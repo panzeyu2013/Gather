@@ -369,7 +369,7 @@ struct DeliveryRepoTests {
         _ = try repo.createOrGet(xmpPath: self.xmp, photoPath: self.photo, revision: 4)
         _ = try repo.markWriting(xmpPath: self.xmp, revision: 4, leaseOwner: "w1")
 
-        let failed = try #require(try repo.markFailed(
+        let failed = try #require(try repo.markFailedForTesting(
             xmpPath: self.xmp, revision: 4, errorMessage: "disk full", leaseOwner: "w1"))
         #expect(failed.status == "failed")
         #expect(failed.errorMessage == "disk full")
@@ -380,7 +380,7 @@ struct DeliveryRepoTests {
         let retry = try #require(try repo.markWriting(xmpPath: self.xmp, revision: 4))
         #expect(retry.attemptCount == 2)
 
-        let conflict = try #require(try repo.markConflict(
+        let conflict = try #require(try repo.markConflictForTesting(
             xmpPath: self.xmp, revision: 4, errorMessage: "external edit"))
         #expect(conflict.status == "conflict")
         #expect(conflict.errorMessage == "external edit")
@@ -411,18 +411,18 @@ struct DeliveryRepoTests {
             xmpPath: self.xmp, leaseOwner: "old",
             currentOwner: "new", status: "writing")
         #expect(throws: lost) {
-            _ = try repo.markFailed(
+            _ = try repo.markFailedForTesting(
                 xmpPath: self.xmp, revision: 2, errorMessage: "boom", leaseOwner: "old")
         }
         #expect(throws: lost) {
-            _ = try repo.markConflict(
+            _ = try repo.markConflictForTesting(
                 xmpPath: self.xmp, revision: 2, errorMessage: "external", leaseOwner: "old")
         }
         // 空 owner 同样带 lease_owner='' CAS：不能覆盖新租约，只返回 nil。
-        #expect(try repo.markFailed(
+        #expect(try repo.markFailedForTesting(
             xmpPath: self.xmp, revision: 2, errorMessage: "boom") == nil)
 
-        let failed = try #require(try repo.markFailed(
+        let failed = try #require(try repo.markFailedForTesting(
             xmpPath: self.xmp, revision: 2, errorMessage: "boom", leaseOwner: "new"))
         #expect(failed.status == "failed")
         #expect(failed.leaseOwner == "")
@@ -1280,8 +1280,8 @@ struct DeliveryRepoTests {
         let linked = "/v/Linked.xmp"
         _ = try repo.createOrGet(xmpPath: linked, photoPath: "/v/Linked.jpg")
         _ = try repo.markWriting(xmpPath: linked, revision: 0)
-        _ = try repo.markFailed(xmpPath: linked, revision: 0, errorMessage: "boom")
-        _ = try repo.markConflict(xmpPath: linked, revision: 0, errorMessage: "XMP_EXTERNAL_EDIT_CONFLICT")
+        _ = try repo.markFailedForTesting(xmpPath: linked, revision: 0, errorMessage: "boom")
+        _ = try repo.markConflictForTesting(xmpPath: linked, revision: 0, errorMessage: "XMP_EXTERNAL_EDIT_CONFLICT")
         _ = try repo.linkSession(xmpPath: linked, sessionId: "s1")
 
         let orphanXmp = "/v/Orphan.xmp"

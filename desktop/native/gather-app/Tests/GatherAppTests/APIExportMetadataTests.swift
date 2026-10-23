@@ -690,7 +690,7 @@ private struct MetadataAPIFixture {
             backupPath: ""
         )
         _ = try deliveryRepo.markSynced(xmpPath: xmpPath, revision: 0)
-        _ = try deliveryRepo.markConflict(
+        _ = try deliveryRepo.markConflictForTestSupport(
             xmpPath: xmpPath, revision: 0, errorMessage: "XMP_EXTERNAL_EDIT_CONFLICT")
         // 冲突前已写盘并确认的项（cleanup 外部修改冲突的真实形态）。
         _ = try deliveryRepo.upsertItem(
@@ -719,7 +719,7 @@ private struct MetadataAPIFixture {
             break
         case .failed:
             _ = try deliveryRepo.markWritingForTesting(xmpPath: xmpPath, revision: 0)
-            _ = try deliveryRepo.markFailed(xmpPath: xmpPath, revision: 0, errorMessage: "WRITE_FAILED")
+            _ = try deliveryRepo.markFailedForTestSupport(xmpPath: xmpPath, revision: 0, errorMessage: "WRITE_FAILED")
         case .synced:
             _ = try deliveryRepo.markWritingForTesting(xmpPath: xmpPath, revision: 0)
             _ = try deliveryRepo.markWritten(
@@ -906,7 +906,7 @@ struct APIMetadataTests {
             baseValues: .object(["rating": .number(3)]),
             backupPath: "")
         _ = try fixture.deliveryRepo.markSynced(xmpPath: xmpPath, revision: 0)
-        _ = try fixture.deliveryRepo.markConflict(
+        _ = try fixture.deliveryRepo.markConflictForTestSupport(
             xmpPath: xmpPath, revision: 0, errorMessage: "XMP_EXTERNAL_EDIT_CONFLICT")
         fixture.xmp.attributes = MetadataWriteAttributes(rating: 3)
 
@@ -1015,7 +1015,7 @@ struct APIMetadataTests {
         _ = try fixture.deliveryRepo.upsertItem(
             xmpPath: xmpPath, photoId: p2, module: .metadata, status: .written)
 
-        _ = try fixture.deliveryRepo.markConflict(
+        _ = try fixture.deliveryRepo.markConflictForTestSupport(
             xmpPath: xmpPath, revision: 0,
             errorMessage: "XMP_EXTERNAL_EDIT_CONFLICT")
         fixture.xmp.attributes = MetadataWriteAttributes(rating: 3)

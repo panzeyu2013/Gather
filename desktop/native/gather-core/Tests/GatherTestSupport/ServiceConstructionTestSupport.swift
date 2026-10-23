@@ -368,4 +368,20 @@ public extension DeliveryRepo {
             xmpPath: xmpPath, revision: revision,
             leaseOwner: leaseOwner, heartbeatAt: heartbeatAt)
     }
+
+    @discardableResult
+    func markFailedForTestSupport(
+        xmpPath: String, revision: Int64, errorMessage: String
+    ) throws -> DeliveryRow? {
+        try markFailed(xmpPath: xmpPath, revision: revision,
+                       errorMessage: errorMessage, leaseOwner: "")
+    }
+
+    @discardableResult
+    func markConflictForTestSupport(
+        xmpPath: String, revision: Int64, errorMessage: String
+    ) throws -> DeliveryRow? {
+        try markConflict(xmpPath: xmpPath, revision: revision,
+                         errorMessage: errorMessage, leaseOwner: "")
+    }
 }

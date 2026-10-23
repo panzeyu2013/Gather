@@ -1388,7 +1388,7 @@ struct CullingDeliverySyncTests {
         let repo = harness.deliveryRepo
         _ = try repo.createOrGet(xmpPath: "/shoot/p1.xmp", photoPath: "/shoot/p1.jpg", revision: 1)
         _ = try repo.markWriting(xmpPath: "/shoot/p1.xmp", revision: 1)
-        _ = try repo.markFailed(xmpPath: "/shoot/p1.xmp", revision: 1, errorMessage: "boom")
+        _ = try repo.markFailedForTesting(xmpPath: "/shoot/p1.xmp", revision: 1, errorMessage: "boom")
         _ = try repo.upsertItem(xmpPath: "/shoot/p1.xmp", photoId: "p1", module: .culling, status: .failed)
         _ = try repo.linkSession(xmpPath: "/shoot/p1.xmp", sessionId: "session")
 
@@ -1906,7 +1906,7 @@ struct CullingEnrichmentTests {
         try addPhoto(harness.db, id: "p2")
         // 交付项 module 是 V1 的归属真相源；conflict 读 deliveries.status。
         _ = try seedWrittenDelivery(harness, photoId: "p1", module: .faceKeyword)
-        _ = try harness.deliveryRepo.markConflict(
+        _ = try harness.deliveryRepo.markConflictForTesting(
             xmpPath: "/shoot/p1.xmp", revision: 1, errorMessage: "external"
         )
 
@@ -2008,7 +2008,7 @@ struct CullingSingleTruthSourceTests {
         let harness = try makeHarness()
         for id in ["p1", "p2", "p3"] { try addPhoto(harness.db, id: id) }
         _ = try seedWrittenDelivery(harness, photoId: "p1")
-        _ = try harness.deliveryRepo.markConflict(
+        _ = try harness.deliveryRepo.markConflictForTesting(
             xmpPath: "/shoot/p1.xmp", revision: 1, errorMessage: "external"
         )
 
@@ -2336,13 +2336,13 @@ struct CullingDeliveryCut2Tests {
 
         _ = try repo.createOrGet(xmpPath: "/shoot/p3.xmp", photoPath: "/shoot/p3.jpg", revision: 1)
         _ = try repo.markWriting(xmpPath: "/shoot/p3.xmp", revision: 1)
-        _ = try repo.markFailed(xmpPath: "/shoot/p3.xmp", revision: 1, errorMessage: "boom")
+        _ = try repo.markFailedForTesting(xmpPath: "/shoot/p3.xmp", revision: 1, errorMessage: "boom")
         _ = try repo.upsertItem(xmpPath: "/shoot/p3.xmp", photoId: "p3", module: .culling, status: .failed)
         _ = try repo.linkSession(xmpPath: "/shoot/p3.xmp", sessionId: "session")
 
         _ = try repo.createOrGet(xmpPath: "/shoot/p4.xmp", photoPath: "/shoot/p4.jpg", revision: 1)
         _ = try repo.markWriting(xmpPath: "/shoot/p4.xmp", revision: 1)
-        _ = try repo.markConflict(xmpPath: "/shoot/p4.xmp", revision: 1, errorMessage: "external")
+        _ = try repo.markConflictForTesting(xmpPath: "/shoot/p4.xmp", revision: 1, errorMessage: "external")
         _ = try repo.upsertItem(xmpPath: "/shoot/p4.xmp", photoId: "p4", module: .culling, status: .written)
         _ = try repo.linkSession(xmpPath: "/shoot/p4.xmp", sessionId: "session")
 
@@ -2450,7 +2450,7 @@ struct CullingDeliveryCut2Tests {
         try addPhoto(harness.db, id: "p3")
         _ = try seedSyncedDelivery(harness, photoId: "p1")
         _ = try seedWrittenDelivery(harness, photoId: "p2")
-        _ = try repo.markConflict(
+        _ = try repo.markConflictForTesting(
             xmpPath: "/shoot/p2.xmp", revision: 1, errorMessage: "external"
         )
         _ = try seedWrittenDelivery(harness, photoId: "p3")

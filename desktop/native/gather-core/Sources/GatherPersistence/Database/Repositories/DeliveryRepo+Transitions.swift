@@ -421,7 +421,7 @@ extension DeliveryRepo {
         xmpPath: String,
         revision: Int64,
         errorMessage: String,
-        leaseOwner: String = ""
+        leaseOwner: String
     ) throws -> DeliveryRow? {
         try leaseAwareTransition(
             xmpPath: xmpPath,
@@ -443,7 +443,7 @@ extension DeliveryRepo {
         xmpPath: String,
         revision: Int64,
         errorMessage: String,
-        leaseOwner: String = ""
+        leaseOwner: String
     ) throws -> DeliveryRow? {
         try leaseAwareTransition(
             xmpPath: xmpPath,
@@ -453,5 +453,22 @@ extension DeliveryRepo {
             assignments: ["error_message = ?", "lease_owner = ''", "heartbeat_at = ''"],
             values: [.text(errorMessage)]
         )
+    }
+
+    // 包内测试夹具：owner 为空串（只允许租约为空的行）。生产必须走 StateWriter 并显式传 owner。
+    @discardableResult
+    package func markFailedForTesting(
+        xmpPath: String, revision: Int64, errorMessage: String, leaseOwner: String = ""
+    ) throws -> DeliveryRow? {
+        try markFailed(xmpPath: xmpPath, revision: revision,
+                       errorMessage: errorMessage, leaseOwner: leaseOwner)
+    }
+
+    @discardableResult
+    package func markConflictForTesting(
+        xmpPath: String, revision: Int64, errorMessage: String, leaseOwner: String = ""
+    ) throws -> DeliveryRow? {
+        try markConflict(xmpPath: xmpPath, revision: revision,
+                         errorMessage: errorMessage, leaseOwner: leaseOwner)
     }
 }

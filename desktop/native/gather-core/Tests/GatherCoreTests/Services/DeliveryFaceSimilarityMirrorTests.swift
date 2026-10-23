@@ -507,7 +507,7 @@ struct DeliveryWritebackMirrorDomainTests {
         let repo = harness.deliveryRepo
         _ = try repo.createOrGet(xmpPath: "/shoot/p1.xmp", photoPath: "/shoot/p1.jpg")
         _ = try repo.markWriting(xmpPath: "/shoot/p1.xmp", revision: 0)
-        _ = try repo.markFailed(
+        _ = try repo.markFailedForTesting(
             xmpPath: "/shoot/p1.xmp", revision: 0, errorMessage: "boom"
         )
         let saved = try repo.upsertItem(

@@ -410,10 +410,10 @@ struct DeliveryCoordinatorTests {
                 _ = try harness.deliveryRepo.markWriting(
                     xmpPath: fixture.path, revision: 1)
             case .failed:
-                _ = try harness.deliveryRepo.markFailed(
+                _ = try harness.deliveryRepo.markFailedForTesting(
                     xmpPath: fixture.path, revision: 1, errorMessage: "injected")
             case .conflict:
-                _ = try harness.deliveryRepo.markConflict(
+                _ = try harness.deliveryRepo.markConflictForTesting(
                     xmpPath: fixture.path, revision: 1, errorMessage: "external")
             case .pending:
                 break
@@ -1073,7 +1073,7 @@ struct DeliveryCoordinatorTests {
         // p1：conflict（不是候选）。
         _ = try createDelivery(harness, xmpPath: "/v/p1.xmp", photoPath: "/v/p1.jpg")
         try driveToWritten(harness, xmpPath: "/v/p1.xmp")
-        _ = try harness.deliveryRepo.markConflict(
+        _ = try harness.deliveryRepo.markConflictForTesting(
             xmpPath: "/v/p1.xmp", revision: 1, errorMessage: "external")
         _ = try harness.deliveryRepo.upsertItem(
             xmpPath: "/v/p1.xmp", photoId: "p1", module: .culling, status: .written)
