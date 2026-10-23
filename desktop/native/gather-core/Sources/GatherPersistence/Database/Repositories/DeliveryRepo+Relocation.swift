@@ -72,8 +72,8 @@ extension DeliveryRepo {
         }
         func rewrite(_ value: Any) -> Any {
             if let string = value as? String {
-                if string == oldXmp { return newXmp }
-                if string == oldPhoto { return newPhoto }
+                if TSPath.normalize(string) == oldXmp { return newXmp }
+                if TSPath.normalize(string) == TSPath.normalize(oldPhoto) { return newPhoto }
                 return string
             }
             if let array = value as? [Any] { return array.map(rewrite) }

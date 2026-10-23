@@ -381,8 +381,22 @@ struct AssetRepoTests {
         _ = try db.prepare("""
             INSERT INTO delivery_sessions (delivery_id, session_id, created_at) VALUES (?, 's1', ?)
           """).run([.int(deliveryId), .text(now)])
+        // 未完成 intent 的 xmp_path 与 payload 都必须随交付迁移，否则 replay 会走 alreadyGone。
+        let intentPayload = "{\"xmpPath\":\"\(oldXmp)\",\"photoPath\":\"\(oldPath)\"}"
+        _ = try db.prepare("""
+            INSERT INTO delivery_intents (kind, xmp_path, phase, payload_json, error_message, created_at, updated_at)
+            VALUES ('cleanup', ?, 'prepared', ?, '', ?, ?)
+          """).run([.text(oldXmp), .text(intentPayload), .text(now), .text(now)])
+        let intentId = db.lastInsertRowid
 
         #expect(try repo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot) == 1)
+        let intent = try db.prepare("SELECT xmp_path, payload_json FROM delivery_intents WHERE id = ?")
+            .get([.int(intentId)])
+        #expect(intent?[0].textValue == newXmp)
+        let payload = (intent?[1].textValue ?? "")
+            .replacingOccurrences(of: "\\/", with: "/")
+        #expect(payload.contains(newXmp))
+        #expect(!payload.contains(oldXmp))
 
         let delivery = try db.prepare("""
             SELECT id, xmp_path, photo_path, status, revision, base_fingerprint, backup_path
