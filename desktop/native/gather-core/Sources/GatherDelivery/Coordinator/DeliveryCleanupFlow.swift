@@ -116,7 +116,8 @@ struct DeliveryCleanupFlow: Sendable {
                         let updated = try writer.markConflict(
                             xmpPath: current.xmpPath,
                             revision: current.revision,
-                            errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT"
+                            errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT",
+                            leaseOwner: ""
                         )
                         if updated != nil {
                             conflictedCount += 1
@@ -259,7 +260,8 @@ struct DeliveryCleanupFlow: Sendable {
                         if try writer.markConflict(
                             xmpPath: current.xmpPath,
                             revision: current.revision,
-                            errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT"
+                            errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT",
+                            leaseOwner: ""
                         ) != nil {
                             conflictedCount += 1
                             conflictedXmpPaths.append(current.xmpPath)

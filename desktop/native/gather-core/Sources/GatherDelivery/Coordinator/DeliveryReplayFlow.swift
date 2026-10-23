@@ -213,7 +213,8 @@ struct DeliveryReplayFlow: Sendable {
                         guard try writer.markConflict(
                             xmpPath: intent.xmpPath,
                             revision: payload.revision,
-                            errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT") != nil else {
+                            errorMessage: "XMP_CLEANUP_ABORTED_EXTERNAL_EDIT",
+                            leaseOwner: "") != nil else {
                             failedCount += 1
                             errors.append(
                                 "XMP_CLEANUP_GUARD_CONFLICT_CAS_FAILED: \(intent.xmpPath)")

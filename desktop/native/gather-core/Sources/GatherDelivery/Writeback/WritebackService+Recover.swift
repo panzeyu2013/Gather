@@ -164,12 +164,12 @@ extension WritebackService {
                         result.errors.append("DELIVERY_LEASE_LOST: \(path)")
                         continue
                     }
-                    if try stateWriter.markWritten(
+                    if try stateWriter.markWrittenAndClearReloadAcks(
                         xmpPath: path, revision: row.revision,
                         leaseOwner: leaseOwner,
                         baseFingerprint: fingerprint, baseValues: baseValues,
-                        backupPath: stale.backupPath) != nil {
-                        clearReloadAck(forXmpPath: path)
+                        backupPath: stale.backupPath,
+                        timestamp: nowISOString()) != nil {
                         result.written += 1
                     } else {
                         logLeaseEvent(

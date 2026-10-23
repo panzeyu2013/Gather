@@ -248,13 +248,14 @@ extension WritebackService {
                     ?? existingBackupByPath[path]
                     ?? ""
                 do {
-                    let row = try stateWriter.markWritten(
+                    let row = try stateWriter.markWrittenAndClearReloadAcks(
                         xmpPath: path,
                         revision: revision,
                         leaseOwner: leaseOwner,
                         baseFingerprint: fingerprintByPath[path] ?? "",
                         baseValues: baseValuesByPath[path] ?? .object([:]),
-                        backupPath: backupPath
+                        backupPath: backupPath,
+                        timestamp: nowISOString()
                     )
                     if row == nil {
                         logLeaseEvent(
@@ -264,9 +265,6 @@ extension WritebackService {
                             op: "writeback-converge",
                             reason: "DELIVERY_WRITE_CAS_FAILED")
                         errors.append("DELIVERY_WRITE_CAS_FAILED: \(path)")
-                    } else {
-                        // 已落盘：关联会话必须重新 reload 才能 confirm（§5.4-2）。
-                        clearReloadAck(forXmpPath: path)
                     }
                 } catch {
                     if let leaseReason = Self.leaseFailureReason(error) {

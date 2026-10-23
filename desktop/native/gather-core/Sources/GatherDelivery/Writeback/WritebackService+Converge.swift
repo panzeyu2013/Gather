@@ -19,20 +19,8 @@ extension WritebackService {
     /// delivery_sessions 反查同一批会话，保证 confirm/finalize 必须等一次新 reload。
     func clearReloadAck(forXmpPath xmpPath: String) {
         do {
-            let path = TSPath.normalize(xmpPath)
-            let rows = try connection.prepare("""
-                SELECT ds.session_id
-                FROM delivery_sessions ds
-                JOIN deliveries d ON d.id = ds.delivery_id
-                WHERE d.xmp_path = ?
-                """).query([.text(path)])
-            for row in rows {
-                guard let sessionId = row[0].textValue, !sessionId.isEmpty else { continue }
-                _ = try connection.prepare("""
-                    UPDATE sessions SET reload_acked_at = NULL, updated_at = ?
-                    WHERE id = ? AND reload_acked_at IS NOT NULL
-                    """).run([.text(nowISOString()), .text(sessionId)])
-            }
+            try SessionReloadAckRepo(connection: connection)
+                .clearReloadAcks(forXmpPath: xmpPath, timestamp: nowISOString())
         } catch {
             // 不改变已落盘的 written：ack 清理失败只会让门禁更严格（下次 reload 仍可过）。
             // P2-5：basename#hash + 结构化 reason，完整路径只留在返回的 errors。

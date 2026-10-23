@@ -396,10 +396,8 @@ public struct DeliveryCoordinator: Sendable {
     /// （冷启动同样有效）。
     private func requireReloadAck(_ sessionId: String) throws {
         guard requireReloadAckEnabled else { return }
-        let row = try connection.prepare(
-            "SELECT reload_acked_at FROM sessions WHERE id = ?"
-        ).get([.text(sessionId)])
-        guard let acked = row?[0].textValue, !acked.isEmpty else {
+        let acked = try SessionReloadAckRepo(connection: connection).reloadAck(sessionId: sessionId)
+        guard let acked, !acked.isEmpty else {
             throw DeliveryCoordinatorError.reloadNotAcknowledged(sessionId: sessionId)
         }
     }

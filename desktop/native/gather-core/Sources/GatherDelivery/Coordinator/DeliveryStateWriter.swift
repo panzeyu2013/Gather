@@ -126,6 +126,29 @@ public struct DeliveryStateWriter: Sendable {
         )
     }
 
+    /// writing → written，并在同一事务内清掉关联会话的 reload-ack（P2）。
+    /// 写者必须传自己的 leaseOwner；CAS 失败返回 nil，不触碰 ack。
+    @discardableResult
+    func markWrittenAndClearReloadAcks(
+        xmpPath: String,
+        revision: Int64,
+        leaseOwner: String,
+        baseFingerprint: String,
+        baseValues: JSONValue,
+        backupPath: String,
+        timestamp: String
+    ) throws -> DeliveryRow? {
+        try repo.markWrittenAndClearReloadAcks(
+            xmpPath: xmpPath,
+            revision: revision,
+            leaseOwner: leaseOwner,
+            baseFingerprint: baseFingerprint,
+            baseValues: baseValues,
+            backupPath: backupPath,
+            timestamp: timestamp
+        )
+    }
+
     /// pending/writing/failed → failed。
     ///
     /// 持租约的写者必须传 `leaseOwner`（与 markWritten 同一 owner CAS）：
@@ -135,7 +158,7 @@ public struct DeliveryStateWriter: Sendable {
         xmpPath: String,
         revision: Int64,
         errorMessage: String,
-        leaseOwner: String = ""
+        leaseOwner: String
     ) throws -> DeliveryRow? {
         try repo.markFailed(
             xmpPath: xmpPath,
@@ -153,7 +176,7 @@ public struct DeliveryStateWriter: Sendable {
         xmpPath: String,
         revision: Int64,
         errorMessage: String,
-        leaseOwner: String = ""
+        leaseOwner: String
     ) throws -> DeliveryRow? {
         try repo.markConflict(
             xmpPath: xmpPath,
