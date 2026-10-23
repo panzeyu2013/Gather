@@ -379,6 +379,16 @@ for lproj in "$UI_RESOURCES"/*.lproj; do
     cp -R "$lproj" "$APP_BUNDLE/Contents/Resources/"
   fi
 done
+# 应用图标必须位于主 bundle 的 Contents/Resources（CFBundleIconFile=AppIcon）。
+if [[ -f "$UI_RESOURCES/AppIcon.icns" ]]; then
+  cp "$UI_RESOURCES/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+else
+  if [[ "$RELEASE_MODE" == "1" ]]; then
+    echo "release mode requires GatherUI/Resources/AppIcon.icns" >&2
+    exit 1
+  fi
+  echo "warning: AppIcon.icns is missing; the app will use the generic icon" >&2
+fi
 for lang in en zh-Hans; do
   if [[ ! -s "$APP_BUNDLE/Contents/Resources/$lang.lproj/Localizable.strings" ]]; then
     echo "main bundle localization is missing or empty: $APP_BUNDLE/Contents/Resources/$lang.lproj/Localizable.strings" >&2

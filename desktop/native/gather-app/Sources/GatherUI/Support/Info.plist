@@ -13,6 +13,8 @@
 	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Gather</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleExecutable</key>
 	<string>Gather</string>
 	<key>CFBundleIdentifier</key>
