@@ -12,27 +12,52 @@
 // 事务**内完成；错误码（XMP_CLEANUP_DB_FAILED / _FINISH_FAILED / XMP_FINALIZE_*）
 // 与计数（applied/skipped/failed）保持原样。
 
+import Darwin
 import Foundation
 import GatherPersistence
 
-/// 进程内 replay 抢占（P2-4）：同一 intent 同时只允许一个回放者。
+/// replay 抢占（P2-4）：同一 intent 同时只允许一个回放者。
 ///
-/// 与 XMPFileLock 同一边界（进程内）；跨进程并发仍不在承诺内。纯内存、无 Schema
-/// 变更：抢不到的回放者直接跳过本 intent（对方会推进/收尾），不再产生虚假失败。
+/// 进程内用 fd 表去重，跨进程用 `flock(LOCK_EX|LOCK_NB)` 锁同一个临时文件；
+/// 不引入 Schema 表。锁文件按 `xmpPath + intent.id` 哈希命名，避免不同数据库
+/// 里相同 id 的误冲突；抢不到的回放者直接跳过（对方会推进/收尾）。
 final class DeliveryReplayClaims: @unchecked Sendable {
     private let lock = NSLock()
-    private var claimed: Set<Int64> = []
+    private var fds: [String: Int32] = [:]
 
-    func claim(_ id: Int64) -> Bool {
+    func claim(_ id: Int64, xmpPath: String, scope: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return claimed.insert(id).inserted
+        let key = "\(scope)#\(xmpPath)#\(id)"
+        if fds[key] != nil { return false }
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-replay-\(Self.fnv1a(key)).lock").path
+        let fd = Darwin.open(file, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { return false }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            Darwin.close(fd)
+            return false
+        }
+        fds[key] = fd
+        return true
     }
 
-    func release(_ id: Int64) {
+    func release(_ id: Int64, xmpPath: String, scope: String) {
         lock.lock()
-        claimed.remove(id)
-        lock.unlock()
+        defer { lock.unlock() }
+        let key = "\(scope)#\(xmpPath)#\(id)"
+        guard let fd = fds.removeValue(forKey: key) else { return }
+        _ = flock(fd, LOCK_UN)
+        _ = Darwin.close(fd)
+    }
+
+    private static func fnv1a(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
     }
 }
 
@@ -45,19 +70,22 @@ struct DeliveryReplayFlow: Sendable {
     /// 抢占状态必须按 flow/coordinator 隔离；用 static 会把不同数据库里相同的
     /// intent.id（各库都从 1 开始）误判为同一回放，测试并行时直接互相跳过。
     private let claims: DeliveryReplayClaims
+    private let claimScope: String
 
     init(
         intents: DeliveryIntentStore,
         writer: DeliveryStateWriter,
         filePhase: DeliveryFilePhase,
         dbPhase: DeliveryDBPhase,
-        claims: DeliveryReplayClaims
+        claims: DeliveryReplayClaims,
+        claimScope: String
     ) {
         self.intents = intents
         self.writer = writer
         self.filePhase = filePhase
         self.dbPhase = dbPhase
         self.claims = claims
+        self.claimScope = claimScope
     }
 
     /// 启动回放（幂等）：先删除 applied 终态，再按相位处理 prepared/fileDone。
@@ -119,12 +147,12 @@ struct DeliveryReplayFlow: Sendable {
             }
             // P2-4：同一 intent 只允许一个回放者。抢不到说明另一回放正在进行，
             // 直接跳过（不再产生 rowNotFound 虚假失败）。
-            guard claims.claim(intent.id) else {
+            guard claims.claim(intent.id, xmpPath: intent.xmpPath, scope: claimScope) else {
                 skippedCount += 1
                 errors.append("XMP_CLEANUP_REPLAY_CLAIMED: #\(intent.id)")
                 continue
             }
-            defer { claims.release(intent.id) }
+            defer { claims.release(intent.id, xmpPath: intent.xmpPath, scope: claimScope) }
             // P0-1 + TOCTOU：prepared 回放的 verify → 文件 → 事后 verify
             // 同样整体在 XMPFileLock 内；新输入已推进 revision 时绝不重做文件
             //（旧备份会覆盖新内容），直接放弃 intent 并上报。
@@ -300,12 +328,12 @@ struct DeliveryReplayFlow: Sendable {
                 }
                 continue
             }
-            guard claims.claim(intent.id) else {
+            guard claims.claim(intent.id, xmpPath: intent.xmpPath, scope: claimScope) else {
                 skippedCount += 1
                 errors.append("XMP_CLEANUP_REPLAY_CLAIMED: #\(intent.id)")
                 continue
             }
-            defer { claims.release(intent.id) }
+            defer { claims.release(intent.id, xmpPath: intent.xmpPath, scope: claimScope) }
             // 文件已是目标状态：这里绝不调用文件阶段（finalize 的备份清理是 DB
             // 段成功后的后置步骤，不属于文件阶段重放）。
             record(await applyDBAndFinish(intent: intent, payload: payload))

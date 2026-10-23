@@ -357,12 +357,15 @@ public struct DeliveryCoordinator: Sendable {
     }
 
     private func makeReplayFlow() -> DeliveryReplayFlow {
-        DeliveryReplayFlow(
+        let claimScope = connection.storagePath
+            ?? "mem:\(String(describing: ObjectIdentifier(connection)))"
+        return DeliveryReplayFlow(
             intents: intentStore,
             writer: stateWriter,
             filePhase: makeFilePhase(),
             dbPhase: makeDBPhase(),
-            claims: replayClaims
+            claims: replayClaims,
+            claimScope: claimScope
         )
     }
 
