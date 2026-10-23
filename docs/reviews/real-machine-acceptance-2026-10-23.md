@@ -22,11 +22,24 @@
 1. **旧库 fail-closed**：用户现有 `~/Library/Application Support/Gather/gather.sqlite` 是 `user_version=0` 且已有表。生产路径启动时按设计拒绝：
    `corrupt("库不可用（V1 之前的旧库（user_version=0 但已有表））: …/gather.sqlite")`，界面显示“初始化失败”。这是预期保护，不是本轮回归；使用当前构建前需归档/移除该旧库（`gather.sqlite` + `-wal` + `-shm`）。
 2. 验收用隔离数据目录启动（`GatherApplicationSupportDirectory` 偏好覆盖，见 DEVELOPMENT），未读写用户真实库；用户库未被修改/移动。
-3. 本环境无可用的辅助功能权限，合成点击未生效；因此本轮只覆盖**启动与首屏**，未执行新建工作区/导入/写回等交互。
+3. 辅助功能权限可用，但宿主 DSH、微信等应用会反复抢回前台；合成键盘事件不稳定，鼠标/AX 点击只在 Gather 短暂置前时生效。
+
+## 交互测试（2026-10-23 15:00）
+
+- **导入**：通过 `gather://import?file=...` 深链导入 2 张 JPEG，`sessions=1`、`photos=2`，图库立即显示 2 张缩略图。
+- **挑片**：切换到“挑片”页，通过 AX 点击“保留/淘汰/上一张”；数据库 `culling_decisions` 2 行均为 `keep`，`culling_history` 4 行，界面显示“保留 2 / 淘汰 0 / 未处理 0”。
+- **写回未触发**：底部“同步…”菜单在抢焦点环境下无法稳定展开，`deliveries` / `delivery_intents` 仍为 0，未生成 `.xmp`。这是**交互自动化未完成**，不是已证实的应用失败；写回引擎由 core 全量测试覆盖（1,168 tests 全绿，含 `WritebackServiceTests`）。
+
+![导入后图库](2026-10-23-acceptance-import.png)
+
+![挑片页](2026-10-23-acceptance-culling.png)
+
+![挑片决策](2026-10-23-acceptance-decisions.png)
 
 ## 未覆盖（外部）
 
 - Developer ID 签名、notarytool 公证、staple、spctl（无证书/凭据）。
 - macos-26/27 release CI 实跑（需 Xcode 26+、Capture One SDK、runner secrets）。
 - x86_64 / Rosetta 运行（本机 `arch -x86_64` 不可用）。
-- 完整的导入→挑片→写回 GUI 流程（需真实照片与交互自动化）。
+- 导入→挑片→写回→导出的完整 GUI 流程：导入/挑片已实测；写回菜单未能在抢焦点环境下触发，导出/确认同步未测。
+- 交互自动化本身受宿主焦点抢占影响；没有把“未触发”当成产品通过。
