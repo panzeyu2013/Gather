@@ -1,7 +1,7 @@
 # 架构整改执行状态（WP0–WP7b，2026-10-22）
 
 > 计划：docs/reviews/architecture-remediation-plan.md。本文件是执行状态索引；详细设计见 macro 报告与 wp6 设计。
-> 工作区：分支 refactor，HEAD cdf3962；本地 commit，未 push。
+> 工作区：分支 refactor，HEAD 见 git log；本地 commit，未 push。
 
 ## 1. 已完成 WP
 
@@ -35,7 +35,7 @@
 - Schema：43 表 / 373 列 / 69 索引 / 62 FK / user_version=2 / FK 违规 0。
 - 门禁：9 道 strict 全绿；ratchet 54/230/0/0/0；protocol surface 255/1,340/0/0；preview 14。
 - Application：DBConnection 0、connection.prepare 0；services_prepare ratchet 0。
-- Delivery：Coordinator 543 行；GatherDelivery 16 文件；状态写入按 writer 交付级入口 8 个（调用点口径见验收报告）；模块适配器 5 方法。
+- Delivery：Coordinator 543 行；GatherDelivery 20 文件；状态写入按 writer 交付级入口 8 个（调用点口径见验收报告）；模块适配器 5 方法。
 - Protocol：255 个 public 类型 / 1,340 声明；零引用 0；Router 信封 0。
 - Host：RootShell 已在 UI；UI sync 端口 0；AppComposition 107 行。
 - Release：真实 universal app 构建通过（本机需给 SwiftPM 注入 `--disable-sandbox`）；GatherLink.coplugin 因 DSH 嵌套 sandbox 的 module cache 拒绝未能构建；签名/公证未验证（无凭据）。
@@ -59,5 +59,5 @@
 ## 4. 结论
 
 计划中的 WP0–WP7b 与独立验收 P1 已全部收口：Application 5 服务改 any 端口、Host 写交付状态收敛到 StateWriter、markWritten/markFailed/markConflict owner CAS、confirm 单事务门禁、confirmSync 委托 Coordinator、370 列 V1 迁移、4 个 >1000 行服务拆分、WP3b fake-repo 与 trace 边界测试。核心指标：Application SQL 0（目标 ≤15）、Delivery Coordinator 543（目标 ≤600）、adapters 5（目标 ≤5）、Protocol 255 类型（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2。
-P2 代码项已收口（死代码/重复 helper/本地化出口/测试支持/路径校验/租约 trace/锁序/警告/插件 universal）；剩余仅为真实发布凭据、x86 运行期与少量已记录的 P2 残余。
+P2 中可安全代码化的项已收口（死代码/重复 helper/本地化出口/测试支持/路径校验/租约 trace/锁序/错误文案/日志脱敏/发布脚本），但**未全部清零**：Persistence 仍有 4 个 >1000 行 Repo、AssetRepo 仍直接 UPDATE deliveries（写 owner 破口）、2 处内联 sessions SQL、reload-ack 与 markWritten 窄窗口、item 级租约、replay 跨进程 claim；发布侧 app icon/签名/公证/macos-26 release job 仍未闭环。
 最终验收报告：[final-acceptance-build.md](final-acceptance-build.md)、[architecture](final-acceptance-architecture.md)、[data](final-acceptance-data.md)、[tests](final-acceptance-tests.md)、[cleanup](final-cleanup-scan.md)。

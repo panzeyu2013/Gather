@@ -92,7 +92,7 @@
 | 写回可靠性 | `DeliveryCoordinator` + `DeliveryRepo` + 纯函数 `aggregateSessionState` | `deliveries/delivery_sessions/delivery_items/delivery_intents` 单事务确认；冲突检测/备份/重试/清理（ADR-015 历史；`MetadataSyncCoordinator`、`CaptureOneSyncState` 已删，见 ADR-028） |
 | 工作区状态 | `WorkspaceStatusService` | 只读聚合、固定优先级推荐、离线 TTL（ADR-012/013） |
 | 一跳化导入 | `SessionService` / `IndexerService` | 路径不跨 IPC、`truncated_import` 标记、去重键 |
-| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 179 项错误码 + 任务/相位文案；en 1,322 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
+| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 179 项错误码 + 任务/相位文案；en 1,332 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
 | 主题与无障碍 | `GatherTheme` / RootView | 品牌令牌 + 语义字体/按钮层级/accessibilityHidden 门控 |
 | 深链/菜单/导入 | `GatherAppDelegate` | gather:// 深链、文件打开、拖拽、菜单、importCompleted 通知 |
 
@@ -197,7 +197,7 @@
 
 | 任务 | 状态 | 验收标准 |
 |---|---|---|
-| 3.1 检测模型换固定输出尺度以启用 CoreML/ANE | ✅ 已取代（Vision 原生，无模型资产；原 ONNX/CoreML 议题见 ADR-026） | 1 万张人脸分析 ≤ 30 分钟，期间 UI 可操作 |
+| 3.1 检测模型换固定输出尺度以启用 CoreML/ANE | ✅ 已取代（Vision + 内置 SFace 模型 38.5MB/Apache-2.0；原 ONNX/CoreML 议题见 ADR-026） | 1 万张人脸分析 ≤ 30 分钟，期间 UI 可操作 |
 | 3.2 跨 session 重识别：绑定角色 → 全局人脸库自动匹配 | ✅ 已完成（LSH 接入 `Face/Matcher.swift`） | 同角色跨 session 自动匹配，无需重新标注 |
 | 3.3 簇持久化与增量 | ⏳ **待做**（1.3 的增量设施已就绪，可直接复用同一模式） | 再次分析只处理新增/变更照片，簇在 10s 内更新 |
 

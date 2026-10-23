@@ -55,19 +55,19 @@
 
 | 指标 | 基线/重构前 | 最终值 | 口径 |
 | --- | ---: | ---: | --- |
-| Swift 文件 | 364（Cut 2 关闭） | **641**（Cut 6c 快照 535） | 收尾实测（含拆分文件）；排除 `.build`；历史 6c 数字保留在归档 |
+| Swift 文件 | 364（Cut 2 关闭） | **649**（Cut 6c 快照 535） | 收尾实测（含拆分文件）；排除 `.build`；历史 6c 数字保留在归档 |
 | 总行数 | 122,692 | — | 收尾未重算全量行数；以当前 `wc -l` 为准，避免旧 133,740 与拆分后矛盾 |
 | SwiftPM target | 2 包（含伞 GatherCore） | **8** | GatherProtocol / GatherPersistence / GatherAnalysis / GatherDelivery / GatherApplication / GatherUI / GatherHost / GatherApp（另有 GatherSchema、2 个 bench、test target） |
 | Schema | 旧迁移链（v35 快照） | **43 表 / 373 列 / 69 索引 / 62 外键 / user_version=2** | `gather-schema verify` + SQLite `pragma_table_info`/`pragma_foreign_key_list` 独立复核；V1→V2 线性迁移 |
 | 错误码 | 179 | **179** | `GatherErrorCode` 的 `case` 计数（L10n.swift 注释旧写 177，6c 修正） |
 | 域协议/方法 | 118 条字符串命令 | **16 协议 / 110 方法** | `GatherProtocol/API/*API.swift` 的 `public protocol` 与 `func` 计数；`PhotoPathPolicy` 端口不计入 16 |
 | 字符串命令 | 118（82 sync + 36 async） | **0** | `grep -rnE 'execute(Async)?\( *"|enqueue\( *"' gather-app --include='*.swift'` = 0 |
-| 本地化 | en 1,407 / zh 10；`l()` 1,481 处 | **en 1,322 / zh 9；页面/VM `l()` = 0** | 修复轮新增 plural/#one/FaceModelPathIssue 9 键；`en` 按 `^"` 计键（1,322；简单键正则 1,321 + 1 个转义引号键） |
+| 本地化 | en 1,407 / zh 10；`l()` 1,481 处 | **en 1,332 / zh 9；页面/VM `l()` = 0** | 修复轮新增 plural/#one/FaceModelPathIssue 9 键；`en` 按 `^"` 计键（1,332；P2 错误码文案新增 10 键） |
 | Preview | — | **14 块 / 5 个 PreviewSupport 文件 / 2,031 行** | `check-preview-surface.sh --strict` |
 | 测试 | core 994 / app 298（Cut 0） | **core 1,146/171 + app 624/69** | P1/P2 收尾实测；core 3 条真实照片 skip（有效 1,143）；app 串行 + 并行 3 次均绿 |
 | 清理 ratchet | 40 / 348 / 128 / 0 / 0（Cut 0） | **54 / 230 / 0 / 0 / 0** | services_prepare 0；unchecked +1 为进程内 replay claim，try? 231→230 |
 | 文档 | 42 篇 / 18,609 行 | **55 篇 / 21,787 行（非 archive 26 篇 / 8,765 行）** | 含本报告与 archive 索引；28 篇历史文档已归档；2026-10-22 收尾实测 |
-| 收尾复核（2026-10-22 23:00） | — | **641 Swift 文件；测试文件 174；#Preview 14；非 archive 死链 0** | P1/P2 收尾实测；Coordinator 543 行、GatherDelivery 16 文件 |
+| 收尾复核（2026-10-22 23:00） | — | **649 Swift 文件；测试文件 179；#Preview 14；非 archive 死链 0** | P1/P2 收尾实测；Coordinator 543 行、GatherDelivery 20 文件 |
 
 ## 4. 删除清单（主要项）
 
@@ -129,7 +129,7 @@ swift run --package-path gather-core --disable-sandbox --cache-path .build/share
 | `check-docs.sh --strict` | OK；ADR 20（缺失 0）、reviews 当前 30 篇、md 链接 0 缺失、schema 声明一致 |
 | `check-no-legacy.sh` | OK；7 条 enforced 全过，6 个 tracked 指标 |
 | `check-layering.sh` | OK；17 条规则全过（含 UI/App 禁 import GatherDelivery） |
-| `check-duplicate-symbols.sh --strict` | OK；扫描 641 文件、batchAsync 1 份、Tests/Support 外 0 |
+| `check-duplicate-symbols.sh --strict` | OK；扫描 649 文件、batchAsync 1 份、Tests/Support 外 0 |
 | `check-select-star.sh --strict` | OK；Sources 4 处 / 1 文件（baseline 4）、Tests 1 处（白名单） |
 | `check-preview-surface.sh --strict` | PASS；**14 个 #Preview / 5 个 PreviewSupport 文件 / 2,031 行** |
 | `check-protocol-surface.sh --strict` | OK；255 类型 / 1,340 声明 / 0 零引用 / 0 信封 |
@@ -152,7 +152,7 @@ BUILD_SH_EXIT:1
 
 ### 5.5 其它证据
 
-- 错误码：`GatherErrorCode` 枚举内 `case` = **179**；L10n.swift 注释写 179 码 / en 表 1,313（缓存上限 ≈3 倍的说明，表当前实测 1,322 键）。
+- 错误码：`GatherErrorCode` 枚举内 `case` = **179**；L10n.swift 注释写 179 码 / en 表 1,313（缓存上限 ≈3 倍的说明，表当前实测 1,332 键）。
 - 协议：16 个 `*API.swift` 内 `func` 合计 **110**；`PhotoPathPolicy` 是端口，不计入。
 - 页面/VM `l()`：`grep -rnE '\bl\(' Sources --include='*.swift' | grep -v /Support/` = **0**。
 - 字符串命令：`grep -rnE 'execute(Async)?\( *"|enqueue\( *"' gather-app --include='*.swift'` = **0**。
@@ -163,7 +163,7 @@ BUILD_SH_EXIT:1
 2. **bundle 本机未构建**：受 DSH 沙箱限制（见 5.4）；bundle 大小、两份 lproj、FaceModels、未签名状态均未在本机验证，交 CI。
 3. **10k 人脸精确聚类未达 5s**：release 精确 DBSCAN 19.25s（3 跑中位；总 19.50s、批量匹配 152.8ms、内存粗估 39.1/19.6MB），约为审计目标 5s 的 3.85×；D-158 已接受 ≤20s 为新 release 基线，5s 作为后续 stretch。debug LSH 中位 28.9s（12.98s 聚类 + 15.56s 匹配），两构建不可互比。
 4. **CL-18 仍 pending**：`try?` 236 行（baseline 242）、`@unchecked Sendable` 53 行；未批量改语义（会改变 UI 错误路径与测试断言），ratchet 只降不升。
-5. **CL-20 已 done，但只是静态证据**：删 94 个 en 键 + 1 个 zh 键（en 1,407→1,313→**1,322**（修复轮 +9）、zh 10→9），保留 `检测模型路径` 1 个 pinned key；未做真实 en 界面逐页 A/B（GUI 不可用）。
+5. **CL-20 已 done，但只是静态证据**：删 94 个 en 键 + 1 个 zh 键（en 1,407→1,313→**1,332**（修复轮 +9 + P2 错误码 10）、zh 10→9），保留 `检测模型路径` 1 个 pinned key；未做真实 en 界面逐页 A/B（GUI 不可用）。
 6. **CL-19 已 done**：保留 60 个旧回归用例；其中 4 例依赖 `/usr/bin/zip`、`/bin/sh`、`/usr/bin/awk`，非 hermetic，未重写为夹具。
 7. **ratchet baseline 未收紧**：当前 try_optional 已 236，baseline 仍 242；6c 只读验收，未改 `docs/cleanup-baseline.json`。如需冻结为 236，由 owner 跑 `check-cleanup-ratchet.sh --write-baseline` 并复核。
 8. **工作区状态**：当前改动已提交且工作区干净（本地 commit 未 push）；`.build`/`release` 仍 gitignored，不计入源码统计。
@@ -192,12 +192,12 @@ BUILD_SH_EXIT:1
 | L10n 注释 | 177→179、1,407→1,313（表最终 1,322） | 通过 |
 | 人工 GUI / 本机 bundle | 未做；已记录命令、失败点与 CI 入口 | **待人工/CI**（非代码阻塞） |
 
-**结论**：8 路评审的 P0/P1 产品路径与架构整改 WP0–WP7b 已闭环，机器验收达到**可发布候选**：core 1,146/171、app 624/69（串行与并行均绿）、schema 43/373/69/62/user_version=2、9 门禁 strict、ratchet 54/230/0。GUI smoke 与 build.sh 完整 bundle 属于环境外的人工/CI 验收，按“未测不写通过”保留；建议 owner 在 CI bundle 与 GUI smoke 通过后执行发布 tag。
+**结论**：8 路评审的 P0/P1 产品路径与架构整改 WP0–WP7b 已闭环，机器验收达到**架构可提交候选**：core 1,146/171、app 624/69（串行与并行均绿）、schema 43/373/69/62/user_version=2、9 门禁 strict、ratchet 54/230/0。**发布门仍未闭环**（app icon 缺失、release runner 需 macos-26/Xcode 26、签名/公证/CI release 未实跑、x86 Rosetta 未验），不能称为“可发布包”；建议 owner 先补资产/凭据并在 macos-26 跑一次 release，再打 tag。
 
 ## 9. 后续接手（resume）
 
 1. 先读本报告 + `refactor-progress.md` 顶部 + D-172；当前工作区已提交且干净，HEAD 见 `git log`；未 push。
-2. 复跑机器验收：§5.1/5.2/5.3 的命令；预期 core 1,146/171、app 624/69、schema 43/373/69/62/user_version=2、9 门禁 54/230/0/0/0、preview 14、test-catalog 174 文件、docs 非 archive 死链 0。
+2. 复跑机器验收：§5.1/5.2/5.3 的命令；预期 core 1,146/171、app 624/69、schema 43/373/69/62/user_version=2、9 门禁 54/230/0/0/0、preview 14、test-catalog 179 文件、docs 非 archive 死链 0。
 3. CI 跑 `./desktop/native/build.sh`（`gather-app tests + bundle` job），记录 bundle 大小、两份 lproj、FaceModels、未签名状态。
 4. 人工 GUI smoke 按 §6 第 1 项逐项记录 pass/fail；重点做中英切换逐页 A/B（94 个 en 键删除后的回归风险）。
 5. 10k 人脸优化以 5s 为 stretch；19.25s 已按 D-158 接受为 ≤20s 基线，优化前先固定机器与 bench 档位。
