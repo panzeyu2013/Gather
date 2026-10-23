@@ -62,5 +62,6 @@
 本轮架构 P1 进一步收口：DeliveryRepo/AssetRepo/FaceRepo/ClusterGraph 四个 >1000 行文件已拆到 ≤800；SidecarXMPProvider/PersonRepo/DeliveryCleanupFlow 也已拆到 ≤800（仅 SchemaV1 DDL 846、DEBUG PreviewFixtures 964 保留）；AssetRepo 不再直接 UPDATE deliveries，路径迁移/Intent payload 归 DeliveryRepo.relocatePaths；2 处内联 sessions SQL 下沉 SessionReloadAckRepo；reload-ack 与 markWritten 改为同事务；StateWriter 的 markFailed/markConflict 强制显式 leaseOwner。
 **已进一步收口**：`DeliveryWriting` 窄协议 + `DeliveryStateWriter` 依赖 `any DeliveryWriting`；`markWriting` 从 public deprecated 降为 `package`，跨包测试经 `GatherTestSupport.markWritingForTesting`；item 级 `markItem` 支持 leaseOwner 并加 `EXISTS(deliveries.lease_owner)` CAS，Writeback 传 owner。
 **已补**：4 个 Query 的 SQL 边界 20 例（真实 SQLite）；Job/Delivery trace `duration_ms`。
-**仍未清零**：replay claim 仅同 coordinator 进程内（无 DB 跨进程 claim）、repo 的 markFailed/markConflict 仍保留空串默认供测试；SchemaV1/PreviewFixtures 仍 >800；发布侧 app icon/签名/公证/macos-26 release job 仍未闭环。
+**已补**：replay claim 以 DB storagePath + xmpPath + intent id 为作用域，并用 `flock` 跨进程排他；`markFailed/markConflict` 已移除空串默认，生产 StateWriter 显式传 owner，测试经 package/GatherTestSupport seam。
+**仍未清零**：SchemaV1（846 DDL）/PreviewFixtures（964 DEBUG）仍 >800；跨进程 claim 无专门并发测试；发布侧 app icon/签名/公证/macos-26 release job 仍未闭环。
 最终验收报告：[final-acceptance-build.md](final-acceptance-build.md)、[architecture](final-acceptance-architecture.md)、[data](final-acceptance-data.md)、[tests](final-acceptance-tests.md)、[cleanup](final-cleanup-scan.md)。
