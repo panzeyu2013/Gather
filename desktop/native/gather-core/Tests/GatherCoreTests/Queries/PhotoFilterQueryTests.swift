@@ -221,4 +221,30 @@ struct PhotoFilterQueryBoundaryTests {
         #expect(suggestions.first?.values.count == 5, "SQL LIMIT 5")
         #expect(suggestions.first?.values.allSatisfy { $0.hasPrefix("Canon ") } == true)
     }
+
+    @Test("filterGlobally 读取 INTEGER rating（不能只认 REAL）")
+    func filterGloballyReadsIntegerRating() throws {
+        let db = try makeQueryTestDB()
+        try queryInsertSession(db, id: "s", name: "Global")
+        try queryInsertAsset(db, id: "a1")
+        try queryInsertPhoto(db, id: "p1", sessionId: "s", assetId: "a1")
+        try queryInsertCache(db, photoId: "p1", sessionId: "s", rating: 4)
+
+        let rows = try PhotoFilterQuery(connection: db).filterGlobally(criteria: emptyGroup())
+        #expect(rows.map(\.rating) == [4])
+    }
+
+    @Test("filterPhotos 只传 offset 时补 LIMIT -1，SQLite 合法且分页正确")
+    func filterPhotosOffsetWithoutLimit() throws {
+        let db = try makeQueryTestDB()
+        try queryInsertSession(db, id: "s")
+        for i in 1...3 {
+            try queryInsertPhoto(db, id: "p\(i)", sessionId: "s", filepath: "/s/\(i).jpg")
+        }
+
+        let rows = try PhotoFilterQuery(connection: db).filterPhotos(
+            sessionId: "s", criteria: emptyGroup(),
+            sortBy: "filename", sortOrder: "asc", offset: 1)
+        #expect(rows.map(\.id) == ["p2", "p3"])
+    }
 }

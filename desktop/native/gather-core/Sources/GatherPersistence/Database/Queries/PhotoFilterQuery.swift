@@ -110,6 +110,8 @@ public final class PhotoFilterQuery {
             allParams.append(.int(Int64(limit)))
         }
         if let offset {
+            // SQLite 的 OFFSET 必须跟 LIMIT；只传 offset 时补 LIMIT -1（不限行）。
+            if limit == nil { resolvedSql += " LIMIT -1" }
             resolvedSql += " OFFSET ?"
             allParams.append(.int(Int64(offset)))
         }
@@ -185,7 +187,8 @@ public final class PhotoFilterQuery {
                 filename: row[4].textValue ?? "",
                 filepath: row[5].textValue ?? "",
                 status: row[6].textValue ?? "",
-                rating: row[7].doubleValue ?? 0,
+                rating: row[7].doubleValue
+                    ?? row[7].intValue.map(Double.init) ?? 0,
                 label: row[8].textValue ?? "",
                 keywords: parseKeywords(row[9].textValue ?? "[]")
             )
