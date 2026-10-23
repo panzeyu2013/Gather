@@ -26,11 +26,10 @@ import GatherPersistence
 import GatherProtocol
 
 public struct DeliveryStateWriter: Sendable {
-    private let repo: DeliveryRepo
+    private let repo: any DeliveryWriting
 
-    /// 模块外（Host 的 LiveMetadataAPI）用同一 DeliveryRepo 构造；
-    /// 生产组合根里与 DeliveryCoordinator / WritebackService 共用同一连接。
-    public init(repo: DeliveryRepo) {
+    /// 生产组合根传入 DeliveryRepo；测试/嵌入可注入任何 DeliveryWriting 实现。
+    public init(repo: any DeliveryWriting) {
         self.repo = repo
     }
 
@@ -86,7 +85,8 @@ public struct DeliveryStateWriter: Sendable {
             xmpPath: xmpPath,
             revision: revision,
             leaseOwner: leaseOwner,
-            heartbeatAt: heartbeatAt
+            heartbeatAt: heartbeatAt,
+            now: Date()
         )
     }
 

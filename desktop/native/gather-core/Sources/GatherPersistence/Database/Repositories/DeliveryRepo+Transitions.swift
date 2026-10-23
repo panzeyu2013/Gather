@@ -12,13 +12,10 @@ extension DeliveryRepo {
     /// pending/failed/conflict → writing（租约起点；attempt_count + 1）。
     ///
     /// P2 收口：生产代码只用 `claimWriting`（带租约）；本方法只为既有测试/
-    /// 夹具保留 "writing + 空 lease_owner" 的构造能力，已 deprecated。
-    /// 生产新增调用必须走 claimWriting（owner/TTL/抢占语义在那里）。
-    /// 说明：未直接降为 internal，是因为 gather-app 测试（跨包、非 @testable）
-    /// 仍用它构造夹具；保留 deprecated public 以避免跨包编译破坏。
-    @available(*, deprecated, message: "生产已无调用；请使用 claimWriting（租约 owner/TTL）")
+    /// 无租约的底层迁移：仅包内测试/嵌入夹具使用，生产必须走 claimWriting。
+    /// 已降为 internal；跨包 app 测试经 GatherTestSupport.markWritingForTesting 访问。
     @discardableResult
-    public func markWriting(
+    package func markWriting(
         xmpPath: String,
         revision: Int64,
         leaseOwner: String = "",

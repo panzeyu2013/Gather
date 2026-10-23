@@ -681,7 +681,7 @@ private struct MetadataAPIFixture {
         let photoPath = try path(for: photoId)
         let xmpPath = try deliveryPath(for: photoId)
         _ = try deliveryRepo.createOrGet(xmpPath: xmpPath, photoPath: photoPath)
-        _ = try deliveryRepo.markWriting(xmpPath: xmpPath, revision: 0)
+        _ = try deliveryRepo.markWritingForTesting(xmpPath: xmpPath, revision: 0)
         _ = try deliveryRepo.markWritten(
             xmpPath: xmpPath,
             revision: 0,
@@ -718,10 +718,10 @@ private struct MetadataAPIFixture {
         case .pending:
             break
         case .failed:
-            _ = try deliveryRepo.markWriting(xmpPath: xmpPath, revision: 0)
+            _ = try deliveryRepo.markWritingForTesting(xmpPath: xmpPath, revision: 0)
             _ = try deliveryRepo.markFailed(xmpPath: xmpPath, revision: 0, errorMessage: "WRITE_FAILED")
         case .synced:
-            _ = try deliveryRepo.markWriting(xmpPath: xmpPath, revision: 0)
+            _ = try deliveryRepo.markWritingForTesting(xmpPath: xmpPath, revision: 0)
             _ = try deliveryRepo.markWritten(
                 xmpPath: xmpPath, revision: 0,
                 baseFingerprint: "fp-orphan", baseValues: .object([:]),
@@ -899,7 +899,7 @@ struct APIMetadataTests {
             attributes: ["rating": .number(5)], status: .written)
         _ = try fixture.deliveryRepo.upsertItem(
             xmpPath: xmpPath, photoId: p2, module: .metadata, status: .written)
-        _ = try fixture.deliveryRepo.markWriting(xmpPath: xmpPath, revision: 0)
+        _ = try fixture.deliveryRepo.markWritingForTesting(xmpPath: xmpPath, revision: 0)
         _ = try fixture.deliveryRepo.markWritten(
             xmpPath: xmpPath, revision: 0,
             baseFingerprint: "fp-conflict",
@@ -986,7 +986,7 @@ struct APIMetadataTests {
             attributes: ["rating": .number(5)], status: .written)
         _ = try fixture.deliveryRepo.upsertItem(
             xmpPath: xmpPath, photoId: p2, module: .metadata, status: .written)
-        _ = try fixture.deliveryRepo.markWriting(xmpPath: xmpPath, revision: 0)
+        _ = try fixture.deliveryRepo.markWritingForTesting(xmpPath: xmpPath, revision: 0)
         _ = try fixture.deliveryRepo.markWritten(
             xmpPath: xmpPath, revision: 0,
             baseFingerprint: "fp-old",
@@ -1335,7 +1335,7 @@ struct APIMetadataTests {
         #expect(delivery.revision == 1)
 
         // 已 pending 的孤儿不可再一次 retry（旧 XMP_ORPHAN_NOT_RETRYABLE 语义）。
-        _ = try fixture.deliveryRepo.markWriting(xmpPath: xmpPath, revision: 1)
+        _ = try fixture.deliveryRepo.markWritingForTesting(xmpPath: xmpPath, revision: 1)
         _ = try fixture.deliveryRepo.markWritten(
             xmpPath: xmpPath, revision: 1,
             baseFingerprint: "fp", baseValues: .object([:]), backupPath: "")

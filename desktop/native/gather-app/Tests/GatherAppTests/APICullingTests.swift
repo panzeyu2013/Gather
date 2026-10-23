@@ -223,7 +223,7 @@ private struct CullingAPIFixture {
             keywords: ["culling:keep"],
             status: .written
         )
-        guard try repo.markWriting(xmpPath: xmpPath, revision: row.revision) != nil,
+        guard try repo.markWritingForTesting(xmpPath: xmpPath, revision: row.revision) != nil,
               try repo.markWritten(
                   xmpPath: xmpPath,
                   revision: row.revision,
@@ -755,7 +755,7 @@ struct APICullingTests {
             baseFingerprint: "",
             baseValues: .object([:])
         )
-        _ = try repo.markWriting(xmpPath: delivery.xmpPath, revision: delivery.revision + 1)
+        _ = try repo.markWritingForTesting(xmpPath: delivery.xmpPath, revision: delivery.revision + 1)
         _ = try repo.markWritten(
             xmpPath: delivery.xmpPath, revision: delivery.revision + 1,
             baseFingerprint: "", baseValues: .object([:]), backupPath: ""

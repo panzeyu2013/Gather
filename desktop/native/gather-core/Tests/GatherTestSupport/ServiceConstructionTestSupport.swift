@@ -353,3 +353,19 @@ extension IndexerService {
         )
     }
 }
+
+// P2：markWriting 已从 public 降为 package；跨包 app 夹具经此显式测试入口访问，
+// 生产代码无法链接到该符号。
+public extension DeliveryRepo {
+    @discardableResult
+    func markWritingForTesting(
+        xmpPath: String,
+        revision: Int64,
+        leaseOwner: String = "",
+        heartbeatAt: String? = nil
+    ) throws -> DeliveryRow? {
+        try markWriting(
+            xmpPath: xmpPath, revision: revision,
+            leaseOwner: leaseOwner, heartbeatAt: heartbeatAt)
+    }
+}
