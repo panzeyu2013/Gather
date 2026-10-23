@@ -833,7 +833,8 @@ struct WritebackServiceTests {
         #expect(row.leaseOwner == "thief")
         #expect(row.baseFingerprint == "")
         #expect(row.backupPath == "")
-        #expect(try fixture.items().first?.status == DeliveryItemStatus.written.rawValue)
+        // item 级写也受 lease owner CAS：租约被接管后不得把 item 翻 written。
+        #expect(try fixture.items().first?.status == DeliveryItemStatus.pending.rawValue)
     }
 
     @Test("租约保护：他人未过期 writing 租约 → execute 逐项失败并报 DELIVERY_LEASE_HELD")

@@ -48,7 +48,8 @@ public protocol DeliveryWriting: Sendable {
         status: DeliveryItemStatus, errorMessage: String
     ) throws -> DeliveryItemRow
     func markItem(
-        itemId: Int64, status: DeliveryItemStatus, errorMessage: String
+        itemId: Int64, status: DeliveryItemStatus, errorMessage: String,
+        leaseOwner: String?
     ) throws -> DeliveryItemRow?
     func deleteItems(
         xmpPath: String, module: DeliveryModule?, statuses: Set<DeliveryItemStatus>

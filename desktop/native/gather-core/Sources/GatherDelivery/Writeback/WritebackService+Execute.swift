@@ -173,7 +173,8 @@ extension WritebackService {
         var baseValuesByPath: [String: JSONValue] = [:]
         for entry in prepared {
             do {
-                try stateWriter.markItem(itemId: entry.itemId, status: .written)
+                try stateWriter.markItem(
+                    itemId: entry.itemId, status: .written, leaseOwner: leaseOwner)
             } catch {
                 let message = "DELIVERY_ITEM_WRITE_FAILED: \(error)"
                 persistItemFailure(itemId: entry.itemId, message: message)

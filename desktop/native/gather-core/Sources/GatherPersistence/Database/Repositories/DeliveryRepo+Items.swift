@@ -72,7 +72,8 @@ extension DeliveryRepo {
     public func markItem(
         itemId: Int64,
         status: DeliveryItemStatus,
-        errorMessage: String = ""
+        errorMessage: String = "",
+        leaseOwner: String? = nil
     ) throws -> DeliveryItemRow? {
         guard let current = try itemRow(id: itemId) else {
             throw DeliveryRepoError.writeNotPersisted("delivery_item#\(itemId)")
@@ -85,13 +86,24 @@ extension DeliveryRepo {
             throw DeliveryRepoError.illegalTransition(
                 xmpPath: current.xmpPath, from: "item:\(typed.rawValue)", to: "item:\(status.rawValue)")
         }
-        let changed = try connection.prepare("""
+        var sql = """
             UPDATE delivery_items
             SET status = ?, error_message = ?, attempt_count = attempt_count + 1, updated_at = ?
             WHERE id = ? AND status IN (\(Self.allowedItemFromSQL(for: status)))
-            """).run([
-                .text(status.rawValue), .text(errorMessage), .text(nowISOString()), .int(itemId),
-            ])
+            """
+        var params: [DBValue] = [
+            .text(status.rawValue), .text(errorMessage), .text(nowISOString()), .int(itemId),
+        ]
+        if let leaseOwner {
+            sql += """
+                 AND EXISTS (
+                    SELECT 1 FROM deliveries d
+                    WHERE d.id = delivery_items.delivery_id AND d.lease_owner = ?
+                 )
+                """
+            params.append(.text(leaseOwner))
+        }
+        let changed = try connection.prepare(sql).run(params)
         guard changed == 1 else { return nil }
         return try itemRow(id: itemId)
     }

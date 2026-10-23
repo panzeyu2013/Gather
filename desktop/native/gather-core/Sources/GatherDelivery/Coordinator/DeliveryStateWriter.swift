@@ -275,9 +275,12 @@ public struct DeliveryStateWriter: Sendable {
     func markItem(
         itemId: Int64,
         status: DeliveryItemStatus,
-        errorMessage: String = ""
+        errorMessage: String = "",
+        leaseOwner: String? = nil
     ) throws -> DeliveryItemRow? {
-        try repo.markItem(itemId: itemId, status: status, errorMessage: errorMessage)
+        try repo.markItem(
+            itemId: itemId, status: status,
+            errorMessage: errorMessage, leaseOwner: leaseOwner)
     }
 
     @discardableResult
