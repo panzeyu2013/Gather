@@ -63,8 +63,8 @@ check_forbidden() {
   done
 }
 
-check_forbidden "$UI_DIR" "GatherUI" GatherPersistence GatherApplication GatherAnalysis GatherHost
-check_forbidden "$ENTRY_DIR" "GatherApp" GatherProtocol GatherPersistence GatherAnalysis GatherApplication
+check_forbidden "$UI_DIR" "GatherUI" GatherPersistence GatherApplication GatherAnalysis GatherHost GatherDelivery
+check_forbidden "$ENTRY_DIR" "GatherApp" GatherProtocol GatherPersistence GatherAnalysis GatherApplication GatherDelivery
 check_forbidden "$HOST_DIR" "GatherHost" GatherApp
 check_forbidden "$ANALYSIS_DIR" "GatherAnalysis" GatherPersistence
 check_forbidden "$DOMAIN_DIR" "GatherApplication" SwiftUI

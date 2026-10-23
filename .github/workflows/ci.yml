@@ -76,9 +76,9 @@ jobs:
           key: core-${{ runner.os }}-${{ hashFiles('desktop/native/gather-core/Package.swift') }}
           restore-keys: core-${{ runner.os }}-
       - name: Core tests
-        run: swift test --package-path desktop/native/gather-core --explicit-target-dependency-import-check error
-      - name: Vector reconciliation gate
-        run: GATHER_RECONCILIATION_VECTOR=1 swift test --package-path desktop/native/gather-core --filter VectorIndexReconciliationTests --explicit-target-dependency-import-check error
+        # 串行：TraceLogging/Logger 两个套件替换进程级 GatherLogger.output；
+        # 跨套件并行会丢日志行，历史 CI 上出现过假红。
+        run: swift test --package-path desktop/native/gather-core --no-parallel --explicit-target-dependency-import-check error
       # WP7：schema 工具是 DDL 真相源的独立消费方；在 core job 内验证 43 表/
       # user_version=2（当前 Schema V2）/外键 0 违规，避免只靠测试间接覆盖。
       - name: Schema verification
@@ -114,6 +114,9 @@ jobs:
         # SwiftPM 的 manifest 缓存不把它计入 key；CI 的 .build 缓存可能来自
         # 旧 runner/SDK，必须强制重算再注入 linker flags。
         run: swift test --package-path desktop/native/gather-app --no-parallel --manifest-cache none --explicit-target-dependency-import-check error
+      - name: App parallel smoke
+        # 验收声称并行 3 次绿；CI 必须实际覆盖一次（不设 --no-parallel）。
+        run: swift test --package-path desktop/native/gather-app --manifest-cache none --explicit-target-dependency-import-check error
       - name: Native bundle build
         run: ./desktop/native/build.sh
 
@@ -145,10 +148,10 @@ jobs:
   release:
     name: Release bundle (universal, signed, notarized)
     # Liquid Glass 需要 Mach-O 的 LC_BUILD_VERSION.sdk >= 26（见 gather-app/
-    # Package.swift）。macos-14 镜像最高 Xcode 16/SDK 15，无法满足；正式发版前
-    # 必须把本 job 移到 macos-26 或装有 Xcode 26 的 self-hosted runner。下面
-    # "Assert release SDK" 会 fail closed，而不是静默产出无 Liquid Glass 的包。
-    runs-on: macos-14
+    # Package.swift）。需要 macos-26 或装有 Xcode 26 的 self-hosted runner；
+    # 若目标 runner 仍无 SDK 26，"Assert release SDK" 会 fail closed，而不是
+    # 静默产出无 Liquid Glass 的包。
+    runs-on: macos-26
     needs: [gates, gather-app]
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 120
