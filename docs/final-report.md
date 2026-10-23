@@ -55,7 +55,7 @@
 
 | 指标 | 基线/重构前 | 最终值 | 口径 |
 | --- | ---: | ---: | --- |
-| Swift 文件 | 364（Cut 2 关闭） | **669**（Cut 6c 快照 535） | 收尾实测（含拆分文件）；排除 `.build`；历史 6c 数字保留在归档 |
+| Swift 文件 | 364（Cut 2 关闭） | **675**（Cut 6c 快照 535） | 收尾实测（含拆分文件）；排除 `.build`；历史 6c 数字保留在归档 |
 | 总行数 | 122,692 | — | 收尾未重算全量行数；以当前 `wc -l` 为准，避免旧 133,740 与拆分后矛盾 |
 | SwiftPM target | 2 包（含伞 GatherCore） | **8** | GatherProtocol / GatherPersistence / GatherAnalysis / GatherDelivery / GatherApplication / GatherUI / GatherHost / GatherApp（另有 GatherSchema、2 个 bench、test target） |
 | Schema | 旧迁移链（v35 快照） | **43 表 / 373 列 / 69 索引 / 62 外键 / user_version=2** | `gather-schema verify` + SQLite `pragma_table_info`/`pragma_foreign_key_list` 独立复核；V1→V2 线性迁移 |
@@ -67,7 +67,7 @@
 | 测试 | core 994 / app 298（Cut 0） | **core 1,146/171 + app 624/69** | P1/P2 收尾实测；core 3 条真实照片 skip（有效 1,143）；app 串行 + 并行 3 次均绿 |
 | 清理 ratchet | 40 / 348 / 128 / 0 / 0（Cut 0） | **54 / 230 / 0 / 0 / 0** | services_prepare 0；unchecked +1 为进程内 replay claim，try? 231→230 |
 | 文档 | 42 篇 / 18,609 行 | **55 篇 / 21,787 行（非 archive 26 篇 / 8,765 行）** | 含本报告与 archive 索引；28 篇历史文档已归档；2026-10-22 收尾实测 |
-| 收尾复核（2026-10-22 23:00） | — | **669 Swift 文件；测试文件 179；#Preview 14；非 archive 死链 0** | P1/P2 收尾实测；Coordinator 543 行、GatherDelivery 20 文件 |
+| 收尾复核（2026-10-22 23:00） | — | **675 Swift 文件；测试文件 179；#Preview 14；非 archive 死链 0** | P1/P2 收尾实测；Coordinator 543 行、GatherDelivery 20 文件 |
 
 ## 4. 删除清单（主要项）
 
@@ -129,7 +129,7 @@ swift run --package-path gather-core --disable-sandbox --cache-path .build/share
 | `check-docs.sh --strict` | OK；ADR 20（缺失 0）、reviews 当前 30 篇、md 链接 0 缺失、schema 声明一致 |
 | `check-no-legacy.sh` | OK；7 条 enforced 全过，6 个 tracked 指标 |
 | `check-layering.sh` | OK；17 条规则全过（含 UI/App 禁 import GatherDelivery） |
-| `check-duplicate-symbols.sh --strict` | OK；扫描 669 文件、batchAsync 1 份、Tests/Support 外 0 |
+| `check-duplicate-symbols.sh --strict` | OK；扫描 675 文件、batchAsync 1 份、Tests/Support 外 0 |
 | `check-select-star.sh --strict` | OK；Sources 4 处 / 1 文件（baseline 4）、Tests 1 处（白名单） |
 | `check-preview-surface.sh --strict` | PASS；**14 个 #Preview / 5 个 PreviewSupport 文件 / 2,031 行** |
 | `check-protocol-surface.sh --strict` | OK；255 类型 / 1,340 声明 / 0 零引用 / 0 信封 |

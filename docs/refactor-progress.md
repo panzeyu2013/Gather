@@ -10,7 +10,7 @@
 - 基线指标（Cut 0）：257 个 Swift 文件；Services 128 处 prepare(；@unchecked Sendable
   ratchet 口径 40（grep 全量 52）；try? 348；测试基线 core 994 / app 298；.disabled 0、
   withKnownIssue 0、.enabled(if:) 4 处（默认跳过 8 条）；错误码 179（D-010）。
-- **最终指标（架构整改 WP0–WP7b，2026-10-22）**：**669** 个 Swift 文件（Cut 6c 快照 535）；8 target；
+- **最终指标（架构整改 WP0–WP7b，2026-10-22）**：**675** 个 Swift 文件（Cut 6c 快照 535）；8 target；
   Schema **43 表/373 列/69 索引/62 FK**、**user_version=2**（V1→V2 no-op 迁移 + 备份）；
   16 协议/110 方法、**0 字符串命令**、179 错误码；en **1,332** / zh **9**、页面/VM `l()`=0；
   #Preview **14**；core **1,146/171**、app **624/69**；ratchet **54/230/0/0/0**；
