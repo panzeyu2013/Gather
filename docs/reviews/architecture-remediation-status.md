@@ -58,6 +58,6 @@
 
 ## 4. 结论
 
-计划中的 WP0–WP7b 与独立验收 P1 已全部收口：Application 5 服务改 any 端口、Host 写交付状态收敛到 StateWriter、markWritten/markFailed/markConflict owner CAS、confirm 单事务门禁、confirmSync 委托 Coordinator、370 列 V1 迁移、4 个 >1000 行服务拆分、WP3b fake-repo 与 trace 边界测试。核心指标：Application SQL 0（目标 ≤15）、Delivery Coordinator 543（目标 ≤600）、adapters 5（目标 ≤5）、Protocol 254 类型（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2。
+计划中的 WP0–WP7b 与独立验收 P1 已全部收口：Application 5 服务改 any 端口、Host 写交付状态收敛到 StateWriter、markWritten/markFailed/markConflict owner CAS、confirm 单事务门禁、confirmSync 委托 Coordinator、370 列 V1 迁移、4 个 >1000 行服务拆分、WP3b fake-repo 与 trace 边界测试。核心指标：Application SQL 0（目标 ≤15）、Delivery Coordinator 543（目标 ≤600）、adapters 5（目标 ≤5）、Protocol 255 类型（目标 ≤260）、Host shell 迁移、sync 0、Composition 107、Schema V2。
 P2 代码项已收口（死代码/重复 helper/本地化出口/测试支持/路径校验/租约 trace/锁序/警告/插件 universal）；剩余仅为真实发布凭据、x86 运行期与少量已记录的 P2 残余。
 最终验收报告：[final-acceptance-build.md](final-acceptance-build.md)、[architecture](final-acceptance-architecture.md)、[data](final-acceptance-data.md)、[tests](final-acceptance-tests.md)、[cleanup](final-cleanup-scan.md)。

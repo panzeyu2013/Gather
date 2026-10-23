@@ -63,8 +63,8 @@
 | 域协议/方法 | 118 条字符串命令 | **16 协议 / 110 方法** | `GatherProtocol/API/*API.swift` 的 `public protocol` 与 `func` 计数；`PhotoPathPolicy` 端口不计入 16 |
 | 字符串命令 | 118（82 sync + 36 async） | **0** | `grep -rnE 'execute(Async)?\( *"|enqueue\( *"' gather-app --include='*.swift'` = 0 |
 | 本地化 | en 1,407 / zh 10；`l()` 1,481 处 | **en 1,322 / zh 9；页面/VM `l()` = 0** | 修复轮新增 plural/#one/FaceModelPathIssue 9 键；`en` 按 `^"` 计键（1,322；简单键正则 1,321 + 1 个转义引号键） |
-| Preview | — | **14 块 / 5 个 PreviewSupport 文件 / 2,045 行** | `check-preview-surface.sh --strict` |
-| 测试 | core 994 / app 298（Cut 0） | **core 1,146/171 + app 624/69** | P1/P2 收尾实测；core 3 条真实照片 skip（有效 1,141）；app 串行 + 并行 3 次均绿 |
+| Preview | — | **14 块 / 5 个 PreviewSupport 文件 / 2,031 行** | `check-preview-surface.sh --strict` |
+| 测试 | core 994 / app 298（Cut 0） | **core 1,146/171 + app 624/69** | P1/P2 收尾实测；core 3 条真实照片 skip（有效 1,143）；app 串行 + 并行 3 次均绿 |
 | 清理 ratchet | 40 / 348 / 128 / 0 / 0（Cut 0） | **54 / 230 / 0 / 0 / 0** | services_prepare 0；unchecked +1 为进程内 replay claim，try? 231→230 |
 | 文档 | 42 篇 / 18,609 行 | **55 篇 / 21,787 行（非 archive 26 篇 / 8,765 行）** | 含本报告与 archive 索引；28 篇历史文档已归档；2026-10-22 收尾实测 |
 | 收尾复核（2026-10-22 23:00） | — | **641 Swift 文件；测试文件 174；#Preview 14；非 archive 死链 0** | P1/P2 收尾实测；Coordinator 543 行、GatherDelivery 16 文件 |
@@ -105,9 +105,9 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 | 检查 | 结果 | exit |
 | --- | --- | ---: |
 | core build（strict） | `Build complete! (8.37s)`；仅有既有测试编译 warning，0 error | 0 |
-| core test（strict） | `Test run with 1092 tests in 157 suites passed` | 0 |
+| core test（strict） | `Test run with 1146 tests in 171 suites passed` | 0 |
 | app build（strict） | `Build complete! (4.63s)` | 0 |
-| app test（strict + `--no-parallel`） | `Test run with 616 tests in 68 suites passed`（评审修复后） | 0 |
+| app test（strict + `--no-parallel`） | `Test run with 624 tests in 69 suites passed`（串行 + 并行 3 次） | 0 |
 | app test（r8 P1-3 删除后，strict + `--no-parallel`） | `Test run with 599 tests in 66 suites passed after 17.199s`（本刀删除 12 例；并行工作区另 +5 例/1 套件。删除当次为 594/65，默认并行连跑 3 次亦 594/65） | 0 |
 
 ### 5.2 Schema
@@ -118,20 +118,21 @@ swift run --package-path gather-core --disable-sandbox --cache-path .build/share
 
 结果：`schema ok: tables=43 user_version=2 foreign_key_violations=0`（exit 0；Cut 6c 当时为 1，WP6b 后为 2）。另把 `gather-schema dump` 的 DDL 灌入内存 SQLite，用 `pragma_table_info` / `pragma_foreign_key_list` 独立复核：**tables=43，columns=373，indexes=69，foreign_keys=62**。
 
-### 5.3 八道门禁（strict 可用的均带 --strict）+ preview
+### 5.3 九道门禁（strict 可用的均带 --strict）+ preview
 
 全部 exit 0：
 
 | 门禁 | 结果 |
 | --- | --- |
-| `check-cleanup-ratchet.sh` | OK；**53 / 235 / 127 / 0 / 0**（baseline 53/240/127；try? 低于 baseline 5，可收紧） |
-| `check-test-catalog.sh --strict` | OK；166 个测试文件、缺头注释 0、skip 站点 3（`.enabled(if:)` 3）、withKnownIssue 0 |
-| `check-docs.sh --strict` | OK；ADR 反引号路径 20（缺失 0）、reviews 历史 14 篇、当前文档 md 链接 0 缺失、schema 声明一致 |
+| `check-cleanup-ratchet.sh` | OK；**54 / 230 / 0 / 0 / 0**（baseline 54/230/0/0/0） |
+| `check-test-catalog.sh --strict` | OK；179 个测试文件、缺头注释 0、skip 站点 3、withKnownIssue 0 |
+| `check-docs.sh --strict` | OK；ADR 20（缺失 0）、reviews 当前 30 篇、md 链接 0 缺失、schema 声明一致 |
 | `check-no-legacy.sh` | OK；7 条 enforced 全过，6 个 tracked 指标 |
-| `check-layering.sh` | OK；17 条规则全过（GatherUI 180 文件不 import Persistence/Domain/Analysis/Host/GatherCore） |
-| `check-duplicate-symbols.sh --strict` | OK；扫描 535 文件、batchAsync 1 份、Tests/Support 外 0（RequestGate 规则已随 CL-04 删除并在最终清理中移除，不再作为门禁证据） |
-| `check-select-star.sh --strict` | OK；Sources 6 处 / 2 文件（baseline 6）、Tests 1 处（白名单） |
-| `check-preview-surface.sh --strict` | PASS；**14 个 #Preview / 5 个 PreviewSupport 文件 / 2,045 行** |
+| `check-layering.sh` | OK；17 条规则全过（含 UI/App 禁 import GatherDelivery） |
+| `check-duplicate-symbols.sh --strict` | OK；扫描 641 文件、batchAsync 1 份、Tests/Support 外 0 |
+| `check-select-star.sh --strict` | OK；Sources 4 处 / 1 文件（baseline 4）、Tests 1 处（白名单） |
+| `check-preview-surface.sh --strict` | PASS；**14 个 #Preview / 5 个 PreviewSupport 文件 / 2,031 行** |
+| `check-protocol-surface.sh --strict` | OK；255 类型 / 1,340 声明 / 0 零引用 / 0 信封 |
 
 ### 5.4 build.sh（本机受限，未通过 ≠ 代码失败）
 
