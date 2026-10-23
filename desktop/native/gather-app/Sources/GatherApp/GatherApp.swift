@@ -103,7 +103,21 @@ struct GatherApp: App {
 
     /// 启动入口：AppBootstrap 负责装配/失败态；重试按钮与 `.task` 共用。
     private func start() async {
-        await bootstrap.startup(delegate: appDelegate)
+        // QA/实机验收：`--data-dir <path>`、环境变量或偏好
+        // `GatherApplicationSupportDirectory` 可把数据目录指向隔离路径，
+        // 避免读写用户真实库；生产都不设时仍走 Application Support/Gather。
+        let arguments = ProcessInfo.processInfo.arguments
+        let argumentPath: String? = {
+            guard let index = arguments.firstIndex(of: "--data-dir"),
+                  arguments.indices.contains(index + 1) else { return nil }
+            return arguments[index + 1]
+        }()
+        let override = (argumentPath
+            ?? ProcessInfo.processInfo.environment["GATHER_APPLICATION_SUPPORT_DIR"]
+            ?? UserDefaults.standard.string(forKey: "GatherApplicationSupportDirectory"))
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        await bootstrap.startup(
+            delegate: appDelegate, applicationSupportDirectory: override)
     }
 }
 

@@ -91,6 +91,20 @@ universal 组装、公证与 staple 也由本脚本负责，契约见下节；`G
 是发布硬门（版本、universal、Developer ID、公证凭据、Capture One 插件任一
 缺失即 exit 1）。
 
+#### 隔离数据目录（QA/实机验收）
+
+默认数据目录是 `~/Library/Application Support/Gather`。实机验收建议使用独立目录，
+避免旧库 fail-closed 或污染真实数据：
+
+```bash
+defaults write com.gather.desktop.native GatherApplicationSupportDirectory /tmp/gather-acceptance
+open -n release/Gather.app
+defaults delete com.gather.desktop.native GatherApplicationSupportDirectory
+```
+
+也可用 `--data-dir <path>` 参数或 `GATHER_APPLICATION_SUPPORT_DIR` 环境变量；
+三者都只在显式设置时生效，生产默认路径不变。
+
 ### 可复现发布（universal / 签名 / 公证 / 版本注入）
 
 同一组环境变量在本地与 CI release job 语义一致；本地不设 `GATHER_RELEASE` 时，
