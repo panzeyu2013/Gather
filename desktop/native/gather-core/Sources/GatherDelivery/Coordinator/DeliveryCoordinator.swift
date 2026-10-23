@@ -24,9 +24,10 @@ import GatherProtocol
 ///
 /// 约定：`delivery:<id>/rev:<revision>/<phase>`。
 /// - id / revision 来自交付行（cleanup/finalize）或 intent payload 的 prepare 快照（replay）；
-/// - phase ∈ confirm / file / db / intent；
+/// - phase ∈ confirm / file / db / intent / backup / lease / summary；
+/// - summary 是 cleanup/finalize/replay 的批次汇总（只带计数与整体 duration_ms）；
 /// - confirm 是 (session, module) 级事务、没有单条交付 id：id 段用
-///   `session:<sessionId>`、revision 固定 0（唯一例外，见 WP7b 台账）。
+///   `session:<sessionId>`、revision 固定 0；replay 批次同理用 `replay`。
 /// GatherLogger.log 不抛错（内部只做等级过滤 + sink 回调），因此日志不会改变
 /// 返回值、错误或业务时序；sink 自身抛错也不是本类型能观察到的语义。
 enum DeliveryTrace {
@@ -63,6 +64,18 @@ enum DeliveryTrace {
         }
         let hex = String(hash, radix: 16)
         return String(repeating: "0", count: max(0, 8 - hex.count)) + hex
+    }
+
+    // MARK: - 阶段耗时（只用于 trace）
+
+    /// 日志耗时的起点（epoch ms）。只用于 duration_ms，不参与业务判定。
+    static func nowMs() -> Int64 {
+        Int64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// 距 startMs 的毫秒数；墙钟回拨时钳到 0，避免 duration_ms 出现负数。
+    static func elapsedMs(since startMs: Int64) -> Int64 {
+        max(0, nowMs() - startMs)
     }
 
     // MARK: - 错误 reason 脱敏（P2）

@@ -22,6 +22,7 @@ extension DeliveryCleanupFlow {
         guard !sessionId.isEmpty else {
             throw DeliveryCoordinatorError.invalidArgument("sessionId 不能为空")
         }
+        let startedAtMs = DeliveryTrace.nowMs()
         let candidates = try summaryQuery.syncedCandidates(sessionId: sessionId, module: module)
         let backlog = try intents.pending()
         var activeIntents = Set(backlog.all.map(\.xmpPath))
@@ -320,6 +321,14 @@ extension DeliveryCleanupFlow {
             }
         }
 
+        // WP7b：批次汇总只带计数与整体耗时，不输出路径/会话明文。
+        DeliveryTrace.log(
+            DeliveryTrace.text(
+                id: DeliveryTrace.sessionToken(sessionId), revision: 0, phase: "summary"),
+            "event=done op=finalize phase=summary module=\(module.rawValue) "
+                + "deleted=\(deletedCount) skipped=\(skippedCount) errors=\(errors.count) "
+                + "duration_ms=\(DeliveryTrace.elapsedMs(since: startedAtMs))",
+            level: .info)
         emitStateChanged(sessionId)
         return DeliveryFinalizeSummary(
             deletedCount: deletedCount,

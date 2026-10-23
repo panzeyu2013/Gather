@@ -109,11 +109,13 @@ extension JobService {
             }
 
             // WP7b：claim 成功 = 本次执行真正开始；trace 可在执行器/心跳/终态间关联。
+            // duration_ms 以此刻为基准：start 记 0，终态日志记实际耗时。
+            beginRun(id: job.id)
             Self.logJob(
                 job.id,
                 "event=start phase=start type=\(job.type.rawValue) "
                     + "scope=\(job.scopeType):\(job.scopeId) "
-                    + "weight=\(registration.weight) lease=\(leaseOwner)",
+                    + "weight=\(registration.weight) lease=\(leaseOwner) duration_ms=0",
                 level: .info)
 
             let task = Task { [weak self] in
@@ -137,6 +139,8 @@ extension JobService {
         lock.lock()
         activeRuns.removeValue(forKey: id)
         controllers.removeValue(forKey: id)
+        // run 已结束：清掉起点，避免同 id retry 时复用旧 duration。
+        runStartedAtMs.removeValue(forKey: id)
         lock.unlock()
     }
 

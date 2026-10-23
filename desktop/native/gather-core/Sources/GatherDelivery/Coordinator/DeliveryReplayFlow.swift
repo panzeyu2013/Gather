@@ -64,6 +64,7 @@ struct DeliveryReplayFlow: Sendable {
     ///
     /// 单条失败不抛出：保留 intent（prepared/fileDone）等待下次重试，错误进 summary。
     func replay() async throws -> DeliveryReplaySummary {
+        let startedAtMs = DeliveryTrace.nowMs()
         let backlog: DeliveryIntentBacklog
         do {
             backlog = try intents.replayAll()
@@ -310,6 +311,13 @@ struct DeliveryReplayFlow: Sendable {
             record(await applyDBAndFinish(intent: intent, payload: payload))
         }
 
+        // WP7b：批次汇总只带计数与整体耗时，不输出路径/会话明文。
+        DeliveryTrace.log(
+            DeliveryTrace.text(id: "replay", revision: 0, phase: "summary"),
+            "event=done op=replay phase=summary applied=\(appliedCount) "
+                + "skipped=\(skippedCount) failed=\(failedCount) errors=\(errors.count) "
+                + "duration_ms=\(DeliveryTrace.elapsedMs(since: startedAtMs))",
+            level: .info)
         return DeliveryReplaySummary(
             appliedCount: appliedCount,
             skippedCount: skippedCount,

@@ -60,7 +60,8 @@ extension JobService {
         if (try? repo.finish(id: id, leaseOwner: leaseOwner, status: .cancelled)) == true {
             Self.logJob(
                 id,
-                "event=terminal phase=terminal status=cancelled reason=cancel-grace",
+                "event=terminal phase=terminal status=cancelled "
+                    + "\(runDurationField(id: id)) reason=cancel-grace",
                 level: .info)
             completeResult(id: id, error: JobCancelledError())
             emitTerminal(id: id)
@@ -81,7 +82,8 @@ extension JobService {
                 if (try? repo.finish(id: id, leaseOwner: leaseOwner, status: .cancelled)) == true {
                     Self.logJob(
                         id,
-                        "event=terminal phase=terminal status=cancelled reason=stop-timeout",
+                        "event=terminal phase=terminal status=cancelled "
+                            + "\(runDurationField(id: id)) reason=stop-timeout",
                         level: .info)
                     completeResult(id: id, error: JobCancelledError())
                     emitTerminal(id: id)
@@ -90,7 +92,8 @@ extension JobService {
                 if (try? repo.interrupt(id: id, leaseOwner: leaseOwner)) == true {
                     Self.logJob(
                         id,
-                        "event=terminal phase=terminal status=interrupted reason=stop-timeout",
+                        "event=terminal phase=terminal status=interrupted "
+                            + "\(runDurationField(id: id)) reason=stop-timeout",
                         level: .info)
                     completeResult(id: id, error: JobServiceError.jobFailed(id, "Application stopped during execution"))
                     emitTerminal(id: id)

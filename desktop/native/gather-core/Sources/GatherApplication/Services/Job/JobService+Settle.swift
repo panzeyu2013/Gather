@@ -114,7 +114,8 @@ extension JobService {
                 Self.logJob(
                     job.id,
                     "event=terminal phase=terminal status=failed "
-                        + "type=\(job.type.rawValue) reason=\(code): \(message)",
+                        + "type=\(job.type.rawValue) \(runDurationField(id: job.id)) "
+                        + "reason=\(code): \(message)",
                     level: .warn)
                 completeResult(id: job.id, error: error)
                 emitTerminal(id: job.id)
@@ -131,7 +132,8 @@ extension JobService {
                 Self.logJob(
                     job.id,
                     "event=terminal phase=terminal status=interrupted "
-                        + "type=\(job.type.rawValue) reason=application-stopped",
+                        + "type=\(job.type.rawValue) \(runDurationField(id: job.id)) "
+                        + "reason=application-stopped",
                     level: .info)
                 completeResult(id: job.id, error: JobServiceError.jobFailed(job.id, "Application stopped during execution"))
                 emitTerminal(id: job.id)
@@ -145,7 +147,8 @@ extension JobService {
                 Self.logJob(
                     job.id,
                     "event=terminal phase=terminal status=cancelled "
-                        + "type=\(job.type.rawValue) reason=cancel-grace",
+                        + "type=\(job.type.rawValue) \(runDurationField(id: job.id)) "
+                        + "reason=cancel-grace",
                     level: .info)
                 completeResult(id: job.id, error: JobCancelledError())
                 emitTerminal(id: job.id)
@@ -159,7 +162,7 @@ extension JobService {
             Self.logJob(
                 job.id,
                 "event=terminal phase=terminal status=succeeded "
-                    + "type=\(job.type.rawValue)",
+                    + "type=\(job.type.rawValue) \(runDurationField(id: job.id))",
                 level: .info)
             completeResult(id: job.id, value: value)
             emitTerminal(id: job.id)
@@ -174,7 +177,7 @@ extension JobService {
         Self.logJob(
             id,
             "event=terminal phase=terminal status=lease-lost "
-                + "reason=conditional-update-missed",
+                + "\(runDurationField(id: id)) reason=conditional-update-missed",
             level: .warn)
         completeResult(id: id, error: JobServiceError.leaseLost(id))
     }

@@ -4,9 +4,10 @@
 // 口径：
 // - trace 字符串：job:<id>、delivery:<id>/rev:<revision>/<phase>；
 // - JobService：start（claim 成功）与 terminal（succeeded/failed/cancelled/
-//   interrupted/lease-lost）各一条，失败终态为 warn 且带 phase + reason；
-// - Delivery：confirm 的 DB 边界、cleanup/finalize/replay 的 file/db/backup 边界、
-//   WritebackService/MirrorWriter 的写租约冲突（lease）；
+//   interrupted/lease-lost）各一条，均带 duration_ms（run 起点=claim 成功），
+//   失败终态为 warn 且带 phase + reason；
+// - Delivery：confirm 的 DB 边界、cleanup/finalize/replay 的 file/db/backup 边界与
+//   批次 summary（整体 duration_ms）、WritebackService/MirrorWriter 的写租约冲突（lease）；
 //   失败路径 warn 必须带 phase + reason，且 reason 不泄漏绝对路径；
 // - 捕获方式：替换 GatherLogger.output（GatherLogger.log 不抛错，日志不影响业务）。
 //   过滤用本测试独有的 job id / xmp 路径，避免并行套件的日志串扰。
@@ -212,6 +213,14 @@ private func traceLines(_ capture: LogCapture, deliveryId: Int64, phase: String)
     return capture.lines.filter { $0.contains(prefix) }
 }
 
+/// 从 trace 行提取 duration_ms（空格分隔字段；reason 内的空格不影响）。
+private func traceDurationMs(in line: String) -> Int? {
+    guard let token = line.split(separator: " ").first(where: { $0.hasPrefix("duration_ms=") }) else {
+        return nil
+    }
+    return Int(token.dropFirst("duration_ms=".count))
+}
+
 // MARK: - tests
 
 /// 串行化：所有用例替换 GatherLogger 的全局 output（进程级单例），并发会互相覆盖。
@@ -246,6 +255,13 @@ struct TraceLoggingTests {
         #expect(lines.contains {
             $0.contains("event=terminal") && $0.contains("phase=terminal")
                 && $0.contains("status=succeeded")
+        })
+        // duration_ms：start 以 run 起点记 0，终态记实际耗时（数值非负）。
+        #expect(lines.contains {
+            $0.contains("event=start") && $0.contains("duration_ms=0")
+        })
+        #expect(lines.contains {
+            $0.contains("event=terminal") && traceDurationMs(in: $0) != nil
         })
         // 两条日志必须是同一个 trace（可关联）。
         #expect(lines.allSatisfy { $0.contains("trace=job:\(job.id)") })
@@ -283,6 +299,7 @@ struct TraceLoggingTests {
         #expect(line.contains("[warn]"))
         #expect(line.contains("phase=terminal"))
         #expect(line.contains("reason="))
+        #expect(traceDurationMs(in: line) != nil)
     }
 
     @Test func cleanupLogsFileAndDBBoundariesWithDeliveryTrace() async throws {
@@ -325,6 +342,14 @@ struct TraceLoggingTests {
         #expect(fileLines.contains { $0.contains("xmp=\(token)") })
         #expect(!allLines.contains { $0.contains(traceXmp) }, "trace 不得泄漏绝对 xmpPath")
         #expect(dbLines.contains { $0.contains("phase=db") })
+
+        // 批次汇总：session token + phase=summary，整体耗时字段存在。
+        let summaryTrace = "trace=delivery:\(DeliveryTrace.sessionToken(traceSession))/rev:0/summary"
+        let summary = try #require(capture.lines.first {
+            $0.contains(summaryTrace) && $0.contains("op=cleanup") && $0.contains("event=done")
+                && $0.contains("deleted=1")
+        })
+        #expect(traceDurationMs(in: summary) != nil)
     }
 
     @Test func cleanupFailureWarnsThenReplayRetriesWithTrace() async throws {
@@ -368,6 +393,14 @@ struct TraceLoggingTests {
         #expect(replayDB.contains {
             $0.contains("event=done") && $0.contains("outcome=deleted")
         })
+
+        // replay 是跨交付批次：固定 replay 汇总 trace + 整体耗时。
+        let replaySummary = try #require(capture.lines.first {
+            $0.contains("trace=delivery:replay/rev:0/summary")
+                && $0.contains("op=replay") && $0.contains("event=done")
+                && $0.contains("applied=1") && $0.contains("failed=0")
+        })
+        #expect(traceDurationMs(in: replaySummary) != nil)
     }
 
     @Test func confirmLogsSessionScopedTraceAtDBBoundary() throws {
@@ -429,6 +462,8 @@ struct TraceLoggingTests {
         #expect(terminal.contains("[info]"))
         #expect(terminal.contains("phase=terminal"))
         #expect(terminal.contains("reason=queued-cancel"))
+        // 未 claim（无 run 起点）：duration_ms 必须是 0，而不是缺字段。
+        #expect(terminal.contains("duration_ms=0"))
         #expect(try repo.get(job.id)?.status == .cancelled)
     }
 
@@ -477,6 +512,7 @@ struct TraceLoggingTests {
         #expect(terminal.contains("status=cancelled"))
         #expect(terminal.contains("type=duplicate.scan"))
         #expect(terminal.contains("reason=cancel-grace"))
+        #expect(traceDurationMs(in: terminal) != nil)
         #expect(try repo.get(job.id)?.status == .cancelled)
     }
 
@@ -517,6 +553,7 @@ struct TraceLoggingTests {
         #expect(terminal.contains("phase=terminal"))
         #expect(terminal.contains("status=interrupted"))
         #expect(terminal.contains("reason=application-stopped"))
+        #expect(traceDurationMs(in: terminal) != nil)
         #expect(try repo.get(job.id)?.status == .interrupted)
         expectNoPathLeak(lines, [])
     }
@@ -568,6 +605,7 @@ struct TraceLoggingTests {
         #expect(terminal.contains("phase=terminal"))
         #expect(terminal.contains("status=lease-lost"))
         #expect(terminal.contains("reason=conditional-update-missed"))
+        #expect(traceDurationMs(in: terminal) != nil)
         #expect(try repo.get(job.id)?.status == .running, "对端行必须原样保留")
     }
 
@@ -598,6 +636,14 @@ struct TraceLoggingTests {
         #expect(skipped.contains("phase=file"))
         #expect(skipped.contains("reason=XMP_BACKUP_PATH_UNEXPECTED_NAME"))
         expectNoPathLeak(lines, [traceXmp, tracePhoto, traceInvalidBackup])
+
+        // finalize 批次汇总同样必须带整体 duration_ms。
+        let summaryTrace = "trace=delivery:\(DeliveryTrace.sessionToken(traceSession))/rev:0/summary"
+        let summary = try #require(capture.lines.first {
+            $0.contains(summaryTrace) && $0.contains("op=finalize") && $0.contains("event=done")
+                && $0.contains("deleted=0") && $0.contains("skipped=1")
+        })
+        #expect(traceDurationMs(in: summary) != nil)
         #expect(try fixture.repo.get(traceXmp) != nil, "fail-closed：行与备份都必须保留")
     }
 

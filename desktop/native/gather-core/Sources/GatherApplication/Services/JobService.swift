@@ -227,10 +227,11 @@ final class Waiter: @unchecked Sendable {
 
 /// 单一后台任务执行器。
 /// 线程安全说明（Swift 6 `Sendable`）：全部可变状态（`executors`/`activeRuns`/
-/// `controllers`/`resultWaiters`/`completedResults`/`cancelGraceTasks`/`watchdog`/
-/// `stopped`/`pumping`/`pumpRequested`/`progressSink`）只在 `lock`（NSLock）临界区内
-/// 读写；其余存储属性构造后不可变。锁纪律无法被编译器静态验证，故标注
-/// `@unchecked`（与同仓 MetadataSyncCoordinator/BatchCursor 一致）。
+/// `runStartedAtMs`/`controllers`/`resultWaiters`/`completedResults`/
+/// `cancelGraceTasks`/`watchdog`/`stopped`/`pumping`/`pumpRequested`/
+/// `progressSink`）只在 `lock`（NSLock）临界区内读写；其余存储属性构造后不可变。
+/// 锁纪律无法被编译器静态验证，故标注 `@unchecked`（与同仓
+/// MetadataSyncCoordinator/BatchCursor 一致）。
 public final class JobService: @unchecked Sendable {
     public typealias JobExecutor = (AnalysisJobData, JobRunContext) async throws -> Any?
     public typealias JobProgressSink = (AnalysisJobData, JobProgressUpdate) -> Void
@@ -297,6 +298,9 @@ public final class JobService: @unchecked Sendable {
 
     var executors: [AnalysisJobType: Registration] = [:]
     var activeRuns: [String: ActiveRun] = [:]
+    /// 本次 run 的起点（epoch ms，claim 成功时登记；run 收尾时清除）。
+    /// 终态日志用它计算 duration_ms；queued 取消没有 run，记 0。
+    var runStartedAtMs: [String: Int64] = [:]
     var controllers: [String: JobAbortSignal] = [:]
     var resultWaiters: [String: [Waiter]] = [:]
     var completedResults: [String: CompletedResult] = [:]
@@ -449,7 +453,8 @@ public final class JobService: @unchecked Sendable {
             // WP7b：queued 取消不经过执行器，仍是终态（trace 可看到未启动就结束）。
             Self.logJob(
                 id,
-                "event=terminal phase=terminal status=cancelled reason=queued-cancel",
+                "event=terminal phase=terminal status=cancelled "
+                    + "\(runDurationField(id: id)) reason=queued-cancel",
                 level: .info)
             completeResult(id: id, error: JobCancelledError())
             emitTerminal(id: id)
@@ -515,6 +520,25 @@ public final class JobService: @unchecked Sendable {
     /// GatherLogger.log 不抛错：日志失败不会改变返回值、错误或业务时序。
     static func logJob(_ jobId: String, _ fields: String, level: LogLevel) {
         GatherLogger.log("trace=job:\(jobId) \(fields)", level: level)
+    }
+
+    /// claim 成功：登记本次 run 的起点。只影响终态日志的 duration_ms，
+    /// 不参与调度、租约或状态机判定。
+    func beginRun(id: String) {
+        let startedAt = Self.nowMs()
+        lock.lock()
+        runStartedAtMs[id] = startedAt
+        lock.unlock()
+    }
+
+    /// 终态日志的 duration 字段；无 run（queued 取消）记 duration_ms=0。
+    /// 锁只包住起点读取，墙钟差值在锁外计算。
+    func runDurationField(id: String) -> String {
+        lock.lock()
+        let startedAt = runStartedAtMs[id]
+        lock.unlock()
+        guard let startedAt else { return "duration_ms=0" }
+        return "duration_ms=\(max(0, Self.nowMs() - startedAt))"
     }
 
     static func gatherErrorCode(from message: String) -> String? {
