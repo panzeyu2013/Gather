@@ -21,6 +21,17 @@ package enum DebugLaunchOptions {
         value(for: "--ui-session")
     }
 
+    /// `--ui-activate`：截图前把窗口置前（终端直接启动时可能被其它窗口盖住）。
+    static var activateWindow: Bool {
+        ProcessInfo.processInfo.arguments.contains("--ui-activate")
+    }
+
+    /// `--ui-language en`：截图/验收用的界面语言覆盖（只在 scene 发布后设置，
+    /// 不改持久化设置；上一版在启动前设置会停在 loading）。
+    static var languageCode: String? {
+        value(for: "--ui-language")
+    }
+
     /// `--ui-window-width 860 --ui-window-height 560`：最小窗口截图。
     package static var windowWidth: CGFloat? {
         dimension(for: "--ui-window-width")

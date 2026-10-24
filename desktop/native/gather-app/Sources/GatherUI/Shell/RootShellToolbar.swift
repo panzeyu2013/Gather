@@ -65,12 +65,9 @@ extension RootView {
     var rootSidebarToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Button {
-                // F02：不再直接 post menuImportFolder——该通知的载荷语义是
-                // 「已经选好的目录」，object: nil 会被接收方（要求 URL）静默丢弃，
-                // 表现就是按钮点了没反应。统一走 importFolderRequest：
-                // AppDelegate 打开目录选择器，落点由面板回调决定
-                //（目录里可导入 → 直接建库；没有可导入文件 → menuImportFolder
-                // 带目录 URL 回落到新建表单）。
+                // F02：统一走 importFolderRequest（「还没选目录」的入口请求）。
+                // RootView 收到后请宿主打开目录选择器：目录里可导入 → 直接建库；
+                // 没有可导入文件 → 回落到新建工作台表单。
                 NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
             } label: {
                 Label(copy.importFolder, systemImage: "square.and.arrow.down")

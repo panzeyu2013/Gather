@@ -376,25 +376,13 @@
 "Capture One 文件" = "Capture One Files";
 "导入照片" = "Import Photos";
 /* Sources/GatherHost/GatherAppDelegate.swift */
-"关于 Gather" = "About Gather";
-"隐藏 Gather" = "Hide Gather";
-"退出 Gather" = "Quit Gather";
 "新建工作区" = "New Workspace";
 "导入文件夹" = "Import Folder";
 "从 Capture One 导入" = "Import from Capture One";
-"关闭窗口" = "Close Window";
-"编辑" = "Edit";
 "撤销" = "Undo";
 "重做" = "Redo";
-"剪切" = "Cut";
-"复制" = "Copy";
-"粘贴" = "Paste";
 "全选" = "Select All";
 "显示" = "View";
-"窗口" = "Window";
-"最小化" = "Minimize";
-"缩放" = "Zoom";
-"全部置于前台" = "Bring All to Front";
 "导入" = "Import";
 /* Sources/GatherUI/Gallery/GalleryView.swift */
 "小图" = "Small";
@@ -785,20 +773,14 @@
 "已下载 %d%%（%@）" = "Downloaded %d%% (%@)";
 "已请求取消质量分析" = "Quality analysis cancellation requested";
 "已请求取消重复扫描" = "Duplicate scan cancellation requested";
-"帮助" = "Help";
 "放大" = "Zoom In";
-"显示全部" = "Show All";
 "最长边" = "Longest Edge";
-"服务" = "Services";
 "状态未知：自动重试中，也可前往设置检查 Capture One 连接" = "Status unknown: retrying automatically; you can also check the Capture One connection in Settings";
 "缩小" = "Zoom Out";
 "视觉相似阈值" = "Visual Similarity Threshold";
-"设置…" = "Settings…";
 "质量分析已取消" = "Quality analysis canceled";
-"进入全屏" = "Enter Full Screen";
 "选择分组 %lld 张" = "Select group of %lld photos";
 "重复扫描已取消" = "Duplicate scan canceled";
-"隐藏其他" = "Hide Others";
 "RAW+JPEG · %lld" = "RAW+JPEG · %lld";
 "%.1f MB" = "%.1f MB";
 "模型信息" = "Model Info";

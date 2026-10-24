@@ -33,7 +33,13 @@ struct GatherApp: App {
         // 渲染期按当前语言解析——Scene body 读 l10n 即建立 Observation 依赖，
         // 切语言后占位界面跟着换语言（不再读进程级 appLanguage）。
         let l10n = bootstrap.languageStore.l10n
-        WindowGroup {
+        // Phase 4 收口：读 installed 建立 Observation 依赖；RootView 安装/清理
+        // handler 时 Scene body 重建 Commands，菜单禁用态随之刷新。
+        let installedCommands = bootstrap.commandCenter.installed
+        // 单窗口语义（Phase 4 收口）：命令中心是 SceneState 级唯一实例，菜单
+        // handler 绑定当前 RootView。用 Window 而不是 WindowGroup，从构造上排除
+        // 「第二个窗口共享/覆盖 handler」的未定义状态；⌘N 是新建工作区，不是新窗口。
+        Window("Gather", id: "main") {
             Group {
                 if let scene = bootstrap.scene {
                     // Cut 4 / 4a-2a-2：外壳只吃 SceneState 装配好的依赖包 +
@@ -72,10 +78,15 @@ struct GatherApp: App {
                 appDelegate.handle(url)
             }
         }
-        // N08：菜单必须声明在 SwiftUI 场景里。SwiftUI 会用自己构建的主菜单替换
-        // NSApp.mainMenu，AppDelegate.installMenu 建的「文件/编辑」在运行态不生效
-        // （现象：只有 Gather/View/Window/Help，⌘N/⌘O 无响应）。
-        .commands { GatherAppCommands(language: menuLanguage, commands: bootstrap.commandCenter) }
+        // N08：菜单只声明在 SwiftUI 场景里。AppDelegate 不再构建整套主菜单，
+        // 只在 SwiftUI 主菜单缺「文件/编辑」时补一份兜底（见 GatherAppDelegate）。
+        .commands {
+            GatherAppCommands(
+                language: menuLanguage,
+                commands: bootstrap.commandCenter,
+                installed: installedCommands
+            )
+        }
         .windowStyle(.automatic)
         // 原生默认窗口尺寸：不再依赖 .frame(minWidth:) 撑开窗口。
         #if DEBUG

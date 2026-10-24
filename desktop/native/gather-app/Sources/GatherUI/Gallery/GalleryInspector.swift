@@ -84,10 +84,10 @@ extension GalleryView {
         // ScrollView + 卡片分组同样贴切。
         ScrollView {
             VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
-                inspectorSection(l10n("筛选")) {
+                GatherInspectorSection(l10n("筛选")) {
                     filterPicker
                 }
-                inspectorSection(l10n("显示")) {
+                GatherInspectorSection(l10n("显示")) {
                     VStack(alignment: .leading, spacing: 10) {
                         densityPicker
                         variantsToggle
@@ -99,20 +99,5 @@ extension GalleryView {
         }
         // 同 CullingView：理想列宽会计入最小宽度，收窄以避免窄窗口下的约束循环。
         .inspectorColumnWidth(min: GatherChromeMetrics.inspectorMinWidth, ideal: GatherChromeMetrics.inspectorIdealWidth, max: GatherChromeMetrics.inspectorMaxWidth)
-    }
-
-    /// 检查器里的一组选项：标题 + 内容，套系统分组容器（与 LibraryView.supportCard 同形）。
-    private func inspectorSection<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(GatherFont.cardTitle)
-            content()
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .gatherCard(cornerRadius: GatherTheme.Radius.card, elevated: false)
     }
 }

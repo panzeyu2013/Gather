@@ -37,7 +37,7 @@ extension LibraryView {
     }
 
     private var smartAlbumsCard: some View {
-        supportCard(title: l10n("智能相册"), systemImage: "rectangle.stack") {
+        GatherInspectorSection(l10n("智能相册"), systemImage: "rectangle.stack") {
             Picker(l10n("相册"), selection: Binding(
                 get: { viewModel.selectedAlbumId ?? "" },
                 set: { viewModel.selectAlbum($0.isEmpty ? nil : $0) }
@@ -99,7 +99,7 @@ extension LibraryView {
     }
 
     private var assetCandidatesCard: some View {
-        supportCard(title: l10n("RAW/JPEG 资产关联"), systemImage: "link") {
+        GatherInspectorSection(l10n("RAW/JPEG 资产关联"), systemImage: "link") {
             if viewModel.assetCandidates.isEmpty {
                 Text(l10n("暂无待处理关联候选"))
                     .font(GatherFont.secondary)
@@ -182,7 +182,7 @@ extension LibraryView {
     }
 
     private var metadataOrphansCard: some View {
-        supportCard(title: l10n("孤立 XMP"), systemImage: "doc.badge.ellipsis") {
+        GatherInspectorSection(l10n("孤立 XMP"), systemImage: "doc.badge.ellipsis") {
             if viewModel.metadataOrphans.isEmpty {
                 Text(l10n("没有孤立 XMP"))
                     .font(GatherFont.secondary)
@@ -250,7 +250,7 @@ extension LibraryView {
     }
 
     private var offlineVolumesCard: some View {
-        supportCard(title: l10n("离线存储卷"), systemImage: "externaldrive.badge.exclamationmark") {
+        GatherInspectorSection(l10n("离线存储卷"), systemImage: "externaldrive.badge.exclamationmark") {
             let offlineVolumes = viewModel.assetVolumes.filter { $0.offlineFiles > 0 }
             if offlineVolumes.isEmpty {
                 Text(l10n("没有需要重新关联的离线卷"))
@@ -304,22 +304,6 @@ extension LibraryView {
             },
             onCancel: { _ in viewModel.reportActionCancelled() }
         )
-    }
-
-    /// 检查器里的一组管理功能：标题 + 内容，套系统分组容器。
-    private func supportCard<Content: View>(
-        title: String,
-        systemImage: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(title, systemImage: systemImage)
-                .font(GatherFont.cardTitle)
-            content()
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .gatherCard(cornerRadius: GatherTheme.Radius.card, elevated: false)
     }
 
     /// 对齐 TS Library/index.tsx:353-355：已关联/已拒绝/待确认·N%。

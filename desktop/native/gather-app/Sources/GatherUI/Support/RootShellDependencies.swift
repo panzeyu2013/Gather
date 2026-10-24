@@ -11,6 +11,14 @@
 import Foundation
 import GatherProtocol
 
+/// 菜单「导入文件夹」的用户选择结果：宿主负责 NSOpenPanel，UI 只做分支
+///（有可导入文件 → 导入；空目录 → 新建工作台表单）。
+public enum ImportFolderSelection: Sendable {
+    case cancelled
+    case files([String])
+    case directory(URL)
+}
+
 public struct RootShellDependencies {
     public let session: any SessionAPI
     public let job: any JobAPI
@@ -30,6 +38,11 @@ public struct RootShellDependencies {
     public let galleryProvider: any GalleryDataProvider
     package let dashboardProvider: any DashboardDataProvider
 
+    /// 菜单命令的宿主动作（Phase 4 收口：命令不再经 Notification 转发）。
+    public let importFiles: @MainActor ([String]) -> Void
+    public let chooseImportFolder: @MainActor () async -> ImportFolderSelection
+    public let captureOneImport: @MainActor () async -> Void
+
     package init(
         session: any SessionAPI,
         job: any JobAPI,
@@ -46,7 +59,10 @@ public struct RootShellDependencies {
         captureOne: any CaptureOneBridging,
         libraryProvider: any LibraryDataProvider,
         galleryProvider: any GalleryDataProvider,
-        dashboardProvider: any DashboardDataProvider
+        dashboardProvider: any DashboardDataProvider,
+        importFiles: @escaping @MainActor ([String]) -> Void = { _ in },
+        chooseImportFolder: @escaping @MainActor () async -> ImportFolderSelection = { .cancelled },
+        captureOneImport: @escaping @MainActor () async -> Void = {}
     ) {
         self.session = session
         self.job = job
@@ -64,5 +80,8 @@ public struct RootShellDependencies {
         self.libraryProvider = libraryProvider
         self.galleryProvider = galleryProvider
         self.dashboardProvider = dashboardProvider
+        self.importFiles = importFiles
+        self.chooseImportFolder = chooseImportFolder
+        self.captureOneImport = captureOneImport
     }
 }

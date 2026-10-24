@@ -162,29 +162,29 @@ fi
 # 旧包与旧校验和；构建失败时也不留下可被误传的“上一次成功包”。
 rm -f "$OUTPUT_DIR/Gather.zip" "$OUTPUT_DIR/Gather.zip.sha256"
 
-# WP7：Package.swift 按 GATHER_SDK_VERSION → SDKROOT → xcrun → 部署目标
-# 14.0 的顺序取真实 SDK（Mach-O 的 LC_BUILD_VERSION.sdk，决定 macOS 26+
-# 是否启用 Liquid Glass）。本脚本优先探测本机并 export，显式传入的
-# GATHER_SDK_VERSION 优先级最高。探测全部失败时 manifest 回退 14.0；
-# Liquid Glass 不会启用，所以这里记录来源，release 模式拒绝静默走回退。
+# WP7：Package.swift 只读 GATHER_SDK_VERSION（manifest 不执行外部进程）；
+# 真实 SDK（Mach-O 的 LC_BUILD_VERSION.sdk，决定 macOS 26+ 是否启用
+# Liquid Glass）由本脚本探测本机后 export，显式传入的值优先级最高。
+# 探测失败时 manifest 回退部署目标 14.0，Liquid Glass 不会启用，所以这里
+# 记录来源，release 模式拒绝静默走回退。
 if [[ -z "${GATHER_SDK_VERSION:-}" ]]; then
   SDK_VERSION="$(xcrun --show-sdk-version 2>/dev/null || true)"
   if [[ -n "$SDK_VERSION" ]]; then
     export GATHER_SDK_VERSION="$SDK_VERSION"
     SDK_VERSION_SOURCE="xcrun"
   else
-    SDK_VERSION_SOURCE="Package.swift fallback (probe / 14.0)"
+    SDK_VERSION_SOURCE="Package.swift default (14.0)"
     if [[ "$RELEASE_MODE" == "1" ]]; then
       echo "release mode requires xcrun --show-sdk-version (macOS 26 SDK for Liquid Glass); refusing the 14.0 fallback" >&2
       exit 1
     fi
-    echo "warning: xcrun --show-sdk-version unavailable; Package.swift fallback SDK applies (probe / 14.0; Liquid Glass may be disabled)" >&2
+    echo "warning: xcrun --show-sdk-version unavailable; Package.swift default SDK 14.0 applies (Liquid Glass disabled)" >&2
   fi
 else
   SDK_VERSION_SOURCE="GATHER_SDK_VERSION"
 fi
 DECLARED_SDK_VERSION="$(printf '%s' "${GATHER_SDK_VERSION:-}" | LC_ALL=C tr -d '[:space:]')"
-echo "SDK version for -platform_version: ${DECLARED_SDK_VERSION:-<Package.swift fallback>} (source: $SDK_VERSION_SOURCE)"
+echo "SDK version for -platform_version: ${DECLARED_SDK_VERSION:-<Package.swift default 14.0>} (source: $SDK_VERSION_SOURCE)"
 
 # 3b-6：两个包都开 SE-0409 严格依赖检查（target 只能 import 直接依赖）。
 DEPENDENCY_CHECK=(--explicit-target-dependency-import-check error)
@@ -431,11 +431,18 @@ if [[ -d "$PLUGIN_SDK" && -f "$PLUGIN_DIR/Makefile" ]]; then
   PLUGIN_SLICES_DIR="$OUTPUT_DIR/.gather-plugin-slices"
   rm -rf "$PLUGIN_SLICES_DIR"
   mkdir -p "$PLUGIN_SLICES_DIR"
+  # 插件用 swiftc 直接编译，模块缓存默认落在系统临时目录；受限环境（CI 容器/
+  # 本机沙箱）可能不可写，导致跨架构切片静默复用上一架构的产物。把 TMPDIR 与
+  # CLANG_MODULE_CACHE_PATH 固定到输出目录，保证每个切片真的重编译。
+  PLUGIN_TMP="$OUTPUT_DIR/.gather-plugin-tmp"
+  PLUGIN_MODULE_CACHE="$OUTPUT_DIR/.gather-plugin-module-cache"
+  mkdir -p "$PLUGIN_TMP" "$PLUGIN_MODULE_CACHE"
   # 清掉旧架构戳，强制每个切片都按当前源码重编译（Makefile 在切架构时也会清，
   # 这里显式做一次，避免复用旧产物）。
   rm -f "$PLUGIN_BUNDLE"/.arch-*
   for arch in "${PLUGIN_ARCHS[@]}"; do
-    if make -C "$PLUGIN_DIR" TARGET_ARCH="$arch" \
+    if TMPDIR="$PLUGIN_TMP" CLANG_MODULE_CACHE_PATH="$PLUGIN_MODULE_CACHE" \
+        make -C "$PLUGIN_DIR" TARGET_ARCH="$arch" \
         TARGET="$arch-apple-macosx$PLUGIN_DEPLOYMENT_TARGET" all; then
       if [[ -f "$PLUGIN_BINARY" ]]; then
         SLICE_ARCHS="$(lipo -archs "$PLUGIN_BINARY")"

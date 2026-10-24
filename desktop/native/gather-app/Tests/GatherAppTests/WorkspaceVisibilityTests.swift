@@ -13,7 +13,9 @@
 //
 // 断言口径：未挂载页用 stub 调用计数 0（而不是 VM 可见性状态——可见性只证明
 // 状态迁移，轮询是否真的启动由各页自己的生命周期用例按调用计数断言）。
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 import GatherProtocol
 @testable import GatherUI
@@ -320,6 +322,47 @@ struct WorkspaceVisibilityTests {
         }
 
         probe.workspace.close()
+    }
+
+    /// 真实挂载（Phase 4 收口）：GatherSessionPage 放进 NSWindow 后，onAppear /
+    /// onDisappear 必须真的驱动页面级可见性。上一轮因 NSHostingView SIGSEGV
+    /// 未保留，本轮改为挂真实 NSWindow（有窗口才有 appearance 回调）。
+    @Test("真实挂载：GatherSessionPage 的 onAppear/onDisappear 驱动页面可见性")
+    func mountedSessionPageDrivesPageVisibility() async throws {
+        // 测试进程没有 NSApplication 时，创建 NSWindow/NSHostingView 会在
+        // AppKit 初始化阶段 SIGSEGV；显式建一次 application 再挂窗口。
+        _ = NSApplication.shared
+        let probe = VisibilityProbe.make()
+        probe.store.activate("s1")
+        let view = GatherSessionPage(page: .gallery, workspace: probe.workspace) {
+            Color.clear
+        }
+        .environment(\.navigator, RootNavigation())
+        .environment(\.languageStore, LanguageStore(language: .zhCN, notificationCenter: NotificationCenter()))
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        pumpRunLoop(0.3)
+        #expect(probe.workspace.gallery.isVisible, "挂载后图库页未变为可见")
+        // 卸载页面（onDisappear）：从窗口移除 contentView，而不是 close——
+        // NSWindow.close 不保证 SwiftUI 的 onDisappear（实测可见性仍为 true）。
+        window.contentView = nil
+        pumpRunLoop(0.3)
+        #expect(!probe.workspace.gallery.isVisible, "卸载页面后图库页仍可见")
+        window.close()
+        probe.workspace.close()
+    }
+
+    /// 同步泵一次主 RunLoop：async 测试里不能直接调 RunLoop.run。
+    @MainActor
+    private func pumpRunLoop(_ seconds: TimeInterval) {
+        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
     }
 
     /// VM 的可见性真相读取：Culling 沿用 isActive，其余 6 个是 isVisible。

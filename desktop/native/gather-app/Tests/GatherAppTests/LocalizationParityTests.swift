@@ -295,7 +295,7 @@ struct LocalizationParityTests {
             .subtracting(allowed)
             .subtracting(pluralOnes)
             .sorted()
-        #expect(orphans.isEmpty, "以下 en 键已无代码引用（删除或写清理由加入 allowlist）：\(orphans.prefix(10))")
+        #expect(orphans.isEmpty, "以下 en 键已无代码引用（删除或写清理由加入 allowlist）：\(orphans)")
         // allowlist 自身必须仍在表里：防止它变成「已删键」的垃圾场。
         for key in allowed {
             #expect(table[key] != nil, "allowlist 键不在 en 表：\(key)")

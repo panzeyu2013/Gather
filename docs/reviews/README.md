@@ -1,4 +1,4 @@
-# 当前有效评审（39 篇）
+# 当前有效评审（40 篇）
 
 `docs/reviews/` 保留当前计划/验收/收尾报告（含本文、4 篇核心计划/验收、final-acceptance 5 篇、final-sweep 4 篇及其余执行报告）；18 篇历史评审已于 2026-10-22 归档到
 [../archive/reviews/](../archive/reviews/)，索引见 [../archive/README.md](../archive/README.md)。
@@ -14,5 +14,6 @@
 | [appearance-m1-execution.md](appearance-m1-execution.md) | 第一里程碑执行记录：DesignSystem 基础 + 四个全局页 + 门禁/截图 |
 | [appearance-m2-m4-execution.md](appearance-m2-m4-execution.md) | Phase 2-4 执行记录：会话页 scaffold + AppRoute + CommandCenter + 事件/生命周期 |
 | [appearance-m2-m4-review.md](appearance-m2-m4-review.md) | Phase 2-4 独立审查：P0/P1/P2、修复与残余风险 |
+| [appearance-m2-m4-completion.md](appearance-m2-m4-completion.md) | Phase 4 收口：菜单单轨/禁用态、检查器共享、focused undo/redo、挂载测试 |
 
 > 归档文档是历史快照，行号/路径/数字均按当时 HEAD；引用前重新 grep。

@@ -131,30 +131,6 @@ struct GatherAppDelegateTests {
         #expect(userInfo[GatherAppImportUserInfoKey.failedCount] as? Int == 1)
     }
 
-    /// Cut 4 / 4b-3：AppKit 兜底菜单的文案随注入语言（菜单文案在**构建时**按
-    /// l10n 解析；ensureStandardMenus 在语言变化/窗口成为 key 时重建）。
-    @Test func standardMenuTitlesFollowInjectedLanguage() {
-        let delegate = GatherAppDelegate()
-        // 注入 store 会触发一次标准菜单补齐：NSApp 为 nil（测试进程无
-        // NSApplication）时必须安全返回，而不是对 IUO 取成员 trap。
-        delegate.languageStore = LanguageStore(language: .en, notificationCenter: NotificationCenter())
-
-        let en = L10n(language: .en)
-        let enFile = delegate.makeStandardFileMenu(l10n: en)
-        #expect(enFile.title == "File")
-        #expect(enFile.items.filter { !$0.isSeparatorItem }.map(\.title) == [
-            "New Workspace", "Import Folder", "Import from Capture One", "Close Window",
-        ])
-        let enEdit = delegate.makeStandardEditMenu(l10n: en)
-        #expect(enEdit.title == "Edit")
-        #expect(enEdit.items.first { $0.title == "Undo" }?.keyEquivalent == "z")
-
-        let zh = L10n(language: .zhCN)
-        #expect(delegate.makeStandardFileMenu(l10n: zh).title == "文件")
-        #expect(delegate.makeStandardFileMenu(l10n: zh).items.first?.title == "新建工作区")
-        #expect(delegate.makeStandardEditMenu(l10n: zh).items.first?.title == "撤销")
-    }
-
     /// Cut 4 / 4b-3：C1 默认建库名走 `l10n.format`（原 String(format: l(...))）；
     /// en 界面出译文，非 C1 来源回退「导入照片」。
     @Test func captureOneDefaultNameFollowsInjectedL10n() {

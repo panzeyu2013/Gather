@@ -9,8 +9,7 @@
 // import GatherUI 断言 5 个菜单项的键 → 文案/通知/快捷键映射，避免 key 与
 // 命令错接（例如 newWorkspace 错接 importFolder 的 key 或 ⌘O 错配通知）。
 //
-// 只搬数据，不改文案/快捷键/通知名：5 个 key、4 个通知、4 组快捷键与
-// 搬移前 GatherAppCommands.swift 逐字一致。
+// Phase 4 收口：菜单不再 post 通知，这里只保留文案与快捷键数据。
 import Foundation
 import SwiftUI
 
@@ -32,17 +31,6 @@ package enum GatherAppMenuItem: String, CaseIterable, Sendable {
         case .captureOneImport: "从 Capture One 导入"
         case .toggleSidebar: "显示/隐藏侧栏"
         case .help: "Gather 帮助"
-        }
-    }
-
-    /// 菜单动作投递的通知名；帮助项直接打开 URL，不投递通知。
-    package var notificationName: Notification.Name? {
-        switch self {
-        case .newWorkspace: GatherAppNotification.menuNewWorkspace
-        case .importFolder: GatherAppNotification.importFolderRequest
-        case .captureOneImport: GatherAppNotification.captureOneImportRequest
-        case .toggleSidebar: GatherAppNotification.menuToggleSidebar
-        case .help: nil
         }
     }
 

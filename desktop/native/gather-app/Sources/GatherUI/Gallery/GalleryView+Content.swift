@@ -299,8 +299,8 @@ extension GalleryView {
         } actions: {
             Button(l10n("导入文件夹")) {
                 // F02：走统一入口（宿主打开目录选择器）。不再 post 带 nil 载荷的
-                // menuImportFolder——那条通知的语义是「已选好目录」，接收方要求 URL，
-                // nil 会被静默丢弃，按钮点了没反应。
+                // menuImportFolder——旧通知的语义是「已选好目录」，接收方要求 URL，
+                // nil 会被静默丢弃，按钮点了没反应；现在只剩统一入口请求。
                 NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
             }
             .gatherPrimaryActionButton()

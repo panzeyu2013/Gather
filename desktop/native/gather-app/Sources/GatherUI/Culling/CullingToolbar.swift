@@ -132,13 +132,12 @@ struct CullingToolbar: View {
 
     private var undoRedoButtons: some View {
         HStack(spacing: 4) {
-            // 菜单 undo:/redo: 走 NSUndoManager，而挑片撤销是自建栈；在完整
-            // focused-scope 落地前，按钮自己挂 ⌘Z/⇧⌘Z（挑片页无文本输入框）。
+            // 挑片撤销是自建栈（不是 NSUndoManager）；⌘Z/⇧⌘Z 由 CullingView 的
+            // focused-scope 命令接管 Edit 菜单，按钮只保留点击与禁用态。
             Button { Task { await viewModel.undo() } } label: {
                 Image(systemName: "arrow.uturn.backward")
             }
             .labelStyle(.iconOnly)
-            .keyboardShortcut("z", modifiers: .command)
             .disabled(viewModel.undoOperation == nil || isBusy)
             .help(l10n("撤销（⌘Z）"))
             .accessibilityLabel(l10n("撤销"))
@@ -147,7 +146,6 @@ struct CullingToolbar: View {
                 Image(systemName: "arrow.uturn.forward")
             }
             .labelStyle(.iconOnly)
-            .keyboardShortcut("z", modifiers: [.command, .shift])
             .disabled(viewModel.redoOperation == nil || isBusy)
             .help(l10n("重做（⇧⌘Z）"))
             .accessibilityLabel(l10n("重做"))

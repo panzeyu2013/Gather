@@ -226,10 +226,9 @@ package final class AppBootstrap {
             composition: composition,
             runtime: runtime,
             captureOneBridge: captureOneBridge,
-            // Cut 4 / 4b-3：语言唯一来源随装配交给 Delegate（AppKit 菜单/面板
+            // Cut 4 / 4b-3：语言唯一来源随装配交给 Delegate（导入面板
             // 没有 environment，只能在动作发生时读同一个 store）。
-            languageStore: languageStore,
-            commandCenter: commandCenter
+            languageStore: languageStore
         )
 
         // Cut 4 / 4a-2a-1：壳层依赖包 + 工作区工厂（只装配引用，不 new 服务）。
@@ -253,7 +252,20 @@ package final class AppBootstrap {
             captureOne: captureOneBridge,
             libraryProvider: libraryProvider,
             galleryProvider: galleryProvider,
-            dashboardProvider: provider
+            dashboardProvider: provider,
+            // Phase 4 收口：菜单/页面入口只经 typed 闭包调用宿主动作，
+            // 不再有 commandCenter → Notification → Delegate 的第二跳。
+            importFiles: { files in
+                delegate?.onImportFiles?(files)
+            },
+            chooseImportFolder: {
+                guard let delegate else { return .cancelled }
+                return await delegate.chooseImportFolder()
+            },
+            captureOneImport: {
+                guard let delegate else { return }
+                await delegate.captureOneImport()
+            }
         )
         let workspaceFactory = SessionWorkspaceFactory(deps: rootDeps)
         let sessionStore = SessionStore(make: workspaceFactory.makeWorkspace)
@@ -282,14 +294,12 @@ package final class AppBootstrap {
         composition: AppComposition,
         runtime: AppRuntime,
         captureOneBridge: CaptureOneBridge,
-        languageStore: LanguageStore,
-        commandCenter: AppCommandCenter
+        languageStore: LanguageStore
     ) {
         guard let delegate else { return }
-        // Cut 4 / 4b-3：界面语言源注入 Delegate（菜单/面板的文案在构建动作发生
-        // 时读它）；导入闭包同样在**动作发生时**取 store.l10n，不缓存字符串。
+        // Cut 4 / 4b-3：界面语言源注入 Delegate（导入面板文案在动作发生时读它）；
+        // 导入闭包同样在**动作发生时**取 store.l10n，不缓存字符串。
         delegate.languageStore = languageStore
-        delegate.commandCenter = commandCenter
         delegate.onImportFiles = { files in
             AppImport.importFiles(
                 files,

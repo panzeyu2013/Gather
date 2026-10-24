@@ -20,7 +20,7 @@ struct CullingInspector: View {
             VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
                 // 当前照片：决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）
                 // + 星级 + 颜色。系统 bordered 按钮 + 裸键 .keyboardShortcut（取代手绘卡片描边）。
-                GroupBox {
+                GatherInspectorSection(l10n("当前照片")) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(viewModel.selectedPhotoIds.isEmpty ? l10n("当前照片") : l10n.format("批量 %lld 张", viewModel.selectedPhotoIds.count))
                             .controlLabelStyle()
@@ -95,12 +95,10 @@ struct CullingInspector: View {
                         .help(l10n("设置当前照片的颜色标签"))
                         .accessibilityLabel(l10n("颜色标签"))
                     }
-                } label: {
-                    Text(l10n("当前照片"))
                 }
 
                 // 页面级选项：折叠收纳，默认不遮挡当前照片决策。
-                GroupBox {
+                GatherInspectorSection {
                     DisclosureGroup(isExpanded: $filtersExpanded) {
                         CullingFilterControls(
                             viewModel: viewModel,
@@ -118,8 +116,6 @@ struct CullingInspector: View {
                             Spacer(minLength: 0)
                         }
                     }
-                } label: {
-                    Text(l10n("筛选"))
                 }
 
                 // 相似组决策（对齐旧版 groupDecision：仅当前照片所在组 >1 张时显示）。
@@ -127,7 +123,10 @@ struct CullingInspector: View {
                     let groupIds = Set(currentGroupAssets.map(\.photo.id))
                     let selectedInGroup = viewModel.selectedPhotoIds.intersection(groupIds)
                     let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < currentGroupAssets.count
-                    GroupBox {
+                    GatherInspectorSection(
+                        l10n.format("相似组 · %lld 张", currentGroupAssets.count),
+                        subtitle: l10n("其余照片自动淘汰")
+                    ) {
                         Button(l10n("保留当前 1 张")) {
                             Task {
                                 await viewModel.keepInGroupRejectRest(
@@ -152,16 +151,11 @@ struct CullingInspector: View {
                         .frame(maxWidth: .infinity)
                         .disabled(!keepValid || isBusy)
                         .help(keepValid ? "" : l10n("按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"))
-                    } label: {
-                        Text(l10n.format("相似组 · %lld 张", currentGroupAssets.count))
-                        Text(l10n("其余照片自动淘汰"))
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
                     }
                 }
 
                 // 选择管理：批量决策对象（在胶片条中 ⌘/Ctrl 点选）。
-                GroupBox {
+                GatherInspectorSection(l10n("选择管理")) {
                     if viewModel.selectedPhotoIds.isEmpty {
                         Text(l10n("未选择照片"))
                             .foregroundStyle(.secondary)
@@ -172,17 +166,13 @@ struct CullingInspector: View {
                             .buttonStyle(.bordered)
                             .frame(maxWidth: .infinity)
                     }
-                } label: {
-                    Text(l10n("选择管理"))
                 }
 
                 // 附加统计（对齐 summaryCard 的增强项：已评分/已标记）。
                 if let summary = viewModel.summary {
-                    GroupBox {
+                    GatherInspectorSection(l10n("统计")) {
                         Text(l10n.format("评分 %lld", summary.rated))
                         Text(l10n.format("标记 %lld", summary.labeled))
-                    } label: {
-                        Text(l10n("统计"))
                     }
                 }
             }

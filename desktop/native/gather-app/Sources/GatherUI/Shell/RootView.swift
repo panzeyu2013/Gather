@@ -129,22 +129,17 @@ package struct RootView: View {
                 .environment(\.navigator, navigation)
         }
         .frame(minWidth: RootShellMetrics.windowMinWidth, minHeight: RootShellMetrics.windowMinHeight)
+        // 菜单「显示/隐藏侧栏」跟随真实列可见性（focused-scope，单窗口）。
+        .focusedSceneValue(\.sidebarExpanded, columnVisibility != .detailOnly)
+        // 命令可执行性随 handler 安装/清理更新（Commands 读 focused-scope，
+        // 不依赖 Scene body 的启动时快照）。
+        .focusedSceneValue(\.commandAvailability, commandCenter.installed)
         // 4a-3a：删除 languageChanged 的本地自增写入点——语言状态由
         // LanguageStore 唯一持有/广播，外壳只读 languageStore.l10n。
-        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuToggleSidebar)) { _ in
-            // 交给系统：⌘⌥S 语义由 NavigationSplitView 的列可见性承载。
-            handleMenuToggleSidebar()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuNewWorkspace)) { _ in
-            // ⌘N：请求先落到外壳再切工作台（F02 同类竞态，见 handler）。
-            handleMenuNewWorkspace()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuImportFolder)) { notification in
-            handleMenuImportFolder(notification)
-        }
-        // ⌘, 与各页面的「打开设置」入口统一打开原生设置窗口。
-        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuOpenSettings)) { _ in
-            handleMenuOpenSettings()
+        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.importFolderRequest)) { _ in
+            // 页面/工具栏的「导入文件夹」入口统一落到外壳：宿主面板 → 导入或
+            // 新建工作台表单（不再经 Delegate 通知转发）。
+            Task { await handleImportFolderRequest() }
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.importCompleted)) { notification in
             handleImportCompleted(notification)
@@ -162,6 +157,15 @@ package struct RootView: View {
             switchWorkspace(for: navigation.route)
             installCommandHandlers()
             #if DEBUG
+            if let raw = DebugLaunchOptions.languageCode {
+                _ = languageStore.set(rawLanguage: raw)
+            }
+            if DebugLaunchOptions.activateWindow {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    NSApp.activate(ignoringOtherApps: true)
+                    NSApp.windows.first { $0.isVisible }?.makeKeyAndOrderFront(nil)
+                }
+            }
             if let appearance = DebugLaunchOptions.appearance {
                 let name: NSAppearance.Name
                 switch appearance {
@@ -210,20 +214,22 @@ extension RootView {
     func installCommandHandlers() {
         let request = $newWorkspaceRequest
         let visibility = $columnVisibility
-        commandCenter.onNewWorkspace = { [navigation] in
+        commandCenter.install(.newWorkspace) { [navigation] in
             navigation.selectDashboard()
             request.wrappedValue = NewWorkspaceRequest()
         }
-        commandCenter.onImportFolder = {
-            NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
+        commandCenter.install(.importFolder) { [deps] in
+            Task { @MainActor in
+                await handleImportFolderRequest(deps: deps)
+            }
         }
-        commandCenter.onCaptureOneImport = {
-            NotificationCenter.default.post(name: GatherAppNotification.captureOneImportRequest, object: nil)
+        commandCenter.install(.captureOneImport) { [deps] in
+            Task { @MainActor in await deps.captureOneImport() }
         }
-        commandCenter.onToggleSidebar = {
+        commandCenter.install(.toggleSidebar) {
             visibility.wrappedValue = visibility.wrappedValue == .detailOnly ? .all : .detailOnly
         }
-        commandCenter.onOpenSettings = {
+        commandCenter.install(.openSettings) {
             openSettings()
         }
     }

@@ -1,42 +1,29 @@
 // desktop/native/gather-app/Sources/GatherUI/Shell/RootShellOverlay.swift
-// Cut 4 / 4c-2k：外壳的通知入口与 Toast 文案，从 RootView.swift 原样搬移。
+// Cut 4 / 4c-2k：外壳的导入入口与 Toast 文案，从 RootView.swift 原样搬移。
 //
-// 菜单/导入/捕获通知仍由外壳统一接收后转成导航 + 意图（F02：页面按目的地
-// 条件构建，页面不在场时投递通知必然丢失）；Toast 仍在**事件发生时**按当前
-// 语言解析（唯一语言源是 LanguageStore），不缓存文案。
+// Phase 4 收口：菜单命令不再经 NotificationCenter 投递；这里只保留两条
+// **页面 → 外壳**的入口（导入目录选择请求）与事件 Toast。页面按目的地条件
+// 构建，页面不在场时投递通知必然丢失（F02），所以导入请求统一由外壳代收。
 import SwiftUI
 import Foundation
 
-// MARK: - 通知入口
+// MARK: - 导入入口
 
 extension RootView {
-    /// ⌘⌥S：交给系统，语义由 NavigationSplitView 的列可见性承载。
-    func handleMenuToggleSidebar() {
-        columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-    }
-
-    /// ⌘N：请求先落到外壳再切工作台。DashboardView 是按目的地条件构建的，
-    /// 页面不在场时把通知直接投递给它必然丢失（与 F02 同类竞态）。
-    func handleMenuNewWorkspace() {
-        navigation.selectDashboard()
-        newWorkspaceRequest = NewWorkspaceRequest()
-    }
-
-    /// 菜单「导入文件夹」：载荷是已选好的目录；object: nil 时退回统一入口。
-    func handleMenuImportFolder(_ notification: Notification) {
-        navigation.selectDashboard()
-        guard let directory = notification.object as? URL else {
-            // 兼容旧语义（object: nil = 用户要导入但尚未选目录）：
-            // 退回统一入口打开目录选择器，绝不静默无响应。
-            NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
+    /// 「导入文件夹」：宿主面板 → 可导入文件直接导入；空目录回落到新建表单。
+    /// 通知路径与 CommandCenter handler 共用这一个实现。
+    @MainActor
+    func handleImportFolderRequest(deps: RootShellDependencies? = nil) async {
+        let dependencies = deps ?? self.deps
+        switch await dependencies.chooseImportFolder() {
+        case .cancelled:
             return
+        case .files(let files):
+            dependencies.importFiles(files)
+        case .directory(let directory):
+            navigation.selectDashboard()
+            newWorkspaceRequest = NewWorkspaceRequest(folderPath: directory.path)
         }
-        newWorkspaceRequest = NewWorkspaceRequest(folderPath: directory.path)
-    }
-
-    /// ⌘, 与各页面的「打开设置」入口统一打开原生设置窗口。
-    func handleMenuOpenSettings() {
-        openSettings()
     }
 
     /// 导入完成：失败计数转 Toast，成功/失败都深链到图库（对齐旧版 App.tsx:34-64）。

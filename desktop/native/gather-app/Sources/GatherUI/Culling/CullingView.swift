@@ -100,6 +100,14 @@ public struct CullingView: View {
                 // 让最小窗口下「页签行 + 内容 + 检查器」仍能装进内容区。
                 .inspectorColumnWidth(min: GatherChromeMetrics.inspectorMinWidth, ideal: GatherChromeMetrics.inspectorIdealWidth, max: GatherChromeMetrics.inspectorMaxWidth)
         }
+        // Phase 4 收口：挑片历史进 focused-scope。页面可见时 Edit 菜单的
+        // 撤销/重做改由这份动作承载（页面无文本输入框，不抢系统文本撤销）。
+        .focusedSceneValue(\.cullingHistory, CullingHistoryActions(
+            canUndo: viewModel.undoOperation != nil && !isBusy,
+            canRedo: viewModel.redoOperation != nil && !isBusy,
+            undo: { Task { await viewModel.undo() } },
+            redo: { Task { await viewModel.redo() } }
+        ))
     }
 
     /// 页面级忙碌（原 CullingView.isBusy，逐字保留）：壳持有，向下传给工具栏 /

@@ -14,8 +14,8 @@
   入口参数均与旧实现对应。
 - Phase 3 主体正确：AppRoute 单一真相源、Destination 投影、prune 等价、
   workspace 双层可见性成立。
-- Phase 4 只完成一半：命令中心主路径已接，但菜单禁用态/AppDelegate 单轨/
-  focused scope 未完成；事件迁移主体正确，但存在双层 debounce（已修 Library/Gallery）。
+- Phase 4 当时只完成一半（命令中心主路径已接；菜单禁用态/AppDelegate 单轨/
+  focused scope 未完成）。**已在 [Phase 4 收口](appearance-m2-m4-completion.md) 关闭**。
 - 测试与门禁：独立验证 debug/release build、640 tests、全部 check-* 通过。
 
 ## 2. P0（已修复）
@@ -46,7 +46,10 @@
 | 意图/导航两条并行实现 + 4 个死方法 | RootShellWorkspace.swift、RootShellNavigation.swift | 删除 4 个未用入口；openGallery 统一走 navigator；新增 clearIntent sink 清旧照片意图 |
 | CommandCenter handler 永不清理 | Interaction/AppCommandCenter.swift、RootView.swift | 新增 clearHandlers()；RootView onDisappear 调用 |
 
-## 4. P2 处置（部分关闭）
+## 4. P2 处置（收口前状态）
+
+> 本节 7 项均已在 [Phase 4 收口](appearance-m2-m4-completion.md) 关闭；
+> 以下保留审查时的原始记录。
 
 ### 已关闭
 

@@ -92,16 +92,8 @@ struct ShellLanguageWiringTests {
         #expect(en[.help] == "Gather Help")
         #expect(en.newWorkspace != zh.newWorkspace)
 
-        // 通知名：4 个动作项 + 帮助项不投递通知（命令按此 post）。
-        #expect(GatherAppMenuItem.newWorkspace.notificationName == GatherAppNotification.menuNewWorkspace)
-        #expect(GatherAppMenuItem.importFolder.notificationName == GatherAppNotification.importFolderRequest)
-        #expect(GatherAppMenuItem.captureOneImport.notificationName == GatherAppNotification.captureOneImportRequest)
-        #expect(GatherAppMenuItem.toggleSidebar.notificationName == GatherAppNotification.menuToggleSidebar)
-        #expect(GatherAppMenuItem.help.notificationName == nil)
-        #expect(GatherAppNotification.menuNewWorkspace.rawValue == "gather.menu.new-workspace")
+        // 入口通知只剩导入目录选择（菜单动作已改 commandCenter，不再有通知名）。
         #expect(GatherAppNotification.importFolderRequest.rawValue == "gather.menu.import-folder-request")
-        #expect(GatherAppNotification.captureOneImportRequest.rawValue == "gather.menu.capture-one-import-request")
-        #expect(GatherAppNotification.menuToggleSidebar.rawValue == "gather.menu.toggle-sidebar")
 
         // 快捷键：键位 + 修饰键（GatherAppCommands 直接把这两项交给 SwiftUI）。
         #expect(GatherAppMenuItem.newWorkspace.shortcut == GatherMenuShortcut(key: "n", command: true))
