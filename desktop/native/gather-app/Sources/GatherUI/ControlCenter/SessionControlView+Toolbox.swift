@@ -21,9 +21,9 @@ extension SessionControlView {
                 Button(l10n("分析质量"), systemImage: "wand.and.stars") { Task { await viewModel.analyzeQuality() } }
                     .disabled(viewModel.isWorking)
                     .help(l10n("为照片计算技术质量评分"))
-                Button(l10n("打开挑片")) { onOpenTab(viewModel.sessionId, .culling) }
+                Button(l10n("打开挑片")) { navigator?.open(.culling, in: viewModel.sessionId) }
                     .help(l10n("切换到挑片页面"))
-                Button(l10n("打开人脸")) { onOpenTab(viewModel.sessionId, .faceKw) }
+                Button(l10n("打开人脸")) { navigator?.open(.faceKw, in: viewModel.sessionId) }
                     .help(l10n("切换到人脸关键词页面"))
             }
         }

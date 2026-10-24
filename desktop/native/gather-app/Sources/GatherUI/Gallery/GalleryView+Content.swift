@@ -305,7 +305,9 @@ extension GalleryView {
             }
             .gatherPrimaryActionButton()
             Button(l10n("前往控制中心")) {
-                onOpenTab(viewModel.sessionId, .control)
+                // 会话页迁移：页签跳转走 environment 里的 navigator（新入口
+                // 优先 open(_:in:)）；没有 navigator（预览/布局测试）时无动作。
+                navigator?.open(.control, in: viewModel.sessionId)
             }
             Button(l10n("刷新")) {
                 Task { await viewModel.load() }

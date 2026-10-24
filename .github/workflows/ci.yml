@@ -56,6 +56,8 @@ jobs:
         run: ./scripts/check-test-catalog.sh --strict
       - name: Preview surface
         run: ./scripts/check-preview-surface.sh --strict
+      - name: Design system ratchet
+        run: ./scripts/check-design-system.sh
       - name: SELECT * ratchet
         run: ./scripts/check-select-star.sh --strict
       - name: Protocol surface

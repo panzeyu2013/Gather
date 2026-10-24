@@ -123,7 +123,7 @@ struct WorkspaceVisibilityTests {
     @Test("进入 sessionTab(culling)：只有 culling 启动，gallery/control/similarity 请求计数 0")
     func enteringSessionTabStartsOnlyMountedPageViewModel() async {
         let probe = VisibilityProbe.make()
-        let destination = RootNavigation.Destination.sessionTab("s1", .culling)
+        let destination = AppRoute.session(sessionId: "s1", page: .culling)
         let sessionId = RootView.workspaceSessionId(for: destination)
         #expect(sessionId == "s1", "sessionTab 应映射到会话 id")
 

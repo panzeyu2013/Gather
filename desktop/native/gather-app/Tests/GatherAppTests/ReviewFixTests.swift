@@ -698,15 +698,15 @@ struct ReviewFixTests {
         #expect(navigation.isLibrary, "从全局图库进入应返回全局图库")
 
         navigation.selectWeb(.persons)
-        navigation.openSessionTab("s1", .culling)
+        navigation.openSessionPage("s1", .culling)
         navigation.backFromSession(sessionId: "s1")
         #expect(navigation.isPersons, "从人脸库深链进入应返回人脸库")
 
         // 会话内部的页签切换不得覆盖来源（否则来回切页签就会把来源弄丢）。
         navigation.selectDashboard()
         navigation.openSession("s1")
-        navigation.openSessionTab("s1", .culling)
-        navigation.openSessionTab("s1", .export)
+        navigation.openSessionPage("s1", .culling)
+        navigation.openSessionPage("s1", .export)
         navigation.backFromSession(sessionId: "s1")
         #expect(navigation.isDashboard, "会话内部切页签不得覆盖来源")
     }
@@ -720,7 +720,7 @@ struct ReviewFixTests {
         navigation.openGallery("s1")                      // 图库
         navigation.backFromGallery()
         #expect(
-            navigation.isSessionTab(sessionId: "s1", tab: .control),
+            navigation.isSessionPage(sessionId: "s1", page: .control),
             "图库返回必须回到进入前的控制中心（旧实现合并成回工作台）"
         )
     }
@@ -758,10 +758,10 @@ struct ReviewFixTests {
         let second = RootNavigation()
         second.selectDashboard()
         second.openSession("s1")
-        second.openSessionTab("s1", .control)
+        second.openSessionPage("s1", .control)
         second.openSimilarity("s1")
         second.backFromSimilarity(sessionId: "s1")
-        #expect(second.isSessionTab(sessionId: "s1", tab: .control), "应回到控制中心页签")
+        #expect(second.isSessionPage(sessionId: "s1", page: .control), "应回到控制中心页签")
     }
 
     @Test("B1/E-P0：会话内部切页签不改变返回目标（返回=离开会话回到来源）")
@@ -769,11 +769,38 @@ struct ReviewFixTests {
         let navigation = RootNavigation()
         navigation.selectDashboard()
         navigation.openSession("s1")           // 控制中心（页签）
-        navigation.openSessionTab("s1", .culling)
+        navigation.openSessionPage("s1", .culling)
         navigation.backFromSession(sessionId: "s1")
         // E-P0 的语义：会话页的「返回」是**离开会话区域**回到进入处，
         // 不是浏览器式的「回到上一个页签」。同会话内的页签切换因此不记录来源。
         #expect(navigation.isDashboard, "应回到进入会话前的工作台")
+    }
+
+    @Test("P0：图库 → 普通页签 → 返回，回到图库而不是 stale 控制中心")
+    func galleryThenTabBackReturnsToGallery() {
+        let navigation = RootNavigation()
+        navigation.selectDashboard()
+        navigation.openSession("s1")
+        navigation.openGallery("s1")
+        navigation.open(.culling, in: "s1")
+        navigation.backFromSession(sessionId: "s1")
+        #expect(navigation.isGallery(sessionId: "s1"), "会话内从图库切到普通页签，返回应先回图库")
+
+        // 再按一次返回：图库的页级来源已清，应离开会话回工作台。
+        navigation.backFromGallery()
+        #expect(navigation.isDashboard, "第二次返回应离开会话，回到进入前的工作台")
+    }
+
+    @Test("P0：图库 → 控制中心 → 挑片 → 返回，仍回图库")
+    func galleryThenControlThenTabBackReturnsToGallery() {
+        let navigation = RootNavigation()
+        navigation.selectDashboard()
+        navigation.openSession("s1")
+        navigation.openGallery("s1")
+        navigation.open(.control, in: "s1")
+        navigation.open(.culling, in: "s1")
+        navigation.backFromSession(sessionId: "s1")
+        #expect(navigation.isGallery(sessionId: "s1"), "从中途页签返回应回到真正的页级来源（图库）")
     }
 
     @Test("B1：跨会话跳转的返回落在上一个会话页")
@@ -781,11 +808,11 @@ struct ReviewFixTests {
         let navigation = RootNavigation()
         navigation.selectDashboard()
         navigation.openSession("s1")
-        navigation.openSessionTab("s1", .culling)
+        navigation.openSessionPage("s1", .culling)
         // 从会话 A 跳到会话 B（跨工作区）：这是真正的「离开 A」。
-        navigation.openSessionTab("s2", .control)
+        navigation.openSessionPage("s2", .control)
         navigation.backFromSession(sessionId: "s2")
-        #expect(navigation.isSessionTab(sessionId: "s1", tab: .culling), "应回到上一个会话的挑片页")
+        #expect(navigation.isSessionPage(sessionId: "s1", page: .culling), "应回到上一个会话的挑片页")
     }
 
     // MARK: 渐进细节（Bridge/C1 式缩放重解码）

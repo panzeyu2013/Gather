@@ -83,11 +83,8 @@ package struct DashboardView: View {
             }
             phaseContent
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(GatherTheme.canvas)
-        // 页面 chrome：标题 / 副标题交给系统窗口，内容区不再自绘大标题。
-        .navigationTitle(l10n("工作台"))
-        .navigationSubtitle(dashboardSubtitle)
+        // 页面 chrome：frame / 表面 / 标题 / 副标题统一由 GatherPage 骨架提供。
+        .gatherPage(title: l10n("工作台"), subtitle: dashboardSubtitle)
         .toolbar { toolbarItems }
         .onChange(of: viewModel.sessions.map(\.id)) { _, ids in
             // 行被别处删除时收敛选中集合，避免「删除 N 个」计数虚高。
@@ -234,17 +231,16 @@ package struct DashboardView: View {
     /// 失败出口：系统空态 + 重试（不再只渲染一行红字）。
     /// 4a-3b-2a：错误以 `CommandError` 传入，文案在渲染期按当前语言解析。
     private func loadFailureState(_ error: CommandError) -> some View {
-        ContentUnavailableView {
-            Label(l10n("工作区"), systemImage: "exclamationmark.triangle")
-        } description: {
-            Text(l10n.format("加载工作区失败：%@", CommandErrorText.resolve(error, with: l10n)))
-        } actions: {
+        GatherEmptyState(
+            icon: "exclamationmark.triangle",
+            title: l10n("工作区"),
+            message: l10n.format("加载工作区失败：%@", CommandErrorText.resolve(error, with: l10n))
+        ) {
             Button(l10n("重试")) {
                 Task { await viewModel.loadAll() }
             }
             .gatherPrimaryActionButton()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// 首次启动：产品预览 hero + 单一主 CTA + 三张快捷卡。

@@ -119,11 +119,8 @@ package struct LibraryView: View {
             }
             content
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(GatherTheme.windowBackground)
-        // 页面 chrome：标题 / 副标题交给系统窗口，内容区不再自绘 eyebrow + 大标题。
-        .navigationTitle(l10n("全局图库"))
-        .navigationSubtitle(browseSubtitle)
+        // 页面 chrome：frame / 表面 / 标题 / 副标题统一由 GatherPage 骨架提供。
+        .gatherPage(title: l10n("全局图库"), subtitle: browseSubtitle)
         // 文件名搜索：系统搜索框（取代 .roundedBorder TextField + 手搓宽度）。
         .searchable(
             text: $viewModel.filter.search,
@@ -138,21 +135,22 @@ package struct LibraryView: View {
             libraryInspector
                 // 与 Culling/Gallery 对齐（A3）：理想列宽会计入承载视图最小宽度，
                 // 320 会在最小窗口下挤压主内容区。
-                .inspectorColumnWidth(min: 220, ideal: 260, max: 400)
+                .inspectorColumnWidth(min: GatherChromeMetrics.inspectorMinWidth, ideal: GatherChromeMetrics.inspectorIdealWidth, max: GatherChromeMetrics.inspectorWideMaxWidth)
         }
         .task {
             if viewModel.phase == .loading {
                 await viewModel.load()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherApplicationChange,
-                  Self.refreshDomains.contains(change.domain),
-                  change.origin != LibraryViewModel.changeOrigin else { return }
+        .refreshOnDomainEvents(
+            Self.refreshDomains,
+            excludingOrigin: LibraryViewModel.changeOrigin,
+            debounce: .zero
+        ) {
             // 只刷新本次变更可能影响的支持子域 + 当前页（不重置筛选/页码）。
             viewModel.scheduleEventRefresh()
         }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobTerminal)) { _ in
+        .refreshOnJobTerminal(debounce: .zero) {
             // 任意终态事件都重载支持数据/照片列表（索引/分析结束即反映）。
             viewModel.scheduleEventRefresh()
         }

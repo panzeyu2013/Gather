@@ -558,14 +558,14 @@
 "写回队列：%d 项" = "Writeback Queue: %d Items";
 "写回队列：%d 项#one" = "Writeback Queue: %d Item";
 "最近同步：%@" = "Last Sync: %@";
-/* Sources/GatherUI/Support/GatherBadge.swift */
+/* Sources/GatherUI/DesignSystem/Components/GatherBadge.swift */
 "待审核" = "Pending Review";
 "运行中" = "Running";
 "草稿" = "Draft";
 "排队中" = "Queued";
 "已中断" = "Interrupted";
 "取消中" = "Canceling";
-/* Sources/GatherUI/Support/SessionTabBar.swift */
+/* Sources/GatherUI/Interaction/GatherSessionPage.swift */
 "浏览" = "Browse";
 "控制中心" = "Control Center";
 "重复" = "Duplicates";
@@ -1202,7 +1202,6 @@
 "已选中" = "Selected";
 "开始导出？" = "Start the export?";
 "当前工作区没有内容完全一致的文件。" = "This workspace has no byte-identical files.";
-"当前窗口没有设置入口" = "No settings entry point in this window";
 "当前范围没有照片" = "No photos in the current scope";
 "快捷键 %@" = "Shortcut: %@";
 "打开设置检查人脸模型" = "Open Settings to check the face models";

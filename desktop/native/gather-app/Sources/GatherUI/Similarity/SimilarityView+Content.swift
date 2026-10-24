@@ -236,7 +236,7 @@ extension SimilarityView {
                     onToggleSelected: { viewModel.toggleGroupSelection(group.id) },
                     onToggleExpanded: { toggleExpanded(group.id) },
                     onToggleShowAll: { toggleShowAll(group.id) },
-                    onOpenPhoto: onOpenPhoto
+                    onOpenPhoto: openPhotoAction
                 )
             }
         }

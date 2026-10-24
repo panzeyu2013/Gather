@@ -98,7 +98,7 @@ extension GalleryView {
             .padding(GatherMetrics.Space.l)
         }
         // 同 CullingView：理想列宽会计入最小宽度，收窄以避免窄窗口下的约束循环。
-        .inspectorColumnWidth(min: 220, ideal: 260, max: 360)
+        .inspectorColumnWidth(min: GatherChromeMetrics.inspectorMinWidth, ideal: GatherChromeMetrics.inspectorIdealWidth, max: GatherChromeMetrics.inspectorMaxWidth)
     }
 
     /// 检查器里的一组选项：标题 + 内容，套系统分组容器（与 LibraryView.supportCard 同形）。

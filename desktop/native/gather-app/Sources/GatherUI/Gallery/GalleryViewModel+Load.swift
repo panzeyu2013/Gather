@@ -39,7 +39,7 @@ extension GalleryViewModel {
     }
 
     /// 首载激活（R4 P1-4）：只由页面首次可见触发（setVisible(true)，来源是
-    /// GalleryView.onAppear → workspace.setPageVisible(.gallery, true)）。
+    /// GatherSessionPage 的 onAppear → workspace.setPageVisible(.gallery, true)）。
     ///
     /// 构造 workspace 不再取页：旧实现把 loadIfNeeded() 挂在 init 的 initTask 上，
     /// 进入 control/face/export 或只 enqueue 意图都会打一次 photo.list_page。

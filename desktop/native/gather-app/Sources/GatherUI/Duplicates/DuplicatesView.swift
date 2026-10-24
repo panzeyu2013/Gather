@@ -14,22 +14,16 @@
 // 4 个状态（viewModel / 两个 pending / showAdvancedScan）、装配 init、页面接线、
 // 两个确认弹窗与工具栏；视图模型在 DuplicatesViewModel.swift，分段视图在
 // DuplicatesView+Sections.swift，分组卡在 DuplicatesGroupCardView.swift。
+// 会话页迁移（M1）：窗口 chrome / 页签 / 返回 / 页面级可见性交给 GatherSessionPage，
+// 导航（图库/照片）改从 environment 的 navigator 取。
 import SwiftUI
 import GatherProtocol
 
 public struct DuplicatesView: View {
     @State private var viewModel: DuplicatesViewModel
-    /// 所属会话工作区（R4 P1-2）：页面级可见性经 workspace 路由；重复页没有
-    /// 轮询，但钩子必须与其他 6 页同形，避免"未挂载页被会话级置真"。
+    /// 所属会话工作区：VM 与页面骨架（GatherSessionPage）都从这里取。
     private let workspace: SessionWorkspace
     private let culling: any CullingAPI
-    private let onBack: () -> Void
-    private let onOpenSimilarity: (String) -> Void
-    private let onOpenTab: (String, SessionTab) -> Void
-    private let onOpenGallery: (String) -> Void
-    private let onOpenSettings: () -> Void
-    /// 打开成员照片（第三轮审计 E）：透传到分组卡的成员行。
-    private let onOpenPhoto: ((String) -> Void)?
     /// 破坏性动作的待确认上下文：非空即弹确认框；命令只在确认分支发出。
     @State private var pendingResolution: PendingGroupResolution?
     @State private var pendingMemberDecision: PendingMemberDecision?
@@ -39,32 +33,33 @@ public struct DuplicatesView: View {
     /// 生产装配（Cut 4 / 4a-2a-2）：VM 来自会话工作区（workspace.duplicates）。
     /// 扫描结果/阈值/分组展开/分页都挂在 VM 上，切页签销毁页面后仍由
     /// workspace 保留；外壳不再缓存/替换 VM。
-    package init(
-        workspace: SessionWorkspace,
-        culling: any CullingAPI,
-        onBack: @escaping () -> Void = {},
-        onOpenSimilarity: @escaping (String) -> Void = { _ in },
-        onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
-        onOpenGallery: @escaping (String) -> Void = { _ in },
-        onOpenSettings: @escaping () -> Void = {},
-        onOpenPhoto: ((String) -> Void)? = nil
-    ) {
-        self.onOpenPhoto = onOpenPhoto
+    ///
+    /// 会话页迁移（M1）：页面只接 workspace + culling；返回 / 页签 / 图库 /
+    /// 成员照片入口一律从 environment 的 navigator 取，不再接收导航闭包。
+    package init(workspace: SessionWorkspace, culling: any CullingAPI) {
         _viewModel = State(initialValue: workspace.duplicates)
         self.workspace = workspace
         self.culling = culling
-        self.onBack = onBack
-        self.onOpenSimilarity = onOpenSimilarity
-        self.onOpenTab = onOpenTab
-        self.onOpenGallery = onOpenGallery
-        self.onOpenSettings = onOpenSettings
     }
 
-    // Cut 4 / 4a-3b-2b：语言源由外壳经 environment 下发（RootView / SessionTabHost）。
+    // Cut 4 / 4a-3b-2b：语言源由外壳经 environment 下发（RootView / SessionPageHost）。
     @Environment(\.languageStore) private var languageStore
+    /// 成员照片入口（图库直达某张照片）；navigator 为 nil 时（预览/布局测试）无操作。
+    @Environment(\.navigator) private var navigator: RootNavigation?
+    /// 设置入口：C1 状态胶囊的「去设置」直接调环境动作，不再收 onOpenSettings。
+    @Environment(\.openSettings) private var openSettings
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     public var body: some View {
+        // 骨架（页签行 / 返回 / canvas 背景 / 副标题 / 页面级可见性）由
+        // GatherSessionPage 统一负责；本页只提供内容 + 自己的工具栏与生命周期。
+        GatherSessionPage(page: .duplicates, workspace: workspace, subtitle: l10n("重复照片检测")) {
+            content
+        }
+    }
+
+    /// 页面内容：横幅 + 扫描控件 + 分组列表（原 body，逐字下移）。
+    private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let error = viewModel.errorMessage {
                 NativeBanner(
@@ -115,7 +110,7 @@ public struct DuplicatesView: View {
                                     viewModel: viewModel,
                                     onResolve: { pendingResolution = $0 },
                                     onSetMemberKept: { pendingMemberDecision = $0 },
-                                    onOpenPhoto: onOpenPhoto
+                                    onOpenPhoto: openPhoto
                                 )
                             }
                             if viewModel.remainingGroupCount > 0 {
@@ -152,15 +147,7 @@ public struct DuplicatesView: View {
                 }
             )
         }
-        .background(GatherTheme.windowBackground)
         .task { await viewModel.load() }
-        // R4 P1-2：页面级可见性只由本页 onAppear/onDisappear 驱动（切页签即交接）。
-        .onAppear {
-            workspace.setPageVisible(.duplicates, true)
-        }
-        .onDisappear {
-            workspace.setPageVisible(.duplicates, false)
-        }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
             guard let event = notification.object as? GatherJobEvent else { return }
             viewModel.applyJobEvent(event)
@@ -184,24 +171,24 @@ public struct DuplicatesView: View {
                 viewModel.reportCancellation(pending.cancelCopy.resolve(with: l10n))
             }
         )
-        .sessionPageChrome(
-            subtitle: l10n("重复照片检测"),
-            onBack: onBack,
-            selection: .tab(.duplicates),
-            onBrowse: { onOpenGallery(viewModel.sessionId) },
-            onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
-            onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
-        )
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                C1StatusCapsuleHost(sessionId: viewModel.sessionId, culling: culling, onOpenSettings: onOpenSettings)
-                Button(l10n("刷新"), systemImage: "arrow.clockwise") {
-                    Task { await viewModel.load() }
-                }
-                .disabled(viewModel.isLoading || viewModel.isScanning)
-                .help(l10n("刷新重复照片"))
-            }
+            GatherSessionToolbar(
+                sessionId: viewModel.sessionId,
+                culling: culling,
+                onOpenSettings: { openSettings() },
+                refreshTitle: l10n("刷新"),
+                refreshHelp: l10n("刷新重复照片"),
+                refreshDisabled: viewModel.isLoading || viewModel.isScanning,
+                onRefresh: { Task { await viewModel.load() } }
+            )
         }
+    }
+
+    /// 成员照片 → 图库（photoId 直达）。navigator 为 nil（预览/布局测试）时无操作。
+    /// 旧实现由外壳经 onOpenPhoto 闭包注入；M1 后外壳不再持有导航闭包，
+    /// 该入口改从 environment 的 navigator 取。
+    private func openPhoto(_ photoId: String) {
+        navigator?.openGallery(viewModel.sessionId, photoId: photoId)
     }
 }
 

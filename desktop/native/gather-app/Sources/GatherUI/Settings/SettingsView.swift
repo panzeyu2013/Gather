@@ -88,9 +88,15 @@ public struct SettingsView: View {
         }
         .formStyle(.grouped)
         .tint(GatherTheme.accent)
+        // 页面骨架（frame / 语义背景 / 窗口标题）由 DesignSystem 提供；
+        // Form(.grouped)、section 顺序与其后的 toolbar / fileImporter /
+        // gatherDestructiveConfirm 全部未动。
+        .gatherPage(title: l10n("设置"), surface: .canvas)
+        // 窗口级不透明修复务必留在最外层：Settings scene 用
+        // containerBackground(for: .window) 给窗口铺 canvas，不能被页面
+        // .background 取代（否则 inactive 时玻璃 titlebar 又会透出主窗口）。
         .modifier(SettingsWindowSurface())
         .frame(minWidth: 580, minHeight: 480)
-        .navigationTitle(l10n("设置"))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
@@ -149,10 +155,8 @@ public struct SettingsView: View {
             }
         }
         // 写路径广播（XMP/同步队列）：立即刷新 C1 写回队列，不再等 12s 轮询。
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherApplicationChange,
-                  change.domain == .metadata else { return }
-            Task { await viewModel.refreshSyncState() }
+        .refreshOnDomainEvents([.metadata]) {
+            await viewModel.refreshSyncState()
         }
         .gatherDestructiveConfirm(
             pending: $pendingReset,

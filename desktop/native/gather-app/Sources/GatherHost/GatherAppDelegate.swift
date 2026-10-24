@@ -110,6 +110,10 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
         didSet { ensureStandardMenus() }
     }
 
+    /// Phase 4：AppKit 菜单兜底也走同一个命令中心；nil 时回退到旧通知。
+    /// （SwiftUI 主菜单正常时由 RootView 安装 handler。）
+    package var commandCenter: AppCommandCenter?
+
     /// 当前语言下的文案器：每次读注入 store 的当前值（不做字符串缓存）。
     private var l10n: L10n { languageStore?.l10n ?? Self.bootstrapL10n }
 
@@ -438,12 +442,20 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func newWorkspace() {
-        NotificationCenter.default.post(name: GatherAppNotification.menuNewWorkspace, object: nil)
+        if let commandCenter, commandCenter.canPerform(.newWorkspace) {
+            commandCenter.perform(.newWorkspace)
+        } else {
+            NotificationCenter.default.post(name: GatherAppNotification.menuNewWorkspace, object: nil)
+        }
     }
 
     /// ⌘,：转发给 SwiftUI 环境里的 openSettings（由 RootView 订阅并调用）。
     @objc private func openSettings() {
-        NotificationCenter.default.post(name: GatherAppNotification.menuOpenSettings, object: nil)
+        if let commandCenter, commandCenter.canPerform(.openSettings) {
+            commandCenter.perform(.openSettings)
+        } else {
+            NotificationCenter.default.post(name: GatherAppNotification.menuOpenSettings, object: nil)
+        }
     }
 
     @objc private func importFolder() {
@@ -483,7 +495,11 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleSidebar(_ sender: Any?) {
         sidebarVisible.toggle()
         sidebarMenuItem?.title = l10n(sidebarVisible ? "隐藏侧栏" : "显示侧栏")
-        NotificationCenter.default.post(name: GatherAppNotification.menuToggleSidebar, object: nil)
+        if let commandCenter, commandCenter.canPerform(.toggleSidebar) {
+            commandCenter.perform(.toggleSidebar)
+        } else {
+            NotificationCenter.default.post(name: GatherAppNotification.menuToggleSidebar, object: nil)
+        }
     }
 
     @objc private func importFromCaptureOne() {

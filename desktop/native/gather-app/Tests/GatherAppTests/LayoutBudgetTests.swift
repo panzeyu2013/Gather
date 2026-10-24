@@ -136,23 +136,16 @@ struct LayoutBudgetTests {
     private func cullingView() -> some View {
         CullingView(
             workspace: makeWorkspace(),
-            culling: B8CullingAPIStub(),
-            onBack: {},
-            onOpenSimilarity: { _ in },
-            onOpenTab: { _, _ in },
-            onOpenGallery: { _ in },
-            onOpenSettings: {}
+            culling: B8CullingAPIStub()
         )
     }
 
     @Test("会话页签行不向 split view 索要超预算的最小宽度")
     func tabStripStaysWithinBudget() {
-        let strip = SessionPageTabStrip(
-            onBack: nil,
-            selection: .tab(.culling),
-            onBrowse: {},
-            onSimilarity: {},
-            onSelectTab: { _ in }
+        let strip = GatherSessionTabStrip(
+            current: .culling,
+            onBack: {},
+            onSelect: { _ in }
         )
         let size = fittingSize(strip, height: 44)
         print("[layout budget] tab strip fitting size = \(size)")
@@ -192,12 +185,7 @@ struct LayoutBudgetTests {
         )
         let view = CullingView(
             workspace: makeWorkspace(culling: viewModel),
-            culling: api,
-            onBack: {},
-            onOpenSimilarity: { _ in },
-            onOpenTab: { _, _ in },
-            onOpenGallery: { _ in },
-            onOpenSettings: {}
+            culling: api
         )
         // 类型化 load 是 async：先显式加载，让页面进入 workbench 分支再测量。
         // 不再用 RunLoop 泵 0.3s——泵会阻塞 MainActor，拖慢并行套件的异步断言。
@@ -332,19 +320,11 @@ struct LayoutBudgetTests {
         let pages: [(String, AnyView)] = [
             ("gallery", AnyView(GalleryView(
                 workspace: globalWorkspace,
-                culling: B8CullingAPIStub(),
-                onBack: {},
-                onOpenSimilarity: { _ in },
-                onOpenTab: { _, _ in },
-                onOpenSettings: {}
+                culling: B8CullingAPIStub()
             ))),
             ("similarity", AnyView(SimilarityView(
                 workspace: globalWorkspace,
-                culling: B8CullingAPIStub(),
-                onBack: {},
-                onOpenGallery: { _ in },
-                onOpenTab: { _, _ in },
-                onOpenSettings: {}
+                culling: B8CullingAPIStub()
             ))),
             ("library", AnyView(LibraryView(viewModel: library))),
             ("persons", AnyView(PersonsView(viewModel: persons))),
@@ -365,30 +345,34 @@ struct LayoutBudgetTests {
     func cullingEmptySessionStaysWithinBudget() {
         let view = CullingView(
             workspace: makeWorkspace(sessionId: ""),
-            culling: B8CullingAPIStub(),
-            onBack: {},
-            onOpenSimilarity: { _ in },
-            onOpenTab: { _, _ in },
-            onOpenGallery: { _ in },
-            onOpenSettings: {}
+            culling: B8CullingAPIStub()
         )
         let size = fittingSize(view)
         print("[layout budget] culling (no session) fitting size = \(size)")
         #expect(size.width <= Self.contentMinWidthBudget)
     }
 
-    @Test("挑片页 + 页签行叠加后仍在预算内")
-    func sessionChromePlusCullingStaysWithinBudget() {
-        let page = cullingView()
-            .sessionPageChrome(
-                subtitle: "挑片",
-                selection: .tab(.culling),
-                onBrowse: {},
-                onSimilarity: {},
-                onSelectTab: { _ in }
-            )
+    @Test("会话页骨架（页签行）仍在预算内")
+    func sessionChromeStaysWithinBudget() {
+        let page = GatherSessionPage(
+            page: .culling,
+            workspace: makeWorkspace(),
+            subtitle: "挑片"
+        ) {
+            Color.clear
+        }
         let size = fittingSize(page)
-        print("[layout budget] culling + chrome fitting size = \(size)")
+        print("[layout budget] session chrome fitting size = \(size)")
         #expect(size.width <= Self.contentMinWidthBudget)
+    }
+
+    @Test("最小窗口：页签行 + 挑片内容 + 展开检查器 不超内容预算")
+    func inspectorFitsMinimumWindow() {
+        let strip = GatherSessionTabStrip(current: .culling, onBack: {}, onSelect: { _ in })
+        let stripWidth = fittingSize(strip, height: 44).width
+        let contentWidth = fittingSize(cullingView()).width
+        let total = stripWidth + contentWidth + GatherChromeMetrics.inspectorIdealWidth
+        print("[layout budget] min window total = \(total) (strip \(stripWidth) + content \(contentWidth) + inspector \(GatherChromeMetrics.inspectorIdealWidth))")
+        #expect(total <= Self.contentMinWidthBudget, "860 最小窗口展开检查器会触发 N01 约束循环")
     }
 }

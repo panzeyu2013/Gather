@@ -80,7 +80,8 @@ extension FaceKeywordingView {
     }
 
     /// TS StepAnalyze.guidance：warning 提示条 +「前往设置」按钮
-    /// （旧版导航 /settings；回调为 nil 时按钮禁用）。
+    /// （旧版导航 /settings；appearance 迁移后设置入口是 environment 的
+    /// openSettings 动作，页面内按钮恒可用，不再按注入闭包是否存在禁用）。
     @ViewBuilder
     private var modelsGuidanceStrip: some View {
         if viewModel.modelsMissing {
@@ -90,13 +91,10 @@ extension FaceKeywordingView {
                     systemImage: "exclamationmark.triangle.fill",
                     color: GatherTheme.warning
                 )
-                Button(l10n("前往设置")) { onOpenSettings?() }
-                    .disabled(onOpenSettings == nil)
+                Button(l10n("前往设置")) { openSettings() }
                     .gatherPrimaryActionButton()
                     .controlSize(.small)
-                    .help(onOpenSettings == nil
-                        ? l10n("当前窗口没有设置入口")
-                        : l10n("打开设置检查人脸模型"))
+                    .help(l10n("打开设置检查人脸模型"))
             }
         }
     }

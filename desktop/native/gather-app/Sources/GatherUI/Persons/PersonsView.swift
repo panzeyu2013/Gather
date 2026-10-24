@@ -64,11 +64,14 @@ package struct PersonsView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(GatherTheme.windowBackground)
-        // 页面名进窗口标题（旧版是列表栏里的 26pt H1，与侧栏条目重复）。
-        .navigationTitle(l10n("人脸库"))
-        .navigationSubtitle(personsSubtitle)
+        // 页面骨架统一由 DesignSystem 提供：frame / 语义背景 / 窗口标题与副标题。
+        // 底色与原 .background(GatherTheme.windowBackground) 等价
+        // （windowBackground == canvas），信息架构未变。
+        .gatherPage(
+            title: l10n("人脸库"),
+            subtitle: personsSubtitle,
+            surface: .canvas
+        )
         // 搜索进工具栏：系统放大镜、清除按钮、Esc 取消；不再自绘圆角输入框。
         .searchable(
             text: $viewModel.searchText,
@@ -90,11 +93,11 @@ package struct PersonsView: View {
             await viewModel.load()
         }
         // 写路径广播（person.* 与 fkw 绑定/解绑 → 人物域）：按域刷新。
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherApplicationChange,
-                  change.domain == .persons,
-                  change.origin != PersonsViewModel.changeOrigin else { return }
-            Task { await viewModel.load() }
+        .refreshOnDomainEvents(
+            [.persons],
+            excludingOrigin: PersonsViewModel.changeOrigin
+        ) {
+            await viewModel.load()
         }
         .sheet(isPresented: $showCreate) {
             CreatePersonSheet(viewModel: viewModel) { name in

@@ -27,7 +27,7 @@ enum InboxAction: Equatable {
     case reviewOfflinePhotos
     /// D10：进入人脸页并直达分析步骤（分析已过期）。
     case reviewStaleAnalysis
-    case navigateTab(SessionTab)
+    case navigateTab(SessionPage)
     case navigateSimilarity
     case navigateGallery
     case retryJob(String)

@@ -100,6 +100,7 @@ SwiftUI 应用，不需要 JavaScript 工具链；设置 `CODESIGN_IDENTITY` 后
 ## 文档
 
 - [开发与贡献指南](DEVELOPMENT.md)：构建/测试、类型化 API 契约、本地化体系、HIG 约定
+- [设计系统与页面配方](design/appearance-interaction.md)：token 角色、页面骨架、组件规则与 ratchet
 - [架构决策记录](ADR.md)：ADR-001~020 既有决策 + 性能决议与遗留方案（ADR-021~029，
   含未接线资产删除裁决 ADR-028 与人脸管线 ADR-029）
 - [Cut 1 完成报告](archive/cuts/cut1-completion-report.md)：118→16 协议/110 方法、Router 删除、

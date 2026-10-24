@@ -114,7 +114,7 @@ let package = Package(
                 .product(name: "GatherProtocol", package: "gather-core"),
             ],
             path: "Sources/GatherUI",
-            exclude: ["Support/Info.plist"],
+            exclude: ["Support/Info.plist", "DesignSystem/README.md", "Interaction/README.md"],
             resources: [
                 // en.lproj / zh-Hans.lproj（Localizable.strings）。
                 .process("Resources"),

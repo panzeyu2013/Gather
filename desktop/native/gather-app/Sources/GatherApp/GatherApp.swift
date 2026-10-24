@@ -43,7 +43,9 @@ struct GatherApp: App {
                         deps: scene.rootDeps,
                         sessionStore: scene.sessionStore,
                         // 4a-3a：语言唯一写入口；外壳文案由它的 l10n 驱动。
-                        languageStore: scene.languageStore
+                        languageStore: scene.languageStore,
+                        // Phase 4：菜单/快捷键命令中心。
+                        commandCenter: scene.commandCenter
                     )
                 } else if let message = bootstrap.errorMessage {
                     GatherEmptyState(
@@ -73,10 +75,17 @@ struct GatherApp: App {
         // N08：菜单必须声明在 SwiftUI 场景里。SwiftUI 会用自己构建的主菜单替换
         // NSApp.mainMenu，AppDelegate.installMenu 建的「文件/编辑」在运行态不生效
         // （现象：只有 Gather/View/Window/Help，⌘N/⌘O 无响应）。
-        .commands { GatherAppCommands(language: menuLanguage) }
+        .commands { GatherAppCommands(language: menuLanguage, commands: bootstrap.commandCenter) }
         .windowStyle(.automatic)
         // 原生默认窗口尺寸：不再依赖 .frame(minWidth:) 撑开窗口。
+        #if DEBUG
+        .defaultSize(
+            width: DebugLaunchOptions.windowWidth ?? 1180,
+            height: DebugLaunchOptions.windowHeight ?? 780
+        )
+        #else
         .defaultSize(width: 1180, height: 780)
+        #endif
         // 原生「设置」窗口：⌘, 由系统提供，最小化/缩放按钮自动变灰，
         // 窗口位置与打开的 pane 由系统记忆。取代旧版在内容区切换设置页。
         //

@@ -32,8 +32,13 @@ package final class AppBootstrap {
     /// 随 `SceneState.languageStore` 发布给 RootView / SettingsView。
     package let languageStore: LanguageStore
 
+    /// Phase 4：菜单/快捷键的唯一命令通道。RootView 在 onAppear 安装 handler，
+    /// `.commands` 与 AppKit 菜单兜底只调 `perform`，不再 post 通知。
+    package let commandCenter: AppCommandCenter
+
     package init() {
         self.languageStore = LanguageStore()
+        self.commandCenter = AppCommandCenter()
     }
 
     /// 场景渲染所需的全部引用（bootstrap 成功后一次性发布）。
@@ -53,6 +58,7 @@ package final class AppBootstrap {
         /// Cut 4 / 4a-3a：语言唯一写入口（与 AppBootstrap.languageStore 同一实例）。
         /// 场景只读它的 language/l10n；写入只经 SettingsViewModel.setLanguage。
         package let languageStore: LanguageStore
+        package let commandCenter: AppCommandCenter
     }
 
     /// 场景状态；nil = 未就绪（初始化中或失败）。
@@ -85,7 +91,8 @@ package final class AppBootstrap {
                 delegate: delegate,
                 applicationSupportDirectory: applicationSupportDirectory,
                 // 4a-3a：语言唯一写入口由装配层持有，冷启动在这里播种。
-                languageStore: languageStore
+                languageStore: languageStore,
+                commandCenter: commandCenter
             )
             self.runtime = runtime
             self.scene = state
@@ -108,7 +115,8 @@ package final class AppBootstrap {
     private static func makeScene(
         delegate: GatherAppDelegate?,
         applicationSupportDirectory: URL?,
-        languageStore: LanguageStore
+        languageStore: LanguageStore,
+        commandCenter: AppCommandCenter
     ) async throws -> (SceneState, AppRuntime) {
         let applicationSupport: URL
         if let applicationSupportDirectory {
@@ -213,7 +221,8 @@ package final class AppBootstrap {
             captureOneBridge: captureOneBridge,
             // Cut 4 / 4b-3：语言唯一来源随装配交给 Delegate（AppKit 菜单/面板
             // 没有 environment，只能在动作发生时读同一个 store）。
-            languageStore: languageStore
+            languageStore: languageStore,
+            commandCenter: commandCenter
         )
 
         // Cut 4 / 4a-2a-1：壳层依赖包 + 工作区工厂（只装配引用，不 new 服务）。
@@ -251,7 +260,8 @@ package final class AppBootstrap {
                 captureOneBridge: captureOneBridge,
                 rootDeps: rootDeps,
                 sessionStore: sessionStore,
-                languageStore: languageStore
+                languageStore: languageStore,
+                commandCenter: commandCenter
             ),
             runtime
         )
@@ -265,12 +275,14 @@ package final class AppBootstrap {
         composition: AppComposition,
         runtime: AppRuntime,
         captureOneBridge: CaptureOneBridge,
-        languageStore: LanguageStore
+        languageStore: LanguageStore,
+        commandCenter: AppCommandCenter
     ) {
         guard let delegate else { return }
         // Cut 4 / 4b-3：界面语言源注入 Delegate（菜单/面板的文案在构建动作发生
         // 时读它）；导入闭包同样在**动作发生时**取 store.l10n，不缓存字符串。
         delegate.languageStore = languageStore
+        delegate.commandCenter = commandCenter
         delegate.onImportFiles = { files in
             AppImport.importFiles(
                 files,

@@ -164,17 +164,13 @@ extension RootView {
     }
 
     private var currentSidebarItem: SidebarItem? {
-        switch navigation.destination {
+        switch navigation.route {
         case .dashboard: return .dashboard
         case .library: return .library
-        case .page(let page): return .web(page)
-        case .gallery, .similarity:
+        case .persons: return .web(.persons)
+        case .session(let id, _):
             // 任一工作区子页都必须保持当前会话高亮。
-            if let id = navigation.currentSessionId { return .session(id) }
-            return nil
-        case .sessionTab:
-            if let id = navigation.currentSessionId { return .session(id) }
-            return nil
+            return .session(id)
         }
     }
 

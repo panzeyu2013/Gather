@@ -161,20 +161,6 @@ enum PreviewFactory {
         )
     }
 
-    static func router() -> SessionTabRouter {
-        SessionTabRouter(
-            onBack: {},
-            onOpenSimilarity: { _ in },
-            onOpenTab: { _, _ in },
-            onOpenGallery: { _ in },
-            onOpenSettings: {},
-            onOpenExportTab: { _, _ in },
-            onReviewXmpConflicts: { _ in },
-            onReviewOfflinePhotos: { _ in },
-            onReviewStaleAnalysis: { _ in }
-        )
-    }
-
     // MARK: - 页面（11 个页面 Preview 的入口）
 
     static func dashboardPage() -> some View {
@@ -198,11 +184,7 @@ enum PreviewFactory {
         return NavigationStack {
             GalleryView(
                 workspace: workspace,
-                culling: PreviewCullingAPI(),
-                onBack: {},
-                onOpenSimilarity: { _ in },
-                onOpenTab: { _, _ in },
-                onOpenSettings: {}
+                culling: PreviewCullingAPI()
             )
         }
         .environment(\.languageStore, store)
@@ -230,12 +212,7 @@ enum PreviewFactory {
         return NavigationStack {
             CullingView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI(),
-                onBack: {},
-                onOpenSimilarity: { _ in },
-                onOpenTab: { _, _ in },
-                onOpenGallery: { _ in },
-                onOpenSettings: {}
+                culling: PreviewCullingAPI()
             )
         }
         .environment(\.languageStore, store)
@@ -248,12 +225,7 @@ enum PreviewFactory {
         return NavigationStack {
             FaceKeywordingView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI(),
-                onBack: {},
-                onOpenSimilarity: { _ in },
-                onOpenTab: { _, _ in },
-                onOpenGallery: { _ in },
-                onOpenSettings: {}
+                culling: PreviewCullingAPI()
             )
         }
         .environment(\.languageStore, store)
@@ -266,12 +238,7 @@ enum PreviewFactory {
         return NavigationStack {
             SimilarityView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI(),
-                onBack: {},
-                onOpenGallery: { _ in },
-                onOpenTab: { _, _ in },
-                onOpenSettings: {},
-                onOpenPhoto: { _ in }
+                culling: PreviewCullingAPI()
             )
         }
         .environment(\.languageStore, store)
@@ -300,12 +267,7 @@ enum PreviewFactory {
         return NavigationStack {
             ExportView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI(),
-                onBack: {},
-                onOpenSimilarity: { _ in },
-                onOpenTab: { _, _ in },
-                onOpenGallery: { _ in },
-                onOpenSettings: {}
+                culling: PreviewCullingAPI()
             )
         }
         .environment(\.languageStore, store)
@@ -318,13 +280,7 @@ enum PreviewFactory {
         return NavigationStack {
             DuplicatesView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI(),
-                onBack: {},
-                onOpenSimilarity: { _ in },
-                onOpenTab: { _, _ in },
-                onOpenGallery: { _ in },
-                onOpenSettings: {},
-                onOpenPhoto: { _ in }
+                culling: PreviewCullingAPI()
             )
         }
         .environment(\.languageStore, store)
@@ -354,35 +310,29 @@ enum PreviewFactory {
         return NavigationStack {
             SessionControlView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI(),
-                onBack: {},
-                onOpenSimilarity: { _ in },
-                onOpenTab: { _, _ in },
-                onOpenGallery: { _ in },
-                onOpenSettings: {}
+                culling: PreviewCullingAPI()
             )
         }
         .environment(\.languageStore, store)
         .frame(width: canvasSize.width, height: canvasSize.height)
     }
 
-    // MARK: - Shell / SessionTab / Root
+    // MARK: - Shell / SessionPage / Root
 
-    static func sessionTabPage() -> some View {
+    static func sessionPageHostView() -> some View {
         prepare()
         let store = languageStore()
         let workspace = workspace()
         return NavigationStack {
-            SessionTabHost(
-                tab: .control,
-                culling: PreviewCullingAPI(),
-                router: router(),
-                onOpenPhoto: { _ in }
+            SessionPageHost(
+                sessionId: PreviewData.sessionOneId,
+                page: .control,
+                culling: PreviewCullingAPI()
             )
             .environment(\.sessionWorkspace, workspace)
             .environment(\.languageStore, store)
             .navigationTitle(PreviewData.sessionOneName)
-            .navigationSubtitle("SessionTabHost · 控制中心")
+            .navigationSubtitle("SessionPageHost · 控制中心")
         }
         .environment(\.languageStore, store)
         .frame(width: canvasSize.width, height: canvasSize.height)

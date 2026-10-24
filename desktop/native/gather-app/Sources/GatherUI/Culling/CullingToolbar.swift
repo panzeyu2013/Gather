@@ -132,14 +132,12 @@ struct CullingToolbar: View {
 
     private var undoRedoButtons: some View {
         HStack(spacing: 4) {
-            // ⌘Z / ⇧⌘Z 由宿主菜单（gatherMenuUndo/Redo 通知）承载，这里只做可见入口。
+            // 菜单 undo:/redo: 走 NSUndoManager，而挑片撤销是自建栈；在完整
+            // focused-scope 落地前，按钮自己挂 ⌘Z/⇧⌘Z（挑片页无文本输入框）。
             Button { Task { await viewModel.undo() } } label: {
                 Image(systemName: "arrow.uturn.backward")
             }
             .labelStyle(.iconOnly)
-            // V2 审计：宿主菜单的 undo:/redo: 走 NSUndoManager，而挑片撤销是自建栈，
-            // 只认 gatherMenuUndo/Redo 通知——那两个通知全仓没有发布者，tooltip 承诺
-            // 的 ⌘Z/⇧⌘Z 从未生效。直接挂在可见按钮上（挑片页无文本输入框，不冲突）。
             .keyboardShortcut("z", modifiers: .command)
             .disabled(viewModel.undoOperation == nil || isBusy)
             .help(l10n("撤销（⌘Z）"))

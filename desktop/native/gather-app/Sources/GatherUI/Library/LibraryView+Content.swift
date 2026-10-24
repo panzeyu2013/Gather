@@ -54,17 +54,16 @@ extension LibraryView {
     /// 失败出口：系统空态 + 重试（不再只渲染一行红字）。
     /// 4a-3b-2a：错误以 `CommandError` 传入，文案在渲染期按当前语言解析。
     private func loadFailureState(_ error: CommandError) -> some View {
-        ContentUnavailableView {
-            Label(l10n("全局图库"), systemImage: "exclamationmark.triangle")
-        } description: {
-            Text(l10n.format("加载照片失败：%@", CommandErrorText.resolve(error, with: l10n)))
-        } actions: {
+        GatherEmptyState(
+            icon: "exclamationmark.triangle",
+            title: l10n("全局图库"),
+            message: l10n.format("加载照片失败：%@", CommandErrorText.resolve(error, with: l10n))
+        ) {
             Button(l10n("重试")) {
                 Task { await viewModel.load() }
             }
             .gatherPrimaryActionButton()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// 无结果态：系统 ContentUnavailableView + 「清除筛选」出口。
@@ -73,20 +72,17 @@ extension LibraryView {
         //「清除筛选」——用户面对死路。这里分两种语义：
         //   · 有筛选 → 清除筛选（可用）；
         //   · 无筛选 → 图库确实为空，给「导入文件夹」出口。
-        ContentUnavailableView {
-            Label(
-                viewModel.activeFilterCount == 0
-                    ? l10n("图库还没有照片")
-                    : l10n("没有符合条件的照片"),
-                systemImage: viewModel.activeFilterCount == 0
-                    ? "photo.on.rectangle.angled"
-                    : "magnifyingglass"
-            )
-        } description: {
-            Text(viewModel.activeFilterCount == 0
+        GatherEmptyState(
+            icon: viewModel.activeFilterCount == 0
+                ? "photo.on.rectangle.angled"
+                : "magnifyingglass",
+            title: viewModel.activeFilterCount == 0
+                ? l10n("图库还没有照片")
+                : l10n("没有符合条件的照片"),
+            message: viewModel.activeFilterCount == 0
                 ? l10n("导入一个文件夹后，这里会汇总所有工作区的照片。")
-                : l10n("调整或清除筛选条件以查看全部照片"))
-        } actions: {
+                : l10n("调整或清除筛选条件以查看全部照片")
+        ) {
             if viewModel.activeFilterCount == 0 {
                 Button(l10n("导入文件夹")) {
                     NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
@@ -98,7 +94,6 @@ extension LibraryView {
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var photoGrid: some View {

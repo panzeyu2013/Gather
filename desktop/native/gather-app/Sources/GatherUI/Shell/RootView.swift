@@ -13,7 +13,7 @@
 //   lastSessionId 由 SessionStore 唯一持有；
 // - 窗口标题读 SessionWorkspace.sessionName（异步 SessionAPI.get 缓存），
 //   删除每次导航同步 listSessions 查库；
-// - SessionTabHost / environment key / router 已迁 GatherUI/Shell；
+// - SessionPageHost / environment key / navigator 已迁 GatherUI/Interaction；
 // - 删除 isActive 常量、SessionDraftCache 与所有页面兼容 init。
 //
 // Cut 4 / 4a-3a：删除 @State languageVersion、languageChanged 自增写点与
@@ -24,7 +24,7 @@
 // - RootShellNavigation.swift  RootNavigation（原 27-224 行，逐字）；
 // - RootShellSidebar.swift     侧栏 + 选中语义 + lastSessionId 回退；
 // - RootShellToolbar.swift     工具栏 / 窗口标题缓存 / 尺寸预算 / 外壳文案；
-// - RootShellDetail.swift      详情区条件构建 + SessionTabHost/Router 装配；
+// - RootShellDetail.swift      详情区条件构建 + SessionPageHost 装配；
 // - RootShellOverlay.swift     6 个通知入口 + 导入/错误 Toast；
 // - RootShellWorkspace.swift   入口动作 / 意图失效 / workspace 生命周期。
 // 本文件只保留依赖、@State、init 与 modifier 接线；层级/顺序/动画/焦点不变。
@@ -42,6 +42,8 @@ package struct RootView: View {
     /// 外壳文案经 `l10n` 读它建立 Observation 依赖：切换语言只重渲染，不再
     /// 用 `.id(languageVersion)` 重建整棵 detail（那会丢页面选择/草稿）。
     let languageStore: LanguageStore
+    /// Phase 4：菜单/快捷键的唯一命令通道（由 SceneState 注入）。
+    let commandCenter: AppCommandCenter
 
     // 4c-2k：@State 留在壳内；拆出的 extension 需要读写，故 private → internal。
     @State var navigation: RootNavigation
@@ -63,13 +65,26 @@ package struct RootView: View {
         deps: RootShellDependencies,
         sessionStore: SessionStore,
         languageStore: LanguageStore,
+        commandCenter: AppCommandCenter,
         navigation: RootNavigation? = nil
     ) {
         self.deps = deps
         self.sessionStore = sessionStore
         self.languageStore = languageStore
+        self.commandCenter = commandCenter
         let navigation = navigation ?? RootNavigation()
+        #if DEBUG
+        Self.applyDebugPage(to: navigation)
+        #endif
         _navigation = State(initialValue: navigation)
+        // 入口意图的写入点：页面只调 navigator，navigator 把 intent 转给
+        // 对应 workspace；不把 SessionStore 塞进每个页面。
+        navigation.enqueueIntent = { [sessionStore] sessionId, intent in
+            sessionStore.workspace(for: sessionId).enqueue(intent)
+        }
+        navigation.clearIntent = { [sessionStore] sessionId, kind in
+            _ = sessionStore.workspace(for: sessionId).take(kind)
+        }
         // Cut 3 / 3b-3（E-17）：Dashboard 的 C1 桥显式注入（不再回退 shared）。
         let dashboardViewModel = DashboardViewModel(provider: deps.dashboardProvider)
         dashboardViewModel.captureOne = deps.captureOne
@@ -86,8 +101,8 @@ package struct RootView: View {
         _personsViewModel = State(initialValue: PersonsViewModel(person: deps.person))
         // 初始目的地本身可能是会话页（预览/测试直接注入 navigation）：
         // 先登记工作区，首帧即可从 environment 拿到 workspace。
-        // 生产从工作台起步，工作区由 .task(id: navigation.destination) 建立。
-        if let sessionId = Self.workspaceSessionId(for: navigation.destination) {
+        // 生产从工作台起步，工作区由 .task(id: navigation.route) 建立。
+        if let sessionId = Self.workspaceSessionId(for: navigation.route) {
             // activate 内部会 setVisible(true)（7 个 VM 扇出）；标题异步缓存。
             sessionStore.activate(sessionId)?.loadSessionNameIfNeeded(using: deps.session)
         }
@@ -96,7 +111,7 @@ package struct RootView: View {
     package var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
-                .navigationSplitViewColumnWidth(min: RootShellMetrics.sidebarMinWidth, ideal: 220, max: 260)
+                .navigationSplitViewColumnWidth(min: RootShellMetrics.sidebarMinWidth, ideal: RootShellMetrics.sidebarIdealWidth, max: RootShellMetrics.sidebarMaxWidth)
         } detail: {
             detail
                 // 4a-3b-2b：会话页/全局页从 environment 取语言源（不再读
@@ -110,8 +125,10 @@ package struct RootView: View {
                 .navigationTitle(windowTitle)
                 // 品牌 tint 只作用于内容区：侧栏保持系统中性色。
                 .tint(GatherTheme.accent)
+                // 页面从 environment 取路由能力，不再逐页注入导航闭包。
+                .environment(\.navigator, navigation)
         }
-        .frame(minWidth: RootShellMetrics.windowMinWidth, minHeight: 560)
+        .frame(minWidth: RootShellMetrics.windowMinWidth, minHeight: RootShellMetrics.windowMinHeight)
         // 4a-3a：删除 languageChanged 的本地自增写入点——语言状态由
         // LanguageStore 唯一持有/广播，外壳只读 languageStore.l10n。
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.menuToggleSidebar)) { _ in
@@ -142,15 +159,42 @@ package struct RootView: View {
         }
         .onAppear {
             // 初始目的地（含预览/测试直接注入的 navigation）也要登记工作区。
-            switchWorkspace(for: navigation.destination)
+            switchWorkspace(for: navigation.route)
+            installCommandHandlers()
+            #if DEBUG
+            if let appearance = DebugLaunchOptions.appearance {
+                let name: NSAppearance.Name
+                switch appearance {
+                case "dark": name = .darkAqua
+                case "high-contrast": name = .accessibilityHighContrastAqua
+                case "high-contrast-dark": name = .accessibilityHighContrastDarkAqua
+                default: name = .aqua
+                }
+                NSApp.appearance = NSAppearance(named: name)
+            }
+            if let width = DebugLaunchOptions.windowWidth,
+               let height = DebugLaunchOptions.windowHeight {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    guard let window = NSApp.mainWindow ?? NSApp.windows.first else { return }
+                    window.setContentSize(NSSize(width: width, height: height))
+                    window.center()
+                }
+            }
+            if DebugLaunchOptions.page == "settings" {
+                openSettings()
+            }
+            #endif
         }
-        .onChange(of: navigation.destination) { previous, destination in
+        .onChange(of: navigation.route) { previous, destination in
             handleDestinationChange(previous: previous, destination: destination)
+        }
+        .onDisappear {
+            commandCenter.clearHandlers()
         }
         // 目的地驱动的 workspace 生命周期：条件构建下页面每次进入都重建，
         // 但 7 个 VM 由 SessionStore 按下 sessionId 持有，跨导航保留（LRU 淘汰）。
-        .task(id: navigation.destination) {
-            switchWorkspace(for: navigation.destination)
+        .task(id: navigation.route) {
+            switchWorkspace(for: navigation.route)
         }
         // 侧栏最近工作区：工作台自己会 loadAll；从深链/图库/会话页启动时，
         // 由外壳补一次轻量会话列表，避免侧栏首帧为空。
@@ -160,3 +204,51 @@ package struct RootView: View {
         }
     }
 }
+
+extension RootView {
+    /// 菜单命令 -> 当前窗口动作。RootView 是唯一知道这些动作如何落地的地方。
+    func installCommandHandlers() {
+        let request = $newWorkspaceRequest
+        let visibility = $columnVisibility
+        commandCenter.onNewWorkspace = { [navigation] in
+            navigation.selectDashboard()
+            request.wrappedValue = NewWorkspaceRequest()
+        }
+        commandCenter.onImportFolder = {
+            NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
+        }
+        commandCenter.onCaptureOneImport = {
+            NotificationCenter.default.post(name: GatherAppNotification.captureOneImportRequest, object: nil)
+        }
+        commandCenter.onToggleSidebar = {
+            visibility.wrappedValue = visibility.wrappedValue == .detailOnly ? .all : .detailOnly
+        }
+        commandCenter.onOpenSettings = {
+            openSettings()
+        }
+    }
+}
+
+#if DEBUG
+private extension RootView {
+    static func applyDebugPage(to navigation: RootNavigation) {
+        if let sessionId = DebugLaunchOptions.sessionId {
+            if let raw = DebugLaunchOptions.page,
+               let page = SessionPage(rawValue: raw) {
+                navigation.open(page, in: sessionId)
+            } else {
+                navigation.openSession(sessionId)
+            }
+            return
+        }
+        switch DebugLaunchOptions.page {
+        case "library":
+            navigation.selectLibrary()
+        case "persons":
+            navigation.selectWeb(.persons)
+        default:
+            break
+        }
+    }
+}
+#endif
