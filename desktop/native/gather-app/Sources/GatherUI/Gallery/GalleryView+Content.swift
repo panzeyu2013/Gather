@@ -19,12 +19,30 @@ extension GalleryView {
                 .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                 .padding(.top, 12)
             }
+            searchRow
             indexHeaderRow
             if !viewModel.selectedIds.isEmpty {
                 selectionBar
             }
             content
         }
+    }
+
+    /// 内容区搜索：固定 320pt，留在网格内容列内；不放进 toolbar，
+    /// 避免 inspector 打开时输入框横跨内容列和右栏。
+    private var searchRow: some View {
+        HStack(spacing: 10) {
+            GatherSearchField(
+                text: $viewModel.search,
+                prompt: l10n("搜索文件名…"),
+                clearLabel: l10n("清除搜索")
+            )
+            .frame(minWidth: 180, maxWidth: 320)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
     }
 
     // MARK: - Lightbox 呈现

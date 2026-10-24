@@ -58,9 +58,6 @@ public struct AppServices: Sendable {
     /// B7a：人物库域（8 个方法 / 8 条命令）。B7b 才迁移 PersonsViewModel
     /// 与 LivePersonsDataProvider，暂不传给页面。
     public let person: any PersonAPI
-    /// B7a：工作流模板域（6 个方法 / 6 条命令）。当前 UI 0 调用（D-008），
-    /// B7b 视产品结论决定是否接页面，暂不传给页面。
-    public let template: any TemplateAPI
     /// Cut 1 / B8.3b-1：宿主运行时（与组合根共用同一 db/JobService/
     /// DeliveryCoordinator 的**唯一**实例）。GatherApp 用它驱动
     /// start()/shutdown()，CaptureOne reload ack 也经它落库；这里只暴露引用，
@@ -83,7 +80,6 @@ public struct AppServices: Sendable {
         export: any ExportAPI,
         metadata: any MetadataAPI,
         person: any PersonAPI,
-        template: any TemplateAPI,
         runtime: AppRuntime
     ) {
         self.session = session
@@ -101,15 +97,14 @@ public struct AppServices: Sendable {
         self.export = export
         self.metadata = metadata
         self.person = person
-        self.template = template
         self.runtime = runtime
     }
 
     /// 生产装配（B8.3b-2a 起的唯一入口）：全部 Live API 直接包装组合根构造的
-    /// 服务/Repo 实例（16 个工厂见 Composition/FeatureAPIs.swift）。
+    /// 服务/Repo 实例（15 个工厂见 Composition/FeatureAPIs.swift）。
     ///
     /// 本方法不构造业务服务、不打开数据库、不注册 executor：JobService、
-    /// SettingsService、PersonRepo、TemplateService、DeliveryRepo 等都是
+    /// SettingsService、PersonRepo、DeliveryRepo 等都是
     /// composition 里的同一份实例（AppRuntime 也来自 composition.runtime）。
     /// WP4c：装配流程委托 Composition/Root.swift（AppServicesRoot）。
     public static func live(composition: AppComposition) -> AppServices {
@@ -118,26 +113,18 @@ public struct AppServices: Sendable {
 }
 
 /// B2 Live API 的共享错误收敛：
-/// - DBError.message 若本身就是 GatherErrorCode（如 ASSET_RELINK_SAME_ROOT、
-///   ALBUM_NOT_FOUND、ASSET_LINK_CANDIDATE_NOT_FOUND），转成带 code 的 GatherError；
-/// - NavigationError.description 与错误码同名，按 rawValue 收敛；
-/// - 其余错误原样抛出（D-030：非域错误暂由 UI 通用文案兜底，不伪造业务码）。
+/// - 任何 CodedError（PersistenceError / NavigationError / 域枚举）直接取 code，
+///   不再按字符串反解 DBError.message；
+/// - 其余错误原样抛出（D-030：非域错误由 UI 通用文案兜底，不伪造业务码）。
 enum LiveAPIErrorMapping {
     static func map<T>(_ body: () throws -> T) throws -> T {
         do {
             return try body()
         } catch let error as GatherError {
             throw error
-        } catch let error as DBError {
-            if case .message(let message) = error, let code = GatherErrorCode(rawValue: message) {
-                throw GatherError(code: code, underlying: message)
-            }
-            throw error
-        } catch let error as NavigationError {
-            if let code = GatherErrorCode(rawValue: error.description) {
-                throw GatherError(code: code, underlying: error.description)
-            }
-            throw error
+        } catch let error as CodedError {
+            // P1-2 / R1：码即类型（PersistenceError / NavigationError / 域枚举）。
+            throw GatherError(code: error.code, underlying: String(describing: error))
         }
     }
 
@@ -148,14 +135,11 @@ enum LiveAPIErrorMapping {
         switch error {
         case let gather as GatherError:
             return gather
+        case let coded as CodedError:
+            return GatherError(code: coded.code, underlying: String(describing: coded))
         case let job as JobServiceError:
+            // allow: string-code（任务失败原因以文本落库 job.error 列，非类型化错误，R1 例外）
             if case .jobFailed(_, let message) = job,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
-            }
-            return nil
-        case let db as DBError:
-            if case .message(let message) = db,
                let code = GatherErrorCode(rawValue: message) {
                 return GatherError(code: code, underlying: message)
             }

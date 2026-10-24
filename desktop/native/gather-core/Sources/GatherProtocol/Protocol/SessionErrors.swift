@@ -18,6 +18,10 @@ public enum SessionServiceError: Error, Equatable, Sendable {
 }
 
 /// TS 错误码映射（rawValue 与 TS 错误消息字符串逐字一致，桥接层序列化用）。
+extension SessionServiceError: CodedError {
+    public var code: GatherErrorCode { gatherCode }
+}
+
 extension SessionServiceError {
     public var gatherCode: GatherErrorCode {
         switch self {

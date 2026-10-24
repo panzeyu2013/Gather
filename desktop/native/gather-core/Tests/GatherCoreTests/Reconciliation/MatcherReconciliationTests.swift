@@ -4,10 +4,9 @@
 // 逐 case 比对：
 //   - matched：personId 精确相等、confidence 容差 1e-4、条数一致；
 //   - unmatched 下标数组精确相等；
-//   - 路径选择（exact/lsh）与 fixture 标注一致（@testable debugUsedLsh）。
+//   - LSH 召回：对每个 case 逐查询与暴力精确最佳比对，召回 >= 0.95
+//     （benchmark 只打印候选/耗时，不测 FaceMatcher 实例级 LSH，召回门留在这里）。
 // 另附边界单元测试：空库、阈值边界（含等号）、零向量、维度不匹配。
-// LSH 召回率 >= 0.95 的质量门已移到 gather-core-benchmarks；默认套件用 exact
-// fixture 验证 matched/unmatched 与 LSH 路径选择。
 
 import Foundation
 import Testing
@@ -25,7 +24,6 @@ struct MatcherReconciliationTests {
 
         struct MatchCase: Decodable {
             let name: String
-            let path: String
             let lshMinPoints: Int
             let threshold: Double
             let library: [LibraryRow]
@@ -107,6 +105,59 @@ struct MatcherReconciliationTests {
             }
         }
         #expect(exact.unmatched == lsh.unmatched, "两路径 unmatched 不一致")
+    }
+
+    // LSH 召回门：LSH 只允许收缩候选集，但不得把真实最邻近的人丢掉。
+    @Test func lshRecallAgainstBruteForceMeetsBaseline() throws {
+        let fixture = try Self.loadFixture()
+        var expectedTotal = 0
+        var recalled = 0
+        var checkedCases = 0
+        for c in fixture.cases {
+            let matcher = Self.makeMatcher(c)
+            let result = try matcher.matchAgainstLibrary(c.queries, threshold: c.threshold)
+            for (queryIndex, query) in c.queries.enumerated() {
+                // 维度必须一致：FaceMatcher 对不符维度抛错，这里不能让 cosine
+                // 静默截断成「看起来一致」。
+                if let row = c.library.first, row.embedding.count != query.count {
+                    Issue.record("case \(c.name) query \(queryIndex): 维度 \(query.count) != 库维度 \(row.embedding.count)")
+                    continue
+                }
+                var best = -Double.infinity
+                var bestPerson: String?
+                for row in c.library {
+                    let score = Self.cosine(query, row.embedding)
+                    if score > best {
+                        best = score
+                        bestPerson = row.personId
+                    }
+                }
+                guard best >= c.threshold else { continue }
+                expectedTotal += 1
+                if result.matched[queryIndex]?.personId == bestPerson { recalled += 1 }
+            }
+            checkedCases += 1
+        }
+        #expect(checkedCases > 0, "fixture 不应为空")
+        #expect(expectedTotal > 0, "fixture 没有超过阈值的查询，召回率无意义")
+        let recall = Double(recalled) / Double(expectedTotal)
+        #expect(recall >= 0.95, "LSH 召回 \(recall) < 0.95（\(recalled)/\(expectedTotal)）")
+    }
+
+    /// 单位向量余弦，与 FaceMatcher 的精确重验同口径（零向量返回 0）。
+    private static func cosine(_ a: [Float], _ b: [Float]) -> Double {
+        var dot = 0.0
+        var normA = 0.0
+        var normB = 0.0
+        for index in 0..<min(a.count, b.count) {
+            let x = Double(a[index])
+            let y = Double(b[index])
+            dot += x * y
+            normA += x * x
+            normB += y * y
+        }
+        guard normA > 0, normB > 0 else { return 0 }
+        return dot / (normA.squareRoot() * normB.squareRoot())
     }
 
     // MARK: 边界单元测试

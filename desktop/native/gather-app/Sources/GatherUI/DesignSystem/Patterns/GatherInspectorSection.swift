@@ -29,7 +29,7 @@ package struct GatherInspectorSection<Content: View>: View {
     }
 
     package var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
             if let title {
                 if let systemImage {
                     Label(title, systemImage: systemImage)
@@ -41,7 +41,7 @@ package struct GatherInspectorSection<Content: View>: View {
             }
             if let subtitle {
                 Text(subtitle)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
             content

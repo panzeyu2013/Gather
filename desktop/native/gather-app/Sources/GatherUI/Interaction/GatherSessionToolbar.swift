@@ -68,21 +68,39 @@ struct GatherSessionToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            C1StatusCapsuleHost(
-                sessionId: sessionId,
-                culling: culling,
-                onOpenSettings: actions.onOpenSettings
-            )
-            if let refreshTitle, let onRefresh = actions.onRefresh {
-                Button {
-                    onRefresh()
-                } label: {
-                    Label(refreshTitle, systemImage: "arrow.clockwise")
+            // 状态 + 页面刷新是一个“同步簇”，但必须是两个可辨识的动作：
+            // 状态点进去是同步设置，刷新只重载当前页。macOS 26 会把相邻的
+            // toolbar item 合并成一枚玻璃胶囊；旧实现的「已同步」和刷新图标
+            // 都被 tint 成品牌色，看起来像一个奇怪的大按钮。这里显式收进
+            // 一个 HStack，用 1pt 分隔线分开两种语义，并压小刷新图标。
+            HStack(spacing: 0) {
+                C1StatusCapsuleHost(
+                    sessionId: sessionId,
+                    culling: culling,
+                    onOpenSettings: actions.onOpenSettings
+                )
+                if let refreshTitle, let onRefresh = actions.onRefresh {
+                    Rectangle()
+                        .fill(GatherTheme.hairline)
+                        .frame(width: 1, height: 12)
+                        .padding(.horizontal, 5)
+                        .accessibilityHidden(true)
+                    GatherToolbarRefreshButton(
+                        title: refreshTitle,
+                        help: refreshHelp ?? refreshTitle
+                    ) {
+                        onRefresh()
+                    }
+                    .disabled(refreshDisabled)
+                    .modifier(OptionalRefreshShortcut(enabled: refreshKeyboardShortcut))
                 }
-                .disabled(refreshDisabled)
-                .help(refreshHelp ?? refreshTitle)
-                .modifier(OptionalRefreshShortcut(enabled: refreshKeyboardShortcut))
             }
+            // 10pt 内容内边距：Liquid Glass 胶囊里的文字/图标不能贴住圆角。
+            .padding(.horizontal, 10)
+            // 关键：没有搜索字段的页面（控制中心/挑片/导出）工具栏会剩下整段
+            // 弹性空间；没有 fixedSize 时状态按钮被拉满，玻璃胶囊一路顶到窗口
+            // 边缘（右侧被裁掉）。锁成内容宽度，胶囊才是“一颗”，不是一条横条。
+            .fixedSize(horizontal: true, vertical: false)
         }
 
         if showsSettings {
@@ -98,6 +116,39 @@ struct GatherSessionToolbar: ToolbarContent {
                 .help(settingsHelp.isEmpty ? settingsTitle : settingsHelp)
             }
         }
+    }
+}
+
+/// 工具栏刷新：plain 按钮避免 macOS 26 把 borderless 图标染成品牌棕。
+/// 自己画 22pt 命中区和悬停底，尺寸与状态胶囊里的刷新位对齐。
+private struct GatherToolbarRefreshButton: View {
+    let title: String
+    let help: String
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(hovered ? Color.primary : Color.secondary)
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(hovered ? GatherTheme.selectionFill : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+                hovered = hovering
+            }
+        }
+        .help(help)
+        .accessibilityLabel(title)
     }
 }
 

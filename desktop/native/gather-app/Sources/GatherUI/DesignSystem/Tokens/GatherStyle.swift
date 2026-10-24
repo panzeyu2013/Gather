@@ -38,6 +38,8 @@ enum GatherMetrics {
     enum Space {
         static let xxs: CGFloat = 2
         static let xs: CGFloat = 4
+        /// 字段图标与文本、紧凑控件内部的通用间距（4 < 6 < 8）。
+        static let controlGap: CGFloat = 6
         static let s: CGFloat = 8
         static let m: CGFloat = 12
         static let l: CGFloat = 16

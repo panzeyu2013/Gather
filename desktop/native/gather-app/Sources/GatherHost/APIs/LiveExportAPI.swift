@@ -179,6 +179,7 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
     private static func translate(_ error: Error) -> Error {
         LiveAPIErrorMapping.translateDomain(error) { domainError in
             guard let export = domainError as? ExportServiceError else { return nil }
+            // allow: string-code（ExportServiceError 的 description 与码同源，R1 例外）
             if let code = GatherErrorCode(rawValue: export.description) {
                 return GatherError(code: code, underlying: export.description)
             }

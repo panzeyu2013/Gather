@@ -33,7 +33,7 @@ package final class AppBootstrap {
     package let languageStore: LanguageStore
 
     /// Phase 4：菜单/快捷键的唯一命令通道。RootView 在 onAppear 安装 handler，
-    /// `.commands` 与 AppKit 菜单兜底只调 `perform`，不再 post 通知。
+    /// `.commands` 只调 `perform`，不再 post 通知（也没有 AppKit 菜单兜底）。
     package let commandCenter: AppCommandCenter
 
     package init() {
@@ -148,11 +148,6 @@ package final class AppBootstrap {
         // Cut 3 / 3b-3（E-04）：注册页面解码端口（RAWDecoder 在 GatherAnalysis，
         // GatherUI 只能经 ImageDecoderPort 拿到；重复注册按后者生效）。
         ImageDecodingRegistry.install(RAWImageDecoder())
-        // 导入路径规则（C1 选片归一化 / 取名）同样经端口注入：真相源在
-        // GatherDomain/GatherPersistence，GatherUI 只认端口。
-        ImportPathRulesRegistry.install(HostImportPathRules())
-        // C1 会话同步状态：UI 只开关视图状态，聚合仍由领域层唯一实现。
-        CaptureOneSyncStateRulesRegistry.install(HostCaptureOneSyncStateRules())
         // Cut 2 / S5c-2b-3b-2b-3：生产唯一建库入口。Database.open 保证
         // user_version == SchemaV1.userVersion（1）：
         //   · 新库 → 建 SchemaV1（43 表，单事务）；

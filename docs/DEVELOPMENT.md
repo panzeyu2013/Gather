@@ -312,7 +312,7 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - `L10n`（`Support/L10n.swift:120`）：**key 即中文文案**；渲染期显式携带
   `language`（`L10n.Language.zhCN/en`），经 `Bundle.module` 的 `.lproj` 查表——
   `zh-Hans.lproj` 只有 9 个占位键，未命中自动回退 key（即中文）；`en.lproj`
-  （1,332 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
+  （1,336 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
   (language, key) 缓存查表结果，避免每帧重走 Bundle 查找。
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`
@@ -326,7 +326,10 @@ GatherApplication 服务（交付编排在 GatherDelivery）
   等错误对象（`RouterCommandError` 仅作为旧错误载体保留，不是命令面）；
   `L10n.jobErrorMessage` 只翻译错误码，非错误码回退通用文案（原始细节留给 tooltip）。
 - 语言持久化：设置页经 `SettingsAPI` 写 `settings.ui_language`（唯一真相源）；
-  `LanguageStore.set` 更新内存并广播，`GatherAppDelegate` 重建菜单。
+  `LanguageStore.set` 更新内存并广播 `languageChanged`。Phase 4 收口后菜单单轨
+  （只有 SwiftUI `.commands`），**标准菜单项语言跟随系统语言**，应用内切换只
+  重渲染窗口内容——不再有 `GatherAppDelegate` 重建菜单；`languageChanged` 的
+  生产消费方是 `LanguageStore`（跟随外部写入）与 `DashboardView`（日期格式化）。
 
 ### 新增文案规范
 
@@ -391,15 +394,16 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 
 **不要在日常提交里跑 `./desktop/native/build.sh`**：完整 `.app` 组装只在发布/打包
 （tag、`workflow_dispatch` 或明确的打包任务）执行；PR/日常测试只构建 test target。
-CI 的 `gather-app` job 也只跑测试，不再附带 bundle build。
+CI 的 `gather-app` job 单独 `swift build` 一次可执行（菜单/场景装配的编译回归），
+仍不附带 bundle build；`.app` 组装由 nightly 与 release job 覆盖。
 
 默认套件按三层组织：
 
 | 层 | 何时跑 | 内容 |
 |---|---|---|
 | Unit/Correctness | 每次 PR | 行为、边界、错误码、成员集合、不变量 |
-| Integration | 夜间/手动（`GATHER_MODEL_TESTS=1`、`GATHER_FACE_FIXTURE`） | CoreML/Vision/真实照片/ImageIO |
-| Quality/Benchmark | 夜间/发版 | F1/ARI/P/R、margin 曲线、LSH 召回、性能基线（`gather-core-benchmarks --quality/--margin/--smoke`） |
+| Integration | 夜间（`GATHER_MODEL_TESTS=1`）；真实照片用例仅手动（`GATHER_FACE_FIXTURE`，nightly 不设） | CoreML/Vision/真实照片/ImageIO |
+| Quality/Benchmark | 夜间/发版 | F1/ARI/P/R、margin 边界、LSH 召回、增量复用与性能基线（`gather-core-benchmarks --quality/--margin/--smoke/--incremental`）；**benchmark 内置阈值，超限即 exit 1**，nightly 直接吃退出码 |
 
 夜间命令示例：
 
@@ -408,6 +412,8 @@ swift build -c release --package-path desktop/native/gather-core
 desktop/native/gather-core/.build/release/gather-core-benchmarks --quality
 desktop/native/gather-core/.build/release/gather-core-benchmarks --margin
 desktop/native/gather-core/.build/release/gather-core-benchmarks --smoke
+desktop/native/gather-core/.build/release/gather-core-benchmarks --incremental
+./desktop/native/build.sh            # 未签名 bundle 组装（PR 不跑，夜间补）
 GATHER_MODEL_TESTS=1 swift test --package-path desktop/native/gather-core \
   --no-parallel --filter 'FaceIdentityArchitectureTests|FaceEmbeddingModelTests|FaceInferenceTests'
 GATHER_TEST_MATRIX_STEPS=200 swift test --package-path desktop/native/gather-core \
@@ -473,16 +479,23 @@ Cut 1 后字符串命令面已删除；当前机器判据（CI 的 boundary job 
 ./scripts/check-test-catalog.sh --self-test # 负例：缺元数据应 exit 1，补齐后 exit 0（非独立门禁）
 ./scripts/check-select-star.sh           # Sources 4 处 / Tests 白名单 1 处
 ./scripts/check-preview-surface.sh --strict  # 14 个 #Preview / 5 个 PreviewSupport 文件
+./scripts/check-coded-errors.sh          # 错误码类型化：Persistence 无裸码字符串；Host 反解须标 allow: string-code
+./scripts/check-backlog-evidence.sh      # cleanup-backlog 的 pending/deferred 段必须有证据标记
 ```
 
 门禁与扫描一律以当前工作树为准；未暂存的删除仍会被 `git ls-files` 列出，不能据此
 判断文件仍然存在。
 
+**backlog 状态规则**（R2）：`docs/cleanup-backlog.md` 里每个 `status: pending|deferred` 的
+CL 段必须写可复核的证据（`证据` / `未完成原因` / `实测` / `最终复核` / `验收偏差` 之一），
+否则 `check-backlog-evidence.sh` 失败；状态改 `done` 时同时写证据与验收口径。
+
 ## 类型化 API 契约（Cut 1 收口）
 
-Cut 1 已用 **16 个域协议 / 110 个方法**替代 118 条字符串命令：
+Cut 1 已用 **15 个域协议 / 104 个方法**替代 118 条字符串命令：
 Session、Culling、Export、Job、Duplicate、Face、Similarity、Photo、Album、Person、
-Metadata、Settings、Navigation、Asset、Quality、Template（`GatherProtocol/API/*API.swift`）。
+Metadata、Settings、Navigation、Asset、Quality（`GatherProtocol/API/*API.swift`；
+Template 域已于 2026-10-24 按 ADR-031 删除）。
 UI 经 `AppServices` 注入 `any XxxAPI`；`AppComposition` 构造唯一服务实例，
 `AppRuntime` 管理任务生命周期。旧 Router 的 118 条命令与
 `check-command-surface.sh` 已删除；逐条映射保留在
@@ -540,7 +553,7 @@ UI 经 `AppServices` 注入 `any XxxAPI`；`AppComposition` 构造唯一服务�
 - 推送走 `GatherEventCenter.shared.wire(jobService:)`（`Support/GatherEventCenter.swift`）：
   `jobs:progress` 逐帧（终态帧驱动整页刷新）、`culling:sync-status`（C1 队列
   状态转换）、`gather:notification`（错误码，UI 经 `errorText` 映射）、
-  `languageChanged`、`importCompleted`。
+  `languageChanged`（LanguageStore/Dashboard 订阅）、`importCompleted`。
 - 轮询兜底：Dashboard 活跃 2s/空闲 30s，控制中心 3s/15s，C1 胶囊 12s；事件与
   轮询双通道语义保留，事件丢失不致静默。
 

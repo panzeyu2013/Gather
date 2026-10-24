@@ -675,9 +675,14 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
     `FaceMarginDecisionTests` 的 1 条 margin=0/0.01 生产路径用例）：
     - 历史合成基线（已迁 benchmark；以下数字保留为决策依据）：生成器自检（分离度前提 ⇒
       划分=真值，**只证明指标实现正确，不是性能证据**）、低质量但方向正确（门槛代价是
-      "少成簇"而非"错聚"）、低质量桥接点（量化门槛造成的真实召回损失）；ARI 用
-      "列联表"与"配对计数"两种等价实现互证，并对手算小例断言精确值（4/9、−0.5）。
-    - 历史 margin 曲线（已迁 benchmark；单点生产路径仍由 `FaceMarginDecisionTests` 覆盖）：
+      "少成簇"而非"错聚"）、低质量桥接点（量化门槛造成的真实召回损失）。ARI 现有
+      唯一实现是配对计数（`adjustedRandIndex`），只对手算小例断言精确值（4/9、−0.5）；
+      历史上的"列联表/配对计数双实现互证"随 1,289 行统计套件删除而取消（2026-10-24）。
+      `--quality` 现已内置阈值（floor=0.5：fp=0、precision≥0.999、ARI≥0.70、noise≥0.15；
+      floor=0：ARI≥0.60、recall≥0.60、clusters≤8；两者都要求 unassigned=0），超限 exit 1。
+    - `--margin` 只对固定分数对（gap=0.0045）扫 margin 并断言边界语义（≤0.0045 accepted、
+      ≥0.0046 ambiguous），**不跑 `fkw.analyze` 生产落库**；单点生产路径仍由
+      `FaceMarginDecisionTests` 覆盖。以下 49 查询曲线是历史证据（当前不可复现）：
       **生产路径**（`fkw.analyze` → `face_clusters.matched_person_id`，49 查询 / 6 人库），
       不是测试内复刻判定；出货默认 0.01 时错绑 3→2、拦下 2 条歧义，且同覆盖率下精度
       0.9655→1.0000（不是靠"少绑定"冒充更准）。
@@ -720,3 +725,46 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
 生产默认使用固定来源、Apache-2.0 许可的 SFace CoreML FP32 模型，Vision 负责检测/关键点/采集质量。模型规格隔离人物向量空间。人工身份与拒绝记录存为模型无关的持久事实，观测、聚类和人物向量作为可重建投影。模型切换在准备成功后以事务发布，任何失败保留旧结果。相似度门槛采用本地素材对照的保守起点 0.65，既有自定义值不覆盖。
 
 [完整实施依据、对照数据和验证边界](archive/reviews/face-identity-replacement-2026-10-03.md)。
+
+## ADR-031：删除未接线的模板域（Template API / Service / Repo，2026-10-24）
+
+状态：已实施。沿用 ADR-028「未接线资产删除而非保留」的裁决口径。
+
+**决策**：删除 `TemplateAPI`（6 方法）、`LiveTemplateAPI`、`TemplateService`、
+`TemplateRepo`/`TemplateRepository`、`WorkflowTemplate*` DTO 与 `TemplateServiceTests`；
+`AppServices` 从 16 域降为 15 域（104 方法）。UI 侧原有 **0 调用**（仅 `CullingWorkbenchViewer`
+的 `.template` 元数据域文案，与 API 无关），保留它只增加每轮 API/测试/文档维护面。
+
+**不动的部分**：`templates` 表保留在 canonical DDL（schema 冻结纪律，43 表/373 列不变），
+表进入休眠；`GatherErrorCode.TEMPLATE_*` 码值保留（错误码是对外契约，删除需单独裁决）；
+本地化键若只服务模板错误，由后续 l10n 清理统一处理。
+
+**复活条件**：产品确认模板导出/应用工作流时，按 `docs/reviews/architecture-remediation-2026-10-24.md`
+的 R3-B 方案重建（含零引用测试与 UI 接线），不得只建类型不接线。
+
+## ADR-032：Delivery 与 Persistence 的依赖风格（R8，2026-10-24）
+
+状态：已实施。
+
+**决策**
+1. GatherDelivery 与 GatherPersistence **同属基础设施层**：编排器（DeliveryCoordinator /
+   WritebackService）可以持有具体 Repo——写方法与事务语义（SAVEPOINT、CAS、租约）
+   强耦合，抽通用 Store 只会得到 Repo 的影子接口。
+2. 但**只读协作者必须走窄端口**（接口隔离）：
+   `DeliveryMirrorWriter` → `DeliveryReadStore`（读一条）；
+   `WritebackService` → `PhotoReadStore`（会话投影）、`MetadataCacheStore`（三字段回写）。
+   见 `desktop/native/gather-core/Sources/GatherPersistence/Ports/NarrowStores.swift`。
+3. Application / UI 仍只能经 Persistence 的 `any XxxRepository` 端口访问数据；
+   Delivery 是唯一允许具体 Repo 的相邻层。
+4. **禁止**把 `DeliveryRepo` 的约 30 个方法整体复制成 "DeliveryStore"（god protocol）。
+   新增内部读取时先用 `Ports/NarrowStores.swift` 里已有的窄端口，否则按调用点新增
+   1–3 方法协议并在本 ADR 追加一行。**不要**用 Application 侧的 `PhotoRepository` /
+   `MetadataRepository` 替代这些窄端口：它们是宽接口（含写路径），会让只读协作者
+   重新获得写能力，与接口隔离目标相反。
+
+**理由**：P2-3 的原始发现是“依赖倒置只做了一半”；在测量了 Delivery 内实际用到的
+Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的收益低于维护成本，
+且会违反接口隔离；按调用点收窄（镜像只读、写回只读投影/三列）才是真实收益。
+
+**后果**：Delivery 内出现新的具体 Repo 读取时，评审要问“为什么不能落进某个窄端口”；
+新窄端口必须只含调用点实际使用的方法。

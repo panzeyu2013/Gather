@@ -29,15 +29,23 @@ jobs:
       - name: Build core benchmarks (release)
         run: swift build -c release --package-path desktop/native/gather-core
       - name: Quality baselines
-        # 质量指标从默认套件迁出：夜间输出 NDJSON，人工/后续基线脚本对比。
+        # 质量指标从默认套件迁出，但**不是**只打印：benchmark 内置阈值（precision/
+        # recall/ARI/fp/noise）超限会非零退出，这里直接把退出码交给 job。NDJSON 只
+        # 用于人工看趋势，绿灯以此步为准。
         run: |
-          set -o pipefail
+          set -euo pipefail
           desktop/native/gather-core/.build/release/gather-core-benchmarks --quality | grep '^{' | tee quality.ndjson
           desktop/native/gather-core/.build/release/gather-core-benchmarks --margin | grep '^{' | tee margin.ndjson
       - name: Performance smoke + LSH exact recall
+        # --smoke 的 lsh 档断言 selfRecall=1.0、exactPairs>=100、exactRecall@0.85 >= 0.45。
         run: |
-          set -o pipefail
+          set -euo pipefail
           desktop/native/gather-core/.build/release/gather-core-benchmarks --smoke | grep '^{' | tee smoke.ndjson
+      - name: Incremental reuse + duration gate
+        # 2 万张 + 新增 100 张：recomputed=1、reused>=1、新增全部进组、耗时 < 10s。
+        run: |
+          set -euo pipefail
+          desktop/native/gather-core/.build/release/gather-core-benchmarks --incremental | grep '^{' | tee incremental.ndjson
       - name: Model integration tests
         # 仅夜间跑 SFace/CoreML + Vision 真实推理；PR 默认套件不跑这些用例。
         env:
@@ -51,6 +59,10 @@ jobs:
         run: >-
           swift test --package-path desktop/native/gather-core --no-parallel
           --filter 'ClusterGraphIncrementalAssemblyTests|IncrementalClustererReconciliationTests'
+      - name: Unsigned bundle assembly
+        # PR 门禁只跑测试（不链接 GatherApp 可执行、不组装 .app）；打包/Info.plist/
+        # 资源/本地化 bundle 的回归在夜间补一次完整组装（未签名，不涉公证）。
+        run: ./desktop/native/build.sh
       - name: Upload metrics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -60,4 +72,5 @@ jobs:
             quality.ndjson
             margin.ndjson
             smoke.ndjson
+            incremental.ndjson
           retention-days: 30

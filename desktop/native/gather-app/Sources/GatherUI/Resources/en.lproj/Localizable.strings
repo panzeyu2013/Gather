@@ -455,6 +455,7 @@
 "最近 7 天" = "Last 7 Days";
 "最近 30 天" = "Last 30 Days";
 "清除筛选" = "Clear Filters";
+"清除搜索" = "Clear Search";
 "智能相册" = "Smart Album";
 "相册" = "Album";
 "新相册名称" = "New Album Name";
@@ -762,6 +763,7 @@
 
 /* incremental keys */
 "Gather 帮助" = "Gather Help";
+"显示主窗口" = "Show Main Window";
 "上一张" = "Previous";
 "下一张" = "Next";
 "前往分析" = "Go to Analysis";

@@ -111,6 +111,23 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    /// 单窗口 scene 的 Dock 重开路径：⌘W 之后点击 Dock 图标时把主窗口带回前台。
+    /// 只认 `GatherWindowID.main` 派生的窗口（SwiftUI Window scene 的标识形如
+    /// `main-AppWindow-1`），避免把同时打开的「设置」窗当前台；找不到主窗口时
+    /// 返回 true 交给 SwiftUI 自己的重开逻辑，不额外造窗口。应用内的显式入口
+    /// 是「显示主窗口」命令（openWindow(id: GatherWindowID.main)）。
+    public func applicationShouldHandleReopen(
+        _ sender: NSApplication, hasVisibleWindows flag: Bool
+    ) -> Bool {
+        guard !flag else { return true }
+        guard let main = sender.windows.first(where: {
+            $0.identifier?.rawValue.hasPrefix(GatherWindowID.main) == true
+        }) else { return true }
+        if main.isMiniaturized { main.deminiaturize(nil) }
+        main.makeKeyAndOrderFront(nil)
+        return true
+    }
+
     public func application(_ application: NSApplication, open urls: [URL]) {
         _ = application
         urls.forEach(handle)

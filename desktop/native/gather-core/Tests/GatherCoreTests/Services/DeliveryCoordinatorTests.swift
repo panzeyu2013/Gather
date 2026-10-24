@@ -158,7 +158,7 @@ private struct CoordinatorHarness {
 
     init(
         fingerprint: @escaping DeliveryFingerprintProvider = { _ in "fp-current" },
-        fileLock: XMPFileLock = .shared
+        fileLock: XMPFileLock = XMPFileLock()
     ) throws {
         let db = try makeCoordinatorV1DB()
         try coordinatorInsertSession(db, "s1")

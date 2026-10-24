@@ -77,8 +77,8 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| gather-core `swift test` | **1171 tests / 176 suites，exit 0**；3 条 fixture skip |
-| gather-app `swift test --no-parallel` | **641 tests / 72 suites，exit 0** |
+| gather-core `swift test` | **1171 tests / 176 suites，exit 0**；3 条 fixture skip（本节为收口提交 `62c312a2` 单树实测） |
+| gather-app `swift test --no-parallel` | **641 tests / 72 suites，exit 0**（合并 `test` 分支并复审修复后为 **646 / 73**；core 为 **1168 / 174**） |
 | app 连续压力复跑 | 20 次全绿（首轮 1 次失败为与 core 编译并行的负载偶发，未复现） |
 | `./desktop/native/build.sh` | exit 0；arm64、未签名（默认） |
 | 签名构建（Developer ID Application） | exit 0；`codesign --verify --deep --strict` 通过（hardened runtime） |

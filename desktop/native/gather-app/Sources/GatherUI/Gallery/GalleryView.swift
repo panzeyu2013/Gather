@@ -95,11 +95,7 @@ package struct GalleryView: View {
         .inspector(isPresented: $showInspector) {
             inspector
         }
-        .searchable(
-            text: $viewModel.search,
-            placement: .toolbar,
-            prompt: Text(l10n("搜索文件名…"))
-        )
+        // 搜索留在内容列：工具栏 search 在 inspector 打开时会横跨两栏。
         .onChange(of: viewModel.search) { _, _ in viewModel.searchChanged() }
         .task(id: viewModel.sessionId) {
             // Cut 4 / 4a-2c：入口意图取出即清（一次性事件，不跨进入重复套用）。

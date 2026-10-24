@@ -12,7 +12,26 @@ package enum AppCommand: String, CaseIterable, Sendable, Hashable {
     case importFolder
     case captureOneImport
     case toggleSidebar
-    case openSettings
+}
+
+// Phase 4 收口（复审修正）：菜单可执行性只有一个判据——handler 是否已安装。
+/// `installed` 是 AppCommandCenter 的可观察投影（权威来源）；focused-scope 的
+/// 集合只是同一事实在当前场景内的投影。这里取并集（fail-open）而不是
+/// 「focused 优先」：focused 快照落后于安装时不会把菜单永久置灰；代价是
+/// 窗口关闭后 focused 投影可能滞后而短暂显示可用，此时 `perform` 是安全
+/// no-op（handler 已清空）。反过来用交集（fail-closed）会让「快照落后」
+/// 变成菜单全灰且没有恢复路径，风险更高。
+/// （`.openSettings` 命令随菜单单轨删除：设置窗口由 macOS Settings scene 的
+/// 「设置…」菜单项直接打开，不再经命令中心。）
+package enum AppCommandAvailability {
+    package static func isEnabled(
+        _ command: AppCommand,
+        installed: Set<AppCommand>,
+        focused: Set<AppCommand>?
+    ) -> Bool {
+        if installed.contains(command) { return true }
+        return focused?.contains(command) ?? false
+    }
 }
 
 /// 命令中心：菜单与 RootView 之间唯一的动作通道。

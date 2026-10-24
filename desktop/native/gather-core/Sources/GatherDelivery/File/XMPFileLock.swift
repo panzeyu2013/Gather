@@ -15,6 +15,7 @@
 // 以同一路径调用 run(path:)（锁不可重入，会自锁）。当前唯一嵌套面
 // （writeGroupItems 内部不再取锁）已按此约束实现。
 
+import GatherProtocol
 import Foundation
 import GatherPersistence
 
@@ -28,12 +29,10 @@ import GatherPersistence
 /// ```
 ///
 /// 同一把锁实例必须由组合根注入 DeliveryCoordinator、WritebackService 与
-/// LiveMetadataAPI（生产：AppComposition 统一用 `.shared`；测试：显式构造同一
-/// 实例）。默认 `.shared` 只用于缺省组合；多实例场景仍应显式共享，否则退化为
-/// 无锁。
+/// LiveMetadataAPI（生产：组合根构造唯一实例；测试：显式构造同一实例）。
+/// R5 起不再提供 `.shared` 兜底——漏注入是**编译错误**（不会静默退化）；
+/// 真实残余风险是调用方各自 new 一个实例，类型层面无法约束，靠组合根/测试夹具保证。
 public actor XMPFileLock {
-    /// 缺省共享实例：未显式注入的 coordinator/WritebackService 仍能互斥。
-    public static let shared = XMPFileLock()
 
     /// 当前持有锁（含排队中已转交所有权）的归一化路径。
     private var active: Set<String> = []

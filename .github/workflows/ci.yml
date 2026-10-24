@@ -62,6 +62,10 @@ jobs:
         run: ./scripts/check-select-star.sh --strict
       - name: Protocol surface
         run: ./scripts/check-protocol-surface.sh --strict
+      - name: Coded errors
+        run: ./scripts/check-coded-errors.sh
+      - name: Backlog evidence
+        run: ./scripts/check-backlog-evidence.sh
 
   gather-core:
     name: gather-core tests
@@ -93,8 +97,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # 正常测试只构建 test target，不链接 GatherApp 可执行、不组装 .app bundle；
-      # GATHER_SDK_VERSION/linker flags 由 release job 的完整构建覆盖。
+      # 测试只构建 test target；下面单独构建 GatherApp 可执行（SwiftUI Commands
+      # 装配、Window scene 与 @Environment 取值只在可执行 target 里编译）。
+      # .app 组装与 GATHER_SDK_VERSION/linker flags 仍由 release/nightly 覆盖。
       - name: Cache SwiftPM
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -103,6 +108,9 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
           key: app-${{ runner.os }}-${{ hashFiles('desktop/native/gather-app/Package.swift') }}
           restore-keys: app-${{ runner.os }}-
+      - name: App executable build
+        # swift test 不链接 GatherApp 可执行 → 菜单/场景装配的编译回归只在这里拦。
+        run: swift build --package-path desktop/native/gather-app --explicit-target-dependency-import-check error
       - name: App tests
         # 串行执行的理由（P0-2）：app 用例共享 MainActor 状态层与进程级语言/通知槽，
         # 默认并行在调度满载时会拖穿等待窗口（历史 flake：ControlCenter/Gallery

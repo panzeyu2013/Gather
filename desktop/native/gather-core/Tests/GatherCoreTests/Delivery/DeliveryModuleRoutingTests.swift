@@ -184,7 +184,8 @@ struct DeliveryModuleAdapterTests {
     @Test func coordinatorFactoryProducesAdapterWithMatchingModule() throws {
         let coordinator = DeliveryCoordinator(
             connection: try DeliveryTestSupport.makeDB(),
-            files: DeliveryTestFilePort()
+            files: DeliveryTestFilePort(),
+            fileLock: XMPFileLock()
         )
         let adapter = coordinator.adapter(for: .similarity)
         #expect(adapter.module == .similarity)

@@ -12,6 +12,12 @@
 
 import Foundation
 
+/// 携带稳定错误码的错误（P1-2 / R1）：跨层边界只认码，不再靠字符串反解。
+/// 领域枚举可直接 conformance；CodedError 的实现必须返回**已登记**的 GatherErrorCode。
+public protocol CodedError: Error {
+    var code: GatherErrorCode { get }
+}
+
 public struct GatherError: Error, Sendable, Equatable {
     public let code: GatherErrorCode
     public let params: [String: String]
@@ -35,6 +41,8 @@ public struct GatherError: Error, Sendable, Equatable {
         }
     }
 }
+
+extension GatherError: CodedError {}
 
 public extension GatherError {
     /// 输入形状错误（缺字段、类型错、范围错、空数组等）。

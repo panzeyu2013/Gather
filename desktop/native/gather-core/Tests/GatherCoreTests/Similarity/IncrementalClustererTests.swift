@@ -375,11 +375,12 @@ struct IncrementalClustererReconciliationTests {
     }
 }
 
-// MARK: - 增量复用语义（性能门已迁到 benchmark）
+// MARK: - 增量复用语义（性能/复用门在 benchmark 的 --incremental 档）
 
 @Suite("IncrementalClusterer 增量复用语义")
 struct IncrementalClustererReuseTests {
-    /// 性能验收（2 万张新增 100 张 < 10s）由 gather-core-benchmarks 负责；
+    /// 性能验收（2 万张 + 新增 100 张 < 10s、recomputed=1/reused=49）由
+    /// `gather-core-benchmarks --incremental` 负责（nightly 跑，失败非零退出）；
     /// 单测只验证“未受影响的分量被复用、被触及的分量才重算”这一功能不变量。
     @Test("新增照片只重算被触及的分量，其余分量直接复用")
     func updateRecomputesOnlyTouchedComponents() throws {

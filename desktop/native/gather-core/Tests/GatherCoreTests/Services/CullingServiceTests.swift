@@ -239,6 +239,7 @@ private func makeHarness(history: Bool = true) throws -> CullingHarness {
         deliveryRepo: deliveryRepo,
         intentRepo: deliveryIntents,
         files: deliveryFiles,
+        fileLock: XMPFileLock(),
         fingerprint: { [deliveryFingerprint] _ in deliveryFingerprint.current },
         resolvePhotoPath: { _, delivery in delivery.photoPath }
     )
@@ -975,13 +976,13 @@ struct CullingHistoryTests {
         let secondId = try #require(second.historyOperationId!)
 
         // 非栈顶 undo → CULLING_UNDO_NOT_LATEST（TS 逐字）。
-        #expect(throws: DBError.message("CULLING_UNDO_NOT_LATEST")) {
+        #expect(throws: PersistenceError(code: .CULLING_UNDO_NOT_LATEST)) {
             try harness.historyRepo.setUndone(sessionId: "session", operationId: firstId, undone: true)
         }
         try harness.historyRepo.setUndone(sessionId: "session", operationId: secondId, undone: true)
         try harness.historyRepo.setUndone(sessionId: "session", operationId: firstId, undone: true)
         // 非栈顶 redo → CULLING_REDO_OUT_OF_ORDER（TS 逐字）。
-        #expect(throws: DBError.message("CULLING_REDO_OUT_OF_ORDER")) {
+        #expect(throws: PersistenceError(code: .CULLING_REDO_OUT_OF_ORDER)) {
             try harness.historyRepo.setUndone(sessionId: "session", operationId: secondId, undone: false)
         }
         try harness.historyRepo.setUndone(sessionId: "session", operationId: firstId, undone: false)
@@ -2076,7 +2077,7 @@ struct CullingHistoryStackRuleTests {
         #expect(tops.redoId == ids[1]) // MIN(已撤销)
 
         // 跳序重做（选 MAX(已撤销) = 旧 UI 的 first(where: undone)）必须被拒。
-        #expect(throws: DBError.self) {
+        #expect(throws: PersistenceError(code: .CULLING_REDO_OUT_OF_ORDER)) {
             try harness.historyRepo.setUndone(sessionId: "session", operationId: ids[2], undone: false)
         }
         _ = try harness.service.applyHistory(

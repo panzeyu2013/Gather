@@ -11,8 +11,10 @@ public enum GatherAppNotification {
     /// 选择器，与「文件 ▸ 导入文件夹…」(⌘O) 走同一条流程。
     public static let importFolderRequest = Notification.Name("gather.menu.import-folder-request")
     public static let captureOneError = Notification.Name("gather.capture-one.error")
-    /// 设置页语言切换后广播（settings.set_language 命令处理器发出），
-    /// AppDelegate 收到后按新语言重建菜单兜底项（对齐旧版 setAppLocale 即时 rebuild）。
+    /// 设置页语言切换后广播（LanguageStore.set 发出）。Phase 4 收口后菜单单轨：
+    /// SwiftUI 标准菜单项由系统本地化，不再有 AppDelegate 重建菜单的订阅方。
+    /// 现有生产消费方：LanguageStore（跟随外部写入，收敛旧写路径）与
+    /// DashboardView（日期格式化跟随 ui_language）。
     public static let languageChanged = Notification.Name("gather.menu.language-changed")
     /// 导入成功后由 GatherApp.importFiles 统一 post（菜单/C1/deep-link 共用），
     /// RootView 订阅后导航到新工作区并 Toast 失败计数。

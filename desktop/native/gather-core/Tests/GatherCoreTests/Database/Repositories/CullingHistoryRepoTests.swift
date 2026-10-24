@@ -67,7 +67,9 @@ struct CullingHistoryRepoTests {
         let op1 = try repo.append(sessionId: "s1", entries: [entry()])
         let op2 = try repo.append(sessionId: "s1", entries: [entry(photoId: "p2")])
 
-        #expect(throws: DBError.self) { try repo.setUndone(sessionId: "s1", operationId: op1.id, undone: true) }
+        #expect(throws: PersistenceError(code: .CULLING_UNDO_NOT_LATEST)) {
+            try repo.setUndone(sessionId: "s1", operationId: op1.id, undone: true)
+        }
         try repo.setUndone(sessionId: "s1", operationId: op2.id, undone: true)
         #expect(try repo.get(sessionId: "s1", operationId: op2.id)?.undone == true)
 
@@ -75,18 +77,26 @@ struct CullingHistoryRepoTests {
         try repo.setUndone(sessionId: "s1", operationId: op2.id, undone: false)
         #expect(try repo.get(sessionId: "s1", operationId: op2.id)?.undone == false)
         // op1 从未 undone → 不在边界上，redo 报错
-        #expect(throws: DBError.self) { try repo.setUndone(sessionId: "s1", operationId: op1.id, undone: false) }
+        #expect(throws: PersistenceError(code: .CULLING_REDO_OUT_OF_ORDER)) {
+            try repo.setUndone(sessionId: "s1", operationId: op1.id, undone: false)
+        }
     }
 
     @Test func setUndoneStaleOrMissing() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
-        #expect(throws: DBError.self) { try repo.setUndone(sessionId: "s1", operationId: 999, undone: true) }
+        #expect(throws: PersistenceError(code: .CULLING_UNDO_NOT_LATEST)) {
+            try repo.setUndone(sessionId: "s1", operationId: 999, undone: true)
+        }
         let op = try repo.append(sessionId: "s1", entries: [entry()])
         // 用 SQL 篡改边界外的行：id 存在但不是 boundary（应报 STALE，因 update 影响 0 行）
         _ = try db.prepare("UPDATE culling_history SET undone = 1 WHERE id = ?").run([.int(Int64(op.id))])
-        #expect(throws: DBError.self) { try repo.setUndone(sessionId: "s1", operationId: op.id, undone: true) }
+        // 篡改后先撞边界守卫（UNDO_NOT_LATEST）；STALE 是并发下 update 影响 0 行的兜底，
+        // 同步测试无法稳定构造，码值由 CullingHistoryRepo 的防御分支保留。
+        #expect(throws: PersistenceError(code: .CULLING_UNDO_NOT_LATEST)) {
+            try repo.setUndone(sessionId: "s1", operationId: op.id, undone: true)
+        }
     }
 
     @Test func getUnknownReturnsNil() throws {
@@ -105,7 +115,9 @@ struct CullingHistoryRepoTests {
             VALUES ('s1', '{not-json', 0, '2026-01-01T00:00:00.000Z')
         """).run()
 
-        #expect(throws: DBError.self) { try repo.get(sessionId: "s1", operationId: 2) }
+        #expect(throws: PersistenceError(code: .CULLING_HISTORY_CORRUPT)) {
+            try repo.get(sessionId: "s1", operationId: 2)
+        }
         let list = try repo.list(sessionId: "s1")
         #expect(list.count == 1, "损坏行在 list 中被跳过")
     }

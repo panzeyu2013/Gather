@@ -229,7 +229,9 @@ struct AssetRepoTests {
         let photoAssets = try db.prepare("SELECT DISTINCT asset_id FROM photos").query()
         #expect(photoAssets.count == 1)
 
-        #expect(throws: DBError.self) { try repo.acceptCandidate("missing") }
+        #expect(throws: PersistenceError(code: .ASSET_LINK_CANDIDATE_NOT_FOUND)) {
+            try repo.acceptCandidate("missing")
+        }
     }
 
     @Test func rejectCandidateMarksRejected() throws {
@@ -245,7 +247,9 @@ struct AssetRepoTests {
         try repo.rejectCandidate(candidate.id)
         #expect(try repo.listCandidates(sessionId: "s1")[0].status == .rejected)
         #expect(try rowCount(db, "SELECT COUNT(*) FROM assets") == 2, "拒绝未接受的候选不拆分资产")
-        #expect(throws: DBError.self) { try repo.rejectCandidate("missing") }
+        #expect(throws: PersistenceError(code: .ASSET_LINK_CANDIDATE_NOT_FOUND)) {
+            try repo.rejectCandidate("missing")
+        }
     }
 
     @Test func rejectAcceptedCandidateSplitsAsset() throws {
@@ -445,13 +449,13 @@ struct AssetRepoTests {
               """).run([.text(path), .text(photo), .text(now), .text(now)])
         }
 
-        var message = ""
+        var code: GatherErrorCode?
         do {
             _ = try repo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
-        } catch let DBError.message(value) {
-            message = value
+        } catch let error as PersistenceError {
+            code = error.code
         }
-        #expect(message == "ASSET_RELINK_OUTBOX_CONFLICT")
+        #expect(code == .ASSET_RELINK_OUTBOX_CONFLICT)
         #expect(try db.prepare("SELECT COUNT(*) FROM deliveries WHERE xmp_path = ?").get([.text(oldXmp)])?[0].intValue == 1, "事务回滚后旧行仍在")
         #expect(try db.prepare("SELECT COUNT(*) FROM deliveries WHERE xmp_path = ?").get([.text(newXmp)])?[0].intValue == 1)
     }
@@ -476,13 +480,13 @@ struct AssetRepoTests {
             VALUES (?, ?, 'writing', 1, ?, ?)
           """).run([.text(TSPath.xmpSidecarPath(oldPath)), .text(oldPath), .text(now), .text(now)])
 
-        var message = ""
+        var code: GatherErrorCode?
         do {
             _ = try repo.relinkRoot(oldRoot: oldRoot, newRoot: newRoot)
-        } catch let DBError.message(value) {
-            message = value
+        } catch let error as PersistenceError {
+            code = error.code
         }
-        #expect(message == "ASSET_RELINK_XMP_BUSY")
+        #expect(code == .ASSET_RELINK_XMP_BUSY)
     }
 
     @Test func relinkMovedFileByChecksum() throws {

@@ -5,6 +5,7 @@
 // SQLCipher 二进制 target，Linux SwiftPM 无法解析，故改用 `import CSQLite` 自包装，
 // 保持零外部依赖，API 语义对齐 better-sqlite3（TS 侧 db/database.ts 的对应物）。
 import Foundation
+import os
 import CSQLite
 import GatherProtocol
 
@@ -185,14 +186,51 @@ public final class DBConnection: @unchecked Sendable {
     private var connectionGeneration: Int64 = 0
     private let reopenPath: String?
 
+    /// 连接用途（R6）：readOnly 供只读池；默认读写。
+    public enum Mode: Sendable {
+        case readWrite
+        case readOnly
+    }
+
+    private let mode: Mode
+    /// 只读连接池大小（0 = 关闭；仅 readWrite + 文件库生效，":memory:" 永远不建池）。
+    private let readPoolSize: Int
+    /// 只在只读池连接上生效的 PRAGMA（继承 Database.Options，避免读路径行为分叉）。
+    private let poolBusyTimeoutMilliseconds: Int
+    private let poolCacheSizeMB: Int
+    /// 事务深度键按**连接实例**隔离：同线程多连接时不会把对方事务误判为嵌套。
+    private let transactionDepthKey: String
+
+    private struct ReadPoolState: Sendable {
+        var pool: ReadConnectionPool?
+        var unavailable = false
+    }
+
+    /// 只读池状态（R6）：独立小锁，避免每个 SELECT 去抢写连接的 connectionLock。
+    private let readPoolState = OSAllocatedUnfairLock(initialState: ReadPoolState())
+
     /// 文件库的真实路径；内存库为 nil。跨进程 replay claim 用它做作用域。
     public var storagePath: String? {
         reopenPath == ":memory:" ? nil : reopenPath
     }
 
     /// path 为 ":memory:" 时使用内存库（测试用）。
-    public init(path: String) throws {
+    /// mode 为 .readOnly 时用于只读池连接（SQLITE_OPEN_READONLY + query_only）。
+    /// readPoolSize 为读写连接可附带的只读池大小（0 = 单连接旧行为）。
+    /// busyTimeoutMilliseconds/cacheSizeMB 只作用于池内只读连接（写连接由 Database.Options 单独应用）。
+    public init(
+        path: String,
+        mode: Mode = .readWrite,
+        readPoolSize: Int = 0,
+        busyTimeoutMilliseconds: Int = 5000,
+        cacheSizeMB: Int = 8
+    ) throws {
         reopenPath = path
+        self.mode = mode
+        self.readPoolSize = max(0, readPoolSize)
+        self.poolBusyTimeoutMilliseconds = max(0, busyTimeoutMilliseconds)
+        self.poolCacheSizeMB = max(1, min(1024, cacheSizeMB))
+        self.transactionDepthKey = "com.gather.database.transactionDepth.\(UUID().uuidString)"
         try open()
     }
 
@@ -211,23 +249,42 @@ public final class DBConnection: @unchecked Sendable {
     private func open() throws {
         let path = reopenPath ?? ":memory:"
         var db: OpaquePointer?
-        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+        let flags: Int32
+        switch mode {
+        case .readWrite:
+            flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+        case .readOnly:
+            flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        }
         let rc = sqlite3_open_v2(path, &db, flags, nil)
         guard rc == SQLITE_OK, let db else {
             throw DBError.message("无法打开数据库 \(path): \(String(cString: sqlite3_errstr(rc)))")
         }
         handle = db
         connectionGeneration &+= 1
-        try exec("PRAGMA journal_mode = WAL;")
+        readPoolState.withLock { $0 = ReadPoolState() }
+        if mode == .readWrite {
+            try exec("PRAGMA journal_mode = WAL;")
+        }
         try exec("PRAGMA foreign_keys = ON;")
-        // 审计 P1-1：多线程共用单连接（JobService worker/协调器/主线程 UI），
-        // 无 busy_timeout 时并发写立即 SQLITE_BUSY 冒泡到 UI。5s 等待让
-        // 短暂写锁竞争（WAL 单写者）退化为排队而非报错。
-        try exec("PRAGMA busy_timeout = 5000;")
-        // F-5（性能审计的移植遗漏）：SettingsService 定义了 db_synchronous /
-        // db_cache_size_mb 并暴露在设置 UI，但全仓无消费者——用户改了不生效。
-        // 这里在打开连接时读取设置并落成 PRAGMA（缺省 normal / 64MB，与 TS 一致）。
-        applyPerformancePragmas()
+        if mode == .readOnly {
+            // R6 批 2：池读连接继承 Database.Options 的 busy/cache 预算（只跳过
+            // synchronous 与 journal_mode，二者在只读连接上无意义/会被拒绝）。
+            try exec("PRAGMA busy_timeout = \(poolBusyTimeoutMilliseconds);")
+            try exec("PRAGMA cache_size = -\(poolCacheSizeMB * 1024);")
+            try exec("PRAGMA temp_store = MEMORY;")
+            // 池连接只读；任何写语句都会显式失败而不是悄悄改库。
+            try exec("PRAGMA query_only = ON;")
+        } else {
+            // 审计 P1-1：多线程共用单连接（JobService worker/协调器/主线程 UI），
+            // 无 busy_timeout 时并发写立即 SQLITE_BUSY 冒泡到 UI。5s 等待让
+            // 短暂写锁竞争（WAL 单写者）退化为排队而非报错。
+            try exec("PRAGMA busy_timeout = 5000;")
+            // F-5（性能审计的移植遗漏）：SettingsService 定义了 db_synchronous /
+            // db_cache_size_mb 并暴露在设置 UI，但全仓无消费者——用户改了不生效。
+            // 这里在打开连接时读取设置并落成 PRAGMA（缺省 normal / 64MB，与 TS 一致）。
+            applyPerformancePragmas()
+        }
     }
 
     /// 性能相关 PRAGMA（F-5）。open() 与 settingsProvider 注入后各调用一次：
@@ -273,6 +330,15 @@ public final class DBConnection: @unchecked Sendable {
     }
 
     public func close() {
+        // R6：先关只读池（每条连接自带锁，不会与写连接锁形成环）。
+        let pool = readPoolState.withLock { state -> ReadConnectionPool? in
+            let current = state.pool
+            state.pool = nil
+            // 关闭后不再重建池：prepare 落到 makeStatement，由句柄为空稳定报错。
+            state.unavailable = true
+            return current
+        }
+        pool?.close()
         // 问题 4（第三轮审查）：close 原先不取连接锁 —— 与 SQL 执行并发时会出现
         // 「句柄已释放但语句还在用」的窗口。这里纳入同一把锁（重入安全）。
         withConnectionLock {
@@ -327,7 +393,28 @@ public final class DBConnection: @unchecked Sendable {
         }
     }
 
+    /// 预编译语句。
+    ///
+    /// R6：**无事务**的 SELECT 从只读池借连接执行（不参与写连接锁）；
+    /// 事务内/写语句/PRAGMA/WITH 仍走本连接，语义与旧实现完全一致。
     public func prepare(_ sql: String) throws -> DBStatement {
+        let depth = threadTransactionDepth
+        if depth == 0, mode == .readWrite, Self.isReadOnlyQuery(sql),
+           let pool = ensureReadPool(), let reader = pool.acquire() {
+            do {
+                return try reader.makeStatement(sql) { [weak pool] in
+                    pool?.release(reader)
+                }
+            } catch {
+                pool.release(reader)
+                throw error
+            }
+        }
+        return try makeStatement(sql, pooledReturn: nil)
+    }
+
+    /// 语句工厂（本连接）：池化语句在 deinit 时归还连接。
+    private func makeStatement(_ sql: String, pooledReturn: (() -> Void)?) throws -> DBStatement {
         try withConnectionLock {
             guard let handle else { throw DBError.message("数据库已关闭") }
             var stmt: OpaquePointer?
@@ -335,7 +422,52 @@ public final class DBConnection: @unchecked Sendable {
             guard rc == SQLITE_OK, let stmt else {
                 throw DBError.message("SQL 编译失败: \(String(cString: sqlite3_errmsg(handle)))")
             }
-            return DBStatement(handle: stmt, owner: self, generation: connectionGeneration)
+            return DBStatement(
+                handle: stmt, owner: self, generation: connectionGeneration,
+                pooledReturn: pooledReturn
+            )
+        }
+    }
+
+    /// 只读语句判定（保守）：仅 trim 后以 SELECT 开头；WITH/RETURNING/PRAGMA 不路由。
+    static func isReadOnlyQuery(_ sql: String) -> Bool {
+        var slice = Substring(sql)
+        while let first = slice.first,
+              first == " " || first == "\n" || first == "\t" || first == "\r" {
+            slice = slice.dropFirst()
+        }
+        let lowered = slice.lowercased()
+        guard lowered.hasPrefix("select") else { return false }
+        let rest = lowered.dropFirst(6)
+        guard let next = rest.first else { return true }
+        return next == " " || next == "\n" || next == "\t" || next == "\r" || next == "("
+    }
+
+    /// 懒建只读池：首次 SELECT 时创建（此时 schema 已就绪）；失败后退化为单连接。
+    ///
+    /// R6：状态用独立小锁（readPoolState），**不取写连接锁**——否则长事务期间
+    /// 每个 SELECT 仍会在建池检查处排队，读池失去意义。
+    private func ensureReadPool() -> ReadConnectionPool? {
+        guard readPoolSize > 0, mode == .readWrite,
+              let path = reopenPath, path != ":memory:" else { return nil }
+        if let pool = readPoolState.withLock({ $0.pool }) { return pool }
+        return readPoolState.withLock { state -> ReadConnectionPool? in
+            if let pool = state.pool { return pool }
+            guard !state.unavailable else { return nil }
+            do {
+                let pool = try ReadConnectionPool(
+                    path: path,
+                    size: readPoolSize,
+                    busyTimeoutMilliseconds: poolBusyTimeoutMilliseconds,
+                    cacheSizeMB: poolCacheSizeMB
+                )
+                state.pool = pool
+                return pool
+            } catch {
+                state.unavailable = true
+                GatherLogger.log("只读连接池创建失败，退化为单连接：\(error)", level: .warn)
+                return nil
+            }
         }
     }
 
@@ -353,49 +485,112 @@ public final class DBConnection: @unchecked Sendable {
     public func commit() throws { try exec("COMMIT") }
     public func rollback() throws { try exec("ROLLBACK") }
 
-    /// 嵌套事务计数：嵌套调用退化为 SAVEPOINT（better-sqlite3 语义——
-    /// TS 的 db.transaction 可嵌套，session.service 的 addPhotos/deleteSessions
-    /// 依赖 savepoint 原子性；SQLite 裸 BEGIN 嵌套会直接报错）。
-    /// 事务全程持连接级锁（withConnectionLock）保证同一连接上事务严格串行。
-    private var transactionDepth = 0
+    /// 嵌套事务计数改为线程局部（R6）：同一线程的嵌套仍退化为 SAVEPOINT
+    /// （better-sqlite3 语义），但其它线程看不到该深度，可从只读池读；
+    /// 事务本身仍持连接级锁（同一连接上的事务严格串行）。
+    ///
+    /// R6 批 2：键必须带**连接身份**（transactionDepthKey）。否则同线程上第二个
+    /// DBConnection 会把对方事务误判为嵌套，只发 SAVEPOINT 而丢掉 BEGIN IMMEDIATE。
+    private var threadTransactionDepth: Int {
+        get { (Thread.current.threadDictionary[transactionDepthKey] as? Int) ?? 0 }
+        set { Thread.current.threadDictionary[transactionDepthKey] = newValue }
+    }
 
     /// 默认 deferred（TransactionRunner 端口要求的就是这个签名）。
-    public func transaction<T>(_ body: () throws -> T) throws -> T {
-        try transaction(.deferred, body)
+    public func transaction<T>(
+        _ body: () throws -> T,
+        file: String = #fileID,
+        line: Int = #line,
+        function: String = #function
+    ) throws -> T {
+        try transaction(.deferred, body, file: file, line: line, function: function)
+    }
+
+    /// R6-a：慢事务诊断阈值（毫秒；0 = 关闭）。
+    /// 开启优先级：静态阈值 > 环境变量 GATHER_SLOW_TX_MS（生产诊断入口）。
+    /// **不读 SettingsService**：阈值检查发生在每个最外层事务的收尾路径上，
+    /// 走 settingsProvider 会变成每次事务一次设置查询；需要动态开关时用环境变量
+    /// 或显式设置静态阈值。只影响日志，不改变事务语义。
+    nonisolated(unsafe) public static var slowTransactionThresholdMilliseconds: Int = 0
+
+    /// 环境变量只读一次（避免每次最外层事务都复制整个 environment 字典）。
+    private static let environmentSlowThreshold: Int =
+        Int(ProcessInfo.processInfo.environment["GATHER_SLOW_TX_MS"] ?? "") ?? 0
+
+    private func slowThreshold() -> Int {
+        if Self.slowTransactionThresholdMilliseconds > 0 {
+            return Self.slowTransactionThresholdMilliseconds
+        }
+        return max(0, Self.environmentSlowThreshold)
+    }
+
+    private func logIfSlow(
+        queuedAt: Date,
+        startedAt: Date,
+        file: String,
+        line: Int,
+        function: String
+    ) {
+        let threshold = slowThreshold()
+        guard threshold > 0 else { return }
+        let queueMs = Int(startedAt.timeIntervalSince(queuedAt) * 1000)
+        let execMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        guard execMs + queueMs >= threshold else { return }
+        GatherLogger.log(
+            "slow transaction: exec=\(execMs)ms queue=\(queueMs)ms threshold=\(threshold)ms "
+                + "at \(file):\(line) \(function)",
+            level: .warn)
     }
 
     /// 显式指定最外层开启模式；嵌套调用仍退化为 SAVEPOINT。
-    public func transaction<T>(_ mode: TransactionMode, _ body: () throws -> T) throws -> T {
-        try withConnectionLock {
-            transactionDepth += 1
-            let isNested = transactionDepth > 1
-            do {
-                if isNested {
-                    try exec("SAVEPOINT gather_tx_\(transactionDepth)")
-                } else {
-                    try exec("BEGIN \(mode.rawValue)")
-                }
-            } catch {
-                transactionDepth -= 1
-                throw error
+    ///
+    /// R6：深度改为**线程局部**——事务期间其它线程的 SELECT 可走只读池，
+    /// 不再被写连接的锁串行化；事务线程内部的语句仍走写连接（读己写）。
+    public func transaction<T>(
+        _ mode: TransactionMode,
+        _ body: () throws -> T,
+        file: String = #fileID,
+        line: Int = #line,
+        function: String = #function
+    ) throws -> T {
+        // R6-a：queuedAt 用于区分「锁排队」与「事务执行」，避免并发写被误报为慢事务。
+        let queuedAt = Date()
+        var startedAt = queuedAt
+        var appliedDepth = 0
+        defer {
+            if appliedDepth == 1 {
+                logIfSlow(
+                    queuedAt: queuedAt, startedAt: startedAt,
+                    file: file, line: line, function: function)
+            }
+        }
+        return try withConnectionLock {
+            startedAt = Date()
+            let depth = threadTransactionDepth + 1
+            appliedDepth = depth
+            threadTransactionDepth = depth
+            defer { threadTransactionDepth = depth - 1 }
+            let isNested = depth > 1
+            if isNested {
+                try exec("SAVEPOINT gather_tx_\(depth)")
+            } else {
+                try exec("BEGIN \(mode.rawValue)")
             }
             do {
                 let result = try body()
                 if isNested {
-                    try exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
+                    try exec("RELEASE SAVEPOINT gather_tx_\(depth)")
                 } else {
                     try commit()
                 }
-                transactionDepth -= 1
                 return result
             } catch {
                 if isNested {
-                    _ = try? exec("ROLLBACK TO SAVEPOINT gather_tx_\(transactionDepth)")
-                    _ = try? exec("RELEASE SAVEPOINT gather_tx_\(transactionDepth)")
+                    _ = try? exec("ROLLBACK TO SAVEPOINT gather_tx_\(depth)")
+                    _ = try? exec("RELEASE SAVEPOINT gather_tx_\(depth)")
                 } else {
                     _ = try? rollback()
                 }
-                transactionDepth -= 1
                 throw error
             }
         }
@@ -408,14 +603,26 @@ public final class DBStatement {
     private let owner: DBConnection
     /// 创建该语句时的连接代数（D6）。reopen/close 之后与 owner 的当前代数不符即失效。
     private let generation: Int64
+    /// R6：只读池语句在释放时归还连接（非池化语句为 nil）。
+    private let pooledReturn: (() -> Void)?
 
-    fileprivate init(handle: OpaquePointer, owner: DBConnection, generation: Int64) {
+    fileprivate init(
+        handle: OpaquePointer,
+        owner: DBConnection,
+        generation: Int64,
+        pooledReturn: (() -> Void)? = nil
+    ) {
         self.stmt = handle
         self.owner = owner
         self.generation = generation
+        self.pooledReturn = pooledReturn
     }
 
-    deinit { sqlite3_finalize(stmt) }
+    deinit {
+        // finalize 必须与同一连接的其它语句互斥（池化连接会被不同线程复用）。
+        owner.withConnectionLock { sqlite3_finalize(stmt) }
+        pooledReturn?()
+    }
 
     /// 连接已关闭即拒绝（问题 4：旧实现会把 stmt 指针当成 db 指针去做
     /// sqlite3_errmsg/sqlite3_changes，句柄类型错误；关闭后 prepare/run/query

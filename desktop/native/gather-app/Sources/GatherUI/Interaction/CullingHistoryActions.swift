@@ -43,8 +43,9 @@ package struct SidebarVisibilityKey: FocusedValueKey {
     package typealias Value = Bool
 }
 
-/// 当前场景已安装 handler 的命令集合：菜单禁用态经 focused-scope 读取，
-/// focus/安装变化都会让 Commands 重新求值（Scene body 级快照会停在启动时）。
+/// 当前场景已安装 handler 的命令集合：菜单禁用态经 focused-scope 读取。
+/// 它只是 AppCommandCenter.installed 在场景内的投影，判据以 installed 为准
+/// （AppCommandAvailability 取并集），focused 快照落后不会把菜单永久置灰。
 package struct CommandAvailabilityKey: FocusedValueKey {
     package typealias Value = Set<AppCommand>
 }

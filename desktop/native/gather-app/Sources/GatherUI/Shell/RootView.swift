@@ -229,9 +229,6 @@ extension RootView {
         commandCenter.install(.toggleSidebar) {
             visibility.wrappedValue = visibility.wrappedValue == .detailOnly ? .all : .detailOnly
         }
-        commandCenter.install(.openSettings) {
-            openSettings()
-        }
     }
 }
 

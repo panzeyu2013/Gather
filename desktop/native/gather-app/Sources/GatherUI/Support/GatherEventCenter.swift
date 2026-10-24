@@ -7,6 +7,7 @@
 // progressMessage/errorMessage（不再等于 status.rawValue），状态机判定
 // succeeded/failed/cancelled/interrupted，不依赖 message 启发式。
 import Foundation
+import os
 import GatherProtocol
 
 /// Swift 6 迁移：不可变事件载荷 —— 两个存储属性均为 let，且
@@ -59,11 +60,20 @@ public struct GatherApplicationChange: Sendable {
     /// 发布者标识：监听方跳过自己发出的变更，避免自触发重查（如人物页
     /// 写路径广播又被自己的监听器收到）。
     public let origin: String?
+    /// 进程内单调序号（按域递增，R4）：监听方据此丢弃过期/重复事件。
+    /// 0 表示“未编号”（仅测试或兼容构造）。
+    public let revision: UInt64
 
-    public init(domain: GatherChangeDomain, sessionId: String? = nil, origin: String? = nil) {
+    public init(
+        domain: GatherChangeDomain,
+        sessionId: String? = nil,
+        origin: String? = nil,
+        revision: UInt64 = 0
+    ) {
         self.domain = domain
         self.sessionId = sessionId
         self.origin = origin
+        self.revision = revision
     }
 
     /// 事件是否命中该会话（全局事件命中所有会话）。
@@ -125,16 +135,40 @@ public final class GatherEventCenter {
 
     /// 写路径完成后广播受影响的域（同步方法，VMs 均在 MainActor 上调用）。
     /// 页面侧只按域刷新自己的数据源，不做整树重建/全量重查。
+    ///
+    /// R4：每次广播按域分配单调 revision；监听方（DomainChangeGate）丢弃
+    /// revision 不新于已应用值的事件，避免重复投递/乱序投递造成二次重查。
     public static func postDomainChange(
         _ domain: GatherChangeDomain,
         sessionId: String? = nil,
         origin: String? = nil
     ) {
+        let revision = Self.revisions.withLock { state -> UInt64 in
+            let value = (state[domain] ?? 0) + 1
+            state[domain] = value
+            return value
+        }
         NotificationCenter.default.post(
             name: domainChanged,
-            object: GatherApplicationChange(domain: domain, sessionId: sessionId, origin: origin)
+            object: GatherApplicationChange(
+                domain: domain, sessionId: sessionId, origin: origin, revision: revision
+            )
         )
     }
+
+    /// 某域最近一次广播的 revision（0 = 尚未广播）。VM/页面可用于“落后”判定。
+    public nonisolated static func currentRevision(_ domain: GatherChangeDomain) -> UInt64 {
+        revisions.withLock { $0[domain] ?? 0 }
+    }
+
+    /// 测试接缝：清空进程内序号（@testable 专用；生产不调用）。
+    nonisolated static func resetRevisionsForTesting() {
+        revisions.withLock { $0.removeAll() }
+    }
+
+    /// 进程内按域序号（OSAllocatedUnfairLock 是 Sendable，无需 @unchecked）。
+    nonisolated private static let revisions =
+        OSAllocatedUnfairLock<[GatherChangeDomain: UInt64]>(initialState: [:])
 
     private func emit(job: AnalysisJobData, update: JobProgressUpdate) {
         let event = GatherJobEvent(job: job, update: update)

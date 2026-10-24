@@ -108,7 +108,11 @@ extension JobService {
 
         if let error, !cancelled {
             let message = String(describing: error)
-            let code = Self.gatherErrorCode(from: message) ?? "worker_error"
+            // 优先取类型化错误码（PersistenceError.detail 非空时 description 是 "CODE: detail"，
+            // 纯字符串等值匹配会退化为 worker_error）。
+            let code = (error as? CodedError)?.code.rawValue
+                ?? Self.gatherErrorCode(from: message)
+                ?? "worker_error"
             if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .failed, error: (code, message))) == true {
                 // WP7b：失败终态是排障入口——warn 带 phase + 错误码/原因。
                 Self.logJob(

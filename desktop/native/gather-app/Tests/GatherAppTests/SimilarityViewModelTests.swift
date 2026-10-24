@@ -94,13 +94,6 @@ private func insertHash(_ db: DBConnection, sessionId: String, photoId: String, 
 @MainActor
 @Suite("SimilarityViewModel", .serialized)
 struct SimilarityViewModelTests {
-    init() {
-        // Cut 3 / 3b-3（E-19 相邻）：C1 会话同步状态聚合在生产由
-        // AppBootstrap 注册（Host 适配器 → GatherApplication 唯一实现）；测试
-        // 直接装同一实现，避免 UI 复制判定逻辑。
-        CaptureOneSyncStateRulesRegistry.install(HostCaptureOneSyncStateRules())
-    }
-
     // ── 状态机：加载 ──
 
     // 无结果 → idle；有结果 → result + 参数同步（阈值恒同步；非预计算档

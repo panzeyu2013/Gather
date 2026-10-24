@@ -4,8 +4,8 @@
 // 原 390+ 行的单一 make 已按阶段拆到 Composition/：
 // - Composition/Core.swift：DB / Repo / Service 图（含 Metadata/Delivery 写回链）；
 // - Composition/Runtime.swift：executorDeps + AppRuntime，以及 CompositionRoot 入口；
-// - Composition/FeatureAPIs.swift：16 个 Live API 工厂（AppServices 的装配单元）；
-// - Composition/Root.swift：AppServices 装配（16 个 Live API + 唯一 runtime）。
+// - Composition/FeatureAPIs.swift：15 个 Live API 工厂（AppServices 的装配单元）；
+// - Composition/Root.swift：AppServices 装配（15 个 Live API + 唯一 runtime）。
 //
 // 本文件只做字段转发与主入口委托：不构造服务、不注册 executor、不开库。
 // 构造顺序、单例（xmpFileLock/deliveryCoordinator/runtime）、deliveryEventSink
@@ -49,7 +49,6 @@ public struct AppComposition {
     var assetRepo: AssetRepo { core.assetRepo }
     var faceKwService: FaceKwService { core.faceKwService }
     var personRepo: PersonRepo { core.personRepo }
-    var templateService: TemplateService { core.templateService }
     var qualityService: QualityService { core.qualityService }
     var indexerService: IndexerService { core.indexerService }
     var metadataService: MetadataService { core.metadataService }

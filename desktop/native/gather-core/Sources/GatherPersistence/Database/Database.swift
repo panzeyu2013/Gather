@@ -26,12 +26,17 @@
 //     DBConnection 的公开 API，因此**不新增**第二条锁序（stateLock → connectionLock 单向）。
 //   * `asyncQueue`（串行 DispatchQueue）：只保证 async 调用之间 FIFO；read/write 与 async
 //     之间在 connectionLock 上串行，但不保证 FIFO（async body 也会取 stateLock）。
+//   * `DBConnection.readPoolState`（R6，DB.swift 持有）：只保护只读池的懒建/关闭，
+//     与 connectionLock **不同时持有**（ensureReadPool 不取写连接锁），因此不参与上述
+//     锁序；池内借还另用 ReadConnectionPool.lock。
 //
-// ── 读池延后（D-035 #2） ──
-// B-1 的 read 与 write **共用同一个连接**：底层 DBConnection 已经是「单连接 + 递归锁」
-// 语义（对齐 better-sqlite3），读池需要额外只读连接 + query_only + WAL 可见性管理，
-// 留到 S5 之后单独做。因此：长 read 会阻塞写、write 事务内的 read 不是快照隔离
-// （读到事务内未提交的数据），调用方不得把 read 当作隔离边界。
+// ── 读池（R6，D-035 #2 的落地） ──
+// `prepare` 遇到「无事务的 SELECT」时从只读池借连接（默认 2 条；":memory:" 不建池；
+// 池空回退写连接）。由此：
+//   * 长写事务只阻塞写语句与非 SELECT 读，普通 SELECT 读最近提交快照、不再排队；
+//   * 事务内/写语句/PRAGMA/WITH 仍走写连接，事务内读己写语义不变；
+//   * `read` 作用域里的无事务 SELECT 可能落到另一条连接——不要把 read 当隔离边界，
+//     也不要在 read 内依赖"随后 write 同连接"的隐式假设。
 //
 // ── 事务 ──
 // write 复用 `DBConnection.transaction`：嵌套调用退化为 SAVEPOINT（`gather_tx_<depth>`），
@@ -83,6 +88,8 @@ public final class Database: @unchecked Sendable {
         public var retainMigrationBackups: Int
         /// 版本/快照/迁移计划。默认 production（current = .v2、V1→V2 no-op）。
         public var catalog: SchemaCatalog
+        /// R6：只读连接池大小（0 = 关闭；":memory:" 永远不建池）。
+        public var readPoolSize: Int
 
         public init(
             busyTimeoutMilliseconds: Int = 5000,
@@ -91,7 +98,8 @@ public final class Database: @unchecked Sendable {
             retainIncompatibleCopies: Int = 3,
             resetPolicy: ResetPolicy = .failClosed,
             retainMigrationBackups: Int = 3,
-            catalog: SchemaCatalog = .production
+            catalog: SchemaCatalog = .production,
+            readPoolSize: Int = 2
         ) {
             self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
             self.synchronous = synchronous
@@ -100,6 +108,7 @@ public final class Database: @unchecked Sendable {
             self.resetPolicy = resetPolicy
             self.retainMigrationBackups = retainMigrationBackups
             self.catalog = catalog
+            self.readPoolSize = max(0, readPoolSize)
         }
 
         public static let `default` = Options()
@@ -410,8 +419,14 @@ public final class Database: @unchecked Sendable {
     private static func makeConnection(at path: String, options: Options) throws -> DBConnection {
         let connection: DBConnection
         do {
-            // DBConnection.open 已设置 journal_mode=WAL / foreign_keys=ON / busy_timeout=5000。
-            connection = try DBConnection(path: path)
+            // DBConnection.open 已设置 journal_mode=WAL / foreign_keys=ON / busy_timeout。
+            // R6 批 2：只读池继承同一份 busy/cache 预算，避免读路径行为分叉。
+            connection = try DBConnection(
+                path: path,
+                readPoolSize: options.readPoolSize,
+                busyTimeoutMilliseconds: options.busyTimeoutMilliseconds,
+                cacheSizeMB: options.cacheSizeMB
+            )
         } catch {
             throw DatabaseError.map(error)
         }

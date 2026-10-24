@@ -20,6 +20,8 @@ package struct GatherAppCommands: Commands {
     @FocusedValue(\.sidebarExpanded) private var sidebarExpanded: Bool?
     /// 当前场景已安装 handler 的命令集合（RootView 注入，随安装/清理更新）。
     @FocusedValue(\.commandAvailability) private var focusedAvailability: Set<AppCommand>?
+    /// 主窗口 scene 的重开入口（Window 场景关窗后应用内唯一的恢复路径）。
+    @Environment(\.openWindow) private var openWindow
 
     package init(language: L10n.Language, commands: AppCommandCenter, installed: Set<AppCommand>) {
         self.language = language
@@ -57,6 +59,14 @@ package struct GatherAppCommands: Commands {
             commandButton(.toggleSidebar, copy: copy)
         }
 
+        // 窗口菜单：单窗口场景关窗后（⌘W）应用内仍能重新打开主窗口；
+        // Dock 点击的重开路径见 GatherAppDelegate.applicationShouldHandleReopen。
+        CommandGroup(after: .windowList) {
+            Button(l10n("显示主窗口")) {
+                openWindow(id: GatherWindowID.main)
+            }
+        }
+
         // 帮助菜单：保留项目主页入口。
         CommandGroup(replacing: .help) {
             Button(copy.help) {
@@ -87,8 +97,11 @@ package struct GatherAppCommands: Commands {
         Button(title(for: item, copy: copy)) {
             commands.perform(command)
         }
-        // 以 focused-scope 的可用集合为准；无窗口（nil）时回退 Scene 快照。
-        .disabled(!(focusedAvailability ?? installed).contains(command))
+        // 单一判据（AppCommandAvailability）：installed 是权威，focused 集合只做
+        // 补充。取并集可避免 focused 快照落后于安装时把菜单永久置灰。
+        .disabled(
+            !AppCommandAvailability.isEnabled(
+                command, installed: installed, focused: focusedAvailability))
     }
 
     /// 侧栏项按 focused-scope 的真实可见性取文案；其余项用静态菜单文案。

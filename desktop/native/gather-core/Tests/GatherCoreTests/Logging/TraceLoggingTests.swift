@@ -203,6 +203,7 @@ private struct TraceDeliveryFixture {
             deliveryRepo: repo,
             intentRepo: intents,
             files: files,
+            fileLock: XMPFileLock(),
             fingerprint: { _ in "fp-current" },
             requireReloadAck: false)
     }
@@ -754,7 +755,8 @@ struct TraceLoggingTests {
             xmp: TraceWritebackXMP(),
             photoRepo: PhotoRepo(connection: db),
             metadataCacheRepo: MetadataCacheRepo(connection: db),
-            connection: db)
+            connection: db,
+            fileLock: XMPFileLock())
         let writebackItem = WritebackItem(
             id: Int(item.id),
             photoId: "wp7b-lease-p1",

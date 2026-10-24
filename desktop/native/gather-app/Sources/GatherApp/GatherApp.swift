@@ -39,7 +39,7 @@ struct GatherApp: App {
         // 单窗口语义（Phase 4 收口）：命令中心是 SceneState 级唯一实例，菜单
         // handler 绑定当前 RootView。用 Window 而不是 WindowGroup，从构造上排除
         // 「第二个窗口共享/覆盖 handler」的未定义状态；⌘N 是新建工作区，不是新窗口。
-        Window("Gather", id: "main") {
+        Window("Gather", id: GatherWindowID.main) {
             Group {
                 if let scene = bootstrap.scene {
                     // Cut 4 / 4a-2a-2：外壳只吃 SceneState 装配好的依赖包 +
@@ -78,8 +78,9 @@ struct GatherApp: App {
                 appDelegate.handle(url)
             }
         }
-        // N08：菜单只声明在 SwiftUI 场景里。AppDelegate 不再构建整套主菜单，
-        // 只在 SwiftUI 主菜单缺「文件/编辑」时补一份兜底（见 GatherAppDelegate）。
+        // N08 / Phase 4 收口：菜单只有 SwiftUI 这一条轨。AppDelegate 不构建任何
+        // AppKit 菜单（也没有兜底分支）；标准菜单项的语言跟随系统语言，
+        // 应用内切换语言只重渲染窗口内容（见 docs/DEVELOPMENT.md「本地化体系」）。
         .commands {
             GatherAppCommands(
                 language: menuLanguage,

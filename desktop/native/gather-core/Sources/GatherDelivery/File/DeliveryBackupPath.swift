@@ -17,6 +17,7 @@
 //
 // 所有检查都是 fail-closed：校验失败只能 skip/报错，绝不能继续 restore/remove。
 
+import GatherProtocol
 import Foundation
 import GatherPersistence
 

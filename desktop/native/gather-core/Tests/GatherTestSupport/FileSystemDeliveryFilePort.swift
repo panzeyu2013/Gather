@@ -7,6 +7,7 @@
 //
 // 恢复 = 备份覆盖写回 photo.xmp（幂等），删除 = unlink。
 
+import GatherProtocol
 import Foundation
 import GatherPersistence
 import GatherDelivery

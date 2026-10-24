@@ -217,21 +217,30 @@ struct C1StatusCapsule: View {
             HStack(spacing: 6) {
                 Circle()
                     .fill(visual.tone)
-                    .frame(width: 8, height: 8)
+                    .frame(width: 6, height: 6)
                     .accessibilityHidden(true)
+                // 显式 primary：borderless 按钮在工具栏里会继承品牌 tint，
+                // 状态词变成棕色（与错误/警告色混淆）。语义只留在状态点上。
                 Text(visual.label)
                     .font(.callout)
+                    .foregroundStyle(.primary)
                 if queue > 0 {
                     Text(queue, format: .number)
-                        .font(.callout.monospacedDigit())
+                        .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule()
+                                .fill(GatherTheme.surfaceMuted.opacity(0.85))
+                        )
                 }
                 if let time = syncedAtText {
                     Text("·")
-                        .font(.callout)
+                        .font(.caption)
                         .foregroundStyle(.tertiary)
                     Text(time)
-                        .font(.callout)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -240,6 +249,7 @@ struct C1StatusCapsule: View {
             .help(tooltip(with: l10n))
         }
         .buttonStyle(.borderless)
+        .tint(.primary)
         .controlSize(.small)
         .accessibilityLabel(visual.label)
         .accessibilityValue(queue > 0 ? "\(queue)" : "")

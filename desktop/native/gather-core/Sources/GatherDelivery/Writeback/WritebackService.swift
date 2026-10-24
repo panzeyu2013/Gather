@@ -56,8 +56,9 @@ public final class WritebackService: @unchecked Sendable {
     /// 交付状态写入的唯一入口（WP2b）；读路径仍直接用 deliveryRepo。
     let stateWriter: DeliveryStateWriter
     let xmp: any XMPProvider
-    private let photoRepo: PhotoRepo
-    let metadataCacheRepo: MetadataCacheRepo
+    /// R8：只读投影 / 三字段回写走窄端口；具体 Repo 只在组合根构造。
+    private let photoRepo: any PhotoReadStore
+    let metadataCacheRepo: any MetadataCacheStore
     let keywordOrigins: MetadataKeywordOriginRepo?
     let assetResolver: PhotoAssetResolver?
     let connection: DBConnection
@@ -79,13 +80,13 @@ public final class WritebackService: @unchecked Sendable {
     public init(
         deliveryRepo: DeliveryRepo,
         xmp: any XMPProvider,
-        photoRepo: PhotoRepo,
-        metadataCacheRepo: MetadataCacheRepo,
+        photoRepo: any PhotoReadStore,
+        metadataCacheRepo: any MetadataCacheStore,
         connection: DBConnection,
         keywordOrigins: MetadataKeywordOriginRepo? = nil,
         assetResolver: PhotoAssetResolver? = nil,
         delivery: DeliveryCoordinator? = nil,
-        fileLock: XMPFileLock = .shared,
+        fileLock: XMPFileLock,
         eventSink: (@Sendable (String) -> Void)? = nil
     ) {
         self.deliveryRepo = deliveryRepo

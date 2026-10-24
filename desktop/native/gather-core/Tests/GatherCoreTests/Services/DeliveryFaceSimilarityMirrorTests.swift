@@ -191,6 +191,7 @@ private struct MirrorHarness {
             deliveryRepo: deliveryRepo,
             intentRepo: intentRepo,
             files: files,
+            fileLock: XMPFileLock(),
             fingerprint: { [fingerprint] _ in fingerprint.current },
             resolvePhotoPath: { _, delivery in delivery.photoPath }
         )

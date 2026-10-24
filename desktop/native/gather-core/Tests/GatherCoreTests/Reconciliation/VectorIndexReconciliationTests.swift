@@ -1,8 +1,9 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Reconciliation/VectorIndexReconciliationTests.swift
 // 角度 LSH 的默认套件行为测试。
 //
-// 质量/召回基线（原 1000 行 × 100 查询、TS 参照召回 >= 0.5）已迁到
-// gather-core-benchmarks；默认套件不再承担“近似算法有多准”的评估，只验证：
+// 质量/召回基线（原 1000 行 × 100 查询）由 gather-core-benchmarks 的 lsh 档负责：
+// --smoke（2 千档）断言 selfRecall=1.0、exactPairs>=100 与 exactRecall@0.85 >= 0.45，nightly 跑；
+// 默认套件不再承担“近似算法有多准”的评估，只验证：
 //   · 非法配置明确报错；
 //   · 空索引查询返回空；
 //   · 小索引对自身行做候选查询能稳定自召回（索引接线正确）。

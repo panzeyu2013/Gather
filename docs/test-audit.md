@@ -16,9 +16,11 @@
 > `swift test` 的 “N tests passed” 包含 skip，**有效执行数 = 声明数 − skip 数**；
 > 统计“通过”时不得把 skip 算作有效执行，门禁与负例见 §4.1。
 
-> **状态（2026-10-24 测试分层优化，当前）**：
-> - 默认套件实测（M5 Pro / Debug / 串行 / 不含构建）：**core 1,167 例 / 174 套件 ≈ 10.1s**，
->   **app 640 例 / 72 套件 ≈ 11.5s**（优化前 17.6s / 16.8s；数值随机器负载浮动）。
+> **状态（2026-10-24 测试分层优化 + 复审修复，当前）**：
+> - 默认套件实测（M5 Pro / Debug / 串行 / 不含构建）：**core 1,168 例 / 174 套件 ≈ 1.7s**
+>   （含新增的 matcher LSH 召回门；上一轮同机采样 10.1s 为并行负载下的读数）、
+>   **app 646 例 / 73 套件 ≈ 12.0s**（含 5 条菜单可用性用例）；skip 11 条（默认）/
+>   3 条（`GATHER_MODEL_TESTS=1`）。随机器负载浮动。
 > - 已从默认套件迁出/精简：`FaceClusteringAccuracyTests`（统计基线，删除，保留 3 个确定性
 >   behavior 用例到 `FaceClustererQualityRetryTests`）、`FaceMarginDecisionTests` 的 7 轮
 >   sweep（只留 1 条 margin=0/0.01 生产路径用例）、`VectorIndexReconciliationTests` 的
@@ -173,7 +175,7 @@ app 合并明细（合计 -54）：C1Preflight 5→4、CullingSyncFlow 5→4、D
 | R8 | `app/SettingsSaveSemanticsTests.swift:164-174` | 读 home 计算期望值 → 纯字符串/注入路径 | 同上 |
 | R9 | `core/Services/ReviewAcceptanceTests.swift:22-55`、`DeepReviewAcceptanceTests.swift:57-160`（12 → 4） | 8 条按 D14 删除；余 4 条去 `print` 证据行与「探针」命名，按行为重命名，断言不动 | CL-19 |
 | R10 | `app/RootViewTests.swift`、`ReviewFixTests.swift:595-700` 导航断言 | `RootNavigation` → `SessionStore` 语义（activate/back/workspace） | §5.2 |
-| R11 | `core/Reconciliation/*`（24） | golden 保留；注释中「由 scripts/reconciliation/*.mjs 生成」已失效（目录不存在）→ 改为「静态 golden，变更需人工签核」 | 【已确认】`ls scripts/reconciliation` 不存在 |
+| R11 | `core/Reconciliation/*`（24） | golden 保留；注释中「由 scripts/reconciliation/*.mjs 生成」已失效（目录不存在）→ 改为「静态 golden，变更需人工签核」 | **已修（2026-10-24 复审）**：4 处注释改为冻结 golden 口径 |
 
 ### 3.4 保留（K，不动或只改注释）
 
@@ -227,7 +229,7 @@ app（298 → **253**）：删除 -11（D1/D3）、合并 -54（M1/M8/M10/M11 + 
 | 启动外部进程 | 6 用例 | `app/ReviewAcceptanceTests.swift:22-40`（2）、`:59-65` 被 `:73,99,120` 复用（3）、`DeepModelAcceptanceTests.swift:23`（1）；依赖 `/usr/bin/zip`、`/bin/sh`、`/usr/bin/awk` |
 | 进程级语言全局 + 互斥锁 | **32 用例 / 16 文件 / 41 调用点** | `Support/AppLanguageLock.swift:13-33`；使用方见 §3.3-R5；根因 `GatherLocalization.appLanguage` 是进程全局 |
 | 依赖当前工作目录 | 1 | `SessionServiceTests.swift:316-320`（`TSPath.resolve` 用 `currentDirectoryPath`） |
-| 依赖 OS 框架（Vision/CoreML/ImageIO） | 17 | `FaceEmbeddingModelTests`(3 gated)、`FaceInferenceTests`(4 gated)、`FaceIdentityArchitectureTests`(1 gated)、`RAWDecoderTests`(13, ImageIO)、`FaceRealPhotoPipelineTests`(3 gated)、`ExportServiceTests`（ImageIO 条件编译） |
+| 依赖 OS 框架（Vision/CoreML/ImageIO） | 24 | `FaceEmbeddingModelTests`(3 gated)、`FaceInferenceTests`(4 gated)、`FaceIdentityArchitectureTests`(1 gated)、`RAWDecoderTests`(13, ImageIO)、`FaceRealPhotoPipelineTests`(3 gated)、`ExportServiceTests`（ImageIO 条件编译） |
 | 依赖时序/RunLoop/超时 | 9 | `LayoutBudgetTests`(8, `NSHostingView.fittingSize` + `RunLoop.run`)、`CommandSurfaceRuntimeTests.swift:277-282`（5s 超时） |
 | 依赖仓库内 fixture 路径（`#filePath`） | 26 | `Reconciliation/Harness.swift:12-17`、`ErrorLocalizationCoverageTests.swift:40-46`、`MigrationTests.swift:17-33`（D4 删除） |
 | 网络 | **0** | `SidecarXMPProviderTests.swift:56-80` 的 `http://` 是 RDF 命名空间，非网络【已确认】 |

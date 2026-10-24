@@ -1,10 +1,10 @@
 {
-  "font.callout": 92,
-  "font.systemSize": 6,
-  "spacing.literalPadding": 156,
-  "spacing.literalSpacing": 238,
+  "font.callout": 88,
+  "font.systemSize": 15,
+  "spacing.literalPadding": 170,
+  "spacing.literalSpacing": 243,
   "empty.contentUnavailable": 30,
-  "container.groupBox": 5,
+  "container.groupBox": 0,
   "theme.legacyAlias": 18,
   "radius.legacyAlias": 20
 }

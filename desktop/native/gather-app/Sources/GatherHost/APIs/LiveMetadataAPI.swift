@@ -67,10 +67,11 @@ public final class LiveMetadataAPI: MetadataAPI {
     /// 交付状态 / 交付项的写入唯一入口；与 deliveryRepo 同一连接。
     private let stateWriter: DeliveryStateWriter
     private let xmp: any XMPProvider
-    /// 与 DeliveryCoordinator / WritebackService 共用的按 xmpPath 文件锁。
-    /// 生产组合根把 XMPFileLock.shared 同时注入三者（AppComposition），
-    /// 缺省也是 .shared：孤儿 restore/remove 与 cleanup/replay/writeback 串行。
-    private let fileLock: XMPFileLock
+    /// 与 DeliveryCoordinator / WritebackService 共用的按 xmpPath 文件锁
+    /// （组合根构造唯一实例并注入三者）：孤儿 restore/remove 与
+    /// cleanup/replay/writeback 串行。
+    /// internal（非 private）：组合根契约测试要断言与 coordinator/writeback 同一实例。
+    let fileLock: XMPFileLock
 
     /// Sendable 由协议继承显式声明：类为 final，所有依赖都是构造后不再变更的
     /// Sendable let（Repo 只持连接、stateWriter 由 deliveryRepo 派生、
@@ -79,7 +80,7 @@ public final class LiveMetadataAPI: MetadataAPI {
         metadataService: MetadataService,
         deliveryRepo: DeliveryRepo,
         xmp: any XMPProvider,
-        fileLock: XMPFileLock = .shared
+        fileLock: XMPFileLock
     ) {
         self.metadataService = metadataService
         self.deliveryRepo = deliveryRepo

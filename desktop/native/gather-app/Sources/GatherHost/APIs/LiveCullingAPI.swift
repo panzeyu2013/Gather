@@ -215,12 +215,8 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             throw error
         } catch let error as CullingServiceError {
             throw Self.gatherError(error)
-        } catch let error as DBError {
-            if case .message(let message) = error,
-               let code = GatherErrorCode(rawValue: message) {
-                throw GatherError(code: code, underlying: message)
-            }
-            throw error
+        } catch let error as CodedError {
+            throw GatherError(code: error.code, underlying: String(describing: error))
         }
     }
 
@@ -231,12 +227,8 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             throw error
         } catch let error as CullingServiceError {
             throw Self.gatherError(error)
-        } catch let error as DBError {
-            if case .message(let message) = error,
-               let code = GatherErrorCode(rawValue: message) {
-                throw GatherError(code: code, underlying: message)
-            }
-            throw error
+        } catch let error as CodedError {
+            throw GatherError(code: error.code, underlying: String(describing: error))
         }
     }
 

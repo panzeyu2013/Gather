@@ -1,7 +1,7 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Reconciliation/ClusterReconciliationTests.swift
 // dHash 聚类对账测试（Phase 1 任务 1.5「对账测试框架」第二批）。
-// fixture 由 scripts/reconciliation/generate-cluster-fixtures.mjs 生成
-// （参照实现 = cluster-engine.ts 照抄核心循环），本测试逐 case 加载比对。
+// fixture 是冻结的 TS 参照（seed 固定、随仓库入库的静态 golden；生成器已随旧栈
+// 删除），本测试逐 case 加载比对；变更 golden 必须人工签核并在评审里给依据。
 // 自含 fixture 加载（经 #filePath 定位 Fixtures 目录），不依赖并行任务文件。
 
 import Foundation

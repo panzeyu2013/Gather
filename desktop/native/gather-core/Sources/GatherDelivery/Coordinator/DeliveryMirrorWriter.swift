@@ -13,11 +13,12 @@
 //
 // 所有状态写入经 DeliveryStateWriter；镜像只决定「写什么」，不直接调 Repo 的迁移方法。
 
+import GatherProtocol
 import Foundation
 import GatherPersistence
 
 struct DeliveryMirrorWriter: Sendable {
-    let repo: DeliveryRepo
+    let repo: any DeliveryReadStore
     let writer: DeliveryStateWriter
     /// 本实例的写租约 owner（P1-2）：claim 与 markWritten 必须使用同一身份。
     let leaseOwner: String

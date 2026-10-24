@@ -206,7 +206,8 @@ private struct FaceSimilarityFixture {
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,
             keywordOrigins: nil,
-            assetResolver: nil
+            assetResolver: nil,
+            fileLock: XMPFileLock()
         )
         // S5c-2b-3b-1：API 只依赖 SimilarityService；写回执行器经生产同款
         // bridge（module=similarity）注入，验证的是真实接缝而不是桩。

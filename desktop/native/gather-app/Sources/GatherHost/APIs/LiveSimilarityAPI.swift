@@ -267,6 +267,7 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
                 return GatherError(code: similarity.gatherCode, underlying: similarity.description)
             }
             if let writeback = domainError as? WritebackServiceError {
+                // allow: string-code（WritebackServiceError 含带消息分支，R1 例外）
                 if let code = GatherErrorCode(rawValue: writeback.description) {
                     return GatherError(code: code, underlying: writeback.description)
                 }

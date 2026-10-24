@@ -100,7 +100,8 @@ struct MetadataParallelBatchTests {
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,
             keywordOrigins: nil,
-            assetResolver: nil
+            assetResolver: nil,
+            fileLock: XMPFileLock()
         )
         var additions: [String: [String]] = [:]
         for id in ids { additions[id] = ["kw"] }

@@ -1,8 +1,8 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Reconciliation/DHashReconciliationTests.swift
 // dHash 双向对账测试（Phase 1 任务 1.5 首批函数）。
 //
-// fixture 由 scripts/reconciliation/generate-hash-fixtures.mjs 产出并入库
-// （seed=42, 50 cases，含全零/全一/重复行/边界值/相邻等值/随机网格），
+// fixture 是冻结的静态 golden（seed=42, 50 cases，含全零/全一/重复行/边界值/
+// 相邻等值/随机网格；生成器已随旧栈删除，变更需人工签核），
 // 本测试加载同一 JSON，逐 case 以 DHash.compute 重算并与 TS 期望 hex 比对。
 // 扩展新函数：见同目录 README.md。
 

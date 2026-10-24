@@ -1,11 +1,11 @@
 // desktop/native/gather-app/Sources/GatherHost/Composition/FeatureAPIs.swift
-// WP4c / 组合根阶段 3：16 个 Live API 工厂。
+// WP4c / 组合根阶段 3：15 个 Live API 工厂。
 //
 // 每个工厂只把 CompositionCore 的共享实例包成 Live API，不构造业务服务、
 // 不打开数据库、不注册 executor：JobService / SettingsService / PersonRepo /
-// TemplateService 等必须与组合根同实例。工厂按拆分前 AppServices.assemble 的
+// DeliveryRepo 等必须与组合根同实例。工厂按拆分前 AppServices.assemble 的
 // 求值顺序（job → session → settings → photo → asset → album → navigation →
-// 其余九个域）构造，被 AppServicesRoot（Root.swift）组装成 AppServices。
+// 其余八个域）构造，被 AppServicesRoot（Root.swift）组装成 AppServices。
 import Foundation
 import GatherProtocol
 import GatherPersistence
@@ -27,7 +27,6 @@ struct FeatureAPIs {
     let export: any ExportAPI
     let metadata: any MetadataAPI
     let person: any PersonAPI
-    let template: any TemplateAPI
 
     init(composition: AppComposition) {
         let job = Self.makeJob(composition)
@@ -46,7 +45,6 @@ struct FeatureAPIs {
         self.export = Self.makeExport(composition)
         self.metadata = Self.makeMetadata(composition)
         self.person = Self.makePerson(composition)
-        self.template = Self.makeTemplate(composition)
     }
 
     private static func makeJob(_ composition: AppComposition) -> any JobAPI {
@@ -143,7 +141,8 @@ struct FeatureAPIs {
         LiveMetadataAPI(
             metadataService: composition.metadataService,
             deliveryRepo: composition.deliveryRepo,
-            xmp: composition.xmpProvider
+            xmp: composition.xmpProvider,
+            fileLock: composition.xmpFileLock
         )
     }
 
@@ -151,7 +150,4 @@ struct FeatureAPIs {
         LivePersonAPI(personRepo: composition.personRepo)
     }
 
-    private static func makeTemplate(_ composition: AppComposition) -> any TemplateAPI {
-        LiveTemplateAPI(templateService: composition.templateService)
-    }
 }

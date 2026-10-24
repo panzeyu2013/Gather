@@ -22,18 +22,18 @@ struct AppCommandCenterTests {
         let center = AppCommandCenter()
         var calls: [String] = []
         center.install(.newWorkspace) { calls.append("new") }
-        center.install(.openSettings) { calls.append("settings") }
+        center.install(.toggleSidebar) { calls.append("sidebar") }
 
         #expect(center.canPerform(.newWorkspace))
-        #expect(center.canPerform(.openSettings))
+        #expect(center.canPerform(.toggleSidebar))
         #expect(!center.canPerform(.importFolder))
-        #expect(center.installed == [.newWorkspace, .openSettings])
+        #expect(center.installed == [.newWorkspace, .toggleSidebar])
 
         center.perform(.newWorkspace)
-        center.perform(.openSettings)
+        center.perform(.toggleSidebar)
         center.perform(.importFolder) // 未安装：no-op
 
-        #expect(calls == ["new", "settings"])
+        #expect(calls == ["new", "sidebar"])
     }
 
     @Test("clearHandlers 清空所有命令且 perform 安全 no-op")

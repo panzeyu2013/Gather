@@ -1,9 +1,9 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Reconciliation/DimensionsReconciliationTests.swift
 // 图片尺寸对账测试（Phase 2 任务 2.1「解码 + 缩略图」）。
 //
-// fixture 由 scripts/reconciliation/generate-dimensions-fixtures.mjs 生成
-// （参照实现 = fast-dimensions.ts 逐字照抄；expected 手工按规范算好，生成时
-// 与参照实现互验一致），本测试逐 case 解码 base64 后以 ImageDimensions.read
+// fixture 是冻结的静态 golden（原参照实现 = fast-dimensions.ts；expected 按规范
+// 手工算好并与参照互验过；生成器已随旧栈删除，变更需人工签核），
+// 本测试逐 case 解码 base64 后以 ImageDimensions.read
 // 重算，与 expected 逐一相等（null 也断言）。
 
 import Foundation

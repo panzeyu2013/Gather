@@ -122,7 +122,8 @@ private struct MutationFixture {
             photoRepo: PhotoRepo(connection: db),
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,
-            assetResolver: assetResolver
+            assetResolver: assetResolver,
+            fileLock: XMPFileLock()
         )
     }
 

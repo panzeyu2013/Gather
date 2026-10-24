@@ -219,7 +219,8 @@ public struct DeliveryCoordinator: Sendable {
     /// 与 WritebackService 共享的按 xmpPath 文件锁（P0-1 收口）。
     /// cleanup/finalize/replay 的 verify → 文件阶段 → 事后再 verify 整体在锁内，
     /// 消除“旧备份覆盖新写入”的 TOCTOU 窗口；同一实例必须由组合根注入。
-    private let fileLock: XMPFileLock
+    /// internal（非 private）：组合根契约测试要断言三处拿到同一实例。
+    let fileLock: XMPFileLock
     private let fingerprint: DeliveryFingerprintProvider
     private let resolvePhotoPath: DeliveryPhotoPathResolver
     /// reload_acked_at 门禁（§5.4-2）。默认开启；测试/嵌入场景可显式关闭，
@@ -239,7 +240,7 @@ public struct DeliveryCoordinator: Sendable {
         deliveryRepo: DeliveryRepo,
         intentRepo: DeliveryIntentRepo,
         files: any DeliveryFilePort,
-        fileLock: XMPFileLock = .shared,
+        fileLock: XMPFileLock,
         fingerprint: @escaping DeliveryFingerprintProvider = {
             try await MetadataFingerprint.contentFingerprint($0)
         },
@@ -266,7 +267,7 @@ public struct DeliveryCoordinator: Sendable {
     public init(
         connection: DBConnection,
         files: any DeliveryFilePort,
-        fileLock: XMPFileLock = .shared,
+        fileLock: XMPFileLock,
         fingerprint: @escaping DeliveryFingerprintProvider = {
             try await MetadataFingerprint.contentFingerprint($0)
         },
@@ -293,7 +294,7 @@ public struct DeliveryCoordinator: Sendable {
     public init(
         connection: DBConnection,
         xmp: any XMPProvider,
-        fileLock: XMPFileLock = .shared,
+        fileLock: XMPFileLock,
         fingerprint: @escaping DeliveryFingerprintProvider = {
             try await MetadataFingerprint.contentFingerprint($0)
         },

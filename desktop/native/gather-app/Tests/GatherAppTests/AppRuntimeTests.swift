@@ -112,7 +112,8 @@ private struct AppRuntimeFixture {
         self.runtime = AppRuntime(
             db: db,
             jobService: jobService,
-            delivery: DeliveryCoordinator(connection: db, xmp: RuntimeNoopXMP()),
+            delivery: DeliveryCoordinator(
+                connection: db, xmp: RuntimeNoopXMP(), fileLock: XMPFileLock()),
             executorDeps: deps
         )
     }

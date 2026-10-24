@@ -38,8 +38,8 @@ public func validateNavigationParameters(burstGapSeconds: Double, sceneGapSecond
     }
 }
 
-/// 导航错误（description 与 TS 错误消息字符串逐字一致，桥接层序列化用）。
-public enum NavigationError: Error, CustomStringConvertible {
+/// 导航错误：code 是唯一真相源；description 与 TS 错误消息字符串逐字一致（日志/桥接用）。
+public enum NavigationError: Error, CustomStringConvertible, CodedError {
     case burstGapInvalid
     case sceneGapInvalid
     case groupNotFound
@@ -47,16 +47,18 @@ public enum NavigationError: Error, CustomStringConvertible {
     case mergeMinTwo
     case mergeTypeMismatch
 
-    public var description: String {
+    public var code: GatherErrorCode {
         switch self {
-        case .burstGapInvalid: return "NAV_BURST_GAP_INVALID"
-        case .sceneGapInvalid: return "NAV_SCENE_GAP_INVALID"
-        case .groupNotFound: return "NAV_GROUP_NOT_FOUND"
-        case .splitOutOfGroup: return "NAV_SPLIT_OUT_OF_GROUP"
-        case .mergeMinTwo: return "NAV_MERGE_MIN_TWO"
-        case .mergeTypeMismatch: return "NAV_MERGE_TYPE_MISMATCH"
+        case .burstGapInvalid: return .NAV_BURST_GAP_INVALID
+        case .sceneGapInvalid: return .NAV_SCENE_GAP_INVALID
+        case .groupNotFound: return .NAV_GROUP_NOT_FOUND
+        case .splitOutOfGroup: return .NAV_SPLIT_OUT_OF_GROUP
+        case .mergeMinTwo: return .NAV_MERGE_MIN_TWO
+        case .mergeTypeMismatch: return .NAV_MERGE_TYPE_MISMATCH
         }
     }
+
+    public var description: String { code.rawValue }
 }
 
 // MARK: - 内部行类型

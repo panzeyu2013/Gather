@@ -3,7 +3,7 @@
 //
 // 本文件是 AppComposition 唯一的服务图构造点，按拆分前 make 的逐行顺序构造：
 // 共享 DB 连接、全部 Repo、Metadata/Delivery 写回链与 Application 服务。
-// 闭包捕获、deliveryEventSink、XMPFileLock.shared、单实例语义保持不变；
+// 闭包捕获、deliveryEventSink、XMPFileLock 单实例语义保持不变（R5：由本文件构造）；
 // 运行时见 Composition/Runtime.swift，API 适配见 FeatureAPIs.swift / Root.swift。
 import Foundation
 import GatherProtocol
@@ -31,7 +31,6 @@ struct CompositionCore {
     let assetRepo: AssetRepo
     let faceKwService: FaceKwService
     let personRepo: PersonRepo
-    let templateService: TemplateService
     let qualityService: QualityService
     let indexerService: IndexerService
     let metadataService: MetadataService
@@ -85,8 +84,8 @@ struct CompositionCore {
             }
         }
         // P0-1 收口：cleanup/finalize/replay、writeback 与 metadata.orphans 的
-        // orphan restore 共用同一把按 xmpPath 的文件锁（.shared 唯一实例）。
-        let xmpFileLock = XMPFileLock.shared
+        // orphan restore 共用同一把按 xmpPath 的文件锁（组合根唯一实例）。
+        let xmpFileLock = XMPFileLock()
         let deliveryCoordinator = DeliveryCoordinator(
             connection: db, xmp: xmp, fileLock: xmpFileLock, eventSink: deliveryEventSink)
         let metadataMutationService = MetadataMutationService(
@@ -193,8 +192,6 @@ struct CompositionCore {
                     mode: mode, onProgress: onProgress
                 ).result
             })
-        let templateService = TemplateService(
-            templates: TemplateRepo(connection: db), settings: settingsService)
         let qualityService = QualityService(
             photoRepo: photoRepo, qualityRepo: QualityRepo(connection: db),
             imageProvider: QualityService.defaultImageProvider,
@@ -224,7 +221,7 @@ struct CompositionCore {
             filterEngine: filterEngine, navigationService: navigationService,
             similarityService: similarityService, duplicateService: duplicateService,
             assetRepo: assetRepo, faceKwService: resolvedFaceKwService,
-            personRepo: personRepo, templateService: templateService,
+            personRepo: personRepo,
             qualityService: qualityService, indexerService: indexerService,
             metadataService: metadataService, deliveryRepo: deliveryRepo,
             metadataMutationService: metadataMutationService,

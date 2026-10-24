@@ -16,6 +16,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherApplication
+@testable import GatherDelivery
 @testable import GatherUI
 @testable import GatherHost
 import GatherTestSupport
@@ -160,5 +161,19 @@ struct AppCompositionTests {
             await fixture.shutdown()
             #expect(fixture.db.isClosed)
         }
+    }
+
+    @Test("R5：组合根把同一把 XMPFileLock 注入 coordinator / writeback / metadata API")
+    func compositionSharesOneFileLock() throws {
+        let fixture = try CompositionFixture()
+        defer { fixture.db.close() }
+        let api = try #require(fixture.services.metadata as? LiveMetadataAPI)
+        let identities = [
+            ObjectIdentifier(fixture.composition.xmpFileLock),
+            ObjectIdentifier(fixture.composition.deliveryCoordinator.fileLock),
+            ObjectIdentifier(fixture.composition.writebackService.fileLock),
+            ObjectIdentifier(api.fileLock),
+        ]
+        #expect(Set(identities).count == 1, "四处必须是同一个 XMPFileLock 实例")
     }
 }

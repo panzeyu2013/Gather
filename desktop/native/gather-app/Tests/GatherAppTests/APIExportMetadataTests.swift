@@ -12,7 +12,7 @@
 //   keep_local 重排；orphans 与 resolveOrphan 的 keep/restore/retry；
 //   参数错误与无记录错误；
 // - P0-1 第二入口：resolveOrphan(restore) 的复核→restore→事后复核持有
-//   XMPFileLock.shared，与 writeback 并发时旧备份不覆盖新内容且不嵌套自锁。
+//   组合根注入的同一个 XMPFileLock，与 writeback 并发时旧备份不覆盖新内容且不嵌套自锁。
 //
 // 夹具用内存 SQLite + 真实 ExportService / MetadataService / DeliveryRepo /
 // JobService；exportExecute 执行器用 stub 替换（真实导出需要文件复制与转码，
@@ -604,7 +604,7 @@ private struct MetadataAPIFixture {
     init(
         photoCount: Int = 2,
         xmp: MetadataTestXMPProvider = MetadataTestXMPProvider(),
-        fileLock: XMPFileLock = .shared
+        fileLock: XMPFileLock = XMPFileLock()
     ) throws {
         let db = try makeTestDB()
         let sessionRepo = SessionRepo(connection: db)
@@ -922,7 +922,7 @@ struct APIMetadataTests {
         #expect(try fixture.deliveryRepo.get(xmpPath)?.typedStatus == .written)
 
         let coordinator = DeliveryCoordinator(
-            connection: fixture.db, xmp: fixture.xmp, requireReloadAck: false)
+            connection: fixture.db, xmp: fixture.xmp, fileLock: XMPFileLock(), requireReloadAck: false)
 
         // s1 确认只落自己的链接；s2 未确认 → 交付仍 written、item 不得被翻 synced。
         let s1Confirm = try coordinator.confirm(
@@ -1040,7 +1040,7 @@ struct APIMetadataTests {
         #expect(stale == 0, "冲突前确认必须全部失效")
 
         let coordinator = DeliveryCoordinator(
-            connection: fixture.db, xmp: fixture.xmp, requireReloadAck: false)
+            connection: fixture.db, xmp: fixture.xmp, fileLock: XMPFileLock(), requireReloadAck: false)
         let s1Confirm = try coordinator.confirm(
             sessionId: fixture.sessionId, module: .metadata)
         #expect(s1Confirm.confirmedLinks == 1, "旧确认已失效，s1 这次必须真正落一条")
@@ -1176,11 +1176,12 @@ struct APIMetadataTests {
         #expect(try await fixture.api.orphans().count == 1, "行必须保留，等待重试/裁决")
     }
 
-    @Test("resolveOrphan(restore)：复核→restore→事后复核持有 XMPFileLock.shared，竞争者排队")
+    @Test("resolveOrphan(restore)：复核→restore→事后复核持有注入的 XMPFileLock，竞争者排队")
     func resolveOrphanRestoreHoldsSharedFileLock() async throws {
         let xmp = MetadataTestXMPProvider()
-        // 不显式注入：走 LiveMetadataAPI 的缺省 .shared（与组合根/cleanup/writeback 同实例）。
-        let fixture = try MetadataAPIFixture(xmp: xmp)
+        // R5：不再有进程级 .shared；测试显式构造唯一实例并注入（与生产组合根同构）。
+        let lock = XMPFileLock()
+        let fixture = try MetadataAPIFixture(xmp: xmp, fileLock: lock)
         let gate = MetadataTestGate()
         defer {
             gate.release()
@@ -1206,17 +1207,17 @@ struct APIMetadataTests {
 
         #expect(await waitUntilAsyncCondition { entered.isSet }, "restore 必须进入文件阶段")
         #expect(
-            await XMPFileLock.shared.isActive(path: xmpPath),
+            await lock.isActive(path: xmpPath),
             "复核→restore→事后复核期间必须持有共享锁")
 
         // 同一路径的其它文件阶段（cleanup/writeback 用的同一实例）必须排队。
         let competitorEntered = LockedFlag()
         let competitor = Task {
-            try await XMPFileLock.shared.run(path: xmpPath) { competitorEntered.set() }
+            try await lock.run(path: xmpPath) { competitorEntered.set() }
         }
         #expect(
             await waitUntilAsyncCondition {
-                await XMPFileLock.shared.waiterCount(path: xmpPath) == 1
+                await lock.waiterCount(path: xmpPath) == 1
             },
             "竞争者应排在同一个共享实例上")
         #expect(!competitorEntered.isSet, "restore 未完成前不得进入（锁不可重入/不嵌套）")
@@ -1228,7 +1229,7 @@ struct APIMetadataTests {
         #expect(remaining.isEmpty)
         #expect(xmp.restoreCalls.count == 1)
         #expect(competitorEntered.isSet)
-        #expect(!(await XMPFileLock.shared.isActive(path: xmpPath)), "锁必须完全释放")
+        #expect(!(await lock.isActive(path: xmpPath)), "锁必须完全释放")
     }
 
     @Test("resolveOrphan(restore) 与 writeback 并发：同锁串行，旧备份不覆盖新内容")

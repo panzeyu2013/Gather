@@ -25,12 +25,12 @@ extension AssetRepo {
         let resolvedOld = ScanPath.canonical(oldRoot)
         let resolvedNew = ScanPath.canonical(newRoot)
         guard resolvedOld != resolvedNew else {
-            throw DBError.message("ASSET_RELINK_SAME_ROOT")
+            throw PersistenceError(code: .ASSET_RELINK_SAME_ROOT)
         }
         guard !ScanPath.isWithin(candidate: resolvedNew, root: resolvedOld),
               !ScanPath.isWithin(candidate: resolvedOld, root: resolvedNew)
         else {
-            throw DBError.message("ASSET_RELINK_NESTED_ROOT")
+            throw PersistenceError(code: .ASSET_RELINK_NESTED_ROOT)
         }
 
         // 历史行可能存 /private/var 或 /var 两种拼写：两种前缀都捞出候选，
@@ -107,10 +107,10 @@ extension AssetRepo {
             ))
         }
         guard scanned > 0 else {
-            throw DBError.message("ASSET_RELINK_NO_FILES_REGISTERED")
+            throw PersistenceError(code: .ASSET_RELINK_NO_FILES_REGISTERED)
         }
         guard !changes.isEmpty else {
-            throw DBError.message("ASSET_RELINK_NO_VERIFIED_FILE")
+            throw PersistenceError(code: .ASSET_RELINK_NO_VERIFIED_FILE)
         }
 
         let timestamp = nowISOString()
@@ -256,7 +256,7 @@ extension AssetRepo {
 
     public func acceptCandidate(_ candidateId: String) throws {
         guard let candidate = try getCandidate(candidateId) else {
-            throw DBError.message("ASSET_LINK_CANDIDATE_NOT_FOUND")
+            throw PersistenceError(code: .ASSET_LINK_CANDIDATE_NOT_FOUND)
         }
         try connection.transaction {
             try mergeFileAssets(primaryFileId: candidate.leftFileId, secondaryFileId: candidate.rightFileId)
@@ -270,7 +270,7 @@ extension AssetRepo {
 
     public func rejectCandidate(_ candidateId: String) throws {
         guard let candidate = try getCandidate(candidateId) else {
-            throw DBError.message("ASSET_LINK_CANDIDATE_NOT_FOUND")
+            throw PersistenceError(code: .ASSET_LINK_CANDIDATE_NOT_FOUND)
         }
         try connection.transaction {
             if candidate.status == "accepted" {
@@ -473,7 +473,7 @@ extension AssetRepo {
            oldState.label != targetState.label ||
            oldState.keywords != targetState.keywords ||
            oldState.fingerprint != targetState.fingerprint {
-            throw DBError.message("ASSET_RELINK_XMP_CONFLICT")
+            throw PersistenceError(code: .ASSET_RELINK_XMP_CONFLICT)
         }
         if let oldState, targetState == nil {
             _ = try connection.prepare("""
@@ -548,7 +548,7 @@ extension AssetRepo {
         guard let membership = try connection.prepare(
             "SELECT asset_id FROM asset_members WHERE file_id = ?"
         ).get([.text(fileId)])?[0].textValue else {
-            throw DBError.message("ASSET_FILE_NOT_LINKED")
+            throw PersistenceError(code: .ASSET_FILE_NOT_LINKED)
         }
         let siblingCount = Int64((try connection.prepare(
             "SELECT COUNT(*) AS count FROM asset_members WHERE asset_id = ?"

@@ -23,11 +23,11 @@ extension DeliveryRepo {
         ).get([.text(oldXmp)])?[0].textValue else {
             return false
         }
-        if status == "writing" { throw DBError.message("ASSET_RELINK_XMP_BUSY") }
+        if status == "writing" { throw PersistenceError(code: .ASSET_RELINK_XMP_BUSY) }
         let target = try connection.prepare(
             "SELECT 1 FROM deliveries WHERE xmp_path = ?"
         ).get([.text(newXmp)])
-        if target != nil { throw DBError.message("ASSET_RELINK_OUTBOX_CONFLICT") }
+        if target != nil { throw PersistenceError(code: .ASSET_RELINK_OUTBOX_CONFLICT) }
 
         _ = try connection.prepare("""
             UPDATE deliveries

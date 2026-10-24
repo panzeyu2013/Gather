@@ -58,13 +58,11 @@ extension DashboardViewModel {
             // 公共父目录只用于取名，绝不落库为 source_path，否则监听器与
             // 「全量兜底」扫描会重新递归整个父目录树（历史 P0：选 3 张照片
             // 等于扫描整棵目录树，最坏上溯到主目录）。
-            // E-19 相邻：路径规则经 ImportPathRules 端口（GatherHost 注册，
-            // 真相源在 GatherApplication/SessionService 与 GatherPersistence/TSPath）。
-            let pathRules = try ImportPathRulesRegistry.current()
-            let selectedPaths = pathRules.normalizedImportFilepaths(files)
-            let parentDirectory = pathRules.importCommonParentDirectory(filepaths: selectedPaths)
+            // R7：路径规则已下沉 GatherProtocol（唯一真相源），UI 直调，无 registry。
+            let selectedPaths = normalizeImportFilepaths(files)
+            let parentDirectory = commonParentDirectory(filepaths: selectedPaths)
             let sessionName = name.isEmpty
-                ? (parentDirectory.isEmpty ? l10n("Capture One 导入") : pathRules.basename(parentDirectory))
+                ? (parentDirectory.isEmpty ? l10n("Capture One 导入") : TSPath.basename(parentDirectory))
                 : name
             // Provider 的 createSessionFromFiles 契约 = 建会话 + addPhotos +
             // metadata.scan（checkpoint.requestedPaths = 本次选中集合）；job 入队

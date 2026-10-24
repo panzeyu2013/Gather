@@ -1,15 +1,17 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/CaptureOneSyncState.swift
+// desktop/native/gather-core/Sources/GatherProtocol/Protocol/C1SyncState.swift
 // TS 源: desktop/src/main/services/capture-one/sync-state.ts（会话级同步状态聚合，
 // 设计文档 2.3.2 / 2.3.3，纯函数与 DB 重推导逐字移植）
 //
-// 机器状态在内存、App 重启后丢失；行状态（metadata_outbox + reload_acked_at）是
-// 持久真相源，本模块跨重启从 DB 重推导，不落库机器状态。保守策略：不自动 reload、
-// 不自动清理；safeToCleanup 仅在 reload_acked_at 已写入后才可恢复。
-
+// R7：从 GatherApplication 下沉到 GatherProtocol —— UI 直接消费判定结果，
+// 不再经「UI 端口 + Host 适配器 + 进程级 registry」三跳；判定逻辑仍只有一份。
+//
+// 机器状态在内存、App 重启后丢失；行状态是持久真相源，本模块跨重启从 DB 重推导，
+// 不落库机器状态。保守策略：不自动 reload、不自动清理；safeToCleanup 仅在
+// reload_acked_at 已写入后才可恢复。
 import Foundation
 
 /// TS: CaptureOneSessionState。
-public enum CaptureOneSessionState: String, Codable, CaseIterable, Equatable, Sendable {
+public enum CaptureOneSyncState: String, Codable, CaseIterable, Equatable, Sendable {
     case disconnected
     case connected
     case syncing
@@ -29,7 +31,7 @@ private let knownOutboxStatuses: Set<String> = [
 public func aggregateSessionState(
     counts: [String: Int],
     reloadAckedAt: String?
-) -> CaptureOneSessionState {
+) -> CaptureOneSyncState {
     let conflict = counts["conflict"] ?? 0
     let failed = counts["failed"] ?? 0
     let pending = counts["pending"] ?? 0

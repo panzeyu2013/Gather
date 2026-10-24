@@ -23,10 +23,11 @@ public enum APIErrorPresentation {
         if let gather = error as? GatherError {
             return l10n.errorText(gather.code.rawValue)
         }
-        // SessionServiceError 不满足 LocalizedError，NSError 桥接会把码值丢成
-        // 「The operation couldn't be completed…」，故必须先取 gatherCode。
-        if let sessionError = error as? SessionServiceError {
-            return l10n.errorText(sessionError.gatherCode.rawValue)
+        // 类型化域错误（PersistenceError / NavigationError / SessionServiceError…）：
+        // 都不满足 LocalizedError，NSError 桥接会把码值丢成
+        // 「The operation couldn't be completed…」，故必须先取 CodedError.code。
+        if let coded = error as? CodedError {
+            return l10n.errorText(coded.code.rawValue)
         }
         if let native = error as? APIError {
             return l10n.errorText(native.description)

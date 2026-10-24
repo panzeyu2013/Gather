@@ -46,9 +46,8 @@ extension SimilarityViewModel {
         for item in items {
             counts[item.xmpStatus, default: 0] += 1
         }
-        // E-19 相邻：聚合经端口（实现=GatherDomain.aggregateSessionState）；
-        // 未注册时保持「加载中」状态，不伪造同步结论。
-        let state = CaptureOneSyncStateRulesRegistry.current()?.aggregateSyncState(
+        // R7：判定函数在 GatherProtocol（唯一实现）；UI 直接调用，无 registry。
+        let state = aggregateSessionState(
             counts: counts,
             reloadAckedAt: reloadAcked ? "x" : nil
         )

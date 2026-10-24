@@ -43,6 +43,7 @@ struct APIErrorPresentationTests {
             ("BridgeError 未实现", BridgeError.notImplemented("dup.groups"), "NOT_IMPLEMENTED: dup.groups"),
             ("SessionServiceError 已知码", SessionServiceError.sessionNotFound, "SESSION_NOT_FOUND"),
             ("SessionServiceError 根目录", SessionServiceError.sourceRootForbidden, "SESSION_SOURCE_ROOT_FORBIDDEN"),
+            ("PersistenceError 码值", PersistenceError(code: .ASSET_RELINK_SAME_ROOT), "ASSET_RELINK_SAME_ROOT"),
             ("NSError 码值", NSError(domain: "t", code: 1, userInfo: [NSLocalizedDescriptionKey: "SESSION_NOT_FOUND"]), "SESSION_NOT_FOUND"),
             ("NSError 无描述", NSError(domain: "t", code: 1), "The operation couldn’t be completed. (t error 1.)"),
             ("DecodingError 诊断", DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad")), "The data couldn’t be read because it isn’t in the correct format."),

@@ -70,24 +70,35 @@
 - **现状**：保留 `CosineLshIndex`（Clusterer 候选生成生产在用；Matcher 只剩实例级 `matchAgainstLibrary`，批量 `match(clusters:)` 自 5c-1 起走精确扫描、5d-2 起不再建 LSH）；`VectorIndexError` 被 LSH 共用。
 
 ### CL-07 两套缩略图 loader / 两套 @State —— status: pending，Cut 4
+- **证据（2026-10-24 复核）**：`GatherUI/Support/PhotoThumbnailView.swift` 仍有 **3 个** `load(for:)`
+  （:236 / :429 / :710）与三套 `@State`（:168-173 / :303-307 / :667-668），`ThumbnailLoader` 未抽取；
+  原「2 套」已漂移为 3 套（新增第三个缩略图视图）。
 - **位置**【已确认】：`Support/PhotoThumbnailView.swift` — @State `:164-168`、`.task(id:)` `:211-218`、`load(for:)` `:222-260`；`FaceCropThumbnailView`（同文件）— @State `:289-293`、`.task` `:342-345`、`load(for:)` `:415-449`。
 - **处置**：抽一个 `ThumbnailLoader`（状态机 + 缓存键 + 取消），两个 View 只保留布局/裁切差异；缓存键统一为 `photo:<path>#<size>#<preview>` 与 `facecrop:<path>#<size>` 两类，由 loader 生成。
 - **验收**：同文件 `load(for:)` 仅 1 处；两 View 各有 #Preview；A/B 检查：切档位不闪图、不错图。
 - **风险**：facecrop 键刻意不含 bbox（:408-412 注释说明），合并时误加 bbox 会导致每脸解码整图。
 
-### CL-08 6 个 VM 的 errorMessage/notice —— status: pending，Cut 4
+### CL-08 6 个 VM 的 errorMessage/notice —— status: done（2026-10-24 复核，Cut 4 已落地）
+- **证据（2026-10-24 复核）**：GatherUI 中 `var errorMessage: String?` = **0**（`grep` 实测）；
+  7 个页面改为 `CommandError` 驱动（如 `SettingsViewModel.swift:36` 的 `errorMessage: CommandError?`）；
+  唯一残留是 `GatherHost/AppBootstrap.swift:67` 的启动错误（宿主状态，不属于 VM）。
 - **位置**【已确认，实测 7 个】：`Culling/CullingView.swift:102`、`Settings/SettingsView.swift:105`、`Export/ExportView.swift:31`、`Duplicates/DuplicatesView.swift:118`、`ControlCenter/SessionControlView.swift:26`、`FaceKeywording/FaceKeywordingView.swift:86`、`Similarity/SimilarityViewModel.swift:332`。计划写 6 个，实测 7 个。
 - **处置**：统一 `GatherError` + `CommandError`（`ViewState<V>` 已于 2026-10-22 删除，见 CL-04）；删除存储型 `errorMessage: String?`。
 - **验收**：`grep -rn 'var errorMessage: String?' app` = 0；错误横幅由 `LoadPhase.failed(CommandError)` / `CommandError` 驱动（不再使用已删的 `ViewState`）。
 - **风险**：现有文案含本地化模板，改 GatherError 后需 en/zh 键位对齐（Localization 测试）。
 
-### CL-09 SessionDraftCache / pending 容器 / isActive —— status: pending，Cut 4
+### CL-09 SessionDraftCache / pending 容器 / isActive —— status: done（2026-10-24 复核，Cut 4 已落地）
+- **证据（2026-10-24 复核）**：`SessionDraftCache` 生产引用 = **0**（仅 2 处注释提及）；
+  `RootView.swift` **257 行**（验收 ≤300）；4 个 pending 容器由 `WorkspaceIntent`（take-and-clear）替代；
+  `isActive` 已转为 VM 的**可见性**语义（`CullingViewModel.isActive` 等，非旧 RootView 常量）。
 - **位置**【已确认】：`Sources/GatherApp/RootView.swift:289-345 SessionDraftCache`（`pendingExportIntent:329`、`pendingCullingConflicts:331`、`pendingFaceAnalyze:335`）；`isActive` 传参 `:617/639/665/684`；`.id(languageVersion)` `:423`；`languageVersion` 状态 `:367/435`。RootView 共 1,005 行。
 - **处置**：`SessionStore` + `SessionWorkspace` + `WorkspaceIntent`（take-and-clear）+ `isVisible`；删除 draftCache 与 4 个 pending 容器。
 - **验收**：RootView ≤300 行；`grep 'isActive|SessionDraftCache' app` = 0；意图"消费即清"测试。
 - **风险**：跨页跳转意图（index→culling/export/face）丢失；多窗口 tab 复用同一 draftCache 的时序。
 
-### CL-10 .id(languageVersion) + l( 直调 —— status: pending，Cut 4
+### CL-10 .id(languageVersion) + l( 直调 —— status: done（2026-10-24 复核，Cut 4 已落地）
+- **证据（2026-10-24 复核）**：`GatherLocalization.l(` = **0**；`.id(languageVersion)` 生产代码 = **0**
+  （4 处命中全在注释里，说明「不再整树重建」）；`l10n(` 经 `LanguageStore` + Environment 驱动。
 - **位置**【已确认】：`.id(languageVersion)` 仅 `RootView.swift:423` 1 处；`GatherLocalization.l(` 全 UI **1,439** 处（计划 1,497，漂移 -58，需在 Cut 4 重扫）；`Support/GatherLocalization.swift`（含 3 处 @unchecked Sendable）。
 - **处置**：`LanguageStore` + Environment `L10n`；codemod `l(`→`l10n(`；删除 `.id` 与全局锁盒（菜单/Delegate 保留只读入口）。
 - **验收**：`grep 'GatherLocalization.l(' app` = 0（菜单除外 allowlist）；`check-l10n.sh`；切语言页面状态保留（手工）。
@@ -133,17 +144,23 @@
 - **残余**：历史文档正文中的旧代码路径仍是快照值（不改正文结论）；无 redirect stub，旧路径靠 archive 索引映射。
 
 ### CL-17 重复常量 / 清单 —— status: pending，Cut 4/5
-- **位置**【已确认】：`rawExtensions` 三入口 — 定义 `Database/Repositories/AssetRepo.swift:1190`、投影 `PhotoRepo.swift:163`（`AssetRepo.rawExtensions.sorted()`）、再导出 `Services/PhotoAssets.swift:12`；轮询间隔 — `ControlCenter/SessionControlView.swift:236/239`（15s/3s）、`Similarity/SimilarityViewModel.swift:398`（1s）、`Gallery/GalleryViewModel.swift:224`（注释引用 SessionControl 模式）。
+- **证据（2026-10-24 复核）**：rawExtensions 定义已收敛到 PhotoFileTypes.rawExtensions
+  （GatherProtocol/Protocol/PhotoFileTypes.swift:22），其余 3 处只是别名
+  （AssetRepo.swift:39、PhotoRepo.swift:158、PhotoAssets.swift:13），别名尚未合并；
+  轮询间隔散落 .seconds( 共 23 处；PollingPolicy 未落地。
+- **位置**【已确认，按符号而非行号取证】：grep -rn 'static let rawExtensions' Sources =
+  1 定义 + 3 别名；轮询间隔见 SessionControlView.swift、SimilarityViewModel.swift、
+  GalleryViewModel.swift（行号随重构漂移，引用前重新 grep）。
 - **处置**：扩展名清单收敛到 `PhotoFileTypes`（GatherProtocol）；轮询抽 `PollingPolicy`（active/idle/debounce 三档）。
 - **验收**：`grep -rn 'rawExtensions' Sources` = 1 定义 + 只读引用；`PollingPolicy` 单元测试；无散落 `.seconds(` 常量。
 - **风险**：RAW 判定被 SQL 拼接复用（AssetRepo:839），迁移时漏改导致导入漏文件。
 
 ### CL-18 吞错 / 弱类型残留 —— status: pending（评审修复后 ratchet 重定基线）
-- **位置（2026-10-22 最终清理后实测）**：`try?` **235 行**（baseline 240，已下降 5）；`@unchecked Sendable` **53 行**；`services_prepare` **127**（Indexer 显式 FK 顺序 +1，已入 baseline）。重点文件：`CullingService.swift`、`MetadataService.swift`、`JobService.swift`、`CaptureOneBridge.swift`。
+- **位置（2026-10-24 门禁实测）**：ratchet current/baseline = unchecked_sendable 54/54、try_optional 228/228、services_prepare 0/0、todo_fixme 0/0、with_known_issue 0/0；services_prepare 从此前 127 归零是指标口径调整（见 check-cleanup-ratchet.sh 与 docs/cleanup-baseline.json 的 generated_at），不是新增豁免。重点文件：CullingService.swift、MetadataService.swift、JobService.swift、CaptureOneBridge.swift。
 - **处置**：逐个消除或登记豁免（`docs/cleanup-baseline.json` + 注释说明锁依据）；`try?` 只允许用于"失败可观测"的分支并记 warn。
 - **验收**：ratchet 只降不升；每个剩余 `@unchecked Sendable` 有锁/不可变依据注释。
 - **风险**：把吞错改成 throw 会改变 UI 错误路径与测试断言；需分批。
-- **最终复核（2026-10-22 收尾）**：`./scripts/check-cleanup-ratchet.sh` 实测 current/baseline = **53/53、235/240、127/127、0/0、0/0**（try? 因并行工作区再降 5，未回升；baseline 未收紧）；`@unchecked Sendable` 53 行、Services `prepare(` 127 处。本轮不改源码，状态维持 pending。
+- **最终复核（2026-10-24）**：./scripts/check-cleanup-ratchet.sh 实测 current/baseline = 54/54、228/228、0/0、0/0、0/0（R5 删单例 −1、R6 新增 ReadConnectionPool +1，净值为 54；try? 已收紧到 228）。状态维持 pending（逐条消除仍属独立工作）。
 
 ### CL-19 旧回归测试 / 重复覆盖 —— status: done（2026-10-22 复核，保留 60 例）
 - **实测（2026-10-22）**：`app ReviewFixTests` 994 行 / 45 例、`app ReviewAcceptanceTests` 135/6、`app DeepModelAcceptanceTests` 37/1、`core ReviewAcceptanceTests` 83/5、`core DeepReviewAcceptanceTests` 53/3；合计 **1,302 行 / 60 例**（计划 1,299 行漂移 +3）。外部进程 4 例（zip/sh/awk）仍在。
@@ -419,6 +436,27 @@ grep -rn 'class LockedBox\|class AsyncGate' --include=*.swift desktop/native/*/T
 - **构建产物**：删除 `release/Gather.app`（22 MB）与 4 个非活动 `.build` scratch（≈2.19 GiB）；保留并行构建正在写入的 `.build/scratch` 与两包增量缓存 `.build`。
 - **A/B 档收尾清理（2026-10-22）**：26 文件头 + 4 交付端口注释；删 `JobScopeCheckpoint`（1 文件/22 行，测试改 `JobCreateParams.metadataScanRequestedPathsKey`）、`IndexerService.sha256File`、`GatherProgressBar` 4 参数、`GatherLocalization.appLocale`、2 私有常量、`VectorIndex.Candidate`、`FaceSimMutationPort`、2 个未调用 helper、`makeGatherTestDB`（22 处→`makeTestDB`）；57 文件 +84/−208。core **1,100/165**、app **617/68**、9 门禁、schema verify（43 表/373 列/69 索引/62 FK/user_version=2）绿。
 - **实测**：en **1,322** / zh 9；测试文件 **166**；535 Swift 文件 / 138,829 行（17:00 采样；并行工作区仍在变）；ratchet **53/235/127/0/0**（baseline try? 240）；docs/test-catalog/ratchet 三门禁全 OK。详见 [final-cleanup-docs.md](final-cleanup-docs.md)。
+
+---
+
+## 11. 合并 `test` 分支后的复审残余（2026-10-24）
+
+本节点名**未修**的剩余缺口（已修的见 §10 与各文档当前口径）：
+
+- **bitset 上限边界无实测（【已确认】）**：`ClusterGraphTests` 的 32,769 条 streaming 对账改为
+  n=33 + 注入 `maxBitsetEntries: 32`（只测分支选择）；`--smoke` 只有 2 千档。默认上限
+  （32,768）附近的真实内存/度数对账没有自动信号。建议在 nightly 增加 33k 稀疏档或 bench 断言。
+- **`languageChanged` 仍有生产订阅方（【已确认】）**：菜单单轨后标准菜单项语言跟随系统语言，
+  但 `LanguageStore`（跟随外部写入）与 `DashboardView`（日期格式化）仍订阅该广播，
+  不能当作「只剩测试」删除。
+- **`check-test-catalog.sh` 只校验 skip 元数据“存在”，不校验到期日（【已确认】）**：
+  `skip-expires` 过期不会变红（当前 2026-12-31 / 2027-06-30 均未过期）。
+- **`WorkspaceVisibilityTests` 依赖进程级 `NSApplication`（【疑似】）**：CI 的 parallel smoke
+  （不带 `--no-parallel`）可能与该套件争用 AppKit 状态；串行套件稳定，并行口径未验证。
+- **菜单禁用态/窗口重开无 GUI 验收（外部证据缺口）**：`AppCommandAvailability` 与
+  `applicationShouldHandleReopen` 只有单测与代码路径证据，鼠标级点击与 Dock 重开未做。
+- **`FileHasher` 打开失败统一映射 `fileReadNoSuchFile`、mid-read/partial-read 未覆盖（【疑似】，既有）**。
+- **x86_64 仅编译不运行**（`GATHER_ARCHS=universal` 只验证 lipo 切片）。
 
 ---
 

@@ -1,17 +1,13 @@
-// desktop/native/gather-app/Tests/GatherAppTests/APIPersonTemplateTests.swift
-// Cut 1 / B7a：LivePersonAPI（8 方法）与 LiveTemplateAPI（6 方法）的行为测试。
+// desktop/native/gather-app/Tests/GatherAppTests/APIPersonTests.swift
+// Cut 1 / B7a：LivePersonAPI（8 方法）的行为测试。
 //
 // 覆盖：
 // - person：list/get/create 的 DTO 形状与 PERSON_NOT_FOUND；update 的 name/notes/
 //   keywords/matchThreshold 与空更新；searchPhotos 的分页/会话过滤/参数边界；
 //   merge / removePhoto / delete 的 Confirmed<T> 行为与投影变化；
-// - template：CRUD（create 的 name trim、update 空更新、delete 幂等）与
-//   TEMPLATE_NOT_FOUND；apply 的 draft/photos_loaded 白名单、SettingsService
-//   写穿（阈值/eps 等）、非法会话状态 → INVALID_PARAM、缺失会话 →
-//   SESSION_NOT_FOUND；
 // - 错误路径：空白 id、超长 name、负数 limit/offset、NaN matchThreshold。
 //
-// 夹具：内存 SQLite（makeTestDB）+ 真实 PersonRepo / TemplateService /
+// 夹具：内存 SQLite（makeTestDB）+ 真实 PersonRepo /
 // SettingsService / SessionRepo，不触碰用户数据；破坏性入口一律显式
 // Confirmed<T>（D-011，source=.test）。
 
@@ -33,9 +29,7 @@ private struct PersonTemplateFixture {
     let photoRepo: PhotoRepo
     let sessionRepo: SessionRepo
     let settingsService: SettingsService
-    let templateService: TemplateService
     let personAPI: LivePersonAPI
-    let templateAPI: LiveTemplateAPI
 
     init() throws {
         let db = try makeTestDB()
@@ -43,15 +37,12 @@ private struct PersonTemplateFixture {
         let photoRepo = PhotoRepo(connection: db)
         let sessionRepo = SessionRepo(connection: db)
         let settingsService = SettingsService(repo: SettingsRepo(connection: db))
-        let templateService = TemplateService(connection: db, settings: settingsService)
         self.db = db
         self.personRepo = personRepo
         self.photoRepo = photoRepo
         self.sessionRepo = sessionRepo
         self.settingsService = settingsService
-        self.templateService = templateService
         self.personAPI = LivePersonAPI(personRepo: personRepo)
-        self.templateAPI = LiveTemplateAPI(templateService: templateService)
     }
 
     /// SessionRepo.create 默认 draft；需要其它状态时显式 updateStatus。
@@ -88,34 +79,6 @@ private struct PersonTemplateFixture {
             }
         )
     }
-}
-
-private func makeTemplateConfig(
-    threshold: Double = 10,
-    minGroupSize: Int = 2,
-    eps: Double = 0.65,
-    minSamples: Int = 2,
-    detectorConfidence: Double = 0.5
-) -> WorkflowTemplateConfig {
-    WorkflowTemplateConfig(
-        similarity: WorkflowTemplateSimilarity(
-            threshold: threshold,
-            minGroupSize: minGroupSize
-        ),
-        face: WorkflowTemplateFace(
-            eps: eps,
-            minSamples: minSamples,
-            detectorConfidence: detectorConfidence
-        ),
-        faceLibrary: WorkflowTemplateFaceLibrary(enabled: true, matchThreshold: 0.6),
-        duplicate: WorkflowTemplateDuplicate(enabled: true, visualThreshold: 8),
-        writeback: WorkflowTemplateWriteback(
-            createAlbums: true,
-            addPrefix: false,
-            markUngrouped: true,
-            writeIPTC: false
-        )
-    )
 }
 
 /// 只接受 GatherError；非 GatherError 视为失败路径断言失败（返回 nil 便于 #expect）。
@@ -335,158 +298,3 @@ struct APIPersonTests {
     }
 }
 
-// MARK: - Template
-
-@Suite("B7a Live TemplateAPI")
-struct APITemplateTests {
-    @Test("template CRUD：create/list/get/update/delete 与 TEMPLATE_NOT_FOUND")
-    func crud() async throws {
-        let fixture = try PersonTemplateFixture()
-        let config = makeTemplateConfig()
-
-        let created = try await fixture.templateAPI.create(
-            TemplateCreateParams(name: "  T1  ", config: config)
-        )
-        #expect(created.name == "T1")
-        #expect(created.description == "")
-        #expect(created.config == config)
-
-        let list = try await fixture.templateAPI.list()
-        #expect(list.map(\.id) == [created.id])
-
-        let fetched = try await fixture.templateAPI.get(created.id)
-        #expect(fetched == created)
-
-        let updatedConfig = makeTemplateConfig(threshold: 20, minGroupSize: 4)
-        let updated = try await fixture.templateAPI.update(TemplateUpdateParams(
-            templateId: created.id,
-            name: "T2",
-            description: "说明",
-            config: updatedConfig
-        ))
-        #expect(updated.name == "T2")
-        #expect(updated.description == "说明")
-        #expect(updated.config == updatedConfig)
-
-        // 空更新返回现值且不触碰 updated_at（TemplateService 语义）。
-        let noOp = try await fixture.templateAPI.update(
-            TemplateUpdateParams(templateId: created.id)
-        )
-        #expect(noOp == updated)
-
-        try await fixture.templateAPI.delete(
-            Confirmed(try TemplateReference(templateId: created.id), source: .test)
-        )
-        #expect(try await fixture.templateAPI.list().isEmpty)
-
-        let missing = await gatherError {
-            _ = try await fixture.templateAPI.get(created.id)
-        }
-        #expect(missing?.code == .TEMPLATE_NOT_FOUND)
-
-        let blankGet = await gatherError {
-            _ = try await fixture.templateAPI.get("   ")
-        }
-        #expect(blankGet?.code == .INVALID_PARAM)
-        #expect(blankGet?.params["field"] == "templateId")
-
-        let blankUpdate = await gatherError {
-            _ = try await fixture.templateAPI.update(
-                TemplateUpdateParams(templateId: "   ")
-            )
-        }
-        #expect(blankUpdate?.code == .INVALID_PARAM)
-        #expect(blankUpdate?.params["field"] == "templateId")
-
-        let blankCreate = await gatherError {
-            _ = try await fixture.templateAPI.create(
-                TemplateCreateParams(name: "   ", config: config)
-            )
-        }
-        #expect(blankCreate?.code == .INVALID_PARAM)
-        #expect(blankCreate?.params["field"] == "name")
-
-        let missingUpdate = await gatherError {
-            _ = try await fixture.templateAPI.update(
-                TemplateUpdateParams(templateId: "missing", name: "x")
-            )
-        }
-        #expect(missingUpdate?.code == .TEMPLATE_NOT_FOUND)
-
-        // 旧命令面：删除不存在的模板是幂等 no-op（DELETE 影响 0 行），本批保持。
-        try await fixture.templateAPI.delete(
-            Confirmed(try TemplateReference(templateId: "missing"), source: .test)
-        )
-    }
-
-    @Test("template.apply：draft/photos_loaded 白名单、Settings 写穿与错误路径")
-    func apply() async throws {
-        let fixture = try PersonTemplateFixture()
-        let config = makeTemplateConfig(
-            threshold: 42,
-            minGroupSize: 3,
-            eps: 0.71,
-            minSamples: 4,
-            detectorConfidence: 0.88
-        )
-        let template = try await fixture.templateAPI.create(
-            TemplateCreateParams(name: "Apply", description: "d", config: config)
-        )
-        let draftSession = try fixture.makeSession()
-        let loadedSession = try fixture.makeSession(status: "photos_loaded")
-        // sessions.status 的 CHECK 白名单：draft/photos_loaded/analyzing/review/completed；
-        // review 不在模板 apply 的允许集合内。
-        let reviewSession = try fixture.makeSession(status: "review")
-
-        try await fixture.templateAPI.apply(
-            Confirmed(
-                try TemplateApplyInput(templateId: template.id, sessionId: draftSession),
-                source: .test
-            )
-        )
-        #expect(fixture.settingsService.getNumber("default_threshold", defaultValue: -1) == 42)
-        #expect(fixture.settingsService.getNumber("default_min_group_size", defaultValue: -1) == 3)
-        #expect(fixture.settingsService.getNumber("default_eps", defaultValue: -1) == 0.71)
-        #expect(fixture.settingsService.getNumber("default_min_samples", defaultValue: -1) == 4)
-        #expect(fixture.settingsService.getNumber("detect_confidence", defaultValue: -1) == 0.88)
-
-        // 第二个允许状态：photos_loaded。
-        try await fixture.templateAPI.apply(
-            Confirmed(
-                try TemplateApplyInput(templateId: template.id, sessionId: loadedSession),
-                source: .test
-            )
-        )
-
-        let invalidStatus = await gatherError {
-            try await fixture.templateAPI.apply(
-                Confirmed(
-                    try TemplateApplyInput(templateId: template.id, sessionId: reviewSession),
-                    source: .test
-                )
-            )
-        }
-        #expect(invalidStatus?.code == .INVALID_PARAM)
-        #expect(invalidStatus?.params["field"] == "sessionId")
-
-        let missingTemplate = await gatherError {
-            try await fixture.templateAPI.apply(
-                Confirmed(
-                    try TemplateApplyInput(templateId: "missing", sessionId: draftSession),
-                    source: .test
-                )
-            )
-        }
-        #expect(missingTemplate?.code == .TEMPLATE_NOT_FOUND)
-
-        let missingSession = await gatherError {
-            try await fixture.templateAPI.apply(
-                Confirmed(
-                    try TemplateApplyInput(templateId: template.id, sessionId: "missing"),
-                    source: .test
-                )
-            )
-        }
-        #expect(missingSession?.code == .SESSION_NOT_FOUND)
-    }
-}

@@ -542,7 +542,10 @@ public final class JobService: @unchecked Sendable {
     }
 
     static func gatherErrorCode(from message: String) -> String? {
-        GatherErrorCode.allCases.first { $0.rawValue == message }?.rawValue
+        // 兼容 "CODE: detail" / "CODE" 两种历史落库文本；完整等值优先。
+        let head = message.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? message
+        return GatherErrorCode.allCases.first { $0.rawValue == message }?.rawValue
+            ?? GatherErrorCode.allCases.first { $0.rawValue == head }?.rawValue
     }
 
     static func nowMs() -> Int64 {

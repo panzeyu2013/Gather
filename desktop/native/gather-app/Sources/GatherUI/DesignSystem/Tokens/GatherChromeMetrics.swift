@@ -16,9 +16,15 @@ public enum GatherChromeMetrics {
     public static var contentMinWidth: CGFloat { windowMinWidth - sidebarMinWidth }
     public static var contentMinHeight: CGFloat { windowMinHeight }
 
+    /// 工具栏字段（GatherMenuField .toolbar）的横向内边距。
+    public static let fieldToolbarHorizontalPadding: CGFloat = 5
+    /// 常规字段 / 搜索框的横向内边距（GatherMenuField .field、GatherSearchField）。
+    public static let fieldHorizontalPadding: CGFloat = 9
+
     /// 会话页签行内边距（宽/高），与页面内容 gutter 区分。
     public static let tabStripHorizontalPadding: CGFloat = 16
-    public static let tabStripVerticalPadding: CGFloat = 8
+    /// 紧凑标签条（30pt 控件 + 5pt 上下留白 = 40pt 行高）。
+    public static let tabStripVerticalPadding: CGFloat = 5
 
     public static let inspectorMinWidth: CGFloat = 220
     /// 860 最小窗口：内容区 680 − 页签行最小 61 − Culling 内容最小 382

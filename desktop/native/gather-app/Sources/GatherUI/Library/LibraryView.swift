@@ -3,9 +3,9 @@
 // TS 源: desktop/src/renderer/pages/Library/index.tsx（筛选面板/工具栏/卡片网格/分页）
 //
 // 原生化改造（仅视图层）：
-// - 删除内容区自绘头部（eyebrow + 26pt 大标题 + 副标题）：标题/副标题交给窗口 chrome，
-//   工作区筛选与页面级动作进系统工具栏；
-// - 文件名搜索框（.roundedBorder TextField）→ .searchable(placement: .toolbar)；
+// - 删除内容区自绘头部（eyebrow + 26pt 大标题 + 副标题）：标题/副标题交给窗口 chrome；
+// - 搜索、工作区筛选、清除/刷新全部收进内容区的筛选 surface（不进窗口 toolbar，
+//   否则右侧 inspector 打开时会横跨内容列与检查器）；
 // - 「更多筛选」手搓展开 → 系统 DisclosureGroup；筛选字段走 LabeledContent 标签列；
 // - 自绘卡片底 / 描边 / 悬停态 → .gatherCard() 分组容器；
 // - 空态 / 无结果 / 加载失败 → ContentUnavailableView（macOS 14+）+ 重试/清除筛选出口；
@@ -15,10 +15,10 @@
 // Cut 4 / 4c-2j：940 行 -> 6 文件（行为不变）。本文件只保留页面壳：8 个 @State
 // （高级筛选展开、相册名、4 个破坏性确认目标、重新关联、jobProgress 去抖 Task）
 // + @SceneStorage（检查器可见性）+ 嵌套 PendingRelink + 页面装配/接线 + #Preview。
-// 工具栏在 +Toolbar，筛选面板在 +Filters，右侧支持能力检查器在 +Support，
+// 筛选/搜索面板在 +Filters，右侧支持能力检查器在 +Support，
 // 状态行/内容/网格/分页在 +Content，照片卡在 LibraryCardView。接线顺序
-// （searchable -> onChange search -> onChange sessionFilter -> toolbar -> inspector
-// -> task -> onReceive domainChanged/jobTerminal/jobProgress）逐字未动。
+// （onChange search -> onChange sessionFilter -> inspector -> task
+// -> onReceive domainChanged/jobTerminal/jobProgress）保持不变。
 import SwiftUI
 import AppKit
 import GatherProtocol
@@ -121,15 +121,11 @@ package struct LibraryView: View {
         }
         // 页面 chrome：frame / 表面 / 标题 / 副标题统一由 GatherPage 骨架提供。
         .gatherPage(title: l10n("全局图库"), subtitle: browseSubtitle)
-        // 文件名搜索：系统搜索框（取代 .roundedBorder TextField + 手搓宽度）。
-        .searchable(
-            text: $viewModel.filter.search,
-            placement: .toolbar,
-            prompt: Text(l10n("搜索文件名"))
-        )
+        // 文件名搜索：内容区搜索框（不用 .searchable toolbar 形态）。
+        // 打开右侧 inspector 时，系统 toolbar search 会横跨内容列 + 检查器；
+        // 搜索属于照片内容，必须留在内容列内，和筛选项待在同一个 surface 里。
         .onChange(of: viewModel.filter.search) { _, _ in viewModel.onFilterChanged() }
         .onChange(of: viewModel.sessionFilter) { _, _ in viewModel.onSessionFilterChanged() }
-        .toolbar { toolbarItems }
         // 右侧检查器：目录级管理功能。内容区回到「筛选 + 网格」两件事。
         .inspector(isPresented: $showInspector) {
             libraryInspector

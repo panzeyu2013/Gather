@@ -61,6 +61,9 @@ private struct DomainChangeModifier: ViewModifier {
     let excludingOrigin: String?
     let action: @MainActor (GatherApplicationChange) -> Void
 
+    /// R4：同一变更的重复/乱序投递只应用一次。
+    @State private var gate = DomainChangeGate()
+
     func body(content: Content) -> some View {
         content.onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
             guard let change = notification.object as? GatherApplicationChange else { return }
@@ -69,6 +72,7 @@ private struct DomainChangeModifier: ViewModifier {
                 sessionId: sessionId,
                 excludingOrigin: excludingOrigin
             ).accepts(change) else { return }
+            guard gate.applyIfNewer(change) else { return }
             action(change)
         }
     }
@@ -132,6 +136,8 @@ private struct DomainRefreshModifier: ViewModifier {
     let action: @MainActor () async -> Void
 
     @State private var pending: Task<Void, Never>?
+    /// R4：同一变更的重复/乱序投递只调度一次（debounce 之外的第二道闸）。
+    @State private var gate = DomainChangeGate()
 
     func body(content: Content) -> some View {
         content
@@ -142,6 +148,7 @@ private struct DomainRefreshModifier: ViewModifier {
                     sessionId: sessionId,
                     excludingOrigin: excludingOrigin
                 ).accepts(change) else { return }
+                guard gate.applyIfNewer(change) else { return }
 
                 pending?.cancel()
                 pending = Task { @MainActor in

@@ -13,4 +13,9 @@ public protocol TransactionRunner {
     func transaction<T>(_ body: () throws -> T) throws -> T
 }
 
-extension DBConnection: TransactionRunner {}
+extension DBConnection: TransactionRunner {
+    /// 端口要求的最简签名；转发到带 file/line 的诊断重载。
+    public func transaction<T>(_ body: () throws -> T) throws -> T {
+        try transaction(body, file: #fileID, line: #line, function: #function)
+    }
+}

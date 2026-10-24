@@ -1,6 +1,7 @@
 // desktop/native/gather-app/Sources/GatherUI/Gallery/GalleryInspector.swift
 // Cut 4 / 4c-2c：右侧检查器（筛选 / 显示）与三个选项控件，原 GalleryView.swift
-// 96-104、277-323、344-395 行逐字搬移；macOS 14 .inspector 系统 API 形态不变。
+// 96-104、277-323、344-395 行搬移；macOS 14 .inspector 系统 API 形态不变。
+// 2026-10-24：筛选/网格尺寸改走 GatherMenuField，去掉系统 Menu 的大灰块。
 import SwiftUI
 
 extension GalleryView {
@@ -14,34 +15,37 @@ extension GalleryView {
         ]
     }
 
-    /// TS: FILTER_OPTIONS —— 原生下拉（可访问名是真标签，不再是当前值）。
-    /// 检查器分区「筛选」的行：分区标题已承担语义，行内隐藏重复标签；
-    /// 可访问名与提示原样保留。
+    /// TS: FILTER_OPTIONS —— 检查器里的紧凑菜单字段。
+    ///
+    /// 系统 `.pickerStyle(.menu)` 在 220pt 检查器里会落成一个孤立的大灰块；
+    /// 统一成 GatherMenuField：图标 + 当前值 + chevron，整行可点，视觉上和
+    /// 「显示」里的字段同一套语言。
     private var filterPicker: some View {
-        Picker(l10n("筛选"), selection: $viewModel.filter) {
-            Text(l10n("全部")).tag(GalleryFilter.all)
-            Text(l10n("有人脸")).tag(GalleryFilter.hasFace)
-            Text(l10n("无人脸")).tag(GalleryFilter.noFace)
-            // D10：离线照片的可见筛选（控制中心「N 张照片离线」直达这里）。
-            Text(l10n("离线")).tag(GalleryFilter.offline)
-        }
-        .pickerStyle(.menu)
-        .labelsHidden()
+        GatherMenuField(
+            l10n("筛选"),
+            selection: $viewModel.filter,
+            options: [
+                GatherMenuOption(l10n("全部"), value: GalleryFilter.all),
+                GatherMenuOption(l10n("有人脸"), value: GalleryFilter.hasFace),
+                GatherMenuOption(l10n("无人脸"), value: GalleryFilter.noFace),
+                // D10：离线照片的可见筛选（控制中心「N 张照片离线」直达这里）。
+                GatherMenuOption(l10n("离线"), value: GalleryFilter.offline),
+            ],
+            systemImage: "line.3.horizontal.decrease.circle",
+            expands: true
+        )
         .help(l10n("筛选"))
-        .accessibilityLabel(l10n("筛选"))
         .onChange(of: viewModel.filter) { _, _ in viewModel.filterOrVariantChanged() }
     }
 
-    /// TS: DENSITY_OPTIONS —— 原生下拉（检查器分区「显示」的行）。
+    /// TS: DENSITY_OPTIONS —— 检查器分区「显示」的行：标签在左，紧凑字段在右。
     private var densityPicker: some View {
-        Picker(l10n("网格尺寸"), selection: $density) {
-            ForEach(densityOptions, id: \.value) { option in
-                Text(option.label).tag(option.value)
-            }
-        }
-        .pickerStyle(.menu)
+        GatherMenuRow(
+            l10n("网格尺寸"),
+            selection: $density,
+            options: densityOptions.map { GatherMenuOption($0.label, value: $0.value) }
+        )
         .help(l10n("网格尺寸"))
-        .accessibilityLabel(l10n("网格尺寸"))
     }
 
     /// TS Gallery.tsx:274-280 —— 变体展开开关。

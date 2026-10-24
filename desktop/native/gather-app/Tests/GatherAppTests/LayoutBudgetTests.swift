@@ -375,4 +375,19 @@ struct LayoutBudgetTests {
         print("[layout budget] min window total = \(total) (strip \(stripWidth) + content \(contentWidth) + inspector \(GatherChromeMetrics.inspectorIdealWidth))")
         #expect(total <= Self.contentMinWidthBudget, "860 最小窗口展开检查器会触发 N01 约束循环")
     }
+
+    /// 回归守卫：全局图库三个筛选字段必须是「固定宽字段」，不能在 ViewThatFits
+    /// 的 HStack 里被父级拉满（17:54 的截图中「在线状态 全部」被拉成一条大灰带）。
+    @Test("筛选菜单字段按 fixedWidth 收敛")
+    func menuFieldKeepsFixedWidth() {
+        let field = GatherMenuField(
+            "星级",
+            selection: .constant(""),
+            options: [GatherMenuOption("全部", value: "")],
+            fixedWidth: 128
+        )
+        let size = fittingSize(field, height: 44)
+        print("[layout budget] menu field fitting size = \(size)")
+        #expect(size.width <= 129)
+    }
 }

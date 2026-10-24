@@ -209,7 +209,8 @@ private func makeService(
         metadataCacheRepo: MetadataCacheRepo(connection: fixture.db),
         connection: fixture.db,
         keywordOrigins: nil,
-        assetResolver: nil
+        assetResolver: nil,
+        fileLock: XMPFileLock()
     )
 }
 
@@ -535,7 +536,7 @@ struct WritebackServiceTests {
             )
         }
         let delivery = DeliveryCoordinator(
-            connection: fixture.db, xmp: xmp, requireReloadAck: false)
+            connection: fixture.db, xmp: xmp, fileLock: XMPFileLock(), requireReloadAck: false)
         let summary = try delivery.mirrorWriteback(
             sessionId: fixture.sessionId, module: .similarity, items: mirrorItems)
         #expect(summary.errors.isEmpty)

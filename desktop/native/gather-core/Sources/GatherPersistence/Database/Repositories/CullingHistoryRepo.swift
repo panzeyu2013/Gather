@@ -78,13 +78,13 @@ public final class CullingHistoryRepo {
           """).get([.text(sessionId), .int(undone ? 0 : 1)])
         let boundaryId = boundary?[0].intValue
         if boundaryId != Int64(operationId) {
-            throw DBError.message(undone ? "CULLING_UNDO_NOT_LATEST" : "CULLING_REDO_OUT_OF_ORDER")
+            throw PersistenceError(code: undone ? .CULLING_UNDO_NOT_LATEST : .CULLING_REDO_OUT_OF_ORDER)
         }
         let changed = try connection.prepare("""
             UPDATE culling_history SET undone = ?
             WHERE id = ? AND session_id = ? AND undone = ?
           """).run([.int(undone ? 1 : 0), .int(Int64(operationId)), .text(sessionId), .int(undone ? 0 : 1)])
-        if changed != 1 { throw DBError.message("CULLING_HISTORY_STALE") }
+        if changed != 1 { throw PersistenceError(code: .CULLING_HISTORY_STALE) }
     }
 
     /// 撤销/重做栈顶（单查询；规则见文件头注）。
@@ -174,7 +174,10 @@ public final class CullingHistoryRepo {
                 createdAt: row.createdAt
             )
         } catch {
-            throw DBError.message("CULLING_HISTORY_CORRUPT")
+            throw PersistenceError(
+                code: .CULLING_HISTORY_CORRUPT,
+                detail: "operationId=\(row.id) \(error)"
+            )
         }
     }
 }

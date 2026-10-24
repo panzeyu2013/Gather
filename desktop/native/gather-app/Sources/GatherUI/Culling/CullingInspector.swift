@@ -98,7 +98,7 @@ struct CullingInspector: View {
                 }
 
                 // 页面级选项：折叠收纳，默认不遮挡当前照片决策。
-                GatherInspectorSection {
+                GatherInspectorSection(l10n("筛选")) {
                     DisclosureGroup(isExpanded: $filtersExpanded) {
                         CullingFilterControls(
                             viewModel: viewModel,

@@ -17,6 +17,10 @@ Modifiers/    gatherSurface / gatherText 等语义修饰符
 - 页面不再直接写 `.font(.callout)`、`Color(hex:)`、手写 `.shadow`、`.background(.regularMaterial)`。
 - 内容层不使用 Liquid Glass；Liquid Glass 只用于 toast / 浮层 / 功能按钮（见 `GatherGlass`）。
 - 卡片用 `gatherCard`；页面背景用 `gatherSurface`；空态用 `GatherEmptyState`。
+- 检查器 / 筛选条的菜单用 `GatherMenuField`（检查器行用 `GatherMenuRow`）：
+  自绘 26pt 字段 + 透明 `Menu` 命中层，不要直接使用 `.pickerStyle(.menu)` 的系统大灰块。
+- 内容区搜索用 `GatherSearchField`，不要用 `.searchable(placement: .toolbar)`：
+  后者在 inspector 打开时会横跨内容列与检查器。
 - `GatherMetrics` / `GatherTheme` 的旧别名仍可用，但新代码使用语义名（canvas / surface / accent / selection）。
 - 新增共享视觉代码放这里，不要继续往 `Support/` 加主题/组件。
 

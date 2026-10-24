@@ -16,6 +16,7 @@
 // - 不碰 .gather-backup-*：备份的归属必须按 deliveries.backup_path 对账，不能
 //   按时间盲删（P2-15 / P1-1）。
 
+import GatherProtocol
 import Foundation
 import GatherPersistence
 

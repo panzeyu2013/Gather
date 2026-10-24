@@ -1,7 +1,8 @@
 // desktop/native/gather-app/Sources/GatherUI/Library/LibraryView+Filters.swift
 // Cut 4 / 4c-2j：从 LibraryView.swift 移出筛选面板（原 180-309 行）与
-// LibraryColorOption（原 903-934 行，随唯一使用点移动）。纯搬移：主筛选三件套、
-// 更多筛选、LabeledContent 行、filterSelect 与 onFilterChanged 接线逐字未动。
+// LibraryColorOption（原 903-934 行，随唯一使用点移动）。
+// 2026-10-24：filterSelect 换成 GatherMenuField（128pt），并把搜索/工作区/
+// 清除/刷新全部收进同一个筛选 surface，避免 toolbar 跨到右侧 inspector。
 import SwiftUI
 import GatherProtocol
 
@@ -35,21 +36,94 @@ extension LibraryView {
         )
     }
 
+    /// 浏览头：搜索 + 工作区筛选 + 清除/刷新，全部留在中间内容列。
+    /// 不能放进窗口 toolbar：右侧 inspector 打开时 toolbar 控件会跨栏。
+    private var browseHeaderRow: some View {
+        HStack(spacing: 5) {
+            GatherSearchField(
+                text: $viewModel.filter.search,
+                prompt: l10n("搜索文件名"),
+                clearLabel: l10n("清除搜索")
+            )
+            .frame(minWidth: 110, maxWidth: 320)
+
+            Spacer(minLength: 5)
+
+            HStack(spacing: 5) {
+                Text(l10n("工作区"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                GatherMenuField(
+                    l10n("工作区"),
+                    selection: $viewModel.sessionFilter,
+                    options: [GatherMenuOption(l10n("全部"), value: "")] +
+                        viewModel.sessions.map {
+                            GatherMenuOption("\($0.name)（\($0.photoCount)）", value: $0.id)
+                        },
+                    minWidth: 88,
+                    fixedWidth: 112
+                )
+                .help(l10n("按工作区筛选"))
+            }
+
+            Rectangle()
+                .fill(GatherTheme.hairline)
+                .frame(width: 1, height: 12)
+                .padding(.horizontal, 1)
+                .accessibilityHidden(true)
+
+            Button {
+                viewModel.clearFilters()
+            } label: {
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(l10n("清除筛选"))
+            .accessibilityLabel(l10n("清除筛选"))
+            .disabled(viewModel.activeFilterCount == 0)
+
+            Button {
+                Task { await viewModel.load() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(l10n("刷新"))
+            .accessibilityLabel(l10n("刷新"))
+            .disabled(viewModel.phase == .loading)
+        }
+    }
+
     var filterBar: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // 宽窗口一行三列；放不下时整组换成竖排（ViewThatFits 按理想宽度判断），
-            // 字段名与当前值在两种排布下都完整可读。
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    primaryFilterControls
-                    Spacer(minLength: 0)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    primaryFilterControls
+            // 搜索 / 工作区 / 清除刷新 / 三组筛选共用一个 surface：
+            // 它们同属“浏览照片”，并且整块留在中间内容列内。
+            VStack(alignment: .leading, spacing: 10) {
+                browseHeaderRow
+
+                // 宽窗口一行三列；放不下时整组换成竖排（ViewThatFits 按理想宽度判断），
+                // 字段名与当前值在两种排布下都完整可读。
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        primaryFilterControls
+                        Spacer(minLength: 0)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        primaryFilterControls
+                    }
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
                     .fill(GatherTheme.surface)
@@ -58,6 +132,7 @@ extension LibraryView {
                 RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
                     .strokeBorder(GatherTheme.hairline, lineWidth: 1)
             )
+
             // 手搓「更多筛选」展开按钮 → 系统 DisclosureGroup（chevron / 键盘 / 动画由系统负责）。
             DisclosureGroup(isExpanded: $showAdvancedFilters) {
                 advancedFilters
@@ -120,8 +195,8 @@ extension LibraryView {
     }
 
     /// 一个筛选下拉：左侧字段名（短标签、不随值变化），右侧只显示当前值。
-    /// 自适应宽度（F01）：固定 150 × 3 个下拉在最小窗口宽度下会超出可用宽度，
-    /// 非滚动容器里的超宽固定子视图会把布局推入约束更新循环。
+    /// 固定 128pt：三列字段对齐，同时保证最小窗口下仍能一行放下；
+    /// 过长的值在字段内省略，完整选项仍在菜单里。
     private func filterSelect(
         _ title: String,
         allLabel: String,
@@ -133,17 +208,17 @@ extension LibraryView {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize()
-            Picker(title, selection: selection) {
-                Text(allLabel).tag("")
-                ForEach(options, id: \.1) { label, value in
-                    Text(label).tag(value)
-                }
-            }
-            .pickerStyle(.menu)
-            // 字段名由左侧 Text 承载，Picker 不再重复渲染标签（N09 的重复文案）。
-            .labelsHidden()
-            .frame(minWidth: 88, maxWidth: 150)
-            .accessibilityLabel(title)
+            // 字段名由左侧 Text 承载；菜单里只显示当前值（N09 的重复文案不再出现）。
+            // 统一用 GatherMenuField，避免每个筛选器都落成一颗系统大灰块。
+            GatherMenuField(
+                title,
+                selection: selection,
+                options: [GatherMenuOption(allLabel, value: "")] +
+                    options.map { GatherMenuOption($0.0, value: $0.1) },
+                // 统一宽度：三个筛选项的字段列对齐，值不再把行撑成一条大灰带。
+                fixedWidth: 128
+            )
+            .help(title)
         }
         .onChange(of: selection.wrappedValue) { _, _ in viewModel.onFilterChanged() }
     }

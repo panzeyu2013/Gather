@@ -17,7 +17,7 @@ enum FixtureLoader {
     }
 }
 
-/// dHash 对账 fixture 结构，与 generate-hash-fixtures.mjs 输出一致：
+/// dHash 对账 fixture 结构（冻结 golden；原生成器已随旧栈删除）：
 /// {"seed":42,"cases":[{"pixels":[...72 数...],"expected":"16 位 hex"}]}
 struct DHashFixture: Decodable {
     struct Case: Decodable {

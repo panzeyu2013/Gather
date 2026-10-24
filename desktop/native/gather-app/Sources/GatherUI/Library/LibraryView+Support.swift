@@ -1,6 +1,6 @@
 // desktop/native/gather-app/Sources/GatherUI/Library/LibraryView+Support.swift
 // Cut 4 / 4c-2j：从 LibraryView.swift 移出右侧检查器与四项支持能力（原 311-653 行）。
-// 纯搬移：四张卡片、supportCard 容器与静态文案映射逐字未动；5 个
+// 2026-10-24：智能相册 Picker 换成 GatherMenuField；四张卡片与 5 个
 // gatherDestructiveConfirm 的节点与顺序保持（相册删除 -> 接受关联 ->
 // 拒绝/拆分关联 -> 恢复原片 -> 重新关联）。
 import SwiftUI
@@ -38,26 +38,26 @@ extension LibraryView {
 
     private var smartAlbumsCard: some View {
         GatherInspectorSection(l10n("智能相册"), systemImage: "rectangle.stack") {
-            Picker(l10n("相册"), selection: Binding(
-                get: { viewModel.selectedAlbumId ?? "" },
-                set: { viewModel.selectAlbum($0.isEmpty ? nil : $0) }
-            )) {
-                Text(l10n("全部照片")).tag("")
-                ForEach(viewModel.albums, id: \.id) { album in
-                    Group {
-                        if album.validationError == nil {
-                            Text(album.name)
-                        } else {
-                            Label(album.name, systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(GatherTheme.errorText)
-                        }
-                    }
-                    .tag(album.id)
-                    .help(album.validationError ?? "")
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // 与图库检查器同一套菜单字段：不再落成系统灰色大块。
+            // 校验失败的相册在菜单文案里加警告符号（原来的行内红色三角
+            // 在系统 menu 里本来也不会渲染）。
+            GatherMenuRow(
+                l10n("相册"),
+                selection: Binding(
+                    get: { viewModel.selectedAlbumId ?? "" },
+                    set: { viewModel.selectAlbum($0.isEmpty ? nil : $0) }
+                ),
+                options: [GatherMenuOption(l10n("全部照片"), value: "")] +
+                    viewModel.albums.map { album in
+                        GatherMenuOption(
+                            album.validationError == nil ? album.name : "\(album.name) ⚠︎",
+                            value: album.id
+                        )
+                    },
+                minWidth: 88,
+                fixedWidth: 104
+            )
+            .help(l10n("相册"))
 
             HStack(spacing: 6) {
                 TextField(l10n("新相册名称"), text: $albumName)
@@ -66,6 +66,8 @@ extension LibraryView {
                     albumName = ""
                     Task { await viewModel.createAlbum(name: name) }
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .disabled(albumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isSupportBusy)
             }
             if viewModel.selectedAlbumId != nil {

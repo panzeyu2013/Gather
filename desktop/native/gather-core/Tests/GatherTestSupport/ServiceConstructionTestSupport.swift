@@ -44,12 +44,6 @@ extension SessionService {
     }
 }
 
-extension TemplateService {
-    public convenience init(connection: DBConnection, settings: SettingsService) {
-        self.init(templates: TemplateRepo(connection: connection), settings: settings)
-    }
-}
-
 extension WorkspaceStatusService {
     public convenience init(
         connection: DBConnection,
@@ -159,6 +153,7 @@ extension SimilarityService {
                 minGroupSize: minGroupSize, mode: mode, onProgress: onProgress)
         },
         writebackProvider: (any SimilarityWritebackProvider)? = nil,
+        fileLock: XMPFileLock? = nil,
         delivery: (any DeliveryModuleAdapter)? = nil
     ) {
         self.init(
@@ -176,10 +171,12 @@ extension SimilarityService {
             multiClusterProvider: multiClusterProvider,
             writebackProvider: writebackProvider,
             // 旧默认：宿主未注入时按同一 connection 自建 coordinator（行为不变）。
+            // R5：不再有 XMPFileLock.shared 兜底；需要跨组件串行的测试应显式注入同一实例。
             delivery: delivery ?? CoordinatorDeliveryAdapter(
                 engine: DeliveryCoordinator(
                     connection: connection,
-                    files: FileSystemDeliveryFilePort()
+                    files: FileSystemDeliveryFilePort(),
+                    fileLock: fileLock ?? XMPFileLock()
                 ),
                 module: .similarity
             )
@@ -231,6 +228,7 @@ extension FaceKwService {
                 isCancelled: isCancelled)
         },
         writebackProvider: FaceWritebackProvider? = nil,
+        fileLock: XMPFileLock? = nil,
         delivery: (any DeliveryModuleAdapter)? = nil
     ) {
         self.init(
@@ -252,7 +250,8 @@ extension FaceKwService {
             delivery: delivery ?? CoordinatorDeliveryAdapter(
                 engine: DeliveryCoordinator(
                     connection: connection,
-                    files: FileSystemDeliveryFilePort()
+                    files: FileSystemDeliveryFilePort(),
+                    fileLock: fileLock ?? XMPFileLock()
                 ),
                 module: .faceKeyword
             )
@@ -274,6 +273,7 @@ extension CullingService {
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: CullingHistoryRepo? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        fileLock: XMPFileLock? = nil,
         delivery: (any DeliveryModuleAdapter)? = nil
     ) {
         self.init(
@@ -293,7 +293,8 @@ extension CullingService {
             delivery: delivery ?? CoordinatorDeliveryAdapter(
                 engine: DeliveryCoordinator(
                     connection: connection,
-                    files: FileSystemDeliveryFilePort()
+                    files: FileSystemDeliveryFilePort(),
+                    fileLock: fileLock ?? XMPFileLock()
                 ),
                 module: .culling
             )

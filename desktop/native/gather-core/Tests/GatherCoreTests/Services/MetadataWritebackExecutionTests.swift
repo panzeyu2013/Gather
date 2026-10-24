@@ -123,7 +123,8 @@ private struct WritebackFixture {
             photoRepo: PhotoRepo(connection: db),
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,
-            assetResolver: assetResolver
+            assetResolver: assetResolver,
+            fileLock: XMPFileLock()
         )
         let counter = FlushCounter()
         // 与组合根同一条接线：宿主注入 executePending(sessionId, module: "metadata")。

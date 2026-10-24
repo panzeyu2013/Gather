@@ -12,8 +12,13 @@
 //   .build/debug/gather-core-benchmarks            # 2 万/5 万两档全量
 //   .build/debug/gather-core-benchmarks --smoke    # 2 千冒烟档
 //   .build/debug/gather-core-benchmarks --multi-bench  # 多档位单趟 A/B（§4.2 性能证据）
-//   .build/debug/gather-core-benchmarks --quality      # 合成聚类质量基线（P/R/F1/noise）
-//   .build/debug/gather-core-benchmarks --margin       # margin 扫描（生产 FaceIdentityPolicy）
+//   .build/debug/gather-core-benchmarks --quality      # 合成聚类质量基线（P/R/F1/noise；含阈值断言）
+//   .build/debug/gather-core-benchmarks --margin       # margin 扫描（生产 FaceIdentityPolicy；含边界断言）
+//   .build/debug/gather-core-benchmarks --incremental  # 2 万张 + 100 张新增的增量复用/耗时门
+//
+// 阈值断言（Cut 5 后续）：--quality / --margin / --incremental 与 --smoke 的
+// LSH 召回在 print 之后逐项判定，退化直接 exit 1；nightly.yml 依赖这个退出码，
+// 不再只把 NDJSON 上传留待人工比对。
 //   .build/debug/gather-core-benchmarks --face-10k     # 10k 合成人脸（显式档；debug 走 LSH，
 //                                                      #   -c release 走生产默认的精确 DBSCAN）
 import Foundation
@@ -64,6 +69,31 @@ func emit(_ row: MetricRow) {
 
 func elapsedMs(_ since: DispatchTime) -> Double {
     Double(DispatchTime.now().uptimeNanoseconds - since.uptimeNanoseconds) / 1_000_000
+}
+
+// ── 阈值断言（夜间门禁）──
+// 统计门从默认单测迁出后不能只「打印」：下限写进可执行文件，退化直接非零
+// 退出（nightly 变红），否则删掉的 ARI/召回/精确率断言等于无人守。
+// 阈值只依赖确定性数据与固定种子，与机器无关；耗时只设宽松上限，避免把
+// CI 负载波动误判成回归。
+/// 断言只走返回值（不共享可变状态）：各 benchmark 函数把自己违反的条目作为
+/// 字符串数组返回，入口汇总后判定，避免在 0 依赖的基准目标里引入锁盒子。
+func check(
+    _ condition: Bool, _ message: @autoclosure () -> String, into failures: inout [String]
+) {
+    guard !condition else { return }
+    failures.append(message())
+}
+
+func reportChecks(_ phase: String, _ failures: [String]) -> Never {
+    guard failures.isEmpty else {
+        for failure in failures {
+            print("benchmark=\(phase) check=FAIL reason=\(failure)")
+        }
+        exit(1)
+    }
+    print("benchmark=\(phase) check=PASS")
+    exit(0)
 }
 
 // ── 数据生成 ──
@@ -315,9 +345,23 @@ func validateQualityMetrics() {
     }
 }
 
+/// 合成聚类质量指标；`unassigned` 是完整性校验（>0 = 聚类器丢点，P/R/F1/ARI 不可信）。
+struct QualityMetrics {
+    let precision: Double
+    let recall: Double
+    let f1: Double
+    let ari: Double
+    let noiseRate: Double
+    let truePositive: Int
+    let falsePositive: Int
+    let falseNegative: Int
+    let unassigned: Int
+    let clusters: Int
+}
+
 func clusterQualityMetric(
     entries: [EmbeddingEntry], labels: [Int], result: FaceClusterResult
-) -> String {
+) -> QualityMetrics {
     let count = entries.count
     var predicted = [Int](repeating: -1, count: count)
     var nextCluster = 0
@@ -329,6 +373,10 @@ func clusterQualityMetric(
         predicted[entry.observationId - 1] = nextCluster
         nextCluster += 1
     }
+    // 丢点检测必须在「noise 逐点成簇」之前按覆盖率算：赋值后每个下标都有值，
+    // 再 filter(<0) 恒为空，等于没有校验。
+    let assignedCount = result.clusters.reduce(0) { $0 + $1.count } + result.noise.count
+    let unassigned = max(count - assignedCount, 0)
 
     var truePositive = 0
     var falsePositive = 0
@@ -350,37 +398,72 @@ func clusterQualityMetric(
     let noiseRate = Double(result.noise.count) / Double(max(count, 1))
     let ari = adjustedRandIndex(labels: labels, predicted: predicted)
 
-    return String(
-        format:
-            "p=%.4f r=%.4f f1=%.4f ari=%.4f tp=%d fp=%d fn=%d noise=%.4f clusters=%d",
-        precision, recall, f1, ari, truePositive, falsePositive, falseNegative, noiseRate,
-        result.clusters.count)
+    return QualityMetrics(
+        precision: precision, recall: recall, f1: f1, ari: ari, noiseRate: noiseRate,
+        truePositive: truePositive, falsePositive: falsePositive, falseNegative: falseNegative,
+        unassigned: unassigned, clusters: result.clusters.count)
 }
 
-func benchQualityCluster() throws {
+func formatQuality(_ q: QualityMetrics) -> String {
+    String(
+        format:
+            "p=%.4f r=%.4f f1=%.4f ari=%.4f tp=%d fp=%d fn=%d noise=%.4f clusters=%d unassigned=%d",
+        q.precision, q.recall, q.f1, q.ari, q.truePositive, q.falsePositive, q.falseNegative,
+        q.noiseRate, q.clusters, q.unassigned)
+}
+
+func benchQualityCluster() throws -> [String] {
     validateQualityMetrics()
+    var failures: [String] = []
     let dataset = makeQualityEntries(identities: 6, perIdentity: 60, dim: 24, seed: 0xFACE)
+    // 阈值 = 当前确定性数据的实测值再留余量；这些下限是默认套件删掉的
+    // 统计门的等价物（floor=0.5 必须彻底消除跨身份误合并，floor=0 允许噪声
+    // 簇但 ARI/召回不得塌方，任何 floor 都不允许丢点）。
     for floor in [0.0, 0.5] {
         let since = DispatchTime.now()
         let result = try FaceClusterer.clusterEmbeddings(
             entries: dataset.entries, eps: 0.8, minPts: 2,
             coreQualityFloor: floor)
         let duration = elapsedMs(since)
+        let metrics = clusterQualityMetric(
+            entries: dataset.entries, labels: dataset.labels, result: result)
+        check(
+            metrics.unassigned == 0,
+            "floor=\(floor): \(metrics.unassigned) 个点未被分配（聚类器丢点）", into: &failures)
+        if floor > 0 {
+            check(
+                metrics.falsePositive == 0,
+                "floor=\(floor): 跨身份误合并 fp=\(metrics.falsePositive)", into: &failures)
+            check(
+                metrics.precision >= 0.999,
+                "floor=\(floor): precision \(metrics.precision) < 0.999", into: &failures)
+            check(
+                metrics.ari >= 0.70, "floor=\(floor): ari \(metrics.ari) < 0.70",
+                into: &failures)
+            check(
+                metrics.noiseRate >= 0.15,
+                "floor=\(floor): 低质量样本未隔离 noise=\(metrics.noiseRate)", into: &failures)
+        } else {
+            check(metrics.ari >= 0.60, "floor=0: ari \(metrics.ari) < 0.60", into: &failures)
+            check(metrics.recall >= 0.60, "floor=0: recall \(metrics.recall) < 0.60", into: &failures)
+            check(metrics.clusters <= 8, "floor=0: clusters \(metrics.clusters) > 8", into: &failures)
+        }
         emit(MetricRow(
             benchmark: "face-quality", phase: "cluster-quality",
             size: dataset.entries.count, durationMs: duration,
             throughputPerSec: Double(dataset.entries.count) / max(duration / 1000, 1e-9),
             metric:
                 "seed=\(0xFACE) dim=24 identities=6 perIdentity=60 floor=\(floor) eps=0.8 minPts=2 "
-                + clusterQualityMetric(
-                    entries: dataset.entries, labels: dataset.labels, result: result)))
+                + formatQuality(metrics)))
     }
+    return failures
 }
 
 // ── margin 扫描（从默认单测迁出）──
 // 直接调用生产判定 FaceIdentityPolicy.decide，跑 0 / gap 边界 / 0.01 / 更大 margin；
 // 质量曲线用于夜间基线，不进入 PR 门禁。
-func benchMarginSweep() {
+func benchMarginSweep() -> [String] {
+    var failures: [String] = []
     let thresholds = ["P0": 0.6, "P1": 0.6]
     let scores = ["P0": 0.8, "P1": 0.7955]
     let margins: [Double] = [0, 0.0045, 0.0046, 0.005, 0.01, 0.02, 0.04, 0.06, 0.10]
@@ -403,20 +486,35 @@ func benchMarginSweep() {
             durationMs: duration,
             throughputPerSec: 0,
             metric: "margin=\(String(format: "%.4f", margin)) gap=0.0045 decision=\(label)"))
+        // 边界语义固定：gap == margin 仍接受（严格小于才 ambiguous），
+        // 越过 gap 之后必须转 ambiguous，margin 再大不得反转。
+        if margin <= 0.0045 {
+            check(
+                label == "accepted:P0:0.8000",
+                "margin=\(margin): 期望 accepted，实际 \(label)", into: &failures)
+        } else {
+            check(
+                label == "ambiguous", "margin=\(margin): 期望 ambiguous，实际 \(label)",
+                into: &failures)
+        }
     }
+    return failures
 }
 
-func benchLsh(size: Int, seed: UInt32, queries: Int, dim: Int) throws {
+func benchLsh(
+    size: Int, seed: UInt32, queries: Int, dim: Int, expectRecall: Bool
+) throws -> [String] {
+    var failures: [String] = []
     var rand = BenchmarkRandom(seed: seed)
-    // 200 个小簇 + 0.45 单位噪声：簇内余弦约 0.91，部分对低于 eps=0.85，
-    // 同时把 LSH 配成 2 表/probe=1，使 exactRecall 有机会 <1（纯随机向量
-    // 在 128 维几乎互不相邻，无法测召回）。
+    // 200 个小簇 + 0.30 单位噪声：簇内余弦约 1/1.09 ≈ 0.92（高于 eps=0.85，
+    // 保证每个查询都有足够的精确近邻可测召回），同时把 LSH 配成 2 表/probe=1，
+    // 使 exactRecall 有机会 < 1（纯随机向量在 128 维几乎互不相邻，测不出召回）。
     let clusterCount = min(200, size)
     let bases = (0..<clusterCount).map { _ in randomUnitVector(dim: dim, rand: &rand) }
     let rows = (0..<size).map { index -> [Float] in
         let base = bases[index % clusterCount]
         let noise = randomUnitVector(dim: dim, rand: &rand)
-        return normalizedFloats(zip(base, noise).map { $0 + $1 * 0.45 })
+        return normalizedFloats(zip(base, noise).map { $0 + $1 * 0.30 })
     }
     // 查询 = 索引内随机行（带真实行号，用于自召回判定）。
     let queryRows: [(row: [Float], index: Int)] = (0..<queries).map { _ in
@@ -479,6 +577,101 @@ func benchLsh(size: Int, seed: UInt32, queries: Int, dim: Int) throws {
         durationMs: buildMs + queryMs,
         throughputPerSec: Double(size) / (buildMs / 1000),
         metric: "buildMs=\(String(format: "%.1f", buildMs)) queryMs=\(String(format: "%.1f", queryMs)) selfRecallAt085=\(String(format: "%.4f", Double(hits) / Double(queries))) exactRecallAt085=\(String(format: "%.4f", exactRecall)) exactPairs=\(exactNeighborTotal) exactSample=\(recallSample) avgCandidates=\(String(format: "%.1f", Double(totalCandidates) / Double(queries)))"))
+
+    // 召回下限：小档（--smoke / nightly）断言精确召回与自召回，否则「LSH 退回
+    // 空候选」这类退化只会让数字变小而不会失败。大档只做接线非空断言，
+    // 避免把 20k/50k 的采样波动当回归。
+    check(totalCandidates > 0, "lsh size=\(size): 候选集为空（索引接线错误）", into: &failures)
+    if expectRecall {
+        check(
+            exactNeighborTotal >= 100,
+            "lsh size=\(size): 精确近邻只有 \(exactNeighborTotal) 对（数据构造失效）", into: &failures)
+        check(
+            exactRecall >= 0.45,
+            "lsh size=\(size): exactRecall@0.85 \(exactRecall) < 0.45", into: &failures)
+        check(
+            hits == queries,
+            "lsh size=\(size): selfRecall@0.85 \(hits)/\(queries) < 1.0", into: &failures)
+    }
+    return failures
+}
+
+// ── 增量聚类性能/复用门（从默认单测迁出）──
+// 语义等价于被删的「2 万张 + 新增 100 张」用例：新增只挂到已有分量上，
+// 因此只有被触及的 1 个分量需要重算，其余分量直接复用；耗时上限宽松
+// （10s），实际远低于全量重算。
+func benchIncrementalCluster(size: Int, added: Int, seed: UInt32) throws -> [String] {
+    var failures: [String] = []
+    let threshold = 8
+    let minGroupSize = 3
+    let sinceGen = DispatchTime.now()
+    let entries = makeHashEntries(count: size, seed: seed)
+    let genMs = elapsedMs(sinceGen)
+
+    let sinceFull = DispatchTime.now()
+    let full = try ClusterGraphPipeline.run(
+        entries: entries, threshold: threshold, minGroupSize: minGroupSize)
+    let fullMs = elapsedMs(sinceFull)
+    guard let state = full.state else {
+        print("benchmark=similarity error=incremental-missing-state")
+        exit(1)
+    }
+
+    // 新增条目与第 0 条同 hash（距离 0），只会并入第 0 条所在分量。
+    let anchor = entries[0].hash
+    var grown = entries
+    grown.reserveCapacity(size + added)
+    for index in 0..<added {
+        grown.append(HashEntry(photoId: "incr-\(index)", hash: anchor))
+    }
+
+    let sinceUpdate = DispatchTime.now()
+    let outcome = try IncrementalClusterer.update(
+        state: state, entries: grown, minGroupSize: minGroupSize, threshold: threshold)
+    let updateMs = elapsedMs(sinceUpdate)
+    let result = IncrementalClusterer.result(
+        state: outcome.state, entries: grown, minGroupSize: minGroupSize)
+
+    emit(MetricRow(
+        benchmark: "similarity", phase: "incremental", size: grown.count,
+        durationMs: updateMs,
+        throughputPerSec: Double(added) / max(updateMs / 1000, 1e-9),
+        metric: "genMs=\(String(format: "%.1f", genMs)) fullMs=\(String(format: "%.1f", fullMs)) updateMs=\(String(format: "%.1f", updateMs)) added=\(outcome.summary.addedCount) recomputed=\(outcome.summary.recomputedComponentCount) reused=\(outcome.summary.reusedComponentCount) groups=\(result.groups.count) threshold=\(threshold) minGroupSize=\(minGroupSize)"))
+
+    check(
+        outcome.summary.addedCount == added,
+        "incremental: added=\(outcome.summary.addedCount) != \(added)", into: &failures)
+    check(
+        outcome.summary.recomputedComponentCount == 1,
+        "incremental: recomputed=\(outcome.summary.recomputedComponentCount)（只有被触及的 1 个分量该重算）",
+        into: &failures)
+    check(
+        outcome.summary.reusedComponentCount >= 1,
+        "incremental: reused=\(outcome.summary.reusedComponentCount)（未被触及的分量必须复用）",
+        into: &failures)
+    check(
+        result.groups.count == full.result.groups.count,
+        "incremental: 组数 \(result.groups.count) != 全量 \(full.result.groups.count)",
+        into: &failures)
+    // 新增必须真的并入组：只比组数时「把新增丢进 ungrouped」也会绿。
+    let grouped = Set(result.groups.flatMap { $0 })
+    let leaked = (0..<added).map { "incr-\($0)" }.filter { !grouped.contains($0) }
+    check(
+        leaked.isEmpty,
+        "incremental: \(leaked.count)/\(added) 条新增未进组（如 \(leaked.prefix(3))）",
+        into: &failures)
+    let anchorGroup = result.groups.first { $0.contains(entries[0].photoId) }
+    check(
+        (anchorGroup?.count ?? 0) >= added,
+        "incremental: anchor 组只有 \(anchorGroup?.count ?? 0) 条（应 >= 新增 \(added)）",
+        into: &failures)
+    check(
+        result.ungrouped.isEmpty,
+        "incremental: ungrouped 非空（\(result.ungrouped.count) 条）", into: &failures)
+    check(
+        updateMs < 10_000,
+        "incremental: 新增 \(added) 张耗时 \(updateMs)ms >= 10000ms", into: &failures)
+    return failures
 }
 
 // ── 10k 合成人脸档（Cut 5 / 5d-2）──
@@ -611,21 +804,35 @@ func benchFace10k(size: Int, dim: Int, identities: Int, seed: UInt32) throws {
 // ── 入口 ──
 // margin 扫描：从默认单测迁出的生产判定曲线；夜间跑。
 if CommandLine.arguments.contains("--margin") {
-    benchMarginSweep()
+    let failures = benchMarginSweep()
     print("benchmark=face-quality phase=margin-sweep doneMs=\(Int(elapsedMs(start)))")
-    exit(0)
+    reportChecks("face-quality", failures)
 }
 
 // 质量基线：从默认单测迁出的合成聚类 P/R/F1/noise；夜间跑。
 if CommandLine.arguments.contains("--quality") {
+    let failures: [String]
     do {
-        try benchQualityCluster()
+        failures = try benchQualityCluster()
     } catch {
         print("benchmark=face-quality error=\(error)")
         exit(1)
     }
     print("benchmark=face-quality doneMs=\(Int(elapsedMs(start)))")
-    exit(0)
+    reportChecks("face-quality", failures)
+}
+
+// 增量聚类档（性能 + 复用门）：从默认单测迁出，夜间保留 2 万张规模。
+if CommandLine.arguments.contains("--incremental") {
+    let failures: [String]
+    do {
+        failures = try benchIncrementalCluster(size: 20_000, added: 100, seed: 0xD4A5)
+    } catch {
+        print("benchmark=similarity error=\(error)")
+        exit(1)
+    }
+    print("benchmark=similarity phase=incremental doneMs=\(Int(elapsedMs(start)))")
+    reportChecks("similarity", failures)
 }
 
 // 10k 合成人脸显式档（Cut 5 / 5d-2）：不进默认档/冒烟档，避免日常基准变慢。
@@ -660,6 +867,7 @@ let queries = smoke ? 20 : 100
 
 print("benchmark=similarity sizes=\(sizes) queries=\(queries) startMs=\(Int(elapsedMs(start)))")
 
+var similarityFailures: [String] = []
 do {
     for size in sizes {
         try benchDHashCluster(size: size, seed: 0xD4A5)
@@ -669,7 +877,8 @@ do {
         try benchEmbeddingCluster(size: size, seed: 0xB1E2, lshMinPoints: smoke ? 100 : 1_000)
     }
     for size in sizes {
-        try benchLsh(size: size, seed: 0x15EED, queries: queries, dim: 128)
+        similarityFailures += try benchLsh(
+            size: size, seed: 0x15EED, queries: queries, dim: 128, expectRecall: smoke)
     }
 } catch {
     print("benchmark=similarity error=\(error)")
@@ -677,3 +886,4 @@ do {
 }
 
 print("benchmark=similarity doneMs=\(Int(elapsedMs(start)))")
+reportChecks("similarity", similarityFailures)

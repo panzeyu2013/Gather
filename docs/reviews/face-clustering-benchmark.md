@@ -138,7 +138,7 @@
 - 高 5（strides/fp16）→ 非连续 strides 走逐下标读取（线性读会静默错序），支持 float32/double/float16；
 - R2（统计口径、恒真断言）→ 2026-10-24 起统计基线迁到 [gather-core-benchmarks](../../desktop/native/gather-core/Sources/GatherCoreBenchmarks/main.swift) 与夜间任务；默认套件的行为证据见 [FaceClustererQualityRetryTests.swift](../../desktop/native/gather-core/Tests/GatherCoreTests/Face/FaceClustererQualityRetryTests.swift)。`ClusteringImpact.swift` 已随 CL-13 删除，其边界声明随之移除。
 - 第二轮对抗验证（V2）新增：设置表被手改成 `NaN`/`inf` 时 `Int(getNumber(...))` 会 **trap 崩溃** → 统一经 `Double.safeInt(fallback:)`（13 处设置→Int 转换；非有限值回退默认值，语义对正常值与旧代码逐位一致）；
-- V2 独立复核结论：ARI 用第三种实现（4000 随机划分，≤1e-15 一致）、margin 走生产落库（49 簇 / ruleMismatches=0）、试算口径与生产归一化逐值一致。
+- V2 独立复核结论（2026-10-24 前口径）：ARI 曾用第三种实现（4000 随机划分，≤1e-15 一致）、margin 走生产落库（49 簇 / ruleMismatches=0）、试算口径与生产归一化逐值一致。**现状**：双实现交叉验证随 1,289 行统计套件删除取消，ARI 只剩配对计数实现 + 手算小例自检；`--margin` 只断言固定分数对的边界决策、不跑 `fkw.analyze`，上述 49 簇曲线不可复现（保留为历史证据）。
 - V1（嵌入接缝验证）又抓出三个真实缺陷并已修：①**部分失败**（1 成功 + 1 失败）会写 `analysis_state` 且丢弃失败的脸 ⇒ 那些脸永不重试 → 现在只要本次有编码失败就不写 state（部分结果仍落库，下次重试）；②签名与推理由两次 `make` 解析，模型文件在两者间被替换会"用 A 的签名标注 B 的向量" → 一次运行只创建**一个**嵌入实例，签名与推理同源；③`.DS_Store` 等系统噪声会改变内容指纹 ⇒ 全库重算 → 指纹递归时跳过点开头文件。
 - V1 同时指出多输出"恰好一个合法"会误杀带分类头的真实导出 → 保守按名字排除 logits/softmax/fc/head 等分类头，排除后仍不唯一才报歧义（**没有**"指定输出名"的设置项，属已知限制）。
 

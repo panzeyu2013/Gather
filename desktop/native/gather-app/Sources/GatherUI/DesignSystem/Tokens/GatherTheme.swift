@@ -40,6 +40,18 @@ public enum GatherTheme {
     /// 选中态低透明度填充。
     public static let selectionFill = GatherTheme.selection.opacity(0.14)
 
+    /// 分段 / 页签控件的选中片：浅色是白片，深色比 surface 再亮一档。
+    ///
+    /// 深色模式下 surface(#2A2A2C) 与 surfaceMuted(#202022) 只差 10 个灰阶，
+    /// 用 surface 直接做选中片会看不出边界；controlSelection 在深色提到
+    /// #3A3A3C，浅色保持纯白。
+    public static let controlSelection = dynamic(
+        light: "#FFFFFF",
+        dark: "#3A3A3C",
+        highContrastLight: "#FFFFFF",
+        highContrastDark: "#4A4A4C"
+    )
+
     // MARK: - 表面（三层）
 
     /// 窗口 / 页面底色。

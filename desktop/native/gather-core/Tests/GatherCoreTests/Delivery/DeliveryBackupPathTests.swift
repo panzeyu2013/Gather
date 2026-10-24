@@ -1,6 +1,7 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Delivery/DeliveryBackupPathTests.swift
 // P2-12：backup_path 的受控目录/前缀/常规文件校验。
 
+import GatherProtocol
 import Foundation
 import Testing
 @testable import GatherDelivery

@@ -261,28 +261,6 @@ public final class SessionService {
 
 // MARK: - 路径工具（TS session.service.ts 模块级函数）
 
-/// TS: commonParentDirectory —— 文件列表的公共父目录；空列表或根目录返回空串。
-/// **仅用于给会话取名**：它绝不再被写进 sessions.source_path（那会把一次文件
-/// 导入变成对公共父目录的全树扫描）。文件系统根与主目录同样返回空串。
-public func commonParentDirectory(filepaths: [String]) -> String {
-    if filepaths.isEmpty { return "" }
-    let directories = filepaths.map { TSPath.dirname(ScanPath.canonical($0)) }
-    var candidate = directories[0]
-    if directories.count > 1 {
-        // 向上收敛到同时包含 candidate 与 directory 的目录。用 ScanPath.isWithin
-        // 的路径分量比较：TSPath.relative 内部会再次 standardizingPath，对存在的
-        // 路径解析符号链接，使包含判定在 /private 前缀上不稳定。
-        for directory in directories.dropFirst() {
-            while candidate != TSPath.dirname(candidate),
-                  !ScanPath.isWithin(candidate: directory, root: candidate) {
-                candidate = TSPath.dirname(candidate)
-            }
-        }
-    }
-    if ScanPath.isForbiddenRoot(candidate) { return "" }
-    return candidate
-}
-
 /// TS: sanitizeSessionSourcePath —— 调用方提供的 sourcePath 只有在它是**至少两张
 /// 已导入照片的真实公共父目录**时才被接受，否则返回空串。
 ///
@@ -297,23 +275,5 @@ public func sanitizeSessionSourcePath(sourcePath: String, filepaths: [String]) -
     if normalized.count < 2 { return "" }
     let parent = commonParentDirectory(filepaths: normalized)
     return !parent.isEmpty && resolved == parent ? resolved : ""
-}
-
-/// TS: normalizeImportFilepaths —— trim + 去空 + 归一化 + 去重。
-/// 归一化走 ScanPath（扫描/监听/导入共用的唯一口径），因此落库的
-/// photos.filepath 与索引器构造的路径键逐字相同。
-public func normalizeImportFilepaths(_ filepaths: [String]) -> [String] {
-    var seen = Set<String>()
-    var result: [String] = []
-    for fp in filepaths {
-        // TS String.prototype.trim() 去全部 Unicode 空白；Swift 无等价内置，
-        // whitespacesAndNewlines 覆盖 ASCII 空白（含 \n\r\t），其余差异
-        // 仅涉 Unicode 空白字符，可接受。
-        let trimmed = fp.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { continue }
-        let normalized = ScanPath.canonical(trimmed)
-        if seen.insert(normalized).inserted { result.append(normalized) }
-    }
-    return result
 }
 

@@ -13,6 +13,14 @@
 import Foundation
 import SwiftUI
 
+// MARK: - 单窗口标识
+
+/// 唯一主窗口的稳定标识：场景声明与「显示主窗口」命令共用，避免 id 字面量
+/// 在两处漂移（关窗后 openWindow(id:) 依赖同一个值）。
+package enum GatherWindowID {
+    package static let main = "main"
+}
+
 // MARK: - 菜单项描述符
 
 /// 菜单项。`allCases` 的顺序即同一 CommandGroup 内的展示顺序。

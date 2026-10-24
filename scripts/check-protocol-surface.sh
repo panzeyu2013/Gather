@@ -181,7 +181,7 @@ compare_metric() {
     echo "FAIL $key = $current > baseline $base" >&2
     fail=1
   elif [ "$current" -lt "$base" ]; then
-    echo "warn $key = $current < baseline $base（可 --write-baseline 收紧）"
+    echo "warn $key = $current < baseline ${base}（可 --write-baseline 收紧）"
   else
     echo "ok   $key = $current"
   fi
