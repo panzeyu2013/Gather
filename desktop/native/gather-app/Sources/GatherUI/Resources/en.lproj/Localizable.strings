@@ -500,7 +500,6 @@
 "删除工作区" = "Delete Workspace";
 "批量删除工作区" = "Batch Delete Workspaces";
 "删除全部" = "Delete All";
-"整理、挑选并同步你的摄影工作区" = "Organize, cull, and sync your photography workspaces";
 "工作区" = "Workspace";
 "照片" = "Photos";
 "待同步写回" = "Pending Writeback";
@@ -559,14 +558,14 @@
 "写回队列：%d 项" = "Writeback Queue: %d Items";
 "写回队列：%d 项#one" = "Writeback Queue: %d Item";
 "最近同步：%@" = "Last Sync: %@";
-/* Sources/GatherUI/Support/GatherBadge.swift */
+/* Sources/GatherUI/DesignSystem/Components/GatherBadge.swift */
 "待审核" = "Pending Review";
 "运行中" = "Running";
 "草稿" = "Draft";
 "排队中" = "Queued";
 "已中断" = "Interrupted";
 "取消中" = "Canceling";
-/* Sources/GatherUI/Support/SessionTabBar.swift */
+/* Sources/GatherUI/Interaction/GatherSessionPage.swift */
 "浏览" = "Browse";
 "控制中心" = "Control Center";
 "重复" = "Duplicates";
@@ -1151,7 +1150,6 @@
 "%@ 张" = "%@ items";
 "%@ 线程" = "%@ threads";
 "%@（快捷键 %@）" = "%@ (shortcut %@)";
-"%lld%% 滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放" = "%lld%% — scroll to zoom · drag to pan · double-click to reset · ⌘−/⌘= to zoom";
 "XMP 写回项 %@" = "XMP write-back item %@";
 "「清理备份」会在确认同步后开放。" = "“Clean up backups” becomes available once sync is confirmed.";
 "上一张（←）" = "Previous (←)";
@@ -1204,7 +1202,6 @@
 "已选中" = "Selected";
 "开始导出？" = "Start the export?";
 "当前工作区没有内容完全一致的文件。" = "This workspace has no byte-identical files.";
-"当前窗口没有设置入口" = "No settings entry point in this window";
 "当前范围没有照片" = "No photos in the current scope";
 "快捷键 %@" = "Shortcut: %@";
 "打开设置检查人脸模型" = "Open Settings to check the face models";
@@ -1413,3 +1410,30 @@
 
 /* P2：Delivery 备份/收尾/replay 错误码与动作标题 */
 "交付记录缺少 XMP 路径，无法校验备份位置。请重新索引该照片后重试清理；若仍失败，请保留现场并联系支持。" = "The delivery has no XMP path, so its backup location cannot be validated. Re-index the photo and retry cleanup; if it still fails, keep the files and contact support.";
+
+/* 2026-10-23 样式统一：新增页面文案 / 动态标题 / 胶片条与筛选控件 */
+"%lld 个人物" = "%lld people";
+"%lld 个工作区 · %lld 张照片" = "%lld workspaces · %lld photos";
+"%lld 张逻辑照片 · %lld 个工作区" = "%lld logical photos · %lld workspaces";
+"%lld 项筛选" = "%lld filters";
+"1 选择来源  ·  2 建立索引  ·  3 挑片 / 写回" = "1 Choose source  ·  2 Build index  ·  3 Cull / write back";
+"从文件夹或 Capture One 导入；照片不会被移动。" = "Import from a folder or Capture One; your photos stay where they are.";
+"从文件夹或 Capture One 开始整理照片" = "Start with a folder or Capture One";
+"导入你的第一个工作区" = "Import your first workspace";
+"导航组" = "Navigation group";
+"展开胶片条" = "Expand filmstrip";
+"扫描设置" = "Scan settings";
+"收起胶片条" = "Collapse filmstrip";
+"滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放" = "Scroll to zoom · Drag to pan · Double-click to reset · ⌘−/⌘= to zoom";
+"跨工作区的人物与人脸绑定" = "People and face bindings across workspaces";
+"重置筛选" = "Reset filters";
+
+/* 2026-10-23 工作台首屏重做 */
+"三步工作流" = "Three-step workflow";
+"最近使用" = "Recent";
+"连接后可直接读取选片与写回 XMP。" = "Connect to read selections and write back XMP.";
+"所有处理都在本地完成；照片不会被移动。" = "Everything happens locally; your photos are never moved.";
+"最近工作区" = "Recent Workspaces";
+"导出设置" = "Export Settings";
+"先选择范围，再设置格式、命名与导出目录。" = "Choose a range, then set format, naming, and destination.";
+"范围、自动前进与对比布局" = "Range, auto-advance, and compare layout";

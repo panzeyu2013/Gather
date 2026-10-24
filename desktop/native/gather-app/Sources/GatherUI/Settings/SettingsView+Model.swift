@@ -111,7 +111,7 @@ extension SettingsView {
                 systemImage: presence.exists ? "checkmark.circle.fill" : "xmark.circle.fill"
             )
             .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(presence.exists ? GatherTheme.success : GatherTheme.error)
+            .foregroundStyle(presence.exists ? GatherTheme.successText : GatherTheme.errorText)
             .accessibilityValue(presence.exists ? l10n("可用") : l10n("未找到"))
         }
     }
@@ -151,7 +151,7 @@ extension SettingsView {
                 systemImage: "exclamationmark.triangle.fill"
             )
             .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(GatherTheme.warning)
+            .foregroundStyle(GatherTheme.warningText)
 
             Text(model.modelResourcesDir)
                 .font(.callout.monospaced())
@@ -179,7 +179,7 @@ extension SettingsView {
             case .done:
                 Label(l10n("人脸模型已安装"), systemImage: "checkmark.circle.fill")
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(GatherTheme.success)
+                    .foregroundStyle(GatherTheme.successText)
                     .font(.callout)
             default:
                 EmptyView()

@@ -56,6 +56,8 @@ jobs:
         run: ./scripts/check-test-catalog.sh --strict
       - name: Preview surface
         run: ./scripts/check-preview-surface.sh --strict
+      - name: Design system ratchet
+        run: ./scripts/check-design-system.sh
       - name: SELECT * ratchet
         run: ./scripts/check-select-star.sh --strict
       - name: Protocol surface
@@ -91,8 +93,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # WP7：manifest 不再自己跑 xcrun；SDK 版本由 CI 显式注入（build.sh 也会
-      # 探测，但这里固定在 job 环境里，保证 test 与 bundle 两次求值同一值）。
+      # WP7：CI 显式注入 GATHER_SDK_VERSION；manifest 仅在未注入时按
+      # SDKROOT → xcrun → 14.0 自行探测。这里固定在 job 环境里，保证 test 与
+      # bundle 两次求值同一值。
       - name: Resolve SDK version
         run: |
           SDK_VERSION="$(xcrun --show-sdk-version)"

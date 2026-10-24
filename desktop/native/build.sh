@@ -162,30 +162,29 @@ fi
 # 旧包与旧校验和；构建失败时也不留下可被误传的“上一次成功包”。
 rm -f "$OUTPUT_DIR/Gather.zip" "$OUTPUT_DIR/Gather.zip.sha256"
 
-# WP7：gather-app/Package.swift 不再在 manifest 求值期执行 xcrun。真实 SDK
-# 版本（Mach-O 的 LC_BUILD_VERSION.sdk，决定 macOS 26+ 是否启用 Liquid Glass）
-# 由本脚本探测本机 SDK 后 export；显式传入的 GATHER_SDK_VERSION 优先。
-# 注意：Package.swift 的默认值是部署目标 14.0（不是 26.0）；探测失败时
-# 会按 14.0 链接，Liquid Glass 不会启用，所以这里记录来源，release 模式拒绝
-# 静默走回退。
+# WP7：Package.swift 按 GATHER_SDK_VERSION → SDKROOT → xcrun → 部署目标
+# 14.0 的顺序取真实 SDK（Mach-O 的 LC_BUILD_VERSION.sdk，决定 macOS 26+
+# 是否启用 Liquid Glass）。本脚本优先探测本机并 export，显式传入的
+# GATHER_SDK_VERSION 优先级最高。探测全部失败时 manifest 回退 14.0；
+# Liquid Glass 不会启用，所以这里记录来源，release 模式拒绝静默走回退。
 if [[ -z "${GATHER_SDK_VERSION:-}" ]]; then
   SDK_VERSION="$(xcrun --show-sdk-version 2>/dev/null || true)"
   if [[ -n "$SDK_VERSION" ]]; then
     export GATHER_SDK_VERSION="$SDK_VERSION"
     SDK_VERSION_SOURCE="xcrun"
   else
-    SDK_VERSION_SOURCE="Package.swift default (14.0)"
+    SDK_VERSION_SOURCE="Package.swift fallback (probe / 14.0)"
     if [[ "$RELEASE_MODE" == "1" ]]; then
       echo "release mode requires xcrun --show-sdk-version (macOS 26 SDK for Liquid Glass); refusing the 14.0 fallback" >&2
       exit 1
     fi
-    echo "warning: xcrun --show-sdk-version unavailable; Package.swift default SDK version 14.0 applies (Liquid Glass disabled)" >&2
+    echo "warning: xcrun --show-sdk-version unavailable; Package.swift fallback SDK applies (probe / 14.0; Liquid Glass may be disabled)" >&2
   fi
 else
   SDK_VERSION_SOURCE="GATHER_SDK_VERSION"
 fi
 DECLARED_SDK_VERSION="$(printf '%s' "${GATHER_SDK_VERSION:-}" | LC_ALL=C tr -d '[:space:]')"
-echo "SDK version for -platform_version: ${DECLARED_SDK_VERSION:-<Package.swift default 14.0>} (source: $SDK_VERSION_SOURCE)"
+echo "SDK version for -platform_version: ${DECLARED_SDK_VERSION:-<Package.swift fallback>} (source: $SDK_VERSION_SOURCE)"
 
 # 3b-6：两个包都开 SE-0409 严格依赖检查（target 只能 import 直接依赖）。
 DEPENDENCY_CHECK=(--explicit-target-dependency-import-check error)

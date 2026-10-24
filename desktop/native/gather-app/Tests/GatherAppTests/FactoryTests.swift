@@ -283,7 +283,8 @@ struct FactoryTests {
         _ = RootView(
             deps: makeDeps(),
             sessionStore: store,
-            languageStore: makeLanguageStore()
+            languageStore: makeLanguageStore(),
+            commandCenter: AppCommandCenter()
         )
         #expect(store.workspaces.isEmpty)
         #expect(store.activeSessionId == nil)
@@ -298,6 +299,7 @@ struct FactoryTests {
             deps: makeDeps(),
             sessionStore: store,
             languageStore: makeLanguageStore(),
+            commandCenter: AppCommandCenter(),
             navigation: navigation
         )
         #expect(store.activeSessionId == "s-initial")
@@ -460,7 +462,7 @@ struct FactoryTests {
         ]
         let deps = makeDeps(dashboard: dashboard)
         let store = SessionStore(capacity: 4, make: SessionWorkspaceFactory(deps: deps).makeWorkspace)
-        let rootView = RootView(deps: deps, sessionStore: store, languageStore: makeLanguageStore())
+        let rootView = RootView(deps: deps, sessionStore: store, languageStore: makeLanguageStore(), commandCenter: AppCommandCenter())
 
         // 三类 workspace + lastSessionId 指向最近会话（侧栏回退来源）。
         let active = store.activate("s-active")

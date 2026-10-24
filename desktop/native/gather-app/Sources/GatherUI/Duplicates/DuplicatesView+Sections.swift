@@ -19,11 +19,11 @@ struct DuplicatesLoadingIndicator: View {
             ProgressView().controlSize(.small)
             if viewModel.isScanning {
                 Text(l10n.progressPhaseText(viewModel.scanProgressPhase))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                 if viewModel.scanProgressTotal > 0 {
                     Text("\(viewModel.scanProgressCurrent)/\(viewModel.scanProgressTotal)")
-                        .font(.callout.monospacedDigit())
+                        .font(GatherFont.mono)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -34,7 +34,7 @@ struct DuplicatesLoadingIndicator: View {
                 .controlSize(.small)
             } else {
                 Text(l10n("加载中…"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                 Spacer()
             }
@@ -52,7 +52,9 @@ struct DuplicatesScanControls: View {
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
+            Text(l10n("扫描设置"))
+                .font(GatherFont.sectionTitle)
             // 三档预设 = 系统分段控件（取代手绘选中底色/描边的 Button 组）。
             LabeledContent(l10n("匹配强度")) {
                 Picker(l10n("匹配强度"), selection: presetBinding) {
@@ -73,12 +75,12 @@ struct DuplicatesScanControls: View {
                 HStack(spacing: 8) {
                     SliderInputIntView(title: l10n("视觉相似阈值"), value: $viewModel.threshold, range: 0...10)
                     Text(l10n("0 (严格) — 10 (宽松)"))
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(GatherFont.secondary).foregroundStyle(.secondary)
                 }
                 .padding(.top, 4)
             } label: {
                 Text(l10n("高级：相似阈值"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
             }
             .disabled(viewModel.isScanning)
 
@@ -91,13 +93,14 @@ struct DuplicatesScanControls: View {
                 .disabled(viewModel.isScanning)
                 if !viewModel.isScanning, let preset = viewModel.activePreset {
                     Text(l10n.format("当前档位：%@", preset.label(with: l10n)))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
             }
         }
         .gatherCard()
+        .frame(maxWidth: 760, alignment: .leading)
     }
 
     /// 预设选择绑定：阈值为非预设值时保持「无选中」（不虚报档位）。

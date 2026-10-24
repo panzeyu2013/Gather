@@ -70,8 +70,8 @@ struct JobRowView: View {
             if !job.errorMessage.isEmpty {
                 // 错误码经漏斗翻译；tooltip 同样不直显原始诊断（细节只进日志）。
                 Text(l10n.jobErrorMessage(job.errorMessage))
-                    .font(.callout)
-                    .foregroundStyle(GatherTheme.error)
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.errorText)
                     .lineLimit(1)
                     .help(l10n.jobErrorMessage(job.errorMessage))
             }

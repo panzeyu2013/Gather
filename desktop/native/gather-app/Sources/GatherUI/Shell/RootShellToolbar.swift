@@ -11,10 +11,14 @@ import Foundation
 /// 主窗口外壳的尺寸约束（D-2 审计 5）：内容区可用最小宽度 = 窗口最小宽度 − 侧栏最小宽度。
 /// 布局预算测试此前把 680 写死在测试里，两处常量漂移时测试不会失败——改由这里单点定义。
 enum RootShellMetrics {
-    static let windowMinWidth: CGFloat = 860
-    static let sidebarMinWidth: CGFloat = 180
+    /// 单点来源：DesignSystem/GatherChromeMetrics。
+    static let windowMinWidth = GatherChromeMetrics.windowMinWidth
+    static let windowMinHeight = GatherChromeMetrics.windowMinHeight
+    static let sidebarMinWidth = GatherChromeMetrics.sidebarMinWidth
+    static let sidebarIdealWidth = GatherChromeMetrics.sidebarIdealWidth
+    static let sidebarMaxWidth = GatherChromeMetrics.sidebarMaxWidth
     /// 内容区（会话页 + 页签行）必须放得下的最小宽度。
-    static var contentMinWidthBudget: CGFloat { windowMinWidth - sidebarMinWidth }
+    static var contentMinWidthBudget: CGFloat { GatherChromeMetrics.contentMinWidth }
 }
 
 // MARK: - 外壳文案（4a-3a）

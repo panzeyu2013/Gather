@@ -12,10 +12,10 @@ extension SessionControlView {
     /// 没有活跃任务时只给一行说明，不再用大卡片承载一段历史。
     var jobsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(l10n("当前任务")).font(.title3.weight(.semibold))
+            Text(l10n("当前任务")).font(GatherFont.sectionTitle)
             if viewModel.activeJobs.isEmpty && viewModel.attentionJobs.isEmpty {
                 Text(l10n("没有进行中的任务。"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(viewModel.activeJobs, id: \.id) { job in
@@ -36,7 +36,7 @@ extension SessionControlView {
                     .padding(.top, 6)
                 } label: {
                     Text(l10n.plural("已完成任务（%lld）", count: viewModel.historyJobs.count))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                 }
             }
         }

@@ -21,65 +21,56 @@ import SwiftUI
 import GatherProtocol
 
 public struct SessionControlView: View {
-    @State var viewModel: SessionControlViewModel
+    // P2：必须用 @Bindable（而非 @State）。@State view 的 VM 捕获经
+    // GatherSessionToolbar 的 ToolbarContent 复制后会失效（实测 SIGSEGV）。
+    @Bindable var viewModel: SessionControlViewModel
     /// 所属会话工作区（R4 P1-2）：页面级可见性经 workspace 路由，进入会话
     /// 不再由 workspace 把 7 个 VM 一起置真。
     private let workspace: SessionWorkspace
     /// C1 状态胶囊的 syncStatus 入口（B8.2e）。
     let culling: any CullingAPI
-    let onBack: () -> Void
-    let onOpenSimilarity: (String) -> Void
-    let onOpenTab: (String, SessionTab) -> Void
-    let onOpenGallery: (String) -> Void
-    let onOpenSettings: () -> Void
-    /// 导出入口专用回调（N05）：携带入口意图，决定导出页的默认范围。
-    let onOpenExportTab: (String, ExportRangeIntent) -> Void
-    /// D10：XMP 冲突待办专用回调——进入挑片并只看冲突（未注入时退回普通挑片页）。
-    let onReviewXmpConflicts: (String) -> Void
-    /// D10：离线照片待办——进入图库并只看离线（未注入时退回普通图库）。
-    let onReviewOfflinePhotos: (String) -> Void
-    /// D10：分析过期待办——进入人脸页并直达分析步骤（未注入时退回人脸页）。
-    let onReviewStaleAnalysis: (String) -> Void
     @State var scrollToStagesRequested = false
     /// 已完成任务历史默认折叠（F07：历史不占首屏）。
     @State var showJobHistory = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 页签与入口意图：页面只从 environment 取路由，不再接收 9 个导航闭包。
+    /// 待办/推荐里的「去挑片/去图库/去人脸/去导出/逐条裁决」映射到 AppNavigator
+    /// 的具名入口（openCullingConflicts / openGalleryOffline / openFaceAnalyze /
+    /// openExport / open + openSessionPage）。
+    @Environment(\.navigator) var navigator: RootNavigation?
+    /// 「前往设置」：系统环境动作，外壳不再注入 onOpenSettings。
+    @Environment(\.openSettings) var openSettings
 
     /// 生产装配（Cut 4 / 4a-2a-2）：VM 来自会话工作区（workspace.control）。
     /// 旧实现每次 View init 新建 VM（无缓存）；现在控制中心的会话/任务/同步态
     /// 随 workspace 跨页签保留，轮询启停仍由 VM 的 setVisible 负责。
-    package init(
-        workspace: SessionWorkspace,
-        culling: any CullingAPI,
-        onBack: @escaping () -> Void = {},
-        onOpenSimilarity: @escaping (String) -> Void = { _ in },
-        onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
-        onOpenGallery: @escaping (String) -> Void = { _ in },
-        onOpenSettings: @escaping () -> Void = {},
-        onOpenExportTab: ((String, ExportRangeIntent) -> Void)? = nil,
-        onReviewXmpConflicts: ((String) -> Void)? = nil,
-        onReviewOfflinePhotos: ((String) -> Void)? = nil,
-        onReviewStaleAnalysis: ((String) -> Void)? = nil
-    ) {
-        _viewModel = State(initialValue: workspace.control)
+    /// appearance 迁移：init 收敛为「工作区 + 挑片 API」两个只读装配参数；
+    /// 导航与设置一律走 environment（navigator / openSettings）。
+    package init(workspace: SessionWorkspace, culling: any CullingAPI) {
+        self.viewModel = workspace.control
         self.workspace = workspace
         self.culling = culling
-        self.onOpenExportTab = onOpenExportTab ?? { id, _ in onOpenTab(id, .export) }
-        self.onReviewXmpConflicts = onReviewXmpConflicts ?? { id in onOpenTab(id, .culling) }
-        self.onReviewOfflinePhotos = onReviewOfflinePhotos ?? { id in onOpenGallery(id) }
-        self.onReviewStaleAnalysis = onReviewStaleAnalysis ?? { id in onOpenTab(id, .faceKw) }
-        self.onBack = onBack
-        self.onOpenSimilarity = onOpenSimilarity
-        self.onOpenTab = onOpenTab
-        self.onOpenGallery = onOpenGallery
-        self.onOpenSettings = onOpenSettings
     }
 
-    // Cut 4 / 4a-3b-2b：语言源由外壳经 environment 下发（RootView / SessionTabHost）。
+    // Cut 4 / 4a-3b-2b：语言源由外壳经 environment 下发（RootView / SessionPageHost）。
     @Environment(\.languageStore) private var languageStore
     var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     public var body: some View {
+        GatherSessionPage(
+            page: .control,
+            workspace: workspace,
+            subtitle: l10n("工作区控制中心")
+        ) {
+            content
+        }
+        .toolbar { toolbarItems }
+    }
+
+    /// 页面内容（原 body 的 ScrollViewReader 段，逐字搬移）。
+    /// 页签行 / 返回 / canvas 背景 / navigationSubtitle / setPageVisible
+    /// 已由 GatherSessionPage 统一承载，这里只剩卡片栈与页面级事件。
+    private var content: some View {
         ScrollViewReader { proxy in
             VStack(alignment: .leading, spacing: 0) {
                 if let error = viewModel.errorMessage {
@@ -87,12 +78,12 @@ public struct SessionControlView: View {
                         text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
                         color: GatherTheme.error
                     )
-                        .padding(.horizontal, 24)
+                        .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                         .padding(.top, 12)
                 }
                 if let notice = viewModel.notice {
                     NativeBanner(text: l10n.resolve(notice), color: GatherTheme.success)
-                        .padding(.horizontal, 24)
+                        .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                         .padding(.top, 12)
                 }
                 ScrollView {
@@ -100,9 +91,9 @@ public struct SessionControlView: View {
                         ProgressView(l10n("加载中…"))
                             .controlSize(.small)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding(24)
+                            .padding(GatherMetrics.Layout.pageGutter)
                     } else if viewModel.workspaceStatus != nil {
-                        VStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: GatherMetrics.Space.l) {
                             // 分块顺序按「现在该做什么」（F07）：
                             // 索引状态（内容，不是假标题栏）→ 阶段条 → 当前任务
                             // →（与任务不重复的）待办与推荐 → 分析工具箱 → 同步详情。
@@ -138,16 +129,6 @@ public struct SessionControlView: View {
                     }
                 }
             }
-            .background(GatherTheme.windowBackground)
-            // 窗口 chrome：副标题 + 工具栏 principal 位置的分段子导航。
-            .sessionPageChrome(
-                subtitle: l10n("工作区控制中心"),
-                selection: .tab(.control),
-                onBrowse: { onOpenGallery(viewModel.sessionId) },
-                onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
-                onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
-            )
-            .toolbar { toolbarItems }
             .onChange(of: scrollToStagesRequested) { _, requested in
                 guard requested else { return }
                 if reduceMotion {
@@ -161,22 +142,12 @@ public struct SessionControlView: View {
         .task {
             // B8.2a：load() 已 async（SessionAPI.get/status + CullingAPI.syncStatus）。
             // Cut 4 / 4a-2b：兜底轮询已迁入 VM（startPolling/stopPolling），
-            // View 只负责首次加载与可见性钩子（task/onAppear 双入口，start 幂等）。
-            // R4 P1-2：页面级路由到 control，进入会话不再由 workspace 全量置真。
-            workspace.setPageVisible(.control, true)
+            // View 只负责首次加载；页面级可见性（setPageVisible）已由
+            // GatherSessionPage 的 onAppear/onDisappear 统一路由。
             await viewModel.load()
         }
-        .onAppear {
-            workspace.setPageVisible(.control, true)
-        }
-        .onDisappear {
-            workspace.setPageVisible(.control, false)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobTerminal)) { notification in
-            guard let event = notification.object as? GatherJobEvent,
-                  event.job.scopeType == "session",
-                  event.job.scopeId == viewModel.sessionId else { return }
-            Task { await viewModel.load() }
+        .refreshOnJobTerminal(sessionId: viewModel.sessionId, sessionOnly: true) {
+            await viewModel.load()
         }
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
             guard (notification.object as? String) == viewModel.sessionId else { return }
@@ -184,11 +155,11 @@ public struct SessionControlView: View {
         }
         // 写路径广播（XMP/同步队列、重复处置、人脸簇变化）：按会话命中后刷新
         // 控制中心的相应域，不再只靠轮询/任务终态。
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherApplicationChange,
-                  change.matches(sessionId: viewModel.sessionId),
-                  [.metadata, .duplicates, .faceKeywording].contains(change.domain) else { return }
-            Task { await viewModel.load() }
+        .refreshOnDomainEvents(
+            [.metadata, .duplicates, .faceKeywording],
+            sessionId: viewModel.sessionId
+        ) {
+            await viewModel.load()
         }
     }
 }

@@ -14,8 +14,8 @@ extension SessionControlView {
     var inboxCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(l10n("待处理事项")).font(.title3.weight(.semibold))
-                Text(l10n("按优先级排序")).font(.footnote).foregroundStyle(.secondary)
+                Text(l10n("待处理事项")).font(GatherFont.sectionTitle)
+                Text(l10n("按优先级排序")).font(GatherFont.labelRegular).foregroundStyle(.secondary)
             }
             if let status = viewModel.workspaceStatus {
                 let items = inboxItems(
@@ -48,7 +48,7 @@ extension SessionControlView {
                 Text(item.label)
                 if let detail = item.detail {
                     // 错误明细是内容语义：用 .callout 而不是 .footnote。
-                    Text(detail).font(.callout).foregroundStyle(.secondary)
+                    Text(detail).font(GatherFont.secondary).foregroundStyle(.secondary)
                 }
             }
             Spacer()

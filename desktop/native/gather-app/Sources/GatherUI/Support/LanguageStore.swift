@@ -124,7 +124,7 @@ public final class LanguageStore {
 
 // MARK: - SwiftUI 环境下发（Cut 4 / 4a-3b-2b）
 
-/// 会话页从 environment 取语言源（RootView / SessionTabHost 注入）。
+/// 会话页从 environment 取语言源（RootView / SessionPageHost 注入）。
 ///
 /// 为什么是 Optional：页面/预览/布局测试可能脱离 RootView 单独构造。生产树
 /// 由外壳显式注入，页面用 languageStore?.l10n ?? L10n(language: .zhCN) 兜底；

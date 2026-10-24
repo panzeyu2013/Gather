@@ -9,13 +9,15 @@ import GatherProtocol
 struct CullingInspector: View {
     let viewModel: CullingViewModel
     let isBusy: Bool
+    @Binding var faceAlign: Bool
+    @State private var filtersExpanded = false
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
                 // 当前照片：决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）
                 // + 星级 + 颜色。系统 bordered 按钮 + 裸键 .keyboardShortcut（取代手绘卡片描边）。
                 GroupBox {
@@ -97,6 +99,29 @@ struct CullingInspector: View {
                     Text(l10n("当前照片"))
                 }
 
+                // 页面级选项：折叠收纳，默认不遮挡当前照片决策。
+                GroupBox {
+                    DisclosureGroup(isExpanded: $filtersExpanded) {
+                        CullingFilterControls(
+                            viewModel: viewModel,
+                            faceAlign: $faceAlign,
+                            isBusy: isBusy
+                        )
+                        .padding(.top, GatherMetrics.Space.xs)
+                    } label: {
+                        HStack {
+                            Text(activeFilterCount == 0
+                                 ? l10n("全部照片")
+                                 : l10n.format("%lld 项筛选", activeFilterCount))
+                                .font(GatherFont.secondary)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                } label: {
+                    Text(l10n("筛选"))
+                }
+
                 // 相似组决策（对齐旧版 groupDecision：仅当前照片所在组 >1 张时显示）。
                 if currentGroupAssets.count > 1, let current = viewModel.currentAsset {
                     let groupIds = Set(currentGroupAssets.map(\.photo.id))
@@ -162,8 +187,20 @@ struct CullingInspector: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
+            .padding(GatherMetrics.Space.l)
         }
+    }
+
+    private var activeFilterCount: Int {
+        let filter = viewModel.filterState
+        return [
+            filter.unreviewedOnly,
+            filter.pickState != nil,
+            filter.rating != nil,
+            filter.colorLabel != nil,
+            filter.qualityStatus != nil,
+            filter.metadataConflictOnly,
+        ].filter { $0 }.count
     }
 
     private func decisionButton(

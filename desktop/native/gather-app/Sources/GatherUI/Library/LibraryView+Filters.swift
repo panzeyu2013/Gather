@@ -48,6 +48,16 @@ extension LibraryView {
                     primaryFilterControls
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
+                    .fill(GatherTheme.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
+                    .strokeBorder(GatherTheme.hairline, lineWidth: 1)
+            )
             // 手搓「更多筛选」展开按钮 → 系统 DisclosureGroup（chevron / 键盘 / 动画由系统负责）。
             DisclosureGroup(isExpanded: $showAdvancedFilters) {
                 advancedFilters

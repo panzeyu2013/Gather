@@ -270,8 +270,8 @@ GatherApplication 服务（交付编排在 GatherDelivery）
   与 modifier 接线；导航/侧栏/工具栏/详情/通知由 `RootShell*.swift` 拆分承载。
   页面按目的地**条件构建**（不再用 `.opacity(0)` 常驻），`NavigationSplitView`
   负责侧栏材质与选中语义。
-- 会话页由 `GatherUI/Shell/SessionTabHost.swift` 按页签分发 workspace 里的
-  ViewModel；session 切换用 `.id("session-tab-\(sessionId)-\(tab)")` 保留身份
+- 会话页由 `GatherUI/Shell/SessionPageHost.swift` 按 `SessionPage` 分发 workspace 里的
+  ViewModel；session 切换用 `.id("session-page-\(sessionId)-\(page.rawValue)")` 保留身份
   （不是语言重建开关）。
 - 工作区状态由 `SessionStore`/`SessionWorkspace` 持有（每会话一套 + LRU），
   入口意图经 `WorkspaceIntent` 取用即清；页面经 `AppServices` 的域协议访问

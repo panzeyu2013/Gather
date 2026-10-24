@@ -29,18 +29,18 @@ struct GalleryCellView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 4) {
                     if photo.status == "missing" {
-                        chip(
+                        PhotoOverlayChip(
                             text: l10n("离线"),
-                            icon: "exclamationmark.triangle.fill",
+                            systemImage: "exclamationmark.triangle.fill",
                             iconColor: GatherTheme.error
                         )
                     }
                     if photo.variantCount > 1 {
-                        chip(text: l10n.format("RAW+JPEG · %lld", photo.variantCount))
+                        PhotoOverlayChip(text: l10n.format("RAW+JPEG · %lld", photo.variantCount))
                     }
                 }
                 Text(photo.filename)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .padding(.horizontal, 8)
@@ -55,8 +55,8 @@ struct GalleryCellView: View {
                         LinearGradient(
                             stops: [
                                 .init(color: .clear, location: 0),
-                                .init(color: .black.opacity(0.55), location: 0.45),
-                                .init(color: .black.opacity(0.82), location: 1),
+                                .init(color: .black.opacity(0.45), location: 0.45),
+                                .init(color: .black.opacity(0.72), location: 1),
                             ],
                             startPoint: .top,
                             endPoint: .bottom
@@ -68,51 +68,29 @@ struct GalleryCellView: View {
                 selectionCheck
             }
         }
-        // TS: 单元格圆角 10（--radius-sm）；选中态 = 系统选中色描边
-        //（旧版 .cellSelected outline 2px inset，无填充底色）。
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        // 照片单元：统一卡片圆角；选中用品牌色描边，hover 用 hairline。
+        .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
                 .strokeBorder(
                     isSelected
-                        ? Color(nsColor: .selectedContentBackgroundColor)
-                        : (isHovered ? GatherTheme.accent.opacity(0.55) : Color.clear),
+                        ? GatherTheme.selection
+                        : (isHovered ? GatherTheme.hairline : Color.clear),
                     lineWidth: isSelected ? 2 : 1
                 )
         )
         .contentShape(Rectangle())
-        // TS: .cell:hover —— box-shadow 0 3px 14px rgba(0,0,0,.45) + brightness(1.05)
-        // 的原生等价：shadowMd（radius 9 / y 3）+ 缩略图亮度 0.03。
-        .shadow(color: isHovered ? GatherTheme.shadowMd : Color.clear, radius: 9, y: 3)
+        // 悬停：抬起一层，与选中描边区分。
+        .shadow(color: isHovered ? GatherTheme.shadowCard : Color.clear, radius: 8, y: 2)
         .onHover { isHovered = $0 }
     }
 
-    /// 照片上的信息芯片：自带深色底 + 白字（不依赖照片亮度，也不会白压亮色）。
-    private func chip(text: String, icon: String? = nil, iconColor: Color = .white) -> some View {
-        HStack(spacing: 3) {
-            if let icon {
-                Image(systemName: icon)
-                    .foregroundStyle(iconColor)
-            }
-            Text(text)
-                .monospacedDigit()
-        }
-        .font(.caption.weight(.medium))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(Capsule().fill(Color.black.opacity(0.66)))
-    }
-
-    /// 选中勾：系统选中色 + 选中文字色（旧版为主色圆 + 白勾，深色下 ≈2.7:1）。
+    /// 选中勾：品牌选中色 + 白勾。
     private var selectionCheck: some View {
         Image(systemName: "checkmark.circle.fill")
             .font(.title3)
             .symbolRenderingMode(.palette)
-            .foregroundStyle(
-                Color(nsColor: .alternateSelectedControlTextColor),
-                Color(nsColor: .selectedContentBackgroundColor)
-            )
+            .foregroundStyle(.white, GatherTheme.selection)
             .padding(6)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .accessibilityHidden(true)

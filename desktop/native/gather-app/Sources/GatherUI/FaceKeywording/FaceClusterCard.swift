@@ -16,18 +16,18 @@ extension FaceKeywordingView {
             VStack(alignment: .leading, spacing: 4) {
                 clusterMontage(cluster)
                 Text(cluster.label)
-                    .font(.body.weight(.semibold))
+                    .font(GatherFont.bodyStrong)
                     .lineLimit(1)
                 // F13：size 是**人脸样本数**（face_cluster_members 行数），不是照片数；
                 // 同一张照片里的两张脸是两个样本。只有成员未被截断时才敢报照片数。
                 Text(cluster.sampleCountText(with: l10n))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                 if let binding = cluster.binding {
                     GatherBadge(binding.roleName, tone: .success)
                 }
             }
-            .padding(10)
+            .padding(GatherMetrics.Space.m)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: GatherTheme.Radius.group, style: .continuous)
@@ -37,7 +37,7 @@ extension FaceKeywordingView {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: GatherTheme.Radius.group, style: .continuous)
-                    .strokeBorder(isSelected ? GatherTheme.accent : GatherTheme.separator, lineWidth: isSelected ? 2 : 1)
+                    .strokeBorder(isSelected ? GatherTheme.selection : GatherTheme.hairline, lineWidth: isSelected ? 2 : 1)
             )
             .contentShape(Rectangle())
         }
@@ -49,7 +49,7 @@ extension FaceKeywordingView {
                 hoveredClusterId = nil
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
+        .animation(reduceMotion ? nil : .easeOut(duration: GatherMetrics.Motion.hover), value: isHovered)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .contextMenu {
             Button(l10n("查看成员")) { viewModel.select(cluster) }

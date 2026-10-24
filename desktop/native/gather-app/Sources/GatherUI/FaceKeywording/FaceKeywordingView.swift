@@ -11,17 +11,17 @@ import SwiftUI
 import GatherProtocol
 
 public struct FaceKeywordingView: View {
-    @State var viewModel: FaceKeywordingViewModel
+    // P2：必须用 @Bindable（而非 @State）。@State view 的 VM 捕获经
+    // GatherSessionToolbar 的 ToolbarContent 复制后会失效（实测 SIGSEGV）。
+    @Bindable var viewModel: FaceKeywordingViewModel
     /// 所属会话工作区（Cut 4 / 4a-2c）：`.faceRole` / `.faceAnalyze` 意图在
     /// .task 里 take（取出即清）。页面按目的地条件构建，存在即可见。
     private let workspace: SessionWorkspace
     let culling: any CullingAPI
-    let onBack: () -> Void
-    private let onOpenSimilarity: (String) -> Void
-    private let onOpenTab: (String, SessionTab) -> Void
-    private let onOpenGallery: (String) -> Void
-    /// 前往设置回调：可选（RootView 由外部接线）；nil 时页面内按钮禁用。
-    let onOpenSettings: (() -> Void)?
+    /// 「前往设置」：系统环境动作，外壳不再注入 onOpenSettings。
+    /// （本页删掉了 onBack/onOpenTab/onOpenGallery/onOpenSimilarity 四个导航闭包：
+    /// 页签与返回由 GatherSessionPage 统一承载，页面内已无其它跳转，故不取 navigator。）
+    @Environment(\.openSettings) var openSettings
     /// 破坏性动作的待确认上下文：非空即弹确认框；命令只在确认分支发出。
     @State var pendingWriteback: PendingFaceWriteback?
     @State var pendingRetry: PendingFaceRetry?
@@ -44,31 +44,29 @@ public struct FaceKeywordingView: View {
     ///
     /// Cut 4 / 4a-2c：删除 analyzeIntent / pendingRoleFilter / 兼容 init；
     /// 深链角色与分析意图均从 workspace take（`WorkspaceIntent`）。
-    package init(
-        workspace: SessionWorkspace,
-        culling: any CullingAPI,
-        onBack: @escaping () -> Void = {},
-        onOpenSimilarity: @escaping (String) -> Void = { _ in },
-        onOpenTab: @escaping (String, SessionTab) -> Void = { _, _ in },
-        onOpenGallery: @escaping (String) -> Void = { _ in },
-        onOpenSettings: (() -> Void)? = nil
-    ) {
+    /// appearance 迁移：init 收敛为「工作区 + 挑片 API」两个只读装配参数；
+    /// 设置走 environment（openSettings），页签/返回由 GatherSessionPage 承载。
+    package init(workspace: SessionWorkspace, culling: any CullingAPI) {
         self.workspace = workspace
-        _viewModel = State(initialValue: workspace.face)
+        self.viewModel = workspace.face
         self.culling = culling
-        self.onBack = onBack
-        self.onOpenSimilarity = onOpenSimilarity
-        self.onOpenTab = onOpenTab
-        self.onOpenGallery = onOpenGallery
-        self.onOpenSettings = onOpenSettings
     }
 
-    // Cut 4 / 4a-3b-2b：语言源由外壳经 environment 下发（RootView / SessionTabHost）。
+    // Cut 4 / 4a-3b-2b：语言源由外壳经 environment 下发（RootView / SessionPageHost）。
     @Environment(\.languageStore) private var languageStore
     var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     public var body: some View {
-        confirmationChrome(shell)
+        // 页签行 / 返回 / canvas 背景 / navigationSubtitle / setPageVisible
+        // 由 GatherSessionPage 统一承载；确认弹窗仍贴内容（破坏性动作就近门控）。
+        GatherSessionPage(
+            page: .faceKw,
+            workspace: workspace,
+            subtitle: l10n("人脸检测与聚类")
+        ) {
+            confirmationChrome(shell)
+        }
+        .toolbar { toolbarItems }
     }
 
     /// 页面骨架：原 body 的 VStack 与生命周期修饰符（挂载层级/顺序逐字不变）；
@@ -85,16 +83,6 @@ public struct FaceKeywordingView: View {
                 viewModel.applyRoleFilterFromDeepLink(role)
             }
         }
-        .background(GatherTheme.windowBackground)
-        // 窗口 chrome：副标题 + 工具栏 principal 位置的分段子导航。
-        .sessionPageChrome(
-            subtitle: l10n("人脸检测与聚类"),
-            selection: .tab(.faceKw),
-            onBrowse: { onOpenGallery(viewModel.sessionId) },
-            onSimilarity: { onOpenSimilarity(viewModel.sessionId) },
-            onSelectTab: { onOpenTab(viewModel.sessionId, $0) }
-        )
-        .toolbar { toolbarItems }
         .task {
             await viewModel.reload()
             visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
@@ -107,14 +95,7 @@ public struct FaceKeywordingView: View {
                 viewModel.step = .analyze
             }
         }
-        // R4 P1-2：页面级可见性只由本页 onAppear/onDisappear 驱动（经 workspace
-        // 路由到 face VM）；人脸页没有轮询，钩子与其他 6 页同形。
-        .onAppear {
-            workspace.setPageVisible(.faceKw, true)
-        }
-        .onDisappear {
-            workspace.setPageVisible(.faceKw, false)
-        }
+        // 页面级可见性（setPageVisible）由 GatherSessionPage 统一路由到 face VM。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
             guard let event = notification.object as? GatherJobEvent else { return }
             viewModel.applyJobEvent(event)

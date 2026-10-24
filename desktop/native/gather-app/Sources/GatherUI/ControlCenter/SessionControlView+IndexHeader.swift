@@ -14,7 +14,7 @@ extension SessionControlView {
             HStack(spacing: 10) {
                 switch copy.mode {
                 case .scanning:
-                    Text(copy.text).font(.callout)
+                    Text(copy.text).font(GatherFont.secondary)
                     if copy.total > 0 {
                         ProgressView(value: Double(copy.done), total: Double(copy.total))
                             .progressViewStyle(.linear)
@@ -32,14 +32,14 @@ extension SessionControlView {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(GatherTheme.error)
                             .accessibilityHidden(true)
-                        Text(copy.text).font(.callout)
+                        Text(copy.text).font(GatherFont.secondary)
                     }
                     Button(l10n("重试")) { Task { await viewModel.retryIndex() } }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .help(l10n("重新排队索引扫描"))
                 case .count:
-                    Text(copy.text).font(.callout).foregroundStyle(.secondary)
+                    Text(copy.text).font(GatherFont.secondary).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
             }

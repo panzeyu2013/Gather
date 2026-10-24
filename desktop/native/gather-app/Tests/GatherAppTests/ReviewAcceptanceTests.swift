@@ -10,7 +10,7 @@ import Testing
 @MainActor @Suite("FullScan gallery navigation probe") struct FullScanNavigationProbeTests {
  @Test func galleryBackMustReturnToControl() {
   let nav = RootNavigation(); nav.openSession("s1"); nav.openGallery("s1"); nav.backFromGallery()
-  #expect(nav.isSessionTab(sessionId: "s1", tab: .control))
+  #expect(nav.isSessionPage(sessionId: "s1", page: .control))
  }
 }
 

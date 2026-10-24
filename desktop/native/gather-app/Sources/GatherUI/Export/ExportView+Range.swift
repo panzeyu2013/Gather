@@ -49,7 +49,7 @@ struct ExportRangeSection: View {
             } else if let planError = viewModel.planError {
                 Text(l10n.format("无法计算导出计划：%@", CommandErrorText.resolve(planError, with: l10n)))
                     .font(.callout)
-                    .foregroundStyle(GatherTheme.error)
+                    .foregroundStyle(GatherTheme.errorText)
             }
         }
     }

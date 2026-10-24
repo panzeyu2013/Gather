@@ -57,8 +57,9 @@ extension SimilarityView {
                         }
                     }
                 }
-                .padding(20)
-                .frame(maxWidth: 1200, alignment: .leading)
+                .padding(GatherMetrics.Layout.pageGutter)
+                .frame(maxWidth: GatherMetrics.Layout.maxReadingWidth, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
             .onAppear {
                 // D 报告：这里原先**无条件**清空展开/全部显示并滚回顶部，而结果本身
@@ -195,11 +196,13 @@ extension SimilarityView {
             // 全选分组（对齐 KeywordWritebackPanel 的 selectAll；写回面板已接线）。
             Toggle(isOn: allGroupsSelected) {
                 Text(l10n("全选分组"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
             }
             .toggleStyle(.checkbox)
         }
-        .gatherCard()
+        .padding(.vertical, GatherMetrics.Space.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var allGroupsSelected: Binding<Bool> {
@@ -214,7 +217,7 @@ extension SimilarityView {
 
     private func statItem(_ text: String) -> some View {
         Text(text)
-            .font(.callout)
+            .font(GatherFont.body)
             .monospacedDigit()
     }
 
@@ -233,7 +236,7 @@ extension SimilarityView {
                     onToggleSelected: { viewModel.toggleGroupSelection(group.id) },
                     onToggleExpanded: { toggleExpanded(group.id) },
                     onToggleShowAll: { toggleShowAll(group.id) },
-                    onOpenPhoto: onOpenPhoto
+                    onOpenPhoto: openPhotoAction
                 )
             }
         }

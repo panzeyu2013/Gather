@@ -54,7 +54,7 @@ extension View {
                 .background(.regularMaterial, in: shape)
                 .overlay {
                     if bordered {
-                        shape.strokeBorder(GatherTheme.separator, lineWidth: 1)
+                        shape.strokeBorder(GatherTheme.hairline, lineWidth: 1)
                     }
                 }
         }
@@ -68,9 +68,21 @@ extension View {
     @ViewBuilder
     package func gatherPrimaryActionButton() -> some View {
         if #available(macOS 26.0, *) {
-            self.buttonStyle(.glassProminent)
+            self.tint(GatherTheme.accentFill)
+                .buttonStyle(.glassProminent)
         } else {
-            self.buttonStyle(.borderedProminent)
+            self.tint(GatherTheme.accentFill)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    /// 内容区的**次要动作**按钮：macOS 26+ 用 glass，低版本回退 bordered。
+    @ViewBuilder
+    package func gatherSecondaryActionButton() -> some View {
+        if #available(macOS 26.0, *) {
+            self.buttonStyle(.glass)
+        } else {
+            self.buttonStyle(.bordered)
         }
     }
 

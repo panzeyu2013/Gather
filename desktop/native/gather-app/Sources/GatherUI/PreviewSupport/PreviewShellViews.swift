@@ -3,7 +3,7 @@ import SwiftUI
 import GatherProtocol
 
 // desktop/native/gather-app/Sources/GatherUI/PreviewSupport/PreviewShellViews.swift
-// Cut 4 / 4c-1：Root / Shell / SessionTab 三个"壳层"预览（只在 DEBUG 编译）。
+// Cut 4 / 4c-1：Root / Shell / SessionPage 三个"壳层"预览（只在 DEBUG 编译）。
 //
 // 为什么 Root 不是 RootView 本身：RootView 已按 D-017 迁到 GatherHost，
 // 依赖 AppBootstrap.SceneState/AppServices（16 个 API + DB），而 GatherUI 不能
@@ -11,8 +11,8 @@ import GatherProtocol
 // NavigationSplitView + 侧栏 + 详情，详情页复用真实页面与同一份 Preview API 依赖。
 // 它验证的是"依赖包形状 + 页面可独立装配"，不是 RootView 的逐像素还原。
 //
-// Shell 预览展示所有会话页共用的 chrome（SessionPageTabStrip）+ 占位内容；
-// SessionTab 预览验证 SessionTabHost 从 environment 取 workspace 后分发到页面。
+// Shell 预览展示所有会话页共用的 chrome（GatherSessionTabStrip）+ 占位内容；
+// SessionPage 预览验证 SessionPageHost 从 environment 取 workspace 后分发到页面。
 
 // MARK: - Root 外壳
 
@@ -100,11 +100,10 @@ struct PreviewRootShell: View {
 
     private var sessionDetail: some View {
         let workspace = PreviewFactory.workspace()
-        return SessionTabHost(
-            tab: .control,
-            culling: deps.culling,
-            router: PreviewFactory.router(),
-            onOpenPhoto: { _ in }
+        return SessionPageHost(
+            sessionId: PreviewData.sessionOneId,
+            page: .control,
+            culling: deps.culling
         )
         .environment(\.sessionWorkspace, workspace)
         .environment(\.languageStore, store)
@@ -119,11 +118,10 @@ struct PreviewShellChrome: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SessionPageTabStrip(
-                selection: .browse,
-                onBrowse: {},
-                onSimilarity: {},
-                onSelectTab: { _ in }
+            GatherSessionTabStrip(
+                current: .gallery,
+                onBack: {},
+                onSelect: { _ in }
             )
             Divider()
             VStack(spacing: 12) {
@@ -138,15 +136,15 @@ struct PreviewShellChrome: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(GatherTheme.windowBackground)
+        .gatherSurface(.canvas)
         .environment(\.languageStore, store)
     }
 }
 
 // MARK: - 三个壳层 Preview
 
-#Preview("SessionTab · 会话页宿主") {
-    PreviewFactory.sessionTabPage()
+#Preview("SessionPage · 会话页宿主") {
+    PreviewFactory.sessionPageHostView()
 }
 
 #Preview("Root · 外壳与侧栏") {

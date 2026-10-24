@@ -25,7 +25,7 @@ struct CullingConflictPanel: View {
                 }
             }
             .gatherCard()
-            .shadow(color: GatherTheme.shadowMd, radius: 12, y: 6)
+            .shadow(color: GatherTheme.shadowFloating, radius: 16, y: 8)
         }
     }
 
@@ -36,8 +36,8 @@ struct CullingConflictPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label(l10n("XMP 字段冲突"), systemImage: "exclamationmark.triangle.fill")
-                    .font(.headline)
-                    .foregroundStyle(GatherTheme.error)
+                    .font(GatherFont.cardTitle)
+                    .foregroundStyle(GatherTheme.errorText)
                 Spacer()
                 Text(URL(fileURLWithPath: conflict.xmpPath).lastPathComponent)
                     .font(.callout)
@@ -47,8 +47,8 @@ struct CullingConflictPanel: View {
             }
             if let reason = viewModel.syncFailureReason(xmpPath: conflict.xmpPath, with: l10n) {
                 Text(l10n.format("原因：%@", reason))
-                    .font(.callout)
-                    .foregroundStyle(GatherTheme.error)
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.errorText)
                     .lineLimit(3)
                     .help(reason)
             }
@@ -61,8 +61,8 @@ struct CullingConflictPanel: View {
                 let key = "\(conflict.xmpPath)|\(field.field.rawValue)"
                 HStack(spacing: 8) {
                     Text(CullingDisplayFormat.metadataFieldTitle(field.field, with: l10n))
-                        .font(.callout.weight(.semibold))
-                        .frame(width: 44, alignment: .leading)
+                        .font(GatherFont.secondaryStrong)
+                        .frame(minWidth: 64, alignment: .leading)
                     Text(l10n.format("Gather：%@", CullingDisplayFormat.valueLabel(field.local, with: l10n)))
                         .font(.callout)
                         .lineLimit(1)
@@ -119,8 +119,8 @@ struct CullingConflictPanel: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(l10n.format("写回失败 %lld 项", viewModel.failedSyncItems.count))
-                    .font(.headline)
-                    .foregroundStyle(GatherTheme.error)
+                    .font(GatherFont.cardTitle)
+                    .foregroundStyle(GatherTheme.errorText)
                 Spacer()
                 Button(l10n("重试失败项")) { pendingAction = .retryFailedWriteback }
             }
@@ -132,8 +132,8 @@ struct CullingConflictPanel: View {
                     Text(item.errorMessage.isEmpty
                         ? l10n("未记录原因")
                         : CullingViewModel.funnelErrorText(item.errorMessage, with: l10n))
-                        .font(.callout)
-                        .foregroundStyle(GatherTheme.error)
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(GatherTheme.errorText)
                         .lineLimit(3)
                         .help(item.errorMessage.isEmpty ? "" : CullingViewModel.funnelErrorText(item.errorMessage, with: l10n))
                 }

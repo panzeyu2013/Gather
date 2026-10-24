@@ -16,7 +16,7 @@ extension GalleryView {
                     text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
                     color: GatherTheme.error
                 )
-                .padding(.horizontal, 20)
+                .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                 .padding(.top, 12)
             }
             indexHeaderRow
@@ -150,7 +150,7 @@ extension GalleryView {
                     }
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, GatherMetrics.Layout.pageGutter)
             .padding(.top, 8)
             .padding(.bottom, 8)
             .frame(minHeight: 26)
@@ -204,11 +204,13 @@ extension GalleryView {
 
     private var selectionBar: some View {
         HStack(spacing: 12) {
-            Label(
-                l10n.format("选中 %lld 张照片", viewModel.selectedIds.count),
-                systemImage: "checkmark.circle.fill"
-            )
-            .font(.callout.weight(.medium))
+            Label {
+                Text(l10n.format("选中 %lld 张照片", viewModel.selectedIds.count))
+                    .font(GatherFont.bodyStrong)
+            } icon: {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(GatherTheme.selection)
+            }
             Spacer(minLength: 0)
             Button(l10n("全选")) {
                 toggleSelectAllVisible()
@@ -221,10 +223,11 @@ extension GalleryView {
             .buttonStyle(.borderless)
             .keyboardShortcut(.escape, modifiers: [])
         }
-        .foregroundStyle(Color(nsColor: .alternateSelectedControlTextColor))
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .background(Color(nsColor: .selectedContentBackgroundColor))
+        .foregroundStyle(.primary)
+        .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+        .frame(height: 32)
+        .background(GatherTheme.surfaceMuted)
+        .overlay(alignment: .bottom) { Divider() }
         .accessibilityElement(children: .contain)
     }
 
@@ -302,7 +305,9 @@ extension GalleryView {
             }
             .gatherPrimaryActionButton()
             Button(l10n("前往控制中心")) {
-                onOpenTab(viewModel.sessionId, .control)
+                // 会话页迁移：页签跳转走 environment 里的 navigator（新入口
+                // 优先 open(_:in:)）；没有 navigator（预览/布局测试）时无动作。
+                navigator?.open(.control, in: viewModel.sessionId)
             }
             Button(l10n("刷新")) {
                 Task { await viewModel.load() }

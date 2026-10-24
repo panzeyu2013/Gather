@@ -29,8 +29,8 @@ let macOSDeploymentTarget = "14.0"
 /// 真实 SDK 版本由 `desktop/native/build.sh` 探测后 export，CI 也显式注入；
 /// 届时 Mach-O 的 LC_BUILD_VERSION.sdk 才是真实 SDK。
 ///
-/// **WP7：manifest 求值是纯声明、无外部进程**；值只来自环境变量
-/// `GATHER_SDK_VERSION` 或这个常量。
+/// 版本优先级：GATHER_SDK_VERSION → SDKROOT → xcrun 探测 → 部署目标回退。
+/// 探测失败不会阻断构建，只会回退到旧 SDK 元数据。
 let defaultSDKVersion = macOSDeploymentTarget
 
 /// 真实 SDK 版本，写进 Mach-O 的 LC_BUILD_VERSION.sdk。
@@ -48,9 +48,37 @@ let defaultSDKVersion = macOSDeploymentTarget
 /// -platform_version macos <部署目标> <SDK 版本>。开发时可覆盖：
 /// `GATHER_SDK_VERSION=27.0 swift build`。
 let designSDKVersion: String = {
-    let raw = ProcessInfo.processInfo.environment["GATHER_SDK_VERSION"]?
-        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return raw.isEmpty ? defaultSDKVersion : raw
+    let environment = ProcessInfo.processInfo.environment
+    if let raw = environment["GATHER_SDK_VERSION"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !raw.isEmpty {
+        return raw
+    }
+    if let sdkRoot = environment["SDKROOT"] {
+        let name = (sdkRoot as NSString).lastPathComponent
+        let version = name
+            .replacingOccurrences(of: "MacOSX", with: "")
+            .replacingOccurrences(of: ".sdk", with: "")
+        if version.range(of: #"^\d+(\.\d+)*$"#, options: .regularExpression) != nil {
+            return version
+        }
+    }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+    process.arguments = ["--sdk", "macosx", "--show-sdk-version"]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return defaultSDKVersion }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let version = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return version.isEmpty ? defaultSDKVersion : version
+    } catch {
+        return defaultSDKVersion
+    }
 }()
 
 /// 每个参数都要 -Xlinker 前缀：SwiftPM 经 swiftc 链接，
@@ -86,7 +114,7 @@ let package = Package(
                 .product(name: "GatherProtocol", package: "gather-core"),
             ],
             path: "Sources/GatherUI",
-            exclude: ["Support/Info.plist"],
+            exclude: ["Support/Info.plist", "DesignSystem/README.md", "Interaction/README.md"],
             resources: [
                 // en.lproj / zh-Hans.lproj（Localizable.strings）。
                 .process("Resources"),

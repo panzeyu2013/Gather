@@ -33,15 +33,10 @@ public final class SessionWorkspace: Identifiable {
     /// 会话区域内的 7 个页面（与 7 个 VM 一一对应）。
     /// 页面级可见性只经 `setPageVisible` 按页路由：切页签只启停对应 VM，
     /// 不会因为 workspaces 里有 7 个 VM 就全部置真（R4 P1-2）。
-    public enum Page: Sendable, CaseIterable {
-        case control
-        case faceKw
-        case duplicates
-        case culling
-        case export
-        case gallery
-        case similarity
-    }
+    ///
+    /// 单一身份来源是 `SessionPage`；旧类型名保留为别名，避免工作区/测试
+    /// 一次性大改。新代码应直接使用 `SessionPage`。
+    public typealias Page = SessionPage
 
     public let sessionId: String
     public let culling: CullingViewModel

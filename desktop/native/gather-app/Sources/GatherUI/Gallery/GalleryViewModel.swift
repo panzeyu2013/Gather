@@ -187,7 +187,7 @@ public final class GalleryViewModel: PageVisibility {
     /// 索引状态轮询任务（可见性由 setVisible 统一启停，Cut 4 / 4a-2b）。
     var statusPollTask: Task<Void, Never>?
     /// 首载激活任务（R4 P1-4）：构造时不再起 Task；只由首次页面激活
-    /// （setVisible(true)，经 GalleryView.onAppear → setPageVisible 路由）启动，
+    /// （setVisible(true)，经 GatherSessionPage.onAppear → setPageVisible 路由）启动，
     /// shutdown 时一并取消，避免关闭后继续取页。
     var activateTask: Task<Void, Never>?
     /// 首载是否已激活（只发生一次：再次 onAppear / 隐藏再显示都不重复取页）。
@@ -264,7 +264,7 @@ public final class GalleryViewModel: PageVisibility {
         // 旧实现在 init 里起 initTask → loadIfNeeded()，于是只要 workspace 被构造
         // （进入 control/face/export，甚至仅 enqueue 意图）就会打一次
         // photo.list_page，与"打开哪一页"无关；LRU 重建还会再来一次。
-        // 首载改为显式激活：GalleryView.onAppear → workspace.setPageVisible(.gallery)
+        // 首载改为显式激活：GatherSessionPage.onAppear → workspace.setPageVisible(.gallery)
         // → setVisible(true) → activateIfNeeded()（见 +Load/+Core）。
     }
 }

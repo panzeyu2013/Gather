@@ -13,20 +13,20 @@ extension SimilarityView {
     var analysisPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(l10n("分析控制"))
-                .font(.headline)
+                .font(GatherFont.sectionTitle)
             // 旧版两张手绘「模式卡」（primarySoft 底 + 主色描边 + 说明行）
             // → 原生分段控件 + 次要说明行。
             LabeledContent(l10n("分组范围")) {
                 groupingModePicker
             }
             Text(groupingModeHint)
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
             LabeledContent(l10n("匹配强度")) {
                 presetPicker
             }
             Text(l10n("建议从「均衡」开始；需要更精细控制时再展开高级参数。"))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
             DisclosureGroup(l10n("高级参数")) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -47,7 +47,7 @@ extension SimilarityView {
                         range: 0...30
                     )
                     Text(l10n("0（严格）— 30（宽松）"))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                     SliderInputIntView(
                         title: l10n("最小组大小"),
@@ -74,6 +74,7 @@ extension SimilarityView {
             }
         }
         .gatherCard()
+        .frame(maxWidth: 760, alignment: .leading)
     }
 
     private var groupingModePicker: some View {

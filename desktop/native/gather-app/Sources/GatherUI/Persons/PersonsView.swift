@@ -49,21 +49,29 @@ package struct PersonsView: View {
                     text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
                     color: GatherTheme.error
                 )
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
+                    .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+                    .padding(.top, 12)
             }
-            // 两栏可拖拽（HSplitView）：删掉固定 300pt 与手绘选中态，
-            // 列表用系统 List(selection:).listStyle(.sidebar)。
-            HSplitView {
-                listPane
-                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 420)
-                detailPane
+            // 空库用整页空态，不再左右各摆一个空态。
+            if viewModel.phase == .loaded && viewModel.persons.isEmpty {
+                emptyState
+            } else {
+                // 两栏可拖拽（HSplitView）：列表用系统 List(selection:).listStyle(.sidebar)。
+                HSplitView {
+                    listPane
+                        .frame(minWidth: 260, idealWidth: 300, maxWidth: 420)
+                    detailPane
+                }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(GatherTheme.windowBackground)
-        // 页面名进窗口标题（旧版是列表栏里的 26pt H1，与侧栏条目重复）。
-        .navigationTitle(l10n("人脸库"))
+        // 页面骨架统一由 DesignSystem 提供：frame / 语义背景 / 窗口标题与副标题。
+        // 底色与原 .background(GatherTheme.windowBackground) 等价
+        // （windowBackground == canvas），信息架构未变。
+        .gatherPage(
+            title: l10n("人脸库"),
+            subtitle: personsSubtitle,
+            surface: .canvas
+        )
         // 搜索进工具栏：系统放大镜、清除按钮、Esc 取消；不再自绘圆角输入框。
         .searchable(
             text: $viewModel.searchText,
@@ -85,11 +93,11 @@ package struct PersonsView: View {
             await viewModel.load()
         }
         // 写路径广播（person.* 与 fkw 绑定/解绑 → 人物域）：按域刷新。
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherApplicationChange,
-                  change.domain == .persons,
-                  change.origin != PersonsViewModel.changeOrigin else { return }
-            Task { await viewModel.load() }
+        .refreshOnDomainEvents(
+            [.persons],
+            excludingOrigin: PersonsViewModel.changeOrigin
+        ) {
+            await viewModel.load()
         }
         .sheet(isPresented: $showCreate) {
             CreatePersonSheet(viewModel: viewModel) { name in
@@ -97,6 +105,14 @@ package struct PersonsView: View {
             }
             .onAppear { viewModel.clearActionError() }
         }
+    }
+
+    /// 窗口副标题：加载完成后显示人物数量。
+    private var personsSubtitle: String {
+        guard viewModel.phase == .loaded else {
+            return l10n("跨工作区的人物与人脸绑定")
+        }
+        return l10n.format("%lld 个人物", viewModel.persons.count)
     }
 
     private var listPane: some View {
@@ -157,14 +173,34 @@ package struct PersonsView: View {
 
     /// 对齐 TS persons.emptyTitle / persons.emptyHint / persons.new。
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label(l10n("暂无人物"), systemImage: "person.2")
-        } description: {
+        VStack(spacing: GatherMetrics.Space.m) {
+            Image(systemName: "person.2")
+                .font(.system(size: 42, weight: .light))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(l10n("暂无人物"))
+                .font(GatherFont.sectionTitle)
             Text(l10n("新建人物以开始建立人脸库"))
-        } actions: {
+                .font(GatherFont.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             Button(l10n("新建人物")) { showCreate = true }
+                .controlSize(.large)
                 .gatherPrimaryActionButton()
         }
+        .padding(.horizontal, 40)
+        .padding(.vertical, 36)
+        .frame(maxWidth: 520)
+        .background(
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.hero, style: .continuous)
+                .fill(GatherTheme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.hero, style: .continuous)
+                .strokeBorder(GatherTheme.hairline, lineWidth: 1)
+        )
+        .shadow(color: GatherTheme.shadowCard, radius: 16, y: 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -175,7 +211,9 @@ package struct PersonsView: View {
 
     @ViewBuilder
     private var detailPane: some View {
-        if let person = viewModel.selected {
+        if viewModel.phase != .loaded {
+            Color.clear
+        } else if let person = viewModel.selected {
             PersonDetailView(
                 person: person,
                 viewModel: viewModel,
@@ -221,7 +259,7 @@ private struct PersonListRow: View {
                 Text(person.name).lineLimit(1)
                 Text(l10n.plural("%lld 张照片", count: person.photoCount)
                     + " · " + l10n.plural("%lld 个工作区", count: person.sessionCount))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -300,7 +338,7 @@ private struct PersonDetailView: View {
             HStack(alignment: .center, spacing: 16) {
                 avatar
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(person.name).font(.title2.weight(.semibold))
+                    Text(person.name).font(GatherFont.pageTitle)
                     Text(l10n.plural("%lld 张照片", count: person.totalPhotoCount)
                         + " · " + l10n.plural("%lld 个工作区", count: person.sessionCount))
                         .font(.callout)
@@ -412,7 +450,6 @@ private struct PersonDetailView: View {
                         } label: {
                             Text(l10n("删除人物"))
                         }
-                        .foregroundStyle(GatherTheme.error)
                         .help(l10n("删除该人物及其人脸绑定数据"))
                     }
                 }
@@ -515,7 +552,7 @@ private struct CreatePersonSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(l10n("新建人物")).font(.title2.weight(.semibold))
+            Text(l10n("新建人物")).font(GatherFont.pageTitle)
             TextField(l10n("输入人物姓名"), text: $name)
                 .textFieldStyle(.roundedBorder)
                 .focused($nameFocused)

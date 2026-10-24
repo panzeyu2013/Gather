@@ -16,14 +16,14 @@ struct CullingWorkbench: View {
     @Binding var faceAlign: Bool
     @Binding var pendingAction: PendingCullingAction?
     @Binding var conflictChoices: [String: MetadataConflictChoice]
+    @State private var filmstripExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
             CullingToolbar(
                 viewModel: viewModel,
                 isBusy: isBusy,
-                compareCount: $compareCount,
-                faceAlign: $faceAlign
+                compareCount: $compareCount
             )
             // 竖向分割：查看器 + infoBar 占据上半区，全宽胶片条固定在底部。
             // （旧版把胶片条放在右侧，与右侧 .inspector 两栏夹击查看器。）
@@ -65,7 +65,7 @@ struct CullingWorkbench: View {
                     }
                 }
             }
-            CullingFilmstrip(viewModel: viewModel)
+            CullingFilmstrip(viewModel: viewModel, isExpanded: $filmstripExpanded)
         }
     }
 }

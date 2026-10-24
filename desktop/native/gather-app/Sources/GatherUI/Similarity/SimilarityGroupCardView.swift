@@ -46,7 +46,7 @@ struct SimilarityGroupCardView: View {
             // 展开/选择互不误触。
             Toggle(isOn: selectionBinding) {
                 Text(l10n.format("选择分组 %lld 张", group.count))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
             }
             .toggleStyle(.checkbox)
             .help(l10n("选择分组"))
@@ -56,7 +56,7 @@ struct SimilarityGroupCardView: View {
             RoundedRectangle(cornerRadius: GatherTheme.Radius.group, style: .continuous)
                 .strokeBorder(ringColor, lineWidth: selected ? 2 : 1)
         )
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
+        .animation(reduceMotion ? nil : .easeOut(duration: GatherMetrics.Motion.hover), value: isHovered)
         .onHover { isHovered = $0 }
     }
 
@@ -68,13 +68,13 @@ struct SimilarityGroupCardView: View {
                 placeholderSize: CGSize(width: Self.representativeThumbSize, height: Self.representativeThumbSize)
             )
             .frame(width: Self.representativeThumbSize, height: Self.representativeThumbSize)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 Text(group.label)
-                    .font(.headline)
+                    .font(GatherFont.cardTitle)
                     .lineLimit(1)
                 Text(l10n.plural("%lld 张照片", count: group.count))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
@@ -120,9 +120,9 @@ struct SimilarityGroupCardView: View {
     }
 
     private var ringColor: Color {
-        if selected { return GatherTheme.accent }
+        if selected { return GatherTheme.selection }
         // 悬停反馈用中性色，不占用品牌色做表面。
-        return isHovered ? GatherTheme.separator : Color.clear
+        return isHovered ? GatherTheme.hairline : Color.clear
     }
 
     /// TS: rep = images.find(representative) ?? images[0]。

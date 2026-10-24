@@ -20,7 +20,7 @@ extension FaceKeywordingView {
 
     var stepWriteback: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(l10n("关键字写回")).font(.title3.weight(.semibold))
+            Text(l10n("关键字写回")).font(GatherFont.sectionTitle)
             writebackStats
             boundPreview
             if viewModel.preview != nil { xmpPreview }
@@ -40,7 +40,7 @@ extension FaceKeywordingView {
             if !viewModel.analysisDone {
                 // 前置条件写在可见文案里：.help 在禁用按钮上不会显示。
                 Label(l10n("请先完成人脸分析，才能生成预览并写回。"), systemImage: "info.circle")
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
             if let result = viewModel.writebackResult {
@@ -50,7 +50,6 @@ extension FaceKeywordingView {
                 // （重试失败项 / C1 重新加载 / 确认同步 / 清理），
                 // 写回报告统计卡仅在有写回结果后出现。
                 reportActionsRow
-                    .padding(18)
                     .gatherCard()
             }
         }
@@ -73,10 +72,9 @@ extension FaceKeywordingView {
     private var boundPreview: some View {
         if viewModel.boundClusters.isEmpty {
             Text(l10n("暂无已绑定簇，请先在审核步骤绑定角色。"))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 20)
                 .gatherCard()
         } else {
             VStack(alignment: .leading, spacing: 0) {
@@ -97,20 +95,20 @@ extension FaceKeywordingView {
                 GatherBadge(l10n.format("%lld 个人脸样本", cluster.size))
                 if let keywords = cluster.binding?.keywords, !keywords.isEmpty {
                     Text(keywords.joined(separator: ", "))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
             ForEach(cluster.members.prefix(5), id: \.memberId) { member in
                 Text(member.filename)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             if cluster.members.count > 5 {
                 Text(l10n.format("还有 %lld 名成员", cluster.members.count - 5))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
         }
@@ -126,7 +124,7 @@ extension FaceKeywordingView {
         if let preview = viewModel.preview {
             VStack(alignment: .leading, spacing: 8) {
                 Text(l10n.format("XMP 写回预览 · 共 %lld 项 · %lld 张照片受影响", preview.totalCount, preview.affectedPhotos))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(preview.items.prefix(50), id: \.xmpPath) { item in
@@ -139,7 +137,7 @@ extension FaceKeywordingView {
                 .gatherCard(cornerRadius: GatherTheme.Radius.panel)
                 if preview.items.count > 50 {
                     Text(l10n.format("还有 %lld 项…", preview.items.count - 50))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -152,14 +150,14 @@ extension FaceKeywordingView {
                 .font(.callout.weight(.semibold))
                 .lineLimit(1)
             Text("\(xmpKeywordsText(item.preview?.before.keywords)) → \(xmpKeywordsText(item.preview?.after.keywords ?? item.keywords))")
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .lineLimit(2)
                 .foregroundStyle(.secondary)
                 // 截断的差异需要出口：完整路径留在 tooltip，文本可选中复制。
                 .textSelection(.enabled)
                 .help(item.xmpPath)
             Text(xmpMarkerText(item))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -188,7 +186,7 @@ extension FaceKeywordingView {
     /// 重试/确认同步/清理 + reload 行。
     private func resultSection(_ result: WritebackResult) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(l10n("写回报告")).font(.headline)
+            Text(l10n("写回报告")).font(GatherFont.cardTitle)
             WritebackReportCard(
                 written: result.written,
                 failed: result.failed,
@@ -203,7 +201,6 @@ extension FaceKeywordingView {
             )
             reportActionsRow
         }
-        .padding(18)
         .gatherCard()
     }
 
@@ -242,7 +239,7 @@ extension FaceKeywordingView {
             }
             if !viewModel.isSyncConfirmed {
                 Text(l10n("「清理备份」会在确认同步后开放。"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
         }

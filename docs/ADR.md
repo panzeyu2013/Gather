@@ -364,8 +364,8 @@
 
 1. **P1**：以 `NavigationSplitView` 替换 HStack 外壳，`SidebarView` 内容原样
    放入 `sidebar` 列，页面区放入 `detail`；`RootNavigation` 保持不变，仅改装配层。
-2. **P2**：工作区页签（`Support/SessionTabBar.swift`）保持自绘——split view 的
-   列模型不适合密集页签，页签仍由 `sessionTabDestination` 驱动。
+2. **P2**：工作区页签（`Interaction/GatherSessionPage.swift`）保留在内容区顶部——
+   split view 的列模型不适合密集页签，页签仍由 `SessionPage` 驱动。
 3. **P3**：验证 ⌘1-9、侧栏收合状态恢复、`gather://` 深链落点与拖拽导入。
 
 ### 风险

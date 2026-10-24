@@ -34,12 +34,12 @@ extension SessionControlView {
                     HStack(spacing: 6) {
                         Image(systemName: "lightbulb").foregroundStyle(GatherTheme.warning)
                             .accessibilityHidden(true)
-                        Text(l10n("推荐下一步")).font(.title3.weight(.semibold))
+                        Text(l10n("推荐下一步")).font(GatherFont.sectionTitle)
                     }
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(view.title).font(.callout.weight(.semibold))
-                            Text(view.detail).font(.callout).foregroundStyle(.secondary)
+                            Text(view.detail).font(GatherFont.secondary).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if let action = view.action {

@@ -50,7 +50,7 @@ public struct GatherStatCard: View {
                     .foregroundStyle(style == .plain ? color : Color.primary)
             }
             Text(label)
-                .font(.caption)
+                .font(GatherFont.labelRegular)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -80,13 +80,14 @@ private extension View {
                 .padding(.vertical, 10)
                 .padding(.horizontal, 8)
                 .background(
-                    RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
-                        .fill(GatherTheme.contentBackground)
+                    RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
+                        .fill(GatherTheme.surface)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
-                        .strokeBorder(GatherTheme.separator, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
+                        .strokeBorder(GatherTheme.hairline, lineWidth: 1)
                 )
+
         case .compact, .plain:
             self
         }
@@ -122,7 +123,7 @@ public struct GatherProgressBar: View {
         ProgressView(value: clamped) {
             if let label {
                 Text(label)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
         }
@@ -138,86 +139,6 @@ private extension View {
     @ViewBuilder
     func labelsHidden(if condition: Bool) -> some View {
         if condition { self.labelsHidden() } else { self }
-    }
-}
-
-// MARK: - 空态
-
-/// 统一空态 / 无结果态：SF Symbol + 标题 + 说明 + 可选操作。
-/// 视觉对齐系统 `ContentUnavailableView`（次要色符号、`headline` 标题、`callout` 说明）。
-public struct GatherEmptyState: View {
-    public let icon: String
-    public let title: String?
-    public let message: String?
-    public let actions: AnyView?
-    public var iconColor: Color = .secondary
-    public var iconSize: CGFloat = 44
-    public var spacing: CGFloat = 10
-
-    public init(
-        icon: String,
-        title: String? = nil,
-        message: String? = nil,
-        actions: AnyView? = nil,
-        iconColor: Color = .secondary,
-        iconSize: CGFloat = 44,
-        spacing: CGFloat = 10
-    ) {
-        self.icon = icon
-        self.title = title
-        self.message = message
-        self.actions = actions
-        self.iconColor = iconColor
-        self.iconSize = iconSize
-        self.spacing = spacing
-    }
-
-    public init(
-        icon: String,
-        title: String? = nil,
-        message: String? = nil,
-        iconColor: Color = .secondary,
-        iconSize: CGFloat = 44,
-        spacing: CGFloat = 10,
-        @ViewBuilder actions: () -> some View
-    ) {
-        self.init(
-            icon: icon,
-            title: title,
-            message: message,
-            actions: AnyView(actions()),
-            iconColor: iconColor,
-            iconSize: iconSize,
-            spacing: spacing
-        )
-    }
-
-    public var body: some View {
-        VStack(spacing: spacing) {
-            Image(systemName: icon)
-                .font(.system(size: iconSize, weight: .light))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(iconColor)
-                .accessibilityHidden(true)
-            if let title {
-                Text(title)
-                    .font(.headline)
-            }
-            if let message {
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let actions {
-                actions
-                    .padding(.top, 2)
-            }
-        }
-        .frame(maxWidth: 320)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
     }
 }
 

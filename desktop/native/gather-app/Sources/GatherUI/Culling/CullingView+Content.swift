@@ -1,7 +1,9 @@
 // desktop/native/gather-app/Sources/GatherUI/Culling/CullingView+Content.swift
 // Cut 4 / 4c-2a：壳层数据驱动内容（横幅 / 空态 / 载入失败 / 工作台）与页面生命周期。
-// 纯搬移（原 CullingView.body 的 VStack 与 .task/.onAppear/.onDisappear/.onReceive）；
-// 这些 modifier 仍作用在同一个 VStack 上、顺序不变，body 后再接确认/窗口 chrome。
+// 纯搬移（原 CullingView.body 的 VStack 与 .task/.onReceive）；这些 modifier 仍作用在
+// 同一个 VStack 上、顺序不变，body 里再接确认弹窗、外层由 GatherSessionPage 提供骨架。
+// appearance：页面级 setPageVisible 已收归 GatherSessionPage，本文件不再自建
+// onAppear/onDisappear；页面底色也交给骨架的 canvas 表面。
 import SwiftUI
 import GatherProtocol
 
@@ -30,8 +32,7 @@ extension CullingView {
                         CullingToolbar(
                             viewModel: viewModel,
                             isBusy: isBusy,
-                            compareCount: $compareCount,
-                            faceAlign: $faceAlign
+                            compareCount: $compareCount
                         )
                         emptyGuide(
                             title: l10n("当前范围没有照片"),
@@ -68,7 +69,6 @@ extension CullingView {
                 }
             }
         }
-        .background(GatherTheme.windowBackground)
         .task {
             // D10：控制中心「N 个 XMP 冲突待裁决 → 逐条裁决」的入口意图。
             // 旧实现只切到挑片页，用户还得自己找冲突；有缓存状态时甚至回到上一次
@@ -90,15 +90,10 @@ extension CullingView {
             }
         }
         // 可见性门控（审计 P1-并发 / Cut 4 4a-2b / R4 P1-2）：条件渲染页离开即销毁，
-        // 页面级启停只由本页 onAppear/onDisappear 经 workspace 路由到 culling VM
-        //（进入会话不再由 workspace 全量置真）；onAppear 补刷隐藏期领域变更并
-        // 恢复画质轮询，onDisappear 停掉 500ms 轮询（隐藏页不发命令）。
-        .onAppear {
-            workspace.setPageVisible(.culling, true)
-        }
-        .onDisappear {
-            workspace.setPageVisible(.culling, false)
-        }
+        // 页面级启停由 GatherSessionPage 的 onAppear/onDisappear 经
+        // workspace.setPageVisible(.culling, …) 路由到 culling VM（进入会话不再由
+        // workspace 全量置真）。补刷隐藏期领域变更、恢复/停止画质 500ms 轮询都在
+        // CullingViewModel.setVisible 内部——本页不再重复调用，避免两处启停互相覆盖。
         // 写回协调器 emitSummary 后刷新同步状态（TS useEvent('culling:sync-status')）。
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
             guard (notification.object as? String) == viewModel.sessionId else { return }
@@ -106,15 +101,8 @@ extension CullingView {
         }
         // 跨页领域变更（挑片/元数据/图库）：可见时按域补刷，隐藏时只登记，
         // 回可见由 onAppear 统一补一次；自身 origin 在 VM 内跳过。
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherApplicationChange else { return }
+        .handleDomainEvents(Set(GatherChangeDomain.allCases)) { change in
             viewModel.handleDomainChange(change)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .gatherMenuUndo)) { _ in
-            Task { await viewModel.undo() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .gatherMenuRedo)) { _ in
-            Task { await viewModel.redo() }
         }
     }
 
@@ -125,5 +113,8 @@ extension CullingView {
             Text(message)
         }
         .padding(.vertical, 48)
+        // 空态自己撑满剩余区域并居中；GatherSessionPage 的 topLeading 只负责
+        // 让页签行贴顶，不应把空态一起顶到上方。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

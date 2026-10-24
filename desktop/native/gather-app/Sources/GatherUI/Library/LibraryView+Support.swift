@@ -23,16 +23,17 @@ extension LibraryView {
         // 已实测复现。这里的四组内容是「管理面板」而不是表单行，
         // 用卡片分组本来也更贴切。
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
+                Text(l10n("资料库"))
+                    .font(GatherFont.sectionTitle)
                 smartAlbumsCard
                 assetCandidatesCard
                 metadataOrphansCard
                 offlineVolumesCard
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
+            .padding(GatherMetrics.Space.l)
         }
-        .navigationTitle(l10n("资料库"))
     }
 
     private var smartAlbumsCard: some View {
@@ -48,7 +49,7 @@ extension LibraryView {
                             Text(album.name)
                         } else {
                             Label(album.name, systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(GatherTheme.error)
+                                .foregroundStyle(GatherTheme.errorText)
                         }
                     }
                     .tag(album.id)
@@ -101,7 +102,7 @@ extension LibraryView {
         supportCard(title: l10n("RAW/JPEG 资产关联"), systemImage: "link") {
             if viewModel.assetCandidates.isEmpty {
                 Text(l10n("暂无待处理关联候选"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             } else {
                 // TS Library/index.tsx:348 —— 候选直出（卡片内可滚动，无分页门控）。
@@ -111,12 +112,12 @@ extension LibraryView {
                 ForEach(viewModel.assetCandidates, id: \.id) { candidate in
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(Self.basename(candidate.leftPath)) ↔ \(Self.basename(candidate.rightPath))")
-                            .font(.callout)
+                            .font(GatherFont.secondary)
                             .lineLimit(1)
                             .help("\(candidate.leftPath)\n\(candidate.rightPath)")
                             .textSelection(.enabled)
                         Text(l10n.format("%@ · 置信度 %lld%%", Self.candidateStatusText(candidate.status, with: l10n), Int(candidate.confidence * 100)))
-                            .font(.callout)
+                            .font(GatherFont.secondary)
                             .foregroundStyle(.secondary)
                         HStack(spacing: 6) {
                             if candidate.status != .accepted {
@@ -184,7 +185,7 @@ extension LibraryView {
         supportCard(title: l10n("孤立 XMP"), systemImage: "doc.badge.ellipsis") {
             if viewModel.metadataOrphans.isEmpty {
                 Text(l10n("没有孤立 XMP"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             } else {
                 // TS Library/index.tsx:377 —— 孤立 XMP 直出（卡片内可滚动，无分页门控）。
@@ -192,7 +193,7 @@ extension LibraryView {
                 ForEach(viewModel.metadataOrphans, id: \.xmpPath) { orphan in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(Self.basename(orphan.xmpPath))
-                            .font(.callout)
+                            .font(GatherFont.secondary)
                             .lineLimit(1)
                             .help(orphan.xmpPath)
                             .textSelection(.enabled)
@@ -205,7 +206,7 @@ extension LibraryView {
                                 Self.orphanStatusText(orphan.status, with: l10n),
                                 Self.orphanErrorText(orphan.errorMessage, with: l10n)
                             ))
-                            .font(.callout)
+                            .font(GatherFont.secondary)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                         HStack(spacing: 6) {
@@ -253,17 +254,17 @@ extension LibraryView {
             let offlineVolumes = viewModel.assetVolumes.filter { $0.offlineFiles > 0 }
             if offlineVolumes.isEmpty {
                 Text(l10n("没有需要重新关联的离线卷"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(offlineVolumes, id: \.volumeId) { volume in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(volume.roots.joined(separator: "、").isEmpty ? volume.volumeId : volume.roots.joined(separator: "、"))
-                            .font(.callout)
+                            .font(GatherFont.secondary)
                             .lineLimit(2)
                             .help(volume.roots.joined(separator: "\n"))
                         Text(l10n.format("离线文件：%lld", volume.offlineFiles))
-                            .font(.callout)
+                            .font(GatherFont.secondary)
                             .foregroundStyle(.secondary)
                         ForEach(volume.roots, id: \.self) { root in
                             Button(l10n("重新关联此目录")) {
@@ -313,12 +314,12 @@ extension LibraryView {
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(title, systemImage: systemImage)
-                .font(.headline)
+                .font(GatherFont.cardTitle)
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .gatherCard(cornerRadius: GatherTheme.Radius.panel)
+        .gatherCard(cornerRadius: GatherTheme.Radius.card, elevated: false)
     }
 
     /// 对齐 TS Library/index.tsx:353-355：已关联/已拒绝/待确认·N%。
