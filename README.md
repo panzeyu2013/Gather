@@ -70,13 +70,18 @@ cd ../gather-app
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-parallel
 ```
 
+The default suites are correctness-only. Quality/recall/F1 baselines and
+CoreML/Vision integration run nightly (`.github/workflows/nightly.yml`), not in
+the PR loop. Normal tests never assemble the `.app` bundle.
+
 ### Build a macOS application bundle
 
 ```bash
 ./desktop/native/build.sh
 ```
 
-The bundle is assembled at `release/Gather.app`. Set
+The full bundle build is a release/packaging activity, not part of the normal
+test loop. The bundle is assembled at `release/Gather.app`. Set
 `CONFIGURATION=release` for a release build. The script does not require a
 JavaScript toolchain and leaves signing disabled unless `CODESIGN_IDENTITY`
 is explicitly provided. When signing, it applies hardened runtime plus
@@ -125,8 +130,9 @@ See [Architecture Decisions](docs/ADR.md), [Development guide](docs/DEVELOPMENT.
 ## Contributing
 
 Issues and pull requests are welcome. Before submitting a change, run the
-native core and app test suites and the bundle build when the changed area
-touches packaging or app startup.
+native core and app test suites. Do not run the full bundle build in the normal
+test loop; it is reserved for release/packaging (or when the change explicitly
+touches packaging and needs a bundle check).
 
 ## License
 

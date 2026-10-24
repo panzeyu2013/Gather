@@ -42,7 +42,29 @@ struct LocalizationParityTests {
     /// 本仓 .strings 条目都是单行 `"key" = "value";`（允许转义引号）。
     private static let entryPattern = #"(?m)^\s*"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"\s*;\s*$"#
 
+    /// 解析结果在套件内缓存：5 条 parity 用例不再各自重读/正则解析同一张表。
+    private static let entriesCache: Result<[(key: String, value: String)], Error> = Result {
+        try parseEntriesUncached()
+    }
+
+    private static let tableCache: Result<[String: String], Error> = Result {
+        var table: [String: String] = [:]
+        for entry in try entriesCache.get() {
+            // 重复键在 noDuplicateKeys 里单独报错；这里保持「后写覆盖」的运行时语义。
+            table[entry.key] = entry.value
+        }
+        return table
+    }
+
     private func parseEntries() throws -> [(key: String, value: String)] {
+        try Self.entriesCache.get()
+    }
+
+    private func parseTable() throws -> [String: String] {
+        try Self.tableCache.get()
+    }
+
+    private static func parseEntriesUncached() throws -> [(key: String, value: String)] {
         let text = try String(contentsOf: Self.stringsURL, encoding: .utf8)
         let regex = try NSRegularExpression(pattern: Self.entryPattern)
         let range = NSRange(text.startIndex..., in: text)
@@ -51,15 +73,6 @@ struct LocalizationParityTests {
                   let valueRange = Range(match.range(at: 2), in: text) else { return nil }
             return (Self.unescape(String(text[keyRange])), Self.unescape(String(text[valueRange])))
         }
-    }
-
-    private func parseTable() throws -> [String: String] {
-        var table: [String: String] = [:]
-        for entry in try parseEntries() {
-            // 重复键在 noDuplicateKeys 里单独报错；这里保持「后写覆盖」的运行时语义。
-            table[entry.key] = entry.value
-        }
-        return table
     }
 
     // MARK: - 代码在用 key
@@ -79,7 +92,13 @@ struct LocalizationParityTests {
     /// 仍按 key 处理（有空格/文字，不匹配本模式）。
     private static let machineFormatPattern = #"^%[-+ #0-9.']*(?:hh|ll|[hlqjzt])?[a-zA-Z@%]$"#
 
+    private static let scannedKeysCache = scannedLiteralKeysUncached()
+
     private func scannedLiteralKeys() -> (keys: Set<String>, files: Int) {
+        Self.scannedKeysCache
+    }
+
+    private static func scannedLiteralKeysUncached() -> (keys: Set<String>, files: Int) {
         var keys: Set<String> = []
         var files = 0
         let enumerator = FileManager.default.enumerator(
@@ -207,7 +226,13 @@ struct LocalizationParityTests {
     ///
     /// 偏差：行首注释整行跳过（注释不算引用），行尾注释不剥离（保守，只会漏报孤儿）；
     /// 运行时拼接出来的 key 扫不到 —— 真出现时本用例会红，属预期（必须显式登记）。
+    private static let sourceLiteralsCache = sourceLiteralKeysUncached()
+
     private func sourceLiteralKeys() -> Set<String> {
+        Self.sourceLiteralsCache
+    }
+
+    private static func sourceLiteralKeysUncached() -> Set<String> {
         var keys: Set<String> = []
         let enumerator = FileManager.default.enumerator(
             at: Self.sourcesURL,

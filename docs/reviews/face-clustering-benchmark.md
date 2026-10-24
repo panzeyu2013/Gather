@@ -115,7 +115,7 @@
 | #1 模型层 | ✅ 接缝落地 / ⚠️ 真实推理未验证 | `FaceEmbeddingProvider` + `FaceEmbeddingSpec`；`CoreMLFaceEmbedder` 支持 `.mlmodel`/`.mlmodelc`；多输出歧义、维度不符、路径不存在都**报错而非回退**；递归全内容指纹进 `analysis_signature`（`.mlmodelc` 权重在包内独立文件，只哈希 `model.mlmodel` 会漏判换权重）；缓存键用递归 stat 指纹；`~`/相对/软链规范化 | [EmbeddingModel.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/EmbeddingModel.swift)、[Encoder.swift](../../desktop/native/gather-core/Sources/GatherAnalysis/Face/Encoder.swift) |
 | #7 增量聚类 | ✅（默认开） | 签名未变 + 有簇 + 无整体失败时，新照片挂已有簇质心（最相似 ≥ eps 且与亚军差 ≥ margin），不动簇 id/`matched_person_id`/绑定，只清幽灵成员；挂不上的新脸彼此跑同参全量 | `Clusterer.assignIncrementally` + [FaceKwService.swift](../../desktop/native/gather-core/Sources/GatherApplication/Services/FaceKwService.swift)（键 `face_incremental_clustering`） |
 | #8 参数影响预估 | ✅ 纯函数 / ⛔ 未接 UI | `FaceClusteringImpactEstimator` 输出换簇/簇数/噪声/变化簇/新增消失簇 + `parametersChanged` 与 `partitionChanged` 分开 + `normalizedParameters`（与生产同刻度）+ `isSubsetOfLibrary`；**计数只对传入观测集成立**，2k 观测 debug ≈28.5s，接 UI 前必须后台化/可取消 | `ClusteringImpact.swift`（2026-10-22 随 CL-13 删除，无替代实现） |
-| #9 准确率基线 | ✅ 合成 / ⛔ 真实标注 | 合成标注集报簇级 P/R、pairwise P/R/F1、ARI（两种等价公式交叉验证）；含"对照组必须出现误聚"、"低质量但方向正确不被误杀"、"低质量桥接点量化召回代价" | `Tests/GatherCoreTests/Face/FaceClusteringAccuracyTests.swift` |
+| #9 准确率基线 | ✅ 合成 / ⛔ 真实标注 | 合成聚类质量（P/R/F1/noise，floor=0/0.5）迁到 `gather-core-benchmarks --quality` 夜间基线；默认套件保留 3 条确定性行为用例（共享退化/正确方向低质量/桥接点） | `Sources/GatherCoreBenchmarks/main.swift`、`Tests/GatherCoreTests/Face/FaceClustererQualityRetryTests.swift` |
 | 真实素材 | ✅（本机可跑） | 真实人像跑通检测 + 5 点对齐 + 768 维单位向量 + 确定性；`GATHER_FACE_FIXTURE=<jpg>` 启用（本机测试进程无法解码 NEF，用 sips 转 JPEG） | `Tests/GatherCoreTests/Face/FaceRealPhotoPipelineTests.swift` |
 
 **新增设置键**（全部在设置页可改；键必须在 `SettingsService.getDefaults()` 注册，否则 `settings.set` 白名单拒绝——有测试守）
@@ -136,7 +136,7 @@
 - 高 3（多输出取错）→ 模型描述里恰好一个合法输出才接受，否则报歧义；推理结果按输出名挑，并断言长度等于声明维度；
 - 高 4（错误不可见）→ `FaceEmbeddingError` 在路由层映射为中文可读原因（不再落到"发生未知错误"）；设置页保存模型路径时当场校验；
 - 高 5（strides/fp16）→ 非连续 strides 走逐下标读取（线性读会静默错序），支持 float32/double/float16；
-- R2（ARI 公式、试算口径、恒真断言）→ 见 [FaceClusteringAccuracyTests.swift](../../desktop/native/gather-core/Tests/GatherCoreTests/Face/FaceClusteringAccuracyTests.swift)；`ClusteringImpact.swift` 已随 CL-13 删除，其边界声明随之移除。
+- R2（统计口径、恒真断言）→ 2026-10-24 起统计基线迁到 [gather-core-benchmarks](../../desktop/native/gather-core/Sources/GatherCoreBenchmarks/main.swift) 与夜间任务；默认套件的行为证据见 [FaceClustererQualityRetryTests.swift](../../desktop/native/gather-core/Tests/GatherCoreTests/Face/FaceClustererQualityRetryTests.swift)。`ClusteringImpact.swift` 已随 CL-13 删除，其边界声明随之移除。
 - 第二轮对抗验证（V2）新增：设置表被手改成 `NaN`/`inf` 时 `Int(getNumber(...))` 会 **trap 崩溃** → 统一经 `Double.safeInt(fallback:)`（13 处设置→Int 转换；非有限值回退默认值，语义对正常值与旧代码逐位一致）；
 - V2 独立复核结论：ARI 用第三种实现（4000 随机划分，≤1e-15 一致）、margin 走生产落库（49 簇 / ruleMismatches=0）、试算口径与生产归一化逐值一致。
 - V1（嵌入接缝验证）又抓出三个真实缺陷并已修：①**部分失败**（1 成功 + 1 失败）会写 `analysis_state` 且丢弃失败的脸 ⇒ 那些脸永不重试 → 现在只要本次有编码失败就不写 state（部分结果仍落库，下次重试）；②签名与推理由两次 `make` 解析，模型文件在两者间被替换会"用 A 的签名标注 B 的向量" → 一次运行只创建**一个**嵌入实例，签名与推理同源；③`.DS_Store` 等系统噪声会改变内容指纹 ⇒ 全库重算 → 指纹递归时跳过点开头文件。

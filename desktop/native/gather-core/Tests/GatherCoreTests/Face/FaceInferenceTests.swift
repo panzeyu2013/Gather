@@ -74,7 +74,12 @@ struct FaceInferenceTests {
 
     // ── Encoder（Vision 空图路径）──
 
-    @Test func encoderReturnsEmptyForSolidImage() throws {
+    // skip-owner: face-model
+    // 到期：2027-06-30
+    // 原因：需要 Vision 人脸检测真实运行，归入夜间集成。
+    // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceInferenceTests
+    @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
+    func encoderReturnsEmptyForSolidImage() throws {
         let image = try makeSolidJPEG()
         let results = try FaceEncoder.encodeFaces(in: image)
         #expect(results.isEmpty)
@@ -104,7 +109,12 @@ struct FaceInferenceTests {
 
     // ── Inference（批处理语义）──
 
-    @Test func inferenceProcessesBatchAndStreamsProgress() async throws {
+    // skip-owner: face-model
+    // 到期：2027-06-30
+    // 原因：批处理路径初始化 Vision 推理引擎。
+    // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceInferenceTests
+    @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
+    func inferenceProcessesBatchAndStreamsProgress() async throws {
         let image = try makeSolidJPEG()
         let engine = FaceInferenceEngine()
         var progressEvents: [(Int, Int)] = []
@@ -123,7 +133,12 @@ struct FaceInferenceTests {
         #expect(progressEvents.map { $0.1 } == [3, 3, 3])
     }
 
-    @Test func inferenceIsolatesPerImageFailures() async throws {
+    // skip-owner: face-model
+    // 到期：2027-06-30
+    // 原因：好图路径仍走 Vision 推理。
+    // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceInferenceTests
+    @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
+    func inferenceIsolatesPerImageFailures() async throws {
         let good = try makeSolidJPEG()
         let engine = FaceInferenceEngine()
         let results = try await engine.analyzeBatch(images: [good, Data("garbage".utf8), good])
@@ -133,7 +148,30 @@ struct FaceInferenceTests {
         #expect(results[2].error == nil)
     }
 
-    @Test func inferencePropagatesCancellation() async throws {
+    /// 纯逻辑路径：三张不可解码的图都在 Vision 之前失败，仍要逐图隔离、
+    /// 不把整批结果吞掉。默认套件用垃圾字节即可，无需 Vision/模型。
+    @Test func inferenceIsolatesAllDecodeFailuresWithoutVision() async throws {
+        // 注入 no-op embedder，连内置模型 spec 也不加载；garbage 在解码阶段失败。
+        let engine = FaceInferenceEngine(embedder: NoopEmbedder())
+        let results = try await engine.analyzeBatch(
+            images: [Data("bad-1".utf8), Data("bad-2".utf8), Data("bad-3".utf8)])
+        #expect(results.count == 3)
+        #expect(results.allSatisfy { $0.error != nil })
+        #expect(results.allSatisfy { $0.observations.isEmpty })
+    }
+
+    private struct NoopEmbedder: FaceEmbeddingProvider {
+        let spec = FaceEmbeddingSpec(
+            modelId: "noop", modelVersion: "test", dimension: 4, signature: "noop")
+        func embed(alignedFace: CGImage) throws -> [Double] { [1, 0, 0, 0] }
+    }
+
+    // skip-owner: face-model
+    // 到期：2027-06-30
+    // 原因：构造 500 张图验证 Vision 批处理取消，属夜间集成。
+    // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceInferenceTests
+    @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
+    func inferencePropagatesCancellation() async throws {
         let image = try makeSolidJPEG()
         let engine = FaceInferenceEngine()
         let task = Task {

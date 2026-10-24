@@ -16,6 +16,23 @@
 > `swift test` 的 “N tests passed” 包含 skip，**有效执行数 = 声明数 − skip 数**；
 > 统计“通过”时不得把 skip 算作有效执行，门禁与负例见 §4.1。
 
+> **状态（2026-10-24 测试分层优化，当前）**：
+> - 默认套件实测（M5 Pro / Debug / 串行 / 不含构建）：**core 1,167 例 / 174 套件 ≈ 10.1s**，
+>   **app 640 例 / 72 套件 ≈ 11.5s**（优化前 17.6s / 16.8s；数值随机器负载浮动）。
+> - 已从默认套件迁出/精简：`FaceClusteringAccuracyTests`（统计基线，删除，保留 3 个确定性
+>   behavior 用例到 `FaceClustererQualityRetryTests`）、`FaceMarginDecisionTests` 的 7 轮
+>   sweep（只留 1 条 margin=0/0.01 生产路径用例）、`VectorIndexReconciliationTests` 的
+>   1000×100 召回（只留配置/空索引/自召回；3.5MB fixture 与生成器删除）、
+>   `MatcherReconciliationTests` 的 recall>=0.95 门、`IncrementalClustererPerformanceTests`
+>   的墙钟门（改功能复用断言）、`ClusterGraph` n=32769（改为可注入 `maxBitsetEntries` 的
+>   n=33 分支测试）、4MB 哈希三重载荷（改为 256B 注入分块 + 一次 4MB+1）、
+>   `IndexerChecksumParityTests`（合并删除）。
+> - 质量/性能指标迁到 `gather-core-benchmarks --quality/--margin/--smoke`；夜间 workflow
+>   `.github/workflows/nightly.yml` 跑 `GATHER_MODEL_TESTS=1` 集成与 release benchmark。
+> - skip 站点 **11**：真实照片 3 + 模型集成 8；每处均有 `skip-owner`/到期/原因。
+> - 完整 `.app` bundle 只在 release/packaging 构建；PR 的 `gather-app` job 已删除
+>   `Native bundle build` 步骤，日常测试不跑 `build.sh`。
+
 ---
 
 ## 1. 现状统计
@@ -93,7 +110,7 @@ core 最大套件：`CullingServiceTests` 67（10 suites，323–1883）、`Face
 
 本仓实测：`.disabled` **0**、`withKnownIssue` **0 实际使用**（`SimilarityViewModelTests.swift:804` 只是注释说明「不再用」），所以 §8.7 的「skip=0」当前已满足；真正的风险是 4 处 `.enabled(if:)` 带来的 8 条默认静默跳过（§4）。
 
-> 上述为 Cut 0 快照；当前为 **3 条** `.enabled(if:)`（`FaceRealPhotoPipelineTests`），已由 `check-test-catalog.sh --strict` 登记 owner/到期/原因，见 §4.1。
+> 上述为 Cut 0 快照；2026-10-24 当前为 **11 条** `.enabled(if:)`（真实照片 3 + 模型集成 8），已由 `check-test-catalog.sh --strict` 登记 owner/到期/原因，见 §4.1。
 
 ---
 
@@ -115,7 +132,7 @@ core 最大套件：`CullingServiceTests` 67（10 suites，323–1883）、`Face
 | D10 ✅ | ~~`.../Reconciliation/VectorIndexReconciliationTests.swift:121`~~（**已删，5b-2a**） | 1 | `hnswTopKMatchesFixture` 随 HNSW 删除（CL-06）；LSH 3 条保留（另有 `rejectsDimensionMismatches` 同批删除，合计 −2） | Cut 5 已完成 | CL-06 |
 | D11 | `Protocol/*ContractTests.swift`（17 文件） | 160 | 「Codable key == TS 字段名」：TS 源 `packages/shared/src/protocol/*.ts` **已不存在**（仓库无 `packages/`），JSON envelope 同时删除 → 契约前提消失。保留约 30 条 enum rawValue（持久化契约）合并成 1 张表 | Cut 1（需先确认 DTO 是否保留 Codable） | 【已确认】`ls packages` 无输出；【疑似】保留面 |
 | D12 | `.../Protocol/ErrorCodeContractTests.swift:11-73` | 1 | 删「177 冻结清单」这条；保留 `case 名 == rawValue` 与无重复断言 | Cut 1 | §1 备注 |
-| D13 | `.../Services/IndexerChecksumParityTests.swift:6-…` | 1 | 流式 vs 一次性 checksum 对拍；若 Cut 5 删双实现则无对象 | Cut 5 | 【疑似】 |
+| D13 ✅ | ~~`.../Services/IndexerChecksumParityTests.swift:6-…`~~ | 1 | 2026-10-24 合并进 `FileHasherTests`：用注入 `chunkSize` 的小载荷覆盖跨块，一次 4MB+1 覆盖生产分块；重复文件删除 | 已完成 | §4 分层优化 |
 | D14 | `core/Services/ReviewAcceptanceTests.swift:22-55`、`DeepReviewAcceptanceTests.swift:57-160` | 8 | 12 条「审查员探针」中 8 条只是同一行为的重复表述/诊断输出；保留 4 条行为断言（见 R9） | Cut 1 当轮 | CL-19 |
 
 小计：**core 236 + app 11**（D2 是 helper，不计条数；D12 含在 Protocol 161 内单独列示）。备注：D2 的 18 个构造点分布在 `ReviewFixTests:136,316,341,349,364,544,564`、`FaceKeywordingViewModelTests:13,171,187,198,329,345`、`LayoutBudgetTests:50,81,131,177,196,278`、`SettingsSaveSemanticsTests:17`、`NativeCommandClientTests:12`、`IndexHeaderCopyTests:50`、`InboxItemsTests:46`、`FaceReclusterConfirmTests:31`、`CullingSyncFlowTests:105`、`WorkspaceStageMarksTests:20`；这些用例本身保留，只换注入（router → typed API fake）。
@@ -173,7 +190,7 @@ app 合并明细（合计 -54）：C1Preflight 5→4、CullingSyncFlow 5→4、D
 | K9 | `app/Gallery/Library/Dashboard/Persons/Similarity/FaceKeywording VM 测试` | 122 | 只把 router 注入换成 fake API（见 D2 备注），断言保留 |
 | K10 | `core/Services/WorkspaceStatusServiceTests` 收敛后 24 条 | 24 | 工作区状态是 UI 唯一入口的投影 |
 | K11 | `app/GatherAppDelegateTests.swift`、`WorkspaceStageMarksTests.swift`、`C1PreflightTests.swift` | 11 | 宿主启动/预检状态机 |
-| K12 | `core/Face/FaceMarginDecisionTests.swift:318-433` | 1 | 唯一在生产路径上验证 margin 决策的用例（合成分布，慢但不可替代） |
+| K12 | `core/Face/FaceMarginDecisionTests.swift` | 1 | 2026-10-24 精简为 margin=0/0.01 的生产路径行为用例；7 轮 sweep 已迁 benchmark |
 
 ### 3.5 账目预算（与 §1.2/§1.3 对齐）
 
@@ -203,19 +220,19 @@ app（298 → **253**）：删除 -11（D1/D3）、合并 -54（M1/M8/M10/M11 + 
 | --- | --- | --- |
 | `@Test(.disabled)` | **0** | — |
 | `withKnownIssue` 实际使用 | **0** | `app/SimilarityViewModelTests.swift:804` 仅注释 |
-| `.enabled(if:)` 条件 | **3 处 / 默认跳过 3 条**（Cut 0 为 4 处 / 8 条；HNSW suite gate 已随 5b-2a 删除，5d-1 复核；均已登记 owner/到期/原因，见 §4.1） | `core/Face/FaceRealPhotoPipelineTests.swift`（3 条，`GATHER_FACE_FIXTURE`） |
+| `.enabled(if:)` 条件 | **11 条**（2026-10-24：真实照片 3 + 模型集成 8；均已登记 owner/到期/原因，见 §4.1） | `FaceRealPhotoPipelineTests`（3，`GATHER_FACE_FIXTURE`）；`FaceIdentityArchitectureTests`（1）、`FaceEmbeddingModelTests`（3）、`FaceInferenceTests`（4），`GATHER_MODEL_TESTS=1` |
 | `.serialized` | 20 处 / 14 文件 | 7 个 Repo 套件、`MigrationTests:64`、`LoggerTests:10`、`FaceIdentityArchitectureTests:6`、`CommandSurfaceRuntimeTests:75`、`GlobalInfraTests:9,241` |
 | 写真实 home | **1** | `FaceEmbeddingFingerprintTests.swift:194-205`（沙箱下已知失败，台账唯一红） |
 | 读 home 作断言输入 | 3 文件 4 处 | `SettingsSaveSemanticsTests.swift:168`、`IndexerServiceTests.swift:916,931,949`、`SessionServiceTests.swift:309-311` |
 | 启动外部进程 | 6 用例 | `app/ReviewAcceptanceTests.swift:22-40`（2）、`:59-65` 被 `:73,99,120` 复用（3）、`DeepModelAcceptanceTests.swift:23`（1）；依赖 `/usr/bin/zip`、`/bin/sh`、`/usr/bin/awk` |
 | 进程级语言全局 + 互斥锁 | **32 用例 / 16 文件 / 41 调用点** | `Support/AppLanguageLock.swift:13-33`；使用方见 §3.3-R5；根因 `GatherLocalization.appLanguage` 是进程全局 |
 | 依赖当前工作目录 | 1 | `SessionServiceTests.swift:316-320`（`TSPath.resolve` 用 `currentDirectoryPath`） |
-| 依赖 OS 框架（Vision/CoreML/ImageIO） | 32 | `FaceEmbeddingModelTests`(12, Vision FeaturePrint)、`FaceClusteringAccuracyTests`(7)、`RAWDecoderTests`(13, ImageIO)、`FaceRealPhotoPipelineTests`(3, 已 gated)、`ExportServiceTests.swift:3,421`（`#if canImport(ImageIO)`） |
+| 依赖 OS 框架（Vision/CoreML/ImageIO） | 17 | `FaceEmbeddingModelTests`(3 gated)、`FaceInferenceTests`(4 gated)、`FaceIdentityArchitectureTests`(1 gated)、`RAWDecoderTests`(13, ImageIO)、`FaceRealPhotoPipelineTests`(3 gated)、`ExportServiceTests`（ImageIO 条件编译） |
 | 依赖时序/RunLoop/超时 | 9 | `LayoutBudgetTests`(8, `NSHostingView.fittingSize` + `RunLoop.run`)、`CommandSurfaceRuntimeTests.swift:277-282`（5s 超时） |
 | 依赖仓库内 fixture 路径（`#filePath`） | 26 | `Reconciliation/Harness.swift:12-17`、`ErrorLocalizationCoverageTests.swift:40-46`、`MigrationTests.swift:17-33`（D4 删除） |
 | 网络 | **0** | `SidecarXMPProviderTests.swift:56-80` 的 `http://` 是 RDF 命名空间，非网络【已确认】 |
 
-结论：Cut 0 快照中真正「无法判定成败」的只有 8 条条件跳过 + 1 条 home 写失败；语言全局是最广的隐性耦合（32 条），Cut 4 必须与 `AppLanguageLock` 一起删。当前 skip 已收敛到 3 条，门禁口径见 §4.1。
+结论：Cut 0 快照中真正「无法判定成败」的条件跳过 + 1 条 home 写失败；语言全局是最广的隐性耦合（32 条），Cut 4 必须与 `AppLanguageLock` 一起删。2026-10-24 当前 skip 为 11 条（真实照片 3 + 模型集成 8），门禁口径见 §4.1。
 
 ### 4.1 skip 门禁与“有效执行”口径（2026-10-22）
 
@@ -279,7 +296,7 @@ app（298 → **253**）：删除 -11（D1/D3）、合并 -54（M1/M8/M10/M11 + 
 | 合并过度丢边界 | Cut 6 | 参数化只保留 happy 输入、丢错误码逐字断言 | 每张参数表必须含 ≥1 非法输入行；A/B 变异抽查（删守卫应变红） |
 | 默认跳过伪装绿灯 | 现状/持续 | skip 被计入 “passed”，有效覆盖虚高 | `check-test-catalog.sh --strict` 识别 `.enabled`/`.disabled`/`@Suite` skip/`withKnownIssue`，强制 owner/到期/原因；CI 同口径；有效执行按“声明−skip”记账；D9 的 3 条已登记但未关闭 |
 | 统计口径漂移 | 每 Cut | 994/141 与 §8.7 指标对不上 | 附录 A 脚本进 CI，输出写入 cleanup-baseline.json |
-| 性能型用例拖慢 | `FaceMarginDecisionTests`、`FaceClusteringAccuracyTests`、`VectorIndex`（~6s） | 全量测试时长上升 | 性能/统计类打 `@Tag(.slow)`，默认 `--skip-tag`（Swift Testing 支持） |
+| 性能型用例拖慢 | ~~`FaceMarginDecisionTests`、`FaceClusteringAccuracyTests`、`VectorIndex`~~ | 全量测试时长上升 | **已实施（2026-10-24）**：统计/性能类迁 `gather-core-benchmarks`（`--quality`/`--margin`/`--smoke`）+ 夜间 workflow；默认套件只留确定性行为用例 |
 
 ---
 
@@ -303,7 +320,7 @@ app（298 → **253**）：删除 -11（D1/D3）、合并 -54（M1/M8/M10/M11 + 
 
 - **5b/5c 合计**：删 **23 例**、增 **44 例**，净 **+21 例 / +4 套件**（1071/153 → 1092/157）；其中 5c 两段合计 **+19 例**。
 - **skip 口径**：`.enabled(if:)` **4 处 / 8 条 → 3 处 / 3 条**（HNSW suite gate 随 5b-2a 删除）；`.disabled` **0**、`withKnownIssue` **0** 不变。
-- **Reconciliation**：**24 → 22 例**（Cluster 3 / Clusterer 4 / DHash 1 / Dimensions 1 / Matcher 10 / Vector 3）；fixture `vector-fixtures.json` 143,273 → 140,855 行（−2,418）。
+- **Reconciliation**：**24 → 22 例**（Cluster 3 / Clusterer 4 / DHash 1 / Dimensions 1 / Matcher 10 / Vector 3）；fixture `vector-fixtures.json` 143,273 → 140,855 行（−2,418）。**2026-10-24：该 fixture、生成器与 Vector 召回门已删除；Matcher 现 9 例。**
 - **口径偏差**：Cut 0 预算 core 761 / app 253 未按原样执行——各 Cut 按"删除对象 + 替代断言同 PR"落地，net 落到 **1,092 / 581**；app 高于预算是 Cut 4 新增的状态层/本地化/边界测试所致，不是新增冗余。
 - **6a 资源口径**：en 1,313 / zh 9；孤儿 key allowlist 1（`检测模型路径` 由测试构造）；`#Preview` 14 块、`#if DEBUG` 16 行有效（全部 Preview 守卫）；`.disabled`/`withKnownIssue` 仍 0。
 

@@ -77,11 +77,16 @@ cd ../gather-app
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-parallel
 ```
 
-### 构建 macOS 应用
+默认测试套件只验证正确性；质量/召回/F1 基线与 CoreML/Vision 集成在夜间
+(`.github/workflows/nightly.yml`) 运行。日常测试不组装 `.app`。
+
+### 构建 macOS 应用（发布/打包）
 
 ```bash
 ./desktop/native/build.sh
 ```
+
+完整 bundle 只在发布/打包时构建，不属于日常测试循环。
 
 产物位于 `release/Gather.app`（可用 `OUTPUT_DIR` 覆盖）。脚本只构建 Swift 核心和
 SwiftUI 应用，不需要 JavaScript 工具链；设置 `CODESIGN_IDENTITY` 后才会执行可选

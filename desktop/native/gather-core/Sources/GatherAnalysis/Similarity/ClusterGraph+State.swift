@@ -1,6 +1,7 @@
 // desktop/native/gather-core/Sources/GatherAnalysis/Similarity/ClusterGraph+State.swift
 // 自 ClusterGraph.swift（Cut 5）纯移动：ClusterWorkspace（有序结果容器）+
-// ClusterGraphOutcome + 状态版本 / 指纹 / 行级 diff；类型与成员逐字未改。
+// ClusterGraphOutcome + 状态版本 / 指纹 / 行级 diff；2026-10-24 为 outcome 增加
+// usedStreaming 诊断字段（默认 false；pipeline 仅在 streaming 分支置 true）。
 
 import Foundation
 import GatherProtocol
@@ -97,10 +98,13 @@ public struct ClusterWorkspace: Sendable, Equatable {
 public struct ClusterGraphOutcome: Sendable, Equatable {
     public let result: ClusterResult
     public let state: ClusterState?
+    /// 本次是否走了 streaming 回退；供测试/诊断观察分支选择。
+    public let usedStreaming: Bool
 
-    public init(result: ClusterResult, state: ClusterState?) {
+    public init(result: ClusterResult, state: ClusterState?, usedStreaming: Bool = false) {
         self.result = result
         self.state = state
+        self.usedStreaming = usedStreaming
     }
 }
 

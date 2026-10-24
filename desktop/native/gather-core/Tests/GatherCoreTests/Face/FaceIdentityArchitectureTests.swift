@@ -203,7 +203,12 @@ struct FaceIdentityArchitectureTests {
         #expect(try people.getPhotosWithDetails(personId: second).photos.map { $0.photo.photoId } == ["p1"])
     }
 
-    @Test func bundledModelRunsRealCoreMLInference() throws {
+    // skip-owner: face-model
+    // 到期：2027-06-30
+    // 原因：加载 37MB SFace CoreML 包并跑真实推理，属夜间集成；默认 PR 只测纯逻辑。
+    // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceIdentityArchitectureTests
+    @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
+    func bundledModelRunsRealCoreMLInference() throws {
         let embedder = try FaceEmbeddingModelFactory.make(modelPath: "", modelVersion: "")
         let pixels = (0..<(112 * 112 * 4)).map { UInt8($0 % 256) }
         let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))

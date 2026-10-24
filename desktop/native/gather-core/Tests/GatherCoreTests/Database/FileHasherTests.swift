@@ -3,7 +3,7 @@
 // 下沉到 FileHasher（Persistence），AssetRepo 改调后者。本测试固定"同输入同输出"：
 //   - 与纯 Swift 一次性实现（Linux 回退路径）逐字节一致；
 //   - 与 CryptoKit 一次性哈希一致（证明 4MB 分块流式没有边界错误）；
-//   - 跨 4MB 分块边界（-1 / 正好 / +1）；
+//   - 注入 256B 分块覆盖多块/尾块，生产 4MB+1 分块只跑一次；
 //   - 空文件、缺失文件的错误语义（不得静默返回空串）。
 
 import Foundation
@@ -15,9 +15,10 @@ import CryptoKit
 @testable import GatherPersistence
 
 struct FileHasherTests {
-    /// 纯 Swift 一次性实现（与 FileHasher 的 Linux 回退路径同源）。
+    /// 纯 Swift 一次性实现（与 FileHasher 的 Linux 回退路径同源）；
+    /// 显式限定 GatherPersistence，避免与 import CryptoKit 的 SHA256 混淆。
     private func pureSwiftHex(_ bytes: [UInt8]) -> String {
-        SHA256.hash(Data(bytes)).map { String(format: "%02x", $0) }.joined()
+        GatherPersistence.SHA256.hash(Data(bytes)).map { String(format: "%02x", $0) }.joined()
     }
 
     private func cryptoKitHex(_ bytes: [UInt8]) -> String? {
@@ -78,17 +79,35 @@ struct FileHasherTests {
         }
     }
 
-    @Test func streamsAcrossFourMegabyteChunkBoundaries() throws {
+    @Test func streamsAcrossInjectedChunkBoundaries() throws {
+        // 用 256B 分块覆盖 1025B（4 个整块 + 1B 尾块）的所有边界，
+        // 不必再为默认套件分配/哈希 4MB 载荷。
+        let bytes = pseudoRandomBytes(count: 1025)
+        let url = try writeTemp(bytes)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let actual = try FileHasher.sha256File(url.path, chunkSize: 256)
+        #expect(actual == pureSwiftHex(bytes), "注入分块与纯 Swift 一次性实现不一致")
+        if let expected = cryptoKitHex(bytes) {
+            #expect(actual == expected, "注入分块与 CryptoKit 不一致")
+        }
+        // 0/负数由 max(1,) 兜底，不能返回空哈希或死循环。
+        let clamped = try FileHasher.sha256File(url.path, chunkSize: 0)
+        #expect(clamped == pureSwiftHex(bytes), "chunkSize=0 必须按 1B 分块且结果正确")
+    }
+
+    @Test func streamsAcrossProductionChunkBoundaryOnce() throws {
+        // 生产分块大小只验证一次 4MB+1（尾块 1B）；边界组合已由注入小分块覆盖。
+        // 用非零常量填充，避免 Debug 下逐字节 LCG 生成 4MB 成为测试热点。
         let chunk = 4 * 1024 * 1024
-        for count in [chunk - 1, chunk, chunk + 1] {
-            let bytes = pseudoRandomBytes(count: count)
-            let url = try writeTemp(bytes)
-            defer { try? FileManager.default.removeItem(at: url) }
-            let actual = try FileHasher.sha256File(url.path)
-            #expect(actual == pureSwiftHex(bytes), "分块边界失败：\(count) 字节")
-            if let expected = cryptoKitHex(bytes) {
-                #expect(actual == expected, "分块边界与 CryptoKit 不一致：\(count) 字节")
-            }
+        let bytes = [UInt8](repeating: 0xA5, count: chunk + 1)
+        let url = try writeTemp(bytes)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let actual = try FileHasher.sha256File(url.path)
+        if let expected = cryptoKitHex(bytes) {
+            // macOS：生产分块边界 vs CryptoKit 一次性；跨实现对比由 1KB 注入用例承担。
+            #expect(actual == expected, "生产分块边界与 CryptoKit 不一致")
+        } else {
+            #expect(actual == pureSwiftHex(bytes), "Linux 回退实现与纯 Swift 一次性不一致")
         }
     }
 

@@ -72,9 +72,11 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-p
 应用测试与其他 app 用例共享 MainActor 状态层与进程级语言/通知槽，默认并行在
 调度满载时会拖穿异步等待窗口（历史 flake 集中在 ControlCenter/Gallery 的
 生命周期断言）。因此 app 测试**始终加 `--no-parallel`**（CI 同口径）；core
-测试保持默认并行。
+本地默认并行，CI 用 `--no-parallel` 避免日志套件竞态。
 
-### 构建应用
+### 构建应用（发布/打包）
+
+完整 `.app` 组装只在发布/打包时执行；日常测试不跑本步骤。
 
 ```bash
 ./desktop/native/build.sh
@@ -385,32 +387,54 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 # app 测试串行：与 CI 同口径（共享 MainActor/进程级状态，并行会拖穿等待窗口）。
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
   swift test --package-path desktop/native/gather-app --no-parallel
+```
 
-./desktop/native/build.sh
+**不要在日常提交里跑 `./desktop/native/build.sh`**：完整 `.app` 组装只在发布/打包
+（tag、`workflow_dispatch` 或明确的打包任务）执行；PR/日常测试只构建 test target。
+CI 的 `gather-app` job 也只跑测试，不再附带 bundle build。
+
+默认套件按三层组织：
+
+| 层 | 何时跑 | 内容 |
+|---|---|---|
+| Unit/Correctness | 每次 PR | 行为、边界、错误码、成员集合、不变量 |
+| Integration | 夜间/手动（`GATHER_MODEL_TESTS=1`、`GATHER_FACE_FIXTURE`） | CoreML/Vision/真实照片/ImageIO |
+| Quality/Benchmark | 夜间/发版 | F1/ARI/P/R、margin 曲线、LSH 召回、性能基线（`gather-core-benchmarks --quality/--margin/--smoke`） |
+
+夜间命令示例：
+
+```bash
+swift build -c release --package-path desktop/native/gather-core
+desktop/native/gather-core/.build/release/gather-core-benchmarks --quality
+desktop/native/gather-core/.build/release/gather-core-benchmarks --margin
+desktop/native/gather-core/.build/release/gather-core-benchmarks --smoke
+GATHER_MODEL_TESTS=1 swift test --package-path desktop/native/gather-core \
+  --no-parallel --filter 'FaceIdentityArchitectureTests|FaceEmbeddingModelTests|FaceInferenceTests'
+GATHER_TEST_MATRIX_STEPS=200 swift test --package-path desktop/native/gather-core \
+  --no-parallel --filter 'ClusterGraphIncrementalAssemblyTests|IncrementalClustererReconciliationTests'
 ```
 
 验收记录至少包含：gather-core 测试总数/套件数/失败数、gather-app 同名指标、
-`.app` 组装结果、fixture-dependent skip 与未执行的外部验收项。
-（台账中的 1,092/157、581/66 是重构收口时（本轮 skip 修复前）的历史值；`desktop/**`
-并行改动期间测试数会变动，以当前树 `swift test` 汇总行为准。）
+fixture-dependent skip 与未执行的外部验收项；`.app` 组装仅在发布/打包验收时记录。
+（台账中的 1,092/157、581/66 是重构收口时的历史值；当前以 `swift test` 汇总为准。）
 
 **skip 不计入“通过”的有效执行数**：`swift test` 的 `N tests passed` 包含被
 `.enabled(if:)` / `.disabled` 跳过的用例。报告口径写成“声明 N / skip S / 有效执行
-N−S”；当前 3 条 `FaceRealPhotoPipelineTests` 在无 `GATHER_FACE_FIXTURE` 时 skip，
-必须单列，不能算作通过。skip 元数据与门禁见 `check-test-catalog.sh --strict`
+N−S”；当前 skip 共 11 条：`FaceRealPhotoPipelineTests` 3 条（无
+`GATHER_FACE_FIXTURE`）与模型集成 8 条（无 `GATHER_MODEL_TESTS=1`），必须单列，
+不能算作通过。skip 元数据与门禁见 `check-test-catalog.sh --strict`
 （识别 `.enabled(if:)`、`@Test`/`@Suite` 的 `.disabled`、`withKnownIssue`；要求
 `skip-owner` + 到期 + 原因）。
 
 验收时要区分：
 
-- 测试/编译/应用组装成功：证明代码链路可构建和可执行；
+- 测试/编译成功：证明代码链路可构建和可执行；
 - 真实照片、人脸推理质量、签名公证安装和商业材料性能：明确排除，不能用自动化
   绿灯替代这些外部证据；
-- 如果测试输出含 fixture-dependent skip（当前仅 `FaceRealPhotoPipelineTests` 的
-  3 条 `.enabled(if: GATHER_FACE_FIXTURE != nil)`；`VectorIndexReconciliationTests`
-  自 5b-2a 起默认运行），应单独记录 skip 数，不得标成失败，也不得计入“有效执行/通过”。
-  该文件 3 条已带 `skip-owner: face-pipeline`、到期 2026-12-31 与手动 CI 条件；
-  `check-test-catalog.sh --strict` 缺任一元数据即红。
+- 如果测试输出含 fixture-dependent skip（`FaceRealPhotoPipelineTests` 3 条 +
+  模型集成 8 条），应单独记录 skip 数，不得标成失败，也不得计入“有效执行/通过”。
+  两类 skip 均带 `skip-owner`、到期与手动 CI 条件；`check-test-catalog.sh --strict`
+  缺任一元数据即红。
 
 ### 手工检查清单（按变更面选择）
 
@@ -551,7 +575,7 @@ refactor(native): 完成原生任务中心路由
 Pull Request 应说明：
 
 1. 变更涉及的页面、服务或数据边界；
-2. 已运行的测试、构建和打包命令及结果；
+2. 已运行的测试命令及结果（发布/打包变更再列 `build.sh` 与产物）；
 3. 未验证或明确排除的外部条件；
 4. 是否涉及数据迁移、写回、删除或恢复行为。
 

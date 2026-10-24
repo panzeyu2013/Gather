@@ -11,7 +11,13 @@ cd desktop/native/gather-core
 swift build -c release            # 必须 release（debug 慢 ~10 倍）
 .build/release/gather-core-benchmarks            # 2 万/5 万两档全量
 .build/release/gather-core-benchmarks --smoke    # 2 千档快速验证
+.build/release/gather-core-benchmarks --quality  # 合成聚类质量（P/R/F1/ARI/noise）
+.build/release/gather-core-benchmarks --margin   # margin 扫描（生产判定）
+.build/release/gather-core-benchmarks --face-10k # 10k 合成人脸（显式档）
 ```
+
+默认单测只保留 correctness；`--quality`/`--margin`/`--smoke` 的质量指标由夜间
+`.github/workflows/nightly.yml` 跑并上传 NDJSON。
 
 ## 覆盖项与口径
 
@@ -19,9 +25,12 @@ swift build -c release            # 必须 release（debug 慢 ~10 倍）
 |---|---|---|
 | `dhash-cluster` | ClusterGraphPipeline.run（threshold=8, minGroupSize=3, global；原 ClusterEngine 已随 5b-2a 删除） | 确定性 50 簇数据（seed 0xD4A5），期望 50 簇、0 噪声 |
 | `embedding-cluster` | FaceClusterer.clusterEmbeddings（eps=0.9, minPts=5, LSH 路径 minPoints=1000） | 确定性 50 正交簇 × 128 维（seed 0xB1E2，扰动按维度缩放 0.005），期望 50 簇 |
-| `lsh` | CosineLshIndex（bits=16/tables=6/probeRadius=2, unitVectors=true）+ 100 查询（索引内行） | 自召回（threshold=0.85 下查到自身） |
+| `lsh` | CosineLshIndex（bits=16/tables=2/probeRadius=1, unitVectors=true）+ 100 查询（索引内行） | selfRecall + 抽样 exactRecall（threshold=0.85；200 个小簇 + 0.45 噪声，保证有真实近邻且召回有区分度） |
+| `face-quality` | FaceClusterer.clusterEmbeddings（eps=0.8, minPts=2, floor=0/0.5） | 6 身份 × 60 样本、24 维；输出 pairwise P/R/F1、ARI、TP/FP/FN、noise 率、簇数 |
+| `margin-sweep` | FaceIdentityPolicy.decide（生产判定） | 固定 near-tie 分数，跑 0 / gap 边界 / 0.01 / 更大 margin 的 accepted/ambiguous 曲线 |
 
-数据全部固定种子确定性生成（不落盘、不入库），与对账 fixture 同一 mulberry32。
+数据全部固定种子确定性生成（不落盘、不入库）；质量基线不再依赖已删除的
+`vector-fixtures.json`。
 
 ## 2026-08-09 基线（x86_64 Linux，Swift 6.1.2 release）
 

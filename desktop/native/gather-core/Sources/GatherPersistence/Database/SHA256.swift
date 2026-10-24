@@ -4,7 +4,7 @@
 // 与 FileHasher 的分工（Cut 3a / E-02、Cut 5 / 5d-2 更名）：
 //   - macOS：FileHasher.sha256File 走 CryptoKit 4MB 分块流式（内存与文件大小无关）；
 //   - Linux：FileHasher.sha256File 回退到本文件的 SHA256.hash(Data)（整块）；
-//   两条路径同算法、同输出（IndexerChecksumParityTests / FileHasherTests 守护）。
+//   两条路径同算法、同输出（FileHasherTests 的分块注入用例守护）。
 // 生产调用：FileHasher、DuplicateService、ExportService、NavigationService、
 // MetadataFingerprint、PhotoAssetResolver。
 //
