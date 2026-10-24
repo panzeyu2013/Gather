@@ -1,0 +1,63 @@
+name: Nightly quality and integration
+
+on:
+  schedule:
+    # 每天 18:00 UTC（Asia/Shanghai 次日 02:00）；不与 PR 套件争抢 runner。
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality baselines + model integration
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Cache SwiftPM
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            desktop/native/gather-core/.build
+            ~/Library/Caches/org.swift.swiftpm
+          key: nightly-core-${{ runner.os }}-${{ hashFiles('desktop/native/gather-core/Package.swift') }}
+          restore-keys: |
+            nightly-core-${{ runner.os }}-
+            core-${{ runner.os }}-
+      - name: Build core benchmarks (release)
+        run: swift build -c release --package-path desktop/native/gather-core
+      - name: Quality baselines
+        # 质量指标从默认套件迁出：夜间输出 NDJSON，人工/后续基线脚本对比。
+        run: |
+          set -o pipefail
+          desktop/native/gather-core/.build/release/gather-core-benchmarks --quality | grep '^{' | tee quality.ndjson
+          desktop/native/gather-core/.build/release/gather-core-benchmarks --margin | grep '^{' | tee margin.ndjson
+      - name: Performance smoke + LSH exact recall
+        run: |
+          set -o pipefail
+          desktop/native/gather-core/.build/release/gather-core-benchmarks --smoke | grep '^{' | tee smoke.ndjson
+      - name: Model integration tests
+        # 仅夜间跑 SFace/CoreML + Vision 真实推理；PR 默认套件不跑这些用例。
+        env:
+          GATHER_MODEL_TESTS: '1'
+        run: >-
+          swift test --package-path desktop/native/gather-core --no-parallel
+          --filter 'FaceIdentityArchitectureTests|FaceEmbeddingModelTests|FaceInferenceTests'
+      - name: Full random parity matrix
+        env:
+          GATHER_TEST_MATRIX_STEPS: '200'
+        run: >-
+          swift test --package-path desktop/native/gather-core --no-parallel
+          --filter 'ClusterGraphIncrementalAssemblyTests|IncrementalClustererReconciliationTests'
+      - name: Upload metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gather-quality-metrics
+          path: |
+            quality.ndjson
+            margin.ndjson
+            smoke.ndjson
+          retention-days: 30

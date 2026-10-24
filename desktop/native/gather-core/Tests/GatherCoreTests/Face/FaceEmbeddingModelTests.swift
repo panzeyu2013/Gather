@@ -81,7 +81,12 @@ struct FaceEmbeddingModelTests {
         #expect(spec.dimension == VisionFeaturePrintEmbedder.dimension)
     }
 
-    @Test func visionEmbedderReturnsUnitVectorOfDeclaredDimension() throws {
+    // skip-owner: face-model
+    // 到期：2027-06-30
+    // 原因：需要 Vision FeaturePrint 真实推理，归入夜间集成；默认套件只测纯逻辑。
+    // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceEmbeddingModelTests
+    @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
+    func visionEmbedderReturnsUnitVectorOfDeclaredDimension() throws {
         let image = try makeGradientImage()
         let embedding = try VisionFeaturePrintEmbedder().embed(alignedFace: image)
         let dimension = VisionFeaturePrintEmbedder.dimension
@@ -95,7 +100,12 @@ struct FaceEmbeddingModelTests {
 
     /// R1 审查缺口：只断言"维度对、模长为 1"时，一个**忽略输入**的实现（永远返回同一向量）
     /// 也能全绿。这里用两张内容不同的图要求两个向量不重合——嵌入必须是输入的函数。
-    @Test func visionEmbeddingDependsOnInput() throws {
+    // skip-owner: face-model
+    // 到期：2027-06-30
+    // 原因：同上，依赖 Vision FeaturePrint 真实推理。
+    // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceEmbeddingModelTests
+    @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
+    func visionEmbeddingDependsOnInput() throws {
         let embedder = VisionFeaturePrintEmbedder()
         let first = try embedder.embed(alignedFace: try makeGradientImage(phase: 0))
         let second = try embedder.embed(alignedFace: try makeGradientImage(phase: .pi))
@@ -168,7 +178,12 @@ struct FaceEmbeddingModelTests {
 
     // ── 工厂 ──
 
-    @Test func factoryUsesBundledIdentityModelForEmptyPath() throws {
+    // skip-owner: face-model
+    // 到期：2027-06-30
+    // 原因：加载并哈希 37MB 内置模型包，属夜间集成；默认套件保留 factory 错误路径。
+    // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceEmbeddingModelTests
+    @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
+    func factoryUsesBundledIdentityModelForEmptyPath() throws {
         let spec = try FaceEmbeddingModelFactory.make(modelPath: "", modelVersion: "").spec
         #expect(spec.modelId == "coreml-SFace")
         #expect(spec.dimension == 128)

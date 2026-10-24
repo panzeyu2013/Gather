@@ -22,17 +22,19 @@ public enum ClusterGraphPipeline {
     public static let defaultMaxBitsetEntries = 32_768
 
     /// 单档位全量：一次图构建同时产出 ClusterResult 与 ClusterState。
+    /// - Parameter maxBitsetEntries: 位集上限注入（默认 32,768；0/负数强制 streaming）。
     public static func run(
         entries: [HashEntry],
         threshold: Int,
         minGroupSize: Int,
+        maxBitsetEntries: Int = defaultMaxBitsetEntries,
         onProgress: ((Int, Int) -> Void)? = nil
     ) throws -> ClusterGraphOutcome {
         let ids = entries.map { entry in entry.photoId }
         let table = try HashGraphTable(hashes: entries.map { entry in entry.hash })
         var workspace = ClusterWorkspace(nodeCount: entries.count)
 
-        if entries.count <= defaultMaxBitsetEntries {
+        if entries.count <= maxBitsetEntries {
             let graph = HashNeighborhoodGraph(
                 table: table, threshold: threshold, onProgress: onProgress)
             _ = DegreeGatedBFS.components(of: graph, into: &workspace)
@@ -50,16 +52,19 @@ public enum ClusterGraphPipeline {
 
         return ClusterGraphOutcome(
             result: result(from: workspace, ids: ids),
-            state: state(from: workspace, entries: entries)
+            state: state(from: workspace, entries: entries),
+            usedStreaming: entries.count > maxBitsetEntries
         )
     }
 
     /// 多档位全量：一次共享并集位图（或一遍度数预扫）+ 每档一次 BFS。
     /// 返回值与调用方 thresholds 同序（允许未排序 / 重复）。
+    /// - Parameter maxBitsetEntries: 位集上限注入（默认 32,768；0/负数强制 streaming）。
     public static func runTiers(
         entries: [HashEntry],
         thresholds: [Int],
         minGroupSize: Int,
+        maxBitsetEntries: Int = defaultMaxBitsetEntries,
         onProgress: ((Int, Int) -> Void)? = nil
     ) throws -> [ClusterResult] {
         guard !thresholds.isEmpty else { return [] }
@@ -71,7 +76,7 @@ public enum ClusterGraphPipeline {
         let table = try HashGraphTable(hashes: entries.map { entry in entry.hash })
         var byThreshold: [Int: ClusterResult] = [:]
 
-        if entries.count <= defaultMaxBitsetEntries {
+        if entries.count <= maxBitsetEntries {
             let graph = MultiThresholdHashGraph(
                 table: table, thresholds: unique, onProgress: onProgress)
             for (index, tier) in unique.enumerated() {
@@ -149,19 +154,22 @@ public enum ClusterGraphPipeline {
         threshold: Int,
         minGroupSize: Int,
         mode: HashGroupingMode,
+        maxBitsetEntries: Int = defaultMaxBitsetEntries,
         onProgress: ((Int, Int) -> Void)? = nil
     ) throws -> ClusterGraphOutcome {
         switch mode {
         case .global:
             return try run(
                 entries: entries, threshold: threshold,
-                minGroupSize: minGroupSize, onProgress: onProgress)
+                minGroupSize: minGroupSize, maxBitsetEntries: maxBitsetEntries,
+                onProgress: onProgress)
         case .sequential:
             return ClusterGraphOutcome(
                 result: try runSequential(
                     entries: entries, threshold: threshold,
                     minGroupSize: minGroupSize, onProgress: onProgress),
-                state: nil
+                state: nil,
+                usedStreaming: false
             )
         }
     }
@@ -172,13 +180,15 @@ public enum ClusterGraphPipeline {
         thresholds: [Int],
         minGroupSize: Int,
         mode: HashGroupingMode,
+        maxBitsetEntries: Int = defaultMaxBitsetEntries,
         onProgress: ((Int, Int) -> Void)? = nil
     ) throws -> [ClusterResult] {
         switch mode {
         case .global:
             return try runTiers(
                 entries: entries, thresholds: thresholds,
-                minGroupSize: minGroupSize, onProgress: onProgress)
+                minGroupSize: minGroupSize, maxBitsetEntries: maxBitsetEntries,
+                onProgress: onProgress)
         case .sequential:
             return try runSequentialTiers(
                 entries: entries, thresholds: thresholds,

@@ -1,14 +1,13 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Reconciliation/MatcherReconciliationTests.swift
 // face-matcher 对账测试（Phase 2 任务 2.3「face-matcher 移植」）。
-// fixture 由 scripts/reconciliation/generate-matcher-fixtures.mjs 生成（参照
-// 实现 = face-matcher.ts 全类照抄 + lsh-index.ts 的 CosineLshIndex，语料参照
-// tests/unit/services/face-kw/face-matcher.test.ts），本测试加载同一 JSON
+// fixture 是冻结的 TS 参照（生成器已随旧栈删除），本测试加载同一 JSON
 // 逐 case 比对：
 //   - matched：personId 精确相等、confidence 容差 1e-4、条数一致；
 //   - unmatched 下标数组精确相等；
 //   - 路径选择（exact/lsh）与 fixture 标注一致（@testable debugUsedLsh）。
-// 另附边界单元测试：空库、阈值边界（含等号）、零向量、维度不匹配、
-// invalidateCache、LSH vs 暴力扫描召回门（>= 0.95）。
+// 另附边界单元测试：空库、阈值边界（含等号）、零向量、维度不匹配。
+// LSH 召回率 >= 0.95 的质量门已移到 gather-core-benchmarks；默认套件用 exact
+// fixture 验证 matched/unmatched 与 LSH 路径选择。
 
 import Foundation
 import Testing
@@ -108,37 +107,6 @@ struct MatcherReconciliationTests {
             }
         }
         #expect(exact.unmatched == lsh.unmatched, "两路径 unmatched 不一致")
-    }
-
-    // synthetic-lsh：LSH 结果与同一数据的暴力扫描逐查询对齐
-    //（precision 恒等 + 召回 >= 0.95 任务门限）
-    @Test func lshMatchesBruteForceWithinRecallGate() throws {
-        let fixture = try Self.loadFixture()
-        let lshCase = try #require(fixture.cases.first { $0.name == "synthetic-lsh" })
-        let lshResult = try Self.makeMatcher(lshCase)
-            .matchAgainstLibrary(lshCase.queries, threshold: lshCase.threshold)
-        let bruteMatcher = FaceMatcher(
-            library: lshCase.library.map { LibraryEmbedding(personId: $0.personId, embedding: $0.embedding) },
-            lshMinPoints: Int.max)
-        let bruteResult = try bruteMatcher.matchAgainstLibrary(lshCase.queries, threshold: lshCase.threshold)
-
-        // precision 恒等：LSH 命中必须是暴力命中的子集（LSH 只收缩候选集）
-        for (queryIndex, match) in lshResult.matched {
-            #expect(
-                bruteResult.matched[queryIndex]?.personId == match.personId,
-                "query \(queryIndex): LSH 命中不在暴力结果中")
-        }
-        // 召回 >= 0.95
-        var agreed = 0
-        var total = 0
-        for (queryIndex, brute) in bruteResult.matched {
-            total += 1
-            if lshResult.matched[queryIndex]?.personId == brute.personId { agreed += 1 }
-        }
-        let recall = total > 0 ? Double(agreed) / Double(total) : 1
-        #expect(recall >= 0.95, "LSH 召回 \(recall) < 0.95 门限")
-        #expect(lshResult.matched.count >= 3, "fixture 应覆盖多条命中")
-        #expect(!lshResult.unmatched.isEmpty, "fixture 应覆盖未命中")
     }
 
     // MARK: 边界单元测试

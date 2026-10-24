@@ -87,20 +87,14 @@ jobs:
         run: swift run --package-path desktop/native/gather-core gather-schema verify
 
   gather-app:
-    name: gather-app tests + bundle
+    name: gather-app tests
     runs-on: macos-14
     needs: gather-core
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # WP7：CI 显式注入 GATHER_SDK_VERSION；manifest 仅在未注入时按
-      # SDKROOT → xcrun → 14.0 自行探测。这里固定在 job 环境里，保证 test 与
-      # bundle 两次求值同一值。
-      - name: Resolve SDK version
-        run: |
-          SDK_VERSION="$(xcrun --show-sdk-version)"
-          echo "GATHER_SDK_VERSION=$SDK_VERSION" >> "$GITHUB_ENV"
-          echo "GATHER_SDK_VERSION=$SDK_VERSION"
+      # 正常测试只构建 test target，不链接 GatherApp 可执行、不组装 .app bundle；
+      # GATHER_SDK_VERSION/linker flags 由 release job 的完整构建覆盖。
       - name: Cache SwiftPM
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -113,15 +107,10 @@ jobs:
         # 串行执行的理由（P0-2）：app 用例共享 MainActor 状态层与进程级语言/通知槽，
         # 默认并行在调度满载时会拖穿等待窗口（历史 flake：ControlCenter/Gallery
         # 生命周期断言）。CI、README、DEVELOPMENT 的 app 测试命令统一 --no-parallel。
-        # --manifest-cache none：GATHER_SDK_VERSION 是 manifest 求值期输入，
-        # SwiftPM 的 manifest 缓存不把它计入 key；CI 的 .build 缓存可能来自
-        # 旧 runner/SDK，必须强制重算再注入 linker flags。
-        run: swift test --package-path desktop/native/gather-app --no-parallel --manifest-cache none --explicit-target-dependency-import-check error
+        run: swift test --package-path desktop/native/gather-app --no-parallel --explicit-target-dependency-import-check error
       - name: App parallel smoke
         # 验收声称并行 3 次绿；CI 必须实际覆盖一次（不设 --no-parallel）。
-        run: swift test --package-path desktop/native/gather-app --manifest-cache none --explicit-target-dependency-import-check error
-      - name: Native bundle build
-        run: ./desktop/native/build.sh
+        run: swift test --package-path desktop/native/gather-app --explicit-target-dependency-import-check error
 
   toolchain-compat:
     name: Newest toolchain build (drift guard)

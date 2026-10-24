@@ -142,6 +142,9 @@ public final class CullingViewModel: PageVisibility {
     /// 画质分析 500ms 轮询任务（可随可见性启停；旧实现把循环内联在
     /// analyzeQuality 里，隐藏即永久退出）。
     private var qualityPollTask: Task<Void, Never>?
+    /// 生产轮询间隔；测试可注入更短间隔，避免用 1.2s 负向窗口证明轮询已停。
+    public static let defaultQualityPollIntervalMilliseconds = 500
+    private let qualityPollIntervalMilliseconds: Int
     public internal(set) var currentPhotoId: String?
     public var currentAsset: CullingAsset? {
         guard let currentPhotoId else { return page?.assets.first }
@@ -175,7 +178,8 @@ public final class CullingViewModel: PageVisibility {
         metadata: any MetadataAPI,
         jobs: any JobAPI,
         quality: any QualityAPI,
-        captureOne: any CaptureOneBridging
+        captureOne: any CaptureOneBridging,
+        qualityPollIntervalMilliseconds: Int = CullingViewModel.defaultQualityPollIntervalMilliseconds
     ) {
         self.sessionId = sessionId
         self.cullingAPI = culling
@@ -184,6 +188,7 @@ public final class CullingViewModel: PageVisibility {
         self.jobAPI = jobs
         self.qualityAPI = quality
         self.captureOne = captureOne
+        self.qualityPollIntervalMilliseconds = max(1, qualityPollIntervalMilliseconds)
     }
 
     /// 首次 / 重试加载：导航组与主列表保持旧顺序（先导航、再整页）。
@@ -419,7 +424,7 @@ public final class CullingViewModel: PageVisibility {
             guard let self else { return }
             while !Task.isCancelled && self.isActive {
                 do {
-                    try await Task.sleep(for: .milliseconds(500))
+                    try await Task.sleep(for: .milliseconds(self.qualityPollIntervalMilliseconds))
                 } catch {
                     return
                 }

@@ -12,10 +12,13 @@
 //   .build/debug/gather-core-benchmarks            # 2 万/5 万两档全量
 //   .build/debug/gather-core-benchmarks --smoke    # 2 千冒烟档
 //   .build/debug/gather-core-benchmarks --multi-bench  # 多档位单趟 A/B（§4.2 性能证据）
+//   .build/debug/gather-core-benchmarks --quality      # 合成聚类质量基线（P/R/F1/noise）
+//   .build/debug/gather-core-benchmarks --margin       # margin 扫描（生产 FaceIdentityPolicy）
 //   .build/debug/gather-core-benchmarks --face-10k     # 10k 合成人脸（显式档；debug 走 LSH，
 //                                                      #   -c release 走生产默认的精确 DBSCAN）
 import Foundation
 import GatherAnalysis
+import GatherProtocol
 
 // ── 确定性 PRNG（与对账生成器同款 mulberry32）──
 struct BenchmarkRandom {
@@ -200,12 +203,220 @@ func benchEmbeddingCluster(size: Int, seed: UInt32, lshMinPoints: Int) throws {
         metric: "genMs=\(String(format: "%.1f", gen)) groups=\(groups) noise=\(noise) lshMinPoints=\(lshMinPoints)"))
 }
 
+// ── 质量基线（从单测迁出）──
+// 合成“身份中心 + 高质量样本 + 共享退化低质量样本”，输出 pairwise P/R/F1 与
+// noise 率。默认测试只验证行为；这里的数字用于夜间基线，不进入 PR 门禁。
+
+func normalizedFloats(_ values: [Double]) -> [Float] {
+    let norm = values.reduce(0.0) { $0 + $1 * $1 }.squareRoot()
+    guard norm > 0 else { return values.map(Float.init) }
+    return values.map { Float($0 / norm) }
+}
+
+func randomUnitVector(dim: Int, rand: inout BenchmarkRandom) -> [Double] {
+    let raw = (0..<dim).map { _ in rand.gaussian() }
+    let norm = raw.reduce(0.0) { $0 + $1 * $1 }.squareRoot()
+    return norm > 0 ? raw.map { $0 / norm } : raw
+}
+
+func makeQualityEntries(
+    identities: Int, perIdentity: Int, dim: Int, seed: UInt32
+) -> (entries: [EmbeddingEntry], labels: [Int]) {
+    var rand = BenchmarkRandom(seed: seed)
+    var bases: [[Double]] = []
+    for _ in 0..<identities {
+        var v = (0..<dim).map { _ in rand.gaussian() }
+        for b in bases {
+            let dot = zip(v, b).reduce(0.0) { $0 + $1.0 * $1.1 }
+            for d in 0..<dim { v[d] -= dot * b[d] }
+        }
+        let norm = v.reduce(0.0) { $0 + $1 * $1 }.squareRoot()
+        if norm > 0 { for d in 0..<dim { v[d] /= norm } }
+        bases.append(v)
+    }
+
+    // 与所有身份中心近正交的共享退化方向：低质量样本互相抱团、与本人不像。
+    var degraded = (0..<dim).map { _ in rand.gaussian() }
+    for _ in 0..<2 {
+        for b in bases {
+            let dot = zip(degraded, b).reduce(0.0) { $0 + $1.0 * $1.1 }
+            for d in 0..<dim { degraded[d] -= dot * b[d] }
+        }
+    }
+    let degradedNorm = degraded.reduce(0.0) { $0 + $1 * $1 }.squareRoot()
+    if degradedNorm > 0 { for d in 0..<dim { degraded[d] /= degradedNorm } }
+
+    var entries: [EmbeddingEntry] = []
+    var labels: [Int] = []
+    var index = 0
+    for identity in 0..<identities {
+        for sample in 0..<perIdentity {
+            let isLowQuality = sample % 5 == 4
+            let noise = randomUnitVector(dim: dim, rand: &rand)
+            let raw: [Double]
+            if isLowQuality {
+                raw = zip(degraded, noise).map { $0 + $1 * 0.3 }
+            } else {
+                raw = zip(bases[identity], noise).map { $0 + $1 * 0.25 }
+            }
+            entries.append(
+                EmbeddingEntry(
+                    observationId: index + 1,
+                    photoId: "q\(index)",
+                    embedding: normalizedFloats(raw),
+                    quality: isLowQuality ? 0.2 : 1.0))
+            labels.append(identity)
+            index += 1
+        }
+    }
+    return (entries, labels)
+}
+
+func comb2(_ k: Int) -> Int { k < 2 ? 0 : k * (k - 1) / 2 }
+
+/// ARI（Hubert–Arabie）：与默认套件删除的统计实现同口径，仅用于夜间基线。
+func adjustedRandIndex(labels: [Int], predicted: [Int]) -> Double {
+    precondition(labels.count == predicted.count)
+    let count = labels.count
+    var joint: [Int: [Int: Int]] = [:]
+    for index in 0..<count {
+        joint[predicted[index], default: [:]][labels[index], default: 0] += 1
+    }
+    let totalPairs = comb2(count)
+    let sumJointPairs = joint.values.reduce(0) { total, row in
+        total + row.values.reduce(0) { $0 + comb2($1) }
+    }
+    let sumPredictedPairs = joint.values.reduce(0) { $0 + comb2($1.values.reduce(0, +)) }
+    var truthCounts: [Int: Int] = [:]
+    for row in joint.values {
+        for (truth, value) in row { truthCounts[truth, default: 0] += value }
+    }
+    let sumTruthPairs = truthCounts.values.reduce(0) { $0 + comb2($1) }
+    let expected = totalPairs > 0
+        ? Double(sumTruthPairs) * Double(sumPredictedPairs) / Double(totalPairs) : 0
+    let maximum = Double(sumTruthPairs + sumPredictedPairs) / 2
+    return maximum - expected == 0
+        ? 1 : (Double(sumJointPairs) - expected) / (maximum - expected)
+}
+
+/// 手算小例自检：ARI 公式回归时 --quality 直接非零退出，而不是只在夜间打印错误数字。
+func validateQualityMetrics() {
+    let hand = adjustedRandIndex(
+        labels: [0, 0, 1, 1, 2, 2], predicted: [0, 0, 0, 1, 2, 2])
+    guard abs(hand - 4.0 / 9.0) < 1e-12 else {
+        print("benchmark=face-quality error=ari-hand-computed-mismatch value=\(hand)")
+        exit(1)
+    }
+    let negative = adjustedRandIndex(
+        labels: [0, 0, 1, 1], predicted: [0, 1, 0, 1])
+    guard abs(negative + 0.5) < 1e-12 else {
+        print("benchmark=face-quality error=ari-negative-case-mismatch value=\(negative)")
+        exit(1)
+    }
+}
+
+func clusterQualityMetric(
+    entries: [EmbeddingEntry], labels: [Int], result: FaceClusterResult
+) -> String {
+    let count = entries.count
+    var predicted = [Int](repeating: -1, count: count)
+    var nextCluster = 0
+    for cluster in result.clusters {
+        for entry in cluster { predicted[entry.observationId - 1] = nextCluster }
+        nextCluster += 1
+    }
+    for entry in result.noise {
+        predicted[entry.observationId - 1] = nextCluster
+        nextCluster += 1
+    }
+
+    var truePositive = 0
+    var falsePositive = 0
+    var falseNegative = 0
+    for i in 0..<count {
+        for j in (i + 1)..<count {
+            let sameTruth = labels[i] == labels[j]
+            let samePrediction = predicted[i] == predicted[j]
+            if sameTruth && samePrediction { truePositive += 1 }
+            else if !sameTruth && samePrediction { falsePositive += 1 }
+            else if sameTruth && !samePrediction { falseNegative += 1 }
+        }
+    }
+    let precision = truePositive + falsePositive > 0
+        ? Double(truePositive) / Double(truePositive + falsePositive) : 0
+    let recall = truePositive + falseNegative > 0
+        ? Double(truePositive) / Double(truePositive + falseNegative) : 0
+    let f1 = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0
+    let noiseRate = Double(result.noise.count) / Double(max(count, 1))
+    let ari = adjustedRandIndex(labels: labels, predicted: predicted)
+
+    return String(
+        format:
+            "p=%.4f r=%.4f f1=%.4f ari=%.4f tp=%d fp=%d fn=%d noise=%.4f clusters=%d",
+        precision, recall, f1, ari, truePositive, falsePositive, falseNegative, noiseRate,
+        result.clusters.count)
+}
+
+func benchQualityCluster() throws {
+    validateQualityMetrics()
+    let dataset = makeQualityEntries(identities: 6, perIdentity: 60, dim: 24, seed: 0xFACE)
+    for floor in [0.0, 0.5] {
+        let since = DispatchTime.now()
+        let result = try FaceClusterer.clusterEmbeddings(
+            entries: dataset.entries, eps: 0.8, minPts: 2,
+            coreQualityFloor: floor)
+        let duration = elapsedMs(since)
+        emit(MetricRow(
+            benchmark: "face-quality", phase: "cluster-quality",
+            size: dataset.entries.count, durationMs: duration,
+            throughputPerSec: Double(dataset.entries.count) / max(duration / 1000, 1e-9),
+            metric:
+                "seed=\(0xFACE) dim=24 identities=6 perIdentity=60 floor=\(floor) eps=0.8 minPts=2 "
+                + clusterQualityMetric(
+                    entries: dataset.entries, labels: dataset.labels, result: result)))
+    }
+}
+
+// ── margin 扫描（从默认单测迁出）──
+// 直接调用生产判定 FaceIdentityPolicy.decide，跑 0 / gap 边界 / 0.01 / 更大 margin；
+// 质量曲线用于夜间基线，不进入 PR 门禁。
+func benchMarginSweep() {
+    let thresholds = ["P0": 0.6, "P1": 0.6]
+    let scores = ["P0": 0.8, "P1": 0.7955]
+    let margins: [Double] = [0, 0.0045, 0.0046, 0.005, 0.01, 0.02, 0.04, 0.06, 0.10]
+    for margin in margins {
+        let since = DispatchTime.now()
+        let decision = FaceIdentityPolicy.decide(
+            scores: scores, thresholds: thresholds, defaultThreshold: 0.65, margin: margin)
+        let duration = elapsedMs(since)
+        let label: String
+        switch decision {
+        case .accepted(let personId, let score):
+            label = "accepted:\(personId):\(String(format: "%.4f", score))"
+        case .ambiguous:
+            label = "ambiguous"
+        case .unknown:
+            label = "unknown"
+        }
+        emit(MetricRow(
+            benchmark: "face-quality", phase: "margin-sweep", size: 2,
+            durationMs: duration,
+            throughputPerSec: 0,
+            metric: "margin=\(String(format: "%.4f", margin)) gap=0.0045 decision=\(label)"))
+    }
+}
+
 func benchLsh(size: Int, seed: UInt32, queries: Int, dim: Int) throws {
     var rand = BenchmarkRandom(seed: seed)
-    let rows = (0..<size).map { _ -> [Float] in
-        let raw = (0..<dim).map { _ in rand.gaussian() }
-        let norm = raw.reduce(0.0) { $0 + $1 * $1 }.squareRoot()
-        return raw.map { Float(norm > 0 ? $0 / norm : 0) }
+    // 200 个小簇 + 0.45 单位噪声：簇内余弦约 0.91，部分对低于 eps=0.85，
+    // 同时把 LSH 配成 2 表/probe=1，使 exactRecall 有机会 <1（纯随机向量
+    // 在 128 维几乎互不相邻，无法测召回）。
+    let clusterCount = min(200, size)
+    let bases = (0..<clusterCount).map { _ in randomUnitVector(dim: dim, rand: &rand) }
+    let rows = (0..<size).map { index -> [Float] in
+        let base = bases[index % clusterCount]
+        let noise = randomUnitVector(dim: dim, rand: &rand)
+        return normalizedFloats(zip(base, noise).map { $0 + $1 * 0.45 })
     }
     // 查询 = 索引内随机行（带真实行号，用于自召回判定）。
     let queryRows: [(row: [Float], index: Int)] = (0..<queries).map { _ in
@@ -215,7 +426,7 @@ func benchLsh(size: Int, seed: UInt32, queries: Int, dim: Int) throws {
 
     let sinceBuild = DispatchTime.now()
     let index = try CosineLshIndex(
-        dim: dim, config: LshConfig(bits: 16, tables: 6, probeRadius: 2, seed: seed, unitVectors: true))
+        dim: dim, config: LshConfig(bits: 16, tables: 2, probeRadius: 1, seed: seed, unitVectors: true))
     var flat: [Float] = []
     flat.reserveCapacity(size * dim)
     for row in rows { flat.append(contentsOf: row) }
@@ -240,13 +451,34 @@ func benchLsh(size: Int, seed: UInt32, queries: Int, dim: Int) throws {
         }
         if bestIndex == expectedIndex { hits += 1 }
     }
+    // 质量基线：抽少量查询做 exact neighbor 扫描，输出 LSH 召回；不进入 PR 门禁。
+    let recallSample = min(queries, size >= 20_000 ? 5 : 20)
+    var exactRecallHits = 0
+    var exactNeighborTotal = 0
+    for queryIndex in 0..<recallSample {
+        let q = queryRows[queryIndex].row
+        let expectedIndex = queryRows[queryIndex].index
+        var exact = Set<Int>()
+        for rowIndex in 0..<size where rowIndex != expectedIndex {
+            let dot = zip(rows[rowIndex], q).reduce(0.0) { acc, pair in
+                acc + Double(pair.0) * Double(pair.1)
+            }
+            if dot >= 0.85 { exact.insert(rowIndex) }
+        }
+        let candidates = try index.neighbors(query: q, threshold: 0.85)
+        exactRecallHits += exact.intersection(Set(candidates.indices)).count
+        exactNeighborTotal += exact.count
+    }
+    // 无真实近邻时输出 0（而不是 1），避免数据构造错误被误读成完美召回。
+    let exactRecall = exactNeighborTotal > 0
+        ? Double(exactRecallHits) / Double(exactNeighborTotal) : 0
     let queryMs = elapsedMs(sinceQuery)
 
     emit(MetricRow(
         benchmark: "similarity", phase: "lsh", size: size,
         durationMs: buildMs + queryMs,
         throughputPerSec: Double(size) / (buildMs / 1000),
-        metric: "buildMs=\(String(format: "%.1f", buildMs)) queryMs=\(String(format: "%.1f", queryMs)) selfRecallAt085=\(String(format: "%.4f", Double(hits) / Double(queries))) avgCandidates=\(String(format: "%.1f", Double(totalCandidates) / Double(queries)))"))
+        metric: "buildMs=\(String(format: "%.1f", buildMs)) queryMs=\(String(format: "%.1f", queryMs)) selfRecallAt085=\(String(format: "%.4f", Double(hits) / Double(queries))) exactRecallAt085=\(String(format: "%.4f", exactRecall)) exactPairs=\(exactNeighborTotal) exactSample=\(recallSample) avgCandidates=\(String(format: "%.1f", Double(totalCandidates) / Double(queries)))"))
 }
 
 // ── 10k 合成人脸档（Cut 5 / 5d-2）──
@@ -377,6 +609,25 @@ func benchFace10k(size: Int, dim: Int, identities: Int, seed: UInt32) throws {
 }
 
 // ── 入口 ──
+// margin 扫描：从默认单测迁出的生产判定曲线；夜间跑。
+if CommandLine.arguments.contains("--margin") {
+    benchMarginSweep()
+    print("benchmark=face-quality phase=margin-sweep doneMs=\(Int(elapsedMs(start)))")
+    exit(0)
+}
+
+// 质量基线：从默认单测迁出的合成聚类 P/R/F1/noise；夜间跑。
+if CommandLine.arguments.contains("--quality") {
+    do {
+        try benchQualityCluster()
+    } catch {
+        print("benchmark=face-quality error=\(error)")
+        exit(1)
+    }
+    print("benchmark=face-quality doneMs=\(Int(elapsedMs(start)))")
+    exit(0)
+}
+
 // 10k 合成人脸显式档（Cut 5 / 5d-2）：不进默认档/冒烟档，避免日常基准变慢。
 if CommandLine.arguments.contains("--face-10k") {
     do {

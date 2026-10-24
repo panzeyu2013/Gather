@@ -16,7 +16,8 @@ extension CullingViewModel {
         navigation: any NavigationAPI,
         metadata: any MetadataAPI,
         jobs: any JobAPI,
-        quality: any QualityAPI
+        quality: any QualityAPI,
+        qualityPollIntervalMilliseconds: Int? = nil
     ) {
         self.init(
             sessionId: sessionId,
@@ -25,7 +26,9 @@ extension CullingViewModel {
             metadata: metadata,
             jobs: jobs,
             quality: quality,
-            captureOne: CaptureOneBridge()
+            captureOne: CaptureOneBridge(),
+            qualityPollIntervalMilliseconds: qualityPollIntervalMilliseconds
+                ?? CullingViewModel.defaultQualityPollIntervalMilliseconds
         )
     }
 }

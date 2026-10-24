@@ -10,7 +10,7 @@
 //
 // 实现从 IndexerService 原样搬移：4MB 分块流式喂 CryptoKit（内存恒定），
 // Linux 无 CryptoKit 回退纯 Swift SHA256（GatherPersistence/Database/SHA256.swift），两条路径
-// 输出逐字节一致（IndexerChecksumParityTests 守护）。
+// 输出逐字节一致（FileHasherTests 的分块注入用例守护）。
 
 import Foundation
 #if canImport(CryptoKit)
@@ -26,6 +26,12 @@ public enum FileHasher {
     /// 瞬时分配可达 GB 级）。这里恒为 4MB 分块，内存与文件大小无关；输出与纯
     /// Swift 一次性实现逐字节一致（同算法，无需迁移）。
     public static func sha256File(_ filePath: String) throws -> String {
+        try sha256File(filePath, chunkSize: 4 * 1024 * 1024)
+    }
+
+    /// 测试可注入分块大小：用 1KB/256B 覆盖跨块边界，避免默认套件反复哈希 4MB 载荷。
+    /// Linux 无 CryptoKit 时走整文件回退，chunkSize 不生效。
+    static func sha256File(_ filePath: String, chunkSize: Int) throws -> String {
         let url = URL(fileURLWithPath: filePath)
         #if canImport(CryptoKit)
         guard let handle = try? FileHandle(forReadingFrom: url) else {
@@ -33,8 +39,9 @@ public enum FileHasher {
         }
         defer { try? handle.close() }
         var hasher = CryptoKit.SHA256()
+        let size = max(1, chunkSize)
         while true {
-            let chunk = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+            let chunk = try handle.read(upToCount: size) ?? Data()
             if chunk.isEmpty { break }
             hasher.update(data: chunk)
         }

@@ -8,7 +8,7 @@
 //   2. 内部一致性：单趟 result 与 state 同源（state.groups 为规范序、分量覆盖全集）、
 //      多档并集行 == 逐档单跑、streaming 图 == 位集图、模式分发 == 对应入口；
 //   3. 增量装配：IncrementalClusterer.update 的 state 与全量 run 的 state 逐位一致
-//      （200 次随机增删 x 3 组参数）。
+//      （默认 50 次随机增删 x 3 组参数；200 步完整矩阵留给夜间）。
 
 import Foundation
 import Testing
@@ -433,10 +433,13 @@ struct ClusterGraphPipelineEntryPointTests {
 
 @Suite("ClusterGraph 增量装配与全量一致")
 struct ClusterGraphIncrementalAssemblyTests {
-    /// 200 次随机新增/移除（每次操作后重算全图），逐项断言：
+    private static let matrixSteps =
+        Int(ProcessInfo.processInfo.environment["GATHER_TEST_MATRIX_STEPS"] ?? "") ?? 50
+    /// 50 次随机新增/移除（每次操作后重算全图），逐项断言：
     /// - IncrementalClusterer.update 的 state.components/groups == 全量 run 的 state；
     /// - 由 state 复原的 result 与全量 result 划分/种子序/未成组一致。
-    @Test("200 次随机增删：增量 state 与全量 state 逐位一致")
+    /// 200 步完整矩阵留给夜间；默认套件用 50 步覆盖全部操作类型。
+    @Test("随机增删：增量 state 与全量 state 逐位一致（默认 50 步，可用 GATHER_TEST_MATRIX_STEPS 放大）")
     func randomAddRemoveMatchesFullRun() throws {
         let configs: [(seed: UInt64, threshold: Int, minGroupSize: Int)] = [
             (seed: 11, threshold: 4, minGroupSize: 2),
@@ -472,7 +475,7 @@ struct ClusterGraphIncrementalAssemblyTests {
                 minGroupSize: config.minGroupSize
             ).state)
 
-            for step in 0..<200 {
+            for step in 0..<Self.matrixSteps {
                 switch random.int(3) {
                 case 0, 1:
                     if list.isEmpty || random.int(10) < 4 {
@@ -579,50 +582,47 @@ struct ClusterGraphStreamingTests {
         }
     }
 
-    /// n = 32,769 = 位集上限 32,768 + 1：超过上限后走 streaming 图。
-    /// 为避免 Debug 构建下再做 5.4 亿次 pair 距离（约 31 s），用 threshold =
-    /// 最大汉明距离（64）构造全连接图：位集构造走 maxDistance 快路径，BFS 走
-    /// “frontier 覆盖全部未入组节点”提前退出，仍完整覆盖 streaming 的邻接枚举
-    /// 与 BFS 路径。结构化稀疏图的 streaming 对账由上一个用例（n = 600）承担。
-    @Test("n=32769：streaming 与位集图的分组/分量逐位一致（跨过 32768 上限）")
+    /// 位集上限可注入后，用 n=33 / maxBitsetEntries=32 覆盖“超过上限切 streaming”
+    /// 的生产分支；真实 32,769 节点的内存/耗时需要专项评估，不再占用默认套件。
+    @Test("跨位集上限时 streaming 分支与位集分支结果一致")
     func streamingParityAboveBitsetLimit() throws {
-        let nodeCount = 32_769 // 32,768 + 1：生产上会切到 streaming 回退
+        #expect(ClusterGraphPipeline.defaultMaxBitsetEntries == 32_768)
+        let nodeCount = 33
         var hashes: [String] = []
         hashes.reserveCapacity(nodeCount)
         for index in 0..<nodeCount {
             hashes.append(graphHex(UInt64(index) &* 0x9E37_79B9_7F4A_7C15))
+        }
+        let entries = hashes.enumerated().map { index, hash in
+            HashEntry(photoId: "n\(index)", hash: hash)
         }
 
         let table = try HashGraphTable(hashes: hashes)
         #expect(table.count == nodeCount)
         #expect(table.maxDistance == 64)
 
-        let threshold = table.maxDistance
-        let full = HashNeighborhoodGraph(table: table, threshold: threshold)
-        let streaming = StreamingNeighborhoodGraph(
-            table: table,
-            threshold: threshold,
-            degrees: full.degreeSequence
-        )
-        #expect(full.nodeCount == nodeCount)
-        #expect(streaming.nodeCount == nodeCount)
-        #expect(full.degree(of: 0) == nodeCount - 1)
-        #expect(streaming.degree(of: 0) == nodeCount - 1)
+        // threshold=64 构造全连接；只比较分支选择与最终分组，不做 32k 规模对账。
+        let streaming = try ClusterGraphPipeline.run(
+            entries: entries, threshold: table.maxDistance, minGroupSize: 2,
+            maxBitsetEntries: 32)
+        let bitset = try ClusterGraphPipeline.run(
+            entries: entries, threshold: table.maxDistance, minGroupSize: 2,
+            maxBitsetEntries: nodeCount)
+        #expect(streaming.usedStreaming, "33 > 32 必须走 streaming 回退")
+        #expect(!bitset.usedStreaming, "33 <= 33 必须走位集路径")
+        #expect(streaming.result == bitset.result)
+        #expect(streaming.result.groups.count == 1)
+        #expect(streaming.result.groups.first?.count == nodeCount)
+        #expect(streaming.result.ungrouped.isEmpty)
 
-        let fullComponents = DegreeGatedBFS.components(of: full)
-        let streamingComponents = DegreeGatedBFS.components(of: streaming)
-        #expect(fullComponents == streamingComponents, "n=32769 components")
-        #expect(fullComponents.count == 1)
-        #expect(fullComponents.first?.count == nodeCount)
-        #expect(fullComponents.first?.first == 0)
-        #expect(fullComponents.first?.last == nodeCount - 1)
-
-        let fullGroups = DegreeGatedBFS.groups(of: full, minGroupSize: 2)
-        let streamingGroups = DegreeGatedBFS.groups(of: streaming, minGroupSize: 2)
-        #expect(fullGroups == streamingGroups, "n=32769 groups")
-        #expect(fullGroups.count == 1)
-        #expect(fullGroups.first?.count == nodeCount)
-        #expect(fullGroups.first?.first == 0)
-        #expect(fullGroups.first?.last == nodeCount - 1)
+        // runTiers 的注入路径也要与单档一致；这里同样用 33>32 触发 streaming。
+        let streamingTiers = try ClusterGraphPipeline.runTiers(
+            entries: entries, thresholds: [table.maxDistance], minGroupSize: 2,
+            maxBitsetEntries: 32)
+        let bitsetTiers = try ClusterGraphPipeline.runTiers(
+            entries: entries, thresholds: [table.maxDistance], minGroupSize: 2,
+            maxBitsetEntries: nodeCount)
+        #expect(streamingTiers == bitsetTiers)
+        #expect(streamingTiers.first?.groups.count == 1)
     }
 }

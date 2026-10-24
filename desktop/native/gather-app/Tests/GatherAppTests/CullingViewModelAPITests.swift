@@ -658,6 +658,7 @@ struct CullingViewModelAPITests {
 
     @Test("4a-2b：setVisible(false) 停画质轮询，true 恢复，shutdown 后不复活")
     func setVisibleControlsQualityPolling() async {
+        #expect(CullingViewModel.defaultQualityPollIntervalMilliseconds == 500)
         let culling = B8CullingAPIStub()
         let navigation = B8NavigationAPIStub()
         let metadata = B6bMetadataAPIStub()
@@ -671,7 +672,8 @@ struct CullingViewModelAPITests {
         jobs.jobs = [queued]
         let vm = CullingViewModel(
             sessionId: "s1", culling: culling, navigation: navigation,
-            metadata: metadata, jobs: jobs, quality: quality
+            metadata: metadata, jobs: jobs, quality: quality,
+            qualityPollIntervalMilliseconds: 10
         )
         // WP4d：默认不可见（统一 PageVisibility 契约），页面挂载后才变为可见。
         #expect(!vm.isActive)
@@ -689,7 +691,7 @@ struct CullingViewModelAPITests {
         // 落定再取基线，随后窗口内再出现调用才说明轮询没停。
         await awaitNegativeWindow(.milliseconds(100))
         let stopped = jobs.listFilters.count
-        await awaitNegativeWindow(.milliseconds(1_200))
+        await awaitNegativeWindow(.milliseconds(200))
         #expect(jobs.listFilters.count == stopped, "隐藏后不得继续轮询 JobAPI.list")
 
         // 恢复：仍在排队的画质任务重新开轮询（进度不丢）。
@@ -702,7 +704,7 @@ struct CullingViewModelAPITests {
         await awaitNegativeWindow(.milliseconds(100))
         let shutDown = jobs.listFilters.count
         vm.setVisible(true)
-        await awaitNegativeWindow(.milliseconds(1_200))
+        await awaitNegativeWindow(.milliseconds(200))
         #expect(jobs.listFilters.count == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
     }
 

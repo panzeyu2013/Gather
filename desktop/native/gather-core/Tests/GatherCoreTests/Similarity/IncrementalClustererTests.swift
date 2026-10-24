@@ -262,9 +262,11 @@ struct MatrixConfig: Sendable {
 
 @Suite("IncrementalClusterer 随机增删改/重命名对账矩阵")
 struct IncrementalClustererReconciliationTests {
+    private static let matrixSteps =
+        Int(ProcessInfo.processInfo.environment["GATHER_TEST_MATRIX_STEPS"] ?? "") ?? 50
     /// 随机操作序列（新增/移除/改哈希/重命名）下，每一步的增量结果都必须与
-    /// 全量重聚类等价（ROADMAP 1.6：随机 200 次操作）。
-    @Test("200 次随机操作逐步与全量重聚类一致", arguments: [
+    /// 全量重聚类等价（默认 50 步；200 步完整矩阵留给夜间）。
+    @Test("随机操作逐步与全量重聚类一致（默认 50 步，可用 GATHER_TEST_MATRIX_STEPS 放大）", arguments: [
         MatrixConfig(seed: 1, threshold: 4, minGroupSize: 2),
         MatrixConfig(seed: 2, threshold: 8, minGroupSize: 2),
         MatrixConfig(seed: 3, threshold: 6, minGroupSize: 3),
@@ -301,9 +303,11 @@ struct IncrementalClustererReconciliationTests {
             "初始状态"
         )
 
-        for step in 0..<200 {
+        var operationCounts = [0, 0, 0, 0, 0]  // add/remove/hash/rename/noop
+        for step in 0..<Self.matrixSteps {
             switch random.int(10) {
             case 0, 1, 2:
+                operationCounts[0] += 1
                 // 新增：60% 邻域（挂到已有照片附近），40% 独立随机。
                 if list.isEmpty || random.int(10) < 4 {
                     list.append(HashEntry(photoId: newId(), hash: hex(random.randomHash())))
@@ -316,12 +320,14 @@ struct IncrementalClustererReconciliationTests {
                     ))
                 }
             case 3, 4:
+                operationCounts[1] += 1
                 // 移除。
                 if !list.isEmpty {
                     let index = random.int(list.count)
                     list.remove(at: index)
                 }
             case 5, 6:
+                operationCounts[2] += 1
                 // 改哈希（内容变化）。
                 if !list.isEmpty {
                     let index = random.int(list.count)
@@ -332,9 +338,14 @@ struct IncrementalClustererReconciliationTests {
                     )
                 }
             case 7, 8:
-                // 重命名：路径变化不影响聚类输入（哈希与顺序不变）。
-                break
+                operationCounts[3] += 1
+                // 重命名：只换 photoId，哈希与顺序不变，聚类输入不受影响。
+                if !list.isEmpty {
+                    let index = random.int(list.count)
+                    list[index] = HashEntry(photoId: newId(), hash: list[index].hash)
+                }
             default:
+                operationCounts[4] += 1
                 // 无操作：验证幂等路径。
                 break
             }
@@ -358,57 +369,48 @@ struct IncrementalClustererReconciliationTests {
             #expect(state.components == rebuilt.components, "分量不一致 seed=\(config.seed) step=\(step)")
             #expect(state.groups == rebuilt.groups, "簇不一致 seed=\(config.seed) step=\(step)")
         }
+        #expect(
+            operationCounts.allSatisfy { $0 > 0 },
+            "默认/夜间步数必须覆盖 add/remove/hash/rename/noop：\(operationCounts)")
     }
 }
 
-// MARK: - 1.3 验收预算（新增 100 张 ≤ 10s）
+// MARK: - 增量复用语义（性能门已迁到 benchmark）
 
-@Suite("IncrementalClusterer 增量预算")
-struct IncrementalClustererPerformanceTests {
-    /// 1.3 验收口径（Release 门 2 万张）：新增 100 张照片后，未受影响的分量直接
-    /// 复用旧簇，只有新照片挂上的分量被重算 —— 2 万张真实分布（大量连拍小簇）
-    /// 下增量更新必须在 10s 内完成。
-    ///
-    /// 极端情形说明：若整库同属一个巨型分量（2 万张两两在阈值内），受影响分量
-    /// 需要 O(k²) 局部重算，增量不会优于全量重聚类（与全量同阶）；
-    /// 该情形在真实 dHash 分布下不出现，后续可用 LSH 候选桶把邻域探测降到亚二次。
-    /// 规模说明（2026-09 测试提速）：原语料为 2000 簇 × 10 张 = 2 万张，
-    /// 但全量 run 走位集图路径（count ≤ 32768），
-    /// 在 Debug 构建下是 O(n²) 全对遍历（2 万²/2 ≈ 2 亿次汉明距离），单测耗时
-    /// 24.6s（占全量 swift test 墙钟的 95%）。现按 1/10 规模下采样为
-    /// 200 簇 × 10 张 = 2 千张 + 新增 100 张：断言的不变量（划分/组数、
-    /// 只重算被触及的 100 个分量、复用其余分量、增量耗时门）与规模无关，
-    /// 且仍走同一条 bitset 代码路径（2000 ≤ 32768，阈值 8、minGroupSize 2 不变）。
-    /// 生产 2 万张规模的 Release 验收由 benchmark 目标（gather-core-benchmarks）
-    /// 承担，不在 Debug 单测里重复。
-    @Test("2 千张真实分布 + 新增 100 张在 10s 内完成局部更新")
-    func incrementalUpdateWithinBudget() throws {
+@Suite("IncrementalClusterer 增量复用语义")
+struct IncrementalClustererReuseTests {
+    /// 性能验收（2 万张新增 100 张 < 10s）由 gather-core-benchmarks 负责；
+    /// 单测只验证“未受影响的分量被复用、被触及的分量才重算”这一功能不变量。
+    @Test("新增照片只重算被触及的分量，其余分量直接复用")
+    func updateRecomputesOnlyTouchedComponents() throws {
         var list: [HashEntry] = []
-        list.reserveCapacity(2_100)
-        // 200 个 10 张的小簇（连拍/同场景），簇间哈希互不相邻。
-        for clusterIndex in 0..<200 {
+        for clusterIndex in 0..<2 {
             let clusterBase = UInt64(clusterIndex) &* 0x9E37_79B9_7F4A_7C15
-            for member in 0..<10 {
-                list.append(HashEntry(photoId: "c\(clusterIndex)-\(member)", hash: hex(clusterBase ^ UInt64(member % 4))))
+            for member in 0..<8 {
+                list.append(HashEntry(
+                    photoId: "c\(clusterIndex)-\(member)",
+                    hash: hex(clusterBase ^ UInt64(member % 4))))
             }
         }
         let state = try fullState(entries: list, minGroupSize: 2, threshold: 8)
-        #expect(state.components.count == 200)
+        #expect(state.components.count == 2)
 
-        for index in 0..<100 {
-            let clusterBase = UInt64(index % 200) &* 0x9E37_79B9_7F4A_7C15
-            list.append(HashEntry(photoId: "new-\(index)", hash: hex(clusterBase ^ UInt64(index % 4))))
+        // 两张新照片都挂到第 0 个分量：只有它需要重算。
+        let touchedBase = UInt64(0) &* 0x9E37_79B9_7F4A_7C15
+        for index in 0..<2 {
+            list.append(HashEntry(
+                photoId: "new-\(index)",
+                hash: hex(touchedBase ^ UInt64(index % 4))))
         }
-        let started = Date()
+
         let outcome = try IncrementalClusterer.update(
-            state: state, entries: list, minGroupSize: 2, threshold: 8
-        )
-        let elapsed = Date().timeIntervalSince(started)
-        let result = IncrementalClusterer.result(state: outcome.state, entries: list, minGroupSize: 2)
-        #expect(result.groups.count == 200)
-        #expect(outcome.summary.recomputedComponentCount == 100, "只重算新照片触及的分量")
-        #expect(outcome.summary.reusedComponentCount == 100, "其余分量直接复用")
-        #expect(elapsed < 10, "增量更新超预算: \(elapsed)s")
+            state: state, entries: list, minGroupSize: 2, threshold: 8)
+        #expect(outcome.summary.recomputedComponentCount == 1, "只重算被新照片触及的分量")
+        #expect(outcome.summary.reusedComponentCount == 1, "另一个分量直接复用")
+        let result = IncrementalClusterer.result(
+            state: outcome.state, entries: list, minGroupSize: 2)
+        #expect(result.groups.count == 2)
+        #expect(result.groups.contains { $0.count == 10 }, "被触及的簇包含两张新照片")
     }
 }
 
