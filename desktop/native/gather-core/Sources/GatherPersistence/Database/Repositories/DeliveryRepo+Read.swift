@@ -78,6 +78,23 @@ extension DeliveryRepo {
         return try itemRow(deliveryId: delivery.id, photoId: photoId, module: module)
     }
 
+    /// 按 (xmp_path, module) 读取该侧车的交付项（不区分首张照片）。
+    /// K0 delta 的 item 身份必须按侧车而不是照片：同一侧车换首张（JPEG→RAW）
+    /// 不能生成第二条 item，否则 cumulative added/removed 会丢失。
+    public func item(xmpPath: String, module: DeliveryModule) throws -> DeliveryItemRow? {
+        guard let delivery = try get(xmpPath) else { return nil }
+        let row = try connection.prepare("""
+            SELECT \(DeliveryItemRow.selectList)
+            FROM delivery_items di
+            JOIN deliveries d ON d.id = di.delivery_id
+            WHERE di.delivery_id = ? AND di.module = ?
+            ORDER BY di.id ASC
+            LIMIT 1
+            """).get([.int(delivery.id), .text(module.rawValue)])
+        guard let row else { return nil }
+        return try DeliveryItemRow(columns: DeliveryItemRow.columnNames, row: row)
+    }
+
     /// 某交付下的全部交付项（按 id 升序 = 入队顺序；conflicts 投影用）。
     public func items(deliveryId: Int64) throws -> [DeliveryItemRow] {
         let rows = try connection.prepare("""

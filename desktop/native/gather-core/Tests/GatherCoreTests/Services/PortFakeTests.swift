@@ -124,24 +124,13 @@ struct PortFakeCullingServiceTests {
         )
     }
 
-    @Test("getSummary reads photo/decision/cache projections through ports")
+    @Test("getSummary 只消费 SQL 聚合端口，不再回退到逐行投影")
     func summaryRead() throws {
         let photoRepo = PortFakePhotoRepo()
-        photoRepo.projectionRows = [
-            try portFakeProjectionRow(id: "p1", sessionId: "s1", filepath: "/p1.jpg"),
-            try portFakeProjectionRow(id: "p2", sessionId: "s1", filepath: "/p2.jpg"),
-            try portFakeProjectionRow(id: "p3", sessionId: "s1", filepath: "/p3.jpg"),
-        ]
         let decisionRepo = PortFakeCullingDecisionRepo()
-        decisionRepo.decisions = [
-            try portFakeDecisionRow(sessionId: "s1", photoId: "p1", decision: "keep"),
-            try portFakeDecisionRow(id: 2, sessionId: "s1", photoId: "p2", decision: "reject"),
-        ]
         let richQuery = PortFakeCullingRichReading()
-        richQuery.summaryRows = [
-            CullingSummaryCacheRow(photoId: "p1", rating: 4, label: "Red"),
-            CullingSummaryCacheRow(photoId: "p2", rating: 0, label: "None"),
-        ]
+        richQuery.summaryCountsValue = CullingSummaryCounts(
+            totalPhotos: 3, kept: 1, rejected: 1, rated: 1, labeled: 1)
         let service = makeService(
             photoRepo: photoRepo,
             decisionRepo: decisionRepo,
@@ -157,7 +146,7 @@ struct PortFakeCullingServiceTests {
         #expect(summary.pending == 1)
         #expect(summary.rated == 1)
         #expect(summary.labeled == 1)
-        #expect(photoRepo.projectionCalls == 1)
+        #expect(photoRepo.projectionCalls == 0, "summary 不再回退到 Swift 逐行循环")
     }
 
     @Test("reset deletes decisions and clears the projection inside one transaction")

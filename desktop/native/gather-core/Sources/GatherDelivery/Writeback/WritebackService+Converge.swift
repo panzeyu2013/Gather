@@ -67,18 +67,36 @@ extension WritebackService {
             } catch {
                 record("cache.updateKeywords", error)
             }
-            if module == "face_kw", let keywordOrigins {
+            if let source = Self.keywordOriginSource(for: module), let keywordOrigins {
                 // keywordsBeforeWrite 是 phase 1 的写前快照：写入前不在文件上的关键词即本模块引入的。
                 let existing = Set(entry.keywordsBeforeWrite)
+                let final = Set(keywords)
                 let introduced = keywords.filter { !existing.contains($0) }
+                let removed = existing.subtracting(final)
                 do {
                     try keywordOrigins.markIntroduced(
-                        xmpPath: entry.delivery.xmpPath, source: "face-keyword", keywords: introduced)
+                        xmpPath: entry.delivery.xmpPath, source: source, keywords: introduced)
+                    // 词已从文件消失：来源凭据必须同步失效，否则后续别的模块
+                    // 重新引入同一个词时会被“仍被本模块拥有”误拦。
+                    try keywordOrigins.deactivate(
+                        xmpPath: entry.delivery.xmpPath, source: source,
+                        keywords: Array(removed))
                 } catch {
-                    record("origin.markIntroduced", error)
+                    record("origin.update", error)
                 }
             }
         }
         return failures
+    }
+
+    /// 生成关键词的交付模块 → 来源凭据。metadata 是用户手动词，不记源。
+    static func keywordOriginSource(for module: String) -> String? {
+        switch module {
+        case "face_kw": return "face-keyword"
+        case "culling": return "culling"
+        case "similarity": return "similarity"
+        case "template": return "template"
+        default: return nil
+        }
     }
 }

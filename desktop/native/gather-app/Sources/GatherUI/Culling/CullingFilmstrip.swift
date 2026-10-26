@@ -75,12 +75,12 @@ struct CullingFilmstrip: View {
                             // 横向滚动近尾自动续页：尾部 4 个缩略图出现即 loadMore。
                             .onAppear {
                                 let count = viewModel.page?.assets.count ?? 0
-                                if index >= count - 4, viewModel.page?.nextRowId != nil {
+                                if index >= count - 4, viewModel.hasMore {
                                     Task { await viewModel.loadMore() }
                                 }
                             }
                     }
-                    if viewModel.page?.nextRowId != nil {
+                    if viewModel.hasMore {
                         Button(viewModel.isLoading ? l10n("加载中…") : l10n("加载更多")) {
                             Task { await viewModel.loadMore() }
                         }

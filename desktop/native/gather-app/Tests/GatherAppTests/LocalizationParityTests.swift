@@ -273,6 +273,19 @@ struct LocalizationParityTests {
 
     // MARK: - 测试
 
+    @Test("错误码历史 %@ 模板按参数插值（B0/K0 新增码不得显示裸 %@）")
+    func legacyPercentTemplatesInterpolate() {
+        let l10n = L10n(language: .zhCN)
+        let backup = l10n.errorText(CommandError(code: "BACKUP_FAILED", params: ["磁盘已满"]))
+        #expect(backup.contains("磁盘已满"))
+        #expect(!backup.contains("%@"))
+        let keyword = l10n.errorText(CommandError(
+            code: "KEYWORD_OWNED_BY_SOURCE", params: ["Bride", "face-keyword"]))
+        #expect(keyword.contains("Bride"))
+        #expect(keyword.contains("face-keyword"))
+        #expect(!keyword.contains("%@"))
+    }
+
     @Test("en 表无重复键（后写覆盖先写会让译文不可预期）")
     func noDuplicateKeys() throws {
         var counts: [String: Int] = [:]

@@ -12,7 +12,8 @@ import GatherProtocol
 struct CullingWorkbench: View {
     let viewModel: CullingViewModel
     let isBusy: Bool
-    @Binding var compareCount: Int
+    @Binding var layoutMode: CullingLayoutMode
+    @Binding var density: CullingGridDensity
     @Binding var faceAlign: Bool
     @Binding var pendingAction: PendingCullingAction?
     @Binding var conflictChoices: [String: MetadataConflictChoice]
@@ -23,7 +24,7 @@ struct CullingWorkbench: View {
             CullingToolbar(
                 viewModel: viewModel,
                 isBusy: isBusy,
-                compareCount: $compareCount
+                layoutMode: $layoutMode
             )
             // 竖向分割：查看器 + infoBar 占据上半区，全宽胶片条固定在底部。
             // （旧版把胶片条放在右侧，与右侧 .inspector 两栏夹击查看器。）
@@ -32,13 +33,22 @@ struct CullingWorkbench: View {
                 // （复用旧版 resetTransform 语义）。不使用 .id() 重建——
                 // 整树销毁会扰动窗口焦点/事件监听，导致快捷键与后续
                 // 点击异常。
-                CullingWorkbenchViewer(
-                    viewModel: viewModel,
-                    compareCount: compareCount,
-                    faceAlign: faceAlign
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                CullingInfoBar(viewModel: viewModel, isBusy: isBusy, pendingAction: $pendingAction)
+                if layoutMode == .grid {
+                    CullingGridView(
+                        viewModel: viewModel,
+                        density: density,
+                        onOpenSingle: { layoutMode = .single }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    CullingWorkbenchViewer(
+                        viewModel: viewModel,
+                        compareCount: layoutMode.compareCount,
+                        faceAlign: faceAlign
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    CullingInfoBar(viewModel: viewModel, isBusy: isBusy, pendingAction: $pendingAction)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .bottomTrailing) {

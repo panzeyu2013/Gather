@@ -32,4 +32,8 @@ public protocol FaceAPI: Sendable {
     func confirmSync(_ sessionId: String) async throws -> Bool
     func cleanup(_ input: Confirmed<SessionReference>) async throws -> CleanupResult
     func modelsStatus() async throws -> FaceModelsStatus
+
+    // P0 / F0：拆分与复核
+    func split(_ input: Confirmed<FaceSplitInput>) async throws -> FaceSplitResult
+    func review(_ input: FaceReviewInput) async throws -> FaceReviewPage
 }

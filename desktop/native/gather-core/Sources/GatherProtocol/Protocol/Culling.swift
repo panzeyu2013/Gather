@@ -54,6 +54,52 @@ public enum CullingScope: String, Codable, CaseIterable, Equatable, Sendable {
     case similarityGroup = "similarity_group"
 }
 
+// P0 / G0：网格挑片排序。rawValue 是对外契约，禁止改名（见 x0-contracts §1.1）。
+public enum CullingSort: String, Codable, CaseIterable, Equatable, Sendable {
+    case importOrder = "import"
+    case captureDesc = "capture_desc"
+    case captureAsc = "capture_asc"
+    case ratingDesc = "rating_desc"
+    case triageConfidenceAsc = "triage_confidence_asc"
+
+    /// 仅决定 keyset 比较方向；并列恒用 first_rowid ASC。
+    public var descending: Bool {
+        self == .captureDesc || self == .ratingDesc
+    }
+}
+
+public enum CullingSortKeyKind: String, Codable, CaseIterable, Equatable, Sendable {
+    case rowId
+    case date
+    case number
+}
+
+extension CullingSort {
+    public var keyKind: CullingSortKeyKind {
+        switch self {
+        case .importOrder: return .rowId
+        case .captureDesc, .captureAsc: return .date
+        case .ratingDesc, .triageConfidenceAsc: return .number
+        }
+    }
+}
+
+/// 资产组 keyset 游标（G0）。sort 必须与请求一致；dateKey/numberKey
+/// 按 sort.keyKind 二选一；rowId 是上一页最后资产组的 first_rowid。
+public struct CullingPageCursor: Codable, Equatable, Sendable {
+    public var sort: CullingSort
+    public var dateKey: String?
+    public var numberKey: Double?
+    public var rowId: Int64
+
+    public init(sort: CullingSort, dateKey: String? = nil, numberKey: Double? = nil, rowId: Int64) {
+        self.sort = sort
+        self.dateKey = dateKey
+        self.numberKey = numberKey
+        self.rowId = rowId
+    }
+}
+
 // TS: MetadataSyncStatus
 public enum MetadataSyncStatus: String, Codable, CaseIterable, Equatable, Sendable {
     case clean
@@ -80,10 +126,23 @@ public struct CullingFilters: Codable, Equatable, Sendable {
     public var colorLabels: [CaptureOneColorLabel]? // TS: colorLabels?
     public var unreviewedOnly: Bool? // TS: unreviewedOnly?
     public var qualityStatus: CullingFilterQualityStatus? // TS: qualityStatus?
+    /// P0 / T0：按 triage verdict 过滤（仅 .filtered scope 生效）。
+    public var triageVerdicts: [TriageVerdict]?
     /// TS: metadataConflictOnly?。
     /// 服务端已下推 SQL（判定规则：首选变体的 photo_path 存在 status='conflict'
     /// 的 outbox 行），JS 安全网用同一规则，故 filtered 范围的 total 与页内容同口径。
     public var metadataConflictOnly: Bool?
+
+    /// 是否有任何下推谓词；`.all` scope 不允许携带，避免静默忽略。
+    public var hasAnyFilter: Bool {
+        (ratings?.isEmpty == false)
+            || (pickStates?.isEmpty == false)
+            || (colorLabels?.isEmpty == false)
+            || unreviewedOnly == true
+            || qualityStatus != nil
+            || metadataConflictOnly == true
+            || (triageVerdicts?.isEmpty == false)
+    }
 
     public init(
         ratings: [Double]? = nil,
@@ -91,7 +150,8 @@ public struct CullingFilters: Codable, Equatable, Sendable {
         colorLabels: [CaptureOneColorLabel]? = nil,
         unreviewedOnly: Bool? = nil,
         qualityStatus: CullingFilterQualityStatus? = nil,
-        metadataConflictOnly: Bool? = nil
+        metadataConflictOnly: Bool? = nil,
+        triageVerdicts: [TriageVerdict]? = nil
     ) {
         self.ratings = ratings
         self.pickStates = pickStates
@@ -99,6 +159,7 @@ public struct CullingFilters: Codable, Equatable, Sendable {
         self.unreviewedOnly = unreviewedOnly
         self.qualityStatus = qualityStatus
         self.metadataConflictOnly = metadataConflictOnly
+        self.triageVerdicts = triageVerdicts
     }
 }
 
@@ -188,6 +249,8 @@ public struct CullingAsset: Codable, Equatable, Sendable {
     public var linkedVariantCount: Int
     public var faceBboxes: [[Double]] // TS: faceBboxes: number[][]
     public var quality: CullingQuality? // TS: quality?
+    /// P0 / T0：该逻辑资产的技术质量建议；无行/已过期/已人工决策时为 nil。
+    public var triage: TriageSuggestion?
     public var metadataSource: MetadataMutationSource? // TS: metadataSource?
 
     public init(
@@ -201,6 +264,7 @@ public struct CullingAsset: Codable, Equatable, Sendable {
         linkedVariantCount: Int,
         faceBboxes: [[Double]],
         quality: CullingQuality? = nil,
+        triage: TriageSuggestion? = nil,
         metadataSource: MetadataMutationSource? = nil
     ) {
         self.photo = photo
@@ -213,42 +277,25 @@ public struct CullingAsset: Codable, Equatable, Sendable {
         self.linkedVariantCount = linkedVariantCount
         self.faceBboxes = faceBboxes
         self.quality = quality
+        self.triage = triage
         self.metadataSource = metadataSource
     }
 }
 
-// TS: CullingPage —— nextRowId: number | null，key 恒存在
+/// 分页结果：唯一续页凭据是 nextCursor（导入序用 rowId）。
 public struct CullingPage: Codable, Equatable, Sendable {
     public var assets: [CullingAsset]
-    public var nextRowId: Int? // TS: nextRowId: number | null
     public var total: Int
+    public var nextCursor: CullingPageCursor?
 
-    public init(assets: [CullingAsset], nextRowId: Int? = nil, total: Int) {
+    public init(
+        assets: [CullingAsset],
+        total: Int,
+        nextCursor: CullingPageCursor? = nil
+    ) {
         self.assets = assets
-        self.nextRowId = nextRowId
         self.total = total
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.assets = try container.decode([CullingAsset].self, forKey: .assets)
-        self.nextRowId = try container.decodeIfPresent(Int.self, forKey: .nextRowId)
-        self.total = try container.decode(Int.self, forKey: .total)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(assets, forKey: .assets)
-        if let nextRowId {
-            try container.encode(nextRowId, forKey: .nextRowId)
-        } else {
-            try container.encodeNil(forKey: .nextRowId)
-        }
-        try container.encode(total, forKey: .total)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case assets, nextRowId, total
+        self.nextCursor = nextCursor
     }
 }
 
@@ -458,8 +505,10 @@ public struct CullingSummary: Codable, Equatable, Sendable {
     public var pending: Int
     public var rated: Int
     public var labeled: Int
+    /// P0 / T0：当前会话的技术质量建议摘要；未生成时为 nil。
+    public var triage: TriageSummary?
 
-    public init(totalGroups: Int, totalPhotos: Int, kept: Int, rejected: Int, pending: Int, rated: Int, labeled: Int) {
+    public init(totalGroups: Int, totalPhotos: Int, kept: Int, rejected: Int, pending: Int, rated: Int, labeled: Int, triage: TriageSummary? = nil) {
         self.totalGroups = totalGroups
         self.totalPhotos = totalPhotos
         self.kept = kept
@@ -467,5 +516,6 @@ public struct CullingSummary: Codable, Equatable, Sendable {
         self.pending = pending
         self.rated = rated
         self.labeled = labeled
+        self.triage = triage
     }
 }

@@ -29,7 +29,6 @@ struct CullingInfoBar: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .disabled(isBusy)
-                .keyboardShortcut(.leftArrow, modifiers: [])
                 .help(l10n("上一张（←）"))
                 .accessibilityLabel(l10n("上一张"))
                 Button { viewModel.advanceCurrent() } label: {
@@ -38,7 +37,6 @@ struct CullingInfoBar: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .disabled(isBusy)
-                .keyboardShortcut(.rightArrow, modifiers: [])
                 .help(l10n("下一张（→）"))
                 .accessibilityLabel(l10n("下一张"))
             }

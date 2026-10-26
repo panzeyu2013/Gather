@@ -109,6 +109,22 @@ public final class FaceKeywordingViewModel: PageVisibility {
     /// 错误文案（旧版详情栏内联错误块，StepReview.tsx:216-218）。
     public internal(set) var reviewActionError: CommandError?
 
+    // MARK: - P0 / F0：复核与拆分（成员级）
+    /// 当前复核页的成员（按选中簇 / includeResolved 过滤）。
+    public internal(set) var reviewItems: [FaceReviewItem] = []
+    /// 全部簇的复核概要（卡片角标用）。
+    public internal(set) var reviewSummaries: [FaceReviewClusterSummary] = []
+    public internal(set) var reviewNextCursor: Int?
+    public internal(set) var reviewTotal = 0
+    public internal(set) var reviewSuspectTotal = 0
+    public internal(set) var selectedMemberIds: Set<Int> = []
+    public internal(set) var isSplitting = false
+    public internal(set) var isLoadingReview = false
+    /// 默认只看待复核成员；关闭后显示全部成员（includeResolved=true）。
+    public var includeOnlyReviewMembers = true
+    /// latest-wins：切换簇/刷新时旧复核请求不得覆盖新结果。
+    var reviewGeneration = 0
+
     /// 生产装配（RootView）：人脸域走 AppServices.face，jobs.list 走
     /// AppServices.job；captureOne 由组合根构造（reload ack 写唯一 AppRuntime）。
     /// B8.4 起这是唯一构造器（字符串命令构造器已删除）。
@@ -250,6 +266,11 @@ public final class FaceKeywordingViewModel: PageVisibility {
             roleName = cluster.binding?.roleName ?? ""
             keywords = cluster.binding?.keywords.joined(separator: ", ") ?? ""
             mergeTargetId = nil
+            selectedMemberIds.removeAll()
+            reviewItems = []
+            reviewNextCursor = nil
+            reviewTotal = 0
+            reviewSuspectTotal = 0
         }
         reviewActionError = nil
     }

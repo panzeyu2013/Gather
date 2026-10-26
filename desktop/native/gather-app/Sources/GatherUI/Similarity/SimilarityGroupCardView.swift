@@ -53,7 +53,7 @@ struct SimilarityGroupCardView: View {
         }
         .gatherCard()
         .overlay(
-            RoundedRectangle(cornerRadius: GatherTheme.Radius.group, style: .continuous)
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
                 .strokeBorder(ringColor, lineWidth: selected ? 2 : 1)
         )
         .animation(reduceMotion ? nil : .easeOut(duration: GatherMetrics.Motion.hover), value: isHovered)

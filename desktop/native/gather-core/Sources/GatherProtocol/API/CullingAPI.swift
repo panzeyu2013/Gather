@@ -25,6 +25,10 @@ public protocol CullingAPI: Sendable {
     func decideGroup(_ input: CullingDecideGroupInput) async throws -> [CullingUpdateResult]
     func groups(_ sessionId: String) async throws -> [CullingGroup]
     func summary(_ sessionId: String) async throws -> CullingSummary
+    /// P0 / T0：生成技术质量建议（只写 triage_suggestions，不写决策/XMP）。
+    func generateTriage(_ input: TriageGenerateInput) async throws -> TriageSummary
+    /// P0 / T0：应用建议（只写 culling 决策，source=ai；绝不自动写 XMP）。
+    func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus
     func reset(_ input: Confirmed<CullingResetInput>) async throws -> Bool
     func writeback(_ input: Confirmed<CullingWritebackInput>) async throws -> WritebackResult

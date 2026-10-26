@@ -29,6 +29,33 @@ public final class MetadataKeywordOriginRepo {
         }
     }
 
+    /// 批量读取某个来源在多个侧车上的全部 active origin（一次 IN 查询）。
+    /// 调用方在 Swift 侧用 fold 比对，避免大小写/NFC 差异绕过生成词保护。
+    public func activeKeywordOrigins(
+        xmpPaths: [String],
+        source: String
+    ) throws -> [(xmpPath: String, keyword: String)] {
+        let paths = Array(Set(xmpPaths))
+        guard !paths.isEmpty else { return [] }
+        var result: [(xmpPath: String, keyword: String)] = []
+        for chunk in stride(from: 0, to: paths.count, by: 800).map({
+            Array(paths[$0..<min($0 + 800, paths.count)])
+        }) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+            var values: [DBValue?] = [.text(source)]
+            values.append(contentsOf: chunk.map { .text($0) })
+            let rows = try connection.prepare("""
+                SELECT xmp_path, keyword FROM metadata_keyword_origins
+                WHERE source = ? AND active = 1 AND xmp_path IN (\(placeholders))
+                """).query(values)
+            for row in rows {
+                guard let path = row[0].textValue, let keyword = row[1].textValue else { continue }
+                result.append((path, keyword))
+            }
+        }
+        return result
+    }
+
     public func getActiveIntroduced(xmpPath: String, source: String, keywords: [String]) throws -> [String] {
         if keywords.isEmpty { return [] }
         let placeholders = keywords.map { _ in "?" }.joined(separator: ", ")

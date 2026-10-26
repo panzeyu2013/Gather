@@ -45,6 +45,25 @@ jobs:
         run: >-
           swift test --package-path desktop/native/gather-core --no-parallel
           --filter 'FaceIdentityArchitectureTests|FaceEmbeddingModelTests|FaceInferenceTests'
+      - name: 2GB backup + 20k culling performance gates
+        # 2GB 备份与 20k 分页默认跳过，只在夜间跑；失败会阻断夜间绿灯。
+        env:
+          GATHER_BACKUP_PERF: '1'
+          GATHER_CULLING_PERF: '1'
+        run: >-
+          swift test --package-path desktop/native/gather-core --no-parallel
+          --filter 'BackupPerfTests|CullingPagingPerfTests|CullingServicePerfTests'
+      - name: 20k grid UI performance gate
+        # 网格首屏/布局性能门默认跳过；此前 CI 从不设置 GATHER_UI_PERF，
+        # 导致“20k 首屏 p95 < 800ms”只有人工可复现。
+        env:
+          GATHER_UI_PERF: '1'
+        run: >-
+          swift test --package-path desktop/native/gather-app --no-parallel
+          --filter 'CullingGridPerfTests'
+      - name: T0 quality-gate CLI self-check
+        # 质量门 CLI 编译产物可用性自检（真实 400 张标注集仍是外部验收）。
+        run: desktop/native/gather-core/.build/release/gather-triage-eval --help
       - name: Full random parity matrix
         env:
           GATHER_TEST_MATRIX_STEPS: '200'

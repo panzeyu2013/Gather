@@ -42,7 +42,7 @@ enum SchemaReset {
         pruneIncompatibleCopies(for: path, retaining: options.retainIncompatibleCopies)
         let detected = previousVersion.map(String.init) ?? "unreadable"
         GatherLogger.log(
-            "schema_reset_dev user_version=\(detected) expected=\(options.catalog.current.rawValue) "
+            "schema_reset_dev user_version=\(detected) expected=\(SchemaCurrent.userVersion) "
                 + "path=\(path) backup=\(target) reason=\(reason)",
             level: .warn
         )

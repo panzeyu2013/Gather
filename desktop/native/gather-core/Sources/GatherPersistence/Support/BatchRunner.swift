@@ -26,10 +26,9 @@
 //   则按上面的规则抛错）。`markFailed` 与取消检查互补：取消传播存在时间窗，游标
 //   停发把它封死。
 //
-// 12 个调用点的真实参数（并发数 / body 错误策略）——差异都在调用点，不在包装体：
+// 11 个调用点的真实参数（并发数 / body 错误策略）——差异都在调用点，不在包装体：
 //   MetadataService.getMetadata         16 / body 全 catch（try? + 逐照片隔离）
 //   MetadataService.getMetadata         10 / body 全 catch（逐照片隔离）
-//   MetadataService.batchSet             4 / body 逐项 catch，汇总 BatchMetadataResult
 //   MetadataSyncCoordinator.cleanup      2 / body 全 catch，返回 (deleted, error)
 //   MetadataSyncCoordinator.finalize     2 / body 全 catch，返回 (deleted, error)
 //   WritebackService.execute             4 / body 逐项 catch，汇总 errors

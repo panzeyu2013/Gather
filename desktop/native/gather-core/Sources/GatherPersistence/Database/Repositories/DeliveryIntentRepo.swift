@@ -19,7 +19,7 @@
 import Foundation
 import GatherProtocol
 
-/// delivery_intents.kind 的合法值（与 SchemaV1 的 CHECK 双向一致）。
+/// delivery_intents.kind 的合法值（与 SchemaCurrent 的 CHECK 双向一致）。
 public enum DeliveryIntentKind: String, Codable, CaseIterable, Equatable, Sendable {
     /// 清理回滚：把备份内容恢复回 XMP，然后删除交付行。
     case cleanup
@@ -27,7 +27,7 @@ public enum DeliveryIntentKind: String, Codable, CaseIterable, Equatable, Sendab
     case write
 }
 
-/// delivery_intents.phase 的合法值（与 SchemaV1 的 CHECK 双向一致）。
+/// delivery_intents.phase 的合法值（与 SchemaCurrent 的 CHECK 双向一致）。
 ///
 /// 回放语义（draft §5.5）：
 /// - prepared：文件操作可能完全没做，回放时**重做文件 + 重做 DB**；
@@ -97,7 +97,7 @@ public enum DeliveryIntentRepoError: Error, Equatable, CustomStringConvertible, 
     public var errorDescription: String? { description }
 }
 
-/// delivery_intents 表行（8 列，与 SchemaV1 §5.2 一致）。
+/// delivery_intents 表行（8 列，与 SchemaCurrent §5.2 一致）。
 public struct DeliveryIntentRow: Sendable, Equatable {
     public let id: Int64
     public let kind: String

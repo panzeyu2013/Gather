@@ -10,6 +10,9 @@ struct CullingInspector: View {
     let viewModel: CullingViewModel
     let isBusy: Bool
     @Binding var faceAlign: Bool
+    @Binding var gridDensity: CullingGridDensity
+    /// T0：复核队列需要把布局切到网格。
+    @Binding var layoutMode: CullingLayoutMode
     @State private var filtersExpanded = false
 
     @Environment(\.languageStore) private var languageStore
@@ -94,6 +97,68 @@ struct CullingInspector: View {
                         .disabled(isBusy)
                         .help(l10n("设置当前照片的颜色标签"))
                         .accessibilityLabel(l10n("颜色标签"))
+                    }
+                }
+
+                // P0/K0：关键词 delta 编辑（当前选择集；未多选时作用于当前照片）。
+                GatherInspectorSection(l10n("关键词")) {
+                    CullingKeywordPanel(viewModel: viewModel, isBusy: isBusy)
+                }
+
+                // G0：排序 / 网格密度 / 建议筛选（可见，不折叠）。
+                GatherInspectorSection(l10n("排序与网格")) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+                        labeledControl(l10n("排序")) {
+                            Picker(l10n("排序"), selection: sortBinding) {
+                                Text(l10n("导入顺序")).tag(CullingSort.importOrder)
+                                Text(l10n("拍摄时间（新→旧）")).tag(CullingSort.captureDesc)
+                                Text(l10n("拍摄时间（旧→新）")).tag(CullingSort.captureAsc)
+                                Text(l10n("评分（高→低）")).tag(CullingSort.ratingDesc)
+                                if viewModel.triageEnabled {
+                                    Text(l10n("建议置信度（低→高）"))
+                                        .tag(CullingSort.triageConfidenceAsc)
+                                }
+                            }
+                            .labelsHidden()
+                        }
+
+                        labeledControl(l10n("网格密度")) {
+                            Picker(l10n("网格密度"), selection: $gridDensity) {
+                                ForEach(CullingGridDensity.allCases, id: \.self) { density in
+                                    Text(l10n(density.titleKey)).tag(density)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
+
+                        if viewModel.triageEnabled {
+                            labeledControl(l10n("建议筛选")) {
+                                Picker(l10n("建议筛选"), selection: triageBinding) {
+                                    Text(l10n("全部")).tag(TriageVerdict?.none)
+                                    Text(l10n("建议保留")).tag(TriageVerdict?.some(.keep))
+                                    Text(l10n("建议淘汰")).tag(TriageVerdict?.some(.reject))
+                                    Text(l10n("待复核")).tag(TriageVerdict?.some(.review))
+                                }
+                                .labelsHidden()
+                            }
+                        }
+                    }
+                }
+
+                // P0/T0：技术质量建议（Beta）。生成/应用/复核队列都在这里。
+                if viewModel.triageEnabled {
+                    GatherInspectorSection(l10n("技术质量建议（Beta）")) {
+                        CullingTriageCard(
+                            viewModel: viewModel,
+                            layoutMode: $layoutMode,
+                            isBusy: isBusy
+                        )
+                    }
+                } else {
+                    GatherInspectorSection(l10n("技术质量建议（Beta）")) {
+                        Text(l10n("已关闭，可在设置中开启。"))
+                            .gatherText(.secondary)
                     }
                 }
 
@@ -190,6 +255,7 @@ struct CullingInspector: View {
             filter.colorLabel != nil,
             filter.qualityStatus != nil,
             filter.metadataConflictOnly,
+            filter.triageVerdicts?.isEmpty == false,
         ].filter { $0 }.count
     }
 
@@ -228,6 +294,36 @@ struct CullingInspector: View {
         guard let current = viewModel.currentAsset, let groupId = current.similarityGroupId else { return [] }
         return viewModel.page?.assets.filter { $0.similarityGroupId == groupId } ?? []
     }
+
+    private var sortBinding: Binding<CullingSort> {
+        Binding(
+            get: { viewModel.sortMode },
+            set: { value in Task { await viewModel.setSort(value) } }
+        )
+    }
+
+    private var triageBinding: Binding<TriageVerdict?> {
+        Binding(
+            get: { viewModel.filterState.triageVerdicts?.first },
+            set: { value in
+                Task { await viewModel.setTriageVerdicts(value.map { [$0] }) }
+            }
+        )
+    }
+
+    private func labeledControl<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(GatherFont.label)
+                .foregroundStyle(.secondary)
+            content()
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 }
 
 /// 决策按钮：系统 bordered 按钮（图标 + 标题 + 快捷键提示），
@@ -247,7 +343,7 @@ private struct DecisionButtonView: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 Image(systemName: icon)
                     .imageScale(.medium)
                     .foregroundStyle(iconColor)

@@ -75,18 +75,37 @@ struct PendingFaceConfirmSync: Identifiable {
     }
 }
 
-/// 成员移除确认：范围 = 成员文件名/路径与所属簇（命令面无 confirmed 门控，
-/// UI 仍需先确认不可逆影响）。
-struct PendingFaceMemberRemoval: Identifiable {
-    let member: ClusterMember
+/// 拆分确认：把所选的复核成员移到一个新簇（未绑定簇；不可撤销，但可再合并）。
+struct PendingFaceSplit: Identifiable {
+    let cluster: FaceClusterData
+    let members: [FaceReviewItem]
+
+    var id: String {
+        "face-split-\(cluster.id)-\(members.map(\.memberId).sorted().map(String.init).joined(separator: "-"))"
+    }
+
+    func scopeText(with l10n: L10n) -> String {
+        let remaining = max(0, cluster.size - members.count)
+        return l10n.format(
+            "将把 %lld 个成员拆到新簇「%@」，原簇保留 %lld 个成员。拆分会在重新聚类后保持，此操作不可撤销。",
+            members.count,
+            l10n("新簇"),
+            remaining
+        )
+    }
+}
+
+/// 复核成员移除确认（removeReviewMember 走既有 remove_member 命令）。
+struct PendingFaceReviewRemoval: Identifiable {
+    let item: FaceReviewItem
     let cluster: FaceClusterData
 
-    var id: String { "remove-member-\(member.memberId)" }
+    var id: String { "face-review-remove-\(item.memberId)" }
 
     func scopeText(with l10n: L10n) -> String {
         l10n.format(
             "将把「%@」（%@）从簇 #%lld「%@」中移除；照片本身不会删除，但该成员不再参与这个簇的写回。",
-            member.filename, member.photoPath, cluster.id, cluster.label
+            item.filename, item.photoPath, cluster.id, cluster.label
         )
     }
 }
@@ -193,17 +212,29 @@ extension FaceKeywordingView {
             onConfirm: { _ in Task { await viewModel.recluster() } },
             onCancel: { _ in viewModel.reportCancellation(LocalizedText("重新聚类")) }
         )
-        // 移除成员 / 合并：命令面无 confirmed 门控，UI 仍需确认不可逆影响。
+        // 合并：命令面无 confirmed 门控，UI 仍需确认不可逆影响。
         .gatherDestructiveConfirm(
-            pending: $pendingMemberRemoval,
+            pending: $pendingSplit,
+            title: l10n("确认拆分所选成员？"),
+            confirmLabel: { _ in l10n("拆分为新簇") },
+            message: { $0.scopeText(with: l10n) },
+            onConfirm: { pending in
+                Task { await viewModel.splitSelectedMembers(from: pending.cluster, confirmed: true) }
+            },
+            onCancel: { pending in
+                viewModel.reportCancellation(LocalizedText("拆分簇 #%lld", params: ["\(pending.cluster.id)"]))
+            }
+        )
+        .gatherDestructiveConfirm(
+            pending: $pendingReviewRemoval,
             title: l10n("确认移除该成员？"),
             confirmLabel: { _ in l10n("移除成员") },
             message: { $0.scopeText(with: l10n) },
             onConfirm: { pending in
-                Task { await viewModel.removeMember(pending.member, from: pending.cluster) }
+                Task { await viewModel.removeReviewMember(pending.item, from: pending.cluster) }
             },
             onCancel: { pending in
-                viewModel.reportCancellation(LocalizedText("移除成员「%@」", params: [pending.member.filename]))
+                viewModel.reportCancellation(LocalizedText("移除成员「%@」", params: [pending.item.filename]))
             }
         )
         .gatherDestructiveConfirm(

@@ -26,7 +26,6 @@ public enum CullingServiceError: Error, Equatable, CustomStringConvertible {
     case invalidPickState // 'Invalid pickState'
     case invalidColorLabel // 'Invalid colorLabel'
     case invalidScope // CULLING_INVALID_SCOPE（IPC 校验）
-    case afterRowIdInvalid // 'afterRowId must be a positive integer'（IPC 校验）
     case pageLimitInvalid // 'limit must be an integer between 1 and 2000'（IPC 校验）
     case tooManyPhotoIds // 'Too many photoIds in one batch'（IPC 校验）
     case tooManyKeepPhotoIds // 'Too many keepPhotoIds'（IPC 校验）
@@ -56,7 +55,6 @@ public enum CullingServiceError: Error, Equatable, CustomStringConvertible {
         case .invalidPickState: "Invalid pickState"
         case .invalidColorLabel: "Invalid colorLabel"
         case .invalidScope: "CULLING_INVALID_SCOPE"
-        case .afterRowIdInvalid: "afterRowId must be a positive integer"
         case .pageLimitInvalid: "limit must be an integer between 1 and 2000"
         case .tooManyPhotoIds: "Too many photoIds in one batch"
         case .tooManyKeepPhotoIds: "Too many keepPhotoIds"
@@ -220,6 +218,8 @@ struct CullingRichLookup {
     let metadataSourceByPath: [String: MetadataMutationSource]
     let similarityMap: [String: String]
     let qualityByPhoto: [String: CullingQuality]
+    /// P0 / T0：按资产组 gid 的建议（代表行一条；变体共享）。
+    let triageByAsset: [String: TriageSuggestion]
     let facesByPhoto: [String: [[Double]]]
     let analysisMaxByPhoto: [String: Double]
     let peopleByPhoto: [String: [String]]

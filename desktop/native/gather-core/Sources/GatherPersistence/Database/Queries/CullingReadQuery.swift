@@ -40,6 +40,37 @@ public struct CullingQualityResultRow: Equatable, Sendable {
     }
 }
 
+/// triage_suggestions 的投影（按逻辑资产 gid；代表行一条）。
+public struct CullingTriageRow: Equatable, Sendable {
+    public let gid: String
+    public let photoId: String
+    public let verdict: String
+    public let score: Double
+    public let confidence: Double
+    public let reasonsJSON: String
+    public let groupId: String?
+    public let policyVersion: String
+    public let inputFingerprint: String
+    public let computedAt: String
+
+    public init(
+        gid: String, photoId: String, verdict: String, score: Double, confidence: Double,
+        reasonsJSON: String, groupId: String?, policyVersion: String,
+        inputFingerprint: String, computedAt: String
+    ) {
+        self.gid = gid
+        self.photoId = photoId
+        self.verdict = verdict
+        self.score = score
+        self.confidence = confidence
+        self.reasonsJSON = reasonsJSON
+        self.groupId = groupId
+        self.policyVersion = policyVersion
+        self.inputFingerprint = inputFingerprint
+        self.computedAt = computedAt
+    }
+}
+
 /// delivery_items 的 module 投影（按侧车路径）。
 public struct CullingDeliveryModuleRow: Equatable, Sendable {
     public let xmpPath: String
@@ -51,16 +82,19 @@ public struct CullingDeliveryModuleRow: Equatable, Sendable {
     }
 }
 
-/// photo_metadata_cache 的轻投影（getSummary 计数用）。
-public struct CullingSummaryCacheRow: Equatable, Sendable {
-    public let photoId: String
-    public let rating: Int64
-    public let label: String?
+public struct CullingSummaryCounts: Sendable, Equatable {
+    public let totalPhotos: Int
+    public let kept: Int
+    public let rejected: Int
+    public let rated: Int
+    public let labeled: Int
 
-    public init(photoId: String, rating: Int64, label: String?) {
-        self.photoId = photoId
-        self.rating = rating
-        self.label = label
+    public init(totalPhotos: Int, kept: Int, rejected: Int, rated: Int, labeled: Int) {
+        self.totalPhotos = totalPhotos
+        self.kept = kept
+        self.rejected = rejected
+        self.rated = rated
+        self.labeled = labeled
     }
 }
 
@@ -84,10 +118,66 @@ public final class CullingReadQuery {
                 JOIN asset_analysis aa ON aa.asset_file_id = p.asset_file_id
                 WHERE aa.analysis_type = 'technical_quality'
                   AND p.id IN (\(placeholders))
-                ORDER BY aa.updated_at DESC
+                ORDER BY aa.updated_at DESC, aa.id DESC
               """).query(chunk.map { .text($0) }).map {
                 CullingQualityResultRow(
                     photoId: $0[0].textValue ?? "", resultJSON: $0[1].textValue ?? "{}")
+            }
+        }
+    }
+
+    /// P0 / T0：按逻辑资产 gid 的建议投影（代表行 photo_id 一条）。
+    public func triageRows(sessionId: String) throws -> [CullingTriageRow] {
+        try connection.prepare("""
+            SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid,
+                   t.photo_id, t.verdict, t.score, t.confidence, t.reasons_json,
+                   t.group_id, t.policy_version, t.input_fingerprint, t.computed_at
+            FROM triage_suggestions t
+            JOIN photos p ON p.id = t.photo_id
+            WHERE t.session_id = ?
+          """).query([.text(sessionId)]).map {
+            CullingTriageRow(
+                gid: $0[0].textValue ?? "",
+                photoId: $0[1].textValue ?? "",
+                verdict: $0[2].textValue ?? "",
+                score: $0[3].doubleValue ?? 0,
+                confidence: $0[4].doubleValue ?? 0,
+                reasonsJSON: $0[5].textValue ?? "[]",
+                groupId: $0[6].textValue,
+                policyVersion: $0[7].textValue ?? "",
+                inputFingerprint: $0[8].textValue ?? "",
+                computedAt: $0[9].textValue ?? ""
+            )
+        }
+    }
+
+    /// 页模式：只取本次页照片的建议，避免 20k 会话每页全量读。
+    public func triageRows(sessionId: String, photoIds: [String]) throws -> [CullingTriageRow] {
+        guard !photoIds.isEmpty else { return [] }
+        return try chunked(photoIds) { chunk in
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            var params: [DBValue?] = [.text(sessionId)]
+            params.append(contentsOf: chunk.map { .text($0) })
+            return try connection.prepare("""
+                SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid,
+                       t.photo_id, t.verdict, t.score, t.confidence, t.reasons_json,
+                       t.group_id, t.policy_version, t.input_fingerprint, t.computed_at
+                FROM triage_suggestions t
+                JOIN photos p ON p.id = t.photo_id
+                WHERE t.session_id = ? AND t.photo_id IN (\(placeholders))
+              """).query(params).map {
+                CullingTriageRow(
+                    gid: $0[0].textValue ?? "",
+                    photoId: $0[1].textValue ?? "",
+                    verdict: $0[2].textValue ?? "",
+                    score: $0[3].doubleValue ?? 0,
+                    confidence: $0[4].doubleValue ?? 0,
+                    reasonsJSON: $0[5].textValue ?? "[]",
+                    groupId: $0[6].textValue,
+                    policyVersion: $0[7].textValue ?? "",
+                    inputFingerprint: $0[8].textValue ?? "",
+                    computedAt: $0[9].textValue ?? ""
+                )
             }
         }
     }
@@ -187,22 +277,46 @@ public final class CullingReadQuery {
         return found
     }
 
-    /// TS: loadSummaryCacheByPhoto —— 轻 photo_metadata_cache 投影（只有 rating/label）。
-    public func summaryCacheRows(photoIds: [String]) throws -> [CullingSummaryCacheRow] {
-        try chunked(photoIds) { chunk in
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            return try connection.prepare("""
-                SELECT photo_id, rating, label
-                FROM photo_metadata_cache
-                WHERE photo_id IN (\(placeholders))
-              """).query(chunk.map { .text($0) }).map {
-                CullingSummaryCacheRow(
-                    photoId: $0[0].textValue ?? "",
-                    rating: $0[1].intValue ?? 0,
-                    label: $0[2].textValue
-                )
-            }
+    /// 20k 首屏摘要：在 SQL 内 GROUP/COUNT，不把全部 photos/decisions/cache 搬到 Swift。
+    public func summaryCounts(
+        sessionId: String, colorLabels: [String]
+    ) throws -> CullingSummaryCounts {
+        let labels = Array(Set(colorLabels)).sorted()
+        guard !labels.isEmpty else {
+            throw DatabaseError.schema("summaryCounts 需要至少一个色标值")
         }
+        let placeholders = labels.map { _ in "?" }.joined(separator: ",")
+        var params: [DBValue?] = [
+            .text(sessionId), .text(sessionId), .text(sessionId),
+            .text(sessionId), .text(sessionId),
+        ]
+        params.append(contentsOf: labels.map { .text($0) })
+        let row = try connection.prepare("""
+            SELECT
+              (SELECT COUNT(*) FROM photos WHERE session_id = ?),
+              (SELECT COUNT(*) FROM culling_decisions d
+                 JOIN photos p ON p.id = d.photo_id
+                WHERE p.session_id = ? AND d.decision = 'keep'),
+              (SELECT COUNT(*) FROM culling_decisions d
+                 JOIN photos p ON p.id = d.photo_id
+                WHERE p.session_id = ? AND d.decision = 'reject'),
+              (SELECT COUNT(*) FROM photo_metadata_cache c
+                 JOIN photos p ON p.id = c.photo_id
+                WHERE p.session_id = ? AND c.rating > 0),
+              (SELECT COUNT(*) FROM photo_metadata_cache c
+                 JOIN photos p ON p.id = c.photo_id
+                WHERE p.session_id = ? AND c.label IN (\(placeholders)))
+            """).get(params)
+        guard let row else {
+            throw DatabaseError.schema("summaryCounts 查询无结果")
+        }
+        return CullingSummaryCounts(
+            totalPhotos: Int(row[0].intValue ?? 0),
+            kept: Int(row[1].intValue ?? 0),
+            rejected: Int(row[2].intValue ?? 0),
+            rated: Int(row[3].intValue ?? 0),
+            labeled: Int(row[4].intValue ?? 0)
+        )
     }
 
     /// reset 的投影撤回：只清 rating/label，不触碰 cached_at。

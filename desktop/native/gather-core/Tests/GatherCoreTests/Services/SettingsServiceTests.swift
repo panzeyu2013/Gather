@@ -103,13 +103,18 @@ struct SettingsServiceTests {
         #expect(try harness.repo.get(key: "thumbnail_size")?.value == "1024")
     }
 
-    // TS: 默认值表规模与关键值对齐（TS 40 键 + lazy_checksum 字符串 "true"；
-    // 另有 6 个原生扩展键——set 的键校验直接由此表派生，
-    // 少一个键就意味着对应设置永远写不进去）。第 6 个是
-    // face_incremental_clustering（ADR-029 增量聚类开关，"1" = 开）。
+    // TS: 默认值表规模与关键值对齐；删除 14 个无消费者的旧 Node 缓存/C1/防抖键后为 49。
+    // set 的键校验直接由此表派生，少一个键就意味着对应设置永远写不进去。
     @Test func defaultsMatchTS() {
         let defaults = SettingsService.getDefaults()
-        #expect(defaults.count == 47)
+        #expect(defaults.count == 49)
+        #expect(defaults["grid_default_sort"] == "import")
+        #expect(defaults["grid_density"] == "m")
+        #expect(defaults["triage_enabled"] == "0")
+        #expect(defaults["triage_auto_generate"] == "0")
+        #expect(defaults["triage_policy"] == "triage-v1")
+        #expect(defaults["triage_reject_confidence_min"] == "0.75")
+        #expect(defaults["triage_min_executable_confidence"] == "0.55")
         #expect(defaults["face_core_quality"] == "0.35")
         #expect(defaults["face_core_retry_min_samples"] == "2")
         #expect(defaults["face_match_margin"] == "0.01")
@@ -122,12 +127,6 @@ struct SettingsServiceTests {
         #expect(defaults["db_synchronous"] == "normal")
         #expect(defaults["metadata_write_mode"] == "sidecar")
         #expect(defaults["ui_language"] == "")
-    }
-
-    // TS: thumbnail_concurrency = max(1, min(4, cpus-1))。
-    @Test func thumbnailConcurrencyClamp() {
-        let value = SettingsService.thumbnailConcurrencyDefault
-        #expect(value >= 1 && value <= 4)
     }
 
     // TS: 已知键白名单与默认值表键一一对应。

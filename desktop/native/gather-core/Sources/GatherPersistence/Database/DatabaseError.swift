@@ -30,7 +30,7 @@ public enum DatabaseError: Error, Equatable, Sendable, LocalizedError {
     case corrupt(String)
     /// facade 已 close，或底层连接已关闭——调用方在错误的生命周期里访问库。
     case closed(String)
-    /// schema 不兼容 / 缺表缺列 / 建库后版本不符（SQLITE_SCHEMA 与 SchemaV1 自检）。
+    /// schema 不兼容 / 缺表缺列 / 建库后版本不符（SQLITE_SCHEMA 与 SchemaCurrent 自检）。
     case schema(String)
     /// 迁移失败（事务已回滚；库仍停在旧版本，文件未被重置）。WP6a 框架引入。
     case migration(String)

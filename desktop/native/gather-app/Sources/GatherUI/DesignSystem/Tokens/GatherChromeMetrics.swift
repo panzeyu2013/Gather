@@ -14,7 +14,6 @@ public enum GatherChromeMetrics {
 
     /// 内容区最小宽度预算：窗口最小宽度 − 侧栏最小宽度。
     public static var contentMinWidth: CGFloat { windowMinWidth - sidebarMinWidth }
-    public static var contentMinHeight: CGFloat { windowMinHeight }
 
     /// 会话页签行内边距（宽/高），与页面内容 gutter 区分。
     public static let tabStripHorizontalPadding: CGFloat = 16

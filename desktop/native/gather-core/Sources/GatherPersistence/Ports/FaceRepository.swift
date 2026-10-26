@@ -64,12 +64,46 @@ public protocol FaceRepository {
     ) throws
     /// 幽灵成员清理：按成员行 id 删除（调用方事务内）。
     func deleteClusterMembers(ids: [Int64]) throws
+
+    // MARK: - P0 / F0：拆分、约束与复核
+    func isClusterBound(clusterId: Int64) throws -> Bool
+    func createCluster(sessionId: String, label: String) throws -> Int64
+    func moveClusterMembers(memberIds: [Int64], toClusterId: Int64, sessionId: String) throws -> Int
+    /// 带期望簇守卫的移动：仅当前 cluster_id == expected 的成员会被搬走。
+    func moveClusterMembers(
+        memberIds: [Int64], toClusterId: Int64, sessionId: String, expectedClusterId: Int64
+    ) throws -> Int
+    func getClusterLabels(sessionId: String) throws -> [String]
+    func getClusterMembersFull(clusterId: Int64) throws -> [FaceClusterMemberRecord]
+    func getReviewMembers(sessionId: String, clusterIds: [Int64]) throws -> [FaceReviewMemberRow]
+    /// F0 复核缓存版本：cluster/member/constraint/binding/observation 的廉价摘要。
+    func reviewRevision(sessionId: String) throws -> String?
+    func getConstraints(sessionId: String) throws -> [FaceClusterConstraintRow]
+    func insertConstraint(
+        sessionId: String,
+        kind: FaceClusterConstraintKind,
+        memberKeys: [FaceClusterConstraintKey],
+        peerKeys: [FaceClusterConstraintKey]
+    ) throws -> Int64
+    /// 剪除失效键：把解析失败的键从约束里去掉（空语义时才整条删除）。
+    func updateConstraintKeys(
+        id: Int64,
+        memberKeys: [FaceClusterConstraintKey],
+        peerKeys: [FaceClusterConstraintKey]
+    ) throws
+    func deleteConstraint(id: Int64) throws
+    func deleteConstraints(ids: [Int64]) throws
+    func deleteConstraints(sessionId: String) throws
+    func deleteEmptyUnboundClusters(ids: [Int64]) throws -> Int
+    func markClustersUnbound(ids: [Int64]) throws
+    func touchClusters(ids: [Int64]) throws
 }
 
 public extension FaceRepository {
     func getClusters(_ sessionId: String) throws -> [FaceClusterRow] {
         try getClusters(sessionId, includeMembers: false)
     }
+
 }
 
 extension FaceRepo: FaceRepository {}

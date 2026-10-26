@@ -13,7 +13,7 @@ import GatherProtocol
 
 /// intent 的动作（同一 kind=.cleanup 的两种文件语义）。
 ///
-/// SchemaV1 的 delivery_intents.kind 只有 cleanup/write 两个合法值（S5c-2b-1 不改
+/// SchemaCurrent 的 delivery_intents.kind 只有 cleanup/write 两个合法值（S5c-2b-1 不改
 /// Schema），finalize 复用 kind=.cleanup，用 payload.op 区分文件阶段：
 /// - cleanup：恢复备份（或删除本次写入的侧车），然后删行；
 /// - finalize：保留 XMP 原样，只删除备份文件，然后删行（dropWithoutRestore）。

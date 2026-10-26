@@ -39,14 +39,6 @@ private final class FakeMutationPort: MetadataMutationPort, @unchecked Sendable 
         )
     }
 
-    func queueMutation(
-        sessionId: String,
-        photoId: String,
-        patch: MetadataPatch,
-        source: MetadataMutationSource
-    ) async throws -> MetadataMutationResult {
-        MetadataMutationResult(photoId: photoId, xmpPath: "", dirtyFields: [], revision: 0, status: "pending")
-    }
 }
 
 /// TS: WritebackService 替身（preview/persistAttributes/execute/retryFailed/
@@ -222,7 +214,11 @@ private func latestResultId(_ harness: CullingHarness) throws -> Int64 {
 }
 
 /// 建已迁移库 + 会话 + 服务。同步态只读交付模型（旧 outbox 不再参与）。
-private func makeHarness(history: Bool = true) throws -> CullingHarness {
+private func makeHarness(
+    history: Bool = true,
+    triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
+    flushMetadata: ((String) async throws -> Void)? = nil
+) throws -> CullingHarness {
     let db = try makeTestDB()
     try insertSession(db, "session")
     let mutations = FakeMutationPort()
@@ -252,6 +248,8 @@ private func makeHarness(history: Bool = true) throws -> CullingHarness {
         writeback: writeback,
         cullingHistoryRepo: history ? historyRepo : nil,
         getNumber: { _, defaultValue in defaultValue },
+        triageDisplayPolicy: triageDisplayPolicy,
+        flushMetadata: flushMetadata,
         delivery: deliveryCoordinator.adapter(for: .culling)
     )
     return CullingHarness(
@@ -291,6 +289,26 @@ private func addPhoto(
         assetFileId.map { .text($0) } ?? .null,
         .int(Int64(width)), .int(Int64(height)),
     ])
+}
+
+/// 插入一条 T0 建议行（门控测试用；gid 由 photos.asset_id 决定）。
+private func insertTriage(
+    _ db: DBConnection,
+    photoId: String,
+    verdict: String,
+    fingerprint: String,
+    policyVersion: String = "triage-v1",
+    confidence: Double = 0.9
+) throws {
+    _ = try db.prepare("""
+        INSERT INTO triage_suggestions
+          (photo_id, session_id, verdict, score, confidence, reasons_json, group_id,
+           policy_version, input_fingerprint, computed_at)
+        VALUES (?, 'session', ?, 0.8, ?, '[]', NULL, ?, ?, 't')
+        """).run([
+            .text(photoId), .text(verdict), .real(confidence),
+            .text(policyVersion), .text(fingerprint),
+        ])
 }
 
 /// 建一条「已写」交付（S5c-2a：confirm/cleanup 的输入形状）。
@@ -1568,22 +1586,22 @@ struct CullingPaginationTests {
         #expect(first.assets[0].photo.variantCount == 2)
         #expect(first.assets[0].linkedVariantCount == 2)
         #expect(first.assets[0].photo.variants?.map(\.photoId) == ["asset-1-raw", "asset-1-jpg"])
-        #expect(first.nextRowId == 1)
+        #expect(first.nextCursor?.rowId == 1)
         #expect(first.total == 3)
 
         let second = try harness.service.listPage(
-            sessionId: "session", scope: .all, afterRowId: Int64(first.nextRowId ?? 0), limit: 1
+            sessionId: "session", scope: .all, afterRowId: Int64(first.nextCursor?.rowId ?? 0), limit: 1
         )
         #expect(second.assets.map(\.photo.id) == ["single1"])
         let third = try harness.service.listPage(
-            sessionId: "session", scope: .all, afterRowId: Int64(second.nextRowId ?? 0), limit: 1
+            sessionId: "session", scope: .all, afterRowId: Int64(second.nextCursor?.rowId ?? 0), limit: 1
         )
         #expect(third.assets.map(\.photo.id) == ["single2"])
         let fourth = try harness.service.listPage(
-            sessionId: "session", scope: .all, afterRowId: Int64(third.nextRowId ?? 0), limit: 1
+            sessionId: "session", scope: .all, afterRowId: Int64(third.nextCursor?.rowId ?? 0), limit: 1
         )
         #expect(fourth.assets.isEmpty)
-        #expect(fourth.nextRowId == nil)
+        #expect(fourth.nextCursor?.rowId == nil)
 
         // 走完全部页：3 个逻辑资产、无重复。
         var walked: [String] = []
@@ -1593,7 +1611,7 @@ struct CullingPaginationTests {
                 sessionId: "session", scope: .all, afterRowId: cursor, limit: 1
             )
             walked.append(contentsOf: page.assets.map(\.photo.id))
-            guard let next = page.nextRowId else { break }
+            guard let next = page.nextCursor?.rowId else { break }
             cursor = Int64(next)
         }
         #expect(walked.count == 3)
@@ -1661,7 +1679,7 @@ struct CullingPaginationTests {
                 afterRowId: cursor, limit: 1
             )
             walked.append(contentsOf: page.assets.map(\.photo.id))
-            guard let next = page.nextRowId else { break }
+            guard let next = page.nextCursor?.rowId else { break }
             cursor = Int64(next)
         }
         #expect(walked == ["p1", "p2", "p3"], "每页 1 个资产走完应恰好 3 个且不重复，实际 \(walked)")
@@ -1676,14 +1694,15 @@ struct CullingPaginationTests {
 
         let page = try harness.service.listPage(
             sessionId: "session", scope: .filtered,
-            filters: CullingFilters(pickStates: [.picked])
+            filters: CullingFilters(pickStates: [.picked]),
+            limit: 1
         )
 
         #expect(page.assets.count == 1)
         #expect(page.assets[0].photo.variantCount == 2)
         #expect(page.assets[0].photo.variants?.map(\.photoId) == ["asset-1-raw", "asset-1-jpg"])
-        // RAW 先插（rowid 1），组首 rowid 即游标。
-        #expect(page.nextRowId == 1)
+        // RAW 先插（rowid 1），首选行也是 RAW；组首 rowid 即游标。
+        #expect(page.nextCursor?.rowId == 1)
     }
 
     @Test("similarity_group 页：可解析组 id 下推 SQL 并计数组成员")
@@ -1821,17 +1840,35 @@ struct CullingPaginationTests {
         #expect(excluded.isEmpty)
     }
 
-    @Test("listPage 参数校验：afterRowId 非正 / limit 越界抛逐字 IPC 消息")
+    @Test("listPage 参数校验：limit 越界 / 游标 rowId 非正 / keyKind 错配都在 Query 层拒绝")
     func listPageValidation() throws {
         let harness = try makeHarness()
-        #expect(throws: CullingServiceError.afterRowIdInvalid) {
-            _ = try harness.service.listPage(sessionId: "session", scope: .all, afterRowId: 0)
-        }
-        #expect(throws: CullingServiceError.pageLimitInvalid) {
+        #expect(throws: GatherError.self) {
             _ = try harness.service.listPage(sessionId: "session", scope: .all, limit: 2001)
         }
-        #expect(CullingServiceError.afterRowIdInvalid.description == "afterRowId must be a positive integer")
-        #expect(CullingServiceError.pageLimitInvalid.description == "limit must be an integer between 1 and 2000")
+        #expect(throws: GatherError.self) {
+            _ = try harness.service.listPage(
+                sessionId: "session", scope: .all,
+                cursor: CullingPageCursor(sort: .importOrder, rowId: 0))
+        }
+
+        // keyKind 缺失/错配必须在 service 层拒绝，不能静默跳页。
+        #expect(throws: GatherError.self) {
+            _ = try harness.service.listPage(
+                sessionId: "session", scope: .all, sort: .captureDesc,
+                cursor: CullingPageCursor(sort: .captureDesc, rowId: 1), limit: 10)
+        }
+        #expect(throws: GatherError.self) {
+            _ = try harness.service.listPage(
+                sessionId: "session", scope: .all, sort: .ratingDesc,
+                cursor: CullingPageCursor(sort: .ratingDesc, rowId: 1), limit: 10)
+        }
+        #expect(throws: GatherError.self) {
+            _ = try harness.service.listPage(
+                sessionId: "session", scope: .all, sort: .importOrder,
+                cursor: CullingPageCursor(
+                    sort: .importOrder, dateKey: "2026-01-01", rowId: 1), limit: 10)
+        }
     }
 }
 
@@ -2529,5 +2566,160 @@ struct CullingDeliveryCut2Tests {
             _ = try await harness.service.finalizeSync(sessionId: "session", confirmed: true)
         }
         #expect(try harness.deliveryRepo.get("/shoot/p1.xmp")?.status == DeliveryStatus.synced.rawValue)
+    }
+}
+// P0 / G0：20k 会话的 service 分页性能门（默认跳过；GATHER_CULLING_PERF=1）。
+private let cullingServicePerfEnabled =
+    ProcessInfo.processInfo.environment["GATHER_CULLING_PERF"] == "1"
+
+@Suite("CullingService 20k 分页性能")
+struct CullingServicePerfTests {
+    // skip-owner: p0-perf
+    // 到期：2027-06-30
+    // 原因：20k service 分页是发布前性能门，默认套件跳过，避免日常插入 2 万行。
+    // 手动条件：GATHER_CULLING_PERF=1 swift test --filter CullingServicePerf
+    @Test(.enabled(if: cullingServicePerfEnabled))
+    func twentyThousandAssetsPageP95() throws {
+        let harness = try makeHarness()
+        defer { harness.db.close() }
+        for index in 0..<20_000 {
+            try addPhoto(harness.db, id: String(format: "p%05d", index))
+        }
+
+        var cursor: Int64?
+        var durations: [Double] = []
+        for _ in 0..<10 {
+            let started = DispatchTime.now().uptimeNanoseconds
+            let page = try harness.service.listPage(
+                sessionId: "session", scope: .all,
+                afterRowId: cursor, limit: 200)
+            durations.append(
+                Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+            guard let next = page.nextCursor?.rowId, !page.assets.isEmpty else { break }
+            cursor = Int64(next)
+        }
+        let sorted = durations.sorted()
+        let p95 = sorted.isEmpty ? .infinity : sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.95))]
+        print("PERF culling-service-20k pages=\(durations.count) p95=\(String(format: "%.1f", p95))ms")
+        #expect(!durations.isEmpty)
+        #expect(p95 < 800, "20k service 分页 p95 超过 800ms：\(p95)ms")
+    }
+
+    @Test("applyHistory 带 source：T0 撤销按 ai 回写，不再变 manual")
+    func applyHistoryCarriesSource() async throws {
+        let harness = try makeHarness()
+        defer { harness.db.close() }
+        try addPhoto(harness.db, id: "p1")
+        _ = try await harness.service.applyHistory(
+            sessionId: "session",
+            requestedEntries: [CullingHistoryApplyEntry(
+                photoId: "p1",
+                expectedRevision: 0,
+                patch: CullingUpdatePatch(pickState: .picked)
+            )],
+            historyOperationId: nil,
+            direction: nil,
+            source: .ai
+        )
+        let row = try #require(try harness.decisionRepo.getDecision(
+            sessionId: "session", photoId: "p1"))
+        #expect(row.decisionSource == "ai")
+        #expect(row.decision == "keep")
+    }
+
+    @Test("rating/label 入队后 flush 接线可调用（API 层在返回前执行）")
+    func flushQueuedMetadataIsWired() async throws {
+        final class Recorder: @unchecked Sendable {
+            var sessions: [String] = []
+        }
+        let recorder = Recorder()
+        let harness = try makeHarness(flushMetadata: { sessionId in
+            recorder.sessions.append(sessionId)
+        })
+        defer { harness.db.close() }
+        try addPhoto(harness.db, id: "p1")
+        try await harness.service.flushQueuedMetadata(sessionId: "session")
+        #expect(recorder.sessions == ["session"])
+    }
+
+    @Test("T0 门控：只展示指纹匹配行；人工决策资产不展示；关闭态全隐藏")
+    func triageDisplayGate() throws {
+        let gate = TriageSuggestionGate(fingerprint: "fp-current", policyVersion: "triage-v1")
+        let harness = try makeHarness(triageDisplayPolicy: { _ in .matching(gate) })
+        defer { harness.db.close() }
+        try addPhoto(harness.db, id: "p1")
+        try addPhoto(harness.db, id: "p2")
+        try insertTriage(harness.db, photoId: "p1", verdict: "keep", fingerprint: "fp-current")
+        try insertTriage(harness.db, photoId: "p2", verdict: "reject", fingerprint: "fp-stale")
+
+        let page = try harness.service.listPage(sessionId: "session", scope: .all, limit: 10)
+        let p1 = try #require(page.assets.first { $0.photo.id == "p1" })
+        let p2 = try #require(page.assets.first { $0.photo.id == "p2" })
+        #expect(p1.triage?.verdict == .keep)
+        #expect(p2.triage == nil)
+
+        // 人工决策过的资产即使有匹配建议也不再展示。
+        _ = try harness.db.prepare("""
+            INSERT INTO culling_decisions
+              (session_id, photo_id, group_id, decision, rating, color_label,
+               decision_source, revision, created_at, updated_at)
+            VALUES ('session', 'p1', 'ungrouped', 'reject', 0, 'None', 'manual', 1, 't', 't')
+            """).run([])
+        let afterManual = try harness.service.listPage(sessionId: "session", scope: .all, limit: 10)
+        #expect(afterManual.assets.first { $0.photo.id == "p1" }?.triage == nil)
+
+        // T0 关闭：任何行都不展示。
+        let hidden = try makeHarness(triageDisplayPolicy: { _ in .hidden })
+        defer { hidden.db.close() }
+        try addPhoto(hidden.db, id: "p1")
+        try insertTriage(hidden.db, photoId: "p1", verdict: "keep", fingerprint: "fp-current")
+        let hiddenPage = try hidden.service.listPage(sessionId: "session", scope: .all, limit: 10)
+        #expect(hiddenPage.assets.first?.triage == nil)
+    }
+
+    // skip-owner: p0-perf
+    // 到期：2027-06-30
+    // 原因：20k summary 是首屏聚合回归门，默认套件跳过，避免日常插入 2 万行。
+    // 手动条件：GATHER_CULLING_PERF=1 swift test --filter CullingServicePerf
+    @Test(.enabled(if: cullingServicePerfEnabled))
+    func twentyThousandSummaryP95() throws {
+        let harness = try makeHarness()
+        defer { harness.db.close() }
+        for index in 0..<20_000 {
+            try addPhoto(harness.db, id: String(format: "p%05d", index))
+        }
+        var durations: [Double] = []
+        for _ in 0..<10 {
+            let started = DispatchTime.now().uptimeNanoseconds
+            _ = try harness.service.getSummary(sessionId: "session")
+            durations.append(
+                Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        }
+        let sorted = durations.sorted()
+        let p95 = sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.95))]
+        print("PERF culling-summary-20k p95=\(String(format: "%.1f", p95))ms")
+        #expect(p95 < 200, "20k summary p95 超过 200ms：\(p95)ms")
+    }
+}
+
+/// 测试适配：旧调用点用 rowid 变量翻页；统一折成 CullingPageQuery。
+private extension CullingService {
+    func listPage(
+        sessionId: String,
+        scope: CullingScope,
+        filters: CullingFilters? = nil,
+        requestedGroupId: String? = nil,
+        sort: CullingSort = .importOrder,
+        cursor: CullingPageCursor? = nil,
+        afterRowId: Int64? = nil,
+        limit: Int = 200
+    ) throws -> CullingPage {
+        let effectiveCursor = cursor ?? afterRowId.map {
+            CullingPageCursor(sort: .importOrder, rowId: $0)
+        }
+        return try listPage(try CullingPageQuery(
+            sessionId: sessionId, scope: scope, filters: filters,
+            groupId: requestedGroupId, sort: sort,
+            cursor: effectiveCursor, limit: limit))
     }
 }

@@ -6,6 +6,7 @@
 // 闭包捕获、deliveryEventSink、XMPFileLock.shared、单实例语义保持不变；
 // 运行时见 Composition/Runtime.swift，API 适配见 FeatureAPIs.swift / Root.swift。
 import Foundation
+import AppKit
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
@@ -15,6 +16,17 @@ import GatherUI
 
 /// 组合根服务图：构造后只读共享；AppComposition 逐字段转发（同一指针）。
 struct CompositionCore {
+    private static func otherInstanceRunning() -> Bool {
+        // 只在 .app 包内判定；xctest / 裸二进制没有单实例语义。
+        guard Bundle.main.bundleURL.pathExtension == "app",
+              let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty else {
+            return false
+        }
+        return NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleId)
+            .count > 1
+    }
+
     /// 宿主已打开的共享 SQLite 连接（停机时由 runtime 关闭）。
     let db: DBConnection
     /// 生产入口的库门面（open/close 不变量；测试夹具为 nil）。
@@ -31,7 +43,6 @@ struct CompositionCore {
     let assetRepo: AssetRepo
     let faceKwService: FaceKwService
     let personRepo: PersonRepo
-    let templateService: TemplateService
     let qualityService: QualityService
     let indexerService: IndexerService
     let metadataService: MetadataService
@@ -42,6 +53,10 @@ struct CompositionCore {
     let writebackService: WritebackService
     let smartAlbumRepo: SmartAlbumRepo
     let cullingService: CullingService
+    /// P0 / T0：技术质量初筛（只写建议与决策，不写 XMP）。
+    let triageService: TriageService
+    /// P0 / B0：备份/恢复/诊断。
+    let maintenanceService: MaintenanceService
     let exportService: ExportService
     let imagePreloadService: ImagePreloadService
     /// XMP 宿主实现（LiveMetadataAPI 冲突 remote 读 / 孤儿 restore 用）。
@@ -98,7 +113,7 @@ struct CompositionCore {
             assetResolver: assetResolver, delivery: deliveryCoordinator,
             fileLock: xmpFileLock, eventSink: deliveryEventSink)
         // P1-9：构造顺序 MetadataMutationService → WritebackService →
-        // MetadataService（无环）；setMetadata/batchSet 入队后经闭包立即写盘。
+        // MetadataService（无环）；关键词 apply/retry 成功后经闭包立即写盘。
         let metadataService = MetadataService(
             metadataCacheRepo: metadataCacheRepo, xmp: xmp, photoRepo: photoRepo,
             transactions: db, mutations: metadataMutationService,
@@ -107,7 +122,8 @@ struct CompositionCore {
                     sessionId: sessionId, module: "metadata")
             },
             assetResolver: assetResolver, exif: ImageIOExifProvider(),
-            dimensions: ImageIODimensionsProvider())
+            dimensions: ImageIODimensionsProvider(),
+            origins: MetadataKeywordOriginRepo(connection: db))
         let similarityService = SimilarityService(
             photoRepo: photoRepo, sessionRepo: sessionRepo,
             similarityResultRepo: similarityResultRepo,
@@ -145,6 +161,15 @@ struct CompositionCore {
             },
             writebackProvider: FaceKwWritebackBridge(writebackService: writebackService),
             delivery: deliveryCoordinator.adapter(for: .faceKeyword))
+        let triageService = TriageService(
+            repository: TriageRepo(connection: db),
+            decisions: CullingDecisionRepo(connection: db),
+            history: CullingHistoryRepo(connection: db),
+            transactions: db,
+            policyProvider: { TriagePolicy.fromSettings(settingsService) },
+            enabledProvider: {
+                settingsService.get("triage_enabled", defaultValue: "0") == "1"
+            })
         // 3.4 CullingService：写回执行器走 WritebackService（CullingWritebackPort），
         // confirm/cleanup/syncStatus 走交付模型（不再注入旧 outbox 仓储）。
         let cullingService = CullingService(
@@ -159,6 +184,19 @@ struct CompositionCore {
             cullingHistoryRepo: CullingHistoryRepo(connection: db),
             getNumber: { key, defaultValue in
                 settingsService.getNumber(key, defaultValue: defaultValue)
+            },
+            // T0 门控由 TriageService 单点产出：关闭即不展示，开启只展示指纹匹配行。
+            triageDisplayPolicy: { sessionId in
+                guard let gate = try triageService.cachedGate(sessionId: sessionId) else {
+                    return .hidden
+                }
+                return .matching(gate)
+            },
+            // rating/label 与 applyHistory 入队后立即写盘（否则 metadata item 停在 pending，
+            // 看起来“改了但 XMP 没写”）。
+            flushMetadata: { sessionId in
+                _ = try await writebackService.executePending(
+                    sessionId: sessionId, module: "metadata")
             },
             delivery: deliveryCoordinator.adapter(for: .culling))
         let sessionService = SessionService(
@@ -193,8 +231,6 @@ struct CompositionCore {
                     mode: mode, onProgress: onProgress
                 ).result
             })
-        let templateService = TemplateService(
-            templates: TemplateRepo(connection: db), settings: settingsService)
         let qualityService = QualityService(
             photoRepo: photoRepo, qualityRepo: QualityRepo(connection: db),
             imageProvider: QualityService.defaultImageProvider,
@@ -217,6 +253,21 @@ struct CompositionCore {
                 _ = try? await metadataService.getMetadata(photoIds: photoIds)
             })
         let smartAlbumRepo = SmartAlbumRepo(connection: db)
+        let appDir: URL
+        if let path = database?.path {
+            appDir = URL(fileURLWithPath: path).deletingLastPathComponent()
+        } else if let path = db.storagePath {
+            appDir = URL(fileURLWithPath: path).deletingLastPathComponent()
+        } else {
+            appDir = FileManager.default.temporaryDirectory.appendingPathComponent("Gather", isDirectory: true)
+        }
+        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+        let maintenanceService = MaintenanceService(
+            database: database, settings: settingsService, appDir: appDir,
+            // 生产单实例检测：同 bundle id 的另一个 Gather 进程存在时，
+            // restore/backup 走 RESTORE_BUSY/BACKUP_BUSY，避免跨实例 swap。
+            isOtherInstanceRunning: Self.otherInstanceRunning
+        )
         return CompositionCore(
             db: db, database: database, sessionService: sessionService,
             workspaceStatusService: workspaceStatusService, jobService: jobService,
@@ -224,12 +275,14 @@ struct CompositionCore {
             filterEngine: filterEngine, navigationService: navigationService,
             similarityService: similarityService, duplicateService: duplicateService,
             assetRepo: assetRepo, faceKwService: resolvedFaceKwService,
-            personRepo: personRepo, templateService: templateService,
+            personRepo: personRepo,
             qualityService: qualityService, indexerService: indexerService,
             metadataService: metadataService, deliveryRepo: deliveryRepo,
             metadataMutationService: metadataMutationService,
             writebackService: writebackService, smartAlbumRepo: smartAlbumRepo,
-            cullingService: cullingService, exportService: exportService,
+            cullingService: cullingService, triageService: triageService,
+            maintenanceService: maintenanceService,
+            exportService: exportService,
             imagePreloadService: imagePreloadService, xmpProvider: xmp,
             deliveryCoordinator: deliveryCoordinator, xmpFileLock: xmpFileLock)
     }

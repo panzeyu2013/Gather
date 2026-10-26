@@ -2,7 +2,7 @@
 // WP3b SQL Query 直接边界测试的共享夹具。
 //
 // 目的：PortFakeTests 用内存替身验证服务只经端口访问；本目录反过来直接构造
-// **真实 SQLite**（makeTestDB：:memory: + SchemaV1 DDL），把 Query 类的 SQL
+// **真实 SQLite**（makeTestDB：:memory: + SchemaCurrent DDL），把 Query 类的 SQL
 // 边界（字段解析、参数顺序、COALESCE/IN 空集、游标、分块）钉在库层。
 // 与 *ServiceTests 的分工：服务测试断言端到端行为，这里只构造最小行并断言
 // Query 的返回形状/顺序/计数，避免重复。

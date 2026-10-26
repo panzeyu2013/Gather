@@ -165,6 +165,14 @@ private final class StubFaceAPI: FaceAPI, @unchecked Sendable {
             return box.models
         }
     }
+
+    func split(_ input: Confirmed<FaceSplitInput>) async throws -> FaceSplitResult {
+        throw NSError(domain: "StubFaceAPI", code: 0)
+    }
+
+    func review(_ input: FaceReviewInput) async throws -> FaceReviewPage {
+        FaceReviewPage(items: [], nextCursor: nil, total: 0, suspectTotal: 0, clusters: [])
+    }
 }
 
 private final class StubFaceJobAPI: JobAPI, @unchecked Sendable {

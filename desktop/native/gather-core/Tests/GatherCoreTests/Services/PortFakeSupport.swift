@@ -196,16 +196,6 @@ final class PortFakeMetadataMutation: MetadataMutationPort, @unchecked Sendable 
         )
     }
 
-    func queueMutation(
-        sessionId: String,
-        photoId: String,
-        patch: MetadataPatch,
-        source: MetadataMutationSource
-    ) async throws -> MetadataMutationResult {
-        MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
-        )
-    }
 }
 
 // MARK: - Delivery
@@ -334,29 +324,28 @@ final class PortFakeCullingWriteback: CullingWritebackPort {
 // MARK: - Culling 读模型 / 决策
 
 final class PortFakeCullingPageReading: CullingPageReading {
-    func pageFiltered(
+    func pageSorted(
         sessionId: String,
+        scope: CullingScope,
         filter: CullingPageFilter,
-        afterRowId: Int64?,
+        similarity: CullingSimilarityScope?,
+        sort: CullingSort,
+        cursor: CullingPageCursor?,
         limit: Int
-    ) throws -> (rows: [PhotoPageRow], cursor: Int64?) { ([], nil) }
-
-    func pageSimilarity(
-        sessionId: String,
-        similarity: CullingSimilarityScope,
-        afterRowId: Int64?,
-        limit: Int
-    ) throws -> (rows: [PhotoPageRow], cursor: Int64?) { ([], nil) }
+    ) throws -> (rows: [PhotoPageRow], cursor: CullingPageCursor?) { ([], nil) }
 
     func countFiltered(sessionId: String, filter: CullingPageFilter) throws -> Int { 0 }
     func countSimilarity(sessionId: String, similarity: CullingSimilarityScope) throws -> Int { 0 }
 }
 
 final class PortFakeCullingRichReading: CullingRichReading {
-    var summaryRows: [CullingSummaryCacheRow] = []
+    var summaryCountsValue = CullingSummaryCounts(
+        totalPhotos: 0, kept: 0, rejected: 0, rated: 0, labeled: 0)
     private(set) var clearedProjectionBatches: [[String]] = []
 
     func qualityRows(photoIds: [String]) throws -> [CullingQualityResultRow] { [] }
+    func triageRows(sessionId: String) throws -> [CullingTriageRow] { [] }
+    func triageRows(sessionId: String, photoIds: [String]) throws -> [CullingTriageRow] { [] }
 
     func faceRows(sessionId: String) throws -> [CullingFaceObservationRow] { [] }
     func faceRows(sessionId: String, photoIds: [String]) throws -> [CullingFaceObservationRow] { [] }
@@ -369,8 +358,8 @@ final class PortFakeCullingRichReading: CullingRichReading {
         Set(photoIds)
     }
 
-    func summaryCacheRows(photoIds: [String]) throws -> [CullingSummaryCacheRow] {
-        summaryRows
+    func summaryCounts(sessionId: String, colorLabels: [String]) throws -> CullingSummaryCounts {
+        summaryCountsValue
     }
 
     func clearCullingProjection(photoIds: [String]) throws {
@@ -709,6 +698,60 @@ final class PortFakeFaceRepo: FaceRepository {
     ) throws {}
 
     func deleteClusterMembers(ids: [Int64]) throws {}
+
+    // F0 真实契约：fake 显式实现，写路径未模拟时必须抛错而不是静默成功。
+    func isClusterBound(clusterId: Int64) throws -> Bool { false }
+    func createCluster(sessionId: String, label: String) throws -> Int64 {
+        throw PortFakeError.unimplemented("FaceRepository.createCluster")
+    }
+    func moveClusterMembers(
+        memberIds: [Int64], toClusterId: Int64, sessionId: String
+    ) throws -> Int {
+        throw PortFakeError.unimplemented("FaceRepository.moveClusterMembers")
+    }
+    func moveClusterMembers(
+        memberIds: [Int64], toClusterId: Int64, sessionId: String, expectedClusterId: Int64
+    ) throws -> Int {
+        throw PortFakeError.unimplemented("FaceRepository.moveClusterMembers(expected)")
+    }
+    func getClusterLabels(sessionId: String) throws -> [String] { [] }
+    func getClusterMembersFull(clusterId: Int64) throws -> [FaceClusterMemberRecord] { [] }
+    func getReviewMembers(sessionId: String, clusterIds: [Int64]) throws -> [FaceReviewMemberRow] { [] }
+    func reviewRevision(sessionId: String) throws -> String? { nil }
+    func getConstraints(sessionId: String) throws -> [FaceClusterConstraintRow] { [] }
+    func insertConstraint(
+        sessionId: String,
+        kind: FaceClusterConstraintKind,
+        memberKeys: [FaceClusterConstraintKey],
+        peerKeys: [FaceClusterConstraintKey]
+    ) throws -> Int64 {
+        throw PortFakeError.unimplemented("FaceRepository.insertConstraint")
+    }
+    func updateConstraintKeys(
+        id: Int64,
+        memberKeys: [FaceClusterConstraintKey],
+        peerKeys: [FaceClusterConstraintKey]
+    ) throws {
+        throw PortFakeError.unimplemented("FaceRepository.updateConstraintKeys")
+    }
+    func deleteConstraint(id: Int64) throws {
+        throw PortFakeError.unimplemented("FaceRepository.deleteConstraint")
+    }
+    func deleteConstraints(ids: [Int64]) throws {
+        throw PortFakeError.unimplemented("FaceRepository.deleteConstraints(ids)")
+    }
+    func deleteConstraints(sessionId: String) throws {
+        throw PortFakeError.unimplemented("FaceRepository.deleteConstraints(session)")
+    }
+    func deleteEmptyUnboundClusters(ids: [Int64]) throws -> Int {
+        throw PortFakeError.unimplemented("FaceRepository.deleteEmptyUnboundClusters")
+    }
+    func markClustersUnbound(ids: [Int64]) throws {
+        throw PortFakeError.unimplemented("FaceRepository.markClustersUnbound")
+    }
+    func touchClusters(ids: [Int64]) throws {
+        throw PortFakeError.unimplemented("FaceRepository.touchClusters")
+    }
 }
 
 final class PortFakeFeedbackRepo: FaceFeedbackRepository {

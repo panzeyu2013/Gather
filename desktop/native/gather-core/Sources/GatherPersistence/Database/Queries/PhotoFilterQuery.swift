@@ -225,18 +225,55 @@ public final class PhotoFilterQuery {
         return Int(row[0].intValue ?? 0)
     }
 
-    /// TS: suggest —— 仅 camera_make LIKE，<2 字符返回空。
+    /// K0：相机（会话内，≥2 字符）+ 关键词（1 个汉字也允许，按 fold 包含匹配）。
+    /// 相机在前；空态返回空数组，不编造建议。
     public func suggest(_ sessionId: String, keyword: String) throws -> [FilterSuggestion] {
         let trimmed = keyword.trimmingCharacters(in: .whitespaces)
-        guard trimmed.count >= 2 else { return [] }
-        let pattern = "%\(trimmed)%"
-        let rows = try connection.prepare(
-            "SELECT DISTINCT camera_make FROM photo_metadata_cache WHERE camera_make LIKE ? LIMIT 5"
-        ).query([.text(pattern)])
-        return [FilterSuggestion(
-            field: "camera_make",
-            values: rows.compactMap { $0[0].textValue }
-        )]
+        guard !trimmed.isEmpty else { return [] }
+        var suggestions: [FilterSuggestion] = []
+
+        if trimmed.count >= 2 {
+            let pattern = "%\(trimmed)%"
+            let cameraRows = try connection.prepare("""
+                SELECT DISTINCT camera_make FROM photo_metadata_cache
+                WHERE session_id = ? AND camera_make LIKE ?
+                LIMIT 5
+                """).query([.text(sessionId), .text(pattern)])
+            let cameras = cameraRows.compactMap { $0[0].textValue }
+            if !cameras.isEmpty {
+                suggestions.append(FilterSuggestion(field: "camera_make", values: cameras))
+            }
+        }
+
+        let keywordRows = try connection.prepare("""
+            SELECT keywords FROM photo_metadata_cache
+            WHERE session_id = ? AND keywords LIKE ?
+            LIMIT 200
+            """).query([.text(sessionId), .text("%\(trimmed)%")])
+        let needle = KeywordNormalizer.fold(trimmed)
+        var seen = Set<String>()
+        var keywords: [String] = []
+        let decoder = JSONDecoder()
+        for row in keywordRows {
+            guard keywords.count < 8,
+                  let text = row[0].textValue,
+                  let data = text.data(using: .utf8) else { continue }
+            let list: [String]
+            do {
+                list = try decoder.decode([String].self, from: data)
+            } catch {
+                continue
+            }
+            for keyword in list where KeywordNormalizer.fold(keyword).contains(needle) {
+                guard seen.insert(KeywordNormalizer.fold(keyword)).inserted else { continue }
+                keywords.append(keyword)
+                if keywords.count >= 8 { break }
+            }
+        }
+        if !keywords.isEmpty {
+            suggestions.append(FilterSuggestion(field: "keyword", values: keywords))
+        }
+        return suggestions
     }
 
     // MARK: buildWhereClause

@@ -54,23 +54,6 @@ extension FaceKeywordingViewModel {
         }
     }
 
-    public func removeMember(_ member: ClusterMember, from cluster: FaceClusterData) async {
-        do {
-            try await face.removeMember(FaceRemoveMemberInput(
-                sessionId: sessionId,
-                clusterId: cluster.id,
-                memberId: member.memberId
-            ))
-            publishChange(.faceKeywording)
-            notice = FaceNotice("已从簇 #%lld 移除成员", params: ["\(cluster.id)"])
-            reviewActionError = nil
-            await reload()
-        } catch {
-            errorMessage = CommandError(error)
-            reviewActionError = errorMessage
-        }
-    }
-
     /// TS handleMerge：合并到下拉目标（过滤当前簇），成功后选中目标簇。
     public func merge(_ cluster: FaceClusterData) async {
         guard let target = mergeTargetId,

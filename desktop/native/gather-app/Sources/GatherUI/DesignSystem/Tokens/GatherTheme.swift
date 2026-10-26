@@ -117,8 +117,6 @@ public enum GatherTheme {
     public static let shadowHero = Color.black.opacity(0.10)
     /// 浮层：toast / 冲突面板 / 浮动工具条。
     public static let shadowFloating = Color.black.opacity(0.16)
-    /// 旧名兼容。
-    public static let shadowMd = GatherTheme.shadowFloating
 
     // MARK: - 圆角
 
@@ -134,11 +132,8 @@ public enum GatherTheme {
         /// 浮层 / toast / sheet。
         public static let floating: CGFloat = 12
 
-        // 兼容旧名：group/panel 仍用于检查器与嵌套面板。
-        public static let group: CGFloat = 12
+        /// 嵌套面板（检查器内的分组容器）。
         public static let panel: CGFloat = 8
-        public static let sm: CGFloat = 6
-        public static let md: CGFloat = 8
     }
 
     // MARK: - 动态色构造
@@ -169,23 +164,6 @@ public enum GatherTheme {
             }
         })
     }
-}
-
-// MARK: - 兼容别名
-//
-// 旧名保留为语义指向；新代码请使用 canvas / surface / surfaceMuted / hairline / selection。
-
-public extension GatherTheme {
-    /// - Note: 语义 = accent。仅用于 tint / 强调，勿用作表面或正文色。
-    static var primary: Color { accent }
-    /// - Note: 语义 = 选中填充。
-    static var primarySoft: Color { selectionFill }
-    /// - Note: 语义 = 页面底色。
-    static var background: Color { canvas }
-    /// - Note: 语义 = 次级表面。
-    static var backgroundSecondary: Color { surfaceMuted }
-    /// - Note: 语义 = 分隔线。
-    static var border: Color { separator }
 }
 
 // MARK: - 原生分组容器

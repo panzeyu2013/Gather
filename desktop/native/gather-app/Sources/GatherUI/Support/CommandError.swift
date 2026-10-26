@@ -176,7 +176,10 @@ public struct CommandError: Error, Equatable, Sendable {
     /// expected）——否则渲染期插值会把两个版本号串位（旧漏斗根本不插值，
     /// 这个错位此前不可见）。
     static func orderedParams(_ params: [String: String]) -> [String] {
-        let preferredKeys = ["field", "reason", "expected", "current", "session", "version", "value", "name", "path"]
+        let preferredKeys = [
+            "field", "reason", "expected", "needed", "available", "backup",
+            "current", "session", "version", "value", "name", "path",
+        ]
         var used: Set<String> = []
         var ordered: [String] = []
         for preferred in preferredKeys {

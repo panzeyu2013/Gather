@@ -19,11 +19,11 @@ import GatherAnalysis
 import GatherApplication
 import GatherUI
 
-public final class LiveSettingsAPI: SettingsAPI, @unchecked Sendable {
+public final class LiveSettingsAPI: SettingsAPI, Sendable {
     private let settingsService: SettingsService
 
-    /// @unchecked Sendable 依据：settingsService 为构造后不可变的 let；其缓存由
-    /// SettingsService 的 NSLock 保护，repo 由 DBConnection 串行化。
+    /// Sendable 依据：settingsService 为构造后不可变的 let，且本身是 Sendable；
+    /// 本类型没有可变状态。
     public init(settingsService: SettingsService) {
         self.settingsService = settingsService
     }

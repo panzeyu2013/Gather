@@ -138,6 +138,7 @@ private actor StubCullingAPI: CullingAPI {
     private(set) var flushCalls: [String] = []
     private(set) var retrySyncCalls: [String] = []
     private(set) var confirmSyncCalls: [String] = []
+    private(set) var triageGenerateCalls = 0
 
     func setPage(_ value: CullingPage) { pageResult = value }
     func setSummary(_ value: CullingSummary) { summaryResult = value }
@@ -236,6 +237,19 @@ private actor StubCullingAPI: CullingAPI {
     func finalizeSync(_ input: Confirmed<SessionReference>) async throws -> MetadataSyncSummary {
         finalizeInputs.append(input)
         return finalizeSummary
+    }
+
+    func generateTriage(_ input: TriageGenerateInput) async throws -> TriageSummary {
+        triageGenerateCalls += 1
+        return summaryResult.triage ?? TriageSummary(
+            counts: TriageCounts(keep: 0, reject: 0, review: 0, total: 0, coverage: 0),
+            stale: false, policyVersion: "triage-v1",
+            inputFingerprint: "", generatedAt: ""
+        )
+    }
+
+    func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult {
+        TriageApplyResult()
     }
 
     func confirmSync(_ sessionId: String) async throws -> Bool {
@@ -561,6 +575,44 @@ struct CullingViewModelAPITests {
         }
         let pageQueries = await culling.pageQueries
         #expect(pageQueries.count == 1, "终态后必须刷新一次挑片页")
+    }
+
+    @Test("T0：summary 未加载时生成结果不丢")
+    func generateTriageKeepsResultWithoutSummary() async {
+        let culling = StubCullingAPI()
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: culling, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub())
+        vm.setTriageEnabled(true)
+        await vm.generateTriage()
+        #expect(vm.triageSummary != nil)
+    }
+
+    @Test("T0：质量分析成功后按开关自动生成建议")
+    func autoGenerateTriageAfterQuality() async throws {
+        let culling = StubCullingAPI()
+        let quality = B5bQualityAPIStub()
+        let jobs = B5bJobAPIStub()
+        let queued = b5bJobData(id: "q1", type: .qualityScore, status: .queued, scopeId: "s1")
+        quality.analyzeResult = queued
+        jobs.jobs = [b5bJobData(id: "q1", type: .qualityScore, status: .succeeded, scopeId: "s1")]
+        let triage = TriageSummary(
+            counts: TriageCounts(keep: 1, reject: 0, review: 0, total: 1, coverage: 1),
+            stale: false, policyVersion: "triage-v1",
+            inputFingerprint: "fp", generatedAt: "t")
+        await culling.setSummary(CullingSummary(
+            totalGroups: 0, totalPhotos: 1, kept: 0, rejected: 0, pending: 1,
+            rated: 0, labeled: 0, triage: triage))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: culling, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: jobs, quality: quality)
+        vm.setVisible(true)
+        vm.setTriageEnabled(true)
+        vm.setTriageAutoGenerate(true)
+
+        let task = Task { await vm.analyzeQuality() }
+        await task.value
+        #expect(await culling.triageGenerateCalls == 1)
     }
 
     @Test("B8.2b：cancelQualityAnalysis 走 JobAPI.cancel 且保留可见文案")

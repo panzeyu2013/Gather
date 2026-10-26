@@ -1,7 +1,6 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Queries/CullingReadQueryTests.swift
 // CullingReadQuery 的 SQL 边界（真实 SQLite）：
-// summaryCacheRows 的轻投影/NULL 兜底、existingPhotoIds 的会话过滤+800 分块、
-// conflictPhotoPaths 的 DISTINCT+会话作用域。
+// existingPhotoIds 的会话过滤+800 分块、conflictPhotoPaths 的 DISTINCT+会话作用域。
 
 import Foundation
 import Testing
@@ -10,29 +9,6 @@ import GatherTestSupport
 
 @Suite("CullingReadQuery SQL 边界")
 struct CullingReadQueryBoundaryTests {
-    @Test("summaryCacheRows 只读 rating/label，NULL rating 归零、缺失 cache 不占位")
-    func summaryCacheProjection() throws {
-        let db = try makeQueryTestDB()
-        try queryInsertSession(db, id: "s")
-        for id in ["p1", "p2", "p3"] {
-            try queryInsertPhoto(db, id: id, sessionId: "s", filepath: "/s/\(id).jpg")
-        }
-        try queryInsertCache(db, photoId: "p1", sessionId: "s", rating: 5, label: "Red",
-                             keywords: #"["street","night"]"#)
-        try queryInsertCache(db, photoId: "p2", sessionId: "s", rating: nil, label: "Blue")
-        let query = CullingReadQuery(connection: db)
-
-        let rows = try query.summaryCacheRows(photoIds: ["p1", "p2", "p3"])
-        #expect(rows.count == 2)
-        let byPhoto = Dictionary(uniqueKeysWithValues: rows.map { ($0.photoId, $0) })
-        #expect(byPhoto["p1"]?.rating == 5)
-        #expect(byPhoto["p1"]?.label == "Red")
-        #expect(byPhoto["p2"]?.rating == 0, "NULL rating 映射为 0")
-        #expect(byPhoto["p2"]?.label == "Blue")
-        #expect(byPhoto["p3"] == nil)
-        #expect(try query.summaryCacheRows(photoIds: []).isEmpty)
-    }
-
     @Test("existingPhotoIds 按会话过滤、去重，并跨 800 分块找到最后一个 id")
     func existingPhotoIdsScopeAndChunk() throws {
         let db = try makeQueryTestDB()

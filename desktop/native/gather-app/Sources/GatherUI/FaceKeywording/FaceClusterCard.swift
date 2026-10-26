@@ -15,6 +15,17 @@ extension FaceKeywordingView {
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 clusterMontage(cluster)
+                    .overlay(alignment: .topTrailing) {
+                        if let summary = viewModel.reviewSummary(for: cluster.id),
+                           summary.reviewCount > 0 {
+                            GatherBadge(
+                                l10n.format("%lld 待复核", summary.reviewCount),
+                                tone: .warning
+                            )
+                            .padding(GatherMetrics.Space.xs)
+                            .accessibilityLabel(l10n.format("%lld 个待复核成员", summary.reviewCount))
+                        }
+                    }
                 Text(cluster.label)
                     .font(GatherFont.bodyStrong)
                     .lineLimit(1)
@@ -30,13 +41,13 @@ extension FaceKeywordingView {
             .padding(GatherMetrics.Space.m)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: GatherTheme.Radius.group, style: .continuous)
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
                     .fill(isSelected
                         ? GatherTheme.selectionFill
                         : (isHovered ? GatherTheme.secondaryContentBackground : GatherTheme.contentBackground))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: GatherTheme.Radius.group, style: .continuous)
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
                     .strokeBorder(isSelected ? GatherTheme.selection : GatherTheme.hairline, lineWidth: isSelected ? 2 : 1)
             )
             .contentShape(Rectangle())

@@ -117,6 +117,14 @@ struct PreviewCullingAPI: CullingAPI {
 
     func summary(_ sessionId: String) async throws -> CullingSummary { PreviewData.cullingSummary }
 
+    func generateTriage(_ input: TriageGenerateInput) async throws -> TriageSummary {
+        throw PreviewAPIError.unavailable("culling.generate_triage")
+    }
+
+    func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult {
+        throw PreviewAPIError.unavailable("culling.apply_triage")
+    }
+
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus {
         PreviewData.cullingSyncStatus
     }
@@ -193,22 +201,24 @@ struct PreviewMetadataAPI: MetadataAPI {
 
     func orphans() async throws -> [MetadataOrphan] { PreviewData.orphanXMPs }
 
-    func get(_ input: MetadataGetInput) async throws -> [String: MetadataTags] { [:] }
-
-    func set(_ input: Confirmed<MetadataSetInput>) async throws -> MetadataTags {
-        throw PreviewAPIError.unavailable("metadata.set")
-    }
-
-    func batchSet(_ input: Confirmed<MetadataBatchSetInput>) async throws -> BatchMetadataResult {
-        throw PreviewAPIError.unavailable("metadata.batch_set")
-    }
-
     func resolveConflict(_ input: Confirmed<MetadataResolveConflictInput>) async throws -> MetadataSyncSummary {
         throw PreviewAPIError.unavailable("metadata.resolve_conflict")
     }
 
     func resolveOrphan(_ input: Confirmed<MetadataResolveOrphanInput>) async throws -> [MetadataOrphan] {
         throw PreviewAPIError.unavailable("metadata.resolve_orphan")
+    }
+
+    func preview(_ input: MetadataPreviewInput) async throws -> WritebackPreview {
+        throw PreviewAPIError.unavailable("metadata.preview_keywords")
+    }
+
+    func applyKeywords(_ input: Confirmed<MetadataKeywordApplyInput>) async throws -> MetadataKeywordApplyResult {
+        throw PreviewAPIError.unavailable("metadata.apply_keywords")
+    }
+
+    func retryKeywordWriteback(_ input: Confirmed<SessionReference>) async throws -> MetadataKeywordApplyResult {
+        throw PreviewAPIError.unavailable("metadata.retry_keywords")
     }
 }
 
@@ -224,6 +234,14 @@ struct PreviewQualityAPI: QualityAPI {
 
 struct PreviewFaceAPI: FaceAPI {
     func clusters(_ sessionId: String) async throws -> [FaceClusterData] { PreviewData.faceClusters }
+
+    func split(_ input: Confirmed<FaceSplitInput>) async throws -> FaceSplitResult {
+        throw PreviewAPIError.unavailable("fkw.split")
+    }
+
+    func review(_ input: FaceReviewInput) async throws -> FaceReviewPage {
+        FaceReviewPage(items: [], nextCursor: nil, total: 0, suspectTotal: 0, clusters: [])
+    }
 
     func modelsStatus() async throws -> FaceModelsStatus { PreviewData.faceModelsStatus }
 
@@ -407,6 +425,24 @@ struct PreviewCaptureOne: CaptureOneBridging {
 
     static func documentProbeScript(appName: String) -> String {
         "return \"Preview: \(appName)\""
+    }
+}
+
+struct PreviewMaintenanceAPI: MaintenanceAPI {
+    func backup(_ input: MaintenanceBackupInput) async throws -> BackupRecord {
+        throw PreviewAPIError.unavailable("maintenance.backup")
+    }
+
+    func listBackups() async throws -> MaintenanceInventory {
+        MaintenanceInventory(backupDir: "", backups: [], lastRestore: nil, autoPaused: false)
+    }
+
+    func restore(_ input: Confirmed<RestoreBackupInput>) async throws -> RestoreReceipt {
+        throw PreviewAPIError.unavailable("maintenance.restore")
+    }
+
+    func exportDiagnostics(_ input: DiagnosticsExportInput) async throws -> DiagnosticsExportResult {
+        throw PreviewAPIError.unavailable("maintenance.export_diagnostics")
     }
 }
 #endif

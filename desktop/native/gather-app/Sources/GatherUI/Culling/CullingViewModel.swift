@@ -9,6 +9,12 @@ import Foundation
 import SwiftUI
 import GatherProtocol
 
+struct KeywordTargetIndex {
+    let key: String
+    let union: [String]
+    let counts: [String: Int]
+}
+
 @MainActor
 @Observable
 public final class CullingViewModel: PageVisibility {
@@ -21,12 +27,15 @@ public final class CullingViewModel: PageVisibility {
         public var colorLabel: CaptureOneColorLabel?
         public var qualityStatus: CullingFilterQualityStatus?
         public var metadataConflictOnly = false
+        /// P0/T0：按建议 verdict 过滤（仅 .filtered scope 生效）。
+        public var triageVerdicts: [TriageVerdict]?
 
         public init() {}
 
         public var isActive: Bool {
             unreviewedOnly || pickState != nil || rating != nil || colorLabel != nil
                 || qualityStatus != nil || metadataConflictOnly
+                || (triageVerdicts?.isEmpty == false)
         }
     }
 
@@ -101,6 +110,8 @@ public final class CullingViewModel: PageVisibility {
     let navigationAPI: any NavigationAPI
     // Cut 1 / B6b：元数据冲突走类型化 API（conflicts / resolve_conflict）。
     let metadataAPI: any MetadataAPI
+    /// P0/K0：关键词自动补全（会话级 suggestions）；预览/写入仍走 metadataAPI。
+    let photoAPI: (any PhotoAPI)?
     // Cut 1 / B8.2b：质量分析建任务与轮询/取消走类型化 API。
     let jobAPI: any JobAPI
     let qualityAPI: any QualityAPI
@@ -115,6 +126,23 @@ public final class CullingViewModel: PageVisibility {
     public internal(set) var isLoading = false
     private(set) public var isQualityBusy = false
     private(set) public var qualityJob: AnalysisJobData?
+    /// P0/T0：初筛生成/应用忙碌与最近一次错误（卡片内展示，不进全局 banner）。
+    public internal(set) var isTriageBusy = false
+    public internal(set) var triageError: CommandError?
+    /// P0/K0：关键词草稿（只影响当前选择集；切换选择时由面板重置）。
+    public internal(set) var keywordAdded: [String] = []
+    public internal(set) var keywordRemoved: [String] = []
+    public internal(set) var keywordSuggestions: [String] = []
+    /// 目标集关键词索引缓存（selection + pageVersion 失效），避免每帧 O(资产×词)。
+    @ObservationIgnored var keywordTargetIndexCache: KeywordTargetIndex?
+    public internal(set) var isKeywordBusy = false
+    public internal(set) var keywordError: CommandError?
+    public internal(set) var keywordPreview: WritebackPreview?
+    /// 预览对应的“选择 + 草稿”签名；apply 前必须仍一致（旧预览不能写到新照片）。
+    var keywordPreviewSignature = ""
+    public internal(set) var keywordResult: MetadataKeywordApplyResult?
+    /// 续页失败后置位：网格底部据此显示重试入口（否则 sentinel 不再 onAppear）。
+    public internal(set) var loadMoreFailed = false
     public internal(set) var errorMessage: CommandError?
     /// Cut 4 / 4b-2a：延迟提示文案（key/计数，渲染期解析；见 CullingNotice）。
     public internal(set) var notice: CullingNotice?
@@ -160,6 +188,81 @@ public final class CullingViewModel: PageVisibility {
     public internal(set) var selectedNavigationGroupIds: Set<String> = []
     public internal(set) var similarityGroups: [CullingGroup] = []
     public var scopeMode: ScopeMode = .all
+    /// P0/G0：排序（所有排序统一走 nextCursor）。
+    public var sortMode: CullingSort = .importOrder
+    /// 用户在本窗口内显式改过排序：设置默认值不得覆盖。
+    internal(set) var isSortUserSet = false
+    /// 设置 `grid_density` 的窗口默认值（SceneStorage 未设置时使用）。
+    internal(set) var defaultGridDensity: CullingGridDensity = .m
+    /// Host 注入：读取 grid_default_sort / grid_density 的原始字符串（async SettingsAPI）。
+    public var gridDefaultsProvider: (@MainActor () async -> (sortRaw: String?, densityRaw: String?))?
+    /// P0/G0：网格 200/页；单图/对比/胶片条沿用 500。
+    public var pageLimit: Int = 500
+    /// P0/T0：Beta 开关来自 settings.triage_enabled；默认 true 仅用于直接构造 VM 的测试/预览。
+    public internal(set) var triageEnabled = true
+    /// 质量分析成功后是否自动生成建议；默认关闭（设置 triage_auto_generate）。
+    public internal(set) var triageAutoGenerate = false
+    /// 已打开会话内设置变更后重读；nil 时保持构造时状态。
+    public var triageEnabledProvider: (@MainActor () async -> Bool)?
+    public var triageAutoGenerateProvider: (@MainActor () async -> Bool)?
+    /// 本次生成结果已经应用过；避免重复 apply 产生无意义 upsert/history。
+    public internal(set) var triageApplied = false
+    /// T0 应用产生的 history operation id：撤销它时必须按 source=ai 回写，
+    /// 否则资产会变成 manual+pending，之后永远被“人工决策”跳过。
+    public internal(set) var triageHistoryOperationId: Int?
+
+    /// Host（跨模块）读取设置后回填 Beta 开关；不暴露任意 setter。
+    public func refreshTriageSettings() async {
+        if let provider = triageEnabledProvider {
+            let enabled = await provider()
+            if enabled != triageEnabled { setTriageEnabled(enabled) }
+        }
+        if let provider = triageAutoGenerateProvider {
+            triageAutoGenerate = await provider()
+        }
+        // 门限/policy 变更会改指纹：开关打开时静默重取当前页，避免旧徽标与
+        // “可应用”状态落后于设置。
+        if triageEnabled, page != nil {
+            refreshSilently(forcePage: true)
+        }
+    }
+
+    /// 应用设置默认值：排序只在用户未手动改过时生效；密度只影响未设置过的窗口。
+    public func refreshGridDefaults() async {
+        guard let provider = gridDefaultsProvider else { return }
+        let defaults = await provider()
+        if let raw = defaults.densityRaw,
+           let density = CullingGridDensity(rawValue: raw) {
+            defaultGridDensity = density
+        }
+        guard let raw = defaults.sortRaw,
+              let sort = CullingSort(rawValue: raw),
+              !isSortUserSet, sortMode != sort else { return }
+        sortMode = sort
+        // 首屏还没加载时只设置排序，由页面 .task 的那次 load 使用它；
+        // 否则会在 applyPageLimit 之前多发一次 500 页请求。
+        guard page != nil else { return }
+        await loadPage(reset: true)
+    }
+
+    public func setTriageEnabled(_ enabled: Bool) {
+        triageEnabled = enabled
+        guard !enabled else { return }
+        // 关闭后不能留下 triage 过滤/排序，否则用户会看到空网格且无入口恢复。
+        let hadTriageFilter = filterState.triageVerdicts != nil
+            || sortMode == .triageConfidenceAsc
+        filterState.triageVerdicts = nil
+        if sortMode == .triageConfidenceAsc { sortMode = .importOrder }
+        if hadTriageFilter, page != nil {
+            Task { @MainActor [weak self] in await self?.loadPage(reset: true) }
+        }
+    }
+
+    public func setTriageAutoGenerate(_ enabled: Bool) {
+        triageAutoGenerate = enabled
+    }
+    /// 是否还有下一页：唯一凭据是 nextCursor。
+    public var hasMore: Bool { page?.nextCursor != nil }
     public internal(set) var selectedSimilarityGroupId = ""
     var pageVersion = 0
     /// 整页加载的 latest-wins 代数：旧请求返回后不得覆盖新筛选/新会话的结果。
@@ -179,12 +282,14 @@ public final class CullingViewModel: PageVisibility {
         jobs: any JobAPI,
         quality: any QualityAPI,
         captureOne: any CaptureOneBridging,
+        photo: (any PhotoAPI)? = nil,
         qualityPollIntervalMilliseconds: Int = CullingViewModel.defaultQualityPollIntervalMilliseconds
     ) {
         self.sessionId = sessionId
         self.cullingAPI = culling
         self.navigationAPI = navigation
         self.metadataAPI = metadata
+        self.photoAPI = photo
         self.jobAPI = jobs
         self.qualityAPI = quality
         self.captureOne = captureOne
@@ -262,14 +367,14 @@ public final class CullingViewModel: PageVisibility {
             pendingDomainRefresh = true
             return
         }
-        refreshSilently()
+        refreshSilently(forcePage: true)
     }
 
     /// 页面重新可见 / 当前刷新结束后的补刷出口（幂等）。
     public func flushDeferredDomainRefresh() {
         guard pendingDomainRefresh, isActive, !isLoading else { return }
         pendingDomainRefresh = false
-        refreshSilently()
+        refreshSilently(forcePage: true)
     }
 
     // MARK: - 可见性 / 关闭（Cut 4 / 4a-2b）
@@ -439,6 +544,10 @@ public final class CullingViewModel: PageVisibility {
                     case .succeeded:
                         self.notice = CullingNotice("技术质量分析已完成")
                         await self.loadPage(reset: true)
+                        // P2：可选自动生成；默认关闭，避免 20k 会话分析完成时突然重算。
+                        if self.triageEnabled && self.triageAutoGenerate {
+                            await self.generateTriage()
+                        }
                         return
                     case .failed, .interrupted:
                         self.errorMessage = CommandError(apiText: latest.errorMessage)

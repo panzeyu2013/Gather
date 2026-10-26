@@ -2,7 +2,7 @@
 // Cut 3 / 3b-1：宿主启动装配（从 GatherApp.swift 抽出）。
 //
 // 职责边界（只做装配与生命周期，不含页面/业务逻辑）：
-// - 应用数据目录与库文件权限 → Database.open（SchemaV1）→ AppComposition.make；
+// - 应用数据目录与库文件权限 → Database.open（SchemaCurrent）→ AppComposition.make；
 // - AppServices.live 十六域装配；AppRuntime.start() / shutdown() 生命周期；
 // - 冷启动语言、jobs:progress 事件总线、原生 embedding 一次性迁移；
 // - 页面 provider、CaptureOneBridge 与 AppDelegate 回调接线；
@@ -35,6 +35,10 @@ package final class AppBootstrap {
     /// Phase 4：菜单/快捷键的唯一命令通道。RootView 在 onAppear 安装 handler，
     /// `.commands` 与 AppKit 菜单兜底只调 `perform`，不再 post 通知。
     package let commandCenter: AppCommandCenter
+    /// B0：日志 sink 必须持有；install 返回的实例被丢弃会让
+    /// GatherLogger.output 里的 weak self 立刻失效，文件日志实际不落盘。
+    /// 安装发生在 static makeScene，故用 MainActor 静态存储保活。
+    private static var logSink: LogFileSink?
 
     package init() {
         self.languageStore = LanguageStore()
@@ -59,6 +63,8 @@ package final class AppBootstrap {
         /// 场景只读它的 language/l10n；写入只经 SettingsViewModel.setLanguage。
         package let languageStore: LanguageStore
         package let commandCenter: AppCommandCenter
+        /// B0：取消尚未 swap 的恢复（设置页“待完成恢复”区）。
+        package let cancelPendingRestore: () async -> Bool
     }
 
     /// 场景状态；nil = 未就绪（初始化中或失败）。
@@ -70,6 +76,8 @@ package final class AppBootstrap {
     @ObservationIgnored private var isStarting = false
     /// 唯一运行时（`shutdown()` 的停机入口；与 scene.appServices.runtime 同一实例）。
     @ObservationIgnored private var runtime: AppRuntime?
+    /// P0 / B0：维护服务（自动备份调度器随启动/停机接线；与 scene 同一实例）。
+    @ObservationIgnored private var maintenanceService: MaintenanceService?
 
     /// 启动装配。顺序与拆分前 `GatherApp.bootstrap` 逐行一致：
     /// 目录 → 库 → 组合根 → AppServices → 冷启动语言 → runtime.start →
@@ -87,7 +95,7 @@ package final class AppBootstrap {
         errorMessage = nil
         defer { isStarting = false }
         do {
-            let (state, runtime) = try await Self.makeScene(
+            let (state, runtime, maintenance) = try await Self.makeScene(
                 delegate: delegate,
                 applicationSupportDirectory: applicationSupportDirectory,
                 // 4a-3a：语言唯一写入口由装配层持有，冷启动在这里播种。
@@ -95,11 +103,18 @@ package final class AppBootstrap {
                 commandCenter: commandCenter
             )
             self.runtime = runtime
+            self.maintenanceService = maintenance
             self.scene = state
+            // B0：按 backup_auto 启停调度器（off 时 startScheduler 自身 no-op）。
+            await maintenance.startScheduler()
         } catch {
             GatherLogger.log("bootstrap failed: \(error)", level: .error)
             // 旧库/损坏库给可执行的归档指引；其余错误仍走统一漏斗。
-            if let dbError = error as? DatabaseError, case .corrupt = dbError {
+            if let unrecoverable = error as? RestoreUnrecoverableError {
+                self.errorMessage = languageStore.l10n.errorText(
+                    GatherErrorCode.RESTORE_FAILED.rawValue
+                ) + "：" + unrecoverable.failure.message
+            } else if let dbError = error as? DatabaseError, case .corrupt = dbError {
                 self.errorMessage = languageStore.l10n(
                     "数据库版本不受支持或已损坏。请将 ~/Library/Application Support/Gather/gather.sqlite 及 -wal/-shm 移走备份后重试。")
             } else {
@@ -114,6 +129,10 @@ package final class AppBootstrap {
     /// 优雅停机（ADR-023）：委托唯一 AppRuntime（幂等）。
     /// 启动未完成/失败时为 no-op（与拆分前「Delegate 回调未挂载」语义一致）。
     package func shutdown() async {
+        if let maintenanceService {
+            await maintenanceService.stopScheduler()
+            await maintenanceService.waitForBackup(timeout: 15)
+        }
         await runtime?.shutdown()
     }
 
@@ -124,7 +143,7 @@ package final class AppBootstrap {
         applicationSupportDirectory: URL?,
         languageStore: LanguageStore,
         commandCenter: AppCommandCenter
-    ) async throws -> (SceneState, AppRuntime) {
+    ) async throws -> (SceneState, AppRuntime, MaintenanceService) {
         let applicationSupport: URL
         if let applicationSupportDirectory {
             applicationSupport = applicationSupportDirectory
@@ -153,12 +172,60 @@ package final class AppBootstrap {
         ImportPathRulesRegistry.install(HostImportPathRules())
         // C1 会话同步状态：UI 只开关视图状态，聚合仍由领域层唯一实现。
         CaptureOneSyncStateRulesRegistry.install(HostCaptureOneSyncStateRules())
-        // Cut 2 / S5c-2b-3b-2b-3：生产唯一建库入口。Database.open 保证
-        // user_version == SchemaV1.userVersion（1）：
-        //   · 新库 → 建 SchemaV1（43 表，单事务）；
-        //   · user_version=0 但有表 / 非 1 / 非 SQLite 文件 → 把 db/-wal/-shm
-        //     整体改名为 <db>.incompatible-<ts> 后重建（旧迁移链已删除，不就地升级）。
-        let database = try Database.open(at: dbURL.path)
+        // 生产唯一建库入口。当前 schema 为 3（44 表）：
+        //   · 空库 → 建当前 schema（单事务）；
+        //   · 当前版本 → 直接打开；
+        //   · 旧版本/不兼容/损坏 → 默认 fail closed；显式 reset 才把
+        //     db/-wal/-shm 整体改名为 <db>.incompatible-<ts> 后重建。
+        // B0：文件日志 sink（启动早期安装，Database.open 的失败也能落盘）。
+        Self.logSink = LogFileSink.install(directory: appDir.appendingPathComponent("Logs", isDirectory: true))
+
+        // B0：跨进程恢复。journal 存在时先拿恢复锁，在 Database.open 前 swap；
+        // 成功 open 后 finalize，失败回滚旧库。
+        var didRestore = false
+        let restoreLock: RestoreLock?
+        if RestoreCoordinator.hasPending(dbPath: dbURL.path) {
+            restoreLock = try RestoreLock.acquire(at: appDir)
+            let outcome = try RestoreCoordinator.applyPendingIfNeeded(dbPath: dbURL.path)
+            switch outcome {
+            case .applied:
+                didRestore = true
+            case .rolledBack(let failure):
+                GatherLogger.log(
+                    "restore rolled back: \(failure.code) \(failure.message)", level: .warn)
+            case .unrecoverable(let failure):
+                // 不能继续 open：空库重建会掩盖数据丢失，且会禁用一次 delivery 回放的语义。
+                GatherLogger.log(
+                    "restore unrecoverable: \(failure.code) \(failure.message)", level: .error)
+                throw RestoreUnrecoverableError(failure: failure)
+            case .none:
+                break
+            }
+        } else {
+            restoreLock = nil
+        }
+        defer { restoreLock?.release() }
+
+        let database: Database
+        if didRestore {
+            do {
+                database = try Database.open(at: dbURL.path)
+            } catch {
+                GatherLogger.log("Database.open after restore failed; rolling back: \(error)", level: .error)
+                BestEffort.attempt("rollback restore on open failure") {
+                    try RestoreCoordinator.rollbackToPrevious(dbPath: dbURL.path)
+                }
+                database = try Database.open(at: dbURL.path)
+                didRestore = false
+            }
+            if didRestore {
+                BestEffort.attempt("finalize restore") {
+                    try RestoreCoordinator.finalizeOpened(dbPath: dbURL.path)
+                }
+            }
+        } else {
+            database = try Database.open(at: dbURL.path)
+        }
         let db = database.connection
         // 审计 P2-安全：库内含照片路径 + 人脸特征，库文件只给当前用户读写。
         try FileManager.default.setAttributes(
@@ -167,7 +234,13 @@ package final class AppBootstrap {
         // 依赖 Services，这里注入一个只读的设置读取钩子；注入即重放 PRAGMA）。
         let settingsRepo = SettingsRepo(connection: db)
         db.settingsProvider = { [weak settingsRepo] key in
-            (try? settingsRepo?.get(key: key))??.value
+            guard let settingsRepo else { return nil }
+            do {
+                return try settingsRepo.get(key: key)?.value
+            } catch {
+                GatherLogger.log("read setting \(key) failed: \(error)", level: .warn)
+                return nil
+            }
         }
 
         // Cut 1 / B8.3b-2a/B8.3b-2b：组合根只构造一次（24 个服务/Repo +
@@ -187,7 +260,7 @@ package final class AppBootstrap {
         // B8.3b-1：注册 8 个 executor 并启动 JobService（start 在已启动时幂等、
         // shutdown 后失败可见）。start 之后还会在后台回放未完成的
         // delivery_intents（不阻塞 UI；失败写 runtime.deliveryReplayFailure）。
-        try runtime.start()
+        try runtime.start(replayPendingDeliveries: !didRestore)
         // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
         GatherEventCenter.shared.wire(jobEvents: runtime.jobService)
         await AppImport.prepareNativeEmbeddingRerun(
@@ -243,6 +316,7 @@ package final class AppBootstrap {
             culling: appServices.culling,
             navigation: appServices.navigation,
             metadata: appServices.metadata,
+            photo: appServices.photo,
             quality: appServices.quality,
             face: appServices.face,
             similarity: appServices.similarity,
@@ -280,9 +354,20 @@ package final class AppBootstrap {
                 rootDeps: rootDeps,
                 sessionStore: sessionStore,
                 languageStore: languageStore,
-                commandCenter: commandCenter
+                commandCenter: commandCenter,
+                cancelPendingRestore: {
+                    do {
+                        try await composition.maintenanceService.cancelPendingRestore()
+                        return true
+                    } catch {
+                        GatherLogger.log(
+                            "cancel pending restore failed: \(error)", level: .warn)
+                        return false
+                    }
+                }
             ),
-            runtime
+            runtime,
+            composition.maintenanceService
         )
     }
 
@@ -340,8 +425,11 @@ package final class AppBootstrap {
     /// 启动路径经 SettingsAPI，而不是旧命令面的 settings.get /
     /// applyStoredInterfaceLanguage。
     package static func storedInterfaceLanguage(using settings: any SettingsAPI) async -> String? {
-        guard let stored = try? await settings.get(SettingsKey("ui_language")),
-              !stored.isEmpty else { return nil }
-        return stored
+        do {
+            let stored = try await settings.get(SettingsKey("ui_language"))
+            return stored.isEmpty ? nil : stored
+        } catch {
+            return nil
+        }
     }
 }

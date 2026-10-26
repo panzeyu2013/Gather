@@ -15,13 +15,15 @@
 import Foundation
 import GatherPersistence
 
-public final class SettingsService {
+/// 并发依据：cache 的读写全部在 NSLock 临界区内；repo 是构造后不可变的 DB 仓储，
+/// 由 DBConnection 串行化。标注集中在状态所有者，LiveSettingsAPI 等调用方因此
+/// 可以保持普通 Sendable，不再各自 @unchecked。
+public final class SettingsService: @unchecked Sendable {
     /// TS: getDefaults() —— 40 键默认值表。
     public static func getDefaults() -> [String: String] {
         [
             "detector_model_path": "models/face_detector.onnx",
             "encoder_model_path": "models/face_encoder.onnx",
-            "onnx_provider": "auto",
             "detect_confidence": "0.5",
             "detect_input_size": "640",
             "detect_secondary_input_size": "128",
@@ -40,6 +42,11 @@ public final class SettingsService {
             "face_core_quality": "0.35",
             "face_core_retry_min_samples": "2",
             "face_match_margin": "0.01",
+            // P0 / F0：复核队列阈值（可调；默认值见 f0 设计）
+            "face_review_cohesion_floor": "0.35",
+            "face_review_relative_mad": "2.5",
+            "face_review_min_quality": "0.35",
+            "face_review_face_size_min": "48",
             // · face_incremental_clustering：增量聚类开关（"1" = 开[推荐]；其余 = 关）。
             //   开启后 analyze 保留已有簇 id / matched_person_id / role_bindings，只
             //   追加新增人脸；首次分析、签名变化、recluster 命令仍走全量。
@@ -61,17 +68,8 @@ public final class SettingsService {
 
             "thumbnail_size": "1024",
             "thumbnail_quality": "80",
-            "face_thumbnail_size": "320",
-            "face_thumbnail_quality": "70",
-            "face_thumbnail_dir": "",
 
-            "memory_cache_size": "10000",
-            "memory_cache_max_size_mb": "192",
             "disk_cache_dir": "",
-            "disk_cache_max_size_gb": "1",
-            "disk_cache_eviction_policy": "lru",
-            // TS: Math.max(1, Math.min(4, os.cpus().length - 1))
-            "thumbnail_concurrency": "\(Self.thumbnailConcurrencyDefault)",
             "face_decode_concurrency": "4",
             "face_inference_parallel_workers": "1",
 
@@ -80,23 +78,29 @@ public final class SettingsService {
             // settings.get('db_synchronous', 'normal')）。
             "db_synchronous": "normal",
 
-            "c1_timeout_ms": "15000",
-            "c1_retries": "3",
-            "c1_reload_delay_ms": "500",
-
             "metadata_write_mode": "sidecar",
-            "metadata_write_debounce_ms": "500",
-            "capture_one_color_compatibility": "label_and_urgency",
 
             "ui_language": "",
             "lazy_checksum": "true",
-        ]
-    }
 
-    /// TS: Math.max(1, Math.min(4, os.cpus().length - 1))。
-    public static var thumbnailConcurrencyDefault: Int {
-        let cores = ProcessInfo.processInfo.processorCount
-        return max(1, min(4, cores - 1))
+            // P0 / G0：网格默认排序与密度（窗口内可临时覆盖）
+            "grid_default_sort": "import",
+            "grid_density": "m",
+
+            // P0 / T0：技术质量建议（Beta）
+            "triage_enabled": "0",
+            "triage_auto_generate": "0",
+            "triage_policy": "triage-v1",
+            "triage_keep_confidence_min": "0.60",
+            "triage_reject_confidence_min": "0.75",
+            "triage_min_executable_confidence": "0.55",
+
+            // B0：备份 / 诊断
+            "backup_dir": "",
+            "backup_retention": "5",
+            "backup_auto": "off",
+            "diagnostics_include_paths": "0",
+        ]
     }
 
     /// TS: KNOWN_SETTING_KEYS = new Set(Object.keys(getDefaults()))。

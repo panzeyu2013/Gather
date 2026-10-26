@@ -9,7 +9,7 @@
 // 5. 同名人物在 reconcile 时不得合并；
 // 6. 内置 SFace 输出 128 维单位向量，且与独立参考向量余弦 > 0.9999。
 //
-// 边界：内存 SchemaV1 + 临时图片路径；解码/推理/聚类以闭包替身注入，只有
+// 边界：内存 SchemaCurrent + 临时图片路径；解码/推理/聚类以闭包替身注入，只有
 // bundledModelRunsRealCoreMLInference 走真实 CoreML（依赖 target 内模型资源）。
 import Foundation
 import CoreGraphics

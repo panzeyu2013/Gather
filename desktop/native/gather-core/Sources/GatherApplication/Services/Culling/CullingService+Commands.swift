@@ -18,7 +18,7 @@ extension CullingService {
         context: CullingUpdateContext? = nil
     ) throws -> CullingUpdateResult {
         try validatePatch(patch)
-        let entry = getSessionUpdateContext(sessionId: sessionId)
+        let entry = try getSessionUpdateContext(sessionId: sessionId)
         var photos = context?.photos ?? entry.photos
         var photoById = context?.photoById ?? entry.photoById
         var contextGroupMap = context?.groupMap
@@ -30,7 +30,7 @@ extension CullingService {
         } else {
             // TTL 缓存的照片集合可能缺索引器刚加的照片，每次窗口先试一次新鲜读
             //（见 refreshSessionUpdateContext）。陈旧的调用方上下文被丢弃。
-            refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
+            try refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
             photos = entry.photos
             photoById = entry.photoById
             contextGroupMap = nil
@@ -218,11 +218,11 @@ extension CullingService {
         }
         if uniqueIds.isEmpty { throw CullingServiceError.emptySelection }
         if uniqueIds.count > Self.batchMax { throw CullingServiceError.tooManyPhotoIds }
-        let entry = getSessionUpdateContext(sessionId: sessionId)
+        let entry = try getSessionUpdateContext(sessionId: sessionId)
         // 先在缓存索引里校验照片 id（任何相似度读之前，见 ensureUpdateExtras）。
         // 缺失可能是索引器刚加的照片（TTL 缓存不可见），先试一次新鲜读再拒绝。
         if uniqueIds.contains(where: { entry.photoById[$0] == nil }) {
-            refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
+            try refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
             if uniqueIds.contains(where: { entry.photoById[$0] == nil }) {
                 throw CullingServiceError.photosNotInSession
             }
@@ -288,6 +288,12 @@ extension CullingService {
         }
         return results
     }
+    /// P1-9：把本次 update/batchUpdate/applyHistory 入队的 metadata 意图立即写盘。
+    /// service 方法保持同步（与旧契约一致），由 async 的 API 层在返回前调用。
+    public func flushQueuedMetadata(sessionId: String) async throws {
+        try await flushMetadata?(sessionId)
+    }
+
     /// TS: applyHistory —— 应用显式条目（renderer 重建的补丁）或历史栈操作
     /// （undo/redo，按操作 id 解析 entries）；带操作 id 时校验并发边界。
     /// 注：TS 参数 `historyOperationId` 在函数内被重新赋值（append 结果），
@@ -297,7 +303,8 @@ extension CullingService {
         sessionId: String,
         requestedEntries: [CullingHistoryApplyEntry],
         historyOperationId: Int? = nil,
-        direction: CullingHistoryDirection? = nil
+        direction: CullingHistoryDirection? = nil,
+        source: CullingDecisionSource = .manual
     ) throws -> [CullingUpdateResult] {
         var historyOperationId = historyOperationId
         var entries = requestedEntries
@@ -334,11 +341,11 @@ extension CullingService {
             throw CullingServiceError.historyDuplicatePhotos
         }
         for entry in entries { try validatePatch(entry.patch) }
-        let updateEntry = getSessionUpdateContext(sessionId: sessionId)
+        let updateEntry = try getSessionUpdateContext(sessionId: sessionId)
         // 与 updateState/batchUpdate 相同的 fresh-read 兜底：索引器刚加的照片
         // 可能缺席 TTL 缓存。
         if entries.contains(where: { updateEntry.photoById[$0.photoId] == nil }) {
-            refreshSessionUpdateContext(sessionId: sessionId, entry: updateEntry)
+            try refreshSessionUpdateContext(sessionId: sessionId, entry: updateEntry)
         }
         let photoById = updateEntry.photoById
         // 历史载荷是**外部数据**（库行里的 operation_json，可能残留已删除照片的 id：
@@ -446,7 +453,7 @@ extension CullingService {
                     pickState: entry.patch.pickState ?? before.pickState,
                     rating: entry.patch.rating ?? before.rating,
                     colorLabel: entry.patch.colorLabel ?? before.colorLabel,
-                    source: .manual,
+                    source: source,
                     revision: before.revision + 1,
                     updatedAt: nowISOString()
                 )
@@ -459,7 +466,8 @@ extension CullingService {
                         decision: pickStateToDecision(after.pickState).rawValue,
                         rating: Int64(after.rating),
                         colorLabel: after.colorLabel.rawValue,
-                        revision: Int64(after.revision)
+                        revision: Int64(after.revision),
+                        source: source.rawValue
                     )
                 )
                 if entry.patch.rating != nil {

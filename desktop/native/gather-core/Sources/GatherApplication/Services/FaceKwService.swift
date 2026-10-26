@@ -105,6 +105,19 @@ public final class FaceKwService {
     var controllers: [String: JobAbortSignal] = [:]
     let controllersLock = NSLock()
 
+    /// F0 复核缓存：key 含 session/cluster/includeResolved/thresholds；value 带
+    /// 廉价 DB revision，写入路径变化后 key 版本不匹配即自动 miss。
+    struct ReviewCacheEntry {
+        let revision: String
+        let summaries: [FaceReviewClusterSummary]
+        let sortedItems: [FaceReviewItem]
+        /// memberId → 在 sortedItems 中的位置：翻页时 O(1) 定位，不再每页 O(n) 扫。
+        let indexByMemberId: [Int: Int]
+        let suspectTotal: Int
+    }
+    var reviewCache: [String: ReviewCacheEntry] = [:]
+    let reviewCacheLock = NSLock()
+
     /// 同步锁临界区辅助（Swift 6 并发检查：async 上下文不可直接拿 NSLock）。
     func controller(for sessionId: String) -> JobAbortSignal? {
         controllersLock.lock()

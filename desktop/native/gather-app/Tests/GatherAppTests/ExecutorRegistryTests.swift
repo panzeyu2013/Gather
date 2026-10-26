@@ -44,11 +44,6 @@ private struct RegistryNoopMutations: MetadataMutationPort {
         MetadataMutationResult(photoId: photoId, xmpPath: photoId + ".xmp", dirtyFields: [], revision: 1, status: "pending")
     }
 
-    func queueMutation(
-        sessionId: String, photoId: String, patch: MetadataPatch, source: MetadataMutationSource
-    ) async throws -> MetadataMutationResult {
-        MetadataMutationResult(photoId: photoId, xmpPath: photoId + ".xmp", dirtyFields: [], revision: 1, status: "pending")
-    }
 }
 
 private struct ExecutorRegistryFixture {

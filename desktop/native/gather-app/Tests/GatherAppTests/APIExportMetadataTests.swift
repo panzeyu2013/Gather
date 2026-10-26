@@ -549,17 +549,8 @@ private final class MetadataTestXMPProvider: XMPProvider, @unchecked Sendable {
     }
 }
 
-/// 记录 set/batchSet 入队的写入；快照在锁内取得，供断言使用。
-private final class MetadataTestMutationPort: MetadataMutationPort, @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: [(photoId: String, patch: MetadataPatch)] = []
-
-    var calls: [(photoId: String, patch: MetadataPatch)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return stored
-    }
-
+/// MetadataService 所需的 mutation 端口；只测读取路径，不记录写入。
+private struct MetadataTestMutationPort: MetadataMutationPort {
     func queuePhotoValues(
         sessionId: String,
         photoId: String,
@@ -568,20 +559,6 @@ private final class MetadataTestMutationPort: MetadataMutationPort, @unchecked S
         schedule: Bool
     ) throws -> MetadataMutationResult {
         MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
-        )
-    }
-
-    func queueMutation(
-        sessionId: String,
-        photoId: String,
-        patch: MetadataPatch,
-        source: MetadataMutationSource
-    ) async throws -> MetadataMutationResult {
-        lock.withLock {
-            stored.append((photoId, patch))
-        }
-        return MetadataMutationResult(
             photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
         )
     }
@@ -595,8 +572,6 @@ private struct MetadataAPIFixture {
     let tempRoot: URL
     let photoIds: [String]
     let photoPaths: [String]
-    let metadataCacheRepo: MetadataCacheRepo
-    let mutations: MetadataTestMutationPort
     let deliveryRepo: DeliveryRepo
     let xmp: MetadataTestXMPProvider
     let api: LiveMetadataAPI
@@ -646,8 +621,6 @@ private struct MetadataAPIFixture {
         self.tempRoot = root
         self.photoIds = ids
         self.photoPaths = paths
-        self.metadataCacheRepo = metadataCacheRepo
-        self.mutations = mutations
         self.deliveryRepo = deliveryRepo
         self.xmp = xmp
         self.api = LiveMetadataAPI(
@@ -745,88 +718,6 @@ private struct MetadataAPIFixture {
 
 @Suite("APIMetadata Live")
 struct APIMetadataTests {
-    @Test("get：缓存命中返回完整 tags，未知 photoId 被过滤")
-    func getReadsSeededCache() async throws {
-        let fixture = try MetadataAPIFixture()
-        defer { fixture.cleanup() }
-        let photoId = try #require(fixture.photoIds.first)
-        let photoPath = try fixture.path(for: photoId)
-        let fingerprint = try #require(
-            try await MetadataFingerprint.cacheStalenessKey(photoPath)
-        )
-        var cacheInput = MetadataCacheInput(cameraMake: "Canon", cameraModel: "R5")
-        cacheInput.fileSize = Int64(fingerprint.size)
-        cacheInput.fileMtime = fingerprint.value
-        try fixture.metadataCacheRepo.upsert(
-            photoId: photoId,
-            sessionId: fixture.sessionId,
-            data: cacheInput
-        )
-
-        let result = try await fixture.api.get(
-            MetadataGetInput(photoIds: [photoId, photoId, "missing"])
-        )
-
-        #expect(result.count == 1)
-        #expect(result[photoId]?.make == "Canon")
-        #expect(result[photoId]?.model == "R5")
-    }
-
-    @Test("set：Confirmed<MetadataSetInput> 写入 rating 并入队 manual 变更")
-    func setWritesThroughConfirmed() async throws {
-        let fixture = try MetadataAPIFixture()
-        defer { fixture.cleanup() }
-        let photoId = try #require(fixture.photoIds.first)
-        let payload = try MetadataSetInput(
-            photoId: photoId,
-            tags: MetadataTags(rating: 4)
-        )
-
-        let tags = try await fixture.api.set(Confirmed(payload, source: .test))
-
-        #expect(tags.rating == 4)
-        let calls = fixture.mutations.calls
-        #expect(calls.count == 1)
-        #expect(calls.first?.photoId == photoId)
-        #expect(calls.first?.patch.rating?.value == 4)
-    }
-
-    @Test("batchSet：Confirmed<MetadataBatchSetInput> 批量写入两项")
-    func batchSetWritesAllUpdates() async throws {
-        let fixture = try MetadataAPIFixture()
-        defer { fixture.cleanup() }
-        let ids = fixture.photoIds
-        #expect(ids.count == 2)
-        let input = try MetadataBatchSetInput(updates: [
-            MetadataBatchUpdate(photoId: ids[0], tags: MetadataTags(rating: 2)),
-            MetadataBatchUpdate(photoId: ids[1], tags: MetadataTags(label: "Green")),
-        ])
-
-        let result = try await fixture.api.batchSet(Confirmed(input, source: .test))
-
-        #expect(result.success == 2)
-        #expect(result.failed == 0)
-        #expect(fixture.mutations.calls.count == 2)
-    }
-
-    @Test("batchSet：单项失败被隔离并计入 failed")
-    func batchSetIsolatesFailures() async throws {
-        let fixture = try MetadataAPIFixture()
-        defer { fixture.cleanup() }
-        let photoId = try #require(fixture.photoIds.first)
-        let input = try MetadataBatchSetInput(updates: [
-            MetadataBatchUpdate(photoId: photoId, tags: MetadataTags(rating: 3)),
-            // make 不在可写字段白名单内：MetadataService 抛 unsupportedFields。
-            MetadataBatchUpdate(photoId: "missing", tags: MetadataTags(make: "Canon")),
-        ])
-
-        let result = try await fixture.api.batchSet(Confirmed(input, source: .test))
-
-        #expect(result.success == 1)
-        #expect(result.failed == 1)
-        #expect(result.errors.contains { $0.contains("Metadata writeback does not support") })
-    }
-
     @Test("conflicts：字段级投影；resolveConflict(use_remote) 结清行")
     func conflictsAndResolve() async throws {
         let fixture = try MetadataAPIFixture()
@@ -1391,17 +1282,6 @@ struct APIMetadataTests {
         }
         #expect(choiceMissing?.code == .XMP_CHOICE_MISSING)
 
-        #expect(gatherError { try MetadataGetInput(photoIds: []) }?.code == .INVALID_PARAM)
-        #expect(
-            gatherError {
-                try MetadataSetInput(photoId: " ", tags: MetadataTags())
-            }?.code == .INVALID_PARAM
-        )
-        #expect(
-            gatherError {
-                try MetadataBatchSetInput(updates: [])
-            }?.code == .INVALID_PARAM
-        )
         #expect(
             gatherError {
                 try MetadataResolveConflictInput(
@@ -1411,15 +1291,5 @@ struct APIMetadataTests {
                 )
             }?.code == .INVALID_PARAM
         )
-
-        // 非白名单字段保留域错误（无协议码，D-030）：API 不伪造业务 code。
-        let unsupported = await asyncError {
-            let payload = try MetadataSetInput(
-                photoId: photoId,
-                tags: MetadataTags(make: "Canon")
-            )
-            return try await fixture.api.set(Confirmed(payload, source: .test))
-        }
-        #expect(unsupported is MetadataServiceError)
     }
 }

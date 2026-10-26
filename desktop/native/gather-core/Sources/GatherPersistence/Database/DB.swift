@@ -184,6 +184,8 @@ public final class DBConnection: @unchecked Sendable {
     /// 读出 affected-row 数。
     private var connectionGeneration: Int64 = 0
     private let reopenPath: String?
+    /// 只读连接（备份校验用）：跳过 WAL/写 PRAGMA，禁止 reopen。
+    private let readOnly: Bool
 
     /// 文件库的真实路径；内存库为 nil。跨进程 replay claim 用它做作用域。
     public var storagePath: String? {
@@ -191,8 +193,11 @@ public final class DBConnection: @unchecked Sendable {
     }
 
     /// path 为 ":memory:" 时使用内存库（测试用）。
-    public init(path: String) throws {
+    /// readOnly = true 时以 SQLITE_OPEN_READONLY 打开并启用 query_only；
+    /// 用于备份校验，绝不能改写备份文件头/日志。
+    public init(path: String, readOnly: Bool = false) throws {
         reopenPath = path
+        self.readOnly = readOnly
         try open()
     }
 
@@ -201,6 +206,9 @@ public final class DBConnection: @unchecked Sendable {
     /// 关闭后按原路径重新打开（迁移回滚流程需要：TS 侧关闭连接→文件恢复→下次访问
     /// 惰性重开，Swift 侧在 rollback 里显式重开以保持连接可用）。
     public func reopen() throws {
+        guard !readOnly else {
+            throw DBError.message("只读连接不能重新打开")
+        }
         guard reopenPath != nil else {
             throw DBError.message("无法重新打开数据库：该连接没有路径信息（内存库）")
         }
@@ -211,13 +219,20 @@ public final class DBConnection: @unchecked Sendable {
     private func open() throws {
         let path = reopenPath ?? ":memory:"
         var db: OpaquePointer?
-        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+        let flags = readOnly
+            ? SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+            : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         let rc = sqlite3_open_v2(path, &db, flags, nil)
         guard rc == SQLITE_OK, let db else {
             throw DBError.message("无法打开数据库 \(path): \(String(cString: sqlite3_errstr(rc)))")
         }
         handle = db
         connectionGeneration &+= 1
+        if readOnly {
+            try exec("PRAGMA query_only = ON;")
+            try exec("PRAGMA busy_timeout = 5000;")
+            return
+        }
         try exec("PRAGMA journal_mode = WAL;")
         try exec("PRAGMA foreign_keys = ON;")
         // 审计 P1-1：多线程共用单连接（JobService worker/协调器/主线程 UI），

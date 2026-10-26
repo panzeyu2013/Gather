@@ -44,12 +44,6 @@ extension SessionService {
     }
 }
 
-extension TemplateService {
-    public convenience init(connection: DBConnection, settings: SettingsService) {
-        self.init(templates: TemplateRepo(connection: connection), settings: settings)
-    }
-}
-
 extension WorkspaceStatusService {
     public convenience init(
         connection: DBConnection,
@@ -274,6 +268,8 @@ extension CullingService {
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: CullingHistoryRepo? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
+        flushMetadata: ((String) async throws -> Void)? = nil,
         delivery: (any DeliveryModuleAdapter)? = nil
     ) {
         self.init(
@@ -289,6 +285,8 @@ extension CullingService {
             writeback: writeback,
             cullingHistoryRepo: cullingHistoryRepo,
             getNumber: getNumber,
+            triageDisplayPolicy: triageDisplayPolicy,
+            flushMetadata: flushMetadata,
             // 旧默认：宿主未注入时按同一 connection 自建 coordinator（行为不变）。
             delivery: delivery ?? CoordinatorDeliveryAdapter(
                 engine: DeliveryCoordinator(

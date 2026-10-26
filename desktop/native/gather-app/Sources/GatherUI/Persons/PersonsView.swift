@@ -423,7 +423,7 @@ private struct PersonDetailView: View {
                                         // 列宽变化时留下右侧空隙与裁切比例不一致。
                                         .aspectRatio(3 / 2, contentMode: .fill)
                                         .frame(maxWidth: .infinity)
-                                        .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.sm))
+                                        .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail))
                                         Text(photo.filename).font(.callout).lineLimit(1)
                                         Text(photo.sessionName)
                                             .font(.callout)

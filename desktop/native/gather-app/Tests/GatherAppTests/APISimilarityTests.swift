@@ -6,7 +6,7 @@
 // 服务层 abort 只在有在飞占用槽时才有可观察副作用，这里不构造假推理；任务
 // 取消是本方法唯一可在无模型环境稳定断言的行为。
 //
-// 夹具：内存 SchemaV1 库 + 真实 SimilarityService / JobService，独立建库，
+// 夹具：内存 SchemaCurrent 库 + 真实 SimilarityService / JobService，独立建库，
 // 不 start() JobService（queued 取消不需要调度器），无全局状态。
 
 import Foundation

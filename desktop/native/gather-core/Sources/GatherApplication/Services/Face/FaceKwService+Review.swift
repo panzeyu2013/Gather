@@ -168,8 +168,23 @@ extension FaceKwService {
         if sourceSessionId != sessionId || targetSessionId != sessionId {
             throw FaceKwServiceError.clusterNotInSession
         }
+        // 绑定簇合并会 DELETE source 的 role_bindings，人物身份/keywords 会静默丢失；
+        // 必须由用户先显式解绑。
+        if try faceRepo.isClusterBound(clusterId: sourceId)
+            || faceRepo.isClusterBound(clusterId: targetId) {
+            throw FaceKwServiceError.clusterBound
+        }
+        // merge 后 source 簇会消失；约束清理必须使用合并前的两侧成员快照。
+        let sourcePhotoIds = Set(
+            try faceRepo.getClusterMembersFull(clusterId: sourceId).map(\.photoId))
+        let targetPhotoIds = Set(
+            try faceRepo.getClusterMembersFull(clusterId: targetId).map(\.photoId))
         try transactions.transaction {
             try faceRepo.mergeClusters(sourceId: sourceId, targetId: targetId)
+            // P0 / F0：合并删除跨两侧的 separate；未绑定合并写 together，使拆分可逆。
+            try updateConstraintsAfterMerge(
+                sessionId: sessionId, sourceId: sourceId, targetId: targetId,
+                sourcePhotoIds: sourcePhotoIds, targetPhotoIds: targetPhotoIds)
             try personRepo.reconcileSession(sessionId: sessionId)
             if let target = try faceRepo.getClusters(sessionId, includeMembers: true).first(where: { $0.id == targetId }),
                let binding = target.binding, let personId = target.matchedPersonId {

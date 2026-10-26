@@ -5,22 +5,16 @@
 
 import Foundation
 
-// TS: batch metadata updates 的元素（匿名对象 { photoId, tags }）
-public struct MetadataBatchUpdate: Codable, Equatable, Sendable {
-    public var photoId: String
-    public var tags: MetadataTags
-
-    public init(photoId: String, tags: MetadataTags) {
-        self.photoId = photoId
-        self.tags = tags
-    }
-}
-
 // TS: MetadataField
 public enum MetadataField: String, Codable, CaseIterable, Equatable, Sendable {
     case rating
     case label
     case keywords
+}
+
+public extension MetadataField {
+    /// 可写元数据字段名的唯一真相源（rating/label/keywords）。
+    static let writableNames: Set<String> = Set(allCases.map(\.rawValue))
 }
 
 // TS: MetadataMutationSource
@@ -30,69 +24,6 @@ public enum MetadataMutationSource: String, Codable, CaseIterable, Equatable, Se
     case similarity
     case template
     case manual
-}
-
-// TS: MetadataPatch.rating.op（内联单值联合 'set'）
-public enum MetadataRatingOp: String, Codable, CaseIterable, Equatable, Sendable {
-    case set
-}
-
-// TS: MetadataPatch.rating（内联匿名对象 { op: 'set'; value: number }）
-public struct MetadataRatingPatch: Codable, Equatable, Sendable {
-    public var op: MetadataRatingOp
-    public var value: Double
-
-    public init(op: MetadataRatingOp = .set, value: Double) {
-        self.op = op
-        self.value = value
-    }
-}
-
-// TS: MetadataPatch.label.op（内联单值联合 'set'）
-public enum MetadataLabelOp: String, Codable, CaseIterable, Equatable, Sendable {
-    case set
-}
-
-// TS: MetadataPatch.label（内联匿名对象 { op: 'set'; value: string }）
-public struct MetadataLabelPatch: Codable, Equatable, Sendable {
-    public var op: MetadataLabelOp
-    public var value: String
-
-    public init(op: MetadataLabelOp = .set, value: String) {
-        self.op = op
-        self.value = value
-    }
-}
-
-// TS: MetadataPatch.keywords.op（内联联合 'append' | 'replace' | 'remove'）
-public enum MetadataKeywordsOp: String, Codable, CaseIterable, Equatable, Sendable {
-    case append
-    case replace
-    case remove
-}
-
-// TS: MetadataPatch.keywords（内联匿名对象 { op: ...; values: string[] }）
-public struct MetadataKeywordsPatch: Codable, Equatable, Sendable {
-    public var op: MetadataKeywordsOp
-    public var values: [String]
-
-    public init(op: MetadataKeywordsOp, values: [String]) {
-        self.op = op
-        self.values = values
-    }
-}
-
-// TS: MetadataPatch
-public struct MetadataPatch: Codable, Equatable, Sendable {
-    public var rating: MetadataRatingPatch? // TS: rating?
-    public var label: MetadataLabelPatch? // TS: label?
-    public var keywords: MetadataKeywordsPatch? // TS: keywords?
-
-    public init(rating: MetadataRatingPatch? = nil, label: MetadataLabelPatch? = nil, keywords: MetadataKeywordsPatch? = nil) {
-        self.rating = rating
-        self.label = label
-        self.keywords = keywords
-    }
 }
 
 // TS: MetadataMutationResult
@@ -272,22 +203,20 @@ public struct MetadataTags: Codable, Equatable, Sendable {
     }
 }
 
-// TS: BatchMetadataResult
-public struct BatchMetadataResult: Codable, Equatable, Sendable {
-    public var success: Int
-    public var failed: Int
-    public var errors: [String]
-
-    public init(success: Int, failed: Int, errors: [String]) {
-        self.success = success
-        self.failed = failed
-        self.errors = errors
-    }
-}
-
 // 指纹计算失败（原声明在 Services/MetadataFingerprint.swift）。
 // Cut 3 / 3a：下移到 Protocol，因为 Persistence/DeliveryError.from 需要按类型
 // 归因（XMP_FINGERPRINT_FAILED），而 Persistence 不得依赖 Domain。
 public enum MetadataFingerprintError: Error, Equatable {
     case statFailed(String)
+}
+
+// P0 / K0：关键词写入结果（写盘结果 + 该会话 metadata 模块的同步投影）。
+public struct MetadataKeywordApplyResult: Codable, Equatable, Sendable {
+    public var result: WritebackResult
+    public var status: MetadataSyncSummary
+
+    public init(result: WritebackResult, status: MetadataSyncSummary) {
+        self.result = result
+        self.status = status
+    }
 }

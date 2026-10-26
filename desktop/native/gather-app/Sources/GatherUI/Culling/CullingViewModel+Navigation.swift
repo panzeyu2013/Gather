@@ -96,7 +96,13 @@ extension CullingViewModel {
 
     /// 对齐旧版 keepInGroupRejectRest 的工具列入口：按相似组 id 定位组并决策。
     public func keepInGroupRejectRest(_ groupId: String, keepPhotoIds: [String], shouldAdvance: Bool = true) async {
-        guard let group = similarityGroups.first(where: { $0.groupId == groupId }) else {
+        var group = similarityGroups.first(where: { $0.groupId == groupId })
+        if group == nil {
+            // groups 只在相似度范围预载；从“全部/筛选”直接按组决策时按需加载。
+            await loadSimilarityGroupsIfNeeded(force: true)
+            group = similarityGroups.first(where: { $0.groupId == groupId })
+        }
+        guard let group else {
             errorMessage = CommandError.localized("相似组已变化，请刷新后重试")
             return
         }

@@ -42,7 +42,7 @@ extension View {
     ///   - bordered: 低版本回退时是否画一圈分隔线。
     @ViewBuilder
     func gatherFunctionalSurface(
-        cornerRadius: CGFloat = GatherTheme.Radius.group,
+        cornerRadius: CGFloat = GatherTheme.Radius.card,
         clear: Bool = false,
         bordered: Bool = true
     ) -> some View {

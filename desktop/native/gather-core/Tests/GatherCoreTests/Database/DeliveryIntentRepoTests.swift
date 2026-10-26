@@ -1,7 +1,7 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Database/DeliveryIntentRepoTests.swift
 // Cut 2 / S3：delivery_intents 持久化层的行为门禁。
 //
-// 建库口径与 DeliveryRepoTests 一致：DBConnection(path: ":memory:") + exec(SchemaV1.sql)，
+// 建库口径与 DeliveryRepoTests 一致：DBConnection(path: ":memory:") + exec(SchemaCurrent.createSQL)，
 // 不走迁移链（V1 新建库）。
 //
 // 覆盖面：
@@ -21,7 +21,7 @@ import Testing
 
 private func makeIntentDB() throws -> DBConnection {
     let db = try DBConnection(path: ":memory:")
-    try db.exec(SchemaV1.sql)
+    try db.exec(SchemaCurrent.createSQL)
     return db
 }
 

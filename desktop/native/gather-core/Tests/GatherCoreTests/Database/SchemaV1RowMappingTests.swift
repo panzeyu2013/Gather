@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Database/SchemaV1RowMappingTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/Database/SchemaCurrentRowMappingTests.swift
 // Cut 2 / S4a：V1 行映射的命名解码门禁 + DB 层 NamedRow/queryNamed 的最小回归。
 //
 // 背景（R1 / D-028 / D-032）：
@@ -24,7 +24,7 @@
 //     truncated_import, reload_acked_at, index_seq, photo_count, created_at, updated_at
 //     （删 writeback_status/import_source/failed_writeback_count）。
 //
-// 全部用例用 DBConnection(path: ":memory:") + SchemaV1.sql 建库，不跑迁移链。
+// 全部用例用 DBConnection(path: ":memory:") + SchemaCurrent.createSQL 建库，不跑迁移链。
 import Foundation
 import Testing
 @testable import GatherProtocol
@@ -192,7 +192,7 @@ private struct V1SessionRow: Equatable {
 
 private func makeRowMappingDB() throws -> DBConnection {
     let db = try DBConnection(path: ":memory:")
-    try db.exec(SchemaV1.sql)
+    try db.exec(SchemaCurrent.createSQL)
     return db
 }
 
@@ -234,7 +234,7 @@ private func insertMappingPhotoFixture(_ db: DBConnection) throws {
 
 // MARK: - DB 层：NamedRow / queryNamed
 
-struct SchemaV1RowMappingTests {
+struct SchemaCurrentRowMappingTests {
     @Test func namedRowDecodesShuffledColumnsAndRejectsMissingOrWrongType() throws {
         let db = try makeRowMappingDB()
         defer { db.close() }
@@ -505,7 +505,7 @@ struct SchemaV1RowMappingTests {
 
     /// 写侧删除 metadata/result、source_file_size/mtime、member_count/thumbnail_base64
     /// 后，PhotoRepo/FaceRepo 的 INSERT/UPDATE 必须能在 V1 库上 prepare 并跑通。
-    @Test func productionWritesRunAgainstSchemaV1WithoutRemovedColumns() throws {
+    @Test func productionWritesRunAgainstSchemaCurrentWithoutRemovedColumns() throws {
         let db = try makeRowMappingDB()
         defer { db.close() }
 

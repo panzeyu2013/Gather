@@ -4,8 +4,8 @@
 // 原 390+ 行的单一 make 已按阶段拆到 Composition/：
 // - Composition/Core.swift：DB / Repo / Service 图（含 Metadata/Delivery 写回链）；
 // - Composition/Runtime.swift：executorDeps + AppRuntime，以及 CompositionRoot 入口；
-// - Composition/FeatureAPIs.swift：16 个 Live API 工厂（AppServices 的装配单元）；
-// - Composition/Root.swift：AppServices 装配（16 个 Live API + 唯一 runtime）。
+// - Composition/FeatureAPIs.swift：17 个 Live API 工厂（AppServices 的装配单元）；
+// - Composition/Root.swift：AppServices 装配（17 个 Live API + 唯一 runtime）。
 //
 // 本文件只做字段转发与主入口委托：不构造服务、不注册 executor、不开库。
 // 构造顺序、单例（xmpFileLock/deliveryCoordinator/runtime）、deliveryEventSink
@@ -49,7 +49,6 @@ public struct AppComposition {
     var assetRepo: AssetRepo { core.assetRepo }
     var faceKwService: FaceKwService { core.faceKwService }
     var personRepo: PersonRepo { core.personRepo }
-    var templateService: TemplateService { core.templateService }
     var qualityService: QualityService { core.qualityService }
     var indexerService: IndexerService { core.indexerService }
     var metadataService: MetadataService { core.metadataService }
@@ -60,6 +59,10 @@ public struct AppComposition {
     var writebackService: WritebackService { core.writebackService }
     var smartAlbumRepo: SmartAlbumRepo { core.smartAlbumRepo }
     var cullingService: CullingService { core.cullingService }
+    /// P0 / T0：技术质量初筛服务（LiveCullingAPI 注入）。
+    var triageService: TriageService { core.triageService }
+    /// P0 / B0：备份/恢复/诊断服务。
+    var maintenanceService: MaintenanceService { core.maintenanceService }
     var exportService: ExportService { core.exportService }
     var imagePreloadService: ImagePreloadService { core.imagePreloadService }
     /// XMP 侧车宿主实现（LiveMetadataAPI 的冲突 remote 读 / 孤儿 restore 用）。

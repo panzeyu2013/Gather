@@ -5,6 +5,7 @@
 // 成员 EXISTS、countForScope 的 GROUP BY 子查询）。Application 只决定 scope，
 // 谓词如何拼、分块多大、代表行规则如何写都留在这里。
 import Foundation
+import GatherProtocol
 
 /// 过滤条件的存储侧投影（Application 的 CullingFilters 在调用前映射成本类型：
 /// 枚举 → DB 字符串/驱动的分支由调用方决定，SQL 不依赖 Application 类型）。
@@ -21,6 +22,12 @@ public struct CullingPageFilter: Sendable, Equatable {
     public var metadataConflictOnly: Bool?
     /// 质量状态分支（与旧 buildFilteredWhere 的三分支一一对应）。
     public var qualityStatus: CullingQualityFilter?
+    /// P0 / T0：triage verdict 过滤（仅 filtered scope 使用）。
+    public var triageVerdicts: [String]?
+    /// P0 / T0：当前建议门控；非 nil 时过滤/排序都只认这一代建议行。
+    /// nil = 未接入 T0（旧调用方/测试），保持历史行为。
+    public var triageFingerprint: String?
+    public var triagePolicyVersion: String?
 
     public init(
         decisions: [String]? = nil,
@@ -28,7 +35,10 @@ public struct CullingPageFilter: Sendable, Equatable {
         colorLabels: [String]? = nil,
         unreviewedOnly: Bool? = nil,
         metadataConflictOnly: Bool? = nil,
-        qualityStatus: CullingQualityFilter? = nil
+        qualityStatus: CullingQualityFilter? = nil,
+        triageVerdicts: [String]? = nil,
+        triageFingerprint: String? = nil,
+        triagePolicyVersion: String? = nil
     ) {
         self.decisions = decisions
         self.ratings = ratings
@@ -36,6 +46,9 @@ public struct CullingPageFilter: Sendable, Equatable {
         self.unreviewedOnly = unreviewedOnly
         self.metadataConflictOnly = metadataConflictOnly
         self.qualityStatus = qualityStatus
+        self.triageVerdicts = triageVerdicts
+        self.triageFingerprint = triageFingerprint
+        self.triagePolicyVersion = triagePolicyVersion
     }
 }
 
@@ -63,65 +76,151 @@ public final class CullingAssetPageQuery {
 
     // MARK: - 资产页
 
-    /// filtered scope：资产组 keyset 页 + 组内全部行。
-    public func pageFiltered(
+    /// 唯一的资产组 keyset 页：scope 决定 WHERE，sort 决定 keyset 键。
+    /// 排序键按资产组聚合（variant 不参与排序）；并列恒用 first_rowid ASC。
+    public func pageSorted(
         sessionId: String,
+        scope: CullingScope,
         filter: CullingPageFilter,
-        afterRowId: Int64?,
+        similarity: CullingSimilarityScope?,
+        sort: CullingSort,
+        cursor: CullingPageCursor?,
         limit: Int
-    ) throws -> (rows: [PhotoPageRow], cursor: Int64?) {
-        let whereClause = filteredWhere(sessionId: sessionId, filter: filter)
-        let groups = try connection.prepare("""
-            SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid, MIN(p.rowid) AS first_rowid
+    ) throws -> (rows: [PhotoPageRow], cursor: CullingPageCursor?) {
+        let base: (sql: String, params: [DBValue?])
+        switch scope {
+        case .all:
+            base = ("p.session_id = ?", [.text(sessionId)])
+        case .filtered:
+            base = filteredWhere(sessionId: sessionId, filter: filter)
+        case .similarityGroup:
+            // 组 id 无法解析时没有可比对的成员集合：空页而不是回退到全部照片。
+            guard let similarity else { return ([], nil) }
+            let clause = similarityClause(sessionId: sessionId, scope: similarity)
+            base = (
+                "p.session_id = ? AND \(clause.sql) AND \(preferredRowPredicate())",
+                [.text(sessionId)] + clause.params
+            )
+        }
+
+        let sortExpression: String
+        switch sort.keyKind {
+        case .rowId:
+            sortExpression = "MIN(p.rowid)"
+        case .date:
+            // EXIF DateTimeOriginal 落库是 "YYYY:MM:DD HH:MM:SS"；ISO 是 "YYYY-MM-DD..."。
+            // 先归一，再交给 strftime 产出固定宽度文本。未知/非法日期统一成 ''。
+            sortExpression = """
+                COALESCE(strftime('%Y-%m-%dT%H:%M:%S', MAX(
+                  CASE WHEN c.date_taken GLOB '????:??:??*'
+                       THEN replace(substr(c.date_taken, 1, 10), ':', '-') || substr(c.date_taken, 11)
+                       ELSE c.date_taken END
+                )), '')
+                """
+        case .number:
+            // 游标统一携带 REAL：rating 列是 INTEGER，不 CAST 会让 doubleValue 读成 0。
+            sortExpression = sort == .ratingDesc
+                ? "CAST(COALESCE(MAX(c.rating), 0) AS REAL)"
+                // 2.0 是“无建议”的排序哨兵（confidence 恒在 0...1）；ASC 时排最后，
+                // 与 T0 §7.3 的 nulls-last 一致，且游标可原样携带。
+                : "CAST(COALESCE(MAX(t.confidence), 2.0) AS REAL)"
+        }
+
+        // triage 排序/过滤只认当前门控代；未接入门控的调用方保持历史 JOIN 行为。
+        var triageJoin = ""
+        var joinParams: [DBValue?] = []
+        if let fingerprint = filter.triageFingerprint,
+           let policyVersion = filter.triagePolicyVersion {
+            triageJoin = " AND t.input_fingerprint = ? AND t.policy_version = ?"
+            joinParams = [.text(fingerprint), .text(policyVersion)]
+        }
+        var inner = """
+            SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid,
+                   MIN(p.rowid) AS first_rowid,
+                   \(sortExpression) AS sort_key
             FROM photos p
-            LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
             LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
-            WHERE \(whereClause.sql)
-            GROUP BY COALESCE(NULLIF(p.asset_id, ''), p.id)
-            HAVING MIN(p.rowid) > ?
-            ORDER BY first_rowid
-            LIMIT ?
-          """).query(whereClause.params + [.int(afterRowId ?? 0), .int(Int64(limit))])
-        let gids = groups.map { (gid: $0[0].textValue ?? "", firstRowid: $0[1].intValue ?? 0) }
-        return (try loadAssetRows(sessionId: sessionId, groups: gids), gids.last?.firstRowid)
+            LEFT JOIN triage_suggestions t
+              ON t.photo_id = p.id AND t.session_id = p.session_id \(triageJoin)
+            """
+        if scope == .filtered {
+            inner += "\n" + """
+                LEFT JOIN culling_decisions d
+                  ON d.session_id = p.session_id AND d.photo_id = p.id
+                """
+        }
+        inner += "\nWHERE \(base.sql)\nGROUP BY gid"
+
+        var sql = "SELECT gid, first_rowid, sort_key FROM (\(inner)) AS grouped"
+        // 参数顺序必须与 SQL 文本一致：JOIN 在前、WHERE 在后。
+        var params = joinParams
+        params.append(contentsOf: base.params)
+        if let cursor {
+            let op = sort.descending ? "<" : ">"
+            let key: DBValue = switch sort.keyKind {
+            case .rowId: .int(cursor.rowId)
+            case .date: .text(cursor.dateKey ?? "")
+            case .number: .real(cursor.numberKey ?? 0)
+            }
+            sql += " WHERE (sort_key \(op) ?) OR (sort_key = ? AND first_rowid > ?)"
+            params.append(key)
+            params.append(key)
+            params.append(.int(cursor.rowId))
+        }
+        sql += " ORDER BY sort_key \(sort.descending ? "DESC" : "ASC"), first_rowid ASC LIMIT ?"
+        params.append(.int(Int64(limit)))
+
+        let grouped = try connection.prepare(sql).query(params)
+        let groups = grouped.map {
+            (gid: $0[0].textValue ?? "", firstRowid: $0[1].intValue ?? 0, sortKey: $0[2])
+        }
+        let rows = try loadAssetRows(
+            sessionId: sessionId,
+            groups: groups.map { (gid: $0.gid, firstRowid: $0.firstRowid) }
+        )
+        // loadAssetRows 按 rowid 排序（导入序）；排序页必须按组序重排，
+        // 否则一页内的组会按 rowid 回退（capture_desc 前 3 组变成 a1/a2/a3）。
+        let groupOrder = Dictionary(
+            uniqueKeysWithValues: groups.enumerated().map { ($1.gid, $0) }
+        )
+        let orderedRows = rows.sorted { lhs, rhs in
+            let left = groupOrder[Self.assetGroupId(lhs)] ?? Int.max
+            let right = groupOrder[Self.assetGroupId(rhs)] ?? Int.max
+            if left != right { return left < right }
+            return lhs.rowid < rhs.rowid
+        }
+        // 不足一页即末页，不再返回 cursor（避免 UI 多发一次空页请求）。
+        let next = groups.count < limit ? nil : groups.last.map { last -> CullingPageCursor in
+            switch sort.keyKind {
+            case .rowId:
+                return CullingPageCursor(sort: sort, rowId: last.firstRowid)
+            case .date:
+                return CullingPageCursor(
+                    sort: sort, dateKey: last.sortKey.textValue ?? "", rowId: last.firstRowid)
+            case .number:
+                return CullingPageCursor(
+                    sort: sort, numberKey: last.sortKey.doubleValue ?? 0, rowId: last.firstRowid)
+            }
+        }
+        return (orderedRows, next)
     }
 
-    /// similarityGroup scope：成员 EXISTS 谓词 + 首选行限定，同样两段式。
-    public func pageSimilarity(
-        sessionId: String,
-        similarity: CullingSimilarityScope,
-        afterRowId: Int64?,
-        limit: Int
-    ) throws -> (rows: [PhotoPageRow], cursor: Int64?) {
-        let clause = similarityClause(sessionId: sessionId, scope: similarity)
-        let groups = try connection.prepare("""
-            SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid, MIN(p.rowid) AS first_rowid
-            FROM photos p
-            WHERE p.session_id = ? AND \(clause.sql) AND \(preferredRowPredicate())
-            GROUP BY COALESCE(NULLIF(p.asset_id, ''), p.id)
-            HAVING MIN(p.rowid) > ?
-            ORDER BY first_rowid
-            LIMIT ?
-          """).query(
-            [.text(sessionId)] + clause.params
-                + [.int(afterRowId ?? 0), .int(Int64(limit))]
-        )
-        let gids = groups.map { (gid: $0[0].textValue ?? "", firstRowid: $0[1].intValue ?? 0) }
-        return (try loadAssetRows(sessionId: sessionId, groups: gids), gids.last?.firstRowid)
+    private static func assetGroupId(_ row: PhotoPageRow) -> String {
+        if let assetId = row.assetId, !assetId.isEmpty { return assetId }
+        return row.id
     }
 
     // MARK: - 计数
 
     public func countFiltered(sessionId: String, filter: CullingPageFilter) throws -> Int {
         let whereClause = filteredWhere(sessionId: sessionId, filter: filter)
+        // COUNT(DISTINCT gid) 直接聚合，省掉 GROUP BY 子查询的临时结果集。
         let row = try connection.prepare("""
-            SELECT COUNT(*) AS count
-            FROM (SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
-                  FROM photos p
-                  LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
-                  LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
-                  WHERE \(whereClause.sql)
-                  GROUP BY gid)
+            SELECT COUNT(DISTINCT COALESCE(NULLIF(p.asset_id, ''), p.id))
+            FROM photos p
+            LEFT JOIN culling_decisions d ON d.session_id = p.session_id AND d.photo_id = p.id
+            LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
+            WHERE \(whereClause.sql)
           """).get(whereClause.params)
         return Int(row?[0].intValue ?? 0)
     }
@@ -224,7 +323,7 @@ public final class CullingAssetPageQuery {
                       WHERE a3.asset_file_id = p.asset_file_id
                         AND a3.analysis_type = 'technical_quality'
                         AND json_valid(a3.result_json)
-                      ORDER BY a3.updated_at DESC
+                      ORDER BY a3.updated_at DESC, a3.id DESC
                       LIMIT 1
                     ), '{}'), '$.status') = ?
                     """)
@@ -239,6 +338,34 @@ public final class CullingAssetPageQuery {
                     )
                     """)
             }
+        }
+        if let verdicts = filter.triageVerdicts, !verdicts.isEmpty {
+            let placeholders = verdicts.map { _ in "?" }.joined(separator: ",")
+            var gateClause = ""
+            var gateParams: [DBValue?] = []
+            if let fingerprint = filter.triageFingerprint,
+               let policyVersion = filter.triagePolicyVersion {
+                gateClause = " AND t2.input_fingerprint = ? AND t2.policy_version = ?"
+                gateParams = [.text(fingerprint), .text(policyVersion)]
+            }
+            clauses.append("""
+                EXISTS (
+                  SELECT 1 FROM triage_suggestions t2
+                  WHERE t2.session_id = p.session_id AND t2.photo_id = p.id
+                    AND t2.verdict IN (\(placeholders))\(gateClause)
+                    AND NOT EXISTS (
+                      SELECT 1 FROM culling_decisions d
+                      JOIN photos p2 ON p2.id = d.photo_id
+                      WHERE d.session_id = t2.session_id
+                        AND d.decision_source = 'manual'
+                        AND d.decision <> 'pending'
+                        AND COALESCE(NULLIF(p2.asset_id, ''), p2.id)
+                            = COALESCE(NULLIF(p.asset_id, ''), p.id)
+                    )
+                )
+                """)
+            params.append(contentsOf: verdicts.map { .text($0) })
+            params.append(contentsOf: gateParams)
         }
         clauses.append(preferredRowPredicate())
         return (clauses.joined(separator: " AND "), params)

@@ -32,6 +32,12 @@ private struct B8FaceState {
     var cleanupResultValue = CleanupResult(deletedCount: 0, errors: [])
     var unbindResultValue = FkwUnbindResult(done: true, removedKeywords: [])
     var confirmSyncResult = true
+    var splitResultValue = FaceSplitResult(
+        newClusterId: 2, movedCount: 0, remainingCount: 0, label: "Person 2"
+    )
+    var reviewPageValue = FaceReviewPage(
+        items: [], nextCursor: nil, total: 0, suspectTotal: 0, clusters: []
+    )
 
     var clustersError: (any Error)?
     var bindError: (any Error)?
@@ -46,6 +52,8 @@ private struct B8FaceState {
     var confirmSyncError: (any Error)?
     var cleanupError: (any Error)?
     var modelsError: (any Error)?
+    var splitError: (any Error)?
+    var reviewError: (any Error)?
 
     var analyzeGate: AsyncGate?
     var responseDelay = Duration.zero
@@ -62,6 +70,8 @@ private struct B8FaceState {
     var writebackInputs: [Confirmed<FaceWritebackInput>] = []
     var confirmSyncCalls: [String] = []
     var cleanupInputs: [Confirmed<SessionReference>] = []
+    var splitInputs: [Confirmed<FaceSplitInput>] = []
+    var reviewInputs: [FaceReviewInput] = []
     var modelsCalls = 0
 }
 
@@ -112,6 +122,26 @@ final class B8FaceAPIStub: FaceAPI, @unchecked Sendable {
     var confirmSyncResult: Bool {
         get { box.lock.withLock { box.confirmSyncResult } }
         set { box.lock.withLock { box.confirmSyncResult = newValue } }
+    }
+
+    var splitResultValue: FaceSplitResult {
+        get { box.lock.withLock { box.splitResultValue } }
+        set { box.lock.withLock { box.splitResultValue = newValue } }
+    }
+
+    var reviewPageValue: FaceReviewPage {
+        get { box.lock.withLock { box.reviewPageValue } }
+        set { box.lock.withLock { box.reviewPageValue = newValue } }
+    }
+
+    var splitError: (any Error)? {
+        get { box.lock.withLock { box.splitError } }
+        set { box.lock.withLock { box.splitError = newValue } }
+    }
+
+    var reviewError: (any Error)? {
+        get { box.lock.withLock { box.reviewError } }
+        set { box.lock.withLock { box.reviewError = newValue } }
     }
 
     var clustersError: (any Error)? {
@@ -201,6 +231,8 @@ final class B8FaceAPIStub: FaceAPI, @unchecked Sendable {
     var writebackInputs: [Confirmed<FaceWritebackInput>] { box.lock.withLock { box.writebackInputs } }
     var confirmSyncCalls: [String] { box.lock.withLock { box.confirmSyncCalls } }
     var cleanupInputs: [Confirmed<SessionReference>] { box.lock.withLock { box.cleanupInputs } }
+    var splitInputs: [Confirmed<FaceSplitInput>] { box.lock.withLock { box.splitInputs } }
+    var reviewInputs: [FaceReviewInput] { box.lock.withLock { box.reviewInputs } }
     var modelsCalls: Int { box.lock.withLock { box.modelsCalls } }
 
     private func delayIfNeeded() async throws {
@@ -328,6 +360,26 @@ final class B8FaceAPIStub: FaceAPI, @unchecked Sendable {
         let (error, result): ((any Error)?, FaceModelsStatus) = box.lock.withLock {
             box.modelsCalls += 1
             return (box.modelsError, box.modelsValue)
+        }
+        if let error { throw error }
+        return result
+    }
+
+    func split(_ input: Confirmed<FaceSplitInput>) async throws -> FaceSplitResult {
+        try await delayIfNeeded()
+        let (error, result): ((any Error)?, FaceSplitResult) = box.lock.withLock {
+            box.splitInputs.append(input)
+            return (box.splitError, box.splitResultValue)
+        }
+        if let error { throw error }
+        return result
+    }
+
+    func review(_ input: FaceReviewInput) async throws -> FaceReviewPage {
+        try await delayIfNeeded()
+        let (error, result): ((any Error)?, FaceReviewPage) = box.lock.withLock {
+            box.reviewInputs.append(input)
+            return (box.reviewError, box.reviewPageValue)
         }
         if let error { throw error }
         return result

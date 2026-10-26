@@ -12,7 +12,7 @@ import GatherProtocol
 struct CullingToolbar: View {
     let viewModel: CullingViewModel
     let isBusy: Bool
-    @Binding var compareCount: Int
+    @Binding var layoutMode: CullingLayoutMode
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
@@ -50,14 +50,15 @@ struct CullingToolbar: View {
                 .toggleStyle(.checkbox)
                 .fixedSize()
 
-            labeledPicker(l10n("对比")) {
-                Picker(l10n("对比"), selection: $compareCount) {
-                    Text(l10n("单图")).tag(1)
-                    Text(l10n("2 图")).tag(2)
-                    Text(l10n("4 图")).tag(4)
+            labeledPicker(l10n("布局")) {
+                Picker(l10n("布局"), selection: $layoutMode) {
+                    ForEach(CullingLayoutMode.allCases, id: \.self) { mode in
+                        Label(l10n(mode.titleKey), systemImage: mode.systemImage)
+                            .tag(mode)
+                    }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 150)
+                .frame(width: 210)
                 .fixedSize()
             }
 
@@ -82,17 +83,17 @@ struct CullingToolbar: View {
                 }
                 Divider()
                 Toggle(l10n("自动前进"), isOn: autoAdvanceBinding)
-                Picker(l10n("对比"), selection: $compareCount) {
-                    Text(l10n("单图")).tag(1)
-                    Text(l10n("2 图")).tag(2)
-                    Text(l10n("4 图")).tag(4)
+                Picker(l10n("布局"), selection: $layoutMode) {
+                    ForEach(CullingLayoutMode.allCases, id: \.self) { mode in
+                        Text(l10n(mode.titleKey)).tag(mode)
+                    }
                 }
             } label: {
                 Label(l10n("显示"), systemImage: "slider.horizontal.3")
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help(l10n("范围、自动前进与对比布局"))
+            .help(l10n("范围、自动前进与布局"))
 
             compactQualityAnalysis
 

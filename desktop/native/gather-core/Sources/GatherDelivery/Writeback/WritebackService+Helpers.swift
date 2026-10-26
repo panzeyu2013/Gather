@@ -189,7 +189,7 @@ public enum WritebackPlannerError: Error, Equatable, CustomStringConvertible {
 extension WritebackService {
     // MARK: - 私有支撑
 
-    /// 旧写回模块名 → 交付模块（落库值只取 SchemaV1 的 CHECK 值）。
+    /// 旧写回模块名 → 交付模块（落库值只取 SchemaCurrent 的 CHECK 值）。
     func mapModule(_ module: String) throws -> DeliveryModule {
         guard let mapped = DeliveryModule(writebackModule: module) else {
             // 现有调用方只用 culling / similarity / face_kw（含 "face-keyword" 别名），

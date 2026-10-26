@@ -34,6 +34,46 @@ enum CullingDisplayFormat {
         }
     }
 
+    /// T0：建议 verdict 的标题（网格 chip、检查器当前照片共用）。
+    static func triageVerdictTitle(_ verdict: TriageVerdict, with l10n: L10n) -> String {
+        switch verdict {
+        case .keep: return l10n("建议保留")
+        case .reject: return l10n("建议淘汰")
+        case .review: return l10n("待复核")
+        }
+    }
+
+    static func triageColor(_ verdict: TriageVerdict) -> Color {
+        switch verdict {
+        case .keep: return GatherTheme.success
+        case .reject: return GatherTheme.error
+        case .review: return .orange
+        }
+    }
+
+    /// T0：理由码 → 用户文案。未知码原样透传，避免新增码在旧界面静默消失。
+    static func triageReasonTitle(_ code: TriageReasonCode, with l10n: L10n) -> String {
+        switch code {
+        case .groupBest: return l10n("同组最佳")
+        case .weakerThanGroupBest: return l10n("同组中有更清晰/更稳的一张")
+        case .motionBlur: return l10n("疑似抖动模糊")
+        case .exposureLow: return l10n("曝光可能不准")
+        case .closedEyeSuspect: return l10n("疑似闭眼，请人工确认")
+        case .closeCall: return l10n("差距不足以下结论")
+        case .tieWithGroup: return l10n("与同组几乎一样")
+        case .singleShot: return l10n("单张，无替代")
+        case .noAlternative: return l10n("没有可比的替代片")
+        case .lowTechnical: return l10n("技术质量偏低")
+        case .qualityMissing: return l10n("尚未做技术质量分析")
+        case .analysisFailed: return l10n("技术质量分析失败")
+        case .duplicateExact: return l10n("完全重复文件")
+        case .duplicateVisual: return l10n("视觉近似重复")
+        case .multiFaceLowConfidence: return l10n("多人脸，建议人工判断")
+        case .smallFace: return l10n("人脸过小，眼部信号不可靠")
+        case .manualOverride: return l10n("已有人工决策")
+        }
+    }
+
     static func metadataFieldTitle(_ field: MetadataField, with l10n: L10n) -> String {
         switch field {
         case .rating: return l10n("星级")

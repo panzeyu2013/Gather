@@ -393,7 +393,15 @@ extension WritebackService {
                 // 与盘上现状取并集（culling/人脸/相似度的只增语义不变）。
                 let keywordsMode = entry.item.attributes[
                     MetadataMutationService.keywordsModeKey]?.stringValue
-                if keywordsMode == MetadataKeywordWriteMode.replace.rawValue {
+                if keywordsMode == MetadataKeywordWriteMode.delta.rawValue {
+                    // K0：delta 在锁内按盘上现状重新合并，绝不覆盖 preview 后外部新增的词。
+                    let added = entry.item.attributes["keywords_added"]?
+                        .arrayElements?.compactMap(\.stringValue) ?? []
+                    let removed = entry.item.attributes["keywords_remove"]?
+                        .arrayElements?.compactMap(\.stringValue) ?? []
+                    attributesToWrite.keywords = KeywordPlanner.apply(
+                        existing: keywordsBeforeWrite, added: added, removed: removed)
+                } else if keywordsMode == MetadataKeywordWriteMode.replace.rawValue {
                     attributesToWrite.keywords = persistedItem.keywords
                 } else {
                     attributesToWrite.keywords = persistedItem.attributes != nil
