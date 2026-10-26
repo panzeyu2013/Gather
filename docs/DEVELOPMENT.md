@@ -312,7 +312,7 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - `L10n`（`Support/L10n.swift:120`）：**key 即中文文案**；渲染期显式携带
   `language`（`L10n.Language.zhCN/en`），经 `Bundle.module` 的 `.lproj` 查表——
   `zh-Hans.lproj` 只有 9 个占位键，未命中自动回退 key（即中文）；`en.lproj`
-  （1,337 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
+  （1,494 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
   (language, key) 缓存查表结果，避免每帧重走 Bundle 查找。
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`

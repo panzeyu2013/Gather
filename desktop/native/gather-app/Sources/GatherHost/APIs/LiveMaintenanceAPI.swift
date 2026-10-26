@@ -44,6 +44,7 @@ public struct LiveMaintenanceAPI: MaintenanceAPI, Sendable {
     }
 
     private static func map(_ error: Error) -> Error {
+        // allow: string-code — core 侧稳定码到 GatherErrorCode 的唯一映射，码值由契约测试钉住。
         guard let maintenance = error as? MaintenanceError,
               let code = GatherErrorCode(rawValue: maintenance.code)
         else { return error }

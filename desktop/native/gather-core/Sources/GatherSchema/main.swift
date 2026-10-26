@@ -1,6 +1,6 @@
 // desktop/native/gather-core/Sources/GatherSchema/main.swift
 // Cut 3 / 3a-5（D-015）：GatherSchema —— schema 工具可执行（dump / verify）。
-// WP6b：verify 对齐 user_version=2 与完整的 43/373/69/62 数字；dump 打印当前 V2 快照。
+// verify 对齐 user_version=3 与完整的 44/383/72/65 数字；dump 打印当前 schema 建库 DDL。
 //
 // DDL 的唯一真相源仍在 GatherPersistence（Sources/GatherPersistence/Database/SchemaCurrent.swift）；
 // 本 target 依赖 GatherPersistence 而**不导出库**，也不复制任何 DDL 文本。

@@ -62,7 +62,7 @@ public enum SchemaCurrent {
     ///
     /// 口径见 Database.readSchemaShape：canonical 文本排序后取 SHA-256。更新 DDL 后必须
     /// 同步更新本值（先让正确库的 open 报出实际指纹，再粘贴；不要用 DDL 自动计算，
-    /// 否则旧库也能自证「当前」）。当前值对应 43 表 / 373 列 / 69 索引 / 62 外键。
+    /// 否则旧库也能自证「当前」）。当前值对应 44 表 / 383 列 / 72 索引 / 65 外键。
     public static let expectedShapeFingerprint: String =
         "fa0f3c87ef2b6cd0fc5e937b116149f2aaa7f4a88dc002794a05730b3e1d2bcc"
 

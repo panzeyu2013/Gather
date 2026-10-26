@@ -17,7 +17,7 @@
 > 统计“通过”时不得把 skip 算作有效执行，门禁与负例见 §4.1。
 
 > **状态（2026-10-24 测试分层优化 + 复审修复，当前）**：
-> - 默认套件实测（M5 Pro / Debug / 串行 / 不含构建）：**core 1,166 例 / 173 套件 ≈ 1.7s**
+> - 默认套件实测（M5 Pro / Debug / 串行 / 不含构建）：**core 1,246 例 / 184 套件**
 >   （含新增的 matcher LSH 召回门；上一轮同机采样 10.1s 为并行负载下的读数）、
 >   **app 650 例 / 74 套件 ≈ 12.0s**（含 5 条菜单可用性用例）；skip 11 条（默认）/
 >   3 条（`GATHER_MODEL_TESTS=1`）。随机器负载浮动。
@@ -324,7 +324,7 @@ app（298 → **253**）：删除 -11（D1/D3）、合并 -54（M1/M8/M10/M11 + 
 - **skip 口径**：`.enabled(if:)` **4 处 / 8 条 → 3 处 / 3 条**（HNSW suite gate 随 5b-2a 删除）；`.disabled` **0**、`withKnownIssue` **0** 不变。
 - **Reconciliation**：**24 → 22 例**（Cluster 3 / Clusterer 4 / DHash 1 / Dimensions 1 / Matcher 10 / Vector 3）；fixture `vector-fixtures.json` 143,273 → 140,855 行（−2,418）。**2026-10-24：该 fixture、生成器与 Vector 召回门已删除；Matcher 现 9 例。**
 - **口径偏差**：Cut 0 预算 core 761 / app 253 未按原样执行——各 Cut 按"删除对象 + 替代断言同 PR"落地，net 落到 **1,092 / 581**；app 高于预算是 Cut 4 新增的状态层/本地化/边界测试所致，不是新增冗余。
-- **6a 资源口径**：en 1,337 / zh 9；孤儿 key allowlist 1（`检测模型路径` 由测试构造）；`#Preview` 18 块 / 13 文件、`#if DEBUG` 16 行有效（全部 Preview 守卫）；`.disabled`/`withKnownIssue` 仍 0。
+- **6a 资源口径**：en 1,494 / zh 9；孤儿 key allowlist 1（`检测模型路径` 由测试构造）；`#Preview` 18 块 / 13 文件、`#if DEBUG` 16 行有效（全部 Preview 守卫）；`.disabled`/`withKnownIssue` 仍 0。
 
 ## 附录 A：复算命令（只读）
 

@@ -1,7 +1,7 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Database/DeliveryRepoTests.swift
 // Cut 2 / S2：delivery 持久化层的行为门禁（只覆盖新表，不碰旧 outbox/writeback）。
 //
-// 建库口径：DBConnection(path: ":memory:") + exec(SchemaCurrent.createSQL)——一次性建齐 43 表/索引/FK，
+// 建库口径：DBConnection(path: ":memory:") + exec(SchemaCurrent.createSQL)——一次性建齐 44 表/索引/FK，
 // 与 Database.open 的 Cut 2 接线方式一致；不用迁移链（D-003：V1 不做版本升级）。
 //
 // 覆盖面：
