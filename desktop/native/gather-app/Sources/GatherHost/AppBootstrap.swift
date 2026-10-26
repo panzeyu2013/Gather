@@ -107,6 +107,14 @@ package final class AppBootstrap {
             self.scene = state
             // B0：按 backup_auto 启停调度器（off 时 startScheduler 自身 no-op）。
             await maintenance.startScheduler()
+            // ADR-023 + B0：退出前优雅停机 —— 停自动备份调度器、等备份收尾、排空写回、关库。
+            // 必须经 bootstrap.shutdown()：只调 runtime.shutdown() 会跳过 stopScheduler/
+            // waitForBackup，退出时备份被半途掐断并累计 autoPaused。
+            if let delegate {
+                delegate.onPrepareForTermination = { [weak self] in
+                    await self?.shutdown()
+                }
+            }
         } catch {
             GatherLogger.log("bootstrap failed: \(error)", level: .error)
             // 旧库/损坏库给可执行的归档指引；其余错误仍走统一漏斗。
@@ -214,8 +222,15 @@ package final class AppBootstrap {
             } catch {
                 GatherLogger.log(
                     "Database.open after restore failed; rolling back: \(error)", level: .error)
-                BestEffort.attempt("rollback restore on open failure") {
+                let rolledBack = BestEffort.attempt("rollback restore on open failure") {
                     try RestoreCoordinator.rollbackToPrevious(dbPath: dbURL.path)
+                }
+                guard rolledBack else {
+                    // 回滚失败 = 现场不可安全继续：fail closed。绝不能按「未恢复」继续启动，
+                    // 否则会在旧库被覆盖后照常回放 delivery（B0 §3.5 明令禁止的路径）。
+                    GatherLogger.log(
+                        "restore rollback failed; failing closed: \(error)", level: .error)
+                    throw error
                 }
                 database = try await openDatabase()
                 didRestore = false
@@ -419,11 +434,6 @@ package final class AppBootstrap {
         }
         delegate.onCaptureOneImport = {
             try await captureOneBridge.selectedPhotoPaths()
-        }
-        // ADR-023：退出前优雅停机（排空写回 + 关闭 SQLite），委托
-        // AppRuntime.shutdown（幂等）。
-        delegate.onPrepareForTermination = {
-            await runtime.shutdown()
         }
     }
 

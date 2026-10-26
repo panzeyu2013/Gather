@@ -85,7 +85,9 @@ enum SchemaReset {
             }
             keys.insert(key)
         }
-        let keep = max(0, limit)
+        // 至少保留 1 份：limit=0 时把刚改名的旧库当场删掉会违背「改名保留」契约，
+        // 且让调用方的 outcome.backup 指向已删文件。
+        let keep = max(1, limit)
         guard keys.count > keep else { return }
         for key in keys.sorted().dropLast(keep) {
             for name in [prefix + key, prefix + key + "-wal", prefix + key + "-shm"] {

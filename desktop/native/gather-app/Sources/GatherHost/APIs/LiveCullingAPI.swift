@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherHost/APIs/LiveCullingAPI.swift
-// Cut 1 / B3a：CullingAPI 的 Live 实现（17 个方法）。
+// Cut 1 / B3a：CullingAPI 的 Live 实现（19 个方法）。
 //
 // 对应命令（19 条）：culling.list_page / history / apply_history / update /
 // batch_update / decide_group / groups / summary / sync_status / reset /
@@ -127,7 +127,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                 source: input.source ?? .manual
             )
         }
-        try await cullingService.flushQueuedMetadata(sessionId: input.sessionId)
+        try await mapAsync { try await cullingService.flushQueuedMetadata(sessionId: input.sessionId) }
         return result
     }
 
@@ -144,7 +144,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                 context: context
             )
         }
-        try await cullingService.flushQueuedMetadata(sessionId: input.sessionId)
+        try await mapAsync { try await cullingService.flushQueuedMetadata(sessionId: input.sessionId) }
         return result
     }
 
@@ -156,7 +156,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                 patch: input.patch
             )
         }
-        try await cullingService.flushQueuedMetadata(sessionId: input.sessionId)
+        try await mapAsync { try await cullingService.flushQueuedMetadata(sessionId: input.sessionId) }
         return result
     }
 
