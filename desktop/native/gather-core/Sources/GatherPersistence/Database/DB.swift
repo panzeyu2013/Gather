@@ -68,8 +68,6 @@ public final class DBConnection: @unchecked Sendable {
     public convenience init(path: String, readOnly: Bool) throws {
         try self.init(path: path, mode: readOnly ? .readOnly : .readWrite)
     }
-        try open()
-    }
 
     deinit { close() }
 

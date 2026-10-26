@@ -188,4 +188,16 @@ struct MetadataServiceTests {
         #expect(second[fx.photoId]?.rating == nil)
         #expect(second[fx.photoId]?.label == nil)
     }
+
+    /// main 分支 2f81fcd8（D4/D7）：数字关键词按 JS `String(item)` 口径字符串化 ——
+    /// 整数值不得带 ".0"（否则写回 XMP 的关键词从 "7" 变成 "7.0"，破坏跨端一致）。
+    @Test("数字关键词字符串化：7→\"7\"、7.5→\"7.5\"、-0→\"0\"")
+    func numericKeywordStringification() {
+        let list = MetadataService.normalizeKeywordList(
+            .array([.number(7), .number(7.5), .number(-0.0), .string("lead"), .null])
+        )
+        #expect(list == ["7", "7.5", "0", "lead"])
+        #expect(MetadataService.normalizeKeywordList(.number(7)) == ["7"])
+        #expect(MetadataService.normalizeKeywordList(.none) == nil)
+    }
 }

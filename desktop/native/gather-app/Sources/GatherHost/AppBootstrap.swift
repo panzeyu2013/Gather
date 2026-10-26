@@ -167,11 +167,8 @@ package final class AppBootstrap {
         // Cut 3 / 3b-3（E-04）：注册页面解码端口（RAWDecoder 在 GatherAnalysis，
         // GatherUI 只能经 ImageDecoderPort 拿到；重复注册按后者生效）。
         ImageDecodingRegistry.install(RAWImageDecoder())
-        // 导入路径规则（C1 选片归一化 / 取名）同样经端口注入：真相源在
-        // GatherDomain/GatherPersistence，GatherUI 只认端口。
-        ImportPathRulesRegistry.install(HostImportPathRules())
-        // C1 会话同步状态：UI 只开关视图状态，聚合仍由领域层唯一实现。
-        CaptureOneSyncStateRulesRegistry.install(HostCaptureOneSyncStateRules())
+        // R7（refactor）：导入路径规则与 C1 同步状态判定已下沉 GatherProtocol，
+        // UI 直调纯函数，不再有端口/registry/Host 适配器。
         // B0：文件日志 sink（启动早期安装，Database.open 的失败也能落盘）。
         Self.logSink = LogFileSink.install(
             directory: appDir.appendingPathComponent("Logs", isDirectory: true))

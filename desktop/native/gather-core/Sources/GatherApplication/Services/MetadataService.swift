@@ -198,7 +198,7 @@ public final class MetadataService: @unchecked Sendable {
         case .array(let items):
             strings = items.compactMap { item in
                 if let s = item.stringValue { return s }
-                if let n = item.numberValue { return String(n) }
+                if let n = item.numberValue { return keywordString(n) }
                 return nil
             }
         case .none, .null:
@@ -207,7 +207,7 @@ public final class MetadataService: @unchecked Sendable {
             if let s = scalar.stringValue {
                 strings = [s]
             } else if let n = scalar.numberValue {
-                strings = [String(n)]
+                strings = [keywordString(n)]
             } else {
                 strings = []
             }
@@ -814,6 +814,16 @@ public final class MetadataService: @unchecked Sendable {
 private func stringValue(_ value: JSONValue?) -> String? {
     guard let value else { return nil }
     if let string = value.stringValue { return string }
-    if let number = value.numberValue { return String(number) }
+    if let number = value.numberValue { return keywordString(number) }
     return nil
+}
+
+/// TS: `String(item)` —— JS Number 字符串化语义：整数值不带小数点（7 → "7"，-0 → "0"），
+/// NaN/±Infinity 同 JS 命名；非整数保留 Double 字符串形式（7.5 → "7.5"）。
+/// 关键词归一化（normalizeKeywordList）与 EXIF 标量字符串化（stringValue）共用同一口径。
+private func keywordString(_ number: Double) -> String {
+    if number.isNaN { return "NaN" }
+    if number.isInfinite { return number < 0 ? "-Infinity" : "Infinity" }
+    if let integer = Int64(exactly: number) { return String(integer) }
+    return String(number)
 }
