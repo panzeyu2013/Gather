@@ -27,15 +27,17 @@ ANALYSIS_DIR="$CORE_SRC/GatherAnalysis"
 DOMAIN_DIR="$CORE_SRC/GatherApplication"
 PERSISTENCE_DIR="$CORE_SRC/GatherPersistence"
 
-split=0
+# 扫描根守卫：目录消失/改名不得静默跳过（Gate fail-open，复审 P1）。
 for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR"; do
-  if [ -d "$d" ]; then split=1; fi
+  if [ ! -d "$d" ]; then
+    echo "check-layering: FAIL 缺少扫描根：$d" >&2
+    exit 1
+  fi
 done
-
-if [ "$split" -eq 0 ]; then
-  echo "check-layering: not split yet — Sources 仍是 GatherCore/GatherApp 单 target（§9 Cut 3 拆分后启用）。"
-  echo "check-layering: exit 0 (baseline mode)"
-  exit 0
+SWIFT_N=$(find "$CORE_SRC" "$APP_SRC" -type f -name '*.swift' -not -path '*/.build/*' | wc -l | tr -d ' ')
+if [ "$SWIFT_N" -lt 300 ]; then
+  echo "check-layering: FAIL Sources 只扫到 ${SWIFT_N} 个 Swift 文件（<300），疑似根路径错误" >&2
+  exit 1
 fi
 
 fail=0
@@ -52,7 +54,8 @@ check_forbidden() {
   local mod
   for mod in "$@"; do
     local hits
-    hits=$(grep -rnE --include='*.swift' "^[[:space:]]*import[[:space:]]+$mod([[:space:]]|$)" "$dir" 2>/dev/null || true)
+    # 复审 P2：兼容 @_exported 与 import struct/class/... Mod.Type 写法。
+    hits=$(grep -rnE --include='*.swift' "^[[:space:]]*(@_exported[[:space:]]+)?import([[:space:]]+(struct|class|enum|func|var|typealias))?[[:space:]]+$mod([.[:space:]]|$)" "$dir" 2>/dev/null || true)
     if [ -n "$hits" ]; then
       echo "FAIL   ${label} 不得 import ${mod}："
       printf '%s\n' "$hits" | sed 's/^/  - /'

@@ -284,9 +284,21 @@ public final class AnalysisJobRepo {
     /// 租约超时回收：
     /// - running 心跳超时 → interrupted / worker_lost（可自动恢复）；
     /// - cancelling 心跳超时 → cancelled（用户已请求取消，绝不允许恢复执行）。
-    public func recoverStale(leaseTimeoutMs: Int = 30_000) throws -> Int {
+    public func recoverStale(leaseTimeoutMs: Int) throws -> Int {
+        try recoverStale(leaseTimeoutMs: leaseTimeoutMs, excludingJobIds: [])
+    }
+
+    /// 看门狗回收（P1）：excludingJobIds 用于排除本进程仍在运行的 job。
+    public func recoverStale(leaseTimeoutMs: Int, excludingJobIds: [String]) throws -> Int {
         let now = nowISOString()
         let cutoff = isoString(Date().addingTimeInterval(-Double(leaseTimeoutMs) / 1000))
+        var values: [DBValue?] = [.text(now), .text(now), .text(cutoff)]
+        var exclusion = ""
+        if !excludingJobIds.isEmpty {
+            let placeholders = excludingJobIds.map { _ in "?" }.joined(separator: ", ")
+            exclusion = " AND id NOT IN (\(placeholders))"
+            values.append(contentsOf: excludingJobIds.map { .text($0) })
+        }
         return try connection.prepare("""
             UPDATE analysis_jobs
             SET status = CASE WHEN status = 'cancelling' THEN 'cancelled' ELSE 'interrupted' END,
@@ -294,8 +306,19 @@ public final class AnalysisJobRepo {
                 error_message = CASE WHEN status = 'cancelling' THEN '' ELSE 'Worker heartbeat expired' END,
                 finished_at = ?, updated_at = ?
             WHERE status IN ('running', 'cancelling')
-              AND (heartbeat_at = '' OR heartbeat_at < ?)
-          """).run([.text(now), .text(now), .text(cutoff)])
+              AND (heartbeat_at = '' OR heartbeat_at < ?)\(exclusion)
+          """).run(values)
+    }
+
+    /// 复审 P2：按 (type, scopeId) 只取活跃行的 id，避免 cancelScope 全表加载
+    /// （list() 带 checkpoint，导出任务可达 ~1MB/行）。
+    public func activeJobIDs(type: AnalysisJobType, scopeId: String) throws -> [String] {
+        try connection.prepare("""
+            SELECT id FROM analysis_jobs
+            WHERE type = ? AND scope_id = ?
+              AND status IN ('queued', 'running', 'cancelling')
+            ORDER BY id
+          """).query([.text(type.rawValue), .text(scopeId)]).compactMap { $0[0].textValue }
     }
 
     /// 自动恢复：interrupted → queued（checkpoint 保留）。

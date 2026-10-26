@@ -9,7 +9,7 @@
 // 2. advance：prepared → fileDone → applied 合法链；跳相位/回退/自迁移显式抛错；
 // 3. finish：成功删除；error 标记 applied + error_message；行不存在显式失败；
 // 4. pending：prepared/fileDone 分开、按 id 升序、排除 applied、只读；
-// 5. replayAll：清理 applied 终态、返回回放待办、重复调用幂等（不做文件 IO）；
+// 5. replayAll：返回 prepared/fileDone/applied（applied 由调用方补删备份后清行）、重复调用幂等；
 // 6. 行映射按列名而非物理列序；CHECK 取值集合与 Swift enum 双向一致。
 
 import Foundation
@@ -268,7 +268,7 @@ struct DeliveryIntentRepoTests {
         #expect(try repo.get(appliedC)?.typedPhase == .applied)
     }
 
-    @Test func replayAllPurgesAppliedAndReturnsBacklogIdempotently() throws {
+    @Test func replayAllReturnsAppliedWithoutPurgingUntilCallerFinishes() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
 
@@ -282,15 +282,18 @@ struct DeliveryIntentRepoTests {
         let backlog = try repo.replayAll()
         #expect(backlog.prepared.map(\.id) == [preparedId])
         #expect(backlog.fileDone.map(\.id) == [fileDoneId])
-        #expect(backlog.count == 2)
-        // applied 终态行被清理；prepared/fileDone 原样保留（等待调用方处理）。
-        #expect(try repo.get(appliedId) == nil)
-        #expect(try intentCount(db) == 2)
+        // A3：applied 行不再由 replayAll 删除——调用方要先补删备份再 finish(nil)。
+        #expect(backlog.applied.map(\.id) == [appliedId])
+        #expect(backlog.count == 3)
+        #expect(try repo.get(appliedId)?.typedPhase == .applied)
 
-        // 第二次 replayAll：幂等，不重复处理已闭环的行。
+        // 第二次 replayAll：同一 applied 行仍返回，直到调用方显式收尾。
         let second = try repo.replayAll()
         #expect(second == backlog)
-        #expect(try intentCount(db) == 2)
+        #expect(try intentCount(db) == 3)
+
+        try repo.finish(id: appliedId, error: nil)
+        #expect(try repo.get(appliedId) == nil)
     }
 
     // MARK: 状态边界（D-031）

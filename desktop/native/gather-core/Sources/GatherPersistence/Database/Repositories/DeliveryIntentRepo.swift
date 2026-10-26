@@ -159,19 +159,27 @@ public struct DeliveryIntentBacklog: Sendable, Equatable {
     public let prepared: [DeliveryIntentRow]
     /// 文件已完成：只补 DB 段，绝不重放文件。
     public let fileDone: [DeliveryIntentRow]
+    /// 已应用（终态）：cleanup 的显式放弃记录，或 finalize 已删行但备份尚未清理。
+    /// pending() 不返回；只有 replayAll() 返回，供启动时补删备份后清行。
+    public let applied: [DeliveryIntentRow]
 
-    public init(prepared: [DeliveryIntentRow], fileDone: [DeliveryIntentRow]) {
+    public init(
+        prepared: [DeliveryIntentRow],
+        fileDone: [DeliveryIntentRow],
+        applied: [DeliveryIntentRow] = []
+    ) {
         self.prepared = prepared
         self.fileDone = fileDone
+        self.applied = applied
     }
 
-    public var isEmpty: Bool { prepared.isEmpty && fileDone.isEmpty }
+    public var isEmpty: Bool { prepared.isEmpty && fileDone.isEmpty && applied.isEmpty }
 
-    public var count: Int { prepared.count + fileDone.count }
+    public var count: Int { prepared.count + fileDone.count + applied.count }
 
-    /// 展平列表（prepared 在前、fileDone 在后；相位内保持 id 升序）。
+    /// 展平列表（prepared 在前、fileDone 次之、applied 最后；相位内 id 升序）。
     /// 仅供审计/日志；实际回放必须按相位分支，不能用本列表驱动文件操作。
-    public var all: [DeliveryIntentRow] { prepared + fileDone }
+    public var all: [DeliveryIntentRow] { prepared + fileDone + applied }
 }
 
 /// delivery_intents 仓储（S3 只做持久化 + 回放待办读取，不做文件 IO）。
@@ -336,9 +344,28 @@ public final class DeliveryIntentRepo: Sendable {
     @discardableResult
     public func replayAll() throws -> DeliveryIntentBacklog {
         try connection.transaction {
-            _ = try connection.prepare("DELETE FROM delivery_intents WHERE phase = ?")
-                .run([.text(DeliveryIntentPhase.applied.rawValue)])
-            return try backlog()
+            let pending = try backlog()
+            // 复审 A3：applied 不再无脑删除——finalize 的 applied 行可能还指向
+            // 一份尚未删除的备份；调用方必须先补删备份，再 finish(nil) 清行。
+            let applied = try appliedRows()
+            return DeliveryIntentBacklog(
+                prepared: pending.prepared,
+                fileDone: pending.fileDone,
+                applied: applied
+            )
+        }
+    }
+
+    /// 终态 applied 行（id 升序）；不做文件操作。
+    private func appliedRows() throws -> [DeliveryIntentRow] {
+        let rows = try connection.prepare("""
+            SELECT \(DeliveryIntentRow.selectList)
+            FROM delivery_intents
+            WHERE phase = ?
+            ORDER BY id ASC
+            """).query([.text(DeliveryIntentPhase.applied.rawValue)])
+        return try rows.map {
+            try DeliveryIntentRow(columns: DeliveryIntentRow.columnNames, row: $0)
         }
     }
 

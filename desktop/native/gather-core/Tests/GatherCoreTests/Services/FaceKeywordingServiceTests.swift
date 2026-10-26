@@ -194,14 +194,15 @@ private let analysisSignatureForDefaults = FaceKwService.makeAnalysisSignature(
 
 @Suite("face clustering parameter validation")
 struct FaceClusteringParameterTests {
-    // TS: it.each —— eps: NaN/-0.1/1.1（无效），minPts: 0/1.5（无效）。
-    // 注意 Swift Testing 的 arguments 是笛卡尔积，TS it.each 是成对 zip，
-    // 故用元组数组保证逐 case 对应。
+    // TS: it.each —— eps: NaN/-0.1/1.1（无效），minPts: 0/1/1.5（无效）。
+    // 复审 P2：minPts=1 使 DBSCAN 的 minNeighbors=0，每个点都成核心点；
+    // 下界与 FaceClusterer.defaultMinSamples / UI 预设（2/3）对齐。
     @Test(arguments: [
         (Double.nan, 2.0),
         (-0.1, 2.0),
         (1.1, 2.0),
         (0.6, 0.0),
+        (0.6, 1.0),
         (0.6, 1.5),
     ])
     func rejectsInvalid(_ pair: (eps: Double, minPts: Double)) throws {
@@ -212,8 +213,8 @@ struct FaceClusteringParameterTests {
 
     @Test("accepts supported similarity and minimum-sample values")
     func acceptsValid() {
-        #expect(throws: Never.self) { try validateFaceClusteringParameters(eps: 0.6, minPts: 1) }
-        #expect(throws: Never.self) { try validateFaceClusteringParameters(eps: 1, minPts: 2.0) }
+        #expect(throws: Never.self) { try validateFaceClusteringParameters(eps: 0.6, minPts: 2) }
+        #expect(throws: Never.self) { try validateFaceClusteringParameters(eps: 1, minPts: 3.0) }
     }
 }
 

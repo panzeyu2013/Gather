@@ -45,55 +45,41 @@ enum AppImport {
     @MainActor
     static func importFiles(
         _ files: [String],
-        composition: AppComposition,
+        sessionAPI: any SessionAPI,
         source: String = "local",
         sourceLabel: String = "",
         l10n: L10n
-    ) {
+    ) async {
         let normalized = normalizeImportFilepaths(files)
         guard !normalized.isEmpty else { return }
         do {
-            let session: SessionData
-            var failedFiles: [String] = []
-            var added = 0
-            var requestedPaths: [String]?
+            let input: SessionCreateInput
             if normalized.count == 1, isDirectory(normalized[0]) {
-                // 目录作用域：name 传空 → 由目录 basename 命名。
-                session = try composition.sessionService.createFromDirectory(
-                    name: "", sourcePath: normalized[0], source: source
+                // 目录作用域：name 取目录名（旧实现传空由 SessionService 取名，等价）。
+                let base = URL(fileURLWithPath: normalized[0]).lastPathComponent
+                input = try SessionCreateInput(
+                    name: base.isEmpty ? Self.defaultImportName(source: source, l10n: l10n) : base,
+                    source: source,
+                    sourcePath: normalized[0]
                 )
-                requestedPaths = nil
             } else {
                 // 目录条目不写照片行（避免把目录当成一张「解码失败的照片」上报），
                 // 交给索引器在 requestedPaths 范围内展开。
                 let filepaths = normalized.filter { !isDirectory($0) }
                 let parent = commonParentDirectory(filepaths: normalized)
-                let name = parent.isEmpty
+                let base = parent.isEmpty
                     ? URL(fileURLWithPath: normalized[0]).deletingPathExtension().lastPathComponent
                     : URL(fileURLWithPath: parent).lastPathComponent
-                // source_path 留空（= 显式文件集合作用域）：公共父目录只用于取名。
-                // 若把 sanitizeSessionSourcePath 通过的父目录落库，监听器与
-                // 「全量兜底」扫描（requestedPaths == nil）会绕开本 job 的
-                // requestedPaths 重新递归该目录，重新引入「导入范围失控」。
-                // 需要目录作用域的用户请走目录导入（拖入/打开文件夹）。
-                session = try composition.sessionService.createSession(
-                    name: name.isEmpty ? Self.defaultImportName(source: source, l10n: l10n) : name,
-                    source: source
+                input = try SessionCreateInput(
+                    name: base.isEmpty ? Self.defaultImportName(source: source, l10n: l10n) : base,
+                    source: source,
+                    filepaths: normalized
                 )
-                if !filepaths.isEmpty {
-                    let result = try composition.sessionService.addPhotos(
-                        sessionId: session.id,
-                        filepaths: filepaths,
-                        source: "import"
-                    )
-                    added = result.added
-                    failedFiles = result.failedFiles
-                }
-                requestedPaths = normalized
             }
-            _ = try composition.jobService.create(
-                JobCreateParams.metadataScan(
-                    sessionId: session.id, requestedPaths: requestedPaths))
+            // P1（复审）：建库/加照片/入队走 typed API（nonisolated async，不在主线程）；
+            // 入队失败由 LiveSessionAPI 补偿删除，不会留下“永远不会被扫描”的半成品。
+            let result = try await sessionAPI.create(input)
+            let failedFiles = result.failedFiles
             if !failedFiles.isEmpty {
                 GatherLogger.log("import skipped \(failedFiles.count) files", level: .warn)
             }
@@ -105,9 +91,9 @@ enum AppImport {
                 name: GatherAppNotification.importCompleted,
                 object: nil,
                 userInfo: [
-                    GatherAppImportUserInfoKey.sessionId: session.id,
+                    GatherAppImportUserInfoKey.sessionId: result.session.id,
                     GatherAppImportUserInfoKey.failedCount: failedFiles.count,
-                    GatherAppImportUserInfoKey.addedCount: added,
+                    GatherAppImportUserInfoKey.addedCount: result.added,
                     GatherAppImportUserInfoKey.sourceLabel: sourceLabel,
                     GatherAppImportUserInfoKey.examples: examples,
                 ]

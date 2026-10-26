@@ -119,7 +119,7 @@ public struct FaceAnalyzeInput: Decodable, Sendable, Equatable {
         }
         self.eps = eps
         if let minSamples {
-            _ = try APIValidation.integerInRange(minSamples, field: "minSamples", 1...1_000_000)
+            _ = try APIValidation.integerInRange(minSamples, field: "minSamples", 2...1_000_000)
         }
         self.minSamples = minSamples
         self.detectorPath = detectorPath
@@ -157,7 +157,7 @@ public struct FaceReclusterInput: Decodable, Sendable, Equatable {
         }
         self.eps = eps
         if let minSamples {
-            _ = try APIValidation.integerInRange(minSamples, field: "minSamples", 1...1_000_000)
+            _ = try APIValidation.integerInRange(minSamples, field: "minSamples", 2...1_000_000)
         }
         self.minSamples = minSamples
     }

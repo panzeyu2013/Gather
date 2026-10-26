@@ -33,6 +33,22 @@ if [ "${CTC_SELF_TEST_CHILD:-0}" = "1" ] && [ -n "${CTC_TEST_ROOTS_OVERRIDE:-}" 
   TEST_ROOTS=(${CTC_TEST_ROOTS_OVERRIDE})
 fi
 
+if [ "${CTC_SELF_TEST_CHILD:-0}" != "1" ]; then
+  TEST_FILE_N=0
+  for root in "${TEST_ROOTS[@]}"; do
+    if [ ! -d "$root" ]; then
+      echo "check-test-catalog: FAIL 缺少测试根：$root" >&2
+      exit 1
+    fi
+    n=$(find "$root" -type f -name '*.swift' -not -path '*/.build/*' | wc -l | tr -d ' ')
+    TEST_FILE_N=$((TEST_FILE_N + n))
+  done
+  if [ "$TEST_FILE_N" -lt 150 ]; then
+    echo "check-test-catalog: FAIL 只扫到 ${TEST_FILE_N} 个测试文件（<150），疑似根路径错误" >&2
+    exit 1
+  fi
+fi
+
 STRICT=0
 SELF_TEST=0
 for arg in "$@"; do
@@ -273,12 +289,32 @@ if [ -n "$raw_hits" ]; then
   done <<< "$raw_hits"
 fi
 
+# 到期校验（复审 P2）：skip 的「到期：YYYY-MM-DD」过期即失败，避免静默续期。
+TODAY="${CTC_TODAY:-$(date +%Y-%m-%d)}"
+skip_expired_n=0
+skip_expired_list=""
+if [ -n "$raw_hits" ]; then
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    file="$(printf '%s' "$hit" | cut -d: -f1)"
+    line="$(printf '%s' "$hit" | cut -d: -f2)"
+    due_line="$(sed -n "$((line - 12)),$((line))p" "$file" 2>/dev/null | grep -E '到期|截止|skip-until' | tail -1 || true)"
+    due="$(printf '%s' "$due_line" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1 || true)"
+    [ -n "$due" ] || continue
+    if [[ "$due" < "$TODAY" ]]; then
+      skip_expired_n=$((skip_expired_n + 1))
+      skip_expired_list="${skip_expired_list}  - ${file}:${line} 到期=${due}"$'\n'
+    fi
+  done <<< "$raw_hits"
+fi
+
 echo "check-test-catalog:"
 echo "  测试文件            $total"
 echo "  缺文件头注释        $header_missing"
 echo "  skip 站点           ${skip_total}（.enabled ${enabled_n} / .disabled ${disabled_n} / withKnownIssue ${known_n}）"
 echo "  其中 @Suite skip    $suite_n"
 echo "  skip 元数据缺失     $skip_missing_n"
+echo "  skip 已过到期日     ${skip_expired_n}（今天 ${TODAY}）"
 echo "  口径                有效执行 = 声明数 − skip 用例数；@Suite skip 需按套件内 @Test 展开"
 
 if [ "$header_missing" -gt 0 ]; then
@@ -291,9 +327,14 @@ if [ "$skip_missing_n" -gt 0 ]; then
   printf '%s' "$skip_missing_list"
 fi
 
+if [ "$skip_expired_n" -gt 0 ]; then
+  echo "WARN 以下 skip 站点已过到期日，必须删除 gate 或重新评估（不能只续期）："
+  printf '%s' "$skip_expired_list"
+fi
+
 echo "----"
 if [ "$STRICT" -eq 1 ]; then
-  if [ "$header_missing" -gt 0 ] || [ "$skip_missing_n" -gt 0 ]; then
+  if [ "$header_missing" -gt 0 ] || [ "$skip_missing_n" -gt 0 ] || [ "$skip_expired_n" -gt 0 ]; then
     echo "check-test-catalog: FAILED (--strict)" >&2
     exit 1
   fi

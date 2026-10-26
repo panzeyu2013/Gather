@@ -24,15 +24,19 @@ public final class AnalysisRunRepo {
         paramsJson: String
     ) throws -> Int64 {
         let now = nowISOString()
-        _ = try connection.prepare("""
-            INSERT INTO analysis_runs
-              (session_id, kind, photo_count, index_seq, started_at, finished_at, params_json, status, created_at)
-            VALUES (?, ?, ?, ?, ?, '', ?, 'running', ?)
-          """).run([
-            .text(sessionId), .text(kind), .int(Int64(photoCount)), .int(Int64(indexSeq)),
-            .text(now), .text(paramsJson), .text(now),
-          ])
-        return connection.lastInsertRowid
+        // 复审 P2：INSERT 与 lastInsertRowid 必须在同一事务；否则并发 INSERT 可插进
+        // 两次取锁之间，拿到别人的 rowid（finish 会标错 run）。
+        return try connection.transaction {
+            _ = try connection.prepare("""
+                INSERT INTO analysis_runs
+                  (session_id, kind, photo_count, index_seq, started_at, finished_at, params_json, status, created_at)
+                VALUES (?, ?, ?, ?, ?, '', ?, 'running', ?)
+              """).run([
+                .text(sessionId), .text(kind), .int(Int64(photoCount)), .int(Int64(indexSeq)),
+                .text(now), .text(paramsJson), .text(now),
+              ])
+            return connection.lastInsertRowid
+        }
     }
 
     /// 落 run 终态（ok/failed）；取消态由 analysis_jobs 表达。

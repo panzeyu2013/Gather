@@ -262,10 +262,20 @@ struct DeliveryDBPhase: Sendable {
             }
             switch outcome {
             case .deleted:
-                try finish(intentId, error: nil)
+                // 复审 A3：行已删，但备份还没删——intent 保留为 applied，
+                // 由调用方删备份成功后 finish(nil)；崩溃时 startup replay 补删。
+                do {
+                    _ = try intents.advance(id: intentId, to: .applied)
+                } catch {
+                    throw DeliveryDBPhaseError.finish(error)
+                }
                 return .deleted
             case .alreadyGone:
-                try finish(intentId, error: nil)
+                do {
+                    _ = try intents.advance(id: intentId, to: .applied)
+                } catch {
+                    throw DeliveryDBPhaseError.finish(error)
+                }
                 return .alreadyGone
             case .idChanged:
                 try finish(intentId, error: "XMP_FINALIZE_SKIPPED: \(outcome.rawValue)")

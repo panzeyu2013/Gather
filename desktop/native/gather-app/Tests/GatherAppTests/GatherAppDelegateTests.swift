@@ -118,9 +118,10 @@ struct GatherAppDelegateTests {
 
         // Cut 3 / 3b-1：导入实现已迁到 AppImport（本测试仍覆盖启动后的菜单/
         // deep-link 共用的导入路径与通知契约）。
-        AppImport.importFiles(
+        let services = AppServices.live(composition: composition)
+        await AppImport.importFiles(
             [good.path, broken.path],
-            composition: composition,
+            sessionAPI: services.session,
             l10n: L10n(language: .zhCN)
         )
 

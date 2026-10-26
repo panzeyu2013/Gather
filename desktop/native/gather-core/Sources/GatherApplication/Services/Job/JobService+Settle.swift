@@ -113,7 +113,10 @@ extension JobService {
             let code = (error as? CodedError)?.code.rawValue
                 ?? Self.gatherErrorCode(from: message)
                 ?? "worker_error"
-            if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .failed, error: (code, message))) == true {
+            switch writeTerminal({
+                try repo.finish(id: job.id, leaseOwner: leaseOwner, status: .failed, error: (code, message))
+            }) {
+            case .written:
                 // WP7b：失败终态是排障入口——warn 带 phase + 错误码/原因。
                 Self.logJob(
                     job.id,
@@ -123,31 +126,39 @@ extension JobService {
                     level: .warn)
                 completeResult(id: job.id, error: error)
                 emitTerminal(id: job.id)
-            } else {
+            case .missed:
                 finishMiss(id: job.id)
+            case .failed(let writeError):
+                reportTerminalWriteFailure(jobId: job.id, error: writeError)
             }
             return
         }
 
         if cancelled {
             // 应用停机导致的取消不是用户取消 → interrupted，供下次启动恢复。
-            if stoppedNow,
-               (try? repo.interrupt(id: job.id, leaseOwner: leaseOwner)) == true {
-                Self.logJob(
-                    job.id,
-                    "event=terminal phase=terminal status=interrupted "
-                        + "type=\(job.type.rawValue) \(runDurationField(id: job.id)) "
-                        + "reason=application-stopped",
-                    level: .info)
-                completeResult(id: job.id, error: JobServiceError.jobFailed(job.id, "Application stopped during execution"))
-                emitTerminal(id: job.id)
-                return
+            if stoppedNow {
+                switch writeTerminal({ try repo.interrupt(id: job.id, leaseOwner: leaseOwner) }) {
+                case .written:
+                    Self.logJob(
+                        job.id,
+                        "event=terminal phase=terminal status=interrupted "
+                            + "type=\(job.type.rawValue) \(runDurationField(id: job.id)) "
+                            + "reason=application-stopped",
+                        level: .info)
+                    completeResult(id: job.id, error: JobServiceError.jobFailed(job.id, "Application stopped during execution"))
+                    emitTerminal(id: job.id)
+                    return
+                case .missed, .failed:
+                    // interrupted 是停机优化路径：未命中/写失败时继续尝试 cancelled 终态。
+                    break
+                }
             }
-            if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .cancelled)) == true {
+            switch writeTerminal({
+                try repo.finish(id: job.id, leaseOwner: leaseOwner, status: .cancelled)
+            }) {
+            case .written:
                 // P2：取消终态必须带 reason（与 queued-cancel/cancel-grace/
-                // application-stopped 的既有口径一致）。本分支是执行器在宽限期
-                // 内协作退出；宽限到点由 forceCancel 收尾，两者同属取消请求，
-                // 因此共用 cancel-grace（stop 导致的取消走 application-stopped）。
+                // application-stopped 的既有口径一致）。
                 Self.logJob(
                     job.id,
                     "event=terminal phase=terminal status=cancelled "
@@ -156,13 +167,18 @@ extension JobService {
                     level: .info)
                 completeResult(id: job.id, error: JobCancelledError())
                 emitTerminal(id: job.id)
-            } else {
+            case .missed:
                 finishMiss(id: job.id)
+            case .failed(let writeError):
+                reportTerminalWriteFailure(jobId: job.id, error: writeError)
             }
             return
         }
 
-        if (try? repo.finish(id: job.id, leaseOwner: leaseOwner, status: .succeeded)) == true {
+        switch writeTerminal({
+            try repo.finish(id: job.id, leaseOwner: leaseOwner, status: .succeeded)
+        }) {
+        case .written:
             Self.logJob(
                 job.id,
                 "event=terminal phase=terminal status=succeeded "
@@ -170,9 +186,46 @@ extension JobService {
                 level: .info)
             completeResult(id: job.id, value: value)
             emitTerminal(id: job.id)
-        } else {
+        case .missed:
             finishMiss(id: job.id)
+        case .failed(let writeError):
+            reportTerminalWriteFailure(jobId: job.id, error: writeError)
         }
+    }
+
+    /// 终态写结果：写成功 / 条件 UPDATE 0 行 / 数据库错误（三者语义不同）。
+    private enum TerminalWriteOutcome {
+        case written
+        case missed
+        case failed(Error)
+    }
+
+    /// 写终态：SQL 错误与 0 行必须分开（P1）。瞬时错误重试一次；仍失败返回
+    /// .failed，由调用方保留真实错误并显式上报，不再伪装成 leaseLost。
+    private func writeTerminal(_ body: () throws -> Bool) -> TerminalWriteOutcome {
+        do {
+            return try body() ? .written : .missed
+        } catch {
+            do {
+                Thread.sleep(forTimeInterval: 0.2)
+                return try body() ? .written : .missed
+            } catch let retryError {
+                return .failed(retryError)
+            }
+        }
+    }
+
+    /// 终态写失败：记录 error 日志并解除等待者；不广播终态帧（库里仍是 running，
+    /// 广播会让 UI 与 DB 分叉）。行由看门狗在租约超时后按既有策略处理。
+    private func reportTerminalWriteFailure(jobId: String, error: Error) {
+        Self.logJob(
+            jobId,
+            "event=terminal phase=terminal status=terminal-write-failed "
+                + "\(runDurationField(id: jobId)) reason=\(error)",
+            level: .error)
+        completeResult(
+            id: jobId,
+            error: JobServiceError.jobFailed(jobId, "terminal state not persisted: \(error)"))
     }
 
     /// 条件 UPDATE 未命中：行已不由本租约持有（对端已迁移/删除）。

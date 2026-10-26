@@ -278,6 +278,9 @@ extension DeliveryCleanupFlow {
                     trace: traceBackup
                 ) {
                     errors.append(failure)
+                } else {
+                    // A3：备份已清（或本就不存在）才删 applied intent；失败留给 replay。
+                    try? intents.finish(id: intentId, error: nil)
                 }
             case .alreadyGone:
                 DeliveryTrace.log(
@@ -293,6 +296,8 @@ extension DeliveryCleanupFlow {
                     trace: traceBackup
                 ) {
                     errors.append(failure)
+                } else {
+                    try? intents.finish(id: intentId, error: nil)
                 }
             case .incompleteItems(let blockerModule, let blockerStatus):
                 // P2-2：DB 段门禁拒绝。交付行/备份/其它模块 item 全部保留；

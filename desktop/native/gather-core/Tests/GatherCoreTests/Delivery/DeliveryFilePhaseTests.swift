@@ -110,7 +110,9 @@ struct DeliveryFilePhaseTests {
     }
 
     @Test func fingerprintMismatchSkipsWithoutTouchingFiles() async throws {
-        let fixture = try makeFixture(fingerprint: { _ in "fp-edited" })
+        let fixture = try makeFixture(fingerprint: { path in
+            path == DeliveryTestSupport.backupPath ? "fp-backup" : "fp-edited"
+        })
         defer { fixture.db.close() }
 
         let outcome = await fixture.phase.run(
@@ -120,6 +122,20 @@ struct DeliveryFilePhaseTests {
         #expect(fixture.port.restoreCallCount == 0)
         #expect(fixture.port.removedPathsSnapshot.isEmpty)
         #expect(fixture.port.contents(DeliveryTestSupport.xmpPath) == "gather-written")
+    }
+
+    /// P1（复审）：restore 已成功、advance(fileDone) 未落库 → 盘上内容等于备份；
+    /// 重放必须继续（幂等覆盖写），不能判 conflict 把交付永久卡死。
+    @Test func restoreAlreadyAppliedIsNotTreatedAsConflict() async throws {
+        let fixture = try makeFixture(fingerprint: { _ in "fp-restored" })
+        defer { fixture.db.close() }
+
+        let outcome = await fixture.phase.run(
+            xmpPath: fixture.row.xmpPath, payload: fixture.payload)
+
+        #expect(outcome == .completed,
+                "盘上已是恢复目标（=备份内容）时应 proceed，而不是 conflict")
+        #expect(fixture.port.restoreCallCount == 1)
     }
 
     @Test func cleanupRestoresBackupAndVerifiesAfterMutation() async throws {

@@ -12,7 +12,7 @@ extension CullingService {
     /// TS: getUpdateContext —— 缓存的 `updateState` 上下文；IPC 更新 handler 复用
     /// 它，点击突发不再每次重读整个会话。
     public func getUpdateContext(sessionId: String) throws -> CullingUpdateContext {
-        let entry = getSessionUpdateContext(sessionId: sessionId)
+        let entry = try getSessionUpdateContext(sessionId: sessionId)
         try ensureUpdateExtras(entry: entry, sessionId: sessionId)
         return CullingUpdateContext(
             photos: entry.photos,
@@ -34,12 +34,12 @@ extension CullingService {
         try richQuery.existingPhotoIds(sessionId: sessionId, photoIds: photoIds)
     }
 
-    func getSessionUpdateContext(sessionId: String) -> SessionUpdateEntry {
+    func getSessionUpdateContext(sessionId: String) throws -> SessionUpdateEntry {
         let now = Date()
         if let cached = sessionUpdateCache[sessionId], cached.expiresAt > now {
             return cached
         }
-        let photos = loadSessionPhotos(sessionId: sessionId)
+        let photos = try loadSessionPhotos(sessionId: sessionId)
         let entry = SessionUpdateEntry(
             photos: photos,
             photoById: Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) }),
@@ -59,9 +59,9 @@ extension CullingService {
     /// 索引器的增删对缓存不可见，窗口内先试一次新鲜读（新导入的照片绝不能被
     /// 拒，真删除的第二次检查仍会被拒）。组索引、xmp 联动与会话查找随照片集
     /// 一起失效，下个 ensureUpdateExtras 对新生行重建。
-    func refreshSessionUpdateContext(sessionId: String, entry: SessionUpdateEntry) {
+    func refreshSessionUpdateContext(sessionId: String, entry: SessionUpdateEntry) throws {
         if entry.refreshed { return }
-        let photos = loadSessionPhotos(sessionId: sessionId)
+        let photos = try loadSessionPhotos(sessionId: sessionId)
         entry.photos = photos
         entry.photoById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
         entry.photosByAssetId = buildPhotosByAssetIndex(photos)
@@ -108,9 +108,17 @@ extension CullingService {
 
     /// TS: loadSessionPhotos —— 热路径用轻投影；全行兜底保持只暴露 getBySession
     /// 的测试替身可用（TS 注释语义；Swift 侧仓库恒有投影，直接使用）。
-    private func loadSessionPhotos(sessionId: String) -> [CullingPhotoRow] {
-        (try? photoRepo.getBySessionProjection(sessionId: sessionId))?.map { CullingPhotoRow(row: $0) }
-            ?? ((try? photoRepo.getBySession(sessionId: sessionId))?.map { CullingPhotoRow(row: $0) } ?? [])
+    /// 复审 P2：DB 故障必须上抛，不能降级成空照片集——否则 updateState 会把
+    /// 基础设施错误伪装成 CULLING_PHOTO_NOT_IN_SESSION。全行兜底只用于测试替身
+    /// 未实现投影接口的情况；投影与全行都失败时向上抛真实错误。
+    private func loadSessionPhotos(sessionId: String) throws -> [CullingPhotoRow] {
+        do {
+            return try photoRepo.getBySessionProjection(sessionId: sessionId)
+                .map { CullingPhotoRow(row: $0) }
+        } catch {
+            return try photoRepo.getBySession(sessionId: sessionId)
+                .map { CullingPhotoRow(row: $0) }
+        }
     }
 
     // MARK: - 会话查找缓存（TS getSessionLookup / prune / getLatestSimilarityMap /

@@ -357,7 +357,8 @@ public func validateFaceClusteringParameters(eps: Double, minPts: Double) throws
     }
     // D8（深审）：除有限/整数外还要有**业务上界** —— 1e30 是有限且整数，
     // 但后续 Int(minPts) 会 trap，且这种规模没有业务含义。
-    if minPts.isNaN || minPts.isInfinite || minPts.rounded() != minPts || minPts < 1
+    // minPts >= 2：DBSCAN 的 minNeighbors = minPts - 1，取 1 时邻域条件恒真。
+    if minPts.isNaN || minPts.isInfinite || minPts.rounded() != minPts || minPts < 2
         || minPts > Double(maxMinClusterSize) {
         throw FaceKwServiceError.minClusterInvalid
     }

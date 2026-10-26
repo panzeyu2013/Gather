@@ -197,7 +197,8 @@ struct DeliveryDBPhaseTests {
             intentId: intentId, xmpPath: row.xmpPath, payload: payload)
         #expect(retried == .deleted)
         #expect(try fixture.repo.get(row.xmpPath) == nil)
-        #expect(try fixture.intentRepo.get(intentId) == nil)
+        // A3：intent 保留为 applied，等调用方删备份后再 finish(nil)。
+        #expect(try fixture.intentRepo.get(intentId)?.typedPhase == .applied)
     }
 
     @Test func finalizeSharesTheSameAtomicDeleteAndFinish() throws {
@@ -208,9 +209,11 @@ struct DeliveryDBPhaseTests {
             for: row, action: .finalize)
         let intentId = try fixture.intentRepo.prepare(
             kind: .cleanup, xmpPath: row.xmpPath, payload: payload.json)
+        _ = try fixture.intentRepo.advance(id: intentId, to: .fileDone)
         try fixture.db.exec("""
             CREATE TRIGGER fail_intent_delete_finalize
-            BEFORE DELETE ON delivery_intents
+            BEFORE UPDATE ON delivery_intents
+            WHEN NEW.phase = 'applied'
             BEGIN
               SELECT RAISE(ABORT, 'injected finalize finish failure');
             END;
@@ -227,6 +230,6 @@ struct DeliveryDBPhaseTests {
             }
         }
         #expect(try fixture.repo.get(row.xmpPath)?.typedStatus == .synced)
-        #expect(try fixture.intentRepo.get(intentId)?.phase == "prepared")
+        #expect(try fixture.intentRepo.get(intentId)?.phase == "fileDone")
     }
 }

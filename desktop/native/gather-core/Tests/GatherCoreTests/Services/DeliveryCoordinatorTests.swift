@@ -735,6 +735,34 @@ struct DeliveryCoordinatorTests {
         #expect(try harness.intentRepo.pending().isEmpty)
     }
 
+    /// A3 崩溃窗口：finalize 的 DB 事务已提交（行已删）、备份未删、进程退出。
+    /// 下次 replay 必须补删备份并清 applied intent。
+    @Test func replayAppliedFinalizeDeletesOrphanBackup() async throws {
+        let harness = try CoordinatorHarness()
+        defer { harness.db.close() }
+        harness.files.setContents(backup, "original")
+        harness.files.setContents(xmp, "gather-written")
+        try makeSyncedDelivery(harness, backupPath: backup)
+
+        let row = try #require(try harness.deliveryRepo.get(xmp))
+        let payload = DeliveryCleanupPayload(delivery: row, photoPath: photo, action: .finalize)
+        let intentId = try harness.intentRepo.prepare(
+            kind: .cleanup, xmpPath: xmp, payload: payload.json)
+        _ = try harness.intentRepo.advance(id: intentId, to: .fileDone)
+        // 模拟 DB 事务：删行成功后进程崩溃，intent 停在 applied、备份仍在。
+        let deleted = try harness.deliveryRepo.deleteSyncedDelivery(
+            xmpPath: xmp, deliveryId: row.id, revision: row.revision)
+        #expect(deleted == .deleted)
+        _ = try harness.intentRepo.advance(id: intentId, to: .applied)
+
+        let replayed = try await harness.coordinator.replay()
+        #expect(replayed.appliedCount == 1)
+        #expect(replayed.failedCount == 0)
+        #expect(harness.files.contents(backup) == nil, "孤儿备份必须补删")
+        #expect(try harness.intentRepo.get(intentId) == nil)
+        #expect(try harness.deliveryRepo.get(xmp) == nil)
+    }
+
     @Test func replayFileDoneOnlyAppliesDBWithoutReplayingFile() async throws {
         let harness = try CoordinatorHarness()
         defer { harness.db.close() }
@@ -758,7 +786,10 @@ struct DeliveryCoordinatorTests {
     }
 
     @Test func cleanupMarksConflictWhenXMPChangedExternally() async throws {
-        let harness = try CoordinatorHarness(fingerprint: { _ in "fp-edited" })
+        // 指纹按路径区分：备份仍是 original，xmp 被外部改成别的内容。
+        let harness = try CoordinatorHarness(fingerprint: { path in
+            path == backup ? "fp-original" : "fp-edited"
+        })
         defer { harness.db.close() }
         harness.files.setContents(backup, "original")
         harness.files.setContents(xmp, "external-edit")
@@ -937,9 +968,12 @@ struct DeliveryCoordinatorTests {
         harness.files.setContents(backup, "original")
         harness.files.setContents(xmp, "gather-written")
         try makeSyncedDelivery(harness, backupPath: backup)
+        // A3 后 finalize 不再 DELETE intent，而是 UPDATE phase=applied；
+        // 故障注入点随之改为 BEFORE UPDATE（同事务回滚语义不变）。
         try harness.db.exec("""
             CREATE TRIGGER fail_finalize_intent_delete
-            BEFORE DELETE ON delivery_intents
+            BEFORE UPDATE ON delivery_intents
+            WHEN NEW.phase = 'applied'
             BEGIN
               SELECT RAISE(ABORT, 'injected finalize finish failure');
             END;
@@ -1240,8 +1274,9 @@ struct DeliveryCoordinatorTests {
     /// 行快照一致但盘上指纹在守卫的 await 窗口里变了：标 conflict，不 restore。
     @Test func cleanupMarksConflictWhenFingerprintChangesDuringFilePhase() async throws {
         let calls = CallCounter()
-        let harness = try CoordinatorHarness(fingerprint: { _ in
-            calls.next() == 1 ? "fp-current" : "fp-edited"
+        let harness = try CoordinatorHarness(fingerprint: { path in
+            if path == backup { return "fp-original" }
+            return calls.next() == 1 ? "fp-current" : "fp-edited"
         })
         defer { harness.db.close() }
         harness.files.setContents(backup, "original")

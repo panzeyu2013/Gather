@@ -29,6 +29,18 @@ import sys
 bases = [pathlib.Path(p) for p in sys.argv[1:]]
 fail = False
 
+# 扫描根守卫：目录消失/改名不得静默 0 命中（Gate fail-open，复审 P1）。
+total = 0
+for base in bases:
+    if not base.is_dir():
+        print(f"FAIL   缺少扫描根：{base}")
+        fail = True
+    else:
+        total += sum(1 for _ in base.rglob("*.swift"))
+if total < 300:
+    print(f"FAIL   Sources 只扫到 {total} 个 Swift 文件（<300），疑似根路径错误")
+    fail = True
+
 # 1) DBError.message("<CODE>")：允许换行/空白，但码必须是完整字符串。
 bare = re.compile(r'DBError\.message\s*\(\s*"([A-Z][A-Z0-9_]*)"')
 hits = []

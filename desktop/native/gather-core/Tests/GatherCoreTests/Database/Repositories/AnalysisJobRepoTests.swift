@@ -238,6 +238,28 @@ struct AnalysisJobRepoTests {
         #expect(try repo.get(fresh.id)?.status == .running)
     }
 
+    /// P1（复审）：看门狗必须能排除本进程仍在执行的 job，否则长事务饿死心跳时
+    /// 会自己回收自己 → worker_lost → 重跑。
+    @Test func recoverStaleExcludesActiveJobIds() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        let active = try repo.create(createParams(dedupeKey: "active"))
+        _ = try repo.claim(id: active.id, leaseOwner: "main-1")
+        let other = try repo.create(createParams(dedupeKey: "other"))
+        _ = try repo.claim(id: other.id, leaseOwner: "main-1")
+        for id in [active.id, other.id] {
+            _ = try db.prepare("UPDATE analysis_jobs SET heartbeat_at = '2020-01-01T00:00:00.000Z' WHERE id = ?")
+                .run([.text(id)])
+        }
+
+        let count = try repo.recoverStale(leaseTimeoutMs: 60_000, excludingJobIds: [active.id])
+        #expect(count == 1)
+        #expect(try repo.get(active.id)?.status == .running,
+                "本进程活跃 job 不得被看门狗回收")
+        #expect(try repo.get(other.id)?.status == .interrupted)
+    }
+
     @Test func resumeInterruptedByTypesAndAttemptCap() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }

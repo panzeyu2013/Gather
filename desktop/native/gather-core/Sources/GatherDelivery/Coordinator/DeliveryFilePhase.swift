@@ -168,6 +168,18 @@ struct DeliveryFilePhase: Sendable {
             return .changed(reason: "base-fingerprint-changed")
         }
         guard onDisk == expected else {
+            // P1（复审）：cleanup 的 base_fingerprint 是**写盘后**内容，备份是写盘前。
+            // restore 成功但 advance(fileDone) 未落库时，盘上必然等于备份内容；
+            // 此时重跑文件阶段是幂等的（覆盖写同一内容），不能再判 conflict——
+            // 否则交付被标 conflict + intent 终态，cleanup/finalize 永远收不了口。
+            if payload.action == .cleanup, !payload.backupPath.isEmpty,
+               let backup = try? DeliveryBackupPath.validate(
+                    xmpPath: xmpPath, backupPath: payload.backupPath),
+               files.fileExists(backup),
+               let restoredFingerprint = try? await fingerprint(backup),
+               onDisk == restoredFingerprint {
+                return .proceed
+            }
             return .conflict(reason: "fingerprint-mismatch")
         }
         return .proceed
@@ -207,6 +219,10 @@ struct DeliveryFilePhase: Sendable {
         xmpPath: String,
         payload: DeliveryCleanupPayload
     ) async throws {
+        // 复审 P2：xmp_path 也是不可信 DB 输入；在 remove/restore 前与 photo_path
+        // 一起做绝对路径/.. /NUL/同目录校验。
+        try DeliveryXMPPath.requireSafeSidecar(
+            xmpPath: xmpPath, photoPath: payload.photoPath)
         if payload.backupPath.isEmpty {
             if files.fileExists(xmpPath) {
                 try await files.removeFile(xmpPath)

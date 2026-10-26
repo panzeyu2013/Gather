@@ -83,4 +83,33 @@ struct DeliveryBackupPathTests {
             _ = try DeliveryBackupPath.validate(xmpPath: xmp, backupPath: dirBackup)
         }
     }
+
+    @Test func xmpPathMustBeAbsoluteWithoutTraversal() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let photo = directory.appendingPathComponent("IMG_1.jpg").path
+
+        #expect(throws: DeliveryBackupPathError.self) {
+            try DeliveryXMPPath.requireSafeSidecar(xmpPath: "relative/IMG_1.xmp", photoPath: photo)
+        }
+        let traversal = directory.path + "/sub/../IMG_1.xmp"
+        #expect(throws: DeliveryBackupPathError.unsafeXMPPath(traversal)) {
+            try DeliveryXMPPath.requireSafeSidecar(xmpPath: traversal, photoPath: photo)
+        }
+    }
+
+    @Test func xmpPathMustBeSiblingOfPhoto() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let photo = directory.appendingPathComponent("IMG_1.jpg").path
+        let elsewhere = directory.appendingPathComponent("other/IMG_1.xmp").path
+
+        #expect(throws: DeliveryBackupPathError.xmpNotSiblingOfPhoto(elsewhere)) {
+            try DeliveryXMPPath.requireSafeSidecar(xmpPath: elsewhere, photoPath: photo)
+        }
+        let sibling = directory.appendingPathComponent("IMG_1.xmp").path
+        #expect(throws: Never.self) {
+            try DeliveryXMPPath.requireSafeSidecar(xmpPath: sibling, photoPath: photo)
+        }
+    }
 }

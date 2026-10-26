@@ -10,7 +10,7 @@ import GatherTestSupport
 @testable import GatherProtocol
 @testable import GatherPersistence
 
-@Suite("R6 只读连接池与慢事务")
+@Suite("R6 只读连接池与慢事务", .serialized)
 struct ReadPoolTests {
     private struct Flag { var entered = false }
     private struct LogState { var messages: [String] = [] }
@@ -69,6 +69,23 @@ struct ReadPoolTests {
             try conn.exec("INSERT INTO t (v) VALUES ('x');")
             let row = try conn.prepare("SELECT COUNT(*) FROM t").get()
             #expect(row?[0].intValue == 1)
+        }
+    }
+
+    @Test("事务外 prepare 的池化 SELECT 在事务内执行必须 fail-closed")
+    func pooledStatementRejectsCrossScopeExecution() throws {
+        let path = try makeTempPath()
+        defer { cleanup(path) }
+        let conn = try DBConnection(path: path, readPoolSize: 1)
+        defer { conn.close() }
+        try conn.exec("CREATE TABLE t (v TEXT);")
+
+        // 事务外 prepare → 池连接；事务内执行会丢掉读己写语义，必须拒绝。
+        let statement = try conn.prepare("SELECT COUNT(*) FROM t")
+        #expect(throws: DBError.self) {
+            try conn.transaction {
+                _ = try statement.get()
+            }
         }
     }
 

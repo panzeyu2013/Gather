@@ -477,12 +477,9 @@ public final class JobService: @unchecked Sendable {
     @discardableResult
     public func cancelScope(type: AnalysisJobType, scopeId: String) throws -> Int {
         var cancelledCount = 0
-        for job in try repo.list() {
-            if job.type == type && job.scopeId == scopeId &&
-               activeAnalysisJobStatuses.contains(job.status),
-               try cancel(job.id) {
-                cancelledCount += 1
-            }
+        // 复审 P2：只取 (type, scope) 活跃行的 id，不再全表加载（含 checkpoint）。
+        for id in try repo.activeJobIDs(type: type, scopeId: scopeId) where try cancel(id) {
+            cancelledCount += 1
         }
         return cancelledCount
     }

@@ -391,12 +391,16 @@ public final class DuplicatesViewModel: PageVisibility {
         groups.count - exactGroupCount
     }
 
-    // MARK: - 推荐保留（对齐 TS Duplicates.tsx:68-75 与 duplicate.service.ts resolveGroup）
+    // MARK: - 推荐保留（对齐 DuplicateService.resolveGroup 的唯一口径）
     // score = fileSize*1000 + mtime ms；最高分者为推荐保留，平手取先出现者。
+    // 复审 P2（C4）：mtime 非空但解析失败必须是 NaN（永不中选），与
+    // DuplicateService.swift 的 tsDateParse(...) ?? .nan 一致；旧实现按 0 计，
+    // 会让「大文件 + 非法 mtime」的成员被 UI 推荐保留，而服务端实际保留另一个。
 
     public static func recommendation(in group: DuplicateGroup) -> DuplicateGroupMember? {
-        var best: DuplicateGroupMember?
-        var bestScore: Int64 = -1
+        // 服务端以 members[0] 为初始 bestId；全部分数无效（NaN）时保留首个成员。
+        var best: DuplicateGroupMember? = group.members.first
+        var bestScore: Double = -1
         for member in group.members {
             let score = memberScore(member)
             if score > bestScore {
@@ -407,8 +411,8 @@ public final class DuplicatesViewModel: PageVisibility {
         return best
     }
 
-    public static func memberScore(_ member: DuplicateGroupMember) -> Int64 {
-        Int64(member.fileSize ?? 0) * 1000 + mtimeMilliseconds(member.fileMtime)
+    public static func memberScore(_ member: DuplicateGroupMember) -> Double {
+        Double(member.fileSize ?? 0) * 1000 + mtimeMilliseconds(member.fileMtime)
     }
 
     private static let iso8601WithFractional: ISO8601DateFormatter = {
@@ -423,14 +427,14 @@ public final class DuplicatesViewModel: PageVisibility {
         return formatter
     }()
 
-    private static func mtimeMilliseconds(_ value: String?) -> Int64 {
+    private static func mtimeMilliseconds(_ value: String?) -> Double {
         guard let value, !value.isEmpty else { return 0 }
         if let date = iso8601WithFractional.date(from: value) {
-            return Int64((date.timeIntervalSince1970 * 1000).rounded())
+            return date.timeIntervalSince1970 * 1000
         }
         if let date = iso8601.date(from: value) {
-            return Int64((date.timeIntervalSince1970 * 1000).rounded())
+            return date.timeIntervalSince1970 * 1000
         }
-        return 0
+        return .nan
     }
 }

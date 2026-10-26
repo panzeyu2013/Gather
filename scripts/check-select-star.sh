@@ -32,6 +32,18 @@ BASELINE=4
 TESTS_BASELINE=1
 TESTS_WHITELIST="desktop/native/gather-core/Tests/GatherCoreTests/Database/Repositories/AnalysisJobRepoTests.swift"
 
+for d in "$CORE_SRC" "$APP_SRC" "$CORE_TESTS" "$APP_TESTS"; do
+  if [ ! -d "$d" ]; then
+    echo "check-select-star: FAIL 缺少扫描根：$d" >&2
+    exit 1
+  fi
+done
+SWIFT_N=$(find "$CORE_SRC" "$APP_SRC" -type f -name '*.swift' -not -path '*/.build/*' | wc -l | tr -d ' ')
+if [ "$SWIFT_N" -lt 300 ]; then
+  echo "check-select-star: FAIL Sources 只扫到 ${SWIFT_N} 个 Swift 文件（<300）" >&2
+  exit 1
+fi
+
 MODE=warning
 while [ $# -gt 0 ]; do
   case "$1" in

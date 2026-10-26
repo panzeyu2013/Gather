@@ -68,9 +68,11 @@ public final class SessionStore {
         if let activeSessionId, activeSessionId != id {
             workspaces[activeSessionId]?.setVisible(false)
         }
+        // 复审 P2：先认领 active 再构造/淘汰。capacity==1 时 workspace(for:)
+        // 内部的 enforceCapacity 保护的是**旧** active，会把刚建的新项淘汰掉。
+        activeSessionId = id
         let workspace = workspace(for: id)
         workspace.setVisible(true)
-        activeSessionId = id
         lastSessionId = id
         enforceCapacity()
         return workspace

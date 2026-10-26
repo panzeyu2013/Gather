@@ -30,6 +30,18 @@ APP_TESTS="desktop/native/gather-app/Tests"
 BASELINE="docs/cleanup-baseline.json"
 METRICS="unchecked_sendable try_optional services_prepare todo_fixme with_known_issue"
 
+for d in "$CORE_SRC" "$APP_SRC" "$SERVICES" "$CORE_TESTS" "$APP_TESTS"; do
+  if [ ! -d "$d" ]; then
+    echo "check-cleanup-ratchet: FAIL 缺少扫描根：$d" >&2
+    exit 1
+  fi
+done
+SWIFT_N=$(find "$CORE_SRC" "$APP_SRC" -type f -name '*.swift' -not -path '*/.build/*' | wc -l | tr -d ' ')
+if [ "$SWIFT_N" -lt 300 ]; then
+  echo "check-cleanup-ratchet: FAIL Sources 只扫到 ${SWIFT_N} 个 Swift 文件（<300）" >&2
+  exit 1
+fi
+
 WRITE=0
 for arg in "$@"; do
   case "$arg" in

@@ -153,17 +153,27 @@ package final class AppBootstrap {
         //   · 新库 → 建 SchemaV1（43 表，单事务）；
         //   · user_version=0 但有表 / 非 1 / 非 SQLite 文件 → 把 db/-wal/-shm
         //     整体改名为 <db>.incompatible-<ts> 后重建（旧迁移链已删除，不就地升级）。
-        let database = try Database.open(at: dbURL.path)
-        let db = database.connection
-        // 审计 P2-安全：库内含照片路径 + 人脸特征，库文件只给当前用户读写。
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600], ofItemAtPath: dbURL.path)
-        // F-5：让 db_synchronous / db_cache_size_mb 设置真正生效（DB 层不反向
-        // 依赖 Services，这里注入一个只读的设置读取钩子；注入即重放 PRAGMA）。
-        let settingsRepo = SettingsRepo(connection: db)
-        db.settingsProvider = { [weak settingsRepo] key in
-            (try? settingsRepo?.get(key: key))??.value
-        }
+        // 复审 P2（C5）：Database.open 会做 schema inspect/assertReady（并可能迁移），
+        // 是启动期最重的同步 IO；放到 detached 任务，主线程可继续绘制“初始化中…”。
+        // Database/DBConnection 均为 @unchecked Sendable（句柄访问由 connectionLock 串行）。
+        let database = try await Task.detached(priority: .userInitiated) {
+            let database = try Database.open(at: dbURL.path)
+            let db = database.connection
+            // 审计 P2-安全：库内含照片路径 + 人脸特征，库文件只给当前用户读写。
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: dbURL.path)
+            // F-5：让 db_synchronous / db_cache_size_mb 设置真正生效（DB 层不反向
+            // 依赖 Services，这里注入一个只读的设置读取钩子；注入即重放 PRAGMA）。
+            // 复审 P2：此前 [weak settingsRepo] 捕获的是局部实例，makeScene 返回即释放，
+            // provider 之后恒 nil（db_synchronous/db_cache_size_mb 改了要重启才生效）。
+            // 这里每次读时临时构造 Repo，避免为 provider 制造 db→repo→db 的持有环；
+            // 只在 PRAGMA 应用时调用，频率极低。
+            db.settingsProvider = { [weak db] key in
+                guard let db else { return nil }
+                return (try? SettingsRepo(connection: db).get(key: key))?.value
+            }
+            return database
+        }.value
 
         // Cut 1 / B8.3b-2a/B8.3b-2b：组合根只构造一次（24 个服务/Repo +
         // 唯一 AppRuntime）。宿主、AppServices、页面 provider、Capture One
@@ -182,7 +192,11 @@ package final class AppBootstrap {
         // B8.3b-1：注册 8 个 executor 并启动 JobService（start 在已启动时幂等、
         // shutdown 后失败可见）。start 之后还会在后台回放未完成的
         // delivery_intents（不阻塞 UI；失败写 runtime.deliveryReplayFailure）。
-        try runtime.start()
+        // 复审 C5：start 内部会查库（recoverStale/resumeInterrupted）并注册 executor，
+        // 放到 detached 执行；AppRuntime 是 @unchecked Sendable（内部 NSLock 保护生命周期）。
+        try await Task.detached(priority: .userInitiated) {
+            try runtime.start()
+        }.value
         // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
         GatherEventCenter.shared.wire(jobEvents: runtime.jobService)
         await AppImport.prepareNativeEmbeddingRerun(
@@ -219,6 +233,7 @@ package final class AppBootstrap {
         wire(
             delegate: delegate,
             composition: composition,
+            sessionAPI: appServices.session,
             runtime: runtime,
             captureOneBridge: captureOneBridge,
             // Cut 4 / 4b-3：语言唯一来源随装配交给 Delegate（导入面板
@@ -287,6 +302,7 @@ package final class AppBootstrap {
     private static func wire(
         delegate: GatherAppDelegate?,
         composition: AppComposition,
+        sessionAPI: any SessionAPI,
         runtime: AppRuntime,
         captureOneBridge: CaptureOneBridge,
         languageStore: LanguageStore
@@ -296,23 +312,28 @@ package final class AppBootstrap {
         // 导入闭包同样在**动作发生时**取 store.l10n，不缓存字符串。
         delegate.languageStore = languageStore
         delegate.onImportFiles = { files in
-            AppImport.importFiles(
-                files,
-                composition: composition,
-                l10n: languageStore.l10n
-            )
+            let l10n = languageStore.l10n
+            Task {
+                await AppImport.importFiles(
+                    files,
+                    sessionAPI: sessionAPI,
+                    l10n: l10n
+                )
+            }
         }
         delegate.onCaptureOneImportFiles = { files in
             // 对齐旧版 App.tsx c1:plugin-import：C1 导入保留
             // capture-one 来源标记与「C1 导入 M/D H:mm」命名。
             let l10n = languageStore.l10n
-            AppImport.importFiles(
-                files,
-                composition: composition,
-                source: "capture-one",
-                sourceLabel: l10n("Capture One 文件"),
-                l10n: l10n
-            )
+            Task {
+                await AppImport.importFiles(
+                    files,
+                    sessionAPI: sessionAPI,
+                    source: "capture-one",
+                    sourceLabel: l10n("Capture One 文件"),
+                    l10n: l10n
+                )
+            }
         }
         delegate.onCaptureOneImport = {
             try await captureOneBridge.selectedPhotoPaths()

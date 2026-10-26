@@ -355,8 +355,8 @@ public struct DeliverySummaryQuery: Sendable {
         try connection.prepare("""
             SELECT 1
             FROM delivery_items di
-            JOIN delivery_sessions ds ON ds.delivery_id = di.delivery_id
-            WHERE ds.session_id = ? AND di.module = ?
+            JOIN photos p ON p.id = di.photo_id
+            WHERE p.session_id = ? AND di.module = ?
               AND di.status IN ('written', 'synced')
             LIMIT 1
           """).get([.text(sessionId), .text(module.rawValue)]) != nil

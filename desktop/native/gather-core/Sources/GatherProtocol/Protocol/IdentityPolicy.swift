@@ -15,6 +15,8 @@ public enum FaceIdentityPolicy {
             .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
         guard let winner = ranked.first,
               winner.value >= (thresholds[winner.key] ?? defaultThreshold) else { return .unknown }
+        // 设计不变量（测试钉住）：被拒绝的亚军仍参与歧义判定——验收阈值不得
+        // 抹掉“存在相近候选”这一事实，否则会出现过度自信的自动绑定。
         if ranked.count > 1, winner.value - ranked[1].value < max(0, margin) { return .ambiguous }
         return .accepted(personId: winner.key, score: winner.value)
     }

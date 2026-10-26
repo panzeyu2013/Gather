@@ -42,6 +42,10 @@ public protocol JobRepository {
     func requestCancel(_ id: String) throws -> JobCancelOutcome
     func retry(_ id: String) throws -> Bool
     func recoverStale(leaseTimeoutMs: Int) throws -> Int
+    /// 看门狗回收：excludingJobIds 排除本进程仍在执行的 job（避免自己回收自己）。
+    func recoverStale(leaseTimeoutMs: Int, excludingJobIds: [String]) throws -> Int
+    /// cancelScope 的窄查询：只返回活跃行的 id（不加载 checkpoint）。
+    func activeJobIDs(type: AnalysisJobType, scopeId: String) throws -> [String]
     func resumeInterrupted(types: [AnalysisJobType], maxAttempts: Int?) throws -> Int
     func claim(id: String, leaseOwner: String) throws -> Bool
     func heartbeat(id: String, leaseOwner: String) throws -> Bool
@@ -83,6 +87,18 @@ public extension JobRepository {
 
     func recoverStale() throws -> Int {
         try recoverStale(leaseTimeoutMs: 30_000)
+    }
+
+    /// 默认实现：不支持排除的实现退化为原行为（测试替身/旧实现）。
+    func recoverStale(leaseTimeoutMs: Int, excludingJobIds: [String]) throws -> Int {
+        try recoverStale(leaseTimeoutMs: leaseTimeoutMs)
+    }
+
+    /// 默认实现：测试替身退化为过滤 list（生产实现走窄 SQL）。
+    func activeJobIDs(type: AnalysisJobType, scopeId: String) throws -> [String] {
+        try list(status: nil, includeCheckpoint: false)
+            .filter { $0.type == type && $0.scopeId == scopeId }
+            .map { $0.id }
     }
 
     func resumeInterrupted(types: [AnalysisJobType]) throws -> Int {

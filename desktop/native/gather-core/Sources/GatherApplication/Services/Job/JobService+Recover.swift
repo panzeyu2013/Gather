@@ -11,7 +11,13 @@ extension JobService {
 
     /// 看门狗：回收 stale 租约 → 按类型策略自动恢复 interrupted → 驱动队列。
     func recoverAndResume() {
-        _ = try? repo.recoverStale(leaseTimeoutMs: Int(leaseTimeoutMs))
+        // P1（复审）：看门狗不得回收**本进程仍在执行**的 job。长事务饿死心跳 >leaseTimeout
+        // 时，旧实现会把自己判成 worker_lost → abort → 重跑；这里用内存中的 activeRuns
+        // 排除（崩溃重启后 activeRuns 为空，跨进程恢复不受影响）。
+        lock.lock()
+        let activeIds = Array(activeRuns.keys)
+        lock.unlock()
+        _ = try? repo.recoverStale(leaseTimeoutMs: Int(leaseTimeoutMs), excludingJobIds: activeIds)
         resumeInterruptedForRegisteredTypes()
         pump()
     }

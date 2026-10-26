@@ -15,10 +15,14 @@ extension CullingService {
         photoId: String,
         expectedRevision: Int,
         patch: CullingUpdatePatch,
-        context: CullingUpdateContext? = nil
+        context: CullingUpdateContext? = nil,
+        preloadedDecision: CullingDecisionRow? = nil,
+        preloadedSyncStatus: MetadataSyncStatus? = nil,
+        preloadedDecisionRows: [String: CullingDecisionRow]? = nil,
+        preloadedCacheRows: [String: MetadataCacheRow]? = nil
     ) throws -> CullingUpdateResult {
         try validatePatch(patch)
-        let entry = getSessionUpdateContext(sessionId: sessionId)
+        let entry = try getSessionUpdateContext(sessionId: sessionId)
         var photos = context?.photos ?? entry.photos
         var photoById = context?.photoById ?? entry.photoById
         var contextGroupMap = context?.groupMap
@@ -30,7 +34,7 @@ extension CullingService {
         } else {
             // TTL 缓存的照片集合可能缺索引器刚加的照片，每次窗口先试一次新鲜读
             //（见 refreshSessionUpdateContext）。陈旧的调用方上下文被丢弃。
-            refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
+            try refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
             photos = entry.photos
             photoById = entry.photoById
             contextGroupMap = nil
@@ -42,7 +46,14 @@ extension CullingService {
             target = refreshed
         }
 
-        let currentRow = try cullingDecisionRepo.getDecision(sessionId: sessionId, photoId: photoId)
+        // 复审 B3：batchUpdate 已在批外层预读决策行，避免每条照片一次单行查询。
+        let currentRow: CullingDecisionRow?
+        if let preloadedDecision {
+            currentRow = preloadedDecision
+        } else {
+            currentRow = try cullingDecisionRepo.getDecision(
+                sessionId: sessionId, photoId: photoId)
+        }
         let currentRevision = currentRow?.revision ?? 0
         if currentRevision != Int64(expectedRevision) {
             throw CullingServiceError.revisionConflict(
@@ -96,16 +107,28 @@ extension CullingService {
         }
 
         try transactions.transaction {
-            let existingRows = Dictionary(
-                uniqueKeysWithValues: try cullingDecisionRepo
-                    .getByPhotoIds(sessionId: sessionId, photoIds: affectedPhotos.map(\.id))
-                    .map { ($0.photoId, $0) }
-            )
-            let cacheRows = Dictionary(
-                uniqueKeysWithValues: try metadataCacheRepo
-                    .getBatch(affectedPhotos.map(\.id))
-                    .map { ($0.photoId, $0) }
-            )
+            // 复审 B3：batchUpdate 在批外层按“受影响照片并集”预读两张表，
+            // 避免每条照片各发一次 IN 查询；单条调用仍走原查询。
+            let existingRows: [String: CullingDecisionRow]
+            if let preloadedDecisionRows {
+                existingRows = preloadedDecisionRows
+            } else {
+                existingRows = Dictionary(
+                    uniqueKeysWithValues: try cullingDecisionRepo
+                        .getByPhotoIds(sessionId: sessionId, photoIds: affectedPhotos.map(\.id))
+                        .map { ($0.photoId, $0) }
+                )
+            }
+            let cacheRows: [String: MetadataCacheRow]
+            if let preloadedCacheRows {
+                cacheRows = preloadedCacheRows
+            } else {
+                cacheRows = Dictionary(
+                    uniqueKeysWithValues: try metadataCacheRepo
+                        .getBatch(affectedPhotos.map(\.id))
+                        .map { ($0.photoId, $0) }
+                )
+            }
 
             for photo in affectedPhotos {
                 let existing = existingRows[photo.id]
@@ -193,10 +216,16 @@ extension CullingService {
         // S5c-2b-3b-2a：交付行是同步态的优先读模型（写回执行器直接维护它）；
         // 手动 rating/label 仍走旧 mutation 队列，交付行出现前用旧行兜底，
         // 2b 手动队列迁入交付后删除兜底（不让徽标在写入前谎报 clean）。
-        let syncStatus = try currentSyncStatus(
-            xmpPath: targetXmpPath,
-            fallback: changesSharedMetadata ? .pending : .clean
-        )
+        // 复审 B3：batch 内同一 xmpPath 的 syncStatus 只查一次。
+        let syncStatus: MetadataSyncStatus
+        if let preloadedSyncStatus {
+            syncStatus = preloadedSyncStatus
+        } else {
+            syncStatus = try currentSyncStatus(
+                xmpPath: targetXmpPath,
+                fallback: changesSharedMetadata ? .pending : .clean
+            )
+        }
         return CullingUpdateResult(
             states: resultStates,
             xmpPath: targetXmpPath,
@@ -218,11 +247,11 @@ extension CullingService {
         }
         if uniqueIds.isEmpty { throw CullingServiceError.emptySelection }
         if uniqueIds.count > Self.batchMax { throw CullingServiceError.tooManyPhotoIds }
-        let entry = getSessionUpdateContext(sessionId: sessionId)
+        let entry = try getSessionUpdateContext(sessionId: sessionId)
         // 先在缓存索引里校验照片 id（任何相似度读之前，见 ensureUpdateExtras）。
         // 缺失可能是索引器刚加的照片（TTL 缓存不可见），先试一次新鲜读再拒绝。
         if uniqueIds.contains(where: { entry.photoById[$0] == nil }) {
-            refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
+            try refreshSessionUpdateContext(sessionId: sessionId, entry: entry)
             if uniqueIds.contains(where: { entry.photoById[$0] == nil }) {
                 throw CullingServiceError.photosNotInSession
             }
@@ -258,9 +287,63 @@ extension CullingService {
                 .getByPhotoIds(sessionId: sessionId, photoIds: operationIds)
                 .map { ($0.photoId, $0) }
         )
+        // 复审 B3：syncStatus 在批外层按 xmpPath 预读（同一侧车的照片只查一次）。
+        let syncFallback: MetadataSyncStatus = (patch.rating != nil || patch.colorLabel != nil)
+            ? .pending : .clean
+        var syncByXmp: [String: MetadataSyncStatus] = [:]
+        for photoId in operationIds {
+            guard let photo = photoById[photoId] else { continue }
+            let xmpPath = DeliveryPath.sidecar(photo.filepath)
+            if syncByXmp[xmpPath] == nil {
+                syncByXmp[xmpPath] = try currentSyncStatus(
+                    xmpPath: xmpPath, fallback: syncFallback)
+            }
+        }
+        // 复审 B3：受影响照片并集只读一次；仅当各操作集合互不相交时才预读，
+        // 相交时退回逐条查询（共享照片的 revision 必须看到前一次写入）。
+        let sharedChanged = patch.rating != nil || patch.colorLabel != nil
+        var union: [String] = []
+        var seenIDs = Set<String>()
+        var disjoint = true
+        for photoId in operationIds {
+            guard let photo = photoById[photoId] else { continue }
+            var ids: [String] = []
+            if patch.pickState != nil, let assetId = photo.assetId {
+                ids = (entry.photosByAssetId[assetId] ?? []).map(\.id)
+            } else {
+                ids = [photo.id]
+            }
+            if sharedChanged {
+                let xmpPath = DeliveryPath.sidecar(photo.filepath)
+                ids += (linkedByXmp[xmpPath] ?? []).map(\.id)
+            }
+            var localSeen = Set<String>()
+            for id in ids where localSeen.insert(id).inserted {
+                if !seenIDs.insert(id).inserted { disjoint = false }
+                union.append(id)
+            }
+        }
+        var preloadedDecisionRows: [String: CullingDecisionRow]?
+        var preloadedCacheRows: [String: MetadataCacheRow]?
+        if disjoint, !union.isEmpty {
+            preloadedDecisionRows = Dictionary(
+                uniqueKeysWithValues: try cullingDecisionRepo
+                    .getByPhotoIds(sessionId: sessionId, photoIds: union)
+                    .map { ($0.photoId, $0) }
+            )
+            preloadedCacheRows = Dictionary(
+                uniqueKeysWithValues: try metadataCacheRepo
+                    .getBatch(union)
+                    .map { ($0.photoId, $0) }
+            )
+        }
         try transactions.transaction {
             for photoId in operationIds {
+                guard let photo = photoById[photoId] else {
+                    throw CullingServiceError.photosNotInSession
+                }
                 let current = currentRows[photoId]
+                let targetXmp = DeliveryPath.sidecar(photo.filepath)
                 results.append(try updateState(
                     sessionId: sessionId,
                     photoId: photoId,
@@ -273,7 +356,11 @@ extension CullingService {
                         groupMap: groupMap,
                         linkedByXmp: linkedByXmp,
                         historySink: historySink
-                    )
+                    ),
+                    preloadedDecision: disjoint ? current : nil,
+                    preloadedSyncStatus: disjoint ? syncByXmp[targetXmp] : nil,
+                    preloadedDecisionRows: preloadedDecisionRows,
+                    preloadedCacheRows: preloadedCacheRows
                 ))
             }
             if !historySink.entries.isEmpty {
@@ -334,11 +421,11 @@ extension CullingService {
             throw CullingServiceError.historyDuplicatePhotos
         }
         for entry in entries { try validatePatch(entry.patch) }
-        let updateEntry = getSessionUpdateContext(sessionId: sessionId)
+        let updateEntry = try getSessionUpdateContext(sessionId: sessionId)
         // 与 updateState/batchUpdate 相同的 fresh-read 兜底：索引器刚加的照片
         // 可能缺席 TTL 缓存。
         if entries.contains(where: { updateEntry.photoById[$0.photoId] == nil }) {
-            refreshSessionUpdateContext(sessionId: sessionId, entry: updateEntry)
+            try refreshSessionUpdateContext(sessionId: sessionId, entry: updateEntry)
         }
         let photoById = updateEntry.photoById
         // 历史载荷是**外部数据**（库行里的 operation_json，可能残留已删除照片的 id：

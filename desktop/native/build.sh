@@ -623,7 +623,9 @@ if [[ -n "$MACHO_SDK" ]]; then
   SDK_MAJOR="${MACHO_SDK%%.*}"
   if [[ "$SDK_MAJOR" =~ ^[0-9]+$ ]] && (( SDK_MAJOR < 26 )); then
     if [[ "$RELEASE_MODE" == "1" ]]; then
-      echo "warning: release bundle links against SDK $MACHO_SDK (<26): Liquid Glass is disabled. The release runner must provide Xcode 26+; CI release asserts this before building." >&2
+      # 复审 P2：发布模式必须 fail-closed（此前只 warning，会产出无 Liquid Glass 的包）。
+      echo "error: release bundle links against SDK $MACHO_SDK (<26): Liquid Glass is disabled. The release runner must provide Xcode 26+." >&2
+      exit 1
     else
       echo "note: Mach-O sdk $MACHO_SDK (<26); Liquid Glass disabled (expected on older toolchains)" >&2
     fi

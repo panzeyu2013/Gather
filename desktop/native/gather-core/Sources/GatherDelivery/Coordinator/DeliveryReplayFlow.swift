@@ -339,6 +339,49 @@ struct DeliveryReplayFlow: Sendable {
             record(await applyDBAndFinish(intent: intent, payload: payload))
         }
 
+        // 复审 A3：applied 行的 finalize 意味着「DB 行已删、备份可能未删」。
+        // 先补删备份，成功后才清 intent；cleanup 的显式放弃行直接清。
+        for intent in backlog.applied {
+            guard let payload = DeliveryCleanupPayload(intent: intent) else {
+                do {
+                    try intents.finish(id: intent.id, error: nil)
+                    skippedCount += 1
+                } catch {
+                    failedCount += 1
+                    errors.append(Self.failure("XMP_REPLAY_APPLIED_CLEANUP_FAILED", intent.xmpPath, error))
+                }
+                continue
+            }
+            if payload.action == .finalize, !payload.backupPath.isEmpty {
+                let removal = await filePhase.removeFinalizeBackup(
+                    xmpPath: intent.xmpPath, backupPath: payload.backupPath)
+                switch removal {
+                case .removed, .absent:
+                    do {
+                        try intents.finish(id: intent.id, error: nil)
+                        appliedCount += 1
+                    } catch {
+                        failedCount += 1
+                        errors.append(Self.failure("XMP_FINALIZE_BACKUP_FINISH_FAILED", intent.xmpPath, error))
+                    }
+                case .retained(let reason):
+                    skippedCount += 1
+                    errors.append("XMP_FINALIZE_BACKUP_RETAINED: \(intent.xmpPath) reason=\(reason)")
+                case .failed(let reason):
+                    failedCount += 1
+                    errors.append("XMP_FINALIZE_BACKUP_CLEANUP_FAILED: \(intent.xmpPath) reason=\(reason)")
+                }
+            } else {
+                // cleanup 的显式放弃行：仅清理，不再计入 skipped（重复 replay 必须幂等）。
+                do {
+                    try intents.finish(id: intent.id, error: nil)
+                } catch {
+                    failedCount += 1
+                    errors.append(Self.failure("XMP_REPLAY_APPLIED_CLEANUP_FAILED", intent.xmpPath, error))
+                }
+            }
+        }
+
         // WP7b：批次汇总只带计数与整体耗时，不输出路径/会话明文。
         DeliveryTrace.log(
             DeliveryTrace.text(id: "replay", revision: 0, phase: "summary"),
@@ -510,6 +553,10 @@ struct DeliveryReplayFlow: Sendable {
                 xmpPath: intent.xmpPath,
                 backupPath: payload.backupPath
             )
+            if notice == nil {
+                // A3：DB 已删 + 备份已清 → applied intent 闭环。
+                try? intents.finish(id: intent.id, error: nil)
+            }
             return DeliveryDBFinishOutcome(
                 applied: true, retryableError: nil, notice: notice)
         case .incompleteItems(let module, let status):

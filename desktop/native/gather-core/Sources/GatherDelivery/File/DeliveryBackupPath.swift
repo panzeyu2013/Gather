@@ -36,6 +36,10 @@ enum DeliveryBackupPathError: Error, Equatable, CustomStringConvertible, Localiz
     case symbolicLink(String)
     /// 已存在的 backup_path 不是常规文件（目录/设备/FIFO 等）。
     case notRegularFile(String)
+    /// xmp_path 自身不安全（空/相对/含 NUL/含 .. 组件）。
+    case unsafeXMPPath(String)
+    /// xmp_path 不在 photo_path 的同目录（侧车必须与照片同目录）。
+    case xmpNotSiblingOfPhoto(String)
 
     var code: String {
         switch self {
@@ -45,6 +49,8 @@ enum DeliveryBackupPathError: Error, Equatable, CustomStringConvertible, Localiz
         case .unexpectedName: return "XMP_BACKUP_PATH_UNEXPECTED_NAME"
         case .symbolicLink: return "XMP_BACKUP_PATH_SYMLINK"
         case .notRegularFile: return "XMP_BACKUP_PATH_NOT_REGULAR_FILE"
+        case .unsafeXMPPath: return "XMP_PATH_UNSAFE"
+        case .xmpNotSiblingOfPhoto: return "XMP_PATH_NOT_SIBLING_OF_PHOTO"
         }
     }
 
@@ -56,7 +62,9 @@ enum DeliveryBackupPathError: Error, Equatable, CustomStringConvertible, Localiz
              .notSibling(let path),
              .unexpectedName(let path),
              .symbolicLink(let path),
-             .notRegularFile(let path):
+             .notRegularFile(let path),
+             .unsafeXMPPath(let path),
+             .xmpNotSiblingOfPhoto(let path):
             return "\(code): \(path)"
         }
     }
@@ -131,5 +139,32 @@ public enum DeliveryBackupPath {
         }
         // ENOENT/EACCES 不在这里判死：存在性交给文件端口，保持 backupMissing 语义。
         return normalizedBackup
+    }
+}
+
+/// xmp_path 的唯一安全校验入口（复审 P2）。
+///
+/// 与 backup_path 的威胁模型相同：delivery_intents.xmp_path 是 DB 列，
+/// cleanup/replay 会据此 remove/restore。旧实现只校验 backup_path，xmp_path
+/// 零校验（相对路径/.. /NUL 都直接交给文件端口）。这里要求：
+/// 1. 绝对路径、无 NUL、无 .. 组件；
+/// 2. 与 photo_path 同目录（侧车约定），两侧都过 TSPath.normalize 后比较。
+public enum DeliveryXMPPath {
+    public static func requireSafeSidecar(xmpPath: String, photoPath: String) throws {
+        guard !xmpPath.isEmpty, !xmpPath.contains("\0"), xmpPath.hasPrefix("/"),
+              !xmpPath.components(separatedBy: "/").contains("..") else {
+            throw DeliveryBackupPathError.unsafeXMPPath(xmpPath)
+        }
+        guard !photoPath.isEmpty, !photoPath.contains("\0"), photoPath.hasPrefix("/"),
+              !photoPath.components(separatedBy: "/").contains("..") else {
+            throw DeliveryBackupPathError.unsafeXMPPath(xmpPath)
+        }
+        let xmpDirectory = (TSPath.normalize(xmpPath) as NSString).deletingLastPathComponent
+        let photoDirectory = (TSPath.normalize(photoPath) as NSString).deletingLastPathComponent
+        guard !xmpDirectory.isEmpty, !photoDirectory.isEmpty,
+              xmpDirectory.precomposedStringWithCanonicalMapping
+                  .caseInsensitiveCompare(photoDirectory.precomposedStringWithCanonicalMapping) == .orderedSame else {
+            throw DeliveryBackupPathError.xmpNotSiblingOfPhoto(xmpPath)
+        }
     }
 }
