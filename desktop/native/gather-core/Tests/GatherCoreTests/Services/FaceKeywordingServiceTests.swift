@@ -758,8 +758,8 @@ struct FaceKwClusterCommandTests {
         #expect(try harness.personRepo.getPhotosWithDetails(personId: personId).photos.isEmpty)
     }
 
-    @Test("merges clusters moving members and dropping the source binding")
-    func mergesClusters() throws {
+    @Test("拒绝合并已绑定簇，source binding 保留")
+    func mergeBoundClusterRejected() throws {
         let harness = try makeFaceKwHarness(photoCount: 2)
         try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
                         members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
@@ -767,12 +767,13 @@ struct FaceKwClusterCommandTests {
                         members: [(photoId: "photo-2", bbox: [5, 6, 7, 8], confidence: 0.8)])
         try bind(harness, clusterId: 1, roleName: "Alice", keywords: [])
 
-        try harness.service.mergeClusters(sessionId: harness.sessionId, sourceId: 1, targetId: 2)
-
-        let targetMembers = try harness.faceRepo.getClusterMembers(2).map(\.photoId)
-        #expect(targetMembers == ["photo-1", "photo-2"])
-        #expect(try harness.faceRepo.getClusterMembers(1).isEmpty)
-        #expect(try harness.faceRepo.getBindingsBySession(harness.sessionId).isEmpty)
+        #expect(throws: FaceKwServiceError.clusterBound) {
+            try harness.service.mergeClusters(
+                sessionId: harness.sessionId, sourceId: 1, targetId: 2)
+        }
+        #expect(try harness.faceRepo.getClusterMembers(2).map(\.photoId) == ["photo-2"])
+        #expect(try harness.faceRepo.getClusterMembers(1).map(\.photoId) == ["photo-1"])
+        #expect(try harness.faceRepo.getBindingsBySession(harness.sessionId).count == 1)
     }
 
     @Test("validates merge inputs")

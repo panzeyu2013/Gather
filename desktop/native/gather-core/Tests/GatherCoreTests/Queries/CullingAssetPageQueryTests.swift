@@ -6,6 +6,7 @@
 
 import Foundation
 import Testing
+import GatherProtocol
 import GatherTestSupport
 @testable import GatherPersistence
 
@@ -25,24 +26,19 @@ struct CullingAssetPageQueryBoundaryTests {
         let query = CullingAssetPageQuery(connection: db)
         let emptyFilter = CullingPageFilter()
 
-        let first = try query.pageFiltered(sessionId: "s", filter: emptyFilter, afterRowId: nil, limit: 2)
+        let first = try query.filtered(sessionId: "s", filter: emptyFilter, afterRowId: nil, limit: 2)
         #expect(first.rows.map(\.id) == ["a1-jpg", "a1-raw", "a2"])
         #expect(first.cursor == 3)
         #expect(try query.countFiltered(sessionId: "s", filter: emptyFilter) == 3)
 
-        let second = try query.pageFiltered(
+        let second = try query.filtered(
             sessionId: "s", filter: emptyFilter, afterRowId: first.cursor, limit: 2
         )
         #expect(second.rows.map(\.id) == ["a3"])
-        #expect(second.cursor == 4)
+        // 不足一页即末页：不再返回游标，UI 不会多发一次空页。
+        #expect(second.cursor == nil)
 
-        let third = try query.pageFiltered(
-            sessionId: "s", filter: emptyFilter, afterRowId: second.cursor, limit: 2
-        )
-        #expect(third.rows.isEmpty)
-        #expect(third.cursor == nil)
-
-        let zero = try query.pageFiltered(sessionId: "s", filter: emptyFilter, afterRowId: nil, limit: 0)
+        let zero = try query.filtered(sessionId: "s", filter: emptyFilter, afterRowId: nil, limit: 0)
         #expect(zero.rows.isEmpty)
         #expect(zero.cursor == nil)
     }
@@ -63,7 +59,7 @@ struct CullingAssetPageQueryBoundaryTests {
 
         let query = CullingAssetPageQuery(connection: db)
         func ids(_ filter: CullingPageFilter) throws -> [String] {
-            try query.pageFiltered(sessionId: "s", filter: filter, afterRowId: nil, limit: 50).rows.map(\.id)
+            try query.filtered(sessionId: "s", filter: filter, afterRowId: nil, limit: 50).rows.map(\.id)
         }
 
         let ignored = CullingPageFilter(
@@ -95,7 +91,7 @@ struct CullingAssetPageQueryBoundaryTests {
 
         let query = CullingAssetPageQuery(connection: db)
         let filter = CullingPageFilter(metadataConflictOnly: true)
-        let page = try query.pageFiltered(sessionId: "s", filter: filter, afterRowId: nil, limit: 10)
+        let page = try query.filtered(sessionId: "s", filter: filter, afterRowId: nil, limit: 10)
         #expect(page.rows.map(\.id) == ["p-conflict"])
         #expect(try query.countFiltered(sessionId: "s", filter: filter) == 1)
     }
@@ -123,11 +119,11 @@ struct CullingAssetPageQueryBoundaryTests {
         let query = CullingAssetPageQuery(connection: db)
         let group0 = CullingSimilarityScope.group(resultId: older, groupIndex: 0)
 
-        let first = try query.pageSimilarity(sessionId: "s", similarity: group0, afterRowId: nil, limit: 1)
+        let first = try query.similarity(sessionId: "s", similarity: group0, afterRowId: nil, limit: 1)
         #expect(first.rows.map(\.id) == ["a1-jpg", "a1-raw"], "组内变体整组返回")
         #expect(first.cursor == 2)
 
-        let second = try query.pageSimilarity(
+        let second = try query.similarity(
             sessionId: "s", similarity: group0, afterRowId: first.cursor, limit: 1
         )
         #expect(second.rows.map(\.id) == ["b"])
@@ -135,14 +131,14 @@ struct CullingAssetPageQueryBoundaryTests {
         #expect(try query.countSimilarity(sessionId: "s", similarity: group0) == 2)
 
         let group1 = CullingSimilarityScope.group(resultId: older, groupIndex: 1)
-        let group1Page = try query.pageSimilarity(
+        let group1Page = try query.similarity(
             sessionId: "s", similarity: group1, afterRowId: nil, limit: 10
         )
         // group1 只含 a1-jpg，而 a1 的首选变体是 a1-raw：非首选变体被排除 → 空组。
         #expect(group1Page.rows.isEmpty)
         #expect(try query.countSimilarity(sessionId: "s", similarity: group1) == 0)
 
-        let latestPage = try query.pageSimilarity(
+        let latestPage = try query.similarity(
             sessionId: "s", similarity: .latest, afterRowId: nil, limit: 10
         )
         #expect(latestPage.rows.map(\.id) == ["b", "c"])
@@ -160,12 +156,51 @@ struct CullingAssetPageQueryBoundaryTests {
         }
         let query = CullingAssetPageQuery(connection: db)
         let filter = CullingPageFilter()
-        let page = try query.pageFiltered(sessionId: "s", filter: filter, afterRowId: nil, limit: 801)
+        let page = try query.filtered(sessionId: "s", filter: filter, afterRowId: nil, limit: 801)
         #expect(page.rows.count == 801)
         #expect(page.rows.first?.id == "cp1")
         #expect(page.rows.last?.id == "cp801")
         #expect(page.cursor == 801)
         #expect(Set(page.rows.map(\.id)).count == 801)
         #expect(try query.countFiltered(sessionId: "s", filter: filter) == 801)
+    }
+}
+
+/// 测试适配：把旧的 rowid 分页参数折成统一 cursor，断言仍用 Int64 便于读。
+private extension CullingAssetPageQuery {
+    func filtered(
+        sessionId: String,
+        filter: CullingPageFilter,
+        afterRowId: Int64?,
+        limit: Int
+    ) throws -> (rows: [PhotoPageRow], cursor: Int64?) {
+        let page = try pageSorted(
+            sessionId: sessionId,
+            scope: .filtered,
+            filter: filter,
+            similarity: nil,
+            sort: .importOrder,
+            cursor: afterRowId.map { CullingPageCursor(sort: .importOrder, rowId: $0) },
+            limit: limit
+        )
+        return (page.rows, page.cursor?.rowId)
+    }
+
+    func similarity(
+        sessionId: String,
+        similarity scope: CullingSimilarityScope,
+        afterRowId: Int64?,
+        limit: Int
+    ) throws -> (rows: [PhotoPageRow], cursor: Int64?) {
+        let page = try pageSorted(
+            sessionId: sessionId,
+            scope: .similarityGroup,
+            filter: CullingPageFilter(),
+            similarity: scope,
+            sort: .importOrder,
+            cursor: afterRowId.map { CullingPageCursor(sort: .importOrder, rowId: $0) },
+            limit: limit
+        )
+        return (page.rows, page.cursor?.rowId)
     }
 }

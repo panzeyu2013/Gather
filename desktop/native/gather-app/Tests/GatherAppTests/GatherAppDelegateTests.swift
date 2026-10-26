@@ -8,7 +8,7 @@
 //    sessionId / addedCount / failedCount。
 //
 // 边界：临时目录 + 真实 1×1 JPEG 驱动启动后共用的导入路径；不跑 AppKit 事件
-// 循环、不触网、不写真实 Application Support（内存 SchemaV1 库）。
+// 循环、不触网、不写真实 Application Support（内存 SchemaCurrent 库）。
 import Foundation
 import Testing
 import CoreGraphics

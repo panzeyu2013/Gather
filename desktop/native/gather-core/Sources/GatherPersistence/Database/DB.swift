@@ -16,7 +16,6 @@ public final class DBConnection: @unchecked Sendable {
     /// 读出 affected-row 数。
     private var connectionGeneration: Int64 = 0
     private let reopenPath: String?
-
     /// 连接用途（R6）：readOnly 供只读池；默认读写。
     public enum Mode: Sendable {
         case readWrite
@@ -65,11 +64,21 @@ public final class DBConnection: @unchecked Sendable {
         try open()
     }
 
+    /// 备份校验用只读连接（feature B0）：等价于 mode = .readOnly。
+    public convenience init(path: String, readOnly: Bool) throws {
+        try self.init(path: path, mode: readOnly ? .readOnly : .readWrite)
+    }
+        try open()
+    }
+
     deinit { close() }
 
     /// 关闭后按原路径重新打开（迁移回滚流程需要：TS 侧关闭连接→文件恢复→下次访问
     /// 惰性重开，Swift 侧在 rollback 里显式重开以保持连接可用）。
     public func reopen() throws {
+        guard mode == .readWrite else {
+            throw DBError.message("只读连接不能重新打开")
+        }
         guard reopenPath != nil else {
             throw DBError.message("无法重新打开数据库：该连接没有路径信息（内存库）")
         }

@@ -21,6 +21,7 @@
 // Cut 1 / B8.2b：质量分析走 QualityAPI + JobAPI 轮询；取消走 JobAPI.cancel。
 // Cut 1 / B8.4：旧命令适配器已删除；C1 状态胶囊经 View 持有的 CullingAPI 注入。
 import SwiftUI
+import AppKit
 import GatherProtocol
 
 public struct CullingView: View {
@@ -31,8 +32,34 @@ public struct CullingView: View {
     /// 破坏性命令的唯一确认载体：命令层的 confirmed:true 只能从确认弹窗分支到达。
     @State var pendingAction: PendingCullingAction?
     @State var conflictChoices: [String: MetadataConflictChoice] = [:]
-    @State var compareCount = 1
     @State var faceAlign = false
+    @SceneStorage("culling.layout") private var layoutRaw = CullingLayoutMode.single.rawValue
+    /// 空串 = 本窗口未设置，回落到设置 grid_density（VM 默认值）。
+    @SceneStorage("culling.gridDensity") private var densityRaw = ""
+    /// 排序跨页签/窗口保持；空串 = 用设置 grid_default_sort。
+    @SceneStorage("culling.sort") var sortRaw = ""
+
+    /// 当前布局（网格是第 4 种布局，不新增页签）。
+    var layoutMode: CullingLayoutMode {
+        CullingLayoutMode(rawValue: layoutRaw) ?? .single
+    }
+
+    var layoutBinding: Binding<CullingLayoutMode> {
+        Binding(
+            get: { layoutMode },
+            set: { mode in
+                layoutRaw = mode.rawValue
+                Task { await viewModel.setPageLimit(mode == .grid ? 200 : 500) }
+            }
+        )
+    }
+
+    var densityBinding: Binding<CullingGridDensity> {
+        Binding(
+            get: { CullingGridDensity(rawValue: densityRaw) ?? viewModel.defaultGridDensity },
+            set: { densityRaw = $0.rawValue }
+        )
+    }
     /// 右侧检查器（系统 .inspector）的展开状态：Bridge/Capture One 式，
     /// 选项面板默认可见，工具栏开关由系统提供。可见性用 @SceneStorage 按页
     /// 记忆（跨导航重建 / 新窗口保持；参考 darktable 各视图独立存储面板可见性）。
@@ -80,6 +107,9 @@ public struct CullingView: View {
                     onCancel: { viewModel.noteCancelledAction($0.actionText) }
                 )
         }
+        .onChange(of: viewModel.sortMode) { _, newValue in
+            sortRaw = newValue.rawValue
+        }
         .toolbar {
             GatherSessionToolbar(
                 sessionId: viewModel.sessionId,
@@ -94,7 +124,13 @@ public struct CullingView: View {
         // Bridge / Capture One 式：图片保持居中，选项面板交给系统 .inspector
         // （工具栏开关由系统自动提供，不自绘按钮）。
         .inspector(isPresented: $showInspector) {
-            CullingInspector(viewModel: viewModel, isBusy: isBusy, faceAlign: $faceAlign)
+            CullingInspector(
+                viewModel: viewModel,
+                isBusy: isBusy,
+                faceAlign: $faceAlign,
+                gridDensity: densityBinding,
+                layoutMode: layoutBinding
+            )
                 // 约束循环修复（N01）：SwiftUI 把**理想列宽**计入承载视图的最小宽度
                 //（实测 min 260 / ideal 300 时贡献 300pt）。收窄到 ideal 260，
                 // 让最小窗口下「页签行 + 内容 + 检查器」仍能装进内容区。
@@ -103,11 +139,22 @@ public struct CullingView: View {
         // Phase 4 收口：挑片历史进 focused-scope。页面可见时 Edit 菜单的
         // 撤销/重做改由这份动作承载（页面无文本输入框，不抢系统文本撤销）。
         .focusedSceneValue(\.cullingHistory, CullingHistoryActions(
-            canUndo: viewModel.undoOperation != nil && !isBusy,
-            canRedo: viewModel.redoOperation != nil && !isBusy,
-            undo: { Task { await viewModel.undo() } },
-            redo: { Task { await viewModel.redo() } }
+            // 焦点可能在关键词 TextField：canUndo 不能只看挑片栈，否则文本撤销被禁用。
+            canUndo: !isBusy,
+            canRedo: !isBusy,
+            undo: { routeHistory(redo: false) },
+            redo: { routeHistory(redo: true) }
         ))
+    }
+
+    /// 文本框聚焦时把 ⌘Z/⇧⌘Z 交还 field editor，避免误撤销挑片决策。
+    private func routeHistory(redo: Bool) {
+        let selector = redo ? Selector(("redo:")) : Selector(("undo:"))
+        if NSApp.keyWindow?.firstResponder is NSTextView {
+            NSApp.sendAction(selector, to: nil, from: nil)
+            return
+        }
+        Task { redo ? await viewModel.redo() : await viewModel.undo() }
     }
 
     /// 页面级忙碌（原 CullingView.isBusy，逐字保留）：壳持有，向下传给工具栏 /

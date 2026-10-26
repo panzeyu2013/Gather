@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Services/DeliveryCoordinatorTests.swift
-// Cut 2 / S4：DeliveryCoordinator 的行为门禁（内存 SchemaV1 + 内存 XMP 假件）。
+// Cut 2 / S4：DeliveryCoordinator 的行为门禁（内存 SchemaCurrent + 内存 XMP 假件）。
 //
 // 覆盖面：
 // 1. confirm：pending/failed/writing/conflict 门禁；written 成功后单事务翻 synced；
@@ -15,7 +15,7 @@
 // 9. 跨模块 item（P1-8）：其它模块 pending/failed 阻断整条 cleanup 且不碰文件；
 //    其它模块全 synced 时只清本模块 item、保留交付；清干净后正常删除。
 //
-// 建库口径与 DeliveryRepoTests 一致：DBConnection(path: ":memory:") + exec(SchemaV1.sql)。
+// 建库口径与 DeliveryRepoTests 一致：DBConnection(path: ":memory:") + exec(SchemaCurrent.createSQL)。
 
 import Foundation
 import Testing
@@ -29,7 +29,7 @@ import Testing
 
 private func makeCoordinatorV1DB() throws -> DBConnection {
     let db = try DBConnection(path: ":memory:")
-    try db.exec(SchemaV1.sql)
+    try db.exec(SchemaCurrent.createSQL)
     return db
 }
 

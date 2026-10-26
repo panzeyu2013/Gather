@@ -1,14 +1,14 @@
 // desktop/native/gather-app/Sources/GatherHost/APIs/AppServices.swift
 // Cut 1 / 阶段 B1+B2+B3a+B4a+B5a+B6a+B7a：Live API 组合根（session / job /
 // settings / photo / asset / album / navigation / culling / face / similarity /
-// duplicate / quality / export / metadata / person / template 十六个域）。
+// duplicate / quality / export / metadata / person / template 十七个域）。
 //
 // 装配只负责“把共享服务包成 Live API”，不重新构造服务实例（JobService 的
 // 执行器注册、SettingsService 的缓存都必须与组合根共用同一实例，否则任务不
 // 执行 / 设置双缓存；Photo/Album/Navigation 的 Repo 同理，避免第二个数据库连接
 // 看到不同快照）。
 //
-// WP4c：16 个 Live API 工厂已拆到 Composition/FeatureAPIs.swift，装配入口
+// WP4c：17 个 Live API 工厂已拆到 Composition/FeatureAPIs.swift，装配入口
 // 委托 Composition/Root.swift（AppServicesRoot）；9 个零引用可选覆盖参数与
 // 9 个 makeX 随之删除。本文件只保留 AppServices 的存储与唯一公开入口
 // live(composition:)，不构造服务。
@@ -58,6 +58,8 @@ public struct AppServices: Sendable {
     /// B7a：人物库域（8 个方法 / 8 条命令）。B7b 才迁移 PersonsViewModel
     /// 与 LivePersonsDataProvider，暂不传给页面。
     public let person: any PersonAPI
+    /// P0 / B0：备份/恢复/诊断（第 17 协议；测试/Preview 可为 nil）。
+    public let maintenance: (any MaintenanceAPI)?
     /// Cut 1 / B8.3b-1：宿主运行时（与组合根共用同一 db/JobService/
     /// DeliveryCoordinator 的**唯一**实例）。GatherApp 用它驱动
     /// start()/shutdown()，CaptureOne reload ack 也经它落库；这里只暴露引用，
@@ -80,6 +82,7 @@ public struct AppServices: Sendable {
         export: any ExportAPI,
         metadata: any MetadataAPI,
         person: any PersonAPI,
+        maintenance: (any MaintenanceAPI)? = nil,
         runtime: AppRuntime
     ) {
         self.session = session
@@ -97,11 +100,12 @@ public struct AppServices: Sendable {
         self.export = export
         self.metadata = metadata
         self.person = person
+        self.maintenance = maintenance
         self.runtime = runtime
     }
 
     /// 生产装配（B8.3b-2a 起的唯一入口）：全部 Live API 直接包装组合根构造的
-    /// 服务/Repo 实例（15 个工厂见 Composition/FeatureAPIs.swift）。
+    /// 服务/Repo 实例（16 个工厂见 Composition/FeatureAPIs.swift）。
     ///
     /// 本方法不构造业务服务、不打开数据库、不注册 executor：JobService、
     /// SettingsService、PersonRepo、DeliveryRepo 等都是

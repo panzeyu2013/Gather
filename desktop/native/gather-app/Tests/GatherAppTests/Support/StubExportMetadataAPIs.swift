@@ -121,6 +121,17 @@ final class B6bExportAPIStub: ExportAPI, @unchecked Sendable {
 
 // MARK: - MetadataAPI
 
+private func emptyKeywordApplyResult() -> MetadataKeywordApplyResult {
+    MetadataKeywordApplyResult(
+        result: WritebackResult(
+            totalAffected: 0, written: 0, failed: 0, skipped: 0,
+            errors: [], failedItems: [], report: ""),
+        status: MetadataSyncSummary(
+            sessionId: "", pending: 0, writing: 0, written: 0,
+            failed: 0, conflict: 0, synced: 0, items: [])
+    )
+}
+
 private struct B6bMetadataState {
     var conflicts: [MetadataConflict] = []
     var conflictsError: (any Error)?
@@ -137,6 +148,15 @@ private struct B6bMetadataState {
     var orphanCalls = 0
     var resolveConflictInputs: [Confirmed<MetadataResolveConflictInput>] = []
     var resolveOrphanInputs: [Confirmed<MetadataResolveOrphanInput>] = []
+    var keywordPreviewResult = WritebackPreview(items: [], totalCount: 0, affectedPhotos: 0)
+    var keywordPreviewError: (any Error)?
+    var keywordPreviewInputs: [MetadataPreviewInput] = []
+    var keywordApplyResult = emptyKeywordApplyResult()
+    var keywordApplyError: (any Error)?
+    var keywordApplyInputs: [Confirmed<MetadataKeywordApplyInput>] = []
+    var keywordRetryResult = emptyKeywordApplyResult()
+    var keywordRetryError: (any Error)?
+    var keywordRetryInputs: [Confirmed<SessionReference>] = []
 }
 
 /// 可配置 MetadataAPI：默认冲突/孤儿为空；resolveOrphan 默认清空列表。
@@ -192,14 +212,77 @@ final class B6bMetadataAPIStub: MetadataAPI, @unchecked Sendable {
         box.lock.withLock { box.resolveOrphanInputs }
     }
 
-    func get(_ input: MetadataGetInput) async throws -> [String: MetadataTags] { [:] }
-
-    func set(_ input: Confirmed<MetadataSetInput>) async throws -> MetadataTags {
-        MetadataTags()
+    var keywordPreviewResult: WritebackPreview {
+        get { box.lock.withLock { box.keywordPreviewResult } }
+        set { box.lock.withLock { box.keywordPreviewResult = newValue } }
     }
 
-    func batchSet(_ input: Confirmed<MetadataBatchSetInput>) async throws -> BatchMetadataResult {
-        BatchMetadataResult(success: 0, failed: 0, errors: [])
+    var keywordPreviewError: (any Error)? {
+        get { box.lock.withLock { box.keywordPreviewError } }
+        set { box.lock.withLock { box.keywordPreviewError = newValue } }
+    }
+
+    var keywordApplyResult: MetadataKeywordApplyResult {
+        get { box.lock.withLock { box.keywordApplyResult } }
+        set { box.lock.withLock { box.keywordApplyResult = newValue } }
+    }
+
+    var keywordApplyError: (any Error)? {
+        get { box.lock.withLock { box.keywordApplyError } }
+        set { box.lock.withLock { box.keywordApplyError = newValue } }
+    }
+
+    var keywordRetryResult: MetadataKeywordApplyResult {
+        get { box.lock.withLock { box.keywordRetryResult } }
+        set { box.lock.withLock { box.keywordRetryResult = newValue } }
+    }
+
+    var keywordRetryError: (any Error)? {
+        get { box.lock.withLock { box.keywordRetryError } }
+        set { box.lock.withLock { box.keywordRetryError = newValue } }
+    }
+
+    var keywordPreviewInputs: [MetadataPreviewInput] {
+        box.lock.withLock { box.keywordPreviewInputs }
+    }
+
+    var keywordApplyInputs: [Confirmed<MetadataKeywordApplyInput>] {
+        box.lock.withLock { box.keywordApplyInputs }
+    }
+
+    var keywordRetryInputs: [Confirmed<SessionReference>] {
+        box.lock.withLock { box.keywordRetryInputs }
+    }
+
+    func preview(_ input: MetadataPreviewInput) async throws -> WritebackPreview {
+        let (error, result): ((any Error)?, WritebackPreview) = box.lock.withLock {
+            box.keywordPreviewInputs.append(input)
+            return (box.keywordPreviewError, box.keywordPreviewResult)
+        }
+        if let error { throw error }
+        return result
+    }
+
+    func applyKeywords(
+        _ input: Confirmed<MetadataKeywordApplyInput>
+    ) async throws -> MetadataKeywordApplyResult {
+        let (error, result): ((any Error)?, MetadataKeywordApplyResult) = box.lock.withLock {
+            box.keywordApplyInputs.append(input)
+            return (box.keywordApplyError, box.keywordApplyResult)
+        }
+        if let error { throw error }
+        return result
+    }
+
+    func retryKeywordWriteback(
+        _ input: Confirmed<SessionReference>
+    ) async throws -> MetadataKeywordApplyResult {
+        let (error, result): ((any Error)?, MetadataKeywordApplyResult) = box.lock.withLock {
+            box.keywordRetryInputs.append(input)
+            return (box.keywordRetryError, box.keywordRetryResult)
+        }
+        if let error { throw error }
+        return result
     }
 
     func conflicts(_ sessionId: String) async throws -> [MetadataConflict] {

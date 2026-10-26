@@ -355,6 +355,15 @@ public struct L10n: Equatable, Sendable {
     /// {{name}} 按出现顺序替换（对空 params 也执行，与已删的旧出口一致：
     /// 未提供参数时占位符替换为空串）。必须在本地化之后调用。
     public static func interpolate(_ template: String, params: [String]) -> String {
+        // 错误码表里仍有历史 %@ 模板（B0/K0 新增 11 条）；{{name}} 优先，其次按序替换 %@。
+        if !template.contains("{{"), template.contains("%@"), !params.isEmpty {
+            var legacy = template
+            for param in params {
+                guard let range = legacy.range(of: "%@") else { break }
+                legacy.replaceSubrange(range, with: param)
+            }
+            return legacy
+        }
         guard template.contains("{{") else { return template }
         var result = template
         var index = 0

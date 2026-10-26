@@ -38,6 +38,8 @@ import GatherDelivery
 
 public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     private let cullingService: CullingService
+    /// P0 / T0：技术质量建议（只写决策/建议，不写 XMP）。
+    private let triageService: TriageService
     /// 只读会话行：syncStatus 需要 session.reload_acked_at。nil 时该字段恒为 nil
     /// （测试/嵌入场景不需要重载确认语义）。
     private let sessionRepo: SessionRepo?
@@ -45,24 +47,20 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     /// @unchecked Sendable 依据：两个依赖都是构造后不再变更的 let；CullingService
     /// 的可变状态（会话级更新上下文缓存、Repo 缓存）由 DBConnection 的递归锁与
     /// 各 Repo 串行化（与组合根 @unchecked Sendable 同一约定）。
-    public init(cullingService: CullingService, sessionRepo: SessionRepo? = nil) {
+    public init(
+        cullingService: CullingService,
+        triageService: TriageService,
+        sessionRepo: SessionRepo? = nil
+    ) {
         self.cullingService = cullingService
+        self.triageService = triageService
         self.sessionRepo = sessionRepo
     }
 
     // MARK: - 读
 
     public func page(_ query: CullingPageQuery) async throws -> CullingPage {
-        try map {
-            try cullingService.listPage(
-                sessionId: query.sessionId,
-                scope: query.scope,
-                filters: query.filters,
-                requestedGroupId: query.groupId,
-                afterRowId: query.afterRowId,
-                limit: query.limit
-            )
-        }
+        try map { try cullingService.listPage(query) }
     }
 
     public func history(_ query: CullingHistoryQuery) async throws -> [CullingHistoryOperation] {
@@ -78,7 +76,34 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
 
     public func summary(_ sessionId: String) async throws -> CullingSummary {
         let id = try LiveAPIInput.requireSessionId(sessionId)
-        return try map { try cullingService.getSummary(sessionId: id) }
+        return try map {
+            var summary = try cullingService.getSummary(sessionId: id)
+            // 关闭 T0 时跳过 TriageRepo 指纹聚合；summary 也不需要该字段。
+            if triageService.isEnabled {
+                summary.triage = try triageService.summary(sessionId: id)
+            }
+            return summary
+        }
+    }
+
+    // MARK: - T0（技术质量建议）
+
+    public func generateTriage(_ input: TriageGenerateInput) async throws -> TriageSummary {
+        let id = try LiveAPIInput.requireSessionId(input.sessionId)
+        // 生成/应用是同步 CPU+DB 重活；离开 MainActor，20k 候选不阻塞 UI。
+        return try await Task.detached(priority: .userInitiated) {
+            try self.map {
+                try self.triageService.generate(sessionId: id, force: input.force)
+            }
+        }.value
+    }
+
+    public func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult {
+        try await Task.detached(priority: .userInitiated) {
+            try self.map {
+                try self.triageService.apply(input)
+            }
+        }.value
     }
 
     public func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus {
@@ -93,20 +118,23 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     // MARK: - 写（决策/历史）
 
     public func applyHistory(_ input: CullingApplyHistoryInput) async throws -> [CullingUpdateResult] {
-        try map {
+        let result = try map {
             try cullingService.applyHistory(
                 sessionId: input.sessionId,
                 requestedEntries: input.entries,
                 historyOperationId: input.historyOperationId,
-                direction: input.direction
+                direction: input.direction,
+                source: input.source ?? .manual
             )
         }
+        try await cullingService.flushQueuedMetadata(sessionId: input.sessionId)
+        return result
     }
 
     /// 单张更新走“会话级更新上下文 + updateState”两步（旧命令面 同一调用序列：
     /// 点击突发不再每次重读整个会话）。
     public func update(_ input: CullingUpdateInput) async throws -> CullingUpdateResult {
-        try map {
+        let result = try map {
             let context = try cullingService.getUpdateContext(sessionId: input.sessionId)
             return try cullingService.updateState(
                 sessionId: input.sessionId,
@@ -116,16 +144,20 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                 context: context
             )
         }
+        try await cullingService.flushQueuedMetadata(sessionId: input.sessionId)
+        return result
     }
 
     public func batchUpdate(_ input: CullingBatchUpdateInput) async throws -> [CullingUpdateResult] {
-        try map {
+        let result = try map {
             try cullingService.batchUpdate(
                 sessionId: input.sessionId,
                 photoIds: input.photoIds,
                 patch: input.patch
             )
         }
+        try await cullingService.flushQueuedMetadata(sessionId: input.sessionId)
+        return result
     }
 
     public func decideGroup(_ input: CullingDecideGroupInput) async throws -> [CullingUpdateResult] {
@@ -215,8 +247,16 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             throw error
         } catch let error as CullingServiceError {
             throw Self.gatherError(error)
+        } catch let error as TriageServiceError {
+            throw Self.gatherError(error)
         } catch let error as CodedError {
             throw GatherError(code: error.code, underlying: String(describing: error))
+        } catch let error as DBError {
+            if case .message(let message) = error,
+               let code = GatherErrorCode(rawValue: message) {
+                throw GatherError(code: code, underlying: message)
+            }
+            throw error
         }
     }
 
@@ -227,8 +267,30 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             throw error
         } catch let error as CullingServiceError {
             throw Self.gatherError(error)
+        } catch let error as TriageServiceError {
+            throw Self.gatherError(error)
         } catch let error as CodedError {
             throw GatherError(code: error.code, underlying: String(describing: error))
+        } catch let error as DBError {
+            if case .message(let message) = error,
+               let code = GatherErrorCode(rawValue: message) {
+                throw GatherError(code: code, underlying: message)
+            }
+            throw error
+        }
+    }
+
+    /// TriageServiceError -> GatherError：四个稳定码，reason 放 params。
+    static func gatherError(_ error: TriageServiceError) -> GatherError {
+        switch error {
+        case .notReady:
+            return GatherError(code: .TRIAGE_NOT_READY, underlying: error.description)
+        case .stale:
+            return GatherError(code: .TRIAGE_STALE, underlying: error.description)
+        case .applyInvalid(let reason):
+            return GatherError(code: .TRIAGE_APPLY_INVALID, params: ["reason": reason], underlying: error.description)
+        case .policyInvalid(let reason):
+            return GatherError(code: .TRIAGE_POLICY_INVALID, params: ["reason": reason], underlying: error.description)
         }
     }
 
@@ -278,8 +340,6 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             return .invalidParameter(field: "patch.colorLabel", reason: error.description)
         case .invalidScope:
             return GatherError(code: .CULLING_INVALID_SCOPE, underlying: error.description)
-        case .afterRowIdInvalid:
-            return .invalidParameter(field: "afterRowId", reason: error.description)
         case .pageLimitInvalid:
             return .invalidParameter(field: "limit", reason: error.description)
         case .tooManyPhotoIds:

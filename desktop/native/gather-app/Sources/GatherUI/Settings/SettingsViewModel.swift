@@ -27,6 +27,8 @@ public final class SettingsViewModel {
     /// Cut 4 / 4a-3a：语言的唯一写入入口（本类不直接写旧全局语言，
     /// 持久化仍由 SettingsAPI 负责；4b-2g 起文案一律经传入的 L10n）。
     let languageStore: LanguageStore
+    /// P0 / B0：维护域（备份/恢复/诊断）。nil = Preview/旧测试，不显示维护分区。
+    let maintenanceAPI: (any MaintenanceAPI)?
     public internal(set) var values: [String: String] = [:]
     /// 分组设置行的编辑缓冲（未保存）。
     public var edits: [String: String] = [:]
@@ -84,6 +86,16 @@ public final class SettingsViewModel {
 
     public internal(set) var downloadPhase: ModelDownloadPhase = .idle
 
+    // MARK: 维护（P0 / B0）
+
+    public internal(set) var maintenanceInventory: MaintenanceInventory?
+    public internal(set) var maintenanceBusy = false
+    public internal(set) var maintenanceError: CommandError?
+    public internal(set) var maintenanceNotice: LocalizedText?
+    public internal(set) var restoreReceipt: RestoreReceipt?
+    let cancelRestore: (() async -> Bool)?
+    public internal(set) var lastDiagnostics: DiagnosticsExportResult?
+
     /// 生产装配（RootView / 宿主 Settings 场景）：三个域与 C1 桥均显式注入。
     /// Cut 3 / 3b-3（E-17）：删掉默认自建 CaptureOneBridge() 的分支——未注入
     /// 即编译错误，避免 reload ack 被静默丢弃。
@@ -92,12 +104,16 @@ public final class SettingsViewModel {
         settings: any SettingsAPI,
         culling: any CullingAPI,
         captureOne: any CaptureOneBridging,
-        languageStore: LanguageStore
+        languageStore: LanguageStore,
+        maintenance: (any MaintenanceAPI)? = nil,
+        cancelPendingRestore: (() async -> Bool)? = nil
     ) {
         self.sessionAPI = session
         self.settingsAPI = settings
         self.cullingAPI = culling
         self.captureOne = captureOne
         self.languageStore = languageStore
+        self.maintenanceAPI = maintenance
+        self.cancelRestore = cancelPendingRestore
     }
 }

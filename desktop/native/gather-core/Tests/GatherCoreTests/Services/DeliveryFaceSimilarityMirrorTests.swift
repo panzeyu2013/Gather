@@ -2,7 +2,7 @@
 // Cut 2 / S5c-2b-2：FaceKw / Similarity 的 writeback 镜像与 confirm/cleanup 接线门禁。
 //
 // 覆盖面：
-// 1. DeliveryModule 映射：旧写回模块名（face_kw / similarity）→ SchemaV1 真实值，
+// 1. DeliveryModule 映射：旧写回模块名（face_kw / similarity）→ SchemaCurrent 真实值，
 //    非法值返回 nil（不新增模块 case）。
 // 2. 两域 writeback → deliveries / delivery_items / delivery_sessions：
 //    written 与 failed 两种结果，module 固定 face-keyword / similarity，
@@ -12,7 +12,7 @@
 // 4. cleanup：外部修改标 conflict 并按路径回填 XMP_EXTERNALLY_MODIFIED；
 //    文件阶段失败保留 intent，下一次 cleanup 先 replay 重试成功。
 //
-// 建库口径：makeTestDB()（SchemaV1 + Transition）——S5c-2b-3b-2b-1 起镜像的
+// 建库口径：makeTestDB()（SchemaCurrent + Transition）——S5c-2b-3b-2b-1 起镜像的
 // 状态读 delivery_items、base/backup 回读 deliveries，不再依赖旧 outbox/writeback 表。
 
 import Foundation
@@ -354,7 +354,7 @@ private func seedSyncedDelivery(
 
 @Suite("DeliveryModule 旧写回名映射（S5c-2b-2）")
 struct DeliveryModuleMappingTests {
-    @Test("face_kw / face-keyword / similarity 映射到 SchemaV1 的真实值")
+    @Test("face_kw / face-keyword / similarity 映射到 SchemaCurrent 的真实值")
     func mapsLegacyNamesToSchemaValues() {
         #expect(DeliveryModule(writebackModule: "face_kw") == .faceKeyword)
         #expect(DeliveryModule(writebackModule: "face-keyword") == .faceKeyword)

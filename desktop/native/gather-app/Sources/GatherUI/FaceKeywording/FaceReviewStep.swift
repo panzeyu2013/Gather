@@ -83,6 +83,9 @@ extension FaceKeywordingView {
                 .padding(.top, 4)
             }
         }
+        .task(id: viewModel.clusters.count) {
+            await viewModel.loadReviewSummaries()
+        }
     }
 
     private var visibleClusters: [FaceClusterData] {
@@ -117,13 +120,11 @@ extension FaceKeywordingView {
         )
     }
 
-    /// TS StepReview.detailPane：详情栏（成员列表 + 编辑 + 合并面板）。
+    /// TS StepReview.detailPane：详情栏（复核成员 + 拆分 + 编辑 + 合并面板）。
     /// 宽度由 HSplitView 拖拽决定（280–460），不再用 GeometryReader 换算。
     private var detailPane: some View {
         Group {
             if let cluster = viewModel.selectedCluster {
-                // 详情栏整体只有一个滚动区：成员行改用 LazyVStack + Divider，
-                // 不再嵌套 List/ScrollView（短窗口下不会把编辑区挤出可视范围）。
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(alignment: .firstTextBaseline) {
@@ -134,9 +135,8 @@ extension FaceKeywordingView {
                                 .font(GatherFont.secondary)
                                 .foregroundStyle(.secondary)
                         }
-                        memberList(cluster)
-                        // TS StepReview.tsx:216-218：审核动作失败的内联错误块
-                        // （绑定/移除/解除/合并），横幅错误保留。
+                        reviewHeader(cluster)
+                        reviewMemberList(cluster)
                         if let actionError = viewModel.reviewActionError {
                             NativeBanner(
                                 text: CommandErrorText.resolve(actionError, with: l10n),
@@ -145,11 +145,17 @@ extension FaceKeywordingView {
                             )
                         }
                         editor(cluster)
-                        mergePanel(cluster)
+                        // 绑定簇不能合并/拆分（服务会拒绝）；直接不渲染注定失败的面板。
+                        if cluster.binding == nil {
+                            mergePanel(cluster)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .task(id: cluster.id) {
+                    await viewModel.loadReview(clusterId: cluster.id, reset: true)
+                }
             } else {
                 ContentUnavailableView {
                     Label(l10n("未选择人脸簇"), systemImage: "person.crop.square")
@@ -161,19 +167,130 @@ extension FaceKeywordingView {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    /// TS memberList：成员行（#序号 + 文件名 + 置信度% + 悬停显现的移除按钮）。
-    /// 移除不可逆：悬停显现的图标按钮 + 右键菜单两个入口，先弹确认
-    /// （旧版「点击即移除」已删除）。
-    private func memberList(_ cluster: FaceClusterData) -> some View {
-        LazyVStack(spacing: 0) {
-            ForEach(Array(cluster.members.enumerated()), id: \.element.memberId) { index, member in
-                MemberRowView(index: index, member: member) {
-                    pendingMemberRemoval = PendingFaceMemberRemoval(member: member, cluster: cluster)
+    /// 复核头：仅看待复核成员 + 拆分所选。
+    private func reviewHeader(_ cluster: FaceClusterData) -> some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+            HStack(spacing: GatherMetrics.Space.s) {
+                Toggle(
+                    l10n("仅看待复核成员"),
+                    isOn: Binding(
+                        get: { viewModel.includeOnlyReviewMembers },
+                        set: { value in
+                            Task { await viewModel.setIncludeOnlyReviewMembers(value) }
+                        }
+                    )
+                )
+                .toggleStyle(.checkbox)
+                .help(l10n("只显示低质量、小脸、未解析或与簇中心差异较大的成员"))
+
+                Spacer(minLength: 8)
+                Text(l10n.format("已选 %lld 个", viewModel.selectedMemberIds.count))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(.secondary)
+
+                Button(l10n.format("拆分所选（%lld）", viewModel.selectedMemberIds.count)) {
+                    let selected = viewModel.selectedReviewItems.filter {
+                        viewModel.selectedMemberIds.contains($0.memberId)
+                    }
+                    pendingSplit = PendingFaceSplit(cluster: cluster, members: selected)
                 }
-                if index < cluster.members.count - 1 { Divider() }
+                .buttonStyle(.borderedProminent)
+                .disabled(!viewModel.canSplit)
+                .help(splitHelp(cluster))
+            }
+            Text(l10n("拆分会把选中的成员移到一个新簇，原簇保留其余成员；拆分会在重新聚类后保持。"))
+                .font(GatherFont.label)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func splitHelp(_ cluster: FaceClusterData) -> String {
+        if cluster.binding != nil {
+            return l10n("先解除绑定（会撤销已写入关键词）")
+        }
+        if viewModel.analysisPhase == .running {
+            return l10n("分析进行中，暂不能拆分")
+        }
+        if viewModel.selectedMemberIds.isEmpty {
+            return l10n("先选择要移出的成员")
+        }
+        if viewModel.selectedMemberIds.count >= cluster.size {
+            return l10n("至少保留 1 个成员在原簇")
+        }
+        return l10n("把所选成员移到一个新簇")
+    }
+
+    /// 复核成员列表：受 includeOnlyReviewMembers / 分页游标控制。
+    @ViewBuilder
+    private func reviewMemberList(_ cluster: FaceClusterData) -> some View {
+        let items = viewModel.selectedReviewItems
+        if viewModel.isLoadingReview && items.isEmpty {
+            ProgressView(l10n("加载中…"))
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
+                .padding(EdgeInsets(top: GatherMetrics.Space.m, leading: 0, bottom: GatherMetrics.Space.m, trailing: 0))
+        } else if items.isEmpty {
+            VStack(spacing: GatherMetrics.Space.s) {
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                Text(
+                    viewModel.includeOnlyReviewMembers
+                        ? l10n("未发现待复核成员")
+                        : l10n("该簇没有成员")
+                )
+                .font(GatherFont.sectionTitle)
+                Text(
+                    viewModel.includeOnlyReviewMembers
+                        ? l10n("这组人脸看起来一致；可显示全部成员后再判断。")
+                        : l10n("重新分析或调整聚类参数后再试。")
+                )
+                .font(GatherFont.secondary)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                if viewModel.includeOnlyReviewMembers {
+                    Button(l10n("显示全部成员")) {
+                        Task { await viewModel.setIncludeOnlyReviewMembers(false) }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(EdgeInsets(top: GatherMetrics.Space.l, leading: 0, bottom: GatherMetrics.Space.l, trailing: 0))
+        } else {
+            LazyVStack(spacing: .zero) {
+                ForEach(Array(items.enumerated()), id: \.element.memberId) { index, item in
+                    FaceReviewMemberRowView(
+                        item: item,
+                        isSelected: viewModel.selectedMemberIds.contains(item.memberId),
+                        focusedMemberId: $focusedMemberId,
+                        onToggle: { viewModel.toggleMemberSelection(item.memberId) },
+                        onRemove: {
+                            pendingReviewRemoval = PendingFaceReviewRemoval(item: item, cluster: cluster)
+                        }
+                    )
+                    if index < items.count - 1 { Divider() }
+                }
+                if viewModel.reviewNextCursor != nil {
+                    Button(l10n("加载更多成员")) {
+                        Task { await viewModel.loadMoreReview() }
+                    }
+                    .buttonStyle(.borderless)
+                    .padding(EdgeInsets(top: GatherMetrics.Space.s, leading: 0, bottom: GatherMetrics.Space.s, trailing: 0))
+                }
+            }
+            .accessibilityLabel(l10n("待复核成员"))
+            .onKeyPress(.escape) {
+                viewModel.clearMemberSelection()
+                return .handled
+            }
+            .onKeyPress(phases: .down) { press in
+                guard press.modifiers.contains(.command),
+                      press.characters.lowercased() == "a" else { return .ignored }
+                viewModel.selectAllReviewMembers()
+                return .handled
             }
         }
-        .accessibilityLabel(l10n("簇成员"))
     }
 
     /// TS editor：角色名/关键字输入 + 绑定/更新绑定 + 解除绑定（解除绑定撤销
@@ -213,7 +330,10 @@ extension FaceKeywordingView {
     /// TS mergePanel：合并目标下拉（过滤当前簇，选项 label (n 张)）+ 合并按钮，
     /// 无目标时禁用。
     private func mergePanel(_ cluster: FaceClusterData) -> some View {
-        let candidates = viewModel.clusters.filter { $0.id != cluster.id }
+        // 服务端会拒绝绑定簇合并；UI 不提供注定报错的选项。
+        let candidates = viewModel.clusters.filter {
+            $0.id != cluster.id && $0.binding == nil
+        }
         return VStack(alignment: .leading, spacing: 8) {
             Text(l10n("合并")).font(GatherFont.cardTitle)
             if candidates.isEmpty {

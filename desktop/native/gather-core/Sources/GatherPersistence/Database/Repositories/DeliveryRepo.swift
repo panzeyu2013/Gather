@@ -131,7 +131,7 @@ private enum DeliveryColumnMap {
     }
 }
 
-/// deliveries 表行（14 列，与 SchemaV1 §5.2 一致）。
+/// deliveries 表行（14 列，与 SchemaCurrent §5.2 一致）。
 ///
 /// 注意：columnNames 是仓储 SELECT 的显式列清单，也是行映射器的键；
 /// 二者始终同源，且与表的物理列序无关（测试用乱序列清单验证）。

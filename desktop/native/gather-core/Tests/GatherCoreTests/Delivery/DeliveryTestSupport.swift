@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Delivery/DeliveryTestSupport.swift
-// WP2b 新增测试的共享夹具：内存 SchemaV1 + 可观测的文件端口。
+// WP2b 新增测试的共享夹具：内存 SchemaCurrent + 可观测的文件端口。
 //
 // 只被 Tests/GatherCoreTests/Delivery 下的测试使用；不复用 DeliveryCoordinatorTests
 // 的私有 fixtures，避免测试之间互相耦合。
@@ -20,7 +20,7 @@ enum DeliveryTestSupport {
 
     static func makeDB() throws -> DBConnection {
         let db = try DBConnection(path: ":memory:")
-        try db.exec(SchemaV1.sql)
+        try db.exec(SchemaCurrent.createSQL)
         try insertSession(db, sessionId)
         try insertSession(db, otherSessionId)
         try insertPhoto(db, photoId, sessionId: sessionId)

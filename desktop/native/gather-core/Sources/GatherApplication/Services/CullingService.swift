@@ -73,6 +73,12 @@ public final class CullingService {
     static let updateTTLSeconds: TimeInterval = 5
     static let updateCacheMax = 8
 
+    /// 续页 total 缓存：首页（cursor=nil）重算并写入，后续页直接复用。
+    /// 任何 filt/sort/scope 变化都会换 key；mutation 后的 reset 也走 cursor=nil 重算。
+    static let pageTotalTTLSeconds: TimeInterval = 30
+    static let pageTotalCacheMax = 16
+    var pageTotalCache: [String: (total: Int, at: Date)] = [:]
+
     /// TS: culling.ipc.ts 的 limit 校验区间。
     public static let pageLimitMax = 2_000
     public static let batchMax = 10_000
@@ -97,6 +103,11 @@ public final class CullingService {
     let delivery: any DeliveryModuleAdapter
     let cullingHistoryRepo: (any CullingHistoryRepository)?
     let getNumber: (String, Double) -> Double
+    /// P0/T0：资产级建议展示策略（指纹/策略匹配 + 关闭态隐藏）。
+    /// nil = 兼容模式（不接 T0 的调用方/旧测试保持原有读行为）。
+    let triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)?
+    /// P1-9 延伸：rating/label 入队后的写盘执行器（nil = 只入队，兼容旧测试）。
+    let flushMetadata: ((String) async throws -> Void)?
 
     public init(
         photoRepo: any PhotoRepository,
@@ -111,6 +122,8 @@ public final class CullingService {
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: (any CullingHistoryRepository)? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
+        flushMetadata: ((String) async throws -> Void)? = nil,
         delivery: any DeliveryModuleAdapter
     ) {
         self.photoRepo = photoRepo
@@ -125,6 +138,8 @@ public final class CullingService {
         self.writeback = writeback
         self.cullingHistoryRepo = cullingHistoryRepo
         self.getNumber = getNumber
+        self.triageDisplayPolicy = triageDisplayPolicy
+        self.flushMetadata = flushMetadata
         // WP3b-2：不再按 connection 自建 coordinator（Application 不持 DBConnection）。
         // 组合根注入交付适配器；测试经 ServiceConstructionTestSupport 的兼容 init 装配。
         self.delivery = delivery

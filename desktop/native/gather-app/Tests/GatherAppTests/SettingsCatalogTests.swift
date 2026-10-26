@@ -20,6 +20,7 @@ struct SettingsCatalogTests {
         SettingsViewModel.generalSliders.map(\.key)
             + SettingsViewModel.advancedSliders.map(\.key)
             + SettingsViewModel.settingGroups.flatMap { $0.fields.map(\.key) }
+            + SettingsViewModel.maintenanceSettingKeys
     }
 
     @Test("设置界面引用的每个键都在默认表里")

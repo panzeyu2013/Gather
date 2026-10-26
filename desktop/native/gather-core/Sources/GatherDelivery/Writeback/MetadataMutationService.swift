@@ -19,7 +19,7 @@
 // - 排程：交付模型没有去抖计时器——交付行/项停在 pending 就是排程状态，
 //   由执行器按需消费；schedule 参数只为调用方签名不变而保留（两种取值落库一致）。
 //
-// 串行化：queueMutation 的"读当前文件 → 合并 op → 入队"必须按 xmpPath 串行，
+// 串行化：queueKeywordDelta 的"读当前文件 → 合并 delta → 入队"必须按 xmpPath 串行，
 // 旧实现用「字典存 Task + AnyObject 身份比较」判定尾结点（身份恒 false →
 // 条目永不回收、错误沿链传播）。新实现改为 actor PathSerialChain + 单调 token：
 //   - token 判定尾结点，条目在最后一回合结束时回收（无无界增长）；
@@ -53,13 +53,16 @@ public protocol MetadataMutationPort: Sendable {
         source: MetadataMutationSource,
         schedule: Bool
     ) throws -> MetadataMutationResult
-    /// TS: queueMutation。
-    func queueMutation(
+
+    /// K0：按 delta（added/removed）入队；返回 nil 表示无变化。
+    func queueKeywordDelta(
         sessionId: String,
         photoId: String,
-        patch: MetadataPatch,
-        source: MetadataMutationSource
-    ) async throws -> MetadataMutationResult
+        added: [String],
+        removed: [String],
+        owned: [String: Set<MetadataMutationSource>],
+        existingKeywords: [String]?
+    ) async throws -> MetadataMutationResult?
 }
 
 public extension MetadataMutationPort {
@@ -71,6 +74,18 @@ public extension MetadataMutationPort {
     ) throws -> MetadataMutationResult {
         try queuePhotoValues(
             sessionId: sessionId, photoId: photoId, values: values, source: source, schedule: true)
+    }
+
+    /// 默认实现：旧测试替身不支持 delta 时显式失败，绝不静默丢词。
+    func queueKeywordDelta(
+        sessionId: String,
+        photoId: String,
+        added: [String],
+        removed: [String],
+        owned: [String: Set<MetadataMutationSource>],
+        existingKeywords: [String]? = nil
+    ) async throws -> MetadataMutationResult? {
+        throw MetadataMutationError.unsupportedField("keywords_delta")
     }
 }
 
@@ -85,6 +100,9 @@ public extension MetadataMutationPort {
 public enum MetadataKeywordWriteMode: String, Sendable, Equatable {
     case merge
     case replace
+    /// K0：执行器在文件锁内按 (disk ∪ added) − removed 合并；attributes_json
+    /// 额外携带 keywords_added / keywords_remove。
+    case delta
 }
 
 public final class MetadataMutationService: MetadataMutationPort {
@@ -131,7 +149,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         )
     }
 
-    /// 入队的唯一实现：queuePhotoValues 与 queueMutation 只在关键词模式上不同。
+    /// 入队的唯一实现：queuePhotoValues 与关键词 delta 只在关键词模式上不同。
     ///
     /// - values 的契约字段之外的键被丢弃（旧 filter/compactMap 的同一规则）；
     /// - 交付行先按「新输入」重开（revision + 1 → pending，基线不变）；
@@ -140,7 +158,8 @@ public final class MetadataMutationService: MetadataMutationPort {
         sessionId: String,
         photoId: String,
         values: [String: JSONValue],
-        keywordsMode: MetadataKeywordWriteMode
+        keywordsMode: MetadataKeywordWriteMode,
+        extraAttributes: [String: JSONValue] = [:]
     ) throws -> MetadataMutationResult {
         let resolved = try assetResolver.resolve(sessionId: sessionId, photoId: photoId)
         // 可写字段名集合的唯一真相源是 MetadataField（契约层枚举）；
@@ -158,6 +177,9 @@ public final class MetadataMutationService: MetadataMutationPort {
         let keywords = values["keywords"]?.arrayElements?.compactMap { $0.stringValue }
         if keywords != nil {
             attributes[Self.keywordsModeKey] = .string(keywordsMode.rawValue)
+        }
+        for (key, value) in extraAttributes {
+            attributes[key] = value
         }
         // P1-3：开行（mergeInput）+ 合并 item + 链接会话必须同一事务提交。
         // 分三步各自提交时，中间失败会留下 revision 已 +1、没有任何 item/link 的
@@ -181,62 +203,94 @@ public final class MetadataMutationService: MetadataMutationPort {
         )
     }
 
-    /// TS: queueMutation —— 校验 patch、读当前文件状态（项内关键词优先），
-    /// 按 op 合并后经 queuePhotoValues 入队。同一 xmp 路径严格串行。
-    public func queueMutation(
+    /// K0：delta 入队。同一 xmpPath 串行；读盘/项内 pending 优先；无变化返回 nil。
+    public func queueKeywordDelta(
         sessionId: String,
         photoId: String,
-        patch: MetadataPatch,
-        source: MetadataMutationSource
-    ) async throws -> MetadataMutationResult {
-        let normalized = try validateMetadataPatch(patch)
+        added: [String],
+        removed: [String],
+        owned: [String: Set<MetadataMutationSource>],
+        existingKeywords: [String]? = nil
+    ) async throws -> MetadataMutationResult? {
         let resolved = try assetResolver.resolve(sessionId: sessionId, photoId: photoId)
         let xmpPath = TSPath.normalize(resolved.xmpPath)
         return try await chain.run(path: xmpPath) {
-            let current = try await self.xmp.readAttributes(photoPath: resolved.filepath)
-            // 「项内关键词优先」：已入队但未落盘的词表才是用户看到的本地状态
-            // （旧实现的 outbox patch 优先同义；空表回退盘上词表，等价于旧
-            // "patch 里没有 keywords 键"）。
-            let existingItem = try? self.deliveryRepo.item(
-                xmpPath: xmpPath, photoId: photoId, module: .metadata)
-            let pendingKeywords = existingItem?.keywordList
-            let existingKeywords: [String]
-            if let pendingKeywords, !pendingKeywords.isEmpty {
-                existingKeywords = try normalizeKeywords(pendingKeywords)
+            let diskKeywords: [String]
+            if let existingKeywords {
+                diskKeywords = existingKeywords
             } else {
-                existingKeywords = try normalizeKeywords(current.keywords ?? [])
+                let current = try await self.xmp.readAttributes(photoPath: resolved.filepath)
+                diskKeywords = current.keywords ?? []
             }
-            var values: [String: JSONValue] = [:]
-            var keywordMode: MetadataKeywordWriteMode = .merge
-            if let rating = normalized.rating { values["rating"] = .number(rating.value) }
-            if let label = normalized.label {
-                // TS: 'None' → ''（写盘标签语义）。
-                values["label"] = .string(label.value == "None" ? "" : label.value)
+            // item 身份按 (xmpPath, module)：同一侧车换首张照片也必须复用同一行，
+            // 否则 cumulative added/removed 丢失、同侧车被写两遍；DB 错误不再吞掉。
+            let pendingItem = try self.deliveryRepo.item(xmpPath: xmpPath, module: .metadata)
+            // 只有“尚未落盘”的 item（pending/failed）才能代表本地基线；written/synced
+            // 的 item.keywords 是上一次写盘时的旧快照，外部在 C1 里新增的词不在其中，
+            // 用它做基线会把“删除外部新增词”静默吞掉（plan.changed=false）。
+            let pending: [String]? = pendingItem.flatMap { item in
+                guard let status = item.typedStatus,
+                      status == .pending || status == .failed,
+                      !item.keywordList.isEmpty
+                else { return nil }
+                return item.keywordList
             }
-            if let keywords = normalized.keywords {
-                switch keywords.op {
-                case .append:
-                    values["keywords"] = .array(
-                        try normalizeKeywords(existingKeywords + keywords.values).map { .string($0) })
-                case .remove:
-                    let remove = Set(keywords.values)
-                    values["keywords"] = .array(
-                        existingKeywords.filter { !remove.contains($0) }.map { JSONValue.string($0) })
-                    keywordMode = .replace
-                case .replace:
-                    values["keywords"] = .array(keywords.values.map { .string($0) })
-                    keywordMode = .replace
-                }
+            let existing = KeywordNormalizer.unique(pending ?? diskKeywords)
+            let activeOwned = owned.filter { key, _ in
+                existing.contains { KeywordNormalizer.fold($0) == key }
             }
-            // append 与盘上现状并集（merge）；replace/remove 的 values 已是完整
-            // 词表，按权威覆盖写盘（replace）。纯 rating/label 变更不改写模式。
-            return try self.enqueue(
+            let plan = KeywordPlanner.plan(
+                existing: existing, added: added, removed: removed, owned: activeOwned)
+            guard plan.blocked.isEmpty else {
+                let blocked = plan.blocked[0]
+                throw GatherError(
+                    code: .KEYWORD_OWNED_BY_SOURCE,
+                    params: [
+                        "keyword": blocked.keyword,
+                        "source": blocked.sources.first?.rawValue ?? "",
+                    ]
+                )
+            }
+            guard plan.changed else { return nil }
+            let priorAdded = pendingItem?.attributes["keywords_added"]?
+                .arrayElements?.compactMap(\.stringValue) ?? []
+            let priorRemoved = pendingItem?.attributes["keywords_remove"]?
+                .arrayElements?.compactMap(\.stringValue) ?? []
+            // 净意图以“本次 plan”为准：add→remove 要真正从 cumulativeAdded 删掉，
+            // 否则盘上执行 disk∪added 时词会残留；remove→add 同理。
+            let removedKeys = Set(plan.removed.map { KeywordNormalizer.fold($0) })
+            let addedKeys = Set(plan.added.map { KeywordNormalizer.fold($0) })
+            let cumulativeAdded = KeywordNormalizer.unique(priorAdded + plan.added)
+                .filter { !removedKeys.contains(KeywordNormalizer.fold($0)) }
+            let cumulativeRemoved = KeywordNormalizer.unique(priorRemoved + plan.removed)
+                .filter { !addedKeys.contains(KeywordNormalizer.fold($0)) }
+            return try self.enqueueKeywordDelta(
                 sessionId: sessionId,
-                photoId: photoId,
-                values: values,
-                keywordsMode: keywordMode
-            )
+                photoId: pendingItem?.photoId ?? photoId,
+                plan: plan,
+                added: cumulativeAdded, removed: cumulativeRemoved)
         }
+    }
+
+    /// 专用入队：显式允许 keywords_added / keywords_remove 进 attributes_json；
+    /// 普通 enqueue(values:) 会按 MetadataField.writableNames 丢弃这两个内部键。
+    private func enqueueKeywordDelta(
+        sessionId: String,
+        photoId: String,
+        plan: KeywordPlan,
+        added: [String],
+        removed: [String]
+    ) throws -> MetadataMutationResult {
+        try enqueue(
+            sessionId: sessionId,
+            photoId: photoId,
+            values: ["keywords": .array(plan.after.map { JSONValue.string($0) })],
+            keywordsMode: .delta,
+            extraAttributes: [
+                "keywords_added": .array(added.map { JSONValue.string($0) }),
+                "keywords_remove": .array(removed.map { JSONValue.string($0) }),
+            ]
+        )
     }
 
 }

@@ -153,6 +153,23 @@ struct CullingWorkbenchViewer: View {
         // 而 P/X/U 是挑片的主力操作，不能依赖某个面板是否展开。
         // 查看器是本页唯一**始终存在**的控件，且已经为空格使用 onKeyPress。
         .onKeyPress(phases: .down) { press in
+            switch press.key {
+            case .leftArrow:
+                guard !press.modifiers.contains(.command),
+                      !press.modifiers.contains(.option) else { return .ignored }
+                viewModel.retreatCurrent()
+                return .handled
+            case .rightArrow:
+                guard !press.modifiers.contains(.command),
+                      !press.modifiers.contains(.option) else { return .ignored }
+                viewModel.advanceCurrent()
+                return .handled
+            default:
+                break
+            }
+            // 裸键决策：带 ⌘/⌥ 的组合交给系统（⌘X 不能变成“淘汰”）。
+            guard !press.modifiers.contains(.command),
+                  !press.modifiers.contains(.option) else { return .ignored }
             switch press.characters.lowercased() {
             case " ":
                 Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }

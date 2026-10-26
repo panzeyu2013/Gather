@@ -50,6 +50,8 @@ let package = Package(
         .library(name: "GatherTestSupport", targets: ["GatherTestSupport"]),
         // Cut 3 / 3a-5（D-015）：schema 工具可执行（dump / verify）。
         .executable(name: "gather-schema", targets: ["GatherSchema"]),
+        // P0 / T0：真实集质量门 CLI。
+        .executable(name: "gather-triage-eval", targets: ["GatherTriageEval"]),
         // Similarity 基准（2.3 验收 2 万/5 万）：产出 JSON 行指标（对齐 scripts/*.mjs 风格）。
         .executable(name: "gather-core-benchmarks", targets: ["GatherCoreBenchmarks"]),
         .executable(name: "gather-face-benchmarks", targets: ["GatherFaceBenchmarks"]),
@@ -66,6 +68,13 @@ let package = Package(
             name: "GatherSchema",
             dependencies: ["GatherPersistence"],
             path: "Sources/GatherSchema",
+            swiftSettings: swift6Settings
+        ),
+        // P0 / T0：真实集质量门 CLI（只读打开库 + 纯函数评估；不写建议/决策/XMP）。
+        .executableTarget(
+            name: "GatherTriageEval",
+            dependencies: ["GatherProtocol", "GatherPersistence", "GatherApplication"],
+            path: "Sources/GatherTriageEval",
             swiftSettings: swift6Settings
         ),
         // 数据库层：唯一 import CSQLite 的模块（DDL 的真相源）。

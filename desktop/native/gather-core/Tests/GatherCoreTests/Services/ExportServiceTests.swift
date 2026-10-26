@@ -8,7 +8,7 @@
 // 4. 变体策略（preferred/all）与导入顺序稳定；丢弃/筛选只导出保留项；
 // 5. 同一会话两次取消互不影响。
 //
-// 边界：内存 SchemaV1 库 + 临时目录中的真实文件；ImageIO 用例用
+// 边界：内存 SchemaCurrent 库 + 临时目录中的真实文件；ImageIO 用例用
 // #if canImport(ImageIO) 门控；不触网、不写真实 Application Support。
 import Foundation
 import Testing

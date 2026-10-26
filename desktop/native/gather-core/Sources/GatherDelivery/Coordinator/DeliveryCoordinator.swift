@@ -409,7 +409,7 @@ public struct DeliveryCoordinator: Sendable {
     ///
     /// 直接读 sessions.reload_acked_at，而不是 SessionRepo.get：后者的投影仍带
     /// S5c-3 前的 legacy 列（writeback_status/import_source/failed_writeback_count），
-    /// 在纯 SchemaV1 上会 SQL 编译失败。单列读取与旧实现逐字一致，也不用内存 ack
+    /// 在纯 SchemaCurrent 上会 SQL 编译失败。单列读取与旧实现逐字一致，也不用内存 ack
     /// （冷启动同样有效）。
     private func requireReloadAck(_ sessionId: String) throws {
         guard requireReloadAckEnabled else { return }

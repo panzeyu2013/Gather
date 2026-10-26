@@ -33,7 +33,7 @@ Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 ```text
 desktop/native/
 ├── gather-core/                     # 5 个库 target（零第三方依赖，另有 GatherTestSupport 夹具）
-│   ├── Sources/GatherProtocol/      # 值类型、15 个域 API 协议、GatherErrorCode、路径策略
+│   ├── Sources/GatherProtocol/      # 值类型、16 个域 API 协议、GatherErrorCode、路径策略
 │   ├── Sources/GatherPersistence/   # SchemaV1、Database、Repositories
 │   ├── Sources/GatherDelivery/      # DeliveryCoordinator / 写回 / XMP 文件锁
 │   ├── Sources/GatherAnalysis/      # Face/Image/Concurrent/Similarity 算法
@@ -256,11 +256,11 @@ App Sandbox**：当前签名与运行模型没有沙盒容器，授权路径访�
 
 ```text
 SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
-  ↓ AppServices（15 个域 API / 104 个类型化方法，同进程直连）
+  ↓ AppServices（16 个域 API / 112 个类型化方法，同进程直连）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication 服务（交付编排在 GatherDelivery）
-  ├── GatherPersistence：SQLite WAL + SchemaV1（43 表 / 373 列 / user_version=2）
+  ├── GatherPersistence：SQLite WAL + SchemaV3（44 表 / 383 列 / user_version=3）
   ├── GatherAnalysis：图片读取、Vision 人脸、RAW/ImageIO 解码
   ├── JobService（可恢复任务，executor + checkpoint + dedupeKey）
   └── DeliveryCoordinator：deliveries 写回（重试 / 冲突 / 重启恢复）
@@ -283,12 +283,12 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 
 ### 数据与任务
 
-- SQLite 使用 WAL；唯一建库入口是 `Database.open(at:)`：新库按当前 SchemaV2
-  DDL 单事务建库并写 `PRAGMA user_version = 2`（43 表 / 373 列 / 69 索引 /
-  62 外键；V2 与 V1 形状相同，仅版本位不同）。形态正确的 V1 库（含 370 列历史形）
-  先做一致性备份，再经 V1→V2 事务迁移/补列到 2；
-  其余不兼容库（user_version=0 有表 / 版本更高 / 形态不符 / 非 SQLite 文件）
-  默认 fail closed（开发重置策略才把 db/-wal/-shm 改名为 `<db>.incompatible-<ts>` 后重建，ADR-005/006）。
+- SQLite 使用 WAL；唯一建库入口是 `Database.open(at:)`：新库按
+  `SchemaCurrent.createSQL` 单事务建库并写 `PRAGMA user_version = 3`
+  （44 表 / 383 列 / 72 索引 / 65 外键）。只有空库与当前版本可直接使用；
+  旧版本（V1/V2 迁移链已删除）、版本更高、版本 0 有表、形态不符、非 SQLite 文件
+  默认 fail closed；开发重置策略才把 db/-wal/-shm 改名为 `<db>.incompatible-<ts>`
+  后重建（ADR-005/006）。
 - 导入创建 session、写入照片资产后，立即提交 `metadata.scan` 任务；任务中心负责
   进度、失败显示、重试和取消。
 - 元数据写回经 `DeliveryCoordinator` + `deliveries/delivery_sessions/delivery_items/
@@ -317,7 +317,7 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`
   重建整棵页面树。
-- 错误码翻译：`L10n.errorText(_:)` 覆盖 **179 项** `GatherErrorCode`（B03 起旧
+- 错误码翻译：`L10n.errorText(_:)` 覆盖 **184 项** `GatherErrorCode`（P0 后含 Triage/Keyword/Face/Maintenance；B03 起旧
   `GatherLocalization` 翻译出口已删，`errorMessages` 码表仍由它持有）
   （`errorMessages` 表与枚举逐项对齐，缺失即测试红）；未知码回退通用文案。
 - 任务侧映射：`jobStatusText` / `jobTypeText` / `progressPhaseText` 分别覆盖
@@ -426,8 +426,10 @@ fixture-dependent skip 与未执行的外部验收项；`.app` 组装仅在发�
 
 **skip 不计入“通过”的有效执行数**：`swift test` 的 `N tests passed` 包含被
 `.enabled(if:)` / `.disabled` 跳过的用例。报告口径写成“声明 N / skip S / 有效执行
-N−S”；当前 skip 共 11 条：`FaceRealPhotoPipelineTests` 3 条（无
-`GATHER_FACE_FIXTURE`）与模型集成 8 条（无 `GATHER_MODEL_TESTS=1`），必须单列，
+N−S”；当前 skip 共 **17** 条（`check-test-catalog.sh` 实测）：
+`FaceRealPhotoPipelineTests` 3 条（无 `GATHER_FACE_FIXTURE`）、模型集成 8 条
+（无 `GATHER_MODEL_TESTS=1`）与 P0 性能门 6 条（`GATHER_CULLING_PERF` /
+`GATHER_BACKUP_PERF` / `GATHER_UI_PERF`；夜间 CI 已置位三类 env），必须单列，
 不能算作通过。skip 元数据与门禁见 `check-test-catalog.sh --strict`
 （识别 `.enabled(if:)`、`@Test`/`@Suite` 的 `.disabled`、`withKnownIssue`；要求
 `skip-owner` + 到期 + 原因）。
@@ -492,9 +494,9 @@ CL 段必须写可复核的证据（`证据` / `未完成原因` / `实测` / `�
 
 ## 类型化 API 契约（Cut 1 收口）
 
-Cut 1 已用 **15 个域协议 / 104 个方法**替代 118 条字符串命令：
+Cut 1 已用 **16 个域协议 / 112 个方法**替代 118 条字符串命令：
 Session、Culling、Export、Job、Duplicate、Face、Similarity、Photo、Album、Person、
-Metadata、Settings、Navigation、Asset、Quality（`GatherProtocol/API/*API.swift`；
+Metadata、Settings、Navigation、Asset、Quality、Maintenance（`GatherProtocol/API/*API.swift`；
 Template 域已于 2026-10-24 按 ADR-031 删除）。
 UI 经 `AppServices` 注入 `any XxxAPI`；`AppComposition` 构造唯一服务实例，
 `AppRuntime` 管理任务生命周期。旧 Router 的 118 条命令与

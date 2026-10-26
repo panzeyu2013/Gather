@@ -375,6 +375,12 @@ extension CullingService {
         }
         return results
     }
+    /// P1-9：把本次 update/batchUpdate/applyHistory 入队的 metadata 意图立即写盘。
+    /// service 方法保持同步（与旧契约一致），由 async 的 API 层在返回前调用。
+    public func flushQueuedMetadata(sessionId: String) async throws {
+        try await flushMetadata?(sessionId)
+    }
+
     /// TS: applyHistory —— 应用显式条目（renderer 重建的补丁）或历史栈操作
     /// （undo/redo，按操作 id 解析 entries）；带操作 id 时校验并发边界。
     /// 注：TS 参数 `historyOperationId` 在函数内被重新赋值（append 结果），
@@ -384,7 +390,8 @@ extension CullingService {
         sessionId: String,
         requestedEntries: [CullingHistoryApplyEntry],
         historyOperationId: Int? = nil,
-        direction: CullingHistoryDirection? = nil
+        direction: CullingHistoryDirection? = nil,
+        source: CullingDecisionSource = .manual
     ) throws -> [CullingUpdateResult] {
         var historyOperationId = historyOperationId
         var entries = requestedEntries
@@ -533,7 +540,7 @@ extension CullingService {
                     pickState: entry.patch.pickState ?? before.pickState,
                     rating: entry.patch.rating ?? before.rating,
                     colorLabel: entry.patch.colorLabel ?? before.colorLabel,
-                    source: .manual,
+                    source: source,
                     revision: before.revision + 1,
                     updatedAt: nowISOString()
                 )
@@ -546,7 +553,8 @@ extension CullingService {
                         decision: pickStateToDecision(after.pickState).rawValue,
                         rating: Int64(after.rating),
                         colorLabel: after.colorLabel.rawValue,
-                        revision: Int64(after.revision)
+                        revision: Int64(after.revision),
+                        source: source.rawValue
                     )
                 )
                 if entry.patch.rating != nil {

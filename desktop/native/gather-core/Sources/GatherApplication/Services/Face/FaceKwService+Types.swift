@@ -44,6 +44,18 @@ public enum FaceKwServiceError: Error, Equatable {
     case cleanupConfirmRequired
     /// 写回 Provider 未注入（迁移接缝，非 TS 错误码；3.4 Wave 接线后不可达）。
     case writebackProviderMissing
+    /// P0 / F0：已绑定簇不可拆分。
+    case clusterBound
+    /// P0 / F0：拆分选择为空。
+    case splitEmpty
+    /// P0 / F0：成员不属于该簇/重复/越界。
+    case splitInvalidMember
+    /// P0 / F0：至少保留 1 个成员。
+    case splitKeepOne
+    /// P0 / F0：成员缺 observation（旧库/未完成分析）。
+    case splitMemberUnresolved
+    /// P0 / F0：复核游标非法。
+    case reviewCursorInvalid
 }
 
 /// TS 错误消息逐字对齐（executor 失败路径经 JobService 以 String(describing:)
@@ -69,6 +81,12 @@ extension FaceKwServiceError: CustomStringConvertible {
         case .itemsInvalid: "FKW_ITEMS_INVALID"
         case .cleanupConfirmRequired: "FKW_CLEANUP_CONFIRM_REQUIRED"
         case .writebackProviderMissing: "WRITEBACK_PROVIDER_NOT_INJECTED"
+        case .clusterBound: "FACE_CLUSTER_BOUND"
+        case .splitEmpty: "FACE_SPLIT_EMPTY"
+        case .splitInvalidMember: "FACE_SPLIT_INVALID_MEMBER"
+        case .splitKeepOne: "FACE_SPLIT_KEEP_ONE"
+        case .splitMemberUnresolved: "FACE_SPLIT_MEMBER_UNRESOLVED"
+        case .reviewCursorInvalid: "FACE_REVIEW_CURSOR_INVALID"
         }
     }
 }
@@ -95,6 +113,12 @@ extension FaceKwServiceError {
         case .itemsInvalid: .FKW_ITEMS_INVALID
         case .cleanupConfirmRequired: .FKW_CLEANUP_CONFIRM_REQUIRED
         case .writebackProviderMissing: .WRITEBACK_OTHER_MODULE_ACTIVE
+        case .clusterBound: .FACE_CLUSTER_BOUND
+        case .splitEmpty: .FACE_SPLIT_EMPTY
+        case .splitInvalidMember: .FACE_SPLIT_INVALID_MEMBER
+        case .splitKeepOne: .FACE_SPLIT_KEEP_ONE
+        case .splitMemberUnresolved: .FACE_SPLIT_MEMBER_UNRESOLVED
+        case .reviewCursorInvalid: .FACE_REVIEW_CURSOR_INVALID
         }
     }
 }

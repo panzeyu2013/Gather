@@ -173,7 +173,6 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     /// 语义不是「Capture One 未配置」——UI 必须提示「正在初始化」，而不是未知错误。
     /// 收进枚举而不是裸字符串：app 侧有一条「文案表不得含枚举之外的码」的契约测试。
     case GATHER_BOOTSTRAPPING
-    case SCAN_INVALID_DIR
     case SCAN_READ_FAILED
     // XMP / metadata 同步协调 + writeback
     case XMP_CONFLICT_RESOLUTION_REQUIRED
@@ -198,7 +197,6 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case XMP_CONFLICT_NOT_FOUND
     case XMP_CONFLICT_DETAILS_UNAVAILABLE
     case XMP_CHOICE_MISSING
-    case XMP_CONFLICT_DETAILS_INVALID
     case XMP_ORPHAN_NOT_FOUND
     case XMP_ORPHAN_NOT_RETRYABLE
     case XMP_WRITER_TIMEOUT
@@ -229,7 +227,6 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case EXPORT_XMP_CONFLICT
     case EXPORT_PATH_INVALID
     case EXPORT_SCOPE_UNSUPPORTED
-    case EXPORT_SCOPE_UNKNOWN
     /// 本次交付零成功且存在失败项（审查 D02）：全失败不得被记成交付完成。
     case EXPORT_ALL_FAILED
     /// 逐项可执行性诊断（审查 D09）：导出计划里该源文件不存在。
@@ -237,7 +234,6 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     /// 逐项可执行性诊断（审查 D09）：源文件存在但不可读（权限/卷离线）。
     case EXPORT_SOURCE_UNREADABLE
     case EXPORT_RAW_CONVERT_UNSUPPORTED
-    case EXPORT_UNKNOWN_ERROR
     // Navigation
     case NAV_BURST_GAP_INVALID
     case NAV_SCENE_GAP_INVALID
@@ -259,6 +255,15 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case CULLING_NO_SIMILARITY
     case CULLING_GROUP_TOO_SMALL
     case CULLING_KEEP_NOT_IN_GROUP
+    case CULLING_CURSOR_INVALID
+    case CULLING_FILTER_INVALID
+    // Triage（技术质量初筛）
+    case TRIAGE_NOT_READY
+    case TRIAGE_STALE
+    case TRIAGE_APPLY_INVALID
+    case TRIAGE_POLICY_INVALID
+    // 关键词（K0）
+    case KEYWORD_OWNED_BY_SOURCE
     // Asset relink
     case ASSET_RELINK_XMP_BUSY
     case ASSET_RELINK_OUTBOX_CONFLICT
@@ -274,13 +279,29 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case FACE_MIN_CLUSTER_INVALID
     case FACE_NO_PHOTOS
     case FACE_SELF_MERGE
-    case FACE_MODEL_DETECTOR_CORRUPT
-    case FACE_MODEL_ENCODER_CORRUPT
+    // P0 / F0：拆分与复核
+    case FACE_CLUSTER_BOUND
+    case FACE_SPLIT_EMPTY
+    case FACE_SPLIT_INVALID_MEMBER
+    case FACE_SPLIT_KEEP_ONE
+    case FACE_SPLIT_MEMBER_UNRESOLVED
+    case FACE_REVIEW_CURSOR_INVALID
+    // B0：备份 / 恢复 / 诊断
+    case BACKUP_FAILED
+    case BACKUP_VERIFY_FAILED
+    case BACKUP_INSUFFICIENT_SPACE
+    case BACKUP_PERMISSION_DENIED
+    case BACKUP_BUSY
+    case RESTORE_FAILED
+    case RESTORE_VERIFY_FAILED
+    case RESTORE_VERSION_UNSUPPORTED
+    case RESTORE_INSUFFICIENT_SPACE
+    case RESTORE_PERMISSION_DENIED
+    case RESTORE_BUSY
+    case DIAGNOSTICS_EXPORT_FAILED
     // Similarity
     case SIM_THRESHOLD_INVALID
     case SIM_MIN_GROUP_INVALID
-    case SIM_WRITEBACK_EMPTY
-    case SIM_WRITEBACK_INVALID_ITEM
     case SIM_ANALYSIS_MISSING
     case SIM_THRESHOLD_NO_RESULTS
     case SIM_PREVIEW_REQUIRED
@@ -319,17 +340,12 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case SIM_NO_HASH_DATA
     case SIM_NO_HASH_RECLUSTER
     case SIM_NO_RESULTS
-    case SIM_ASSIGNMENT_INVALID
-    case SIM_GROUPING_MODE_INVALID
     // Duplicate / metadata / jobs / settings / quality / index / asset
     case DUP_RESOLVE_CONFIRM_REQUIRED
     case DUP_RESOLVE_MEMBER_CONFIRM_REQUIRED
     /// 视觉阈值非法（§4.2 P2）：必须是 0...64 的整数。
     case DUP_THRESHOLD_INVALID
     case DUPLICATE_SCAN_BUSY
-    case METADATA_SET_CONFIRM_REQUIRED
-    case METADATA_BATCH_SET_CONFIRM_REQUIRED
-    case METADATA_RESOLVE_CONFLICT_CONFIRM_REQUIRED
     case METADATA_RESOLVE_ORPHAN_CONFIRM_REQUIRED
     case METADATA_KEYWORDS_INVALID
     case METADATA_PATCH_INVALID
@@ -338,7 +354,6 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case METADATA_KEYWORDS_OP_INVALID
     case METADATA_PATCH_EMPTY
     case METADATA_MUTATION_EMPTY
-    case JOBS_CLEAR_CONFIRM_REQUIRED
     case SETTINGS_LANGUAGE_INVALID
     case QUALITY_NO_ASSET_FILE
     case INDEX_SESSION_NO_SOURCE
@@ -350,15 +365,9 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case FACE_WORKERS_INIT_FAILED
     case FILTER_CRITERIA_INVALID
     case FILTER_FIELD_UNKNOWN
-    case FILTER_SCHEMA_UNSUPPORTED
-    case TEMPLATE_NOT_FOUND
-    case TEMPLATE_CONFIG_INVALID
-    case TEMPLATE_DELETE_CONFIRM_REQUIRED
-    case TEMPLATE_APPLY_CONFIRM_REQUIRED
     case ALBUM_DELETE_CONFIRM_REQUIRED
     case ALBUM_NOT_FOUND
     case PERSON_NOT_FOUND
-    case PERSON_DELETE_CONFIRM_REQUIRED
     case PERSON_MERGE_CONFIRM_REQUIRED
     case PERSON_REMOVE_PHOTO_CONFIRM_REQUIRED
     case ASSET_LINK_ACCEPT_CONFIRM_REQUIRED

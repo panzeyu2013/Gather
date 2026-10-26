@@ -41,45 +41,6 @@ struct MetadataContractTests {
         }
     }
 
-    @Test func metadataPatchOpsRawValuesMatchTS() {
-        #expect(MetadataRatingOp.set.rawValue == "set")
-        #expect(MetadataLabelOp.set.rawValue == "set")
-        let keywordOps: [(MetadataKeywordsOp, String)] = [
-            (.append, "append"), (.replace, "replace"), (.remove, "remove"),
-        ]
-        for (op, raw) in keywordOps {
-            #expect(op.rawValue == raw)
-        }
-    }
-
-    // MARK: - MetadataPatch
-
-    @Test func metadataPatchFullRoundTripAndKeys() throws {
-        let original = MetadataPatch(
-            rating: MetadataRatingPatch(value: 4),
-            label: MetadataLabelPatch(value: "红色"),
-            keywords: MetadataKeywordsPatch(op: .append, values: ["街头", "夜景"])
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(MetadataPatch.self, from: data)
-        #expect(decoded == original)
-        #expect(Set(try jsonKeys(of: data)) == ["rating", "label", "keywords"])
-    }
-
-    @Test func metadataPatchEmptyEncodesEmptyObject() throws {
-        let empty = MetadataPatch()
-        let keys = try jsonKeys(of: JSONEncoder().encode(empty))
-        #expect(keys.isEmpty, "TS 全可选 patch 未设置时编码为 {}")
-    }
-
-    @Test func metadataRatingPatchOpRoundTrip() throws {
-        let patch = MetadataRatingPatch(value: 3)
-        let data = try JSONEncoder().encode(patch)
-        let decoded = try JSONDecoder().decode(MetadataRatingPatch.self, from: data)
-        #expect(decoded == patch)
-        #expect(decoded.op == .set)
-        #expect(Set(try jsonKeys(of: data)) == ["op", "value"])
-    }
     // MARK: - MetadataMutationResult
 
     @Test func metadataMutationResultRoundTrip() throws {
@@ -172,14 +133,6 @@ struct MetadataContractTests {
         #expect(try jsonKeys(of: JSONEncoder().encode(empty)).isEmpty)
     }
 
-    // MARK: - BatchMetadataResult
-
-    @Test func batchMetadataResultRoundTrip() throws {
-        let original = BatchMetadataResult(success: 9, failed: 1, errors: ["/u/bad.xmp"])
-        let data = try JSONEncoder().encode(original)
-        #expect(try JSONDecoder().decode(BatchMetadataResult.self, from: data) == original)
-        #expect(Set(try jsonKeys(of: data)) == ["success", "failed", "errors"])
-    }
     private func jsonKeys(of data: Data) throws -> [String] {
         Array(try jsonObject(of: data).keys)
     }

@@ -23,7 +23,7 @@ import GatherTestSupport
 
 // MARK: - 夹具
 
-private struct PersonTemplateFixture {
+private struct PersonFixture {
     let db: DBConnection
     let personRepo: PersonRepo
     let photoRepo: PhotoRepo
@@ -99,7 +99,7 @@ private func gatherError<T>(_ body: () async throws -> T) async -> GatherError? 
 struct APIPersonTests {
     @Test("person.list/get/create：DTO 形状、name trim 与 PERSON_NOT_FOUND")
     func listGetCreate() async throws {
-        let fixture = try PersonTemplateFixture()
+        let fixture = try PersonFixture()
 
         let created = try await fixture.personAPI.create(
             PersonCreateParams(name: "  Alice  ", keywords: ["lead"])
@@ -149,7 +149,7 @@ struct APIPersonTests {
 
     @Test("person.update/searchPhotos：字段更新、空名保留、分页与参数边界")
     func updateAndSearchPhotos() async throws {
-        let fixture = try PersonTemplateFixture()
+        let fixture = try PersonFixture()
         let personId = try await fixture.personAPI.create(
             PersonCreateParams(name: "Alice")
         ).id
@@ -247,7 +247,7 @@ struct APIPersonTests {
 
     @Test("person.merge / removePhoto / delete：Confirmed<T> 的投影变化")
     func mergeRemoveDelete() async throws {
-        let fixture = try PersonTemplateFixture()
+        let fixture = try PersonFixture()
         let sourceId = try await fixture.personAPI.create(
             PersonCreateParams(name: "Source")
         ).id
@@ -297,4 +297,3 @@ struct APIPersonTests {
         )
     }
 }
-

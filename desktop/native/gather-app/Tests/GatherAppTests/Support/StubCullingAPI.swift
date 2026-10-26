@@ -76,7 +76,8 @@ func b8CullingAsset(
     _ id: String,
     revision: Int = 1,
     pickState: PickState = .unreviewed,
-    sessionId: String = "s1"
+    sessionId: String = "s1",
+    keywords: [String] = []
 ) -> CullingAsset {
     CullingAsset(
         photo: b8CullingPhoto(id, sessionId: sessionId),
@@ -84,7 +85,7 @@ func b8CullingAsset(
         xmpPath: "/shoot/\(id).xmp",
         syncStatus: .clean,
         people: [],
-        keywords: [],
+        keywords: keywords,
         linkedVariantCount: 1,
         faceBboxes: []
     )
@@ -142,6 +143,13 @@ private struct B8CullingState {
     var finalizeSummary = b8SyncSummary(synced: 1)
     var confirmSyncResult = true
 
+    var triageSummaryResult: TriageSummary?
+    var triageGenerateError: (any Error)?
+    var triageGenerateInputs: [TriageGenerateInput] = []
+    var applyTriageResult = TriageApplyResult()
+    var applyTriageError: (any Error)?
+    var applyTriageInputs: [Confirmed<TriageApplyInput>] = []
+
     var pageError: (any Error)?
     var historyError: (any Error)?
     var applyHistoryError: (any Error)?
@@ -150,6 +158,7 @@ private struct B8CullingState {
     var decideGroupError: (any Error)?
     var groupsError: (any Error)?
     var summaryError: (any Error)?
+
     var syncStatusError: (any Error)?
     var resetError: (any Error)?
     var writebackError: (any Error)?
@@ -322,6 +331,34 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
     var summaryError: (any Error)? {
         get { box.lock.withLock { box.summaryError } }
         set { box.lock.withLock { box.summaryError = newValue } }
+    }
+
+    var triageSummaryResult: TriageSummary? {
+        get { box.lock.withLock { box.triageSummaryResult } }
+        set { box.lock.withLock { box.triageSummaryResult = newValue } }
+    }
+
+    var triageGenerateError: (any Error)? {
+        get { box.lock.withLock { box.triageGenerateError } }
+        set { box.lock.withLock { box.triageGenerateError = newValue } }
+    }
+
+    var triageGenerateInputs: [TriageGenerateInput] {
+        box.lock.withLock { box.triageGenerateInputs }
+    }
+
+    var applyTriageResult: TriageApplyResult {
+        get { box.lock.withLock { box.applyTriageResult } }
+        set { box.lock.withLock { box.applyTriageResult = newValue } }
+    }
+
+    var applyTriageError: (any Error)? {
+        get { box.lock.withLock { box.applyTriageError } }
+        set { box.lock.withLock { box.applyTriageError = newValue } }
+    }
+
+    var applyTriageInputs: [Confirmed<TriageApplyInput>] {
+        box.lock.withLock { box.applyTriageInputs }
     }
 
     var syncStatusError: (any Error)? {
@@ -567,6 +604,33 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
         let (error, result): ((any Error)?, Bool) = box.lock.withLock {
             box.confirmSyncCalls.append(sessionId)
             return (box.confirmSyncError, box.confirmSyncResult)
+        }
+        if let error { throw error }
+        return result
+    }
+
+    // P0 / T0：可配置返回/错误，并记录入参。
+    func generateTriage(_ input: TriageGenerateInput) async throws -> TriageSummary {
+        try await delayIfNeeded()
+        let (error, result): ((any Error)?, TriageSummary?) = box.lock.withLock {
+            box.triageGenerateInputs.append(input)
+            return (box.triageGenerateError, box.triageSummaryResult)
+        }
+        if let error { throw error }
+        return result ?? TriageSummary(
+            counts: TriageCounts(keep: 0, reject: 0, review: 0, total: 0, coverage: 0),
+            stale: false,
+            policyVersion: "triage-v1",
+            inputFingerprint: "",
+            generatedAt: ""
+        )
+    }
+
+    func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult {
+        try await delayIfNeeded()
+        let (error, result): ((any Error)?, TriageApplyResult) = box.lock.withLock {
+            box.applyTriageInputs.append(input)
+            return (box.applyTriageError, box.applyTriageResult)
         }
         if let error { throw error }
         return result

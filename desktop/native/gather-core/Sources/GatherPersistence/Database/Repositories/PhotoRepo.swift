@@ -5,7 +5,7 @@ import GatherProtocol
 
 /// photos 表投影（V1 14 列，无 metadata/result）。
 public struct PhotoRow: Equatable, Sendable {
-    /// SELECT 与位置解码共用的唯一列清单；顺序 = SchemaV1 photos 的物理列序。
+    /// SELECT 与位置解码共用的唯一列清单；顺序 = SchemaCurrent photos 的物理列序。
     /// 旧库仍有 metadata/result，但 SELECT 不再选它们（Cut 2 S5a / R1-B）。
     public static let columns = [
         "id", "session_id", "filepath", "filename", "checksum", "checksum_file_size",

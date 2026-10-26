@@ -109,36 +109,8 @@ extension CullingService {
         }
         return operations
     }
-    /// TS: getSummary —— 徽标计数（决策 + 缓存 fallback + 相似度组数）。
+    /// 首屏摘要：SQL 聚合（20k 不搬全量 photos/decisions/cache）。
     public func getSummary(sessionId: String) throws -> CullingSummary {
-        // 轻投影：计数只需照片 id。
-        let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
-            .map { CullingPhotoRow(row: $0) }
-        let decisions = try cullingDecisionRepo.getBySession(sessionId)
-        let decisionByPhoto = Dictionary(uniqueKeysWithValues: decisions.map { ($0.photoId, $0) })
-        // 决策与缓存读每次调用保持新鲜：renderer 在每次 update/undo/redo 后重取
-        // summary，徽标必须反映刚完成的写入，故每会话缓存永不在此复用。
-        let cacheByPhoto = try loadSummaryCacheByPhoto(photos)
-        var kept = 0
-        var rejected = 0
-        var rated = 0
-        var labeled = 0
-        for photo in photos {
-            // 取舍只读决策行；星级/色标只读唯一真相源 cache（决策行的 rating/
-            // color_label 是镜像列，读取它们会造出第二真相源）。
-            let row = decisionByPhoto[photo.id]
-            let cache = cacheByPhoto[photo.id]
-            if row?.decision == "keep" { kept += 1 }
-            if row?.decision == "reject" { rejected += 1 }
-            if (cache?.rating ?? 0) > 0 { rated += 1 }
-            let label = cache?.label ?? "None"
-            if let parsed = CaptureOneColorLabel(rawValue: label),
-               Self.colorLabels.contains(parsed), parsed != .none {
-                labeled += 1
-            }
-        }
-        // 组数来自会话查找条目（版本键控）：stats_json.totalGroups 是小组件对象，
-        // 替代多 MB 的 groups_json 解析，结果按 (session, result id) 缓存。
         let lookup = try getSessionLookup(sessionId: sessionId)
         var totalGroups = 0
         if let resultRow = lookup.resultRow {
@@ -148,14 +120,16 @@ extension CullingService {
             }
             totalGroups = lookup.groupCount
         }
+        let labels = Self.colorLabels.filter { $0 != .none }.map(\.rawValue).sorted()
+        let counts = try richQuery.summaryCounts(sessionId: sessionId, colorLabels: labels)
         return CullingSummary(
             totalGroups: totalGroups,
-            totalPhotos: photos.count,
-            kept: kept,
-            rejected: rejected,
-            pending: max(0, photos.count - kept - rejected),
-            rated: rated,
-            labeled: labeled
+            totalPhotos: counts.totalPhotos,
+            kept: counts.kept,
+            rejected: counts.rejected,
+            pending: max(0, counts.totalPhotos - counts.kept - counts.rejected),
+            rated: counts.rated,
+            labeled: counts.labeled
         )
     }
     // MARK: - 富查询（TS buildRichLookup 及支撑）
@@ -175,6 +149,54 @@ extension CullingService {
         // 每个侧车取最近更新的 item（SQL 已按 updated_at DESC, id DESC 排序）。
         for row in rows where result[row.xmpPath] == nil {
             result[row.xmpPath] = MetadataMutationSource(rawValue: row.module)
+        }
+        return result
+    }
+
+    /// P0 / T0：triage_suggestions → gid 建议。损坏 reasons 跳过（不伪造建议）。
+    /// 门控匹配的行才进入资产（stale/旧策略不展示，契约 §4.3）。
+    func loadTriageByAsset(
+        sessionId: String,
+        photoIds: [String]? = nil,
+        policy: TriageDisplayPolicy?
+    ) throws -> [String: TriageSuggestion] {
+        guard policy != .hidden else { return [:] }
+        var gate: TriageSuggestionGate?
+        if case .matching(let value) = policy { gate = value }
+        var result: [String: TriageSuggestion] = [:]
+        let decoder = JSONDecoder()
+        let rows = if let photoIds {
+            try richQuery.triageRows(sessionId: sessionId, photoIds: photoIds)
+        } else {
+            try richQuery.triageRows(sessionId: sessionId)
+        }
+        for row in rows {
+            guard let verdict = TriageVerdict(rawValue: row.verdict) else { continue }
+            if let gate,
+               row.inputFingerprint != gate.fingerprint
+                   || row.policyVersion != gate.policyVersion {
+                continue
+            }
+            let reasons: [TriageReason]
+            do {
+                reasons = try decoder.decode(
+                    [TriageReason].self, from: Data(row.reasonsJSON.utf8))
+            } catch {
+                GatherLogger.log(
+                    "triage reasons decode failed photo=\(row.photoId)", level: .warn)
+                continue
+            }
+            result[row.gid] = TriageSuggestion(
+                photoId: row.photoId,
+                verdict: verdict,
+                score: row.score,
+                confidence: row.confidence,
+                reasons: reasons,
+                groupId: row.groupId,
+                policyVersion: row.policyVersion,
+                inputFingerprint: row.inputFingerprint,
+                computedAt: row.computedAt
+            )
         }
         return result
     }
@@ -281,6 +303,24 @@ extension CullingService {
         let deliveryByPath = try deliveryItems.getMany(xmpPaths: xmpPaths)
         let metadataSourceByPath = try loadDeliveryMetadataSourceByPath(xmpPaths: xmpPaths)
         let similarityMap = try getLatestSimilarityMap(sessionId: sessionId)
+        let displayPolicy = try triageDisplayPolicy?(sessionId)
+        var triageByAsset = try loadTriageByAsset(
+            sessionId: sessionId,
+            photoIds: mode == .session ? nil : photoIds,
+            policy: displayPolicy
+        )
+        // 人工决策过的逻辑资产不展示建议（契约：已人工决策 = nil），
+        // 避免“手动改选后网格仍显示旧淘汰徽标”。
+        if !triageByAsset.isEmpty {
+            for photo in photos {
+                guard let decision = decisions[photo.id],
+                      decision.decisionSource == CullingDecisionSource.manual.rawValue,
+                      decision.decision != CullingDecisionValue.pending.rawValue
+                else { continue }
+                let gid = photo.assetId.flatMap { $0.isEmpty ? nil : $0 } ?? photo.id
+                triageByAsset.removeValue(forKey: gid)
+            }
+        }
         // 会话级分析表（质量/人脸/人物）只被后台分析重写，故会话模式复用
         // 版本键控缓存而不是每次调用全量重读；页模式保持每页范围查询。
         let sessionLookup = try getSessionLookup(sessionId: sessionId)
@@ -337,6 +377,7 @@ extension CullingService {
             metadataSourceByPath: metadataSourceByPath,
             similarityMap: similarityMap,
             qualityByPhoto: qualityByPhoto,
+            triageByAsset: triageByAsset,
             facesByPhoto: facesByPhoto,
             analysisMaxByPhoto: analysisMaxByPhoto,
             peopleByPhoto: peopleByPhoto,
@@ -357,6 +398,7 @@ extension CullingService {
             // 来源由交付项 module 投影（旧 outbox patch_json.source 已无生产写入）。
             let metadataSource = lookup.metadataSourceByPath[xmpPath]
             let keywords: [String] = cache?.keywords ?? []
+            let triageGid = (photo.assetId?.isEmpty == false ? photo.assetId! : photo.id)
             let sourceWidth = max(1, photo.width)
             let sourceHeight = max(1, photo.height)
             let analysisMax = lookup.analysisMaxByPhoto[photo.id]
@@ -399,6 +441,7 @@ extension CullingService {
                 linkedVariantCount: lookup.linkedCounts[xmpPath] ?? 1,
                 faceBboxes: normalizedFaces,
                 quality: lookup.qualityByPhoto[photo.id],
+                triage: lookup.triageByAsset[triageGid],
                 metadataSource: metadataSource
             )
         }
@@ -498,18 +541,6 @@ extension CullingService {
     }
     // MARK: - Summary 支撑
 
-    /// TS: loadSummaryCacheByPhoto —— getSummary 的轻 photo_metadata_cache 投影：
-    /// 计数循环只需要 rating/label 兜底，跳过 getBatch 携带的重 keywords JSON 列。
-    func loadSummaryCacheByPhoto(
-        _ photos: [CullingPhotoRow]
-    ) throws -> [String: (rating: Int64, label: String?)] {
-        var cacheByPhoto: [String: (rating: Int64, label: String?)] = [:]
-        if photos.isEmpty { return cacheByPhoto }
-        for row in try richQuery.summaryCacheRows(photoIds: photos.map(\.id)) {
-            cacheByPhoto[row.photoId] = (row.rating, row.label)
-        }
-        return cacheByPhoto
-    }
     /// TS: parseTotalGroups —— 相似度结果行的组计数。当前管线把 totalGroups 写进
     /// 小的 stats_json 对象，多 MB 的 groups_json 只为旧行解析。损坏行退化为 0
     /// （与旧 groups_json 解析相同）。

@@ -3,7 +3,7 @@
 //
 // 行为必须与抽取前**逐字等价**：canonical 口径与 SHA-256 指纹算法一行未改，
 // 只是从 Database 的 private static 变成同模块 internal 类型，供 open、迁移器与
-// 测试共用。改 canonical 任何一段都必须重算 SchemaV1.expectedShapeFingerprint。
+// 测试共用。改 canonical 任何一段都必须重算 SchemaCurrent.expectedShapeFingerprint。
 //
 // canonical 口径：
 //   table\t<name>
@@ -24,7 +24,7 @@ struct SchemaShapeSnapshot: Sendable {
     let fingerprint: String
 }
 
-/// 某个 schema 版本**应该**具备的列形（来自 SchemaV1.shape / 未来的 SchemaVn.shape）。
+/// 某个 schema 版本**应该**具备的列形（来自 SchemaCurrent.shape / 未来的 SchemaVn.shape）。
 ///
 /// 计数用于可读报错；关键表列集合兜「少关键列」；指纹兜「列名/类型/默认值/外键/
 /// 索引变了但计数没变」。三者任一不符都意味着旧库或损坏库。

@@ -23,7 +23,7 @@
 //   - upsertByName 的复活路径只有一条 —— role_bindings（FaceKwService.bindCluster
 //     与 reconcileSession 都经它按名 adopt）。delete 把这些绑定与 matched_person_id
 //     一并清掉，就没有可被认领的东西；
-//   - tombstone 需要新表/新列（SchemaV1.swift 不在本域文件所有权内），
+//   - tombstone 需要新表/新列（SchemaCurrent.swift 不在本域文件所有权内），
 //     且会把「用户以后再次显式绑定同名角色」误判为复活；
 //   - 清关联后再次出现同名人物只可能来自用户显式绑定，语义上就是新身份，不是复活。
 // 拆分（WP5，纯移动）：值类型与主类型留本文件；实现见

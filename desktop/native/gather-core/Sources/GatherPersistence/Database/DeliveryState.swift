@@ -17,7 +17,7 @@
 
 import Foundation
 
-/// deliveries.status 的合法值（与 SchemaV1 的 CHECK 双向一致）。
+/// deliveries.status 的合法值（与 SchemaCurrent 的 CHECK 双向一致）。
 ///
 /// 生命周期（正常路径）：
 ///   pending → writing → written → synced →（cleanup 删除；软删场景为 cleaned）
@@ -77,7 +77,7 @@ public enum DeliveryStatus: String, Codable, CaseIterable, Equatable, Sendable {
     public var isTerminal: Bool { self == .synced || self == .cleaned }
 }
 
-/// delivery_items.status 的合法值（与 SchemaV1 的 CHECK 双向一致）。
+/// delivery_items.status 的合法值（与 SchemaCurrent 的 CHECK 双向一致）。
 ///
 /// item 是「某张照片 × 某模块」的交付项：文件写成功后逐项从 pending → written，
 /// 会话确认后 written → synced；新输入到达时 synced/written → pending 重新打开。
@@ -109,7 +109,7 @@ public enum DeliveryItemStatus: String, Codable, CaseIterable, Equatable, Sendab
     public var isTerminal: Bool { self == .synced }
 }
 
-/// delivery_items.module 的合法值（与 SchemaV1 的 CHECK 双向一致）。
+/// delivery_items.module 的合法值（与 SchemaCurrent 的 CHECK 双向一致）。
 ///
 /// 归属从旧模型的 patch_json.__owners__（字段 → 模块 JSON）提升为**行**：
 /// 一个 (delivery, photo, module) 三元组就是一条归属事实（draft §5.3）。
@@ -124,7 +124,7 @@ public enum DeliveryModule: String, Codable, CaseIterable, Equatable, Sendable {
 
     /// 旧写回模块名（WritebackService / writeback_items.module）→ 交付模块。
     ///
-    /// 落库值只取 SchemaV1 delivery_items.module CHECK 的真实值
+    /// 落库值只取 SchemaCurrent delivery_items.module CHECK 的真实值
     /// （culling / face-keyword / similarity / template / metadata），不新增非法值。
     /// "face_kw" 是旧写回层的历史别名（TS mutation-source 命名），映射后仍写
     /// "face-keyword"；"face-keyword" 也接受，便于调用方按落库值传入。
@@ -140,7 +140,7 @@ public enum DeliveryModule: String, Codable, CaseIterable, Equatable, Sendable {
     }
 
     /// 反向映射：交付模块 → 旧写回层模块名（日志/过渡适配用）。
-    /// faceKeyword 回旧名 "face_kw"；其余与 SchemaV1 的落库值一致。
+    /// faceKeyword 回旧名 "face_kw"；其余与 SchemaCurrent 的落库值一致。
     public var writebackModuleName: String {
         switch self {
         case .culling: return "culling"

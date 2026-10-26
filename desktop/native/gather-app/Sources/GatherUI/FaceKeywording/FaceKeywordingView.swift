@@ -28,9 +28,12 @@ public struct FaceKeywordingView: View {
     @State var pendingUnbind: PendingFaceUnbind?
     @State var pendingCleanup: PendingFaceCleanup?
     @State var pendingConfirmSync: PendingFaceConfirmSync?
-    @State var pendingMemberRemoval: PendingFaceMemberRemoval?
     @State var pendingMerge: PendingFaceMerge?
     @State var pendingRecluster: PendingFaceRecluster?
+    // P0 / F0：拆分所选成员 / 复核成员移除
+    @State var pendingSplit: PendingFaceSplit?
+    @State var pendingReviewRemoval: PendingFaceReviewRemoval?
+    @FocusState var focusedMemberId: Int?
     @State var visibleClusterCount = FaceKeywordingViewModel.clusterPageSize
     @State var hoveredClusterId: Int?
     /// 被门控拒绝的步骤切换提示（分段控件不能逐段禁用）。

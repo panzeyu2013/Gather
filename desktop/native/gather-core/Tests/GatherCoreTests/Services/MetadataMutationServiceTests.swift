@@ -6,13 +6,12 @@
 // 1. queuePhotoValues → deliveries(pending, revision+1) + delivery_items
 //    (module=.metadata, attributes rating/label, keywords 列, 会话链接)；
 // 2. 字段级合并（后写字段覆盖、未提及字段保留）与 revision 推进；
-// 3. queueMutation 的 append/replace/remove → 关键词列表 + keywords_mode
-//    （merge/replace），且 append 以盘上词表为基线；
+// 3. K0 delta（added/removed + owned）按盘上/未落盘基线计算净意图；
 // 4. 刷盘由 WritebackService.execute 消费同一批 pending 项：rating/label 落盘、
-//    replace 模式权威覆盖关键词、merge 模式与盘上并集；
+//    关键词按 delta/merge 语义收敛；
 // 5. 契约错误（空 values）不落任何交付行。
 //
-// 建库口径与 DeliveryRepoTests 一致：内存 DB + SchemaV1.sql（不跑迁移链）。
+// 建库口径与 DeliveryRepoTests 一致：内存 DB + SchemaCurrent.createSQL（不跑迁移链）。
 
 import Foundation
 import Testing
@@ -84,7 +83,7 @@ private struct MutationFixture {
 
     init() throws {
         let db = try DBConnection(path: ":memory:")
-        try db.exec(SchemaV1.sql)
+        try db.exec(SchemaCurrent.createSQL)
         let sessionId = "s-2b2"
         let photoId = "p-2b2"
         _ = try db.prepare("""
@@ -278,41 +277,6 @@ struct MetadataMutationServiceTests {
         #expect(try fixture.count("delivery_sessions") == 1)
     }
 
-    @Test("queueMutation 的 linkSession 失败同样整体回滚，串行链可继续入队")
-    func queueMutationLinkFailureRollsBack() async throws {
-        let fixture = try MutationFixture()
-        defer { fixture.cleanup() }
-        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["old"])
-
-        try fixture.db.exec("""
-            CREATE TRIGGER fail_delivery_session_link
-            BEFORE INSERT ON delivery_sessions
-            BEGIN SELECT RAISE(ABORT, 'forced link failure'); END;
-            """)
-        await #expect(throws: (any Error).self) {
-            _ = try await fixture.mutations.queueMutation(
-                sessionId: fixture.sessionId,
-                photoId: fixture.photoId,
-                patch: MetadataPatch(keywords: MetadataKeywordsPatch(op: .append, values: ["new"])),
-                source: .manual)
-        }
-        #expect(try fixture.deliveryRepo.get(fixture.xmpPath) == nil)
-        #expect(try fixture.item() == nil)
-        #expect(try DeliverySummaryQuery(connection: fixture.db)
-            .summary(sessionId: fixture.sessionId).isConfirmable)
-
-        try fixture.db.exec("DROP TRIGGER fail_delivery_session_link")
-        let result = try await fixture.mutations.queueMutation(
-            sessionId: fixture.sessionId,
-            photoId: fixture.photoId,
-            patch: MetadataPatch(keywords: MetadataKeywordsPatch(op: .append, values: ["new"])),
-            source: .manual)
-        #expect(result.revision == 1)
-        let item = try #require(try fixture.item())
-        #expect(item.keywordList == ["old", "new"])
-        #expect(try fixture.count("delivery_sessions") == 1)
-    }
-
     @Test("重复入队幂等：不产生重复交付/项/链接，字段保持最近输入")
     func repeatedEnqueueIsIdempotentForRows() throws {
         let fixture = try MutationFixture()
@@ -343,54 +307,40 @@ struct MetadataMutationServiceTests {
         #expect(item.keywordList == ["keep"])
     }
 
-    @Test("queueMutation：append 以盘上词表为基线，keywords_mode=merge")
-    func queueMutationAppendMergesWithDisk() async throws {
-        let fixture = try MutationFixture()
-        defer { fixture.cleanup() }
-        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["old"], rating: 1)
-
-        let result = try await fixture.mutations.queueMutation(
-            sessionId: fixture.sessionId,
-            photoId: fixture.photoId,
-            patch: MetadataPatch(keywords: MetadataKeywordsPatch(op: .append, values: ["new"])),
-            source: .manual
-        )
-
-        #expect(result.dirtyFields == [.keywords])
-        let item = try #require(try fixture.item())
-        #expect(item.keywordList == ["old", "new"])
-        #expect(item.attributes[MetadataMutationService.keywordsModeKey]?.stringValue
-            == MetadataKeywordWriteMode.merge.rawValue)
+    @Test("K0 生成词来源：culling/similarity/template/face 均映射到 origin")
+    func generatedKeywordSourcesMap() {
+        #expect(WritebackService.keywordOriginSource(for: "culling") == "culling")
+        #expect(WritebackService.keywordOriginSource(for: "similarity") == "similarity")
+        #expect(WritebackService.keywordOriginSource(for: "template") == "template")
+        #expect(WritebackService.keywordOriginSource(for: "face_kw") == "face-keyword")
+        #expect(WritebackService.keywordOriginSource(for: "metadata") == nil)
     }
 
-    @Test("queueMutation：replace 权威覆盖，remove 从盘上词表删除")
-    func queueMutationReplaceAndRemove() async throws {
+    @Test("K0 delta：连续 add→remove 的净意图不残留")
+    func deltaAddThenRemoveIsNet() async throws {
         let fixture = try MutationFixture()
         defer { fixture.cleanup() }
-        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["old", "x"])
+        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["base"])
 
-        _ = try await fixture.mutations.queueMutation(
-            sessionId: fixture.sessionId,
-            photoId: fixture.photoId,
-            patch: MetadataPatch(keywords: MetadataKeywordsPatch(op: .replace, values: ["new"])),
-            source: .manual
-        )
+        _ = try await fixture.mutations.queueKeywordDelta(
+            sessionId: fixture.sessionId, photoId: fixture.photoId,
+            added: ["X"], removed: [], owned: [:])
+        _ = try await fixture.mutations.queueKeywordDelta(
+            sessionId: fixture.sessionId, photoId: fixture.photoId,
+            added: [], removed: ["X"], owned: [:])
+
         var item = try #require(try fixture.item())
-        #expect(item.keywordList == ["new"])
-        #expect(item.attributes[MetadataMutationService.keywordsModeKey]?.stringValue
-            == MetadataKeywordWriteMode.replace.rawValue)
+        #expect(item.keywordList == ["base"])
+        let added = item.attributes["keywords_added"]?.arrayElements?.compactMap(\.stringValue) ?? []
+        let removed = item.attributes["keywords_remove"]?.arrayElements?.compactMap(\.stringValue) ?? []
+        #expect(!added.contains("X"))
+        #expect(removed.contains("X"))
 
-        // 项内词表优先（旧 outbox patch 优先）：remove 作用在 ["new"] 上。
-        _ = try await fixture.mutations.queueMutation(
-            sessionId: fixture.sessionId,
-            photoId: fixture.photoId,
-            patch: MetadataPatch(keywords: MetadataKeywordsPatch(op: .remove, values: ["new"])),
-            source: .manual
-        )
-        item = try #require(try fixture.item())
-        #expect(item.keywordList.isEmpty)
-        #expect(item.attributes[MetadataMutationService.keywordsModeKey]?.stringValue
-            == MetadataKeywordWriteMode.replace.rawValue)
+        let items = try fixture.writeback.getItems(sessionId: fixture.sessionId, module: "metadata")
+        _ = try await fixture.writeback.execute(
+            sessionId: fixture.sessionId, module: "metadata", items: items)
+        let written = try #require(fixture.xmp.writeCalls.last)
+        #expect(written.keywords == ["base"])
     }
 
     @Test("queuePhotoValues：无可写字段抛 METADATA_MUTATION_EMPTY 且不落交付")
@@ -436,43 +386,209 @@ struct MetadataMutationServiceTests {
         #expect(item.typedStatus == .written)
     }
 
-    @Test("执行器刷盘：keywords_mode=replace 权威覆盖（不并集）")
-    func writebackHonoursReplaceMode() async throws {
+    @Test("K0 delta：written item 不得覆盖盘上基线（外部新增词可删除）")
+    func keywordDeltaUsesDiskAfterWrite() async throws {
         let fixture = try MutationFixture()
         defer { fixture.cleanup() }
-        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["old"])
-
-        _ = try await fixture.mutations.queueMutation(
-            sessionId: fixture.sessionId,
-            photoId: fixture.photoId,
-            patch: MetadataPatch(keywords: MetadataKeywordsPatch(op: .replace, values: ["new"])),
-            source: .manual
-        )
+        _ = try await fixture.mutations.queueKeywordDelta(
+            sessionId: fixture.sessionId, photoId: fixture.photoId,
+            added: ["Cat"], removed: [], owned: [:])
         let items = try fixture.writeback.getItems(sessionId: fixture.sessionId, module: "metadata")
         _ = try await fixture.writeback.execute(
             sessionId: fixture.sessionId, module: "metadata", items: items)
+        #expect(try fixture.item()?.typedStatus == .written)
 
-        let written = try #require(fixture.xmp.writeCalls.last)
-        #expect(written.keywords == ["new"])
+        // C1 外部新增 Bird；回到 Gather 删除 Bird 必须产生真实 delta。
+        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["Cat", "Bird"])
+        let queued = try await fixture.mutations.queueKeywordDelta(
+            sessionId: fixture.sessionId, photoId: fixture.photoId,
+            added: [], removed: ["Bird"], owned: [:])
+        #expect(queued != nil, "written item 的旧快照不能让删除静默 no-op")
+        #expect(try fixture.item()?.keywordList == ["Cat"])
     }
 
-    @Test("执行器刷盘：keywords_mode=merge 与盘上并集（旧模块语义不变）")
-    func writebackKeepsMergeMode() async throws {
+    @Test("K0 delta：入队保留 added/remove，执行器按 disk∪added−removed 落盘")
+    func keywordDeltaQueueAndFlush() async throws {
         let fixture = try MutationFixture()
         defer { fixture.cleanup() }
-        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["old"])
+        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["old", "keep"])
 
-        _ = try await fixture.mutations.queueMutation(
+        let queued = try await fixture.mutations.queueKeywordDelta(
             sessionId: fixture.sessionId,
             photoId: fixture.photoId,
-            patch: MetadataPatch(keywords: MetadataKeywordsPatch(op: .append, values: ["new"])),
-            source: .manual
+            added: ["new"],
+            removed: ["old"],
+            owned: [:]
         )
+        #expect(queued != nil)
+        let item = try #require(try fixture.item())
+        #expect(item.attributes["keywords_mode"]?.stringValue == "delta")
+        #expect(item.attributes["keywords_added"]?.arrayElements?.compactMap(\.stringValue) == ["new"])
+        #expect(item.attributes["keywords_remove"]?.arrayElements?.compactMap(\.stringValue) == ["old"])
+        #expect(item.keywordList == ["keep", "new"])
+
         let items = try fixture.writeback.getItems(sessionId: fixture.sessionId, module: "metadata")
         _ = try await fixture.writeback.execute(
             sessionId: fixture.sessionId, module: "metadata", items: items)
-
         let written = try #require(fixture.xmp.writeCalls.last)
-        #expect(written.keywords == ["old", "new"])
+        #expect(written.keywords == ["keep", "new"])
+    }
+
+    @Test("K0 delta：生成词删除被阻止且不落交付行")
+    func keywordDeltaBlocksOwnedRemoval() async throws {
+        let fixture = try MutationFixture()
+        defer { fixture.cleanup() }
+        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["人物A"])
+
+        do {
+            _ = try await fixture.mutations.queueKeywordDelta(
+                sessionId: fixture.sessionId,
+                photoId: fixture.photoId,
+                added: [],
+                removed: ["人物A"],
+                owned: [KeywordNormalizer.fold("人物A"): [.faceKeyword]]
+            )
+            Issue.record("expected KEYWORD_OWNED_BY_SOURCE")
+        } catch let error as GatherError {
+            #expect(error.code == .KEYWORD_OWNED_BY_SOURCE)
+        }
+        #expect(try fixture.deliveryRepo.get(fixture.xmpPath) == nil)
+    }
+
+    @Test("K0 预览只读；apply 入队 delta 但不直接写 XMP")
+    func keywordPreviewIsReadOnlyAndApplyQueuesDelta() async throws {
+        let fixture = try MutationFixture()
+        defer { fixture.cleanup() }
+        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["old"])
+        let service = MetadataService(
+            metadataCacheRepo: MetadataCacheRepo(connection: fixture.db),
+            xmp: fixture.xmp,
+            photoRepo: PhotoRepo(connection: fixture.db),
+            transactions: fixture.db,
+            mutations: fixture.mutations,
+            origins: MetadataKeywordOriginRepo(connection: fixture.db)
+        )
+        let before = try fixture.count("delivery_items")
+        let preview = try await service.previewKeywords(
+            photoIds: [fixture.photoId], added: ["new"], removed: ["old"])
+        #expect(try fixture.count("delivery_items") == before)
+        let item = try #require(preview.items.first)
+        #expect(item.keywords == ["new"])
+        #expect(item.preview?.dirtyFields == [.keywords])
+        #expect(item.xmpStatus == "pending")
+        #expect(fixture.xmp.writeCalls.isEmpty)
+
+        _ = try await service.applyKeywordDelta(
+            photoIds: [fixture.photoId], added: ["new"], removed: ["old"])
+        #expect(try fixture.count("delivery_items") == before + 1)
+        let queued = try #require(try fixture.item())
+        #expect(queued.attributes["keywords_mode"]?.stringValue == "delta")
+        #expect(queued.keywordList == ["new"])
+        #expect(fixture.xmp.writeCalls.isEmpty)
+    }
+
+    @Test("K0 delta：连续入队累积 added，后一批不丢前一批")
+    func keywordDeltaAccumulates() async throws {
+        let fixture = try MutationFixture()
+        defer { fixture.cleanup() }
+        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["base"])
+
+        _ = try await fixture.mutations.queueKeywordDelta(
+            sessionId: fixture.sessionId, photoId: fixture.photoId,
+            added: ["A"], removed: [], owned: [:])
+        _ = try await fixture.mutations.queueKeywordDelta(
+            sessionId: fixture.sessionId, photoId: fixture.photoId,
+            added: ["B"], removed: [], owned: [:])
+
+        let item = try #require(try fixture.item())
+        #expect(item.attributes["keywords_added"]?.arrayElements?.compactMap(\.stringValue) == ["A", "B"])
+        #expect(item.keywordList == ["base", "A", "B"])
+
+        let items = try fixture.writeback.getItems(sessionId: fixture.sessionId, module: "metadata")
+        _ = try await fixture.writeback.execute(
+            sessionId: fixture.sessionId, module: "metadata", items: items)
+        #expect(fixture.xmp.writeCalls.last?.keywords == ["base", "A", "B"])
+    }
+
+    @Test("K0 delta：归一化后无变化返回 nil，不建交付行")
+    func keywordDeltaNoChange() async throws {
+        let fixture = try MutationFixture()
+        defer { fixture.cleanup() }
+        fixture.xmp.attributes = MetadataWriteAttributes(keywords: ["Bride"])
+
+        let queued = try await fixture.mutations.queueKeywordDelta(
+            sessionId: fixture.sessionId,
+            photoId: fixture.photoId,
+            added: [" bride "],
+            removed: [],
+            owned: [:]
+        )
+        #expect(queued == nil)
+        #expect(try fixture.deliveryRepo.get(fixture.xmpPath) == nil)
+    }
+}
+
+
+@Suite("K0 keyword suggestions")
+struct KeywordSuggestionTests {
+    @Test("会话内关键词/相机建议；1 个汉字也可命中")
+    func suggestsKeywordsAndCameraInSession() throws {
+        let db = try DBConnection(path: ":memory:")
+        defer { db.close() }
+        try db.exec(SchemaCurrent.createSQL)
+        _ = try db.prepare("""
+            INSERT INTO sessions (id, name, status, created_at, updated_at)
+            VALUES ('s', '', 'draft', 't', 't')
+            """).run([])
+        _ = try db.prepare("""
+            INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at)
+            VALUES ('p1', 's', '/p1.jpg', 'p1.jpg', 't', 't')
+            """).run([])
+        _ = try db.prepare("""
+            INSERT INTO photo_metadata_cache
+              (photo_id, session_id, camera_make, keywords, cached_at, updated_at)
+            VALUES ('p1', 's', 'Canon', '["婚礼|仪式","Bride"]', 't', 't')
+            """).run([])
+
+        let query = PhotoFilterQuery(connection: db)
+        let keyword = try query.suggest("s", keyword: "婚")
+        #expect(keyword.contains { $0.field == "keyword" && $0.values.contains("婚礼|仪式") })
+
+        let camera = try query.suggest("s", keyword: "Can")
+        #expect(camera.first?.field == "camera_make")
+        #expect(camera.first?.values.contains("Canon") == true)
+
+        let none = try query.suggest("s", keyword: "不存在的词")
+        #expect(none.allSatisfy { $0.values.isEmpty })
+    }
+}
+@Suite("K0 KeywordPlanner")
+struct KeywordPlannerTests {
+    @Test("归一化/大小写去重保留首次拼写")
+    func normalizeAndUnique() {
+        #expect(KeywordNormalizer.normalize("  Bride   Smith ") == "Bride Smith")
+        #expect(KeywordNormalizer.normalize("   ") == nil)
+        #expect(KeywordNormalizer.unique(["Bride", "bride", "BRIDE", "Groom"]) == ["Bride", "Groom"])
+    }
+
+    @Test("delta：保留生成词、删除手动词、新增去重")
+    func planDelta() {
+        let plan = KeywordPlanner.plan(
+            existing: ["Bride", "人物A", "Old"],
+            added: ["New", "new"],
+            removed: ["old", "人物A"],
+            owned: [KeywordNormalizer.fold("人物A"): [.faceKeyword]]
+        )
+        #expect(plan.after == ["Bride", "人物A", "New"])
+        #expect(plan.blocked.map(\.keyword) == ["人物A"])
+        #expect(plan.added == ["New"])
+        #expect(plan.removed == ["Old"])
+    }
+
+    @Test("层级词原样保留，不展开父级")
+    func hierarchicalKeywordIsLiteral() {
+        let plan = KeywordPlanner.plan(
+            existing: [], added: ["婚礼|仪式"], removed: [], owned: [:])
+        #expect(plan.after == ["婚礼|仪式"])
     }
 }

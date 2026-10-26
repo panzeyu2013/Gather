@@ -8,7 +8,7 @@
 // - cancelAnalysis（fkw.cancel_analysis）：只取消本会话的 faceAnalyze job，
 //   其它会话/其它类型不受影响；裸 sessionId 走 INVALID_PARAM。
 //
-// 夹具：内存 SchemaV1 库 + 真实 FaceKwService / JobService / SessionRepo；
+// 夹具：内存 SchemaCurrent 库 + 真实 FaceKwService / JobService / SessionRepo；
 // 不写文件、不跑推理（三个被测方法都不需要模型或写回提供者），每个用例独立
 // 新建库与 service，不共享全局状态。JobService 不 start()，避免后台看门狗
 // 线程；queued job 的取消不需要调度器参与。

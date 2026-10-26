@@ -5,21 +5,18 @@
 // 独立 library target 的原因见 docs/module-split-map-v2.md §5.2：
 // - 普通 target，不用 @testable（对 -enable-testing 无隐性依赖）；
 // - public API 便于 gather-app 的 GatherAppTests 将来复用（package 访问级跨 package 不可用）。
-// 全部 fixture 只调用 GatherPersistence 的 public API（DBConnection / DBStatement / SchemaV1）。
+// 全部 fixture 只调用 GatherPersistence 的 public API（DBConnection / DBStatement / SchemaCurrent）。
 
 import Foundation
 import GatherPersistence
 
-/// 打开测试用内存库：**纯 SchemaV1**（Cut 2 / S5c-2b-3b-2b-3；Cut 6 统一命名）。
+/// 打开测试用内存库：**当前 schema 形态**。
 ///
-/// 只执行 SchemaV1.sql（43 表一次成型，user_version=1）。旧迁移链
-/// （DBConnection + MigrationRunner 双入口、SchemaV1Transition）已删除：
-/// 旧表（metadata_outbox / writeback_items）与 sessions 3 列不再是任何测试的夹具形态。
-/// 本函数是 core/app 测试唯一的建库入口（Cut 6 把易误解的旧名统一为
-/// makeTestDB，并合并了临时别名层）。
+/// 不写 user_version（夹具不参与版本门禁，版本由 Database.open 测）。
+/// 本函数是 core/app 测试唯一的建库入口。
 public func makeTestDB() throws -> DBConnection {
     let db = try DBConnection(path: ":memory:")
-    try db.exec(SchemaV1.sql)
+    try db.exec(SchemaCurrent.ddl)
     return db
 }
 

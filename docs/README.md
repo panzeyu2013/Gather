@@ -23,12 +23,12 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 
 ## 架构一句话
 
-**SwiftUI 页面 → 15 个域 API（104 个类型化方法，`AppServices` 注入）→ 8 个
+**SwiftUI 页面 → 16 个域 API（112 个类型化方法，`AppServices` 注入）→ 8 个
 SwiftPM target**：`GatherProtocol`（值类型/协议/错误码）、`GatherPersistence`
-（SchemaV1/Database/仓储）、`GatherDelivery`（交付引擎）、`GatherAnalysis`
+（SchemaCurrent/Database/仓储）、`GatherDelivery`（交付引擎）、`GatherAnalysis`
 （聚类/人脸/图像）、`GatherApplication`（服务与任务）、`GatherUI`（页面/状态层）、
-`GatherHost`（组合根/Live API）、`GatherApp`（入口）。SQLite（WAL，SchemaV1 43 表 /
-373 列 / user_version=2）为唯一持久层，
+`GatherHost`（组合根/Live API）、`GatherApp`（入口）。SQLite（WAL，SchemaCurrent 44 表 /
+383 列 / user_version=3）为唯一持久层，
 Vision/ImageIO/RAW 解码负责图像，`JobService` 承载可恢复后台任务，
 `DeliveryCoordinator` 负责可靠写回。无 Node.js、无 Electron、无浏览器渲染层、
 无本地 HTTP 服务。
@@ -36,9 +36,9 @@ Vision/ImageIO/RAW 解码负责图像，`JobService` 承载可恢复后台任务
 Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRouter` /
 `NativeCommandClient`；历史命令映射见 [api-migration-map.md](archive/cuts/api-migration-map.md)。
 
-> 当前基线（2026-10-24 采样，R1–R9 整改后）：8 个功能 target、Schema **43 表 / 373 列 / 69 索引 / 62 外键（user_version=2）**、
-> core **1,166 tests / 173 suites**、app **650 tests / 74 suites**、en 1,337 键 / zh 9 键；无 Router、无字符串命令。
-> V1→V2 为线性迁移（先一致性备份，再事务补版本/列）；未知形态默认 fail-closed，仅显式重置策略才改名重建。
+> 当前基线（2026-10-26 合并后采样）：8 个功能 target、Schema **44 表 / 383 列 / 72 索引 / 65 外键（user_version=3）**、
+> core **1,230 tests / 182 suites**、app **683 tests / 77 suites**、en 1,494 键 / zh 9 键；无 Router、无字符串命令。
+> 只有当前 schema 可打开；V1/V2 迁移链已删除，旧版本/未知形态默认 fail-closed，仅显式重置策略才归档重建。
 > **12 道** strict 门禁全绿；ratchet **54/228/0/0/0**（采样命令见 DEVELOPMENT.md）。
 
 ## 核心工作流

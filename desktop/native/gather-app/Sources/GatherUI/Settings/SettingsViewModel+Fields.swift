@@ -184,6 +184,17 @@ extension SettingsViewModel {
                 // 这类提示让用户无法确认自己改的是哪一项。
                 self.notice = LocalizedText("已保存 %@", params: [Self.label(for: key, with: l10n)])
                 self.errorMessage = nil
+                // 门限/policy 也进指纹：变更后卡片必须重取 summary，否则会显示
+                // “可应用”而点下去才报 TRIAGE_STALE。
+                let triageSettingKeys: Set<String> = [
+                    "triage_enabled", "triage_auto_generate", "triage_policy",
+                    "triage_keep_confidence_min", "triage_reject_confidence_min",
+                    "triage_min_executable_confidence",
+                ]
+                if triageSettingKeys.contains(key) {
+                    NotificationCenter.default.post(
+                        name: GatherAppNotification.settingsChanged, object: nil)
+                }
                 if Self.needsModelStatusRefresh(for: key) {
                     self.modelStatus = try? await settingsAPI.mlStatus()
                 }

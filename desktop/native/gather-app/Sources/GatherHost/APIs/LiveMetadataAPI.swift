@@ -1,11 +1,11 @@
 // desktop/native/gather-app/Sources/GatherHost/APIs/LiveMetadataAPI.swift
-// Cut 1 / B6a + Cut 2 / S5c-2b-3b-2b-2：MetadataAPI 的 Live 实现（7 个方法）。
+// MetadataAPI 的 Live 实现（7 个方法）。
 //
-// 对应命令（7 条）：metadata.get / set / batch_set / conflicts / orphans /
-// resolve_conflict / resolve_orphan。
+// 对应命令（7 条）：metadata.conflicts / orphans / resolve_conflict /
+// resolve_orphan，以及 K0 的 preview / apply_keywords / retry_keyword_writeback。
 //
 // 依赖（2b-2 起不再持有 MetadataSyncCoordinator；P1-2 起写路径收口）：
-// - metadataService：get/set/batchSet（缓存指纹、可写字段白名单、侧车分组串行）；
+// - metadataService：关键词预览/应用/重试（缓存指纹、可写字段白名单、侧车分组串行）；
 // - deliveryRepo：**只读**查询（conflictDeliveries / items / orphanDeliveries /
 //   get / metadataSummary），本文件不再调用它的任何写方法；
 // - stateWriter：交付状态与交付项写入的唯一入口（acceptExternalState /
@@ -15,15 +15,14 @@
 //   两个动作，收窄为只读属性 + 三文件操作）。
 //
 // 校验归属：
-// - MetadataGetInput 已在输入类型完成 photoIds 非空、逐项非空白、去重与
-//   10000 上限；MetadataSetInput / MetadataBatchSetInput 完成 photoId 与
-//   updates 非空校验；resolveConflict / resolveOrphan 的 choices 非空、未知
-//   字段、action 枚举也在输入类型收敛（G5/G6）。本实现不重复解析 JSON；
+// - resolveConflict / resolveOrphan / applyKeywords / retryKeywordWriteback
+//   的 choices 非空、未知字段、action 枚举在输入类型收敛（G5/G6）；本实现不
+//   重复解析 JSON；
 // - 只接收 sessionId 的 conflicts 在这里补"非空白 + 长度上限"校验（对齐
 //   LiveAPIInput.requireSessionId），失败统一 GatherError.invalidParameter；
-// - 4 个破坏性入口只接收 Confirmed<T>（set / batchSet / resolveConflict /
-//   resolveOrphan），内部固定传服务层语义：类型层面已经保证"没有确认弹窗
-//   就写不出调用点"，实现不自行补确认、也不再解析 Bool（D-011）。
+// - 破坏性入口只接收 Confirmed<T>（resolveConflict / resolveOrphan /
+//   applyKeywords / retryKeywordWriteback），类型层面保证"没有确认弹窗就写不出
+//   调用点"，实现不自行补确认、也不再解析 Bool（D-011）。
 //
 // 冲突/孤儿的领域判定（D-089 / 2b-2）：
 // - 冲突是**交付级**事实：deliveries.status = conflict 且该交付经
@@ -91,12 +90,6 @@ public final class LiveMetadataAPI: MetadataAPI {
 
     // MARK: - 读取
 
-    public func get(_ input: MetadataGetInput) async throws -> [String: MetadataTags] {
-        try await mapAsync {
-            try await metadataService.getMetadata(photoIds: input.photoIds)
-        }
-    }
-
     public func conflicts(_ sessionId: String) async throws -> [MetadataConflict] {
         let id = try LiveAPIInput.requireSessionId(sessionId)
         return try await mapAsync {
@@ -126,22 +119,6 @@ public final class LiveMetadataAPI: MetadataAPI {
 
     public func orphans() async throws -> [MetadataOrphan] {
         try map { try listOrphans() }
-    }
-
-    // MARK: - 写入（Confirmed<T>）
-
-    public func set(_ input: Confirmed<MetadataSetInput>) async throws -> MetadataTags {
-        let payload = input.value
-        return try await mapAsync {
-            try await metadataService.setMetadata(photoId: payload.photoId, tags: payload.tags)
-        }
-    }
-
-    public func batchSet(_ input: Confirmed<MetadataBatchSetInput>) async throws -> BatchMetadataResult {
-        let updates = input.value.updates.map { (photoId: $0.photoId, tags: $0.tags) }
-        return try await mapAsync {
-            try await metadataService.batchSet(updates: updates)
-        }
     }
 
     // MARK: - 冲突/孤儿处置（Confirmed<T>）
@@ -328,7 +305,11 @@ public final class LiveMetadataAPI: MetadataAPI {
             let attributes = item.attributes
             if attributes["rating"] != nil { hasRating = true }
             if attributes["label"] != nil { hasLabel = true }
-            if !item.keywordList.isEmpty { hasKeywords = true }
+            // 只删词的 delta 项 keywordList（after）可能为空，仍必须参与冲突裁决。
+            if !item.keywordList.isEmpty
+                || attributes["keywords_mode"]?.stringValue == "delta" {
+                hasKeywords = true
+            }
         }
         var fields: [MetadataField] = []
         if hasRating { fields.append(.rating) }
@@ -405,11 +386,17 @@ public final class LiveMetadataAPI: MetadataAPI {
             var merged = item.attributes
             if fields.contains(.rating) { merged.removeValue(forKey: "rating") }
             if fields.contains(.label) { merged.removeValue(forKey: "label") }
+            if fields.contains(.keywords) {
+                // 接受远程 = 以盘上词表为新基线；必须同时移除 delta 意图，
+                // 否则同一 item 重放时会按 keywords_added/remove 再合并一次，
+                // 把用户刚接受的远程删除词“复活”。
+                merged.removeValue(forKey: MetadataMutationService.keywordsModeKey)
+                merged.removeValue(forKey: "keywords_added")
+                merged.removeValue(forKey: "keywords_remove")
+                keywordUpdates.append((item.id, remote.keywords ?? []))
+            }
             if merged != item.attributes {
                 attributeUpdates.append((item.id, merged))
-            }
-            if fields.contains(.keywords) {
-                keywordUpdates.append((item.id, remote.keywords ?? []))
             }
         }
         // 交付项投影的写也归 writer（先属性、后关键词；两次批量写的事务边界不变）。
@@ -482,6 +469,55 @@ public final class LiveMetadataAPI: MetadataAPI {
         guard stillOrphan else {
             throw GatherError(
                 code: .XMP_EXTERNAL_EDIT_CONFLICT, underlying: "no-longer-orphan")
+        }
+    }
+
+    // MARK: - K0 关键词
+
+    public func preview(_ input: MetadataPreviewInput) async throws -> WritebackPreview {
+        try await mapAsync {
+            let conflicts: Set<String>
+            if let sessionId = try metadataService.sessionId(forPhotoIds: input.photoIds) {
+                conflicts = Set(
+                    try deliveryRepo.conflictDeliveries(sessionId: sessionId).map(\.xmpPath))
+            } else {
+                conflicts = []
+            }
+            return try await metadataService.previewKeywords(
+                photoIds: input.photoIds,
+                added: input.addedKeywords,
+                removed: input.removedKeywords,
+                conflictedXmpPaths: conflicts
+            )
+        }
+    }
+
+    public func applyKeywords(
+        _ input: Confirmed<MetadataKeywordApplyInput>
+    ) async throws -> MetadataKeywordApplyResult {
+        let payload = input.value
+        return try await mapAsync {
+            let result = try await metadataService.applyKeywordDelta(
+                photoIds: payload.photoIds,
+                added: payload.addedKeywords,
+                removed: payload.removedKeywords
+            )
+            guard let sessionId = try metadataService.sessionId(forPhotoIds: payload.photoIds) else {
+                throw GatherError.invalidParameter(field: "photoIds", reason: "photos not found")
+            }
+            let status = try deliveryRepo.metadataSummary(sessionId: sessionId, module: .metadata)
+            return MetadataKeywordApplyResult(result: result, status: status)
+        }
+    }
+
+    public func retryKeywordWriteback(
+        _ input: Confirmed<SessionReference>
+    ) async throws -> MetadataKeywordApplyResult {
+        let sessionId = input.value.sessionId
+        return try await mapAsync {
+            let result = try await metadataService.retryKeywordWriteback(sessionId: sessionId)
+            let status = try deliveryRepo.metadataSummary(sessionId: sessionId, module: .metadata)
+            return MetadataKeywordApplyResult(result: result, status: status)
         }
     }
 

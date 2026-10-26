@@ -360,6 +360,8 @@ extension FaceKwService {
                 if clearOnEmpty {
                     try faceRepo.clearClusterMembers(sessionId: sessionId)
                     try faceRepo.deleteUnboundClusters(sessionId: sessionId)
+                    // 无脸结果 = 簇重建；人工拆分约束随旧簇失效，必须一起清。
+                    try faceRepo.deleteConstraints(sessionId: sessionId)
                 }
                 try faceRepo.upsertClusterSignature(sessionId: sessionId, signature: signature)
                 return
@@ -418,6 +420,18 @@ extension FaceKwService {
                     FaceClusterInput(label: binding.roleName, members: [])
                 ])[0]
                 try faceRepo.updateBinding(clusterId: orphan, roleName: binding.roleName, keywords: binding.keywords)
+            }
+            // P0 / F0：人工拆分/合并约束在绑定迁移之后、写签名之前应用。
+            // 约束冲突只记日志，绝不因陈旧约束回滚本次聚类结果。
+            do {
+                // 嵌套事务退化为 SAVEPOINT：约束应用失败只回滚约束写入，
+                // 本次聚类结果仍按原计划提交，不会留下半套约束状态。
+                _ = try transactions.transaction {
+                    try applyClusterConstraints(sessionId: sessionId)
+                }
+            } catch {
+                GatherLogger.log(
+                    "Face constraints apply failed (analysis kept): \(error)", level: .warn)
             }
             try faceRepo.upsertClusterSignature(sessionId: sessionId, signature: signature)
             newClusterIds = ids

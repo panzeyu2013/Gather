@@ -13,7 +13,11 @@ extension CullingViewModel {
             assets[index].state = byId[assets[index].photo.id]!
         }
         pageVersion += 1
-        self.page = CullingPage(assets: assets, nextRowId: page.nextRowId, total: page.total)
+        self.page = CullingPage(
+            assets: assets,
+            total: page.total,
+            nextCursor: page.nextCursor
+        )
     }
 
 
@@ -109,6 +113,7 @@ extension CullingViewModel {
     /// 不同相似度组的资产，避免跳到当前照片之前。
     private func jumpToNextGroup(after group: CullingGroup) async {
         if scopeMode == .similarityGroup {
+            await loadSimilarityGroupsIfNeeded()
             let groups = similarityGroups
             guard let index = groups.firstIndex(where: { $0.groupId == group.groupId }),
                   let next = groups.dropFirst(index + 1).first else { return }
@@ -174,14 +179,21 @@ extension CullingViewModel {
         }
     }
 
-    public func batchUpdate(patch: CullingUpdatePatch) async {
-        guard !selectedPhotoIds.isEmpty else {
+    public func batchUpdate(
+        patch: CullingUpdatePatch,
+        targets: Set<String>? = nil
+    ) async {
+        // commit 传 visibleSelection；直接调用时再与当前已加载页求交，
+        // 防止分页/筛选后隐藏的选择被批量写入。
+        let loaded = Set(page?.assets.map { $0.photo.id } ?? [])
+        let requested = targets ?? selectedPhotoIds
+        let photoIds = requested.intersection(loaded).sorted()
+        guard !photoIds.isEmpty else {
             errorMessage = CommandError.localized("请选择至少一张照片")
             return
         }
         do {
             // 选择集与 before 都在 await 前快照：等待期间用户仍可能改选择/触发刷新。
-            let photoIds = selectedPhotoIds.sorted()
             let beforeByPhoto = Dictionary(
                 uniqueKeysWithValues: (page?.assets ?? []).compactMap { asset in
                     photoIds.contains(asset.photo.id)
@@ -225,16 +237,26 @@ extension CullingViewModel {
     /// 无选中时作用于当前照片；U 待定不前进，其余决策按自动前进开关前进。
     public func commit(patch: CullingUpdatePatch, shouldAdvance: Bool = true) async {
         guard !isLoading else { return }
-        let targets = selectedPhotoIds.isEmpty
+        // P0：只提交当前已加载页里仍可见的选择；筛选/排序后隐藏的旧选择
+        // 不能因为快捷键命中而写到不可见照片。
+        let loaded = Set(page?.assets.map { $0.photo.id } ?? [])
+        let visibleSelection = selectedPhotoIds.intersection(loaded)
+        if !selectedPhotoIds.isEmpty, visibleSelection.isEmpty {
+            // 选择仍在但已不可见（筛选/刷新/翻页后）：绝不回退到当前照片，
+            // 否则会把 P/X 写进用户根本没选中的照片（宁可漏杀不可错杀）。
+            errorMessage = CommandError.localized("所选照片不在当前视图内，请重新选择")
+            return
+        }
+        let targets = visibleSelection.isEmpty
             ? (currentAsset.map { [$0.photo.id] } ?? [])
-            : Array(selectedPhotoIds)
+            : Array(visibleSelection)
         guard !targets.isEmpty else { return }
         if targets.count == 1 {
             guard let asset = page?.assets.first(where: { $0.photo.id == targets[0] }) else { return }
             let nextId = shouldAdvance && autoAdvance ? nextPhotoId(after: targets[0]) : nil
             await update(asset, patch: patch, nextPhotoId: nextId)
         } else {
-            await batchUpdate(patch: patch)
+            await batchUpdate(patch: patch, targets: visibleSelection)
         }
     }
     public func nextPhotoId(after photoId: String) -> String? {
@@ -253,9 +275,21 @@ extension CullingViewModel {
         guard let assets = page?.assets, !assets.isEmpty else { return }
         if let current = currentPhotoId, let index = assets.firstIndex(where: { $0.photo.id == current }) {
             if index < assets.count - 1 {
-                currentPhotoId = assets[index + 1].photo.id
-            } else if page?.nextRowId != nil {
-                Task { await loadMore() }
+                let next = assets[index + 1].photo.id
+                currentPhotoId = next
+                selectedPhotoIds = [next]
+            } else if hasMore {
+                // 末张：加载下一页后真正前进到新页首张（否则停在末张，看起来像卡住）。
+                Task {
+                    await loadMore()
+                    guard let assets = page?.assets,
+                          let current = currentPhotoId,
+                          let index = assets.firstIndex(where: { $0.photo.id == current }),
+                          index + 1 < assets.count
+                    else { return }
+                    currentPhotoId = assets[index + 1].photo.id
+                    selectedPhotoIds = [assets[index + 1].photo.id]
+                }
             }
         } else {
             currentPhotoId = assets.first?.photo.id
@@ -265,13 +299,16 @@ extension CullingViewModel {
     public func retreatCurrent() {
         guard let assets = page?.assets, !assets.isEmpty else { return }
         if let current = currentPhotoId, let index = assets.firstIndex(where: { $0.photo.id == current }) {
-            currentPhotoId = assets[max(0, index - 1)].photo.id
+            let previous = assets[max(0, index - 1)].photo.id
+            currentPhotoId = previous
+            selectedPhotoIds = [previous]
         } else {
             currentPhotoId = assets.first?.photo.id
         }
     }
 
     public func undo() async {
+        triageApplied = false
         // 唯一规则：撤销栈顶 = MAX(id) 未撤销（见 undoOperation）。
         guard let operation = undoOperation else {
             notice = CullingNotice("没有可撤销的挑片操作")
@@ -281,6 +318,7 @@ extension CullingViewModel {
     }
 
     public func redo() async {
+        triageApplied = false
         // 唯一规则：重做栈顶 = MIN(id) 已撤销（见 redoOperation）。
         guard let operation = redoOperation else {
             notice = CullingNotice("没有可重做的挑片操作")
@@ -308,7 +346,8 @@ extension CullingViewModel {
                 sessionId: sessionId,
                 entries: entries,
                 historyOperationId: operation.id,
-                direction: direction
+                direction: direction,
+                source: operation.id == triageHistoryOperationId ? .ai : .manual
             )
             let results = try await cullingAPI.applyHistory(input)
             applyDecisionStates(results.flatMap { $0.states })

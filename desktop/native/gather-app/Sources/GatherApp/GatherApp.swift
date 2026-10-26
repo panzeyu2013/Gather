@@ -111,7 +111,10 @@ struct GatherApp: App {
                     culling: scene.appServices.culling,
                     captureOne: scene.captureOneBridge,
                     // 4a-3a：设置页 setLanguage 只经 LanguageStore 写入。
-                    languageStore: scene.languageStore
+                    languageStore: scene.languageStore,
+                    // P0 / B0：维护域（备份/恢复/诊断）；Preview/旧调用不传时隐藏分区。
+                    maintenance: scene.appServices.maintenance,
+                    cancelPendingRestore: scene.cancelPendingRestore
                 )
             } else {
                 ProgressView(l10n("初始化中…"))

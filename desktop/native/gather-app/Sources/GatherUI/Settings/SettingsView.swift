@@ -59,7 +59,9 @@ public struct SettingsView: View {
         settings: any SettingsAPI,
         culling: any CullingAPI,
         captureOne: any CaptureOneBridging,
-        languageStore: LanguageStore
+        languageStore: LanguageStore,
+        maintenance: (any MaintenanceAPI)? = nil,
+        cancelPendingRestore: (() async -> Bool)? = nil
     ) {
         self.languageStore = languageStore
         _viewModel = State(initialValue: SettingsViewModel(
@@ -67,7 +69,9 @@ public struct SettingsView: View {
             settings: settings,
             culling: culling,
             captureOne: captureOne,
-            languageStore: languageStore
+            languageStore: languageStore,
+            maintenance: maintenance,
+            cancelPendingRestore: cancelPendingRestore
         ))
     }
 
@@ -84,6 +88,7 @@ public struct SettingsView: View {
                 settingsSection(group)
             }
             faceAnalysisSection
+            maintenanceSection
             advancedSection
         }
         .formStyle(.grouped)
@@ -101,6 +106,8 @@ public struct SettingsView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     viewModel.load()
+                    // 刷新同时重载维护清单：否则备份/恢复失败后列表无法重试。
+                    Task { await viewModel.loadMaintenance() }
                 } label: {
                     Label(l10n("刷新"), systemImage: "arrow.clockwise")
                 }
@@ -146,6 +153,8 @@ public struct SettingsView: View {
         // 对齐 C1HealthPanel.tsx：挂载时检测一次；重检走"重新检测"按钮
         // （TS checkHealth 仅挂载时 + 手动触发，12s 定时器只轮询 sync-state）。
         .task { await viewModel.checkC1Health() }
+        // P0 / B0：维护分区的备份清单（MaintenanceAPI 为 nil 时 no-op）。
+        .task { await viewModel.loadMaintenance() }
         // 对齐 C1HealthPanel.tsx：CullingAPI.syncStatus 每 12s 轮询刷新。
         .task {
             await viewModel.refreshSyncState()

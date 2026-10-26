@@ -2,7 +2,7 @@
 // Cut 3 / 3a-5（D-015）：GatherSchema —— schema 工具可执行（dump / verify）。
 // WP6b：verify 对齐 user_version=2 与完整的 43/373/69/62 数字；dump 打印当前 V2 快照。
 //
-// DDL 的唯一真相源仍在 GatherPersistence（Sources/GatherPersistence/Database/SchemaV1.swift）；
+// DDL 的唯一真相源仍在 GatherPersistence（Sources/GatherPersistence/Database/SchemaCurrent.swift）；
 // 本 target 依赖 GatherPersistence 而**不导出库**，也不复制任何 DDL 文本。
 //
 // 用法：
@@ -19,18 +19,13 @@
 import Foundation
 import GatherPersistence
 
-/// verify 钉死的不变量（与 Tests/GatherCoreTests/Database/SchemaV1Tests.swift 同源）。
+/// verify 钉死的不变量（与 Tests/GatherCoreTests/Database/SchemaCurrentTests.swift 同源）。
 private enum SchemaInvariant {
-    /// SchemaV1/V2 的表数（不含 SQLite 内部表 sqlite_*）。
-    static let tableCount = 43
-    /// 全部用户列之和（43 表逐表 pragma 累加）。
-    static let columnCount = 373
-    /// 显式索引数（sql IS NOT NULL；排除 sqlite_autoindex_*）。
-    static let explicitIndexCount = 69
-    /// 外键数（逐表 PRAGMA foreign_key_list 累加）。
-    static let foreignKeyCount = 62
-    /// 当前库版本号（PRAGMA user_version）；WP6b 起为 2。
-    static let userVersion = SchemaCatalog.production.current.rawValue
+    static let tableCount = SchemaCurrent.expectedTableCount
+    static let columnCount = SchemaCurrent.expectedColumnCount
+    static let explicitIndexCount = SchemaCurrent.expectedExplicitIndexCount
+    static let foreignKeyCount = SchemaCurrent.expectedForeignKeyCount
+    static let userVersion = SchemaCurrent.userVersion
 }
 
 /// 校验失败（携带人类可读原因；由顶层统一转成 exit 1）。
@@ -43,7 +38,7 @@ private let usage = """
 gather-schema — Gather 本地库 schema 工具（Cut 3 / 3a-5，D-015）
 
 用法：
-  gather-schema dump      打印当前 schema（V2）建库 DDL（含 PRAGMA user_version = 2）
+  gather-schema dump      打印当前 schema（V3）建库 DDL（含 PRAGMA user_version = 3）
   gather-schema verify    在内存库上重建 schema 并校验不变量：
                             \(SchemaInvariant.tableCount) 张表 / \(SchemaInvariant.columnCount) 列 /
                             \(SchemaInvariant.explicitIndexCount) 显式索引 / \(SchemaInvariant.foreignKeyCount) 外键 /
@@ -171,8 +166,8 @@ case "dump":
         writeStderr("gather-schema: dump 不接受额外参数\n\n\(usage)")
         exit(2)
     }
-    // 打印当前版本快照（V2）；末尾补一个换行，便于终端拼接。
-    let sql = SchemaCatalog.production.currentSnapshot.createSQL
+    // 打印当前 schema 建库 DDL；末尾补一个换行，便于终端拼接。
+    let sql = SchemaCurrent.createSQL
     writeStdout(sql.hasSuffix("\n") ? sql : sql + "\n")
     exit(0)
 

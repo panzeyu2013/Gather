@@ -82,7 +82,7 @@
 | 项 | 位置 | 说明 |
 |---|---|---|
 | 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（`scripts/check-no-legacy.sh` 门禁）；模块拆分为 8 个 target（Protocol/Persistence/Delivery/Analysis/Application/UI/Host/App）；2026-10-22 本机 `swift test`：gather-core **1,092 / 157 suites**，gather-app **581 / 66 suites**，exit 0 |
-| 类型化 API 16/110 | `gather-core/Sources/GatherProtocol/API/` + `gather-app/Sources/GatherHost/APIs/` | Cut 1 删除 118 条字符串命令与 Router；15 协议 / 104 方法经 `AppServices` 注入，0 处 `execute("x.y")`；命令面脚本已删除，映射表归档在 [archive/cuts/api-migration-map.md](archive/cuts/api-migration-map.md) |
+| 类型化 API 16/112 | `gather-core/Sources/GatherProtocol/API/` + `gather-app/Sources/GatherHost/APIs/` | Cut 1 删除 118 条字符串命令与 Router；合并后为 16 协议 / 112 方法（Cut 1 基线 16/110，P0 +11，Template −6，死 API −3，Maintenance +1），经 `AppServices` 注入，0 处 `execute("x.y")`；映射表归档在 [archive/cuts/api-migration-map.md](archive/cuts/api-migration-map.md) |
 | Culling 逻辑资产分页 | `gather-core/Services/CullingService.swift` | keyset 游标、首选变体谓词、total 逻辑资产（ADR-008） |
 | 阈值预计算多档 | `SimilarityService` | 主档 + T±4/T±8 档位，`precomputed` 行排除不变量 |
 | 任务化分析/写回 | `Services/JobService.swift` + executors | 租约/心跳/checkpoint/dedupeKey/取消/重试；`sim.recluster` 已任务化（ADR-024） |
@@ -92,7 +92,7 @@
 | 写回可靠性 | `DeliveryCoordinator` + `DeliveryRepo` + 纯函数 `aggregateSessionState` | `deliveries/delivery_sessions/delivery_items/delivery_intents` 单事务确认；冲突检测/备份/重试/清理（ADR-015 历史；`MetadataSyncCoordinator`、`CaptureOneSyncState` 已删，见 ADR-028） |
 | 工作区状态 | `WorkspaceStatusService` | 只读聚合、固定优先级推荐、离线 TTL（ADR-012/013） |
 | 一跳化导入 | `SessionService` / `IndexerService` | 路径不跨 IPC、`truncated_import` 标记、去重键 |
-| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 179 项错误码 + 任务/相位文案；en 1,337 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
+| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 184 项错误码 + 任务/相位文案；en 1,494 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
 | 主题与无障碍 | `GatherTheme` / RootView | 品牌令牌 + 语义字体/按钮层级/accessibilityHidden 门控 |
 | 深链/菜单/导入 | `GatherAppDelegate` | gather:// 深链、文件打开、拖拽、菜单、importCompleted 通知 |
 
@@ -109,7 +109,7 @@
 | 算法基准（`gather-core-benchmarks`） | 2 万/5 万两档全过（dHash、embedding、LSH）；Cut 5 增 10k 合成人脸显式档 `--face-10k`（聚类 + 批量匹配） |
 | 聚类对账 | 25k 合成 8 簇 eps=0.6：ARI=1.0000 / NMI=1.0000 / 加速 3.1x（unit 级） |
 | （历史）HNSW 质量门禁 | recall@1 ≥ 0.9，查询 ≈0.3ms/次，增量插入召回波动 −0.008（HNSW 已删除，该指标不再维护） |
-| SchemaV1 / 历史快照 | `SchemaV1.swift`：43 表 / 373 列 / 69 索引 / 62 外键 / `user_version=2`（V1 快照为 1），空库由 `Database.open(at:)` 一次建齐；旧 35 版快照归档为 [schema.snapshot-v35.json](archive/schema.snapshot-v35.json)（历史，不参与门禁） |
+| SchemaCurrent / 历史快照 | `SchemaCurrent.swift`（唯一 DDL）：当前 **44 表 / 383 列 / 72 索引 / 65 外键 / `user_version=3`**；空库由 `Database.open(at:)` 一次建齐；V1/V2 迁移链已删除，旧版本默认 fail-closed（显式 reset 才归档重建）；旧 35 版快照归档为 [schema.snapshot-v35.json](archive/schema.snapshot-v35.json)（历史，不参与门禁） |
 | 人脸算法基线（**合成标注集**，单 seed） | 门槛 0→0.5：低质量但方向正确的样本 F1 0.7273→0.6977（25% 进噪声、**跨身份误聚 0**）、低质量桥接点使同人分裂（R 1.0→0.5238）；ARI 用两种等价实现互证 |
 | margin 生产路径曲线（49 查询 / 6 人库） | 0 → 错绑 3；**0.01（出货默认）→ 错绑 2 + 歧义 2**；0.04 → 错绑 0（覆盖 0.857）；同覆盖率精度 0.9655→1.0000 |
 
@@ -280,6 +280,7 @@ FaceMatcher 批量匹配；无模型，不测检测/嵌入）。合成数据驱�
 | 2026-09-30 | unit | — | 深审 D1–D8 修复 + 探针验收 | core 986/987* / app 298 全绿 | 见 [深审修复台账](archive/reviews/deep-review-2026-09-30-fixes.md)：导出失败回滚、孤儿恢复重取、清理 revision CAS、防抖取消、waitForIdle 超时、连接代数、模型整体回滚、参数上界；审查员 8 个探针已收入仓库作验收测试；`*` 唯一失败为沙箱环境性用例 |
 | 2026-09-29 | unit | — | 深度审查（D01–D12）修复 | core 953/954 / app 268 全绿 | 交付真实性（D01–D03）、图库异步边界（D04–D07）、目标照片定位（D08）、统一输出计划（D09）、入口意图（D10）、菜单兜底与人物入口（D11–D12）见 [第三轮审计台账 §0.3](archive/reviews/ui-review-2026-09-29-round3-audit.md)；仅剩原生人工验收 |
 | 2026-10-22 | unit | — | Cut 0–6 收口（破坏性重构） | core **1,092/157** + app **581/66** 全绿 | 7 target、SchemaV1 43 表/373 列、Router/118 命令删除、HNSW/ClusteringImpact 删除；当前账本见 [refactor-progress.md](refactor-progress.md) |
+| 2026-10-25 | unit | — | P0 五工作流 + Schema V3 | core **1,252/187** + app **687/78** 全绿 | 17 协议/121 方法、45 表/389 列/72 索引/65 外键（user_version=3）、8 道 strict 门禁；见 [P0 验收报告](reviews/p0-completion-2026-10-25.md) |
 
 ---
 

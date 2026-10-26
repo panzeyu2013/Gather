@@ -30,17 +30,59 @@ package struct SessionWorkspaceFactory {
     /// 等方法；control/gallery/similarity 见 SessionControlView 与 RootView 的
     /// 单槽创建点。7 个 VM 的 sessionId 必须全部等于入参（测试固定）。
     package func makeWorkspace(sessionId: String) -> SessionWorkspace {
-        SessionWorkspace(
+        let cullingViewModel = CullingViewModel(
             sessionId: sessionId,
-            culling: CullingViewModel(
-                sessionId: sessionId,
-                culling: deps.culling,
-                navigation: deps.navigation,
-                metadata: deps.metadata,
-                jobs: deps.job,
-                quality: deps.quality,
-                captureOne: deps.captureOne
-            ),
+            culling: deps.culling,
+            navigation: deps.navigation,
+            metadata: deps.metadata,
+            jobs: deps.job,
+            quality: deps.quality,
+            captureOne: deps.captureOne,
+            photo: deps.photo
+        )
+        // SettingsAPI 是 async；先构造 VM（默认开），再异步读取 Beta 开关。
+        // 已打开会话内设置变更由 settingsChanged 通知触发重读。
+        let settings = deps.settings
+        cullingViewModel.triageEnabledProvider = {
+            do {
+                let key = try SettingsKey("triage_enabled")
+                return try await settings.get(key) == "1"
+            } catch {
+                GatherLogger.log("read triage_enabled failed: \(error)", level: .warn)
+                return false
+            }
+        }
+        cullingViewModel.triageAutoGenerateProvider = {
+            do {
+                let key = try SettingsKey("triage_auto_generate")
+                return try await settings.get(key) == "1"
+            } catch {
+                GatherLogger.log("read triage_auto_generate failed: \(error)", level: .warn)
+                return false
+            }
+        }
+        cullingViewModel.gridDefaultsProvider = {
+            var sortRaw = "import"
+            var densityRaw = "m"
+            do {
+                sortRaw = try await settings.get(SettingsKey("grid_default_sort"))
+            } catch {
+                GatherLogger.log("read grid_default_sort failed: \(error)", level: .warn)
+            }
+            do {
+                densityRaw = try await settings.get(SettingsKey("grid_density"))
+            } catch {
+                GatherLogger.log("read grid_density failed: \(error)", level: .warn)
+            }
+            return (sortRaw, densityRaw)
+        }
+        Task { @MainActor in
+            await cullingViewModel.refreshTriageSettings()
+            await cullingViewModel.refreshGridDefaults()
+        }
+        return SessionWorkspace(
+            sessionId: sessionId,
+            culling: cullingViewModel,
             duplicates: DuplicatesViewModel(
                 sessionId: sessionId,
                 duplicate: deps.duplicate,

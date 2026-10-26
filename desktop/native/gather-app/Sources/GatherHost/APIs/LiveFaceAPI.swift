@@ -68,6 +68,23 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
         return try map { try faceKwService.getClusters(sessionId: id) }
     }
 
+    // MARK: - P0 / F0：拆分与复核
+
+    public func split(_ input: Confirmed<FaceSplitInput>) async throws -> FaceSplitResult {
+        let value = input.value
+        return try map {
+            try faceKwService.splitCluster(
+                sessionId: value.sessionId,
+                clusterId: Int64(value.clusterId),
+                memberIds: value.memberIds.map(Int64.init)
+            )
+        }
+    }
+
+    public func review(_ input: FaceReviewInput) async throws -> FaceReviewPage {
+        try map { try faceKwService.review(input) }
+    }
+
     // MARK: - 绑定 / 合并 / 成员
 
     public func bind(_ input: FaceBindInput) async throws {

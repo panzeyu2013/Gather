@@ -90,7 +90,7 @@ public final class AppRuntime: @unchecked Sendable {
     ///   的连接上“看起来启动成功”）。
     /// - 返回值只用于装配期自检与测试断言，生产调用方可忽略。
     @discardableResult
-    public func start() throws -> [AnalysisJobType] {
+    public func start(replayPendingDeliveries: Bool = true) throws -> [AnalysisJobType] {
         lock.lock()
         switch lifecycle {
         case .stopped:
@@ -108,7 +108,11 @@ public final class AppRuntime: @unchecked Sendable {
             lock.unlock()
             // jobService 已在运行：此时才允许回放（回放可能补 DB 段并触发文件阶段，
             // 不得早于调度器启动，否则写回执行器还没就绪）。
-            scheduleDeliveryReplay()
+            // 恢复备份后的首次启动必须关闭自动回放：备份里的旧 intent 可能覆盖
+            // 比备份更新的 XMP（B0 §3.5）。
+            if replayPendingDeliveries {
+                scheduleDeliveryReplay()
+            }
             return types
         }
     }

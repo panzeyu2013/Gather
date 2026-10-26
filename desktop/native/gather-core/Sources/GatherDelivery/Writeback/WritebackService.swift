@@ -243,9 +243,9 @@ public final class WritebackService: @unchecked Sendable {
     /// 按需执行入口（P1-9）：加载本会话/模块下 **pending + failed** 交付项，
     /// 原样交给 `execute` 完成写盘与状态推进（不复制任何写盘/租约逻辑）。
     ///
-    /// 手动元数据队列（module=metadata）在 setMetadata / batchSet 入队成功后经宿主
-    /// 注入的闭包调用本入口；失败的项由 execute 落 failed（可重试），下次调用
-    /// executePending 会连同 pending 一起再次消费。
+    /// 关键词队列（module=metadata）在 applyKeywords / retryKeywordWriteback 成功
+    /// 后经宿主注入的闭包调用本入口；失败的项由 execute 落 failed（可重试），下次
+    /// 调用 executePending 会连同 pending 一起再次消费。
     public func executePending(sessionId: String, module: String) async throws -> WritebackResult {
         let deliveryModule = try mapModule(module)
         var items: [WritebackItem] = []

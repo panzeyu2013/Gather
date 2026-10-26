@@ -21,12 +21,6 @@ extension SettingsViewModel {
     }
     // MARK: - 静态配置表（对齐 TS GROUPS / 滑杆段）
 
-    /// TS: Math.max(1, Math.min(8, cpuCount - 1))。
-    public static var maxConcurrency: Double {
-        let cores = ProcessInfo.processInfo.processorCount
-        return Double(max(1, min(8, cores - 1)))
-    }
-
     /// 数值文案（设置校验提示里的 min/max）：整数不带小数，其余保留两位。
     /// Cut 4 / 4b-2g：模板经传入的 L10n 渲染（`%.2f` 本身保留——这是机器值，
     /// 不做本地化数字样式；zh/en 小数点一致，输出逐字不变）。
@@ -59,7 +53,6 @@ extension SettingsViewModel {
         "face_embedding_model_path",
         "face_embedding_model_version",
         "model_download_url",
-        "face_thumbnail_dir",
         "disk_cache_dir",
         "ui_language",
     ]
@@ -121,33 +114,9 @@ extension SettingsViewModel {
     public static let settingGroups: [SettingGroup] = [
         SettingGroup(id: "cache", titleZh: "缓存", fields: [
             SettingField(
-                key: "memory_cache_size", type: .number(min: 1, max: nil),
-                zhLabel: "内存缓存条目数",
-                zhDesc: "内存中缓存的缩略图最大数量"
-            ),
-            SettingField(
-                key: "memory_cache_max_size_mb", type: .number(min: 32, max: 2048),
-                zhLabel: "内存缓存上限 (MB)",
-                zhDesc: "缩略图和预览内存缓存的最大空间，防止高分辨率图片占满内存"
-            ),
-            SettingField(
                 key: "disk_cache_dir", type: .text,
                 zhLabel: "磁盘缓存目录",
                 zhDesc: "磁盘缓存存储路径（留空使用默认）"
-            ),
-            SettingField(
-                key: "disk_cache_max_size_gb", type: .number(min: 0, max: nil),
-                zhLabel: "磁盘缓存上限 (GB)",
-                zhDesc: "磁盘缓存占用硬盘的最大空间"
-            ),
-            SettingField(
-                key: "disk_cache_eviction_policy", type: .select([
-                    SelectOption(value: "lru", labelZh: "LRU（最近最少使用）"),
-                    SelectOption(value: "fifo", labelZh: "FIFO（先进先出）"),
-                    SelectOption(value: "lfu", labelZh: "LFU（最不经常使用）"),
-                ]),
-                zhLabel: "淘汰策略",
-                zhDesc: "lru=LRU（最近最少使用）, fifo=FIFO（先进先出）, lfu=LFU（最不经常使用）"
             ),
         ]),
         SettingGroup(id: "image", titleZh: "图片处理", fields: [
@@ -160,21 +129,6 @@ extension SettingsViewModel {
                 key: "thumbnail_quality", type: .number(min: 0, max: 100),
                 zhLabel: "缩略图质量",
                 zhDesc: "缩略图的 JPEG 压缩质量 (0-100)"
-            ),
-            SettingField(
-                key: "thumbnail_concurrency", type: .number(min: 1, max: maxConcurrency),
-                zhLabel: "缩略图生成并发数",
-                zhDesc: "同时生成缩略图的任务数（RAW 建议 2-4，最大 8）"
-            ),
-            SettingField(
-                key: "face_thumbnail_size", type: .number(min: 1, max: nil),
-                zhLabel: "人脸缩略图尺寸",
-                zhDesc: "人脸缩略图的宽高像素值"
-            ),
-            SettingField(
-                key: "face_thumbnail_quality", type: .number(min: 0, max: 100),
-                zhLabel: "人脸缩略图质量",
-                zhDesc: "人脸缩略图的 JPEG 压缩质量 (0-100)"
             ),
         ]),
         SettingGroup(id: "db", titleZh: "数据库", fields: [
@@ -193,23 +147,6 @@ extension SettingsViewModel {
                 zhDesc: "off=OFF（关闭）, normal=NORMAL（正常）, full=FULL（完整）"
             ),
         ]),
-        SettingGroup(id: "c1", titleZh: "Capture One 集成", fields: [
-            SettingField(
-                key: "c1_timeout_ms", type: .number(min: 1, max: nil),
-                zhLabel: "超时时间 (ms)",
-                zhDesc: "与 Capture One 通信的超时毫秒数"
-            ),
-            SettingField(
-                key: "c1_retries", type: .number(min: 0, max: nil),
-                zhLabel: "重试次数",
-                zhDesc: "与 Capture One 通信的最大重试次数"
-            ),
-            SettingField(
-                key: "c1_reload_delay_ms", type: .number(min: 0, max: nil),
-                zhLabel: "重载延迟 (ms)",
-                zhDesc: "重载元数据后的等待延迟毫秒数"
-            ),
-        ]),
         SettingGroup(id: "metadata", titleZh: "元数据", fields: [
             SettingField(
                 key: "metadata_write_mode", type: .select([
@@ -220,18 +157,68 @@ extension SettingsViewModel {
                 zhLabel: "写入方式",
                 zhDesc: "auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded"
             ),
+        ]),
+        SettingGroup(id: "culling", titleZh: "挑片网格", fields: [
             SettingField(
-                key: "metadata_write_debounce_ms", type: .number(min: 1, max: nil),
-                zhLabel: "后台写入防抖 (ms)",
-                zhDesc: "连续评级或改色后等待多久合并写入，建议 300-800"
+                key: "grid_default_sort",
+                type: .select([
+                    SelectOption(value: "import", labelZh: "导入顺序"),
+                    SelectOption(value: "capture_desc", labelZh: "拍摄时间（新→旧）"),
+                    SelectOption(value: "capture_asc", labelZh: "拍摄时间（旧→新）"),
+                    SelectOption(value: "rating_desc", labelZh: "星级（高→低）"),
+                ]),
+                zhLabel: "默认排序",
+                zhDesc: "新窗口首次打开网格时的排序；窗口内切换只在本次窗口生效"
             ),
             SettingField(
-                key: "capture_one_color_compatibility", type: .select([
-                    SelectOption(value: "label_and_urgency", labelZh: "Label + Urgency（推荐，兼容更多版本）"),
-                    SelectOption(value: "label_only", labelZh: "仅标准 xmp:Label"),
+                key: "grid_density",
+                type: .select([
+                    SelectOption(value: "s", labelZh: "小图"),
+                    SelectOption(value: "m", labelZh: "中图"),
+                    SelectOption(value: "l", labelZh: "大图"),
                 ]),
-                zhLabel: "Capture One 颜色兼容",
-                zhDesc: "label_and_urgency=Label + Urgency（推荐，兼容更多版本）, label_only=仅标准 xmp:Label"
+                zhLabel: "网格密度",
+                zhDesc: "网格缩略图目标行高；窗口内切换只在本次窗口生效"
+            ),
+        ]),
+        SettingGroup(id: "triage", titleZh: "技术质量建议（Beta）", fields: [
+            SettingField(
+                key: "triage_enabled", type: .select([
+                    SelectOption(value: "0", labelZh: "关闭（默认）"),
+                    SelectOption(value: "1", labelZh: "开启"),
+                ]),
+                zhLabel: "启用建议",
+                zhDesc: "开启后会话检查器显示技术质量建议；变更在下次启动/新会话生效"
+            ),
+            SettingField(
+                key: "triage_auto_generate", type: .select([
+                    SelectOption(value: "0", labelZh: "关闭（默认）"),
+                    SelectOption(value: "1", labelZh: "开启"),
+                ]),
+                zhLabel: "自动生成建议",
+                zhDesc: "质量分析成功后自动生成技术质量建议；默认关闭，避免大会话突然重算"
+            ),
+            SettingField(
+                key: "triage_policy", type: .select([
+                    SelectOption(value: "triage-v1", labelZh: "triage-v1"),
+                ]),
+                zhLabel: "策略版本",
+                zhDesc: "阈值大改需升版并重新生成建议"
+            ),
+            SettingField(
+                key: "triage_keep_confidence_min", type: .number(min: 0, max: 1),
+                zhLabel: "建议保留最低置信度",
+                zhDesc: "默认 0.60；低于此值不会自动保留"
+            ),
+            SettingField(
+                key: "triage_reject_confidence_min", type: .number(min: 0, max: 1),
+                zhLabel: "建议淘汰最低置信度",
+                zhDesc: "默认 0.75；低于此值不会自动淘汰"
+            ),
+            SettingField(
+                key: "triage_min_executable_confidence", type: .number(min: 0, max: 1),
+                zhLabel: "最低可执行置信度",
+                zhDesc: "默认 0.55；低于此值一律待复核"
             ),
         ]),
         SettingGroup(id: "face", titleZh: "人脸模型", fields: [

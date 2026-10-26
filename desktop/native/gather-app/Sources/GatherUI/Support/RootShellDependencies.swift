@@ -26,6 +26,8 @@ public struct RootShellDependencies {
     public let culling: any CullingAPI
     public let navigation: any NavigationAPI
     public let metadata: any MetadataAPI
+    /// P0/K0：关键词自动补全；可选，预览/测试壳可为 nil（面板退化为本地建议）。
+    public let photo: (any PhotoAPI)?
     public let quality: any QualityAPI
     public let face: any FaceAPI
     public let similarity: any SimilarityAPI
@@ -50,6 +52,7 @@ public struct RootShellDependencies {
         culling: any CullingAPI,
         navigation: any NavigationAPI,
         metadata: any MetadataAPI,
+        photo: (any PhotoAPI)? = nil,
         quality: any QualityAPI,
         face: any FaceAPI,
         similarity: any SimilarityAPI,
@@ -70,6 +73,7 @@ public struct RootShellDependencies {
         self.culling = culling
         self.navigation = navigation
         self.metadata = metadata
+        self.photo = photo
         self.quality = quality
         self.face = face
         self.similarity = similarity

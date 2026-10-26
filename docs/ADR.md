@@ -10,22 +10,21 @@
 > 已随迁移失效，语义与不变量不变，**原生对应实现位置见下表**（未列条目以
 > `desktop/native/gather-core` / `gather-app` 代码为准）。
 >
-> 当前 schema：2（`SchemaCatalog.production.current`；DDL 由 `SchemaV1.swift` 唯一定义，
-> V2 与 V1 逐字相同，只 bump `user_version`）。旧迁移链（v1…v35）与 `MigrationRunner`
-> 已删除；形态正确的 V1 库经备份 + no-op 事务迁移到 V2，不兼容库默认 fail closed。
-> 下文历史 ADR 中的 schema 33/34/35 是当时版本，不是当前代码版本。
+> 当前 schema：3（唯一版本；`SchemaCurrent`，44 表 / 383 列 / 72 索引 / 65 外键）。
+> V1/V2 迁移链已删除：旧版本库默认 fail closed，只有显式 reset 才归档
+> db/-wal/-shm 后重建。下文历史 ADR 中的 schema 33/34/35 是当时版本，不是当前代码版本。
 
 **原实现路径 → 原生实现位置对照**
 
 | ADR | Electron 时代路径（已删除） | 原生实现（迁移后） |
 |---|---|---|
-| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherPersistence/Database/SchemaV1.swift`（旧迁移链已删除）；fresh 校验 `Tests/GatherCoreTests/Database/MigrationTests.swift`（schema 1 / 43 表） |
+| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`（唯一 DDL；旧迁移链已删除）；fresh/形态校验 `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift`（44 表 / 383 列） |
 | 007 | `services/image/disk-cache.ts` | `gather-core/Sources/GatherPersistence/Database/SHA256.swift`（**ImageCache 类已删除**，见 ADR-028；文件已由 ImageCache.swift 更名为 SHA256.swift，仅保留生产在用的哈希工具） |
 | 012/013 | `services/workspace/workspace-status.service.ts` | `gather-core/Sources/GatherApplication/Services/WorkspaceStatusService.swift` |
 | 014 | `ipc/session.ipc.ts`、`services/session/session.service.ts` | `gather-core/Sources/GatherApplication/Services/SessionService.swift` |
 | 015 | `services/capture-one/sync-state.ts` | `gather-core/Sources/GatherApplication/Services/CaptureOneSyncState.swift`（**`CaptureOneSyncState` 类与 `C1BridgeProvider` 已删除**，见 ADR-028；保留纯函数 `aggregateSessionState`） |
 | 016/019/020 | `renderer/locales/`（i18next）、`main/menu.ts`、`main/locale.ts` | `gather-app/Sources/GatherUI/Support/GatherLocalization.swift` + `Resources/{en,zh-Hans}.lproj`；`gather-app/Sources/GatherHost/GatherAppDelegate.swift`（`installMenu` 两语言重建，`languageChanged` 驱动） |
-| 017 | `packages/shared/src/errors.ts` | `gather-core` 错误枚举（错误码语义不变）+ `L10n.errorText`（179 项映射；B03 前为 `GatherLocalization.errorText`） |
+| 017 | `packages/shared/src/errors.ts` | `gather-core` 错误枚举（错误码语义不变）+ `L10n.errorText`（184 项映射；B03 前为 `GatherLocalization.errorText`） |
 | 018 | `renderer/components/Dialog/Dialog.tsx` | 历史记录：自研 APG 焦点管理仅存在于 Electron 版；原生版由系统 sheet/`confirmationDialog` 天然覆盖（见 DEVELOPMENT.md HIG 约定），"拒绝 roving tabindex"的结论对原生列表仍成立 |
 
 ---
@@ -62,33 +61,28 @@
 
 ---
 
-## ADR-005 数据库建库不变量与不兼容库重置（Cut 2 / S5c-2b-3b-2b-3 修订）
+## ADR-005 数据库建库不变量与不兼容库重置（2026-10-26 收敛）
 
-- 唯一建库入口是 `Database.open(at:)`：新库在单事务内执行当前快照 DDL 并写
-  `PRAGMA user_version = 2`；打开后自检版本、`foreign_keys` 与 `foreign_key_check`。
-- 形态正确的 V1 库（user_version=1 且列形匹配 V1 快照）**就地升级**：先 `VACUUM INTO`
-  `<db>.pre-v2-<ts>`，再在 BEGIN IMMEDIATE 事务内执行 V1→V2（no-op）并写
-  `user_version=2`；失败整体回滚，库仍为 V1，备份保留。不存在 down-migration。
-- 不兼容库（user_version=0 但有表 / 高于 current / 形态不符 / 非 SQLite 文件）默认
-  **fail closed**（只抛错、不改文件）；只有显式 `Options.resetPolicy=.renameToIncompatible`
-  才把 db/-wal/-shm 一起改名为 `<db>.incompatible-<ts>`（最多保留 3 套），再建新库。
-  移动/备份失败显式抛错，绝不吞错。
-- 旧迁移链（`MigrationRunner`、`Schema.swift` 的 44 表 DDL）已删除；不得恢复
-  「DDL 在 A 处、补列在 B 处」的第二份 schema 定义。
+- 唯一建库入口是 `Database.open(at:)`：新库在单事务内执行
+  `SchemaCurrent.createSQL` 并写 `PRAGMA user_version = 3`；打开后自检版本、`foreign_keys`
+  与 `foreign_key_check`。
+- 只有两种状态可继续：空库（建库）与当前版本（打开）。旧版本（V1/V2）、更高版本、
+  版本 0 有表、形态不符、非 SQLite 文件一律不兼容，默认 **fail closed**（只抛错、
+  不改文件）；只有显式 `Options.resetPolicy=.renameToIncompatible` 才把
+  db/-wal/-shm 一起改名为 `<db>.incompatible-<ts>`（最多保留 3 套），再建新库。
+- 旧迁移链（SchemaCatalog/Snapshot/Migrator/Backup、V1→V2→V3 迁移、370 列补列）
+  已全部删除；不得恢复「DDL 在 A 处、补列在 B 处」的第二份 schema 定义。
 
 ## ADR-006 Schema 唯一真相源
 
-- 唯一 DDL 真相源是 `gather-core/Sources/GatherPersistence/Database/SchemaV1.swift`
-  （43 表 / 373 列 / 69 索引 / 62 外键，一次成型）。Cut 5 / 5b-2b 给
-  similarity_cluster_meta +3 列（algorithm_version / input_signature / state_digest）。
-  WP6b 起当前版本是 V2（`SchemaV2`，DDL 与 V1 逐字相同，只 bump user_version=2）；
-  `SchemaV1` 是冻结的迁移起点。
-- `Tests/GatherCoreTests/Database/MigrationTests.swift` 校验 fresh 库（直接 exec
-  `SchemaV1.sql` 与经 `Database.open` 两种路径）同形：43 表、无 legacy 表/列、
-  无悬空外键；V1 夹具 user_version=1，`Database.open` 当前路径 user_version=2。
-  任何真实表级变更必须新增 SchemaVn 快照 + 迁移（旧库按 ADR-005 迁移/失败回滚）。
+- 唯一 DDL 真相源是 `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`
+  （44 表 / 383 列 / 72 索引 / 65 外键，一次成型；含 triage_suggestions 与
+  face_cluster_constraints）。索引 SQL 文本参与列形指纹，逐字保留。
+- `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift` 校验 fresh 库（直接 exec
+  `SchemaCurrent.createSQL` 与经 `Database.open` 两种路径）同形：版本 3、44 表、
+  无悬空外键、逐表列数与 CHECK 约束不漂移。Schema 变更只改这一份 DDL 并同步计数/指纹。
 - `docs/archive/schema.snapshot-v35.json` 是旧迁移链时代（schema 35）的**历史快照**，
-  只作归档，不参与门禁；当前 schema 以 `SchemaV2`（43 表 / user_version=2）为准。
+  只作归档，不参与门禁；当前 schema 以 `SchemaCurrent`（44 表 / user_version=3）为准。
 
 ---
 
@@ -629,7 +623,7 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
 6. **schema 34（历史）**：`face_observations` 追加 6 列（quality / face_size_px /
    roll_degrees / model_id / model_version / embedding_dim）。当时快照
    `docs/archive/schema.snapshot-v35.json` 记为 34/35（43 表不变）；**当前 schema 为
-   2（SchemaV2；DDL 与 V1 相同，V1 是冻结迁移起点）**，旧迁移链已删除，见 ADR-005/006。
+   3（SchemaCurrent；44 表）**，旧迁移链已删除，见 ADR-005/006。
 
 **决策（第二轮：把"接口留缝"改成"缝里真的有实现"，2026-09-28）**
 
@@ -768,3 +762,43 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
 
 **后果**：Delivery 内出现新的具体 Repo 读取时，评审要问“为什么不能落进某个窄端口”；
 新窄端口必须只含调用点实际使用的方法。
+## ADR-033：Schema V3 纯增量（T0/F0 共表）
+
+状态：已实施（2026-10-25）。生产 `current=.v3`，线性链 `V1→V2→V3`，无 down migration。
+
+新增两张表（不改任何既有表/列/外键）：
+- `triage_suggestions`：逻辑资产代表行一条；verdict/score/confidence/reasons_json/group_id/
+  policy_version/input_fingerprint/computed_at；2 个索引。
+- `face_cluster_constraints`：set-vs-set（`member_keys_json` + `peer_keys_json`），
+  用于拆分在重聚类后保持；1 个索引。
+
+计数：44 表 / 383 列 / 72 显式索引 / 65 外键；列形指纹
+`fa0f3c87ef2b6cd0fc5e937b116149f2aaa7f4a88dc002794a05730b3e1d2bcc`。建库在单事务内执行 DDL + 版本号；fresh 建库与旧库校验共用同一份 DDL
+（`IF NOT EXISTS`），索引 SQL 文本进入指纹，禁止两份 DDL。
+
+## ADR-034：T0 技术质量初筛（保守、只写决策）
+
+状态：设计冻结（实现中）。对外只叫“技术质量建议（Beta）”，不承诺审美/闭眼识别。
+
+- 三分类 keep/reject/review；只有 keep/reject 可应用；keep ≥0.60、reject ≥0.75，
+  `triage_min_executable_confidence`（默认 0.55）以下绝不执行。
+- 人工已决策不生成建议、不覆盖；单张/无替代永不 reject；未分析/失败只 review；
+  闭眼只“疑似”进入 review（EAR 留 P1）。
+- 组内最佳自算，不依赖未可靠落库的 `relativeRank`；组源优先级
+  exact > similarity > visual > navigation。
+- review 的 confidence 是“最高可执行置信度”，可 >0.55；UI 不显示裸值。
+- 建议只写 `culling_decisions`（source=ai）与一条 history；**绝不自动写 XMP**；
+  应用前校验 input fingerprint，stale 拒绝。写回仍走用户显式动作。
+
+## ADR-035：备份/恢复/诊断
+
+状态：设计冻结（实现中）。备份不新增表，记录用 JSON sidecar。
+
+- 备份：第二个 `DBConnection` 执行 `VACUUM INTO` 到 `.partial`，只读
+  `quick_check` + `user_version` + 形状指纹校验后原子改名；2GB 预算 <30s。
+- 恢复：**跨进程**。`restore` 校验并写 journal（持 `.restore.lock`），确认后退出，
+  下次 `Database.open` 前 swap；失败回滚，旧库 `pre-restore-<ts>` 保留 2 份；
+  备份版本高于当前构建则拒绝。恢复后禁用一次 delivery 自动回放，避免旧 intent
+  覆盖较新 XMP。
+- 诊断：文件日志 sink（5MB×5 轮转），20MB 上限、默认不含绝对路径、不含 DB/照片/XMP；
+  仅托管 `Backups/` 内的备份可恢复，不接受任意外部 SQLite。

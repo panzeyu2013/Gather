@@ -70,8 +70,8 @@ struct AnalysisJobRepoTests {
         let text = plan.map { $0.compactMap(\.textValue).joined(separator: "|") }.joined(separator: " ")
         #expect(text.contains("idx_analysis_jobs_active_dedupe"), "活跃去重必须走部分唯一索引，实际计划: \(text)")
 
-        // 同一字面量也被 SchemaV1 的部分索引 DDL 使用（唯一真相源，避免两处手写字面量漂移）。
-        #expect(SchemaV1.sql.contains("WHERE status IN (\(SchemaSQL.activeAnalysisJobStatusSQLList))"))
+        // 同一字面量也被 SchemaCurrent 的部分索引 DDL 使用（唯一真相源，避免两处手写字面量漂移）。
+        #expect(SchemaCurrent.createSQL.contains("WHERE status IN (\(SchemaSQL.activeAnalysisJobStatusSQLList))"))
     }
 
     /// 活跃行（queued/running/cancelling）存在时，create 复用该行，不新建。

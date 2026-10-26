@@ -40,16 +40,6 @@ private final class CullingTestMutationPort: MetadataMutationPort, @unchecked Se
         )
     }
 
-    func queueMutation(
-        sessionId: String,
-        photoId: String,
-        patch: MetadataPatch,
-        source: MetadataMutationSource
-    ) async throws -> MetadataMutationResult {
-        MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
-        )
-    }
 }
 
 /// CullingWritebackPort 的替身：只记录 writeback/retry 调用的模块与项，返回注入结果。
@@ -141,7 +131,17 @@ private struct CullingAPIFixture {
         self.decisionRepo = decisionRepo
         self.similarityRepo = similarityRepo
         self.writeback = writeback
-        self.api = LiveCullingAPI(cullingService: service, sessionRepo: sessionRepo)
+        let triageService = TriageService(
+            repository: TriageRepo(connection: db),
+            decisions: decisionRepo,
+            history: CullingHistoryRepo(connection: db),
+            transactions: db
+        )
+        self.api = LiveCullingAPI(
+            cullingService: service,
+            triageService: triageService,
+            sessionRepo: sessionRepo
+        )
     }
 
     /// 返回与输入同序的照片 id（去重跳过项为空串，本文件不构造重复路径）。
@@ -294,7 +294,7 @@ private func cullingGatherError<T>(_ body: () async throws -> T) async -> Gather
 
 @Suite("B3a Live Culling API")
 struct APICullingTests {
-    @Test("page：keyset 分页按 limit 取资产，nextRowId 可续页，total 精确")
+    @Test("page：keyset 分页按 limit 取资产，nextCursor 可续页，total 精确")
     func pagePaginates() async throws {
         let fixture = try CullingAPIFixture()
         try fixture.addPhotos(["a.jpg", "b.jpg", "c.jpg"])
@@ -304,28 +304,18 @@ struct APICullingTests {
         )
         #expect(first.assets.count == 2)
         #expect(first.total == 3)
-        let cursor = try #require(first.nextRowId)
+        let cursor = try #require(first.nextCursor)
 
         let second = try await fixture.api.page(
             CullingPageQuery(
                 sessionId: fixture.sessionId, scope: .all,
-                afterRowId: Int64(cursor), limit: 2
+                cursor: cursor, limit: 2
             )
         )
         #expect(second.assets.count == 1)
         #expect(second.total == 3)
-        // nextRowId 是“本页最后一组的首 rowid”，不是“还有下一页”的布尔标记；
-        // 最后一页也会给出游标，再翻一次才是空页 + nil 游标。
-        let tail = try #require(second.nextRowId)
-
-        let exhausted = try await fixture.api.page(
-            CullingPageQuery(
-                sessionId: fixture.sessionId, scope: .all,
-                afterRowId: Int64(tail), limit: 2
-            )
-        )
-        #expect(exhausted.assets.isEmpty)
-        #expect(exhausted.nextRowId == nil)
+        // 不足一页即末页：不再返回游标。
+        #expect(second.nextCursor == nil)
     }
 
     @Test("update：expectedRevision 冲突返回 CULLING_REVISION_CONFLICT 与 expected/current 参数")
@@ -795,5 +785,45 @@ struct APICullingTests {
                 "SELECT confirmed_at FROM delivery_sessions ds JOIN deliveries d ON d.id = ds.delivery_id WHERE d.xmp_path = ?"
             ).get([.text(delivery.xmpPath)])?[0].textValue?.isEmpty == false
         )
+    }
+
+    @Test("T0：generate/apply 经 API 映射 TRIAGE_*；summary 携带 triage 摘要")
+    func triageAPIWiring() async throws {
+        let fixture = try CullingAPIFixture()
+        defer { fixture.db.close() }
+
+        let generated = try await fixture.api.generateTriage(
+            TriageGenerateInput(sessionId: fixture.sessionId)
+        )
+        #expect(generated.counts.total == 0)
+        #expect(generated.stale == false)
+
+        var summary = try await fixture.api.summary(fixture.sessionId)
+        summary.triage = try await fixture.api.generateTriage(
+            TriageGenerateInput(sessionId: fixture.sessionId)
+        )
+        #expect(summary.triage?.policyVersion == "triage-v1")
+
+        do {
+            _ = try await fixture.api.applyTriage(Confirmed(TriageApplyInput(
+                sessionId: fixture.sessionId,
+                verdicts: [.review],
+                fingerprint: String(repeating: "0", count: 64)
+            )))
+            Issue.record("review verdict 必须被拒绝")
+        } catch let error as GatherError {
+            #expect(error.code == .TRIAGE_APPLY_INVALID)
+        }
+
+        do {
+            _ = try await fixture.api.applyTriage(Confirmed(TriageApplyInput(
+                sessionId: fixture.sessionId,
+                verdicts: [.keep],
+                fingerprint: String(repeating: "0", count: 64)
+            )))
+            Issue.record("空会话的 fingerprint 不可能匹配")
+        } catch let error as GatherError {
+            #expect(error.code == .TRIAGE_STALE)
+        }
     }
 }

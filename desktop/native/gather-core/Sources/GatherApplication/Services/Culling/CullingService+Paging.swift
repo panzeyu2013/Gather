@@ -7,84 +7,99 @@ import GatherDelivery
 import GatherProtocol
 
 extension CullingService {
-    /// TS: listPage —— 资产分组 keyset 分页（RAW/JPEG 变体永不分页；total 精确）。
-    public func listPage(
-        sessionId: String,
-        scope: CullingScope,
-        filters: CullingFilters? = nil,
-        requestedGroupId: String? = nil,
-        afterRowId: Int64? = nil,
-        limit: Int = 200
-    ) throws -> CullingPage {
-        if let afterRowId, afterRowId < 1 {
-            throw CullingServiceError.afterRowIdInvalid
-        }
-        guard limit >= 1, limit <= Self.pageLimitMax else {
-            throw CullingServiceError.pageLimitInvalid
+    /// 唯一分页入口：limit/scope/cursor 的合法性由 CullingPageQuery.init 单点校验。
+    public func listPage(_ query: CullingPageQuery) throws -> CullingPage {
+        let gate = try triageGate(sessionId: query.sessionId)
+        // 没有门控就没有“当前建议”的判定；带着 verdict 过滤会把历史行当现状。
+        if let verdicts = query.filters?.triageVerdicts, !verdicts.isEmpty, gate == nil {
+            throw GatherError(
+                code: .CULLING_FILTER_INVALID,
+                params: ["reason": "triage filter requires enabled triage"])
         }
         let page = try pagePhotosQuery(
-            sessionId: sessionId, scope: scope, filters: filters,
-            requestedGroupId: requestedGroupId, afterRowId: afterRowId, limit: limit
+            sessionId: query.sessionId, scope: query.scope, filters: query.filters,
+            requestedGroupId: query.groupId, sort: query.sort, cursor: query.cursor,
+            limit: query.limit, gate: gate
         )
-        let lookup = try buildRichLookup(photos: page.photos, sessionId: sessionId, mode: .page)
+        let lookup = try buildRichLookup(photos: page.photos, sessionId: query.sessionId, mode: .page)
         let assets = filterVisible(
             assembleAssets(photos: page.photos, lookup: lookup),
-            scope: scope, filters: filters, requestedGroupId: requestedGroupId,
-            conflictingPhotoPaths: try conflictPhotoPaths(sessionId: sessionId, filters: filters)
+            scope: query.scope, filters: query.filters, requestedGroupId: query.groupId,
+            conflictingPhotoPaths: try conflictPhotoPaths(
+                sessionId: query.sessionId, filters: query.filters)
         )
-        let total = try countForScope(
-            sessionId: sessionId, scope: scope, filters: filters,
-            requestedGroupId: requestedGroupId, similarityMap: lookup.similarityMap
-        )
-        return CullingPage(
-            assets: assets,
-            nextRowId: page.cursor.map(Int.init),
-            total: total
-        )
+        let totalKey = pageTotalKey(query, gate: gate)
+        let total: Int
+        if let cached = pageTotalCache[totalKey],
+           query.cursor != nil,
+           Date().timeIntervalSince(cached.at) < Self.pageTotalTTLSeconds {
+            // 续页不再重算精确 total；首页/reset（cursor=nil）会覆盖缓存。
+            total = cached.total
+        } else {
+            total = try countForScope(
+                sessionId: query.sessionId, scope: query.scope, filters: query.filters,
+                requestedGroupId: query.groupId, similarityMap: lookup.similarityMap,
+                gate: gate
+            )
+            pageTotalCache[totalKey] = (total, Date())
+            if pageTotalCache.count > Self.pageTotalCacheMax {
+                let keep = pageTotalCache
+                    .sorted { $0.value.at > $1.value.at }
+                    .prefix(Self.pageTotalCacheMax)
+                pageTotalCache = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+            }
+        }
+        return CullingPage(assets: assets, total: total, nextCursor: page.cursor)
     }
     // MARK: - 分页（TS pagePhotosQuery / loadAssetRows / preferredRowPredicate /
     // buildFilteredWhere / buildSimilarityClause / countForScope）
 
-    /// TS: pagePhotosQuery —— 三 scope 共用的两步资产分组 keyset 页：
-    /// 1. 取至多 limit 个资产组（按组首 rowid 排序，first_rowid > afterRowId）；
-    /// 2. 取这些组的全部行（一页恒为完整资产）。
-    /// afterRowId 是上一页的 nextRowId（其最后资产组的首 rowid）；cursor 是
-    /// 当前页组查询的 first_rowid —— 绝非从已加载行推导的值（最小 rowid 可能
-    /// 属于不匹配谓词的变体，重新推导会让下一页重复选中该资产）。
+    /// 三 scope 共用的资产组 keyset 页：scope 只决定 WHERE，sort 决定 keyset 键。
     private func pagePhotosQuery(
         sessionId: String,
         scope: CullingScope,
         filters: CullingFilters?,
         requestedGroupId: String?,
-        afterRowId: Int64?,
-        limit: Int
-    ) throws -> (photos: [CullingPhotoRow], cursor: Int64?) {
-        if scope == .filtered {
-            let page = try pageQuery.pageFiltered(
-                sessionId: sessionId,
-                filter: Self.pageFilter(filters),
-                afterRowId: afterRowId,
-                limit: limit
-            )
-            return (photos: page.rows.map { CullingPhotoRow(row: $0) }, cursor: page.cursor)
-        }
-        if scope == .similarityGroup, let similarity = Self.similarityScope(requestedGroupId) {
-            let page = try pageQuery.pageSimilarity(
-                sessionId: sessionId,
-                similarity: similarity,
-                afterRowId: afterRowId,
-                limit: limit
-            )
-            return (photos: page.rows.map { CullingPhotoRow(row: $0) }, cursor: page.cursor)
-        }
-        let page = try photoRepo.getAssetPage(sessionId: sessionId, afterFirstRowid: afterRowId, limit: limit)
+        sort: CullingSort,
+        cursor: CullingPageCursor?,
+        limit: Int,
+        gate: (fingerprint: String, policyVersion: String)?
+    ) throws -> (photos: [CullingPhotoRow], cursor: CullingPageCursor?) {
+        let similarity = scope == .similarityGroup
+            ? Self.similarityScope(requestedGroupId)
+            : nil
+        let page = try pageQuery.pageSorted(
+            sessionId: sessionId,
+            scope: scope,
+            filter: Self.pageFilter(filters, gate: gate),
+            similarity: similarity,
+            sort: sort,
+            cursor: cursor,
+            limit: limit
+        )
         return (photos: page.rows.map { CullingPhotoRow(row: $0) }, cursor: page.cursor)
+    }
+
+    /// T0 门控（指纹 + 策略版本）：只在匹配/关闭两态；未接入时返回 nil。
+    private func triageGate(
+        sessionId: String
+    ) throws -> (fingerprint: String, policyVersion: String)? {
+        guard let policy = try triageDisplayPolicy?(sessionId) else { return nil }
+        guard case .matching(let gate) = policy else { return nil }
+        return (gate.fingerprint, gate.policyVersion)
     }
 
     /// CullingFilters → 存储侧过滤投影。枚举 → DB 值的映射留在应用层；
     /// SQL 谓词与子句顺序见 CullingPageQuery.filteredWhere（逐字搬移）。
-    static func pageFilter(_ filters: CullingFilters?) -> CullingPageFilter {
-        guard let filters else { return CullingPageFilter() }
+    static func pageFilter(
+        _ filters: CullingFilters?,
+        gate: (fingerprint: String, policyVersion: String)? = nil
+    ) -> CullingPageFilter {
+        guard let filters else {
+            return CullingPageFilter(
+                triageFingerprint: gate?.fingerprint,
+                triagePolicyVersion: gate?.policyVersion)
+        }
         let decisions = filters.pickStates?.map { state -> String in
             switch state {
             case .picked: "keep"
@@ -105,7 +120,10 @@ extension CullingService {
             colorLabels: filters.colorLabels?.map(\.rawValue),
             unreviewedOnly: filters.unreviewedOnly,
             metadataConflictOnly: filters.metadataConflictOnly,
-            qualityStatus: quality
+            qualityStatus: quality,
+            triageVerdicts: filters.triageVerdicts?.map(\.rawValue),
+            triageFingerprint: gate?.fingerprint,
+            triagePolicyVersion: gate?.policyVersion
         )
     }
 
@@ -123,6 +141,17 @@ extension CullingService {
         return .group(resultId: Int64(resultId), groupIndex: Int64(groupIndex))
     }
 
+    private func pageTotalKey(
+        _ query: CullingPageQuery,
+        gate: (fingerprint: String, policyVersion: String)?
+    ) -> String {
+        let filterKey = (try? JSONEncoder().encode(query.filters))?.base64EncodedString() ?? ""
+        return [
+            query.sessionId, query.scope.rawValue, query.groupId ?? "", filterKey,
+            gate?.fingerprint ?? "", gate?.policyVersion ?? "",
+        ].joined(separator: "|")
+    }
+
     /// TS: countForScope —— scope/filters 的逻辑资产计数（total 匹配胶片条加载
     /// 全部页后的条目数：每资产一条，非每物理照片行一条）。
     private func countForScope(
@@ -130,7 +159,8 @@ extension CullingService {
         scope: CullingScope,
         filters: CullingFilters?,
         requestedGroupId: String?,
-        similarityMap: [String: String]
+        similarityMap: [String: String],
+        gate: (fingerprint: String, policyVersion: String)?
     ) throws -> Int {
         if scope == .similarityGroup {
             if let similarity = Self.similarityScope(requestedGroupId) {
@@ -148,7 +178,7 @@ extension CullingService {
         }
         if scope == .filtered {
             return try pageQuery.countFiltered(
-                sessionId: sessionId, filter: Self.pageFilter(filters))
+                sessionId: sessionId, filter: Self.pageFilter(filters, gate: gate))
         }
         return try photoRepo.countAssetsBySession(sessionId: sessionId)
     }

@@ -158,8 +158,10 @@ struct SessionContractTests {
         // → 175。深度审查 D09 再补 2 个计划诊断码（EXPORT_SOURCE_MISSING /
         // EXPORT_SOURCE_UNREADABLE：逐项可执行性诊断进枚举，才能过本地化交叉契约）
         // → 177。Cut 1 D-010 再补 2 个通用码（INVALID_PARAM / PHOTO_NOT_FOUND）→ 179。
-        // 增删错误码时必须同步此断言与 GatherLocalization.errorMessages。
-        #expect(GatherErrorCode.allCases.count == 179)
+        // P0 T0 再补 4 个初筛码（TRIAGE_NOT_READY / _STALE / _APPLY_INVALID /
+        // _POLICY_INVALID）→ 185；P0 补 19 → 204；清理 Template/死码后 → 184。增删错误码时必须同步此断言与
+        // GatherLocalization.errorMessages。
+        #expect(GatherErrorCode.allCases.count == 184)
     }
 
     @Test func gatherErrorCodeRawValueMatchesCaseName() {

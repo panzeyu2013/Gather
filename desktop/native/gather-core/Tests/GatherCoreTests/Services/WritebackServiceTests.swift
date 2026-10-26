@@ -118,7 +118,7 @@ private final class WritebackFSXMPProvider: XMPProvider, @unchecked Sendable {
     }
 }
 
-/// 单会话 + N 张照片的临时目录夹具（纯 SchemaV1）。
+/// 单会话 + N 张照片的临时目录夹具（纯 SchemaCurrent）。
 private struct WritebackFixture {
     let db: DBConnection
     let dir: String

@@ -7,7 +7,7 @@ import GatherProtocol
 
 /// face_observations 行（V1 17 列；SELECT 显式列，不再读 source_file_size/mtime）。
 public struct FaceObservationRow {
-    /// SELECT 与位置解码共用的唯一列清单；顺序 = SchemaV1 face_observations 的物理列序。
+    /// SELECT 与位置解码共用的唯一列清单；顺序 = SchemaCurrent face_observations 的物理列序。
     /// created_at 在 V1 移到列尾（旧库物理列序不同，显式 SELECT 解除该依赖）。
     public static let columns = [
         "id", "photo_id", "session_id", "bbox_x", "bbox_y", "bbox_w", "bbox_h",

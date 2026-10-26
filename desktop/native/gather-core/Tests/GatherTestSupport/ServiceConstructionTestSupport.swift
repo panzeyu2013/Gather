@@ -273,6 +273,8 @@ extension CullingService {
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: CullingHistoryRepo? = nil,
         getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
+        flushMetadata: ((String) async throws -> Void)? = nil,
         fileLock: XMPFileLock? = nil,
         delivery: (any DeliveryModuleAdapter)? = nil
     ) {
@@ -289,6 +291,8 @@ extension CullingService {
             writeback: writeback,
             cullingHistoryRepo: cullingHistoryRepo,
             getNumber: getNumber,
+            triageDisplayPolicy: triageDisplayPolicy,
+            flushMetadata: flushMetadata,
             // 旧默认：宿主未注入时按同一 connection 自建 coordinator（行为不变）。
             delivery: delivery ?? CoordinatorDeliveryAdapter(
                 engine: DeliveryCoordinator(

@@ -37,7 +37,9 @@ public struct CullingPageQuery: Decodable, Sendable, Equatable {
     public let scope: CullingScope
     public let filters: CullingFilters?
     public let groupId: String?
-    public let afterRowId: Int64?
+    public let sort: CullingSort
+    /// 唯一续页凭据：sort + keyset；导入序用 rowId。
+    public let cursor: CullingPageCursor?
     public let limit: Int
 
     public init(
@@ -45,7 +47,8 @@ public struct CullingPageQuery: Decodable, Sendable, Equatable {
         scope: CullingScope,
         filters: CullingFilters? = nil,
         groupId: String? = nil,
-        afterRowId: Int64? = nil,
+        sort: CullingSort = .importOrder,
+        cursor: CullingPageCursor? = nil,
         limit: Int? = nil
     ) throws {
         self.sessionId = try APIValidation.nonBlank(sessionId, field: "sessionId", maxLength: 128)
@@ -57,10 +60,36 @@ public struct CullingPageQuery: Decodable, Sendable, Equatable {
         }
         self.filters = filters
         self.groupId = groupId
-        if let afterRowId, afterRowId < 1 {
-            throw GatherError.invalidParameter(field: "afterRowId", reason: "must be a positive integer")
+        if let cursor {
+            guard cursor.sort == sort else {
+                throw GatherError(code: .CULLING_CURSOR_INVALID, params: ["reason": "cursor sort mismatch"])
+            }
+            guard cursor.rowId >= 1 else {
+                throw GatherError(code: .CULLING_CURSOR_INVALID, params: ["reason": "cursor rowId must be positive"])
+            }
+            switch cursor.sort.keyKind {
+            case .rowId:
+                guard cursor.dateKey == nil, cursor.numberKey == nil else {
+                    throw GatherError(code: .CULLING_CURSOR_INVALID, params: ["reason": "import cursor must not carry a sort key"])
+                }
+            case .date:
+                guard cursor.dateKey != nil, cursor.numberKey == nil else {
+                    throw GatherError(code: .CULLING_CURSOR_INVALID, params: ["reason": "capture cursor requires dateKey only"])
+                }
+            case .number:
+                guard cursor.numberKey != nil, cursor.dateKey == nil else {
+                    throw GatherError(code: .CULLING_CURSOR_INVALID, params: ["reason": "numeric cursor requires numberKey only"])
+                }
+            }
         }
-        self.afterRowId = afterRowId
+        if let filters, filters.hasAnyFilter, scope == .all {
+            throw GatherError(code: .CULLING_FILTER_INVALID, params: ["scope": scope.rawValue])
+        }
+        if let verdicts = filters?.triageVerdicts, !verdicts.isEmpty, scope != .filtered {
+            throw GatherError(code: .CULLING_FILTER_INVALID, params: ["scope": scope.rawValue])
+        }
+        self.sort = sort
+        self.cursor = cursor
         self.limit = try APIValidation.integerInRange(limit ?? 200, field: "limit", 1...2_000)
     }
 
@@ -71,13 +100,14 @@ public struct CullingPageQuery: Decodable, Sendable, Equatable {
             scope: try container.decode(CullingScope.self, forKey: .scope),
             filters: try container.decodeIfPresent(CullingFilters.self, forKey: .filters),
             groupId: try container.decodeIfPresent(String.self, forKey: .groupId),
-            afterRowId: try container.decodeIfPresent(Int64.self, forKey: .afterRowId),
+            sort: try container.decodeIfPresent(CullingSort.self, forKey: .sort) ?? .importOrder,
+            cursor: try container.decodeIfPresent(CullingPageCursor.self, forKey: .cursor),
             limit: try container.decodeIfPresent(Int.self, forKey: .limit)
         )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, scope, filters, groupId, afterRowId, limit
+        case sessionId, scope, filters, groupId, sort, cursor, limit
     }
 }
 
@@ -110,12 +140,15 @@ public struct CullingApplyHistoryInput: Decodable, Sendable, Equatable {
     public let entries: [CullingHistoryApplyEntry]
     public let historyOperationId: Int
     public let direction: CullingHistoryDirection
+    /// v1.1：撤销 T0 应用时必须回写 source=ai，否则资产会被当成“人工决策”永久跳过。
+    public let source: CullingDecisionSource?
 
     public init(
         sessionId: String,
         entries: [CullingHistoryApplyEntry],
         historyOperationId: Int,
-        direction: CullingHistoryDirection
+        direction: CullingHistoryDirection,
+        source: CullingDecisionSource? = nil
     ) throws {
         self.sessionId = try APIValidation.nonBlank(sessionId, field: "sessionId", maxLength: 128)
         self.entries = try APIValidation.nonEmpty(entries, field: "entries", maxCount: 10_000)
@@ -126,6 +159,7 @@ public struct CullingApplyHistoryInput: Decodable, Sendable, Equatable {
         }
         self.historyOperationId = try APIValidation.positive(historyOperationId, field: "historyOperationId")
         self.direction = direction
+        self.source = source
     }
 
     public init(from decoder: Decoder) throws {
@@ -134,12 +168,14 @@ public struct CullingApplyHistoryInput: Decodable, Sendable, Equatable {
             sessionId: try container.decode(String.self, forKey: .sessionId),
             entries: try container.decode([CullingHistoryApplyEntry].self, forKey: .entries),
             historyOperationId: try container.decode(Int.self, forKey: .historyOperationId),
-            direction: try container.decode(CullingHistoryDirection.self, forKey: .direction)
+            direction: try container.decode(CullingHistoryDirection.self, forKey: .direction),
+            source: try container.decodeIfPresent(
+                CullingDecisionSource.self, forKey: .source)
         )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, entries, historyOperationId, direction
+        case sessionId, entries, historyOperationId, direction, source
     }
 }
 

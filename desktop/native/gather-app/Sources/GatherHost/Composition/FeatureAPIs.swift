@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherHost/Composition/FeatureAPIs.swift
-// WP4c / 组合根阶段 3：15 个 Live API 工厂。
+// WP4c / 组合根阶段 3：16 个 Live API 工厂。
 //
 // 每个工厂只把 CompositionCore 的共享实例包成 Live API，不构造业务服务、
 // 不打开数据库、不注册 executor：JobService / SettingsService / PersonRepo /
@@ -27,6 +27,7 @@ struct FeatureAPIs {
     let export: any ExportAPI
     let metadata: any MetadataAPI
     let person: any PersonAPI
+    let maintenance: any MaintenanceAPI
 
     init(composition: AppComposition) {
         let job = Self.makeJob(composition)
@@ -45,6 +46,11 @@ struct FeatureAPIs {
         self.export = Self.makeExport(composition)
         self.metadata = Self.makeMetadata(composition)
         self.person = Self.makePerson(composition)
+        self.maintenance = Self.makeMaintenance(composition)
+    }
+
+    private static func makeMaintenance(_ composition: AppComposition) -> any MaintenanceAPI {
+        LiveMaintenanceAPI(service: composition.maintenanceService)
     }
 
     private static func makeJob(_ composition: AppComposition) -> any JobAPI {
@@ -96,6 +102,7 @@ struct FeatureAPIs {
     private static func makeCulling(_ composition: AppComposition) -> any CullingAPI {
         LiveCullingAPI(
             cullingService: composition.cullingService,
+            triageService: composition.triageService,
             sessionRepo: SessionRepo(connection: composition.db)
         )
     }

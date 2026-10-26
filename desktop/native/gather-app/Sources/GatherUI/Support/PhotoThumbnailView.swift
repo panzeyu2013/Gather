@@ -330,7 +330,7 @@ public struct FaceCropThumbnailView: View {
         GeometryReader { geometry in
             let frame = geometry.size
             ZStack {
-                GatherTheme.backgroundSecondary
+                GatherTheme.surfaceMuted
                 if let image {
                     let layout = Self.layout(
                         imageSize: image.size,

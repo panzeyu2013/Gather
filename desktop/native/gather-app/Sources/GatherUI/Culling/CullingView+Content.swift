@@ -32,7 +32,7 @@ extension CullingView {
                         CullingToolbar(
                             viewModel: viewModel,
                             isBusy: isBusy,
-                            compareCount: $compareCount
+                            layoutMode: layoutBinding
                         )
                         emptyGuide(
                             title: l10n("当前范围没有照片"),
@@ -44,7 +44,8 @@ extension CullingView {
                     CullingWorkbench(
                         viewModel: viewModel,
                         isBusy: isBusy,
-                        compareCount: $compareCount,
+                        layoutMode: layoutBinding,
+                        density: densityBinding,
                         faceAlign: $faceAlign,
                         pendingAction: $pendingAction,
                         conflictChoices: $conflictChoices
@@ -70,6 +71,12 @@ extension CullingView {
             }
         }
         .task {
+            // G0：布局决定首页大小（网格 200，其余 500）；在首次加载前静默设置。
+            viewModel.applyPageLimit(layoutMode == .grid ? 200 : 500)
+            // 排序优先 SceneStorage（用户上次选择），否则用设置默认值。
+            if let stored = CullingSort(rawValue: sortRaw), viewModel.sortMode != stored {
+                viewModel.applySort(stored)
+            }
             // D10：控制中心「N 个 XMP 冲突待裁决 → 逐条裁决」的入口意图。
             // 旧实现只切到挑片页，用户还得自己找冲突；有缓存状态时甚至回到上一次
             // 无关的筛选。这里在页面就位后把筛选一次性收敛到冲突，并消费意图
@@ -85,7 +92,8 @@ extension CullingView {
                     state = CullingViewModel.FilterState()
                     state.metadataConflictOnly = true
                 }
-            } else {
+            } else if viewModel.page == nil {
+                // 页签重建不应重置已翻页的网格；隐藏期变更由 setVisible 补刷。
                 await viewModel.load()
             }
         }
@@ -98,6 +106,9 @@ extension CullingView {
         .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
             guard (notification.object as? String) == viewModel.sessionId else { return }
             Task { await viewModel.refreshSyncStatus() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.settingsChanged)) { _ in
+            Task { await viewModel.refreshTriageSettings() }
         }
         // 跨页领域变更（挑片/元数据/图库）：可见时按域补刷，隐藏时只登记，
         // 回可见由 onAppear 统一补一次；自身 origin 在 VM 内跳过。

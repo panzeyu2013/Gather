@@ -1,20 +1,18 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Database.swift
-// Cut 2 / B-1：Database facade（docs/refactor-decisions.md D-035）。
-// WP6a：open 状态机、Options/Outcome、迁移框架（设计 docs/reviews/wp6-schema-migration-design.md §4）。
+// Database facade（docs/refactor-decisions.md D-035）。
 //
-// 定位：V1 之后**唯一**的库入口。职责只有三件事：
-//   1. 打开即保证 schema 就绪：user_version == catalog.current（当前 2）**且**列形
-//      与快照一致（43 表 / 373 列 / 69 显式索引 / 62 外键 + 指纹）；
-//      0（且无表）→ 建当前 schema；形态正确的 V1 库 → 备份 + V1→V2 no-op 事务迁移
-//      + user_version=2；0 但有表 / 版本更高 / 同版本但列形不符 / 非 SQLite
-//      文件 → **默认 fail closed**（只抛错，不改名、不删文件）；只有 Options.resetPolicy
-//      == .renameToIncompatible（开发重置）才把 db/-wal/-shm 改名 .incompatible-* 后重建；
+// 定位：**唯一**的库入口。职责只有三件事：
+//   1. 打开即保证 schema 就绪：user_version == SchemaCurrent.userVersion（3）**且**
+//      列形与指纹一致（44 表 / 383 列 / 72 显式索引 / 65 外键）；
+//      0 且无表 → 建当前 schema；当前版本 → 直接打开；旧版本 / 更高版本 / 版本 0 有表 /
+//      形态不符 / 非 SQLite 文件 → **默认 fail closed**（只抛错，不改名、不删文件）；
+//      只有 Options.resetPolicy == .renameToIncompatible（开发重置）才把 db/-wal/-shm
+//      改名 .incompatible-* 后重建；
 //   2. 提供 read / write / async 三个作用域，让 Service 不再自己管连接与事务边界；
 //   3. 把底层 `DBError.message` 收敛成类型化 `DatabaseError`（见 DatabaseError.swift）。
 //
-// 接线（Cut 2 / S5c-2b-3b-2b-3）：生产 GatherApp 只经 `Database.open(at:)` 打开库，
-// 组合根用 `connection` 构造 Repo/Service（连接与建库只有 `Database.open(at:)` 单一入口）；
-// 测试工厂只执行 `SchemaV1.sql`。
+// 生产 GatherApp 只经 `Database.open(at:)` 打开库；测试工厂执行
+// `SchemaCurrent.createSQL`。
 //
 // ── 锁纪律（@unchecked Sendable 的依据） ──
 // 本类跨并发域传递，但锁纪律无法被编译器静态验证，故显式标注 @unchecked。三层保护：
@@ -26,22 +24,17 @@
 //     DBConnection 的公开 API，因此**不新增**第二条锁序（stateLock → connectionLock 单向）。
 //   * `asyncQueue`（串行 DispatchQueue）：只保证 async 调用之间 FIFO；read/write 与 async
 //     之间在 connectionLock 上串行，但不保证 FIFO（async body 也会取 stateLock）。
-//   * `DBConnection.readPoolState`（R6，DB.swift 持有）：只保护只读池的懒建/关闭，
-//     与 connectionLock **不同时持有**（ensureReadPool 不取写连接锁），因此不参与上述
-//     锁序；池内借还另用 ReadConnectionPool.lock。
 //
-// ── 读池（R6，D-035 #2 的落地） ──
-// `prepare` 遇到「无事务的 SELECT」时从只读池借连接（默认 2 条；":memory:" 不建池；
-// 池空回退写连接）。由此：
-//   * 长写事务只阻塞写语句与非 SELECT 读，普通 SELECT 读最近提交快照、不再排队；
-//   * 事务内/写语句/PRAGMA/WITH 仍走写连接，事务内读己写语义不变；
-//   * `read` 作用域里的无事务 SELECT 可能落到另一条连接——不要把 read 当隔离边界，
-//     也不要在 read 内依赖"随后 write 同连接"的隐式假设。
+// ── 读池延后（D-035 #2） ──
+// B-1 的 read 与 write **共用同一个连接**：底层 DBConnection 已经是「单连接 + 递归锁」
+// 语义（对齐 better-sqlite3），读池需要额外只读连接 + query_only + WAL 可见性管理，
+// 留到 S5 之后单独做。因此：长 read 会阻塞写、write 事务内的 read 不是快照隔离
+// （读到事务内未提交的数据），调用方不得把 read 当作隔离边界。
 //
 // ── 事务 ──
 // write 复用 `DBConnection.transaction`：嵌套调用退化为 SAVEPOINT（`gather_tx_<depth>`），
 // 内层失败只回滚到自己的 savepoint，外层可继续或整体回滚（与既有 Repo 语义一致）。
-// 迁移器不用 write，直接调 `connection.transaction(.immediate)`（见 SchemaMigrator）。
+// schema 建库在 `connection.transaction` 内执行 DDL + user_version。
 //
 // ── 错误 ──
 // read/write/async 只把 `DBError` 映射为 `DatabaseError`；body 抛出的其它错误原样上抛，
@@ -49,7 +42,7 @@
 import Foundation
 import GatherProtocol
 
-/// V1 库门面（单写连接 + 作用域 API）。
+/// 本地库门面（单写连接 + 作用域 API）。
 public final class Database: @unchecked Sendable {
 
     /// 内存库路径（SQLite 约定）。生产路径禁止使用（draft §6.3）。
@@ -84,10 +77,6 @@ public final class Database: @unchecked Sendable {
         public var retainIncompatibleCopies: Int
         /// 不兼容库处理策略：默认 fail closed；开发重置显式传 .renameToIncompatible。
         public var resetPolicy: ResetPolicy
-        /// 迁移备份保留份数（默认 3；`.pre-v<target>-*` 按时间戳从旧到新淘汰）。
-        public var retainMigrationBackups: Int
-        /// 版本/快照/迁移计划。默认 production（current = .v2、V1→V2 no-op）。
-        public var catalog: SchemaCatalog
         /// R6：只读连接池大小（0 = 关闭；":memory:" 永远不建池）。
         public var readPoolSize: Int
 
@@ -97,8 +86,6 @@ public final class Database: @unchecked Sendable {
             cacheSizeMB: Int = 64,
             retainIncompatibleCopies: Int = 3,
             resetPolicy: ResetPolicy = .failClosed,
-            retainMigrationBackups: Int = 3,
-            catalog: SchemaCatalog = .production,
             readPoolSize: Int = 2
         ) {
             self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
@@ -106,8 +93,6 @@ public final class Database: @unchecked Sendable {
             self.cacheSizeMB = cacheSizeMB
             self.retainIncompatibleCopies = retainIncompatibleCopies
             self.resetPolicy = resetPolicy
-            self.retainMigrationBackups = retainMigrationBackups
-            self.catalog = catalog
             self.readPoolSize = max(0, readPoolSize)
         }
 
@@ -207,75 +192,30 @@ public final class Database: @unchecked Sendable {
             }
 
             do {
-                switch try SchemaInspector.inspect(connection, catalog: options.catalog, path: path) {
-                case .current(let version):
-                    try assertReady(
-                        connection,
-                        expecting: options.catalog.snapshot(version),
-                        path: path
-                    )
+                switch try SchemaInspector.inspect(connection, path: path) {
+                case .current:
+                    try assertReady(connection, path: path)
                     return Database(
                         path: path,
                         connection: connection,
                         options: options,
-                        outcome: resetOutcome ?? .opened(version)
+                        outcome: resetOutcome ?? .opened(SchemaCurrent.userVersion)
                     )
 
                 case .empty:
-                    let snapshot = options.catalog.currentSnapshot
-                    try createSchema(connection, snapshot: snapshot)
-                    try assertReady(connection, expecting: snapshot, path: path)
+                    try createSchema(connection)
+                    try assertReady(connection, path: path)
                     return Database(
                         path: path,
                         connection: connection,
                         options: options,
-                        outcome: resetOutcome ?? .created(snapshot.version)
+                        outcome: resetOutcome ?? .created(SchemaCurrent.userVersion)
                     )
 
-                case .older(let from):
-                    // 备份是迁移的前置条件：失败即抛 .io，绝不带着「无备份」冒险迁移。
-                    let backup = try SchemaBackup.create(
-                        connection: connection,
-                        at: path,
-                        from: from,
-                        to: options.catalog.current,
-                        retaining: options.retainMigrationBackups
-                    )
-                    let to = try SchemaMigrator(catalog: options.catalog)
-                        .migrate(connection, from: from, path: path)
-                    try assertReady(connection, expecting: options.catalog.snapshot(to), path: path)
-                    return Database(
-                        path: path,
-                        connection: connection,
-                        options: options,
-                        outcome: resetOutcome ?? .migrated(from: from, to: to, backup: backup)
-                    )
-
-                case .newer(let version):
+                case .incompatible(let reason):
                     connection.close()
                     guard options.resetPolicy.allowsReset, !didReset else {
-                        throw DatabaseError.versionUnsupported(
-                            "库版本 \(version) 高于本构建 \(options.catalog.current.rawValue)：\(path)"
-                        )
-                    }
-                    let backup = try SchemaReset.reset(
-                        at: path,
-                        options: options,
-                        reason: .newerVersion(version),
-                        previousVersion: version
-                    )
-                    resetOutcome = .reset(
-                        reason: .newerVersion(version),
-                        previousVersion: version,
-                        backup: backup
-                    )
-                    didReset = true
-                    continue
-
-                case .corrupt(let reason):
-                    connection.close()
-                    guard options.resetPolicy.allowsReset, !didReset else {
-                        throw DatabaseError.corrupt("库不可用（\(reason)）：\(path)")
+                        throw incompatibleError(reason, path: path)
                     }
                     let backup = try SchemaReset.reset(
                         at: path,
@@ -286,25 +226,6 @@ public final class Database: @unchecked Sendable {
                     resetOutcome = .reset(
                         reason: reason.resetReason,
                         previousVersion: reason.version,
-                        backup: backup
-                    )
-                    didReset = true
-                    continue
-
-                case .unreadableVersion:
-                    connection.close()
-                    guard options.resetPolicy.allowsReset, !didReset else {
-                        throw DatabaseError.corrupt("无法读取 user_version：\(path)")
-                    }
-                    let backup = try SchemaReset.reset(
-                        at: path,
-                        options: options,
-                        reason: .unreadableVersion,
-                        previousVersion: nil
-                    )
-                    resetOutcome = .reset(
-                        reason: .unreadableVersion,
-                        previousVersion: nil,
                         backup: backup
                     )
                     didReset = true
@@ -327,14 +248,13 @@ public final class Database: @unchecked Sendable {
             throw DatabaseError.map(error)
         }
         do {
-            let snapshot = options.catalog.currentSnapshot
-            try createSchema(connection, snapshot: snapshot)
-            try assertReady(connection, expecting: snapshot, path: inMemoryPath)
+            try createSchema(connection)
+            try assertReady(connection, path: inMemoryPath)
             return Database(
                 path: inMemoryPath,
                 connection: connection,
                 options: options,
-                outcome: .created(snapshot.version)
+                outcome: .created(SchemaCurrent.userVersion)
             )
         } catch {
             connection.close()
@@ -420,10 +340,10 @@ public final class Database: @unchecked Sendable {
         let connection: DBConnection
         do {
             // DBConnection.open 已设置 journal_mode=WAL / foreign_keys=ON / busy_timeout。
-            // R6 批 2：只读池继承同一份 busy/cache 预算，避免读路径行为分叉。
+            // R6：文件库附带只读池，池读连接继承同一份 busy/cache 预算（避免读路径行为分叉）。
             connection = try DBConnection(
                 path: path,
-                readPoolSize: options.readPoolSize,
+                readPoolSize: path == Self.inMemoryPath ? 0 : options.readPoolSize,
                 busyTimeoutMilliseconds: options.busyTimeoutMilliseconds,
                 cacheSizeMB: options.cacheSizeMB
             )
@@ -454,17 +374,17 @@ public final class Database: @unchecked Sendable {
     ///
     /// 注意 DDL 里的 `PRAGMA foreign_keys = ON` 在事务内是 no-op（SQLite 语义）；
     /// 连接级开关已由 DBConnection.open 在事务前打开，事务后还会再自检一次。
-    private static func createSchema(_ connection: DBConnection, snapshot: SchemaSnapshot) throws {
+    private static func createSchema(_ connection: DBConnection) throws {
         do {
             _ = try connection.transaction {
-                try connection.exec(snapshot.createSQL)
+                try connection.exec(SchemaCurrent.createSQL)
             }
             guard let version = try SchemaInspector.readUserVersion(connection) else {
                 throw DatabaseError.schema("建库后读不到 user_version")
             }
-            guard version == snapshot.version.rawValue else {
+            guard version == SchemaCurrent.userVersion else {
                 throw DatabaseError.schema(
-                    "建库后 user_version=\(version)，期望 \(snapshot.version.rawValue)"
+                    "建库后 user_version=\(version)，期望 \(SchemaCurrent.userVersion)"
                 )
             }
         } catch let error as DBError {
@@ -477,24 +397,20 @@ public final class Database: @unchecked Sendable {
     /// 列形校验是「同版本旧库」的最后一道门：user_version 只证明曾经按该版本建过库，
     /// 不能证明它有当前的全部列（Cut 5 加列未 bump）。文件库在 inspect 中已检查并
     /// 按 resetPolicy 处理；这里对新建库/迁移后的库再断言一次，防止 DDL 与快照漂移。
-    private static func assertReady(
-        _ connection: DBConnection,
-        expecting snapshot: SchemaSnapshot,
-        path: String
-    ) throws {
+    private static func assertReady(_ connection: DBConnection, path: String) throws {
         do {
             guard let version = try SchemaInspector.readUserVersion(connection) else {
                 throw DatabaseError.schema("读取 PRAGMA user_version 无结果：\(path)")
             }
-            guard version == snapshot.version.rawValue else {
+            guard version == SchemaCurrent.userVersion else {
                 throw DatabaseError.schema(
-                    "schema 版本不是 \(snapshot.version.rawValue)（实际 \(version)）：\(path)"
+                    "schema 版本不是 \(SchemaCurrent.userVersion)（实际 \(version)）：\(path)"
                 )
             }
-            let issues = snapshot.shape.issues(against: try SchemaShapeReader.read(connection))
+            let issues = SchemaCurrent.shape.issues(against: try SchemaShapeReader.read(connection))
             guard issues.isEmpty else {
                 throw DatabaseError.schema(
-                    "\(snapshot.version) 列形不符：\(issues.joined(separator: "；"))"
+                    "\(SchemaCurrent.userVersion) 列形不符：\(issues.joined(separator: "；"))"
                 )
             }
             guard let row = try connection.prepare("PRAGMA foreign_keys;").get([]),
@@ -508,6 +424,15 @@ public final class Database: @unchecked Sendable {
             }
         } catch let error as DBError {
             throw DatabaseError(dbError: error)
+        }
+    }
+
+    private static func incompatibleError(_ reason: CorruptReason, path: String) -> DatabaseError {
+        switch reason {
+        case .newerVersion:
+            return .versionUnsupported(reason.description + "：\(path)")
+        case .notADatabase, .legacyPreV1, .oldVersion, .shapeMismatch, .unreadableVersion:
+            return .corrupt("库不可用（\(reason)）：\(path)")
         }
     }
 

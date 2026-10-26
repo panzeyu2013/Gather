@@ -6,8 +6,15 @@ import GatherProtocol
 
 extension CullingViewModel {
     public func loadMore() async {
-        guard !isLoading, page?.nextRowId != nil else { return }
+        guard !isLoading, hasMore else { return }
         await loadPage(reset: false)
+    }
+
+    /// 静默刷新可安全重取的页大小；nil = 已加载超过单次上限（service pageLimitMax），
+    /// 此时跳过页刷新、只刷新摘要等辅助数据，避免折叠页面与选择。
+    nonisolated static func silentRefreshPageLimit(pageLimit: Int, loadedCount: Int) -> Int? {
+        guard loadedCount <= 2_000 else { return nil }
+        return min(2_000, max(pageLimit, loadedCount))
     }
 
     private struct RefreshSnapshot: Sendable {
@@ -29,7 +36,7 @@ extension CullingViewModel {
     ///（500）。读取方据此保证栈顶在窗口内（服务端还会补栈顶，见 CullingService.getHistory）。
     nonisolated private static let historyWindow = 500
 
-    func refreshSilently() {
+    func refreshSilently(forcePage: Bool = false) {
         refreshTask?.cancel()
         guard page != nil else { return }
         let version = pageVersion
@@ -39,14 +46,27 @@ extension CullingViewModel {
         let scope = currentAPIScope
         let filters = filtersForCurrentState()
         let groupId = selectedSimilarityGroupId
-        refreshTask = Task.detached { [api, metadata, sessionId, scope, filters, groupId, version] in
+        let sort = sortMode
+        // 决策后的本地状态已由 applyDecisionStates 更新：无筛选且不是 rating/T0 排序时，
+        // 页不需要重取；只刷 summary/aux。这样深翻/大页不会每次 P/X 重建整页。
+        let pageOrderDependsOnDecision = sort == .ratingDesc || sort == .triageConfidenceAsc
+        let needsPage = forcePage || filters?.hasAnyFilter == true || pageOrderDependsOnDecision
+        // 保留已加载范围：静默刷新不得把多页翻页折叠成首页（会导致当前照片跨页丢失、
+        // 选择变为“不可见”，进而让 P/X 误伤当前照片）。
+        let loaded = page?.assets.count ?? 0
+        let limit = needsPage
+            ? Self.silentRefreshPageLimit(pageLimit: pageLimit, loadedCount: loaded)
+            : nil
+        refreshTask = Task.detached { [api, metadata, sessionId, scope, filters, groupId, sort, limit, version] in
             let snapshot = await Self.fetchSnapshot(
                 api: api,
                 metadata: metadata,
                 sessionId: sessionId,
                 scope: scope,
                 filters: filters,
-                groupId: groupId
+                groupId: groupId,
+                sort: sort,
+                limit: limit
             )
             let cancelled = Task.isCancelled
             await MainActor.run {
@@ -60,8 +80,12 @@ extension CullingViewModel {
         guard version == pageVersion else { return }
         lastSyncError = snapshot.auxError ?? snapshot.pageError
         if let page = snapshot.page {
-            selectedPhotoIds.formIntersection(loadedPhotoIds)
-            loadedPhotoIds = Set(page.assets.map(\.photo.id))
+            let ids = Set(page.assets.map(\.photo.id))
+            loadedPhotoIds = ids
+            // 只保留仍被加载的选择：刷新后不可见的照片不能再参与批量决策。
+            selectedPhotoIds.formIntersection(ids)
+            // 内容版本：网格布局缓存/在途 conflicts 守卫都据此判断“页已变”。
+            pageVersion += 1
             self.page = page
             logQualityFailures(page)
             if let current = currentPhotoId, !page.assets.contains(where: { $0.photo.id == current }) {
@@ -89,20 +113,25 @@ extension CullingViewModel {
         sessionId: String,
         scope: CullingScope,
         filters: CullingFilters?,
-        groupId: String
+        groupId: String,
+        sort: CullingSort,
+        limit: Int?
     ) async -> RefreshSnapshot {
         var snapshot = RefreshSnapshot()
-        do {
+        if let limit {
+            do {
             let query = try CullingPageQuery(
                 sessionId: sessionId,
                 scope: scope,
                 filters: scope == .filtered ? filters : nil,
                 groupId: scope == .similarityGroup && !groupId.isEmpty ? groupId : nil,
-                limit: 500
+                sort: sort,
+                limit: limit
             )
-            snapshot.page = try await api.page(query)
-        } catch {
-            snapshot.pageError = CommandError(error)
+                snapshot.page = try await api.page(query)
+            } catch {
+                snapshot.pageError = CommandError(error)
+            }
         }
         guard !Task.isCancelled else { return snapshot }
         do {
@@ -111,10 +140,13 @@ extension CullingViewModel {
             snapshot.auxError = snapshot.auxError ?? CommandError(error)
         }
         guard !Task.isCancelled else { return snapshot }
-        do {
-            snapshot.groups = try await api.groups(sessionId)
-        } catch {
-            snapshot.auxError = snapshot.auxError ?? CommandError(error)
+        // 相似度分组只在相似度范围需要；默认网格每次决策刷新不应全量读 groups。
+        if scope == .similarityGroup {
+            do {
+                snapshot.groups = try await api.groups(sessionId)
+            } catch {
+                snapshot.auxError = snapshot.auxError ?? CommandError(error)
+            }
         }
         guard !Task.isCancelled else { return snapshot }
         do {
@@ -156,20 +188,23 @@ extension CullingViewModel {
         }
         loadGeneration &+= 1
         let generation = loadGeneration
+        if reset { loadMoreFailed = false }
         isLoading = true
         defer {
             if generation == loadGeneration { isLoading = false }
         }
         do {
             let scope = currentAPIScope
+            let cursor = reset ? nil : page?.nextCursor
             let query = try CullingPageQuery(
                 sessionId: sessionId,
                 scope: scope,
                 filters: scope == .filtered ? filtersForCurrentState() : nil,
                 groupId: scope == .similarityGroup && !selectedSimilarityGroupId.isEmpty
                     ? selectedSimilarityGroupId : nil,
-                afterRowId: reset ? nil : page?.nextRowId.map(Int64.init),
-                limit: 500
+                sort: sortMode,
+                cursor: cursor,
+                limit: pageLimit
             )
             let nextPage = try await cullingAPI.page(query)
             guard generation == loadGeneration else { return }
@@ -178,8 +213,8 @@ extension CullingViewModel {
             if reset || page == nil {
                 // 对齐 TS：update/batchUpdate/undo/redo 后整页刷新不清空选择，
                 // 仅在选择已失效（不在本次会话已加载的照片全集）时清空对应条目。
-                selectedPhotoIds.formIntersection(loadedPhotoIds)
                 loadedPhotoIds = newIds
+                selectedPhotoIds.formIntersection(newIds)
                 page = nextPage
                 if let current = currentPhotoId, !newIds.contains(current) {
                     currentPhotoId = nextPage.assets.first?.photo.id
@@ -190,49 +225,59 @@ extension CullingViewModel {
             } else if let oldPage = page {
                 page = CullingPage(
                     assets: oldPage.assets + nextPage.assets,
-                    nextRowId: nextPage.nextRowId,
-                    total: nextPage.total
+                    total: nextPage.total,
+                    nextCursor: nextPage.nextCursor
                 )
                 loadedPhotoIds.formUnion(newIds)
             }
-            let fetchedSummary = try await cullingAPI.summary(sessionId)
-            guard generation == loadGeneration else { return }
-            summary = fetchedSummary
-            // 以下为辅助查询：失败保持降级（空结果）但不静默，写入 lastSyncError 由 UI 提示。
-            lastSyncError = nil
-            do {
-                similarityGroups = try await cullingAPI.groups(sessionId)
-            } catch {
+            // 翻页只追加页数据；summary/groups/sync/history 不随页变化，
+            // 避免 20k 会话每 loadMore 都做 O(session) 查询。
+            if reset {
+                let fetchedSummary = try await cullingAPI.summary(sessionId)
                 guard generation == loadGeneration else { return }
-                similarityGroups = []
-                lastSyncError = CommandError(error)
+                summary = fetchedSummary
+                // 以下为辅助查询：失败保持降级（空结果）但不静默，写入 lastSyncError 由 UI 提示。
+                lastSyncError = nil
+                // 相似度分组只在相似度范围需要；默认网格/翻页不拉全量 groups。
+                if scopeMode == .similarityGroup, similarityGroups.isEmpty {
+                    do {
+                        similarityGroups = try await cullingAPI.groups(sessionId)
+                    } catch {
+                        guard generation == loadGeneration else { return }
+                        similarityGroups = []
+                        lastSyncError = CommandError(error)
+                    }
+                }
+                guard generation == loadGeneration else { return }
+                // 对齐 TS：不自动选中第一组；未显式选组时保持空选，
+                // 请求服务端全部相似组照片。
+                if !similarityGroups.contains(where: { $0.groupId == selectedSimilarityGroupId }) {
+                    selectedSimilarityGroupId = ""
+                }
+                do {
+                    let status = try await cullingAPI.syncStatus(sessionId)
+                    guard generation == loadGeneration else { return }
+                    applySyncStatus(status.summary)
+                    reloadAcked = status.reloadAckedAt != nil
+                } catch {
+                    guard generation == loadGeneration else { return }
+                    applySyncStatus(nil)
+                    lastSyncError = CommandError(error)
+                }
+                do {
+                    let historyQuery = try CullingHistoryQuery(
+                        sessionId: sessionId, limit: Self.historyWindow)
+                    let fetchedHistory = try await cullingAPI.history(historyQuery)
+                    guard generation == loadGeneration else { return }
+                    history = fetchedHistory
+                } catch {
+                    guard generation == loadGeneration else { return }
+                    history = []
+                    lastSyncError = CommandError(error)
+                }
             }
-            guard generation == loadGeneration else { return }
-            // 对齐 TS：不自动选中第一组；未显式选组时保持空选，
-            // 请求服务端全部相似组照片。
-            if !similarityGroups.contains(where: { $0.groupId == selectedSimilarityGroupId }) {
-                selectedSimilarityGroupId = ""
-            }
-            do {
-                let status = try await cullingAPI.syncStatus(sessionId)
-                guard generation == loadGeneration else { return }
-                applySyncStatus(status.summary)
-                reloadAcked = status.reloadAckedAt != nil
-            } catch {
-                guard generation == loadGeneration else { return }
-                applySyncStatus(nil)
-                lastSyncError = CommandError(error)
-            }
-            do {
-                let historyQuery = try CullingHistoryQuery(sessionId: sessionId, limit: Self.historyWindow)
-                let fetchedHistory = try await cullingAPI.history(historyQuery)
-                guard generation == loadGeneration else { return }
-                history = fetchedHistory
-            } catch {
-                guard generation == loadGeneration else { return }
-                history = []
-                lastSyncError = CommandError(error)
-            }
+
+
             // P2-8（审计 2）：detached 任务必须带版本守卫（同 refreshSilently 的惯例）。
             // 连续改筛选会并发多个 conflicts 请求，旧请求后到会覆盖新列表；
             // 旧请求失败还会把 conflicts 清空并写入过期的 lastSyncError。
@@ -250,10 +295,13 @@ extension CullingViewModel {
                 }
             }
             if let page { logQualityFailures(page) }
+            loadMoreFailed = false
             errorMessage = nil
             flushDeferredDomainRefresh()
         } catch {
             guard generation == loadGeneration else { return }
+            // 续页失败要留重试入口：sentinel 已出现不会再 onAppear。
+            if !reset { loadMoreFailed = true }
             errorMessage = CommandError(error)
         }
     }
@@ -266,6 +314,10 @@ extension CullingViewModel {
         if let label = filterState.colorLabel { filters.colorLabels = [label]; active = true }
         if let quality = filterState.qualityStatus { filters.qualityStatus = quality; active = true }
         if filterState.metadataConflictOnly { filters.metadataConflictOnly = true; active = true }
+        if let verdicts = filterState.triageVerdicts, !verdicts.isEmpty {
+            filters.triageVerdicts = verdicts
+            active = true
+        }
         return active ? filters : nil
     }
 
@@ -274,6 +326,8 @@ extension CullingViewModel {
     public func setFilterState(_ mutate: (inout FilterState) -> Void) async {
         mutate(&filterState)
         scopeMode = filterState.isActive ? .filtered : .all
+        // P0：筛选变化后旧选择可能不可见；提交前必须清空。
+        selectedPhotoIds.removeAll()
         await loadPage(reset: true)
     }
 
@@ -282,19 +336,35 @@ extension CullingViewModel {
         guard filterState.isActive || scopeMode != .all else { return }
         filterState = FilterState()
         scopeMode = .all
+        selectedPhotoIds.removeAll()
         await loadPage(reset: true)
     }
 
     public func setScope(_ scope: ScopeMode) async {
         guard scopeMode != scope else { return }
         scopeMode = scope
+        selectedPhotoIds.removeAll()
         await loadPage(reset: true)
     }
 
+    /// 相似度分组是 O(session) 查询；只在进入相似度范围/需要选组时加载。
+    /// force 用于“从全部范围直接选组”：此时 scope 还不是 similarityGroup。
+    public func loadSimilarityGroupsIfNeeded(force: Bool = false) async {
+        guard (force || scopeMode == .similarityGroup), similarityGroups.isEmpty else { return }
+        do {
+            similarityGroups = try await cullingAPI.groups(sessionId)
+        } catch {
+            similarityGroups = []
+            lastSyncError = CommandError(error)
+        }
+    }
+
     public func selectSimilarityGroup(_ groupId: String) async {
+        await loadSimilarityGroupsIfNeeded(force: true)
         guard similarityGroups.contains(where: { $0.groupId == groupId }) else { return }
         selectedSimilarityGroupId = groupId
         scopeMode = .similarityGroup
+        selectedPhotoIds.removeAll()
         await loadPage(reset: true)
     }
 }

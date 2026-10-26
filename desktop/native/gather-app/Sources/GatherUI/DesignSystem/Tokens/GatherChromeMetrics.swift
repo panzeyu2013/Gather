@@ -14,7 +14,6 @@ public enum GatherChromeMetrics {
 
     /// 内容区最小宽度预算：窗口最小宽度 − 侧栏最小宽度。
     public static var contentMinWidth: CGFloat { windowMinWidth - sidebarMinWidth }
-    public static var contentMinHeight: CGFloat { windowMinHeight }
 
     /// 工具栏字段（GatherMenuField .toolbar）的横向内边距。
     public static let fieldToolbarHorizontalPadding: CGFloat = 5

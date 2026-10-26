@@ -36,9 +36,6 @@ private struct ParallelMutations: MetadataMutationPort {
     func queuePhotoValues(sessionId: String, photoId: String, values: [String: JSONValue], source: MetadataMutationSource, schedule: Bool) throws -> MetadataMutationResult {
         MetadataMutationResult(photoId: photoId, xmpPath: photoId + ".xmp", dirtyFields: [.rating], revision: 1, status: "pending")
     }
-    func queueMutation(sessionId: String, photoId: String, patch: MetadataPatch, source: MetadataMutationSource) async throws -> MetadataMutationResult {
-        MetadataMutationResult(photoId: photoId, xmpPath: photoId + ".xmp", dirtyFields: [], revision: 1, status: "pending")
-    }
 }
 
 @Suite("MetadataParallelBatch")
@@ -78,16 +75,6 @@ struct MetadataParallelBatchTests {
         let result = try await service(db).getMetadata(photoIds: ids)
         #expect(result.count == ids.count)
         #expect(Set(result.keys) == Set(ids))
-    }
-
-    @Test("batchSet：96 项并发分组，成功计数与输入逐项对应")
-    func batchSetCountsEveryUpdate() async throws {
-        let (db, _, ids) = try makeDB(photos: 96)
-        let updates = ids.map { (photoId: $0, tags: MetadataTags(rating: 3)) }
-        let result = try await service(db).batchSet(updates: updates)
-        #expect(result.success == ids.count)
-        #expect(result.failed == 0)
-        #expect(result.errors.isEmpty)
     }
 
     @Test("WritebackService.execute：64 项 Phase 1 并发入队不丢项（totalAffected 守恒）")

@@ -210,30 +210,30 @@ struct CullingContractTests {
         #expect(!keys.contains("metadataSource"))
     }
 
-    // MARK: - CullingPage（nextRowId: number | null）
+    // MARK: - CullingPage（nextCursor 唯一续页凭据）
 
     @Test func cullingPageRoundTripAndKeys() throws {
         let original = CullingPage(
             assets: [],
-            nextRowId: 42,
-            total: 3
+            total: 3,
+            nextCursor: CullingPageCursor(sort: .importOrder, rowId: 42)
         )
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(CullingPage.self, from: data)
         #expect(decoded == original)
-        #expect(Set(try jsonKeys(of: data)) == ["assets", "nextRowId", "total"])
+        #expect(Set(try jsonKeys(of: data)) == ["assets", "nextCursor", "total"])
     }
 
-    @Test func cullingPageNextRowIdNullAlwaysEncoded() throws {
-        let page = CullingPage(assets: [], nextRowId: nil, total: 3)
+    @Test func cullingPageNilCursorIsOmitted() throws {
+        let page = CullingPage(assets: [], total: 3)
         let object = try jsonObject(of: JSONEncoder().encode(page))
-        #expect(object["nextRowId"] is NSNull, "TS nextRowId: number | null —— nil 必须编码为 null 且 key 恒存在")
+        #expect(object["nextCursor"] == nil)
     }
 
-    @Test func cullingPageNextRowIdDecodesFromNull() throws {
-        let json = #"{"assets":[],"nextRowId":null,"total":3}"#
+    @Test func cullingPageDecodesWithoutCursor() throws {
+        let json = #"{"assets":[],"total":3}"#
         let decoded = try JSONDecoder().decode(CullingPage.self, from: Data(json.utf8))
-        #expect(decoded.nextRowId == nil)
+        #expect(decoded.nextCursor == nil)
         #expect(decoded.total == 3)
     }
 
@@ -354,6 +354,92 @@ struct CullingContractTests {
         #expect(try JSONDecoder().decode(CullingSummary.self, from: data) == original)
         #expect(Set(try jsonKeys(of: data)) == ["totalGroups", "totalPhotos", "kept", "rejected", "pending", "rated", "labeled"])
     }
+
+    @Test func cullingSummaryCarriesTriageSummary() throws {
+        let triage = TriageSummary(
+            counts: TriageCounts(keep: 3, reject: 2, review: 1, total: 6, coverage: 0.8),
+            stale: false, policyVersion: "triage-v1",
+            inputFingerprint: "fp", generatedAt: "t"
+        )
+        let original = CullingSummary(
+            totalGroups: 5, totalPhotos: 30, kept: 20, rejected: 5, pending: 5,
+            rated: 12, labeled: 8, triage: triage
+        )
+        let data = try JSONEncoder().encode(original)
+        #expect(try JSONDecoder().decode(CullingSummary.self, from: data) == original)
+        #expect(Set(try jsonKeys(of: data)) == [
+            "totalGroups", "totalPhotos", "kept", "rejected", "pending", "rated", "labeled", "triage",
+        ])
+    }
+
+    @Test func cullingAssetTriageRoundTripAndDefaultNil() throws {
+        let photo = PhotoData(
+            id: "p1", sessionId: "s1", filepath: "/u/DSC0001.ARW", filename: "DSC0001.ARW",
+            checksum: "abc", hasExistingXmp: true, faceCount: 0, width: 6000, height: 4000,
+            metadata: [:], result: [:], status: "indexed", assetId: "asset_1",
+            createdAt: "t", updatedAt: "t"
+        )
+        let state = AssetCullingState(
+            photoId: "p1", pickState: .unreviewed, rating: 0,
+            colorLabel: .none, source: .manual, revision: 0, updatedAt: "t"
+        )
+        let suggestion = TriageSuggestion(
+            photoId: "p1", verdict: .reject, score: 0.42, confidence: 0.91,
+            reasons: [TriageReason(code: .motionBlur), TriageReason(code: .weakerThanGroupBest, value: 0.3)],
+            groupId: "sim:1:0", policyVersion: "triage-v1",
+            inputFingerprint: "fp", computedAt: "t"
+        )
+        let original = CullingAsset(
+            photo: photo, state: state, xmpPath: "/u/DSC0001.xmp", syncStatus: .clean,
+            people: [], keywords: [], linkedVariantCount: 1, faceBboxes: [], triage: suggestion
+        )
+        let data = try JSONEncoder().encode(original)
+        #expect(try JSONDecoder().decode(CullingAsset.self, from: data) == original)
+        #expect(try jsonKeys(of: data).contains("triage"))
+
+        let without = CullingAsset(
+            photo: photo, state: state, xmpPath: "/u/DSC0001.xmp", syncStatus: .clean,
+            people: [], keywords: [], linkedVariantCount: 1, faceBboxes: []
+        )
+        let withoutData = try JSONEncoder().encode(without)
+        let keysWithout = try jsonKeys(of: withoutData)
+        #expect(!keysWithout.contains("triage"), "nil 建议不新增 JSON key（旧读方兼容）")
+        #expect(try JSONDecoder().decode(CullingAsset.self, from: withoutData) == without)
+    }
+
+    @Test("G0 冻结枚举 rawValue：CullingSort / keyKind / 方向")
+    func cullingSortRawValuesAreFrozen() {
+        #expect(CullingSort.allCases.map(\.rawValue) == [
+            "import", "capture_desc", "capture_asc", "rating_desc", "triage_confidence_asc",
+        ])
+        #expect(CullingSort.importOrder.keyKind == .rowId)
+        #expect(CullingSort.captureDesc.keyKind == .date)
+        #expect(CullingSort.captureAsc.keyKind == .date)
+        #expect(CullingSort.ratingDesc.keyKind == .number)
+        #expect(CullingSort.triageConfidenceAsc.keyKind == .number)
+        #expect(CullingSort.captureDesc.descending)
+        #expect(CullingSort.ratingDesc.descending)
+        #expect(!CullingSort.captureAsc.descending)
+        #expect(!CullingSort.importOrder.descending)
+    }
+
+    @Test("T0 冻结枚举 rawValue：verdict / reason / review flag")
+    func triageRawValuesAreFrozen() {
+        #expect(TriageVerdict.allCases.map(\.rawValue) == ["keep", "reject", "review"])
+        #expect(TriageReasonCode.allCases.count == 17)
+        #expect(Set(TriageReasonCode.allCases.map(\.rawValue)) == [
+            "group_best", "weaker_than_group_best", "motion_blur", "exposure_low",
+            "closed_eye_suspect", "close_call", "tie_with_group", "single_shot",
+            "no_alternative", "low_technical", "quality_missing", "analysis_failed",
+            "duplicate_exact", "duplicate_visual", "multi_face_low_confidence",
+            "small_face", "manual_override",
+        ])
+        #expect(Set(FaceReviewFlag.allCases.map(\.rawValue)) == [
+            "suspect", "low_quality", "small_face",
+            "unresolved_observation", "incompatible_model",
+        ])
+    }
+
     private func jsonKeys(of data: Data) throws -> [String] {
         Array(try jsonObject(of: data).keys)
     }
