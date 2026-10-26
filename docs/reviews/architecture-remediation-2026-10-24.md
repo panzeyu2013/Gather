@@ -292,3 +292,22 @@ CI `gates` job 增加一步。
   CI 维持串行主 job + 并行 smoke。
 - **R6-b 分块**：需真实库跑出 >100ms 事务清单（用 `GATHER_SLOW_TX_MS=100` 采样）后再改事务边界。
 
+## 16. 第二轮全量 review（2026-10-25）
+
+完整发现与证据见 [architecture-review-2026-10-25.md](architecture-review-2026-10-25.md)：无 P0，
+6 条 P1 / 18 条 P2 / 1 条驳回。本轮已落地：
+
+- **P1**：JobService 终态写三态化（不再把 SQL 错误当 leaseLost）；看门狗排除本进程活跃
+  job（+回归测试）；AppImport 改走 async SessionAPI（离开主线程 + 复用补偿删除）；
+  5 个门禁增加扫描根/文件数下界；skip 到期日 strict FAIL。
+- **P2**：AnalysisRunRepo 事务化；hasWrittenBackItem 口径统一；Culling 缓存 DB 错误上抛；
+  minSamples 下界 2；settingsProvider 生命周期；SessionStore 先认领再淘汰；
+  layering 正则兼容 @_exported/import struct；release SDK<26 fail-closed；
+  xmp_path 安全校验（DeliveryXMPPath + 测试）；ReadPoolTests 串行化。
+- **驳回**：IdentityPolicy 亚军阈值——文件头与测试明确“被拒绝的亚军仍参与歧义”，不是缺陷。
+
+已继续收口：A1 cleanup 假 conflict（盘上==备份内容时幂等继续 + 回归测试）、A5 读池
+跨事务守卫、B4 cancelScope 窄查询、D3 CI 并行 smoke 删除、D5 文档计数、E1 DB.swift
+拆分（695 行）。已修 C4（推荐算法对齐服务端 + 测试）。已修 A3（applied intent + replay 补删备份 + 测试）。已修 B3（批外层预读 + 相交回退）。C5 也已把 runtime.start 移入 detached，仅剩组合根对象装配在主线程。
+C5 已把 Database.open/schema 校验移入 detached，组合根与 runtime.start 仍主线程。
+

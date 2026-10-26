@@ -33,7 +33,7 @@ Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 ```text
 desktop/native/
 ├── gather-core/                     # 5 个库 target（零第三方依赖，另有 GatherTestSupport 夹具）
-│   ├── Sources/GatherProtocol/      # 值类型、16 个域 API 协议、GatherErrorCode、路径策略
+│   ├── Sources/GatherProtocol/      # 值类型、15 个域 API 协议、GatherErrorCode、路径策略
 │   ├── Sources/GatherPersistence/   # SchemaV1、Database、Repositories
 │   ├── Sources/GatherDelivery/      # DeliveryCoordinator / 写回 / XMP 文件锁
 │   ├── Sources/GatherAnalysis/      # Face/Image/Concurrent/Similarity 算法
@@ -256,7 +256,7 @@ App Sandbox**：当前签名与运行模型没有沙盒容器，授权路径访�
 
 ```text
 SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
-  ↓ AppServices（16 个域 API / 110 个类型化方法，同进程直连）
+  ↓ AppServices（15 个域 API / 104 个类型化方法，同进程直连）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication 服务（交付编排在 GatherDelivery）
@@ -312,7 +312,7 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - `L10n`（`Support/L10n.swift:120`）：**key 即中文文案**；渲染期显式携带
   `language`（`L10n.Language.zhCN/en`），经 `Bundle.module` 的 `.lproj` 查表——
   `zh-Hans.lproj` 只有 9 个占位键，未命中自动回退 key（即中文）；`en.lproj`
-  （1,336 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
+  （1,337 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
   (language, key) 缓存查表结果，避免每帧重走 Bundle 查找。
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`
@@ -472,13 +472,13 @@ Cut 1 后字符串命令面已删除；当前机器判据（CI 的 boundary job 
                                          # R5 对 Router 三类旧文件做 0 文件断言
 ./scripts/check-cleanup-ratchet.sh       # 5 个清理指标不得超过 docs/cleanup-baseline.json
 ./scripts/check-docs.sh --strict         # ADR 路径、当前文档（非 archive）md 链接、docs/archive、当前 schema 版本
-./scripts/check-layering.sh              # 17 条依赖方向（UI 不 import Persistence/Domain/Analysis）
+./scripts/check-layering.sh              # 19 条依赖方向（UI 不 import Persistence/Domain/Analysis/Delivery/Host）
 ./scripts/check-protocol-surface.sh --strict  # Protocol public 类型/声明/零引用/Router 信封 ratchet
 ./scripts/check-duplicate-symbols.sh --strict
 ./scripts/check-test-catalog.sh --strict # 测试文件头注释 / skip 元数据（.enabled、@Suite(.disabled)、owner/到期/原因）
 ./scripts/check-test-catalog.sh --self-test # 负例：缺元数据应 exit 1，补齐后 exit 0（非独立门禁）
 ./scripts/check-select-star.sh           # Sources 4 处 / Tests 白名单 1 处
-./scripts/check-preview-surface.sh --strict  # 14 个 #Preview / 5 个 PreviewSupport 文件
+./scripts/check-preview-surface.sh --strict  # 18 个 #Preview / 13 个文件
 ./scripts/check-coded-errors.sh          # 错误码类型化：Persistence 无裸码字符串；Host 反解须标 allow: string-code
 ./scripts/check-backlog-evidence.sh      # cleanup-backlog 的 pending/deferred 段必须有证据标记
 ```

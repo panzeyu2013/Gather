@@ -37,7 +37,7 @@ Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRoute
 `NativeCommandClient`；历史命令映射见 [api-migration-map.md](archive/cuts/api-migration-map.md)。
 
 > 当前基线（2026-10-24 采样，R1–R9 整改后）：8 个功能 target、Schema **43 表 / 373 列 / 69 索引 / 62 外键（user_version=2）**、
-> core **1,160 tests / 173 suites**、app **648 tests / 73 suites**、en 1,336 键 / zh 9 键；无 Router、无字符串命令。
+> core **1,166 tests / 173 suites**、app **650 tests / 74 suites**、en 1,337 键 / zh 9 键；无 Router、无字符串命令。
 > V1→V2 为线性迁移（先一致性备份，再事务补版本/列）；未知形态默认 fail-closed，仅显式重置策略才改名重建。
 > **12 道** strict 门禁全绿；ratchet **54/228/0/0/0**（采样命令见 DEVELOPMENT.md）。
 

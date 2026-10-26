@@ -82,7 +82,7 @@
 | 项 | 位置 | 说明 |
 |---|---|---|
 | 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（`scripts/check-no-legacy.sh` 门禁）；模块拆分为 8 个 target（Protocol/Persistence/Delivery/Analysis/Application/UI/Host/App）；2026-10-22 本机 `swift test`：gather-core **1,092 / 157 suites**，gather-app **581 / 66 suites**，exit 0 |
-| 类型化 API 16/110 | `gather-core/Sources/GatherProtocol/API/` + `gather-app/Sources/GatherHost/APIs/` | Cut 1 删除 118 条字符串命令与 Router；16 协议 / 110 方法经 `AppServices` 注入，0 处 `execute("x.y")`；命令面脚本已删除，映射表归档在 [archive/cuts/api-migration-map.md](archive/cuts/api-migration-map.md) |
+| 类型化 API 16/110 | `gather-core/Sources/GatherProtocol/API/` + `gather-app/Sources/GatherHost/APIs/` | Cut 1 删除 118 条字符串命令与 Router；15 协议 / 104 方法经 `AppServices` 注入，0 处 `execute("x.y")`；命令面脚本已删除，映射表归档在 [archive/cuts/api-migration-map.md](archive/cuts/api-migration-map.md) |
 | Culling 逻辑资产分页 | `gather-core/Services/CullingService.swift` | keyset 游标、首选变体谓词、total 逻辑资产（ADR-008） |
 | 阈值预计算多档 | `SimilarityService` | 主档 + T±4/T±8 档位，`precomputed` 行排除不变量 |
 | 任务化分析/写回 | `Services/JobService.swift` + executors | 租约/心跳/checkpoint/dedupeKey/取消/重试；`sim.recluster` 已任务化（ADR-024） |
@@ -92,7 +92,7 @@
 | 写回可靠性 | `DeliveryCoordinator` + `DeliveryRepo` + 纯函数 `aggregateSessionState` | `deliveries/delivery_sessions/delivery_items/delivery_intents` 单事务确认；冲突检测/备份/重试/清理（ADR-015 历史；`MetadataSyncCoordinator`、`CaptureOneSyncState` 已删，见 ADR-028） |
 | 工作区状态 | `WorkspaceStatusService` | 只读聚合、固定优先级推荐、离线 TTL（ADR-012/013） |
 | 一跳化导入 | `SessionService` / `IndexerService` | 路径不跨 IPC、`truncated_import` 标记、去重键 |
-| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 179 项错误码 + 任务/相位文案；en 1,332 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
+| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 179 项错误码 + 任务/相位文案；en 1,337 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
 | 主题与无障碍 | `GatherTheme` / RootView | 品牌令牌 + 语义字体/按钮层级/accessibilityHidden 门控 |
 | 深链/菜单/导入 | `GatherAppDelegate` | gather:// 深链、文件打开、拖拽、菜单、importCompleted 通知 |
 
