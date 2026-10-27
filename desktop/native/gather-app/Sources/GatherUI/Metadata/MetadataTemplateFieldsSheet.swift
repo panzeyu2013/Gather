@@ -129,7 +129,9 @@ struct MetadataTemplateFieldsSheet: View {
                 // 空文本 = 从模板移除；要显式清空必须勾选。
                 if fields.value(for: field) != nil { edited.set(nil, for: field) }
             } else if descriptor(field)?.shape == .bag || descriptor(field)?.shape == .seq {
-                let items = text.split(separator: "、")
+                // 同时接受中文顿号与逗号：英文输入法下 "," 是自然分隔符，
+                // 只认顿号会把 "a, b" 当成一个关键词整体写入。
+                let items = text.split(whereSeparator: { $0 == "、" || $0 == "," })
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
                 edited.set(items.isEmpty ? nil : .list(items), for: field)

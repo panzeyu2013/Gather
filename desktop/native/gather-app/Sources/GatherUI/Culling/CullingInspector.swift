@@ -137,7 +137,7 @@ struct CullingInspector: View {
                 .sheet(item: $activeSheet) { sheet in
                     switch sheet {
                     case .ingest:
-                        IngestSheet(viewModel: viewModel, sessionSourcePath: "")
+                        IngestSheet(viewModel: viewModel)
                     case .templates:
                         MetadataTemplateSheet(viewModel: viewModel)
                     case .batches:
@@ -188,6 +188,26 @@ struct CullingInspector: View {
                             .buttonStyle(.bordered)
                             .frame(maxWidth: .infinity)
                             .disabled(isBusy)
+                            // 挂在按钮自身上：同一视图叠两个 confirmationDialog 时
+                            // SwiftUI 只保证其中一个能弹出（见本文件顶部注释）。
+                            .confirmationDialog(
+                                l10n("撤销上次建议写回？"),
+                                isPresented: $showTriageUndoConfirm,
+                                titleVisibility: .visible
+                            ) {
+                                Button(l10n("撤销"), role: .destructive) {
+                                    guard let batchId = viewModel.lastTriageWritebackBatchId,
+                                          let input = try? MetadataTemplateUndoInput(batchId: batchId)
+                                    else { return }
+                                    Task {
+                                        await viewModel.undoTriageWriteback(
+                                            Confirmed(input, source: .userDialog))
+                                    }
+                                }
+                                Button(l10n("取消"), role: .cancel) {}
+                            } message: {
+                                Text(l10n("还原 rating/关键词，并清除私有命名空间信号。"))
+                            }
                         }
                     }
                     .confirmationDialog(
@@ -206,24 +226,6 @@ struct CullingInspector: View {
                         Button(l10n("取消"), role: .cancel) { pendingTriageInput = nil }
                     } message: {
                         Text(l10n("会写入全会话所有 keep/reject 建议的私有信号；rating 只写空值。"))
-                    }
-                    .confirmationDialog(
-                        l10n("撤销上次建议写回？"),
-                        isPresented: $showTriageUndoConfirm,
-                        titleVisibility: .visible
-                    ) {
-                        Button(l10n("撤销"), role: .destructive) {
-                            guard let batchId = viewModel.lastTriageWritebackBatchId,
-                                  let input = try? MetadataTemplateUndoInput(batchId: batchId)
-                            else { return }
-                            Task {
-                                await viewModel.undoTriageWriteback(
-                                    Confirmed(input, source: .userDialog))
-                            }
-                        }
-                        Button(l10n("取消"), role: .cancel) {}
-                    } message: {
-                        Text(l10n("还原 rating/关键词，并清除私有命名空间信号。"))
                     }
                 }
 

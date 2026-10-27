@@ -80,7 +80,7 @@ struct MetadataTemplateSheet: View {
             }
             .pickerStyle(.segmented)
 
-            Text(l10n.format("目标：%lld 张照片", targetPhotoIds.count))
+            Text(l10n.plural("目标：%lld 张照片", count: targetPhotoIds.count))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -175,8 +175,13 @@ struct MetadataTemplateSheet: View {
     private func loadFields() async {
         guard let id = selectedId else { editorFields = nil; return }
         do {
-            editorFields = try await viewModel.metadataAPI.templateFields(id: id)
+            let fields = try await viewModel.metadataAPI.templateFields(id: id)
+            // latest-wins：await 期间用户可能已切换模板，旧响应写进 editorFields
+            // 会让保存把 A 的字段写进 B（静默覆盖模板体）。
+            guard selectedId == id else { return }
+            editorFields = fields
         } catch {
+            guard selectedId == id else { return }
             editorFields = nil
             errorText = String(describing: error)
         }

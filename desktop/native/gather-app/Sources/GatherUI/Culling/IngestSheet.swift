@@ -2,14 +2,14 @@
 // P1 / D：摄取向导（复制/重命名/校验 → 登记进当前会话）。
 //
 // 只做"把卡里的照片搬进工作目录并登记"这一件事：不选片、不改元数据。
-// 目标默认 <sessionSourcePath>/_ingest，源用系统面板选（支持多选目录）。
+// 目标默认 <会话源目录>/_ingest（打开时由 session.get 补齐），源用系统面板选（支持多选目录）。
 import SwiftUI
 import AppKit
 import GatherProtocol
 
 struct IngestSheet: View {
     let viewModel: CullingViewModel
-    let sessionSourcePath: String
+
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.languageStore) private var languageStore
@@ -100,11 +100,6 @@ struct IngestSheet: View {
         }
         .padding(16)
         .frame(width: 520)
-        .onAppear {
-            if destinationRoot.isEmpty, !sessionSourcePath.isEmpty {
-                destinationRoot = (sessionSourcePath as NSString).appendingPathComponent("_ingest")
-            }
-        }
         .task {
             // 调用点没传会话目录时从会话记录补：目标必须在会话源目录内（API 会校验）。
             guard destinationRoot.isEmpty else { return }
@@ -114,6 +109,8 @@ struct IngestSheet: View {
             }
             do {
                 let session = try await api.get(viewModel.sessionId)
+                // await 期间用户可能已经手选目录：不得用回填值覆盖。
+                guard destinationRoot.isEmpty else { return }
                 if !session.sourcePath.isEmpty {
                     destinationRoot = (session.sourcePath as NSString)
                         .appendingPathComponent("_ingest")

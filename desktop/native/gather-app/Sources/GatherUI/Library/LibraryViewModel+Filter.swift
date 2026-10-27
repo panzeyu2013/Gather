@@ -42,21 +42,27 @@ extension LibraryViewModel {
     }
 
     /// TS: activeFilterCount / advancedFilterCount（trim 后非空的字段数）。
+    /// P1 / C：facet 五维与规则编辑器也是"筛选生效"，漏计会让工具栏的
+    /// 「清除筛选」在只有 facet 时被 .disabled（LibraryView+Filters），空态也会误判成空库。
     public var activeFilterCount: Int {
         let values: [String] = [
             filter.search, filter.rating, filter.label, filter.status,
             filter.keyword, filter.directory, filter.volume, filter.person,
             filter.duplicates, filter.recentDays,
+            filter.camera, filter.lens, filter.iso, filter.year,
         ]
         return values.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+            + (filter.rules.conditions.isEmpty ? 0 : 1)
     }
 
     public var advancedFilterCount: Int {
         let values: [String] = [
             filter.keyword, filter.directory, filter.volume, filter.person,
             filter.duplicates, filter.recentDays,
+            filter.camera, filter.lens, filter.iso, filter.year,
         ]
         return values.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+            + (filter.rules.conditions.isEmpty ? 0 : 1)
     }
 
     private func commitFilter() {

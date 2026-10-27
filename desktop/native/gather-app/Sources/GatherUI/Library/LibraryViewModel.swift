@@ -275,18 +275,26 @@ public final class LibraryViewModel {
     /// 每维最多展示的桶数（避免面板被长尾撑爆）。
     static let facetLimit = 40
 
+    /// 请求代数：连续改筛选时旧响应可能后到，只接受最后一次的结果。
+    private var facetsRequestID = 0
+
     /// 重新计算 facet：基于**已提交**的筛选（与网格一致），不是正在编辑的草稿。
     func refreshFacets() async {
+        facetsRequestID &+= 1
+        let requestID = facetsRequestID
         let criteria = buildLibraryCriteria(committed)
         do {
-            facets = try await provider.facets(
+            let next = try await provider.facets(
                 criteria: criteria,
                 sessionId: sessionFilter.isEmpty ? nil : sessionFilter,
                 dimensions: ["camera", "lens", "iso", "year", "label"],
                 limit: Self.facetLimit
             )
+            guard facetsRequestID == requestID else { return }
+            facets = next
             actionError = nil
         } catch {
+            guard facetsRequestID == requestID else { return }
             facets = []
             actionError = CommandError(error)
         }

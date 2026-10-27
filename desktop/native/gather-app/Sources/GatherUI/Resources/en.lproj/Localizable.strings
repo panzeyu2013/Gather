@@ -1712,6 +1712,8 @@
 "保留外部改动" = "Keep External Changes";
 "覆盖外部改动" = "Overwrite External Changes";
 "目标：%lld 张照片" = "Target: %lld photos";
+"目标：%lld 张照片#one" = "Target: %lld photo";
+"没有已淘汰的照片可移出" = "No rejected photos to move out";
 "将写 %lld 张 / %lld 个字段；%lld 处冲突" = "Will write %lld photos / %lld fields; %lld conflicts";
 "已写 %lld 张，跳过 %lld 张，失败 %lld 张" = "Wrote %lld, skipped %lld, failed %lld";
 "应用到选中照片" = "Apply to Selected Photos";

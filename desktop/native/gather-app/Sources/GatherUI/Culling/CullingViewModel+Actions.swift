@@ -131,18 +131,27 @@ extension CullingViewModel {
 
     /// 把已淘汰的照片移出工作目录；确认由调用点构造 Confirmed。
     /// 范围：显式传入 > 选中项 > 当前照片。
+    ///
+    /// 服务端只接受已淘汰的照片，且校验失败会**整批**拒绝（LiveCullingAPI.moveRejected），
+    /// 所以这里必须先按当前判定过滤：选中集里混进一张保留件，就一张都移不动。
     public func moveRejectedOut(photoIds explicitIds: [String]? = nil) async {
+        let rejected = Set((page?.assets ?? [])
+            .filter { $0.state.pickState == .rejected }
+            .map(\.photo.id))
         let targets: [String]
         if let explicitIds {
-            targets = explicitIds
+            targets = explicitIds.filter { rejected.contains($0) }
         } else if !selectedPhotoIds.isEmpty {
-            targets = Array(selectedPhotoIds)
-        } else if let current = currentAsset {
+            targets = selectedPhotoIds.filter { rejected.contains($0) }
+        } else if let current = currentAsset, current.state.pickState == .rejected {
             targets = [current.photo.id]
         } else {
             targets = []
         }
-        guard !targets.isEmpty else { return }
+        guard !targets.isEmpty else {
+            errorMessage = CommandError.localized("没有已淘汰的照片可移出")
+            return
+        }
         do {
             let input = try CullingMoveRejectedInput(sessionId: sessionId, photoIds: targets)
             let result = try await cullingAPI.moveRejected(Confirmed(input, source: .userDialog))
