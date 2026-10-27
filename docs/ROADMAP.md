@@ -82,7 +82,7 @@
 | 项 | 位置 | 说明 |
 |---|---|---|
 | 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（`scripts/check-no-legacy.sh` 门禁）；模块拆分为 8 个 target（Protocol/Persistence/Delivery/Analysis/Application/UI/Host/App）；2026-10-22 本机 `swift test`：gather-core **1,092 / 157 suites**，gather-app **581 / 66 suites**，exit 0 |
-| 类型化 API 16/124 | `gather-core/Sources/GatherProtocol/API/` + `gather-app/Sources/GatherHost/APIs/` | Cut 1 删除 118 条字符串命令与 Router；合并后实测 16 协议 / 124 方法（Cut 1 基线 16/110；P0/P1 增量以代码为准），经 `AppServices` 注入，0 处 `execute("x.y")`；映射表归档在 [archive/cuts/api-migration-map.md](archive/cuts/api-migration-map.md) |
+| 类型化 API 16/126 | `gather-core/Sources/GatherProtocol/API/` + `gather-app/Sources/GatherHost/APIs/` | Cut 1 删除 118 条字符串命令与 Router；合并后实测 16 协议 / 126 方法（Cut 1 基线 16/110；P0/P1 增量以代码为准），经 `AppServices` 注入，0 处 `execute("x.y")`；映射表归档在 [archive/cuts/api-migration-map.md](archive/cuts/api-migration-map.md) |
 | Culling 逻辑资产分页 | `gather-core/Services/CullingService.swift` | keyset 游标、首选变体谓词、total 逻辑资产（ADR-008） |
 | 阈值预计算多档 | `SimilarityService` | 主档 + T±4/T±8 档位，`precomputed` 行排除不变量 |
 | 任务化分析/写回 | `Services/JobService.swift` + executors | 租约/心跳/checkpoint/dedupeKey/取消/重试；`sim.recluster` 已任务化（ADR-024） |

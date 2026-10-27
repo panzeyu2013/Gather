@@ -494,7 +494,7 @@ CL 段必须写可复核的证据（`证据` / `未完成原因` / `实测` / `�
 
 ## 类型化 API 契约（Cut 1 收口）
 
-Cut 1 已用 **16 个域协议 / 124 个方法**替代 118 条字符串命令：
+Cut 1 已用 **16 个域协议 / 126 个方法**替代 118 条字符串命令：
 Session、Culling、Export、Job、Duplicate、Face、Similarity、Photo、Album、Person、
 Metadata、Settings、Navigation、Asset、Quality、Maintenance（`GatherProtocol/API/*API.swift`；
 Template 域已于 2026-10-24 按 ADR-031 删除）。

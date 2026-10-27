@@ -30,7 +30,7 @@ decisions back through metadata.
 
 - **Local-first:** photos, indexes, models, and metadata processing stay on the
   computer; the app does not run a local web service.
-- **Native workflow:** SwiftUI pages call 16 typed domain APIs (124 methods)
+- **Native workflow:** SwiftUI pages call 16 typed domain APIs (126 methods)
   in-process across eight functional SwiftPM targets (15 total, incl. test/tool targets); there is no Electron, browser
   renderer, JavaScript IPC runtime, or string-command router.
 - **Recoverable writeback:** metadata changes are persisted in the `deliveries`

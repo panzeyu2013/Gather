@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/CullingAPI.swift
-// Cut 1 / 阶段 1A：挑片域协议（17 个方法）。
+// Cut 1 / 阶段 1A：挑片域协议（20 个方法）。
 //
 // 职责：挑片分页/历史栈/单张与批量决策/分组/摘要/同步状态/写回与清理。
 // 对应命令（19 条）：culling.list_page / history / apply_history / update /

@@ -22,7 +22,27 @@
 
 ## 基线
 
-protocol 304 类型 / 1713 声明 / 0 零引用；cleanup 60 unchecked / 257 try?（收紧 1）；design system 无回归。
+三条 ratchet 基线本轮**均按实测重写（上限抬高，不是收紧）**，与上一版对比：
+
+| 基线 | 旧 | 新 | 来源 |
+|---|---|---|---|
+| cleanup `unchecked_sendable` | 54 | 58 | 新增 4 个需 NSLock/端口持有的类型；TriageWritebackService、MetadataTemplateService 已改为编译器校验的 `Sendable` |
+| cleanup `try_optional` | 228 | 256 | 新增代码的 best-effort 路径（临时文件清理、回滚、缓存投影、批次留证） |
+| design system `literalPadding` | 170 | 175 | 新增 6 个 Sheet/面板 |
+| design system `literalSpacing` | 243 | 257 | 同上 |
+| protocol `public_types` | 272 | 304 | IPTC/模板/摄取/分面 DTO |
+| protocol `public_declarations` | 1469 | 1713 | 同上 |
+
+protocol `zero_reference_types` 1 → 0（改善）。基线与当前实测相等（零余量），
+后续任何新增都会被门禁拦下。
+
+可降级的部分已降级：`TriageWritebackService` / `MetadataTemplateService` 去掉
+`@unchecked`（存储属性全是不可变 Sendable，交给编译器校验）；其余 4 处保留
+`@unchecked` 是因为持有 `NSLock` 保护的 mutable 状态或非 Sendable 端口
+（`RejectedMover` 的 `PhotoRepository`/`relocate` 闭包、`DirectoryWatcher` 的
+FSEventStreamRef、两个 `*Store` 的缓存 + NSLock），在 macOS 14 目标上无法用
+`Mutex`/actor 替代同步 API。`try?` 的 +28 全部是"失败可继续"的路径，改成 `try`
+会把清理/回滚失败升级成主流程失败。
 
 ## 剩余（人工/产品确认）
 

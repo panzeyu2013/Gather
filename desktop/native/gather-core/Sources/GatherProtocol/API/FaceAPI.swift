@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/FaceAPI.swift
-// Cut 1 / 阶段 1A：人脸关键字域协议（13 个方法）。
+// Cut 1 / 阶段 1A：人脸关键字域协议（15 个方法）。
 //
 // 职责：人脸聚类读取、绑定/合并/移除成员、分析/重聚类/取消、解绑、预览与写回、
 // 同步确认、清理、模型状态。

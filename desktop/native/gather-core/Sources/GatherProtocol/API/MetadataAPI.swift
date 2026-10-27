@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/MetadataAPI.swift
-// Cut 1 / 阶段 1A：元数据域协议（7 个方法）。
+// Cut 1 / 阶段 1A：元数据域协议（18 个方法）。
 //
 // 职责：冲突与孤儿列表、冲突/孤儿处置、关键词预览/应用/重试。
 // 对应命令（7 条）：metadata.conflicts / orphans / resolve_conflict /

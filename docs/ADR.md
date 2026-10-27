@@ -622,8 +622,14 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
    的 `faces migrate`）。
 6. **schema 34（历史）**：`face_observations` 追加 6 列（quality / face_size_px /
    roll_degrees / model_id / model_version / embedding_dim）。当时快照
-   `docs/archive/schema.snapshot-v35.json` 记为 34/35（43 表不变）；**当前 schema 为
-   3（SchemaCurrent；44 表）**，旧迁移链已删除，见 ADR-005/006。
+   `docs/archive/schema.snapshot-v35.json` 记为 34/35（43 表不变）；该轮对应的 schema
+   为 3（44 表），旧迁移链已删除，见 ADR-005/006。
+
+   **schema 4（当前唯一版本，44 表 / 384 列）**：`photo_metadata_cache` 追加
+   `iptc_json`（描述性元数据 32 字段的只读投影，字段表见
+   `desktop/native/gather-core/Sources/GatherProtocol/Protocol/DescriptiveMetadata.swift`）。
+   v3 库按 fail-closed 处理，
+   不就地迁移，需显式重置重建（开发期库可丢弃）。
 
 **决策（第二轮：把"接口留缝"改成"缝里真的有实现"，2026-09-28）**
 

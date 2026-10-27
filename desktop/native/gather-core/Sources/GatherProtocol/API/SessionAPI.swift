@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/SessionAPI.swift
-// Cut 1 / 阶段 1A：会话域协议（7 个方法）。
+// Cut 1 / 阶段 1A：会话域协议（8 个方法）。
 //
 // 职责：会话 CRUD、文件/目录导入、工作区状态。Dashboard 不再直连 SessionService，
 // 与其他 UI 一样只依赖本协议（第 13 个调用方）。

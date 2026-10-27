@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/PhotoAPI.swift
-// Cut 1 / 阶段 1A：照片域协议（7 个方法）。
+// Cut 1 / 阶段 1A：照片域协议（8 个方法）。
 //
 // 职责：照片分页、查询 DSL、建议、派生媒体（尺寸/缩略图/预览）。
 // 对应命令（9 条）：photo.list_page、filter.photos + filter.photos_global（M3 合并）、
