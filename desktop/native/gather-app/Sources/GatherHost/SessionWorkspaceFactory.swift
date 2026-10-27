@@ -38,7 +38,8 @@ package struct SessionWorkspaceFactory {
             jobs: deps.job,
             quality: deps.quality,
             captureOne: deps.captureOne,
-            photo: deps.photo
+            photo: deps.photo,
+            session: deps.session
         )
         // SettingsAPI 是 async；先构造 VM（默认开），再异步读取 Beta 开关。
         // 已打开会话内设置变更由 settingsChanged 通知触发重读。
@@ -80,6 +81,17 @@ package struct SessionWorkspaceFactory {
             await cullingViewModel.refreshTriageSettings()
             await cullingViewModel.refreshGridDefaults()
         }
+        // P1 / D：外部对会话目录的改动（Finder/其它软件）→ 增量索引扫描。
+        // 只监听真实存在的目录；测试替身返回空路径时自动跳过。
+        let sessionAPI = deps.session
+        let jobAPI = deps.job
+        Task { @MainActor in
+            if let session = try? await sessionAPI.get(sessionId), !session.sourcePath.isEmpty {
+                await SessionDirectoryMonitor.shared.start(
+                    sessionId: sessionId, root: session.sourcePath,
+                    jobs: jobAPI, settings: deps.settings)
+            }
+        }
         return SessionWorkspace(
             sessionId: sessionId,
             culling: cullingViewModel,
@@ -110,7 +122,8 @@ package struct SessionWorkspaceFactory {
             gallery: GalleryViewModel(
                 sessionId: sessionId,
                 provider: deps.galleryProvider,
-                job: deps.job
+                job: deps.job,
+                metadata: deps.metadata
             ),
             similarity: SimilarityViewModel(
                 sessionId: sessionId,

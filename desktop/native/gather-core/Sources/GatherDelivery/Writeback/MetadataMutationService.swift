@@ -141,11 +141,13 @@ public final class MetadataMutationService: MetadataMutationPort {
     ) throws -> MetadataMutationResult {
         // 排程语义（契约保留）：交付行回到 pending 就是排程；没有计时器。
         _ = schedule
+        let requested = values[Self.keywordsModeKey]?.stringValue
+            .flatMap(MetadataKeywordWriteMode.init(rawValue:))
         return try enqueue(
             sessionId: sessionId,
             photoId: photoId,
             values: values,
-            keywordsMode: .replace
+            keywordsMode: requested ?? .replace
         )
     }
 
@@ -164,9 +166,12 @@ public final class MetadataMutationService: MetadataMutationPort {
         let resolved = try assetResolver.resolve(sessionId: sessionId, photoId: photoId)
         // 可写字段名集合的唯一真相源是 MetadataField（契约层枚举）；
         // filter 与 compactMap 同为「非契约字段丢弃」，保留调用方键序不变。
+        // P1：descriptive / triageSignal 不是独立 MetadataField，但属于可写载荷
+        // （字段级粒度由 DescriptiveMetadata 承担）。
+        let internalWritableKeys: Set<String> = ["triageSignal"]
         let dirtyFields = values.keys
-            .filter { MetadataField.writableNames.contains($0) }
-            .compactMap { MetadataField(rawValue: $0) }
+            .filter { MetadataField.writableNames.contains($0) || internalWritableKeys.contains($0) }
+            .compactMap { MetadataField(rawValue: $0) ?? ($0 == "triageSignal" ? .descriptive : nil) }
         if dirtyFields.isEmpty {
             throw MetadataMutationError.empty
         }
@@ -174,9 +179,20 @@ public final class MetadataMutationService: MetadataMutationPort {
         var attributes: [String: JSONValue] = [:]
         if let rating = values["rating"] { attributes["rating"] = rating }
         if let label = values["label"] { attributes["label"] = label }
+        if let descriptive = values["descriptive"] { attributes["descriptive"] = descriptive }
+        if let triageSignal = values["triageSignal"] { attributes["triageSignal"] = triageSignal }
+        if values["replace_contact"]?.boolValue == true {
+            attributes["replace_contact"] = .bool(true)
+        }
         let keywords = values["keywords"]?.arrayElements?.compactMap { $0.stringValue }
         if keywords != nil {
             attributes[Self.keywordsModeKey] = .string(keywordsMode.rawValue)
+        } else {
+            // 不带关键词的新输入必须清掉上一次 delta 的意图，否则执行器会重放
+            // 旧的 keywords_added/remove（复活外部已删词、删掉外部新词）。
+            attributes[Self.keywordsModeKey] = .string(MetadataKeywordWriteMode.merge.rawValue)
+            attributes["keywords_added"] = .array([])
+            attributes["keywords_remove"] = .array([])
         }
         for (key, value) in extraAttributes {
             attributes[key] = value
@@ -186,13 +202,20 @@ public final class MetadataMutationService: MetadataMutationPort {
         // 幽灵 pending（永久阻断该侧车其它模块 confirm），或 linkSession 的 FK
         // 拒绝后留下孤儿 pending item。原子入口在 DeliveryRepo 内完成，
         // 失败整体回滚（revision 不推进、无 item / delivery_sessions 行）。
+        // 首次入队时记录写前指纹：执行器在 plan→write 窗口内检测外部改动。
+        let knownBase = try deliveryRepo.get(xmpPath)?.baseFingerprint ?? ""
+        var base = knownBase
+        if base.isEmpty {
+            do { base = try MetadataFingerprint.contentFingerprintSync(xmpPath) } catch {}
+        }
         let delivery = try stateWriter.enqueueMetadataMutation(
             xmpPath: xmpPath,
             photoPath: resolved.filepath,
             photoId: photoId,
             sessionId: sessionId,
             attributes: attributes,
-            keywords: keywords
+            keywords: keywords,
+            baseFingerprint: base
         )
         return MetadataMutationResult(
             photoId: photoId,
@@ -252,10 +275,12 @@ public final class MetadataMutationService: MetadataMutationPort {
                 )
             }
             guard plan.changed else { return nil }
-            let priorAdded = pendingItem?.attributes["keywords_added"]?
-                .arrayElements?.compactMap(\.stringValue) ?? []
-            let priorRemoved = pendingItem?.attributes["keywords_remove"]?
-                .arrayElements?.compactMap(\.stringValue) ?? []
+            // 只有 pending/failed 的 item 才携带"尚未落盘"的净意图；written/synced
+            // 的旧 delta 已经落盘，再叠加会把外部后来删除的词复活。
+            let priorAdded = pending == nil ? [] : (pendingItem?.attributes["keywords_added"]?
+                .arrayElements?.compactMap(\.stringValue) ?? [])
+            let priorRemoved = pending == nil ? [] : (pendingItem?.attributes["keywords_remove"]?
+                .arrayElements?.compactMap(\.stringValue) ?? [])
             // 净意图以“本次 plan”为准：add→remove 要真正从 cumulativeAdded 删掉，
             // 否则盘上执行 disk∪added 时词会残留；remove→add 同理。
             let removedKeys = Set(plan.removed.map { KeywordNormalizer.fold($0) })

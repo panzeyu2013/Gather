@@ -16,6 +16,17 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
     public var dateTaken: String? // TS: dateTaken?
     public var latitude: Double? // TS: latitude?
     public var longitude: Double? // TS: longitude?
+    /// P1 / IPTC：描述性元数据（Core + Extension 32 字段）。
+    /// nil = 不改动描述性元数据；非 nil 时按字段三态合并（nil 跳过 / 空值清空 / 有值写入）。
+    public var descriptive: DescriptiveMetadata?
+    /// P1 / E：triage 可移植信号（私有命名空间 gather:Triage）。
+    /// nil = 不改；空串 = 清除信号；非空 = 写入（keep / reject）。
+    public var triageSignal: String?
+    /// 交付层关键词写入模式（merge/replace/delta）；不写进 XMP，只随 attributes_json
+    /// 传给执行器。triage 写回用 merge，避免覆盖 culling 尚未落盘的 delta。
+    public var keywordsMode: String?
+    /// P1：撤销结构字段时整块替换 contact（而不是成员级合并），才能删除模板新增成员。
+    public var replaceContact: Bool?
 
     public init(
         keywords: [String]? = nil,
@@ -23,7 +34,11 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
         label: String? = nil,
         dateTaken: String? = nil,
         latitude: Double? = nil,
-        longitude: Double? = nil
+        longitude: Double? = nil,
+        descriptive: DescriptiveMetadata? = nil,
+        triageSignal: String? = nil,
+        keywordsMode: String? = nil,
+        replaceContact: Bool? = nil
     ) {
         self.keywords = keywords
         self.rating = rating
@@ -31,12 +46,18 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
         self.dateTaken = dateTaken
         self.latitude = latitude
         self.longitude = longitude
+        self.descriptive = descriptive
+        self.triageSignal = triageSignal
+        self.keywordsMode = keywordsMode
+        self.replaceContact = replaceContact
     }
 
     /// TS: `Object.keys(attributes).length === 0`（corrupt sidecar 守卫）。
     public var isEmpty: Bool {
         keywords == nil && rating == nil && label == nil
             && dateTaken == nil && latitude == nil && longitude == nil
+            && (descriptive?.isEmpty ?? true)
+            && triageSignal == nil
     }
 
     /// TS: `{ ...attributes }`（仅存在的键）。
@@ -48,6 +69,13 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
         if let dateTaken { object["dateTaken"] = .string(dateTaken) }
         if let latitude { object["latitude"] = .number(latitude) }
         if let longitude { object["longitude"] = .number(longitude) }
+        if let descriptive, !descriptive.isEmpty,
+           let encoded = try? JSONValue(encoding: descriptive) {
+            object["descriptive"] = encoded
+        }
+        if let triageSignal { object["triageSignal"] = .string(triageSignal) }
+        if let keywordsMode { object["keywords_mode"] = .string(keywordsMode) }
+        if replaceContact == true { object["replace_contact"] = .bool(true) }
         return .object(object)
     }
 
@@ -59,7 +87,11 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
             label: jsonValue["label"]?.stringValue,
             dateTaken: jsonValue["dateTaken"]?.stringValue,
             latitude: jsonValue["latitude"]?.numberValue,
-            longitude: jsonValue["longitude"]?.numberValue
+            longitude: jsonValue["longitude"]?.numberValue,
+            descriptive: try? jsonValue["descriptive"]?.decode(DescriptiveMetadata.self),
+            triageSignal: jsonValue["triageSignal"]?.stringValue,
+            keywordsMode: jsonValue["keywords_mode"]?.stringValue,
+            replaceContact: jsonValue["replace_contact"]?.boolValue
         )
     }
 }

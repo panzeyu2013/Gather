@@ -122,6 +122,20 @@ public final class LiveLibraryDataProvider: LibraryDataProvider {
         try await assetAPI.volumes()
     }
 
+    /// P1 / C：facet 计数。sessionId == nil 用 "__global__"（与筛选引擎的会话语义一致）。
+    public func facets(
+        criteria: FilterGroup,
+        sessionId: String?,
+        dimensions: [String],
+        limit: Int
+    ) async throws -> [PhotoFacetGroup] {
+        let input = try PhotoFacetInput(
+            sessionId: sessionId ?? "__global__", criteria: criteria,
+            dimensions: dimensions, limit: limit
+        )
+        return try await photoAPI.facets(input)
+    }
+
     public func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) async throws -> Int {
         guard confirmed else { throw GatherError(code: .ASSET_RELINK_CONFIRM_REQUIRED) }
         let input = try AssetRelinkInput(oldRoot: oldRoot, newRoot: newRoot)

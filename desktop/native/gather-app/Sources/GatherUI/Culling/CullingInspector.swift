@@ -14,6 +14,18 @@ struct CullingInspector: View {
     /// T0：复核队列需要把布局切到网格。
     @Binding var layoutMode: CullingLayoutMode
     @State private var filtersExpanded = false
+    /// P1 / D：淘汰移出的确认弹窗（移动文件属于破坏性操作，必须显式确认）。
+    @State private var confirmMoveRejected = false
+    /// 检查器内的互斥 sheet（SwiftUI 同视图叠多个 .sheet 行为不稳定）。
+    private enum InspectorSheet: String, Identifiable {
+        case ingest, templates, batches
+        var id: String { rawValue }
+    }
+    @State private var activeSheet: InspectorSheet?
+    /// P1 / E：建议写回必须先确认（VM 只准备输入，Confirmed 由视图构造）。
+    @State private var pendingTriageInput: TriageWritebackInput?
+    @State private var showTriageWritebackConfirm = false
+    @State private var showTriageUndoConfirm = false
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
@@ -101,6 +113,120 @@ struct CullingInspector: View {
                 }
 
                 // P0/K0：关键词 delta 编辑（当前选择集；未多选时作用于当前照片）。
+                // P1 / A3：只读元数据（拍摄参数 / IPTC / 文件）。数据来自缓存投影，
+                // 由 .task(id:) 在当前照片变化时按需加载，面板本身不触发磁盘解析。
+                MetadataSections(
+                    detail: viewModel.metadataDetail,
+                    selectionCount: max(1, viewModel.selectedPhotoIds.count)
+                )
+                .task(id: viewModel.currentAsset?.photo.id) {
+                    viewModel.loadMetadataDetail()
+                }
+                .confirmationDialog(
+                    l10n("把选中的淘汰照片移出到 _rejects？"),
+                    isPresented: $confirmMoveRejected,
+                    titleVisibility: .visible
+                ) {
+                    Button(l10n("移出"), role: .destructive) {
+                        Task { await viewModel.moveRejectedOut() }
+                    }
+                    Button(l10n("取消"), role: .cancel) {}
+                } message: {
+                    Text(l10n("只移动、不删除；文件可在会话目录的 _rejects 中找回。"))
+                }
+                .sheet(item: $activeSheet) { sheet in
+                    switch sheet {
+                    case .ingest:
+                        IngestSheet(viewModel: viewModel, sessionSourcePath: "")
+                    case .templates:
+                        MetadataTemplateSheet(viewModel: viewModel)
+                    case .batches:
+                        MetadataBatchSheet(viewModel: viewModel)
+                    }
+                }
+
+                // P1 / B2：模板批量套用入口（选中集或当前照片）。
+                GatherInspectorSection(l10n("元数据模板")) {
+                    Button(l10n("套用模板…")) { activeSheet = .templates }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .disabled(isBusy || viewModel.currentAsset == nil)
+                        .help(l10n("预览后把描述性元数据批量套用到选中的照片"))
+                    Button(l10n("历史与撤销…")) { activeSheet = .batches }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .help(l10n("查看最近套用/写回批次并撤销"))
+                }
+
+                // P1 / D：摄取入口（复制/重命名/校验 → 登记进当前会话）。
+                GatherInspectorSection(l10n("导入")) {
+                    Button(l10n("摄取照片…")) { activeSheet = .ingest }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .help(l10n("从存储卡或文件夹复制照片到工作目录并登记"))
+                }
+
+                // P1 / E：把技术建议写成 rating（只写空值）+ 私有命名空间，可回溯。
+                GatherInspectorSection(l10n("技术建议写回")) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+                        Button(l10n("把建议写成评级")) {
+                            Task {
+                                pendingTriageInput = await viewModel.prepareTriageWriteback()
+                                showTriageWritebackConfirm = pendingTriageInput != nil
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .disabled(isBusy)
+                        Text(l10n("只写空评级；已有星级与人工决策一律不动。"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if viewModel.lastTriageWritebackBatchId != nil {
+                            Button(l10n("撤销上次建议写回")) {
+                                showTriageUndoConfirm = true
+                            }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            .disabled(isBusy)
+                        }
+                    }
+                    .confirmationDialog(
+                        l10n("把全会话的建议写成评级？"),
+                        isPresented: $showTriageWritebackConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button(l10n("写回")) {
+                            guard let input = pendingTriageInput else { return }
+                            pendingTriageInput = nil
+                            Task {
+                                await viewModel.applyTriageWriteback(
+                                    Confirmed(input, source: .userDialog))
+                            }
+                        }
+                        Button(l10n("取消"), role: .cancel) { pendingTriageInput = nil }
+                    } message: {
+                        Text(l10n("会写入全会话所有 keep/reject 建议的私有信号；rating 只写空值。"))
+                    }
+                    .confirmationDialog(
+                        l10n("撤销上次建议写回？"),
+                        isPresented: $showTriageUndoConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button(l10n("撤销"), role: .destructive) {
+                            guard let batchId = viewModel.lastTriageWritebackBatchId,
+                                  let input = try? MetadataTemplateUndoInput(batchId: batchId)
+                            else { return }
+                            Task {
+                                await viewModel.undoTriageWriteback(
+                                    Confirmed(input, source: .userDialog))
+                            }
+                        }
+                        Button(l10n("取消"), role: .cancel) {}
+                    } message: {
+                        Text(l10n("还原 rating/关键词，并清除私有命名空间信号。"))
+                    }
+                }
+
                 GatherInspectorSection(l10n("关键词")) {
                     CullingKeywordPanel(viewModel: viewModel, isBusy: isBusy)
                 }
@@ -230,6 +356,17 @@ struct CullingInspector: View {
                         Button(l10n("取消选择")) { viewModel.clearSelection() }
                             .buttonStyle(.bordered)
                             .frame(maxWidth: .infinity)
+
+                        // P1 / D：把淘汰件移出工作目录（只移动、不删除，可在 _rejects 找回）。
+                        Button(role: .destructive) {
+                            confirmMoveRejected = true
+                        } label: {
+                            Label(l10n("淘汰移出到 _rejects"), systemImage: "arrow.up.bin")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isBusy)
+                        .help(l10n("移到会话目录下的 _rejects 文件夹，不删除文件"))
                     }
                 }
 

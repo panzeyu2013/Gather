@@ -214,14 +214,16 @@ extension DeliveryRepo {
         photoId: String,
         sessionId: String,
         attributes: [String: JSONValue] = [:],
-        keywords: [String]? = nil
+        keywords: [String]? = nil,
+        baseFingerprint: String = ""
     ) throws -> DeliveryRow {
         let path = try normalizedPath(xmpPath)
         guard !sessionId.isEmpty else {
             throw DeliveryRepoError.invalidArgument("sessionId 不能为空")
         }
         return try connection.transaction {
-            _ = try openDeliveryForInput(xmpPath: path, photoPath: photoPath)
+            _ = try openDeliveryForInput(
+                xmpPath: path, photoPath: photoPath, baseFingerprint: baseFingerprint)
             _ = try mergeItem(
                 xmpPath: path,
                 photoId: photoId,
@@ -246,11 +248,15 @@ extension DeliveryRepo {
     /// - 其余状态一律 revision + 1 回到 pending，**基线保持不变**
     ///   （真实基线由执行器写盘后回读落库，本层不猜）。
     /// - CAS 失配重读一次再推（单连接事务内通常不会发生，保留与服务层旧语义一致）。
-    private func openDeliveryForInput(xmpPath: String, photoPath: String) throws -> DeliveryRow {
+    private func openDeliveryForInput(
+        xmpPath: String, photoPath: String, baseFingerprint: String = ""
+    ) throws -> DeliveryRow {
         for _ in 0..<2 {
             guard let current = try get(xmpPath) else {
                 // 首次输入 = revision 1（旧 outbox mergePatch 对新建行的同一口径）。
-                return try createOrGet(xmpPath: xmpPath, photoPath: photoPath, revision: 1)
+                return try createOrGet(
+                    xmpPath: xmpPath, photoPath: photoPath, revision: 1,
+                    baseFingerprint: baseFingerprint)
             }
             guard let typed = current.typedStatus else {
                 throw DeliveryRepoError.illegalTransition(

@@ -32,6 +32,8 @@ public protocol MetadataCacheStore {
     func updateRating(photoId: String, rating: Int64) throws
     func updateLabel(photoId: String, label: String) throws
     func updateKeywords(photoId: String, keywords: [String]) throws
+    /// P1 / IPTC：描述性元数据写盘后的投影刷新。
+    func updateDescriptive(photoId: String, descriptive: DescriptiveMetadata) throws
 }
 
 extension DeliveryRepo: DeliveryReadStore {}

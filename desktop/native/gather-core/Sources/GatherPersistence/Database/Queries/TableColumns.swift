@@ -9,8 +9,8 @@
 // 1. 列序 = 当前 Schema.swift 的 DDL 列序 = 现有 Row 映射器的位置下标顺序
 //    （例如 AnalysisJobRow 读 0-23）。展开后结果集列序由本清单决定，不再随
 //    物理列序漂移（升级库 ALTER 追加列会改变 `SELECT *` 的列序）。
-// 2. 只列本表全部列，不增删；V1 会改变行形的表（photos / face_observations /
-//    sessions / metadata_outbox / writeback_items）不在此处，按 D-028 单独处理。
+// 2. 只列本表全部列，不增删；行形特殊的表（photos / face_observations /
+//    sessions / deliveries）不在此处，按表单独处理。
 // 3. 每个调用点在 SQL 上方注释表名与列数，便于逐条对账（见 §1.2 清单）。
 enum TableColumns {
     /// 拼 `SELECT` 列清单：`id, name, ...`；传 prefix 时输出 `p.id, p.name, ...`。
@@ -48,12 +48,13 @@ enum TableColumns {
         "created_at", "updated_at",
     ]
 
-    /// photo_metadata_cache：22 列（MetadataCacheRow 位置 0-21）。
+    /// photo_metadata_cache：23 列（MetadataCacheRow 位置 0-22）。
+    /// iptc_json 追加在末尾：0-21 的既有位置保持不变（P1 / IPTC）。
     static let photoMetadataCache: [String] = [
         "id", "photo_id", "session_id", "date_taken", "camera_make", "camera_model",
         "lens_model", "focal_length", "f_number", "exposure_time", "iso", "rating",
         "label", "gps_latitude", "gps_longitude", "width", "height", "file_size",
-        "file_mtime", "keywords", "cached_at", "updated_at",
+        "file_mtime", "keywords", "cached_at", "updated_at", "iptc_json",
     ]
 
     /// persons：8 列（PersonRow 位置 0-7；get/listWithCounts 的追加列由调用点显式给出）。

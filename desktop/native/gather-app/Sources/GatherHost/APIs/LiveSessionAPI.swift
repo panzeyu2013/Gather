@@ -43,6 +43,68 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
         self.jobService = jobService
     }
 
+    // MARK: - P1 / D：摄取
+
+    public func ingest(_ input: Confirmed<SessionIngestInput>) async throws -> SessionIngestResult {
+        let payload = input.value
+        let options = IngestOptions(
+            destinationRoot: payload.destinationRoot,
+            renameTemplate: payload.renameTemplate,
+            secondDestinationRoot: payload.secondDestinationRoot,
+            verifyChecksum: payload.verifyChecksum
+        )
+        let service = IngestService()
+        return try map {
+            // 目标必须落在会话源目录内：摄取写文件系统，不能接受任意磁盘路径。
+            guard let session = try sessionService.getSession(payload.sessionId) else {
+                throw GatherError(code: .SESSION_NOT_FOUND)
+            }
+            let base = URL(fileURLWithPath: session.sourcePath)
+                .resolvingSymlinksInPath().path
+            let destination = URL(fileURLWithPath: payload.destinationRoot)
+                .resolvingSymlinksInPath().path
+            guard !base.isEmpty, destination == base || destination.hasPrefix(base + "/") else {
+                throw GatherError.invalidParameter(
+                    field: "destinationRoot", reason: "must be inside the session source path")
+            }
+            var existing: [String: String] = [:]
+            do {
+                existing = try sessionService.photoChecksums(sessionId: payload.sessionId)
+            } catch {
+                GatherLogger.log("ingest checksum lookup failed: \(error)", level: .warn)
+            }
+            let plan = try service.plan(
+                sourcePaths: payload.sourcePaths, options: options,
+                existingChecksums: existing)
+            let result = service.execute(plan, options: options)
+            var registered = 0
+            var unregistered: [String] = []
+            // 登记走既有 add_photos 语义（RAW/JPEG 配对、去重、checksum 回填都复用）。
+            if !result.copied.isEmpty {
+                do {
+                    let addResult = try sessionService.addPhotos(
+                        sessionId: payload.sessionId, filepaths: result.copied, source: "ingest"
+                    )
+                    registered = addResult.added
+                    unregistered = addResult.failedFiles
+                } catch {
+                    // 文件已落盘但登记失败：如实返回"已复制未登记"，让用户/调用方
+                    // 可以重试 add_photos，而不是报整批失败把已落盘文件变成幽灵。
+                    registered = 0
+                    unregistered = result.copied
+                    GatherLogger.log("ingest register failed: \(error)", level: .warn)
+                }
+            }
+            return SessionIngestResult(
+                registered: registered,
+                copiedButUnregistered: unregistered,
+                skipped: result.skipped,
+                unreadable: result.unreadable,
+                failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.sourcePath, message: $0.message) }
+            )
+        }
+    }
+
     // MARK: - SessionAPI
 
     public func list() async throws -> [SessionData] {

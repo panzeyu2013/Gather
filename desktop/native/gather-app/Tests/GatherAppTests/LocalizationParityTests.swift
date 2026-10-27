@@ -15,6 +15,7 @@
 // 基线是「代码 key ⊆ en 键」而不是 zh/en 双向对齐。
 import Foundation
 import Testing
+import GatherProtocol
 @testable import GatherUI
 
 @MainActor
@@ -198,6 +199,14 @@ struct LocalizationParityTests {
         for slider in SettingsViewModel.generalSliders + SettingsViewModel.advancedSliders {
             keys.insert(slider.zhLabel)
             if !slider.zhDesc.isEmpty { keys.insert(slider.zhDesc) }
+        }
+        // fieldTitle(field)/field.label 传的是变量，调用点扫描看不到具体 key；
+        // 这里把目录里的动态标题显式纳入覆盖率检查。
+        for field in DescriptiveField.allCases {
+            keys.insert(MetadataDisplay.fieldTitle(field))
+        }
+        for field in FilterFieldCatalog.fields {
+            keys.insert(field.label)
         }
         return keys.filter { !$0.isEmpty }
     }

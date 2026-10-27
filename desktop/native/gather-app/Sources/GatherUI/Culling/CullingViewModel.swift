@@ -210,6 +210,8 @@ public final class CullingViewModel: PageVisibility {
     /// T0 应用产生的 history operation id：撤销它时必须按 source=ai 回写，
     /// 否则资产会变成 manual+pending，之后永远被“人工决策”跳过。
     public internal(set) var triageHistoryOperationId: Int?
+    /// P1 / E：最近一次"建议写回 XMP"的批次 id（nil = 没有可撤销的写回）。
+    public internal(set) var lastTriageWritebackBatchId: String?
 
     /// Host（跨模块）读取设置后回填 Beta 开关；不暴露任意 setter。
     public func refreshTriageSettings() async {
@@ -283,6 +285,7 @@ public final class CullingViewModel: PageVisibility {
         quality: any QualityAPI,
         captureOne: any CaptureOneBridging,
         photo: (any PhotoAPI)? = nil,
+        session: (any SessionAPI)? = nil,
         qualityPollIntervalMilliseconds: Int = CullingViewModel.defaultQualityPollIntervalMilliseconds
     ) {
         self.sessionId = sessionId
@@ -290,6 +293,7 @@ public final class CullingViewModel: PageVisibility {
         self.navigationAPI = navigation
         self.metadataAPI = metadata
         self.photoAPI = photo
+        self.sessionAPI = session
         self.jobAPI = jobs
         self.qualityAPI = quality
         self.captureOne = captureOne
@@ -312,6 +316,35 @@ public final class CullingViewModel: PageVisibility {
         if syncStatus.written > 0 { return .c1Read }
         if syncStatus.synced > 0 { return .safeToCleanup }
         return .synced
+    }
+
+    // MARK: - P1 / A3：只读元数据面板
+
+    /// 当前照片的只读元数据详情（缓存投影）。nil = 尚未加载或未选中。
+    /// P1 / D：会话域（摄取登记用）。nil = 未接线，摄取入口报错而不是静默失败。
+    var sessionAPI: (any SessionAPI)?
+
+    public var metadataDetail: PhotoMetadataDetail?
+    /// latest-wins 代数：快速翻页时只落最后一次请求的结果。
+    private var metadataDetailRequestID = 0
+
+    /// 面板数据加载：只读缓存（photo.metadata 不触发磁盘解析）。
+    public func loadMetadataDetail() {
+        guard let photoId = currentAsset?.photo.id else {
+            metadataDetail = nil
+            return
+        }
+        metadataDetailRequestID += 1
+        let requestID = metadataDetailRequestID
+        // 先清空：切图后不得继续渲染上一张的路径/IPTC（请求返回前也不显示旧值）。
+        metadataDetail = nil
+        Task { [weak self] in
+            guard let self else { return }
+            let detail = try? await self.metadataAPI.metadata(photoId)
+            guard self.metadataDetailRequestID == requestID,
+                  detail?.photoId == photoId else { return }
+            self.metadataDetail = detail
+        }
     }
 
     /// 对齐 deriveSyncControls：syncing/c1Read/safeToCleanup 才可重载元数据。

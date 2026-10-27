@@ -5,8 +5,8 @@
 // 证明"移动后的文件是同一个"，原实现调 Domain 层 IndexerService 的哈希方法
 // ——这是 Persistence→Domain 的反向依赖；拆 target 后 GatherPersistence 无法
 // import GatherDomain，若给两者互相加依赖则 SwiftPM 直接报 cyclic dependency。
-// 哈希是纯文件 IO 工具，与 Domain 语义无关，故下沉到 Persistence；Domain 侧
-// 的同名静态方法保留为一行委托（deprecated 别名）。
+// 哈希是纯文件 IO 工具，与 Domain 语义无关，故下沉到 Persistence；扫描/去重/
+// 备份校验统一直接调用 FileHasher，不再保留 Domain 侧同名别名。
 //
 // 实现从 IndexerService 原样搬移：4MB 分块流式喂 CryptoKit（内存恒定），
 // Linux 无 CryptoKit 回退纯 Swift SHA256（GatherPersistence/Database/SHA256.swift），两条路径

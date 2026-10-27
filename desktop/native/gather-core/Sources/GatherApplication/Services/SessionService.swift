@@ -216,6 +216,21 @@ public final class SessionService {
         )
     }
 
+    /// P1 / D：会话内已有照片的校验和（摄取去重）。只取已回填的行。
+    public func photoChecksums(sessionId: String) throws -> [String: String] {
+        var result: [String: String] = [:]
+        for row in try photoRepo.getBySessionProjection(sessionId: sessionId) {
+            if !row.checksum.isEmpty {
+                result[row.checksum] = row.id
+            } else {
+                // 懒索引默认不回填 checksum；摄取去重要对存量照片现算一次，
+                // 否则重复摄取同一批卡会再复制一份。
+                do { result[try FileHasher.sha256File(row.filepath)] = row.id } catch {}
+            }
+        }
+        return result
+    }
+
     public func updateSession(sessionId: String, name: String) throws -> SessionData {
         let updated = try sessionRepo.updateName(id: sessionId, name: name)
         if !updated { throw SessionServiceError.sessionNotFound }

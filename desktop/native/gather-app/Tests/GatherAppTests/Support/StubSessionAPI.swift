@@ -94,6 +94,11 @@ final class B8SessionAPIStub: SessionAPI, @unchecked Sendable {
         throw GatherError(code: .SESSION_NOT_FOUND)
     }
 
+    // P1 / D：摄取（stub：不碰文件系统，直接回报 0 登记）。
+    func ingest(_ input: Confirmed<SessionIngestInput>) async throws -> SessionIngestResult {
+        SessionIngestResult(registered: 0, copiedButUnregistered: [], skipped: [], failed: [])
+    }
+
     func status(_ sessionId: String) async throws -> WorkspaceStatus {
         let (error, status): ((any Error)?, WorkspaceStatus?) = box.lock.withLock {
             box.statusCalls.append(sessionId)

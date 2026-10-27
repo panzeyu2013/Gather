@@ -121,6 +121,10 @@ struct CompositionCore {
                 try await writebackService.executePending(
                     sessionId: sessionId, module: "metadata")
             },
+            retryFlush: { sessionId in
+                try await writebackService.executePending(
+                    sessionId: sessionId, module: "metadata", includeFailed: true)
+            },
             assetResolver: assetResolver, exif: ImageIOExifProvider(),
             dimensions: ImageIODimensionsProvider(),
             origins: MetadataKeywordOriginRepo(connection: db))

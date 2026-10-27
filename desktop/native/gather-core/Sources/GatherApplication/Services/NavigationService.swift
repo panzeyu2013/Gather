@@ -464,6 +464,17 @@ func parseISODate(_ value: String) -> Double {
     if let date = formatter2.date(from: value) {
         return date.timeIntervalSince1970 * 1000
     }
+    // 生产库的 date_taken 是 EXIF 原值（"2026:07:30 10:00:00"），
+    // 也兼容无 T 的 ISO 空格形式；否则 gap 恒 NaN → 每张自成一组。
+    let fallback = DateFormatter()
+    fallback.locale = Locale(identifier: "en_US_POSIX")
+    fallback.timeZone = TimeZone(secondsFromGMT: 0)
+    for format in ["yyyy:MM:dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss"] {
+        fallback.dateFormat = format
+        if let date = fallback.date(from: value) {
+            return date.timeIntervalSince1970 * 1000
+        }
+    }
     return Double.nan
 }
 

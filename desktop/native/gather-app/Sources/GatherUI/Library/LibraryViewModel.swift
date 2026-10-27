@@ -37,6 +37,13 @@ public struct LibraryFilterState: Equatable, Sendable {
     public var person = ""
     public var duplicates = ""
     public var recentDays = ""
+    // P1 / C：facet 维（单值选择；空串 = 不限）
+    public var camera = ""
+    public var lens = ""
+    public var iso = ""
+    public var year = ""
+    /// P1 / C：规则编辑器的高级条件（AND/OR + between/in）。空组 = 不参与筛选。
+    public var rules = FilterGroup(logic: .and, conditions: [])
 
     public init() {}
 
@@ -61,7 +68,21 @@ public func buildLibraryCriteria(_ state: LibraryFilterState) -> FilterGroup {
 
     let search = state.search.trimmingCharacters(in: .whitespaces)
     if !search.isEmpty {
-        add("filename", .contains, .string(search))
+        // P1 / C：多字段搜索——文件名 / 标题 / 说明 / 关键词任意命中即可。
+        // 必须是 OR 子组：并进外层 AND 会要求"文件名也命中"，等于没扩。
+        // title/description 经 FilterEngine 的 jsonFields 映射到 iptc_json。
+        conditions.append(.group(FilterGroup(logic: .or, conditions: [
+            .rule(FilterRule(field: "filename", operator: .contains, value: .string(search))),
+            .rule(FilterRule(field: "title", operator: .contains, value: .string(search))),
+            .rule(FilterRule(field: "description", operator: .contains, value: .string(search))),
+            .rule(FilterRule(field: "headline", operator: .contains, value: .string(search))),
+            .rule(FilterRule(field: "creator", operator: .containsAny, value: .array([.string(search)]))),
+            .rule(FilterRule(field: "copyright", operator: .contains, value: .string(search))),
+            .rule(FilterRule(field: "city", operator: .contains, value: .string(search))),
+            .rule(FilterRule(field: "country", operator: .contains, value: .string(search))),
+            .rule(FilterRule(field: "location", operator: .contains, value: .string(search))),
+            .rule(FilterRule(field: "keywords", operator: .contains, value: .string(search))),
+        ])))
     }
     if let rating = Int(state.rating) {
         add("rating", .gte, .number(Double(rating)))
@@ -91,6 +112,20 @@ public func buildLibraryCriteria(_ state: LibraryFilterState) -> FilterGroup {
     if !state.duplicates.isEmpty {
         add("has_duplicates", .eq, .bool(state.duplicates == "yes"))
     }
+    // P1 / C：规则编辑器的高级条件（逻辑由 rules.logic 决定）。
+    if !state.rules.conditions.isEmpty {
+        conditions.append(.group(state.rules))
+    }
+
+    // P1 / C：facet 维 —— 与 FacetQuery 的维度与字段一一对应。
+    let camera = state.camera.trimmingCharacters(in: .whitespaces)
+    if !camera.isEmpty { add("camera_model", .eq, .string(camera)) }
+    let lens = state.lens.trimmingCharacters(in: .whitespaces)
+    if !lens.isEmpty { add("lens_model", .eq, .string(lens)) }
+    if let iso = Int(state.iso) { add("iso", .eq, .number(Double(iso))) }
+    let year = state.year.trimmingCharacters(in: .whitespaces)
+    if !year.isEmpty { add("date_taken", .startsWith, .string(year)) }
+
     if let recentDays = Int(state.recentDays) {
         // TS: Date.now() - N 天 → ISO8601（毫秒精度字符串）。
         let since = ISO8601DateFormatter().string(
@@ -138,6 +173,13 @@ public protocol LibraryDataProvider: Sendable {
     /// 破坏性（合并/拆分会改变资产结构）：confirmed 同上。
     func updateAssetCandidate(candidateId: String, accept: Bool, confirmed: Bool) async throws
     func listAssetVolumes() async throws -> [AssetVolumeData]
+    /// P1 / C：facet 计数（每维已排除自身条件）。sessionId == nil 表示全库。
+    func facets(
+        criteria: FilterGroup,
+        sessionId: String?,
+        dimensions: [String],
+        limit: Int
+    ) async throws -> [PhotoFacetGroup]
     /// 破坏性（改写该根下全部路径记录）：confirmed 同上。
     func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) async throws -> Int
 
@@ -181,6 +223,14 @@ public extension LibraryDataProvider {
 
     func listAssetVolumes() async throws -> [AssetVolumeData] { [] }
 
+    /// P1 / C：stub 默认无 facet（面板隐藏）。
+    func facets(
+        criteria: FilterGroup,
+        sessionId: String?,
+        dimensions: [String],
+        limit: Int
+    ) async throws -> [PhotoFacetGroup] { [] }
+
     func relinkAssetRoot(oldRoot: String, newRoot: String, confirmed: Bool) async throws -> Int {
         throw APIError.failed("ASSET_RELINK_NOT_SUPPORTED")
     }
@@ -217,6 +267,30 @@ public final class LibraryViewModel {
     var requestSequence = 0
     var latestRequestID = 0
     var committed: LibraryFilterState = LibraryFilterState()
+
+    // MARK: - P1 / C：facet
+
+    /// 各维计数（相机/镜头/ISO/年份/色标）；空 = 未加载或库为空。
+    var facets: [PhotoFacetGroup] = []
+    /// 每维最多展示的桶数（避免面板被长尾撑爆）。
+    static let facetLimit = 40
+
+    /// 重新计算 facet：基于**已提交**的筛选（与网格一致），不是正在编辑的草稿。
+    func refreshFacets() async {
+        let criteria = buildLibraryCriteria(committed)
+        do {
+            facets = try await provider.facets(
+                criteria: criteria,
+                sessionId: sessionFilter.isEmpty ? nil : sessionFilter,
+                dimensions: ["camera", "lens", "iso", "year", "label"],
+                limit: Self.facetLimit
+            )
+            actionError = nil
+        } catch {
+            facets = []
+            actionError = CommandError(error)
+        }
+    }
     /// 当前已提交的 criteriaKey（TS criteriaKey = JSON.stringify(criteria)）。
     var criteriaKey = ""
 

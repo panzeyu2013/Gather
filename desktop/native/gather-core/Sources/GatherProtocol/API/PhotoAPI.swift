@@ -28,6 +28,9 @@ public protocol PhotoAPI: Sendable {
     /// filter.suggest
     func suggestions(_ query: PhotoSuggestionQuery) async throws -> [FilterSuggestion]
 
+    /// P1 / C：facet 计数（每维独立 COUNT，已按该维剔除自身条件）。
+    func facets(_ input: PhotoFacetInput) async throws -> [PhotoFacetGroup]
+
     /// image.get_dimensions（单路径 = paths 只有一个元素）
     func dimensions(_ input: PhotoDimensionsInput) async throws -> [String: PhotoDimensions]
 

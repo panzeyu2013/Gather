@@ -117,6 +117,75 @@ struct MetadataServiceTests {
         return Fixture(db: db, dir: dir, photoId: photoId, photoPath: photoPath, exif: exif, xmp: xmp, service: service)
     }
 
+    // MARK: - P1 / IPTC：只读详情
+
+    /// photoDetail 只读缓存：不得触发 EXIF/XMP 解析（面板翻页不能产生 N 次 IO）。
+    @Test("photoDetail：缓存投影不触发解析，描述性元数据与 EXIF 都来自缓存行")
+    func photoDetailReadsCacheOnly() async throws {
+        let fx = try makeFixture()
+        defer { fx.cleanup() }
+        let repo = MetadataCacheRepo(connection: fx.db)
+        let sessionRow = try fx.db.prepare("SELECT session_id FROM photos WHERE id = ?")
+            .get([.text(fx.photoId)])
+        let sessionId = sessionRow?[0].textValue ?? ""
+        try repo.upsert(photoId: fx.photoId, sessionId: sessionId, data: MetadataCacheInput(
+            cameraModel: "X-T5",
+            lensModel: "23mm F1.4",
+            iso: 400,
+            descriptive: DescriptiveMetadata(title: "落日", city: "上海", personInImage: ["张三"])
+        ))
+
+        let detail = try fx.service.photoDetail(photoId: fx.photoId)
+        #expect(detail.exif.cameraModel == "X-T5")
+        #expect(detail.exif.iso == 400)
+        #expect(detail.descriptive.title == "落日")
+        #expect(detail.descriptive.city == "上海")
+        #expect(detail.descriptive.personInImage == ["张三"])
+        #expect(detail.filledDescriptiveCount == 3)
+        #expect(detail.filename == "photo.cr3")
+        #expect(detail.xmpPath.hasSuffix(".xmp"))
+        #expect(detail.hasXMP)
+        #expect(fx.exif.callCount() == 0, "只读详情不得触发 EXIF 解析")
+    }
+
+    @Test("photoDetail：缓存缺失返回空快照；照片不存在抛 photoNotFound")
+    func photoDetailMissingCacheAndUnknownPhoto() throws {
+        let fx = try makeFixture()
+        defer { fx.cleanup() }
+        let detail = try fx.service.photoDetail(photoId: fx.photoId)
+        #expect(detail.exif.isEmpty)
+        #expect(detail.descriptive.isEmpty)
+
+        #expect(throws: MetadataServiceError.self) {
+            _ = try fx.service.photoDetail(photoId: "missing-photo")
+        }
+    }
+
+    /// P1 / IPTC：扫描必须把侧车描述性元数据投影到缓存（否则只读面板永远为空）。
+    @Test("扫描：侧车 IPTC 投影到缓存；侧车消失后清空投影")
+    func scanProjectsDescriptiveMetadata() async throws {
+        let fx = try makeFixture()
+        defer { fx.cleanup() }
+        fx.xmp.setAttributes(MetadataWriteAttributes(descriptive: DescriptiveMetadata(
+            title: "落日", creator: ["张三"], city: "上海",
+            contactInfo: DescriptiveContact(email: "a@b.c"))))
+        _ = try await fx.service.getMetadata(photoIds: [fx.photoId])
+        let repo = MetadataCacheRepo(connection: fx.db)
+        let cached = try repo.get(fx.photoId)?.descriptive
+        #expect(cached?.title == "落日")
+        #expect(cached?.creator == ["张三"])
+        #expect(cached?.city == "上海")
+        #expect(cached?.contactInfo?.email == "a@b.c")
+
+        // 侧车被删除（合法清空）：守卫只针对"文件在但读不出"的损坏场景。
+        fx.xmp.setAttributes(MetadataWriteAttributes())
+        fx.xmp.setSidecarExists(false)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(300)], ofItemAtPath: fx.photoPath)
+        _ = try await fx.service.getMetadata(photoIds: [fx.photoId])
+        #expect(try repo.get(fx.photoId)?.descriptive.title == nil, "侧车被删除后缓存必须同步清空")
+    }
+
     /// 变异守卫：缓存命中判据 && 退化为 || 时，源文件大小不变、仅侧车 mtime 变化
     /// 的情况会被误判为命中 —— 外部软件写进侧车的关键词/星级永远读不到。
     @Test("缓存陈旧键：指纹未变命中缓存；仅侧车 mtime 变化必须重新提取")

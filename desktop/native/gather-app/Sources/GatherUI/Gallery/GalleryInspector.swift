@@ -97,6 +97,13 @@ extension GalleryView {
                         variantsToggle
                     }
                 }
+                // P1 / A3：选中单张时的只读元数据（EXIF + IPTC Core/Extension）。
+                if viewModel.selectedIds.count == 1 {
+                    MetadataSections(detail: viewModel.metadataDetail)
+                        .task(id: viewModel.selectedIds) {
+                            viewModel.loadMetadataDetail()
+                        }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(GatherMetrics.Space.l)

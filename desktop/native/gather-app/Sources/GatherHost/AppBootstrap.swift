@@ -137,6 +137,7 @@ package final class AppBootstrap {
     /// 优雅停机（ADR-023）：委托唯一 AppRuntime（幂等）。
     /// 启动未完成/失败时为 no-op（与拆分前「Delegate 回调未挂载」语义一致）。
     package func shutdown() async {
+        SessionDirectoryMonitor.shared.stopAll()
         if let maintenanceService {
             await maintenanceService.stopScheduler()
             await maintenanceService.waitForBackup(timeout: 15)
@@ -365,6 +366,10 @@ package final class AppBootstrap {
         )
         let workspaceFactory = SessionWorkspaceFactory(deps: rootDeps)
         let sessionStore = SessionStore(make: workspaceFactory.makeWorkspace)
+        // P1 / D：LRU 淘汰/删除会话时停掉该会话的 FSEvents 监听，避免关闭后仍建扫描 job。
+        sessionStore.onWorkspaceClosed = { sessionId in
+            SessionDirectoryMonitor.shared.stop(sessionId: sessionId)
+        }
 
         return (
             // 4a-2c：删除 provider/libraryProvider/galleryProvider 三个未被场景

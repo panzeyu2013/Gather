@@ -210,7 +210,14 @@ extension WritebackService {
                 // 未知模块串（历史脏数据）按「其它模块」处理，宁可拦下不可覆盖。
                 throw WritebackServiceError.otherModuleActive
             }
-            if typed == current || typed == .culling { continue }
+            // culling 是连续同步模块；metadata/template 是本地显式写入且**没有
+            // confirm/cleanup 出口**（MetadataAPI 不提供），若按 written 阻塞会让
+            // 一次星级写回永久挡住 culling/face/sim 的所有写回。它们由各自的
+            // 批次快照负责撤销，行/备份留给维护清理。
+            if typed == current || typed == .culling
+                || typed == .metadata || typed == .template {
+                continue
+            }
             throw WritebackServiceError.otherModuleActive
         }
     }

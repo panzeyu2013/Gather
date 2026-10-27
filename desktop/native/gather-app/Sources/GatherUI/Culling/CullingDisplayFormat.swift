@@ -79,6 +79,7 @@ enum CullingDisplayFormat {
         case .rating: return l10n("星级")
         case .label: return l10n("颜色")
         case .keywords: return l10n("关键词")
+        case .descriptive: return l10n("描述信息")
         }
     }
 

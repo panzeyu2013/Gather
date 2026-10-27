@@ -41,6 +41,8 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
     private let imagePreloadService: ImagePreloadService
     private let settingsService: SettingsService
     private let jobAPI: any JobAPI
+    /// P1 / C：facet 计数（与 filter 引擎同库；nil = 未接线，返回空面板）。
+    private let facetQuery: FacetQuery?
 
     /// @unchecked Sendable 依据：全部依赖均为构造后不可变的 let；Repo/Service 的
     /// 可变状态由 DBConnection 的递归锁或各服务自己的锁保护（同组合根约定）。
@@ -51,7 +53,8 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         filterEngine: FilterEngine,
         imagePreloadService: ImagePreloadService,
         settingsService: SettingsService,
-        jobAPI: any JobAPI
+        jobAPI: any JobAPI,
+        facetQuery: FacetQuery? = nil
     ) {
         self.photoRepo = photoRepo
         self.assetRepo = assetRepo
@@ -60,6 +63,7 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         self.imagePreloadService = imagePreloadService
         self.settingsService = settingsService
         self.jobAPI = jobAPI
+        self.facetQuery = facetQuery
         self.pathPolicy = LivePhotoPathPolicy(photoRepo: photoRepo)
     }
 
@@ -101,6 +105,28 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
     public func suggestions(_ query: PhotoSuggestionQuery) async throws -> [FilterSuggestion] {
         try mapFilterError {
             try filterEngine.suggest(query.sessionId, keyword: query.keyword)
+        }
+    }
+
+    /// P1 / C：facet 计数。每维单独 COUNT，且按该维剔除自身条件（同维多选取并集）。
+    public func facets(_ input: PhotoFacetInput) async throws -> [PhotoFacetGroup] {
+        guard let facetQuery else { return [] }
+        let requested: [FacetDimension] = input.dimensions.isEmpty
+            ? FacetDimension.allCases
+            : input.dimensions.compactMap(FacetDimension.init(rawValue:))
+        return try mapFilterError {
+            try requested.map { dimension in
+                let buckets = try facetQuery.buckets(
+                    sessionId: input.sessionId,
+                    criteria: input.criteria,
+                    dimension: dimension,
+                    limit: input.limit
+                )
+                return PhotoFacetGroup(
+                    dimension: dimension.rawValue,
+                    buckets: buckets.map { PhotoFacetBucket(value: $0.value, count: $0.count) }
+                )
+            }
         }
     }
 

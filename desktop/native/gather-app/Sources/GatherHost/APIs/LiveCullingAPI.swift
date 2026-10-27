@@ -43,6 +43,10 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     /// 只读会话行：syncStatus 需要 session.reload_acked_at。nil 时该字段恒为 nil
     /// （测试/嵌入场景不需要重载确认语义）。
     private let sessionRepo: SessionRepo?
+    /// P1 / D：淘汰移动需要写 photos.filepath；nil = 未接线（调用显式报错）。
+    private let photoRepo: (any PhotoRepository)?
+    /// P1：移出后的跨表路径迁移（photos/deliveries/intents/origins/bindings/assets）。
+    private let relocateAfterMove: ((String, String, String) throws -> Void)?
 
     /// @unchecked Sendable 依据：两个依赖都是构造后不再变更的 let；CullingService
     /// 的可变状态（会话级更新上下文缓存、Repo 缓存）由 DBConnection 的递归锁与
@@ -50,11 +54,75 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     public init(
         cullingService: CullingService,
         triageService: TriageService,
-        sessionRepo: SessionRepo? = nil
+        sessionRepo: SessionRepo? = nil,
+        photoRepo: (any PhotoRepository)? = nil,
+        relocateAfterMove: ((String, String, String) throws -> Void)? = nil
     ) {
         self.cullingService = cullingService
         self.triageService = triageService
         self.sessionRepo = sessionRepo
+        self.photoRepo = photoRepo
+        self.relocateAfterMove = relocateAfterMove
+    }
+
+    // MARK: - P1 / D：淘汰移动
+
+    /// 路径一律从 photos 表取（缓存不可靠），移动后立刻改写登记路径。
+    public func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult {
+        guard let photoRepo else {
+            throw GatherError(
+                code: .INVALID_PARAM,
+                params: ["field": "photoRepo", "reason": "move_rejected 未接线（缺少 photoRepo）"]
+            )
+        }
+        let payload = input.value
+        return try map {
+            let lookups = try photoRepo.getLookupByIds(payload.photoIds)
+            guard lookups.count == Set(payload.photoIds).count,
+                  lookups.allSatisfy({ $0.sessionId == payload.sessionId }) else {
+                throw GatherError.invalidParameter(
+                    field: "photoIds", reason: "must belong to the session")
+            }
+            // 只允许移动已淘汰的照片：保持"淘汰移动"语义，避免误把保留件搬出工作区。
+            let rejected = Set(
+                try cullingService.getDecisions(sessionId: payload.sessionId)
+                    .filter { $0.decision == CullingDecisionValue.reject.rawValue }
+                    .map(\.photoId))
+            guard lookups.allSatisfy({ rejected.contains($0.id) }) else {
+                throw GatherError.invalidParameter(
+                    field: "photoIds", reason: "contains photos that are not rejected")
+            }
+            let session = try sessionRepo?.get(id: payload.sessionId)
+            let root: String
+            if let explicit = payload.destinationRoot {
+                // 显式目标只接受会话根目录下的路径：防止把照片搬到任意目录。
+                let base = URL(fileURLWithPath: session?.sourcePath ?? "")
+                    .resolvingSymlinksInPath().path
+                let target = URL(fileURLWithPath: explicit)
+                    .resolvingSymlinksInPath().path
+                guard !base.isEmpty, target == base || target.hasPrefix(base + "/") else {
+                    throw GatherError.invalidParameter(
+                        field: "destinationRoot", reason: "must be inside the session source path")
+                }
+                root = explicit
+            } else if let sourcePath = session?.sourcePath, !sourcePath.isEmpty {
+                root = sourcePath
+            } else {
+                root = lookups.first.map { ($0.filepath as NSString).deletingLastPathComponent } ?? ""
+            }
+            let destination = (root as NSString).appendingPathComponent(RejectedMover.folderName)
+            let result = RejectedMover(
+                photoRepo: photoRepo, relocate: relocateAfterMove
+            ).move(
+                photos: lookups.map { ($0.id, $0.filepath) },
+                destinationRoot: destination
+            )
+            return CullingMoveRejectedResult(
+                moved: result.moved,
+                newPaths: result.newPaths,
+                failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+            )
+        }
     }
 
     // MARK: - 读

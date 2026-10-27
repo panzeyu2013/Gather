@@ -9,7 +9,7 @@ extension SimilarityViewModel {
 
     // MARK: C1 同步状态机（TS utils/c1-sync-controls.ts 移植，2.3.5 P1）
 
-    /// 重拉同步状态视图（sim.writeback_items 行计数 → aggregateSessionState）。
+    /// 重拉同步状态视图（deliveries 状态计数 → aggregateSessionState）。
     ///
     /// 保留同步签名：SimilarityView 在 c1SyncStatus 通知回调里直接调用。
     /// 生产实现调度异步查询；需要等待结果的调用方（load/写回动作）走

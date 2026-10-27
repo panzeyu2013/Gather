@@ -42,7 +42,7 @@ struct MaintenanceTests {
         #expect(!FileManager.default.fileExists(atPath: stalePartial.path))
 
         #expect(record.verified)
-        #expect(record.schemaVersion == 3)
+        #expect(record.schemaVersion == 4)
         #expect(record.tableCount == 44)
         #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("Backups").appendingPathComponent(record.fileName).path))
         let verification = try BackupVerifier.verify(path: dir.appendingPathComponent("Backups").appendingPathComponent(record.fileName).path)

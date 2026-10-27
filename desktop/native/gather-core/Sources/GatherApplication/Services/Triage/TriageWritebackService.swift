@@ -1,0 +1,201 @@
+// desktop/native/gather-core/Sources/GatherApplication/Services/Triage/TriageWritebackService.swift
+// P1 / E：把 triage 写回计划落成**可移植信号**（逐张独立提交，经交付队列）。
+//
+// 写入三件套：
+// - rating（只写空值，人工决策不动）；
+// - 可选关键词（Gather|AI|Keep / Reject，会进客户交付物）；
+// - 私有命名空间 gather:Triage = keep/reject（其它工具可读、可审计、可撤销）。
+//
+// 撤销：按批次记录还原 rating/关键词，并清空私有命名空间（不误删其它字段）。
+import Foundation
+import GatherProtocol
+import GatherPersistence
+
+public struct TriageWritebackFailure: Equatable, Sendable {
+    public var photoId: String
+    public var message: String
+    public init(photoId: String, message: String) {
+        self.photoId = photoId
+        self.message = message
+    }
+}
+
+public struct TriageWritebackOutcome: Equatable, Sendable {
+    public var written: [String]
+    public var skipped: [String]
+    public var failed: [TriageWritebackFailure]
+    public init(written: [String], skipped: [String], failed: [TriageWritebackFailure]) {
+        self.written = written
+        self.skipped = skipped
+        self.failed = failed
+    }
+}
+
+public final class TriageWritebackService: @unchecked Sendable {
+    /// 批次存储里 triage 批次的模板标识（避免多处魔法串漂移）。
+    public static let batchTemplateID = "triage"
+    private let xmp: any XMPProvider
+    private let metadata: MetadataService
+    /// nil = 不记批次（此时不提供撤销）。
+    private let batches: MetadataApplyBatchStore?
+
+    public init(xmp: any XMPProvider, metadata: MetadataService, batches: MetadataApplyBatchStore? = nil) {
+        self.xmp = xmp
+        self.metadata = metadata
+        self.batches = batches
+    }
+
+    /// 逐张独立提交：一张失败不影响其它张；无写入动作的决策记为 skipped。
+    public func apply(
+        _ decisions: [TriageWritebackDecision],
+        batchId: String = UUID().uuidString,
+        now: String = ""
+    ) async -> TriageWritebackOutcome {
+        var skipped: [String] = []
+        var inputs: [(photoId: String, attributes: MetadataWriteAttributes)] = []
+        var snapshots: [String: MetadataApplySnapshot] = [:]
+        var failed: [TriageWritebackFailure] = []
+
+        enum DecisionOutcome: Sendable {
+            case input(String, MetadataWriteAttributes, MetadataApplySnapshot)
+            case failure(TriageWritebackFailure)
+        }
+        // 读盘是主成本：有界并发；写盘仍逐张走交付队列。
+        var outcomes: [DecisionOutcome] = []
+        do {
+            outcomes = try await batchAsync(decisions, concurrency: 8) { decision -> DecisionOutcome in
+            do {
+                let detail = try self.metadata.photoDetail(photoId: decision.photoId)
+                let current = (try? await self.xmp.readAttributes(photoPath: detail.filepath))
+                    ?? MetadataWriteAttributes()
+                var attributes = MetadataWriteAttributes()
+                if let rating = decision.rating { attributes.rating = Double(rating) }
+                if let keyword = decision.keyword {
+                    var keywords = current.keywords ?? []
+                    if !keywords.contains(keyword) { keywords.append(keyword) }
+                    attributes.keywords = keywords
+                    // 并集语义：不得覆盖 culling 尚未落盘的 delta 意图。
+                    attributes.keywordsMode = "merge"
+                }
+                // 信号始终写：即使 rating 因人工决策被跳过，也要记录"这条建议存在"。
+                attributes.triageSignal = decision.namespaceValue
+                let snapshot = MetadataApplySnapshot(
+                    photoId: decision.photoId,
+                    filepath: detail.filepath,
+                    before: DescriptiveMetadata(),
+                    // 撤销基线取盘上现值（缓存可能落后）。
+                    beforeRating: decision.rating == nil
+                        ? nil : Int(current.rating ?? Double(detail.exif.rating)),
+                    beforeKeywords: decision.keyword == nil ? nil : (current.keywords ?? []),
+                    appliedKeyword: decision.keyword
+                )
+                return .input(decision.photoId, attributes, snapshot)
+            } catch {
+                return .failure(TriageWritebackFailure(
+                    photoId: decision.photoId, message: String(describing: error)))
+                }
+            }
+        } catch {
+            failed.append(contentsOf: decisions.map {
+                TriageWritebackFailure(photoId: $0.photoId, message: String(describing: error))
+            })
+        }
+        for outcome in outcomes {
+            switch outcome {
+            case .input(let photoId, let attributes, let snapshot):
+                inputs.append((photoId, attributes))
+                snapshots[photoId] = snapshot
+            case .failure(let failure):
+                failed.append(failure)
+            }
+        }
+
+        var written: [String] = []
+        var attempted: [String] = []
+        if !inputs.isEmpty {
+            do {
+                let outcome = try await metadata.applyMetadataAttributes(inputs, source: .manual)
+                written = outcome.written
+                attempted = outcome.attempted
+                skipped.append(contentsOf: outcome.skipped)
+                failed.append(contentsOf: outcome.failed.map {
+                    TriageWritebackFailure(photoId: $0.photoId, message: $0.message)
+                })
+            } catch {
+                failed.append(contentsOf: inputs.map {
+                    TriageWritebackFailure(photoId: $0.photoId, message: String(describing: error))
+                })
+            }
+        }
+        if let batches {
+            let writtenSnapshots = attempted.compactMap { snapshots[$0] }
+            if !writtenSnapshots.isEmpty {
+                try? batches.record(MetadataApplyBatch(
+                    id: batchId, templateId: Self.batchTemplateID,
+                    templateName: Self.batchTemplateID,
+                    appliedAt: now, snapshots: writtenSnapshots))
+            }
+        }
+        return TriageWritebackOutcome(written: written, skipped: skipped, failed: failed)
+    }
+
+    /// 撤销：rating/关键词还原为改动前；私有命名空间清空。
+    public func undo(batchId: String) async throws -> TriageWritebackOutcome {
+        guard let batches, let batch = batches.get(id: batchId) else {
+            throw MetadataTemplateServiceError.batchNotFound(batchId)
+        }
+        guard !batch.undone else {
+            throw MetadataTemplateServiceError.batchAlreadyUndone(batchId)
+        }
+        guard batch.templateId == Self.batchTemplateID else {
+            throw MetadataTemplateServiceError.batchTypeMismatch(batchId)
+        }
+        var inputs: [(photoId: String, attributes: MetadataWriteAttributes)] = []
+        var failed: [TriageWritebackFailure] = []
+        var blocked = Set<String>()
+        // 新批次只删"本次追加的那个关键词"：写回后用户/C1 新增的词必须保留。
+        for snapshot in batch.snapshots {
+            guard let keyword = snapshot.appliedKeyword else { continue }
+            do {
+                let removal = try await metadata.applyKeywordDelta(
+                    photoIds: [snapshot.photoId], added: [], removed: [keyword])
+                if removal.failed > 0 {
+                    blocked.insert(snapshot.photoId)
+                    failed.append(TriageWritebackFailure(
+                        photoId: snapshot.photoId,
+                        message: removal.errors.first ?? "keyword undo failed"))
+                }
+            } catch {
+                blocked.insert(snapshot.photoId)
+                failed.append(TriageWritebackFailure(
+                    photoId: snapshot.photoId, message: String(describing: error)))
+            }
+        }
+        for snapshot in batch.snapshots where !blocked.contains(snapshot.photoId) {
+            var attributes = MetadataWriteAttributes()
+            if let beforeRating = snapshot.beforeRating { attributes.rating = Double(beforeRating) }
+            // 旧批次没有 appliedKeyword：退回 beforeKeywords 整表恢复（历史行为）。
+            if snapshot.appliedKeyword == nil, let beforeKeywords = snapshot.beforeKeywords {
+                attributes.keywords = beforeKeywords
+            }
+            attributes.triageSignal = ""
+            inputs.append((snapshot.photoId, attributes))
+        }
+        var written: [String] = []
+        if !inputs.isEmpty {
+            do {
+                let outcome = try await metadata.applyMetadataAttributes(inputs, source: .manual)
+                written = outcome.written
+                failed = outcome.failed.map {
+                    TriageWritebackFailure(photoId: $0.photoId, message: $0.message)
+                }
+            } catch {
+                failed = inputs.map {
+                    TriageWritebackFailure(photoId: $0.photoId, message: String(describing: error))
+                }
+            }
+        }
+        if failed.isEmpty { try batches.markUndone(id: batchId) }
+        return TriageWritebackOutcome(written: written, skipped: [], failed: failed)
+    }
+}

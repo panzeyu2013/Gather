@@ -127,6 +127,35 @@ extension CullingViewModel {
             .first(where: { $0.similarityGroupId != currentGroupId }) else { return }
         currentPhotoId = next.photo.id
     }
+    // MARK: - P1 / D：淘汰移出（移到 _rejects，不删除）
+
+    /// 把已淘汰的照片移出工作目录；确认由调用点构造 Confirmed。
+    /// 范围：显式传入 > 选中项 > 当前照片。
+    public func moveRejectedOut(photoIds explicitIds: [String]? = nil) async {
+        let targets: [String]
+        if let explicitIds {
+            targets = explicitIds
+        } else if !selectedPhotoIds.isEmpty {
+            targets = Array(selectedPhotoIds)
+        } else if let current = currentAsset {
+            targets = [current.photo.id]
+        } else {
+            targets = []
+        }
+        guard !targets.isEmpty else { return }
+        do {
+            let input = try CullingMoveRejectedInput(sessionId: sessionId, photoIds: targets)
+            let result = try await cullingAPI.moveRejected(Confirmed(input, source: .userDialog))
+            if let first = result.failed.first {
+                errorMessage = CommandError(APIError.failed(first.message))
+            }
+            // 路径已变：重新拉页，避免网格继续用旧路径取缩略图。
+            await loadPage(reset: true)
+        } catch {
+            errorMessage = CommandError(error)
+        }
+    }
+
     public func toggleSelection(_ photoId: String) {
         if selectedPhotoIds.contains(photoId) {
             selectedPhotoIds.remove(photoId)

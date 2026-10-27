@@ -95,6 +95,85 @@ extension CullingViewModel {
     }
 
     /// 进入复核队列：只看待复核、低置信度优先、网格布局由调用方设置。
+    // MARK: - P1 / E：把建议写回成可移植信号
+
+    /// 准备写回输入（只分页读取，不写盘）。确认弹窗由 View 持有：
+    /// VM 不得自行构造 Confirmed（D-011：破坏性入口的类型层确认）。
+    public func prepareTriageWriteback(
+        policy: TriageWritebackPolicy = .ratingOnlyWhenEmpty
+    ) async -> TriageWritebackInput? {
+        var items: [TriageWritebackItem] = []
+        var seen = Set<String>()
+        var cursor: CullingPageCursor?
+        var pages = 0
+        do {
+            repeat {
+                let query = try CullingPageQuery(
+                    sessionId: sessionId,
+                    scope: .filtered,
+                    filters: CullingFilters(triageVerdicts: [.keep, .reject]),
+                    sort: .importOrder,
+                    cursor: cursor,
+                    limit: 200
+                )
+                let result = try await cullingAPI.page(query)
+                for asset in result.assets {
+                    guard let triage = asset.triage else { continue }
+                    guard triage.verdict == .keep || triage.verdict == .reject else { continue }
+                    guard seen.insert(asset.photo.id).inserted else { continue }
+                    // 人工已决策（manual 且非 unreviewed）→ 服务端绝不写 rating，但信号仍记录。
+                    let manuallyDecided = asset.state.source == .manual
+                        && asset.state.pickState != .unreviewed
+                    if let item = try? TriageWritebackItem(
+                        photoId: asset.photo.id,
+                        verdict: triage.verdict.rawValue,
+                        manuallyDecided: manuallyDecided
+                    ) {
+                        items.append(item)
+                    }
+                }
+                cursor = result.nextCursor
+                pages += 1
+            } while cursor != nil && pages < 100
+        } catch {
+            triageError = CommandError(error)
+            return nil
+        }
+        guard !items.isEmpty else { return nil }
+        return try? TriageWritebackInput(policy: policy, items: items)
+    }
+
+    /// 执行已确认的写回（Confirmed 只能由 View 的确认弹窗构造）。
+    public func applyTriageWriteback(_ input: Confirmed<TriageWritebackInput>) async {
+        do {
+            let result = try await metadataAPI.applyTriageWriteback(input)
+            if let failure = result.failed.first {
+                triageError = CommandError(APIError.failed(failure.message))
+            }
+            lastTriageWritebackBatchId = (result.written.isEmpty && result.failed.isEmpty)
+                ? nil : result.batchId
+            await loadPage(reset: true)
+        } catch {
+            triageError = CommandError(error)
+        }
+    }
+
+    /// 撤销最近一次建议写回（rating/关键词还原，私有信号清除）。
+    public func undoTriageWriteback(_ input: Confirmed<MetadataTemplateUndoInput>) async {
+        do {
+            let result = try await metadataAPI.undoTriageWriteback(input)
+            if result.failed.isEmpty {
+                lastTriageWritebackBatchId = nil
+            }
+            if let failure = result.failed.first {
+                triageError = CommandError(APIError.failed(failure.message))
+            }
+            await loadPage(reset: true)
+        } catch {
+            triageError = CommandError(error)
+        }
+    }
+
     public func showTriageReviewQueue() async {
         sortMode = .triageConfidenceAsc
         scopeMode = .filtered

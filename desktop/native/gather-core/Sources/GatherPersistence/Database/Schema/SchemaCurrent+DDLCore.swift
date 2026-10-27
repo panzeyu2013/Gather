@@ -3,11 +3,11 @@
 //
 // final-cleanup 纯拆分：本片段与拆分前 SchemaCurrent.ddl 的对应区间逐字节相同；三段按
 // ddlCore → ddlDomain → ddlIndexes 拼接（见 SchemaCurrent.swift），不得重排或改字。
-// 修改 DDL 必须同步 SchemaCurrent.expectedShapeFingerprint（7c7e…）。
+// 修改 DDL 必须同步 SchemaCurrent.expectedShapeFingerprint（4e47485e…）。
 extension SchemaCurrent {
     /// DDL 片段 1/3（internal：仅供 SchemaCurrent.ddl 拼接，不是公开 API）。
     static let ddlCore: String = """
-    -- SchemaCurrent · Gather 本地库最终形态（44 表 / 383 列 / 72 索引 / 65 外键）
+    -- SchemaCurrent · Gather 本地库最终形态（44 表 / 384 列 / 72 索引 / 65 外键）
     -- 约定：时间戳为 ISO-8601 TEXT（与 nowISOString 同格式）；布尔为 INTEGER 0/1；mtime 为 REAL 毫秒。
     -- 约束分层：CHECK 只兜「非法值」，状态转移合法性由 Swift 状态机负责。
 

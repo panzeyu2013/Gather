@@ -57,6 +57,11 @@ struct PreviewSessionAPI: SessionAPI {
         throw PreviewAPIError.unavailable("session.add_photos")
     }
 
+    // P1 / D：摄取（stub：不碰文件系统，直接回报 0 登记）。
+    func ingest(_ input: Confirmed<SessionIngestInput>) async throws -> SessionIngestResult {
+        SessionIngestResult(registered: 0, copiedButUnregistered: [], skipped: [], failed: [])
+    }
+
     func status(_ sessionId: String) async throws -> WorkspaceStatus {
         PreviewData.workspaceStatus(sessionId)
     }
@@ -123,6 +128,11 @@ struct PreviewCullingAPI: CullingAPI {
 
     func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult {
         throw PreviewAPIError.unavailable("culling.apply_triage")
+    }
+
+    // P1 / D：淘汰移动（stub：直接回成功，不碰文件系统）。
+    func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult {
+        CullingMoveRejectedResult(moved: input.value.photoIds, newPaths: [], failed: [])
     }
 
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus {
@@ -197,6 +207,47 @@ struct PreviewNavigationAPI: NavigationAPI {
 // MARK: - 元数据 / 画质
 
 struct PreviewMetadataAPI: MetadataAPI {
+    func metadata(_ photoId: String) async throws -> PhotoMetadataDetail {
+        throw PreviewAPIError.unavailable("metadata.detail")
+    }
+
+    func applyTriageWriteback(_ input: Confirmed<TriageWritebackInput>) async throws -> TriageWritebackResult {
+        throw PreviewAPIError.unavailable("metadata.apply_triage_writeback")
+    }
+
+    func undoTriageWriteback(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> TriageWritebackResult {
+        throw PreviewAPIError.unavailable("metadata.undo_triage_writeback")
+    }
+
+    // P1 / B2：模板（预览态一律不可用，避免 SwiftUI Preview 触发真实写盘）。
+    func templates() async throws -> [MetadataTemplateSummary] { [] }
+
+    func saveTemplate(_ input: MetadataTemplateSaveInput) async throws -> MetadataTemplateSummary {
+        throw PreviewAPIError.unavailable("metadata.save_template")
+    }
+
+    func templateFields(id: String) async throws -> DescriptiveMetadata {
+        throw PreviewAPIError.unavailable("metadata.template_fields")
+    }
+
+    func deleteTemplate(_ input: Confirmed<MetadataTemplateDeleteInput>) async throws {
+        throw PreviewAPIError.unavailable("metadata.delete_template")
+    }
+
+    func previewTemplate(_ input: MetadataTemplatePreviewInput) async throws -> MetadataTemplatePreviewResult {
+        throw PreviewAPIError.unavailable("metadata.preview_template")
+    }
+
+    func applyTemplate(_ input: Confirmed<MetadataTemplateApplyInput>) async throws -> MetadataTemplateApplyOutcome {
+        throw PreviewAPIError.unavailable("metadata.apply_template")
+    }
+
+    func undoTemplate(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> MetadataTemplateApplyOutcome {
+        throw PreviewAPIError.unavailable("metadata.undo_template")
+    }
+
+    func recentBatches(limit: Int) async throws -> [MetadataBatchSummary] { [] }
+
     func conflicts(_ sessionId: String) async throws -> [MetadataConflict] { PreviewData.conflicts }
 
     func orphans() async throws -> [MetadataOrphan] { PreviewData.orphanXMPs }

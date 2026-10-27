@@ -246,10 +246,16 @@ public final class WritebackService: @unchecked Sendable {
     /// 关键词队列（module=metadata）在 applyKeywords / retryKeywordWriteback 成功
     /// 后经宿主注入的闭包调用本入口；失败的项由 execute 落 failed（可重试），下次
     /// 调用 executePending 会连同 pending 一起再次消费。
-    public func executePending(sessionId: String, module: String) async throws -> WritebackResult {
+    public func executePending(
+        sessionId: String, module: String, includeFailed: Bool = false
+    ) async throws -> WritebackResult {
         let deliveryModule = try mapModule(module)
         var items: [WritebackItem] = []
-        for status in [DeliveryItemStatus.pending, .failed] {
+        // 默认只消费 pending：failed 必须由显式 retry 入口重试，否则用户已看到
+        // "失败"的项会在一段时间后被无关 flush 静默写盘（模板/triage 批次的撤销
+        // 入口可能已被关闭）。
+        let statuses: [DeliveryItemStatus] = includeFailed ? [.pending, .failed] : [.pending]
+        for status in statuses {
             items.append(contentsOf: try loadEntries(
                 sessionId: sessionId, module: deliveryModule, status: status
             ).map { entryToItem($0, sessionId: sessionId) })

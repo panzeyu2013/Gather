@@ -95,6 +95,12 @@ public final class SettingsService: @unchecked Sendable {
             "triage_reject_confidence_min": "0.75",
             "triage_min_executable_confidence": "0.55",
 
+            // P1 / B2：元数据模板（单键 JSON 数组）
+            "metadata.templates": "[]",
+            "metadata.applyBatches": "[]",
+            // P1 / D：FSEvents 各会话的 lastEventID（JSON 对象，单键避免动态 key）
+            "watch.lastEventIDs": "{}",
+
             // B0：备份 / 诊断
             "backup_dir": "",
             "backup_retention": "5",

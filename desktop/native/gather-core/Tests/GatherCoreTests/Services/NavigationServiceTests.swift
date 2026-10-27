@@ -44,9 +44,10 @@ private func makeHarness() throws -> Harness {
         ) VALUES ('session', ?, ?, 10, 1)
       """)
     let captures: [(String, String, String, Double)] = [
-        ("p1", "IMG_0001.JPG", "2026-07-30T10:00:00.000Z", 0),
-        ("p2", "IMG_0002.JPG", "2026-07-30T10:00:01.000Z", 5),
-        ("p3", "IMG_0003.JPG", "2026-07-30T10:00:20.000Z", 0),
+        // 生产库写入的是 EXIF 原值（冒号日期），不是 ISO8601。
+        ("p1", "IMG_0001.JPG", "2026:07:30 10:00:00", 0),
+        ("p2", "IMG_0002.JPG", "2026:07:30 10:00:01", 5),
+        ("p3", "IMG_0003.JPG", "2026:07:30 10:00:20", 0),
     ]
     for (id, filename, capturedAt, rating) in captures {
         _ = try insertPhoto.run([

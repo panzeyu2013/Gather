@@ -37,7 +37,7 @@
 import Foundation
 import GatherProtocol
 
-/// 同步状态视图（TS C1SyncStateView 的模块级近似：state + written 计数）。
+/// 同步状态视图（state + 尚未确认的 written 计数）。
 /// reload ack 路由侧不可读，由 SimilarityViewModel 本地标记提供。
 public struct SimilaritySyncView: Equatable {
     /// TS: state（CaptureOneSyncState 枚举；nil 表示尚未加载）。

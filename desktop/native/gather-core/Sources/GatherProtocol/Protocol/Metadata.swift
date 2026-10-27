@@ -10,6 +10,8 @@ public enum MetadataField: String, Codable, CaseIterable, Equatable, Sendable {
     case rating
     case label
     case keywords
+    /// P1 / IPTC：描述性元数据整块（字段级粒度由 DescriptiveMetadata 承担）。
+    case descriptive
 }
 
 public extension MetadataField {

@@ -199,6 +199,10 @@ extension AssetRepo {
                 LIMIT 1
               """).get([.text(volumeId), .text(fileIdentity), .text(resolvedPath)]).map { row in
                 AssetFileRefRow(id: row[0].textValue ?? "", normalizedPath: row[1].textValue ?? "")
+            }.flatMap { row in
+                // 旧路径仍存在 = 同 inode 的硬链接/未移动文件；relink 会把两张
+                // 在册照片并到同一 asset。只接受"旧位置已消失"的移动。
+                tsExists(row.normalizedPath) ? nil : row
             }
         } else {
             identityMatch = nil
@@ -382,6 +386,38 @@ extension AssetRepo {
             rightFileId: row[1].textValue ?? "",
             status: row[2].textValue ?? ""
         )
+    }
+
+    /// 淘汰/手动移动后的路径迁移：photos.filepath + deliveries/intents +
+    /// keyword origins + sidecar bindings + asset_files 必须在**同一事务**里完成。
+    /// 调用方负责移动文件；本方法失败时文件由调用方回滚。
+    public func relocatePhotoPathsAfterMove(
+        photoId: String,
+        oldPhotoPath: String,
+        newPhotoPath: String,
+        timestamp: String
+    ) throws {
+        try connection.transaction {
+            _ = try PhotoRepo(connection: connection).updateFilepath(
+                photoId: photoId, filepath: newPhotoPath)
+            _ = try relocateMetadataState(
+                oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)
+            try relocateSidecarBinding(
+                oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)
+            let oldNormalized = TSPath.normalize(oldPhotoPath)
+            let newNormalized = TSPath.normalize(newPhotoPath)
+            let targetExists = try connection.prepare(
+                "SELECT 1 FROM asset_files WHERE normalized_path = ? LIMIT 1"
+            ).get([.text(newNormalized)]) != nil
+            if !targetExists {
+                _ = try connection.prepare("""
+                    UPDATE asset_files SET normalized_path = ?, updated_at = ?
+                    WHERE normalized_path = ?
+                  """).run([
+                    .text(newNormalized), .text(timestamp), .text(oldNormalized),
+                  ])
+            }
+        }
     }
 
     /// 把 deliveries / metadata_keyword_origins 从旧照片路径迁到新路径。

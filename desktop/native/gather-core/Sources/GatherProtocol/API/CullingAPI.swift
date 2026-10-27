@@ -29,6 +29,9 @@ public protocol CullingAPI: Sendable {
     func generateTriage(_ input: TriageGenerateInput) async throws -> TriageSummary
     /// P0 / T0：应用建议（只写 culling 决策，source=ai；绝不自动写 XMP）。
     func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult
+    /// P1 / D：把已淘汰的照片移到 <sessionRoot>/_rejects（只移动、不删除）。
+    func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult
+
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus
     func reset(_ input: Confirmed<CullingResetInput>) async throws -> Bool
     func writeback(_ input: Confirmed<CullingWritebackInput>) async throws -> WritebackResult

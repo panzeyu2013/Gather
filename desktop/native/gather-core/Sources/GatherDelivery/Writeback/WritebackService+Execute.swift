@@ -361,6 +361,31 @@ extension WritebackService {
                 // 会写到旧路径/旧侧车。
                 let resolvedTarget = resolvedByPhoto[entry.item.photoId]
                 let writePhotoPath = resolvedTarget?.filepath ?? photoPath
+                // P1：写前基线校验。plan/入队到真正写盘之间外部可能改过侧车；
+                // 有 base_fingerprint 时先比对，避免 keepExternal 计划被静默覆盖。
+                if (entry.item.typedModule == .metadata
+                        || entry.item.typedModule == .template),
+                   !entry.delivery.baseFingerprint.isEmpty {
+                    let targetXmp = TSPath.xmpSidecarPath(writePhotoPath)
+                    do {
+                        let current = try await MetadataFingerprint.contentFingerprint(targetXmp)
+                        if current != entry.delivery.baseFingerprint {
+                            let message = "XMP_EXTERNAL_EDIT_CONFLICT"
+                            persistItemFailure(itemId: Int64(itemId), message: message)
+                            phaseOne.recordPathError(path: xmpPath, message: message)
+                            phaseOne.recordFailure(
+                                message: "\(photoPath): \(message)", item: persistedItem)
+                            continue
+                        }
+                    } catch {
+                        let message = "XMP_FINGERPRINT_FAILED: \(error)"
+                        persistItemFailure(itemId: Int64(itemId), message: message)
+                        phaseOne.recordPathError(path: xmpPath, message: message)
+                        phaseOne.recordFailure(
+                            message: "\(photoPath): \(message)", item: persistedItem)
+                        continue
+                    }
+                }
                 // 写前真实备份（S5c-2b-3b-1）：必须在文件写入之前取，
                 // 备份路径随 markWritten 直接落 deliveries.backup_path。
                 // 已有备份（重试）直接复用。
@@ -411,6 +436,25 @@ extension WritebackService {
                 if let attributes = persistedItem.attributes {
                     if let rating = attributes.rating { attributesToWrite.rating = rating }
                     if let label = attributes.label { attributesToWrite.label = label }
+                }
+                // P1 / IPTC：描述性元数据按字段三态合并到盘上现值（nil 保留、
+                // 空值清空、有值写入），绝不整块覆盖外部新增的字段。
+                if let descriptiveValue = entry.item.attributes["descriptive"],
+                   let descriptive = try? descriptiveValue.decode(DescriptiveMetadata.self),
+                   !descriptive.isEmpty {
+                    var merged = (attributesToWrite.descriptive ?? DescriptiveMetadata())
+                        .applying(descriptive)
+                    // 撤销模板时结构字段必须整块还原（含删除模板新增的 contact 成员）；
+                    // 普通套用仍走成员级合并，绝不覆盖外部填写的其它成员。
+                    if entry.item.attributes["replace_contact"]?.boolValue == true {
+                        merged.set(.contact(descriptive.contactInfo ?? DescriptiveContact()),
+                                   for: .contactInfo)
+                    }
+                    attributesToWrite.descriptive = merged
+                }
+                // P1 / E：triage 私有命名空间信号随交付落盘。
+                if let signal = entry.item.attributes["triageSignal"]?.stringValue {
+                    attributesToWrite.triageSignal = signal
                 }
                 try await xmp.writeAttributes(
                     photoPath: writePhotoPath, attributes: attributesToWrite)

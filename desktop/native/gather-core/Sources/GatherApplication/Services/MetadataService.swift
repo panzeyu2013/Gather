@@ -20,6 +20,8 @@ import GatherProtocol
 public enum MetadataServiceError: Error, Equatable, CustomStringConvertible {
     /// TS: `Metadata writeback does not support these fields: ${fields}`
     case unsupportedFields([String])
+    /// P1 / IPTC：只读元数据详情请求的照片不存在（API 层映射 PHOTO_NOT_FOUND）。
+    case photoNotFound(String)
     /// 入队成功但写盘执行器失败（P1-9）：交付项保留在队列里，可经 executePending 重试。
     case writebackFailed(String)
 
@@ -27,6 +29,8 @@ public enum MetadataServiceError: Error, Equatable, CustomStringConvertible {
         switch self {
         case .unsupportedFields(let fields):
             "Metadata writeback does not support these fields: \(fields.joined(separator: ", "))"
+        case .photoNotFound(let photoId):
+            "Photo not found: \(photoId)"
         case .writebackFailed(let message):
             message.isEmpty ? "METADATA_WRITEBACK_FAILED" : message
         }
@@ -38,6 +42,22 @@ public enum MetadataServiceError: Error, Equatable, CustomStringConvertible {
 /// 宿主注入的参数是 sessionId；模块在组合根绑定为 "metadata"（core 不硬编码宿主
 /// 的写回模块名）。返回 WritebackResult 让调用方能把逐项失败上抛给用户。
 public typealias MetadataQueueFlush = @Sendable (String) async throws -> WritebackResult
+
+/// 逐张属性写入的结果（模板 / triage 共用）。
+public struct MetadataAttributesApplyOutcome: Equatable, Sendable {
+    public var written: [String]
+    /// 已提交给执行器且未被明确报错的照片（含回读校验失败者）：
+    /// 撤销批次要按它记录快照，避免"盘上已改但不可撤销"。
+    public var attempted: [String]
+    public var skipped: [String]
+    public var failed: [MetadataApplyFailure]
+    public init(written: [String], attempted: [String] = [], skipped: [String], failed: [MetadataApplyFailure]) {
+        self.written = written
+        self.attempted = attempted
+        self.skipped = skipped
+        self.failed = failed
+    }
+}
 
 /// TS: metadata.service.ts 的 photos 轻查询行。
 /// Swift 6：batchAsync 的 worker 子任务会捕获本行（T: Sendable 约束），
@@ -110,6 +130,8 @@ public final class MetadataService: @unchecked Sendable {
     private let mutations: any MetadataMutationPort
     /// 入队后的写盘执行器（P1-9；nil = 只入队，兼容旧测试/无写回宿主）。
     private let flushPending: MetadataQueueFlush?
+    /// 显式重试入口（含 failed 项）；nil = 退回 flushPending。
+    private let retryFlush: MetadataQueueFlush?
     private let assetResolver: PhotoAssetResolver?
     private let exif: (any ExifProvider)?
     private let dimensions: (any ImageDimensionsProvider)?
@@ -124,6 +146,7 @@ public final class MetadataService: @unchecked Sendable {
         transactions: any TransactionRunner,
         mutations: any MetadataMutationPort,
         flushPending: MetadataQueueFlush? = nil,
+        retryFlush: MetadataQueueFlush? = nil,
         assetResolver: PhotoAssetResolver? = nil,
         exif: (any ExifProvider)? = nil,
         dimensions: (any ImageDimensionsProvider)? = nil,
@@ -136,6 +159,7 @@ public final class MetadataService: @unchecked Sendable {
         self.transactions = transactions
         self.mutations = mutations
         self.flushPending = flushPending
+        self.retryFlush = retryFlush
         self.assetResolver = assetResolver
         self.exif = exif
         self.dimensions = dimensions
@@ -257,7 +281,10 @@ public final class MetadataService: @unchecked Sendable {
             label: overlay.label ?? base.label,
             dateTaken: overlay.dateTaken ?? base.dateTaken,
             latitude: overlay.latitude ?? base.latitude,
-            longitude: overlay.longitude ?? base.longitude
+            longitude: overlay.longitude ?? base.longitude,
+            // P1 / IPTC：描述性元数据整块按"后写覆盖"合并（侧车覆盖内嵌），
+            // 与其它字段的 overlay 语义一致；nil 表示该来源没有可投影的 IPTC。
+            descriptive: overlay.descriptive ?? base.descriptive
         )
     }
 
@@ -296,6 +323,54 @@ public final class MetadataService: @unchecked Sendable {
         try photoRepo.getLookupByIds(photoIds)
     }
 
+    /// P1 / IPTC：单张照片的只读元数据详情。
+    ///
+    /// 只读缓存投影：**不触发磁盘解析**（面板翻页不得产生 N 次 IO）。
+    /// 缓存行缺失时返回空快照与空描述性元数据，而不是抛错 —— "尚未扫描"是正常态。
+    public func photoDetail(photoId: String) throws -> PhotoMetadataDetail {
+        guard let lookup = try photoRepo.getLookupByIds([photoId]).first else {
+            throw MetadataServiceError.photoNotFound(photoId)
+        }
+        let row = try metadataCacheRepo.get(photoId)
+        // asset_read_mode=asset 时写盘/预览都必须用解析后的资产路径；photos.filepath
+        // 可能还是旧路径（写回执行器同样经 resolver），否则会读错侧车。
+        let resolved = try? assetResolver?.resolve(sessionId: lookup.sessionId, photoId: photoId)
+        let filepath = resolved?.filepath ?? lookup.filepath
+        let filename = (filepath as NSString).lastPathComponent
+        let xmpPath = resolved?.xmpPath ?? TSPath.xmpSidecarPath(filepath)
+        let exif = PhotoExifSnapshot(
+            dateTaken: row?.dateTaken,
+            cameraMake: row?.cameraMake,
+            cameraModel: row?.cameraModel,
+            lensModel: row?.lensModel,
+            focalLength: row?.focalLength,
+            fNumber: row?.fNumber,
+            exposureTime: row?.exposureTime,
+            iso: row?.iso.map { Int($0) },
+            gpsLatitude: row?.gpsLatitude,
+            gpsLongitude: row?.gpsLongitude,
+            width: row?.width.map { Int($0) },
+            height: row?.height.map { Int($0) },
+            fileSize: row?.fileSize.map { Int($0) },
+            fileMtime: row?.fileMtime,
+            rating: Int(row?.rating ?? 0),
+            label: row?.label,
+            keywords: row?.keywords ?? []
+        )
+        return PhotoMetadataDetail(
+            photoId: photoId,
+            sessionId: lookup.sessionId,
+            filepath: filepath,
+            filename: filename,
+            xmpPath: xmpPath,
+            hasXMP: xmp.fileExists(xmpPath),
+            exif: exif,
+            descriptive: row?.descriptive ?? DescriptiveMetadata(),
+            cachedAt: row?.cachedAt ?? "",
+            updatedAt: row?.updatedAt ?? ""
+        )
+    }
+
     /// TS: preserveValuesOnCorruptSidecar —— 损坏 sidecar 让 readAttributes 返回
     /// 空对象；没有该守卫缓存会被空值覆盖，直到文件再次变更前有效值全失。
     private func preserveValuesOnCorruptSidecar(
@@ -310,6 +385,9 @@ public final class MetadataService: @unchecked Sendable {
         if !previousKeywords.isEmpty { attributes.keywords = previousKeywords }
         if previous.rating != 0 { attributes.rating = Double(previous.rating) }
         if previous.label != nil { attributes.label = previous.label }
+        // P1 / IPTC：损坏侧车读不出 IPTC 时同样保留旧投影，避免一次坏文件清空面板。
+        let previousDescriptive = previous.descriptive
+        if !previousDescriptive.isEmpty { attributes.descriptive = previousDescriptive }
     }
 
     // MARK: - 公开 API
@@ -406,6 +484,9 @@ public final class MetadataService: @unchecked Sendable {
                                 tags.label = writerAttributes.label
                                 cacheInput.label = writerAttributes.label
                             }
+                            // P1 / IPTC：空值也要投影（显式清空后缓存必须跟着变空，
+                            // 否则只读面板会一直显示已被删除的字段）。
+                            cacheInput.descriptive = writerAttributes.descriptive ?? DescriptiveMetadata()
 
                             collector.recordExtraction(
                                 photoId: photo.id,
@@ -444,6 +525,7 @@ public final class MetadataService: @unchecked Sendable {
                     if existingAttributes.keywords != nil { cacheInput.keywords = existingAttributes.keywords }
                     if existingAttributes.rating != nil { cacheInput.rating = existingAttributes.rating.map { Int64($0) } }
                     if existingAttributes.label != nil { cacheInput.label = existingAttributes.label }
+                    cacheInput.descriptive = existingAttributes.descriptive ?? DescriptiveMetadata()
 
                     collector.recordExtraction(
                         photoId: photo.id,
@@ -720,9 +802,207 @@ public final class MetadataService: @unchecked Sendable {
         return result
     }
 
+    /// P1 / IPTC：把逐张的属性写入（描述性元数据 / rating / label / keywords）
+    /// 经交付队列落盘。
+    ///
+    /// 为什么必须走队列：侧车写入的唯一路径是 deliveries（备份 → 冲突检测 → 写盘
+    /// → reload-ack）。模板与 triage 直接调 XMPProvider 会绕过备份与审计，撤销也
+    /// 没有交付行可追溯；这里统一入队后 flush，再回读校验并刷新缓存投影。
+    public func applyMetadataAttributes(
+        _ inputs: [(photoId: String, attributes: MetadataWriteAttributes)],
+        source: MetadataMutationSource
+    ) async throws -> MetadataAttributesApplyOutcome {
+        guard !inputs.isEmpty else {
+            return MetadataAttributesApplyOutcome(written: [], attempted: [], skipped: [], failed: [])
+        }
+        let ids = inputs.map(\.photoId)
+        guard Set(ids).count == ids.count else {
+            throw GatherError.invalidParameter(field: "photoIds", reason: "must be unique")
+        }
+        let photos = try getPhotosByIds(ids)
+        guard photos.count == ids.count else {
+            throw GatherError.invalidParameter(field: "photoIds", reason: "contains unknown photo ids")
+        }
+        let photoById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
+
+        var skipped: [String] = []
+        var queued: [(photoId: String, attributes: MetadataWriteAttributes, sessionId: String)] = []
+        // 入队失败不能中断整批：已入队的照片仍要 flush，否则它们停在 pending，
+        // 模板批次也不会记录（撤销输入丢失）。
+        var failureByPhoto: [String: String] = [:]
+        for input in inputs {
+            guard !input.attributes.isEmpty else {
+                skipped.append(input.photoId)
+                continue
+            }
+            guard let photo = photoById[input.photoId] else { continue }
+            do {
+                _ = try mutations.queuePhotoValues(
+                    sessionId: photo.sessionId,
+                    photoId: input.photoId,
+                    values: input.attributes.asJSONValue.objectValue ?? [:],
+                    source: source
+                )
+                queued.append((input.photoId, input.attributes, photo.sessionId))
+            } catch {
+                failureByPhoto[input.photoId] = String(describing: error)
+            }
+        }
+        guard !queued.isEmpty else {
+            return MetadataAttributesApplyOutcome(
+                written: [], attempted: [], skipped: skipped,
+                failed: failureByPhoto.map { MetadataApplyFailure(photoId: $0.key, message: $0.value) })
+        }
+        // 已入队的照片都算 attempted：即使 flush 抛错/回读失败，交付项可能仍会在
+        // 之后被别的 flush 写盘；批次必须先有快照，否则"盘上已改但不可撤销"。
+        let attempted = queued.map(\.photoId)
+        guard let flushPending else {
+            throw MetadataServiceError.writebackFailed("writeback executor unavailable")
+        }
+        // 一次应用可能跨会话（模板 API 没有会话入参）；按会话 flush，失败互不影响。
+        for sessionId in Set(queued.map(\.sessionId)).sorted() {
+            do {
+                let result = try await flushPending(sessionId)
+                for item in result.failedItems where failureByPhoto[item.photoId] == nil {
+                    failureByPhoto[item.photoId] = item.errorMessage.isEmpty
+                        ? "writeback failed" : item.errorMessage
+                }
+            } catch {
+                for entry in queued where entry.sessionId == sessionId {
+                    failureByPhoto[entry.photoId] = String(describing: error)
+                }
+            }
+        }
+
+        var written: [String] = []
+        var failed: [MetadataApplyFailure] = []
+        // RAW+JPEG 共享同一 .xmp：写后投影要刷新全部兄弟照片，否则兄弟面板/下次
+        // plan 仍读旧值并误判冲突（关键词路径已有同样处理）。
+        var siblingIDsByXmp: [String: [String]] = [:]
+        var loadedSessions = Set<String>()
+        for input in queued {
+            if let message = failureByPhoto[input.photoId] {
+                failed.append(MetadataApplyFailure(photoId: input.photoId, message: message))
+                continue
+            }
+            guard let photo = photoById[input.photoId] else { continue }
+            let readPath = (try? assetResolver?.resolve(
+                sessionId: photo.sessionId, photoId: input.photoId))?.filepath ?? photo.filepath
+            let actual: MetadataWriteAttributes
+            do {
+                actual = try await xmp.readAttributes(photoPath: readPath)
+            } catch {
+                failed.append(MetadataApplyFailure(
+                    photoId: input.photoId, message: "read-back failed: \(error)"))
+                continue
+            }
+            guard Self.attributesMatch(input.attributes, actual) else {
+                failed.append(MetadataApplyFailure(
+                    photoId: input.photoId, message: "write-back verification failed"))
+                continue
+            }
+            // 缓存投影以回读值为准（写入可能是"字段合并"，本地输入不等于最终文件）。
+            // 只有本次明确写了描述性元数据才刷新 IPTC 投影：rating/关键词写回
+            // 时若侧车解析失败，不能用空值把面板已有 IPTC 抹掉。
+            if input.attributes.descriptive != nil {
+                if !loadedSessions.contains(photo.sessionId) {
+                    loadedSessions.insert(photo.sessionId)
+                    do {
+                        for row in try photoRepo.getBySessionProjection(
+                            sessionId: photo.sessionId) {
+                            let key = TSPath.normalize(TSPath.xmpSidecarPath(row.filepath))
+                            siblingIDsByXmp[key, default: []].append(row.id)
+                        }
+                    } catch {
+                        // 兄弟刷新是投影优化；失败不回滚已写盘的文件。
+                    }
+                }
+                let key = TSPath.normalize(TSPath.xmpSidecarPath(readPath))
+                let targets = siblingIDsByXmp[key] ?? [input.photoId]
+                for sibling in targets {
+                    try? metadataCacheRepo.updateDescriptive(
+                        photoId: sibling,
+                        descriptive: actual.descriptive ?? DescriptiveMetadata())
+                }
+            }
+            if let rating = actual.rating {
+                try? metadataCacheRepo.updateRating(photoId: input.photoId, rating: Int64(rating))
+            }
+            if let label = actual.label {
+                try? metadataCacheRepo.updateLabel(photoId: input.photoId, label: label)
+            }
+            if let keywords = actual.keywords {
+                try? metadataCacheRepo.updateKeywords(photoId: input.photoId, keywords: keywords)
+            }
+            written.append(input.photoId)
+        }
+        return MetadataAttributesApplyOutcome(
+            written: written, attempted: attempted, skipped: skipped, failed: failed)
+    }
+
+    /// 写后回读判定：描述性元数据逐字段（空值等价于不存在），其余字段精确比较。
+    private static func attributesMatch(
+        _ expected: MetadataWriteAttributes,
+        _ actual: MetadataWriteAttributes
+    ) -> Bool {
+        if expected.rating != nil, expected.rating != actual.rating { return false }
+        if expected.label != nil, expected.label != actual.label { return false }
+        if let expectedKeywords = expected.keywords {
+            let actualKeywords = Set(actual.keywords ?? [])
+            if !Set(expectedKeywords).isSubset(of: actualKeywords) { return false }
+        }
+        if let descriptive = expected.descriptive {
+            let actualDescriptive = actual.descriptive ?? DescriptiveMetadata()
+            for field in descriptive.explicitlySetFields {
+                let expectedValue = Self.normalizedValue(descriptive.value(for: field))
+                let actualValue = Self.normalizedValue(actualDescriptive.value(for: field))
+                if case .contact(let expectedContact) = expectedValue {
+                    // 结构字段是成员级合并：模板只填部分成员时，盘上必然比输入多。
+                    guard case .contact(let actualContact) = actualValue,
+                          Self.contactContains(actualContact, expectedContact) else {
+                        return false
+                    }
+                } else if expectedValue != actualValue {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    /// expected 的每个非 nil 成员都必须与 actual 相同（成员级合并校验）。
+    private static func contactContains(_ actual: DescriptiveContact, _ expected: DescriptiveContact) -> Bool {
+        func eq(_ a: String?, _ b: String?) -> Bool { b == nil || a == b }
+        return eq(actual.city, expected.city)
+            && eq(actual.country, expected.country)
+            && eq(actual.address, expected.address)
+            && eq(actual.postalCode, expected.postalCode)
+            && eq(actual.region, expected.region)
+            && eq(actual.email, expected.email)
+            && eq(actual.telephone, expected.telephone)
+            && eq(actual.url, expected.url)
+    }
+
+    /// 读侧会 trim 文本并丢掉空列表项；比较前必须同口径，否则"写成功却报失败"。
+    private static func normalizedValue(_ value: XMPFieldValue?) -> XMPFieldValue? {
+        switch value {
+        case .text(let text):
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : .text(trimmed)
+        case .list(let values):
+            let items = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return items.isEmpty ? nil : .list(items)
+        case .contact(let contact):
+            return contact.isEmpty ? nil : .contact(contact)
+        case .none:
+            return nil
+        }
+    }
+
     public func retryKeywordWriteback(sessionId: String) async throws -> WritebackResult {
-        guard let flushPending else { return emptyKeywordResult() }
-        return try await flushPending(sessionId)
+        guard let flush = retryFlush ?? flushPending else { return emptyKeywordResult() }
+        return try await flush(sessionId)
     }
 
     private struct KeywordTarget {

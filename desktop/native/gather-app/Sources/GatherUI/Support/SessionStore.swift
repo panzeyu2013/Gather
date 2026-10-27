@@ -27,6 +27,8 @@ public final class SessionStore {
 
     /// 工厂闭包：id → 已注入 7 个 VM 的 workspace。
     @ObservationIgnored private let makeWorkspace: (String) -> SessionWorkspace
+    /// P1 / D：workspace 关闭（LRU 淘汰/删除会话）时通知宿主停掉目录监听。
+    @ObservationIgnored public var onWorkspaceClosed: (@MainActor (String) -> Void)?
 
     public init(
         capacity: Int = SessionStore.defaultCapacity,
@@ -104,6 +106,7 @@ public final class SessionStore {
         if let workspace = workspaces.removeValue(forKey: id) {
             workspace.close()
         }
+        onWorkspaceClosed?(id)
         recent.removeAll { $0 == id }
         if lastSessionId == id { lastSessionId = nil }
     }

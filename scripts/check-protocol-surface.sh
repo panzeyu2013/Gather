@@ -76,38 +76,41 @@ public_declarations=$(grep -hE '^[[:space:]]*public[[:space:]]' $(cat "$TMP/prot
 awk '{ print $1 }' "$TMP/type-names" | LC_ALL=C sort | uniq -c > "$TMP/decl-counts"
 
 # 代码语料：Protocol + 生产 Sources。剥离 //、/* */、普通字符串和三引号字符串。
-{
-  cat "$TMP/proto-files"
-  cat "$TMP/prod-files"
-} | xargs -n 200 awk '
-BEGIN { inblock = 0; instr = 0; intriple = 0 }
-{
-  line = $0; out = ""; i = 1; n = length(line)
-  while (i <= n) {
-    c = substr(line, i, 1); two = substr(line, i, 2); three = substr(line, i, 3)
-    if (inblock) {
-      if (two == "*/") { inblock = 0; i += 2 } else { i++ }
-    } else if (intriple) {
-      if (three == "\"\"\"") { intriple = 0; i += 3 } else { i++ }
-    } else if (instr) {
-      if (c == "\\") { i += 2 }
-      else if (c == "\"") { instr = 0; i++ }
-      else { i++ }
-    } else if (three == "\"\"\"") {
-      intriple = 1; i += 3
-    } else if (two == "//") {
-      break
-    } else if (two == "/*") {
-      inblock = 1; i += 2
-    } else if (c == "\"") {
-      instr = 1; i++
-    } else {
-      out = out c; i++
+: > "$TMP/code.txt"
+# 逐文件处理：状态机必须在文件边界重置，否则一个未闭合的字符串/注释会吞掉
+# 其后所有文件（曾把生产在用的 MetadataTags 误报成零引用）。
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  perl -0777 -pe 's/#+"(?:[^"\\]|\\.)*"#+//gs; s/#+"""(?s:.*?)"""#+//gs' "$file" | awk '
+  BEGIN { inblock = 0; instr = 0; intriple = 0 }
+  {
+    line = $0; out = ""; i = 1; n = length(line)
+    while (i <= n) {
+      c = substr(line, i, 1); two = substr(line, i, 2); three = substr(line, i, 3)
+      if (inblock) {
+        if (two == "*/") { inblock = 0; i += 2 } else { i++ }
+      } else if (intriple) {
+        if (three == "\"\"\"") { intriple = 0; i += 3 } else { i++ }
+      } else if (instr) {
+        if (c == "\\") { i += 2 }
+        else if (c == "\"") { instr = 0; i++ }
+        else { i++ }
+      } else if (three == "\"\"\"") {
+        intriple = 1; i += 3
+      } else if (two == "//") {
+        break
+      } else if (two == "/*") {
+        inblock = 1; i += 2
+      } else if (c == "\"") {
+        instr = 1; i++
+      } else {
+        out = out c; i++
+      }
     }
+    print out
   }
-  print out
-}
-' > "$TMP/code.txt"
+  ' >> "$TMP/code.txt"
+done < <(cat "$TMP/proto-files" "$TMP/prod-files")
 
 grep -oE '[A-Za-z_][A-Za-z0-9_]*' "$TMP/code.txt" | LC_ALL=C sort | uniq -c > "$TMP/freq" || true
 

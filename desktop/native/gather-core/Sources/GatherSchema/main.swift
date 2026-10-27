@@ -1,6 +1,6 @@
 // desktop/native/gather-core/Sources/GatherSchema/main.swift
 // Cut 3 / 3a-5（D-015）：GatherSchema —— schema 工具可执行（dump / verify）。
-// verify 对齐 user_version=3 与完整的 44/383/72/65 数字；dump 打印当前 schema 建库 DDL。
+// verify 对齐 user_version=4 与完整的 44/384/72/65 数字；dump 打印当前 schema 建库 DDL。
 //
 // DDL 的唯一真相源仍在 GatherPersistence（Sources/GatherPersistence/Database/SchemaCurrent.swift）；
 // 本 target 依赖 GatherPersistence 而**不导出库**，也不复制任何 DDL 文本。
@@ -38,7 +38,7 @@ private let usage = """
 gather-schema — Gather 本地库 schema 工具（Cut 3 / 3a-5，D-015）
 
 用法：
-  gather-schema dump      打印当前 schema（V3）建库 DDL（含 PRAGMA user_version = 3）
+  gather-schema dump      打印当前 schema（V4）建库 DDL（含 PRAGMA user_version = 4）
   gather-schema verify    在内存库上重建 schema 并校验不变量：
                             \(SchemaInvariant.tableCount) 张表 / \(SchemaInvariant.columnCount) 列 /
                             \(SchemaInvariant.explicitIndexCount) 显式索引 / \(SchemaInvariant.foreignKeyCount) 外键 /

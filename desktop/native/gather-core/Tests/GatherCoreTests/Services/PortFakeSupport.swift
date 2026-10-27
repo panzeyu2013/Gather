@@ -85,6 +85,13 @@ final class PortFakePhotoRepo: PhotoRepository {
 
     func getBySession(sessionId: String) throws -> [PhotoRow] { [] }
 
+    /// P1 / D：淘汰移动的路径回写（fake 只记录，不改行）。
+    private(set) var filepathUpdates: [(photoId: String, filepath: String)] = []
+
+    func updateFilepath(photoId: String, filepath: String) throws {
+        filepathUpdates.append((photoId, filepath))
+    }
+
     func getBySessionProjection(sessionId: String) throws -> [PhotoProjectionRow] {
         projectionCalls += 1
         return projectionRows
@@ -178,6 +185,11 @@ final class PortFakeMetadataRepo: MetadataRepository {
     func updateRating(photoId: String, rating: Int64) throws { ratingUpdates[photoId] = rating }
     func updateLabel(photoId: String, label: String) throws { labelUpdates[photoId] = label }
     func updateKeywords(photoId: String, keywords: [String]) throws {}
+    /// P1 / IPTC：记录描述性元数据投影（模板/triage 写后刷新的断言点）。
+    private(set) var descriptiveUpdates: [String: DescriptiveMetadata] = [:]
+    func updateDescriptive(photoId: String, descriptive: DescriptiveMetadata) throws {
+        descriptiveUpdates[photoId] = descriptive
+    }
 }
 
 final class PortFakeMetadataMutation: MetadataMutationPort, @unchecked Sendable {

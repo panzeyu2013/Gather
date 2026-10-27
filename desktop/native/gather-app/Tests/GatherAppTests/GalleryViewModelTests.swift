@@ -187,6 +187,33 @@ private func makeStubVM(
     )
 }
 
+// MARK: - P1 / A3：元数据面板
+
+/// 单选加载详情、多选清空；请求返回后选择已变则丢弃（防串图）。
+@MainActor
+@Test("Gallery 单选加载只读元数据详情，多选/切换时清空")
+func loadsMetadataDetailForSingleSelection() async {
+    let api = B6bMetadataAPIStub()
+    api.detail = PhotoMetadataDetail(
+        photoId: "p1", sessionId: "s1", filepath: "/tmp/p1.CR3", filename: "p1.CR3",
+        xmpPath: "/tmp/p1.xmp", hasXMP: true, exif: PhotoExifSnapshot(),
+        descriptive: DescriptiveMetadata(title: "落日", city: "上海"),
+        cachedAt: "", updatedAt: "")
+    let stub = StubGalleryProvider()
+    let viewModel = GalleryViewModel(
+        sessionId: "s1", provider: stub, job: B5bJobAPIStub(),
+        metadata: api, debounceDelay: .milliseconds(5))
+    viewModel.selectedIds = ["p1"]
+    viewModel.loadMetadataDetail()
+    await waitUntilAsync { viewModel.metadataDetail != nil }
+    #expect(viewModel.metadataDetail?.descriptive.title == "落日")
+    #expect(viewModel.metadataDetail?.hasXMP == true)
+
+    viewModel.selectedIds = ["p1", "p2"]
+    viewModel.loadMetadataDetail()
+    #expect(viewModel.metadataDetail == nil, "多选时不显示单张详情")
+}
+
 // MARK: - 真实服务集成（临时 SQLite + 路由直连）
 
 private func makeLiveProvider() throws -> (LiveGalleryDataProvider, DBConnection) {

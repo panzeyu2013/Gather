@@ -23,6 +23,18 @@ public enum MetadataFingerprint {
         return "\(info.size):\(Int64(info.mtimeMs.rounded())):\(hex)"
     }
 
+    /// 同步版本：入队时（sync 上下文）取首次写盘基线。
+    public static func contentFingerprintSync(_ filePath: String) throws -> String {
+        guard let info = tsStat(filePath) else {
+            if !FileManager.default.fileExists(atPath: filePath) { return "" }
+            throw MetadataFingerprintError.statFailed(filePath)
+        }
+        let content = try Data(contentsOf: URL(fileURLWithPath: filePath))
+        let digest = SHA256.hash(content)
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return "\(info.size):\(Int64(info.mtimeMs.rounded())):\(hex)"
+    }
+
     /// TS: cacheStalenessKey —— 廉价陈旧键：源文件大小 + { 源 mtime : 侧车 mtime }。
     /// 刻意不读文件内容（缓存失效提示，非持久性守卫）。不可读返回 nil。
     public static func cacheStalenessKey(_ photoPath: String) async throws -> (size: Int, value: String)? {

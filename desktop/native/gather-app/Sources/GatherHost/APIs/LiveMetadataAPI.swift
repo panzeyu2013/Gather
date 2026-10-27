@@ -71,6 +71,10 @@ public final class LiveMetadataAPI: MetadataAPI {
     /// cleanup/replay/writeback 串行。
     /// internal（非 private）：组合根契约测试要断言与 coordinator/writeback 同一实例。
     let fileLock: XMPFileLock
+    /// P1 / B2：模板与批次（settings 单键 JSON；进程内唯一实例）。
+    private let templateStore: MetadataTemplateStore
+    private let batchStore: MetadataApplyBatchStore
+    private let templateService: MetadataTemplateService
 
     /// Sendable 由协议继承显式声明：类为 final，所有依赖都是构造后不再变更的
     /// Sendable let（Repo 只持连接、stateWriter 由 deliveryRepo 派生、
@@ -79,16 +83,30 @@ public final class LiveMetadataAPI: MetadataAPI {
         metadataService: MetadataService,
         deliveryRepo: DeliveryRepo,
         xmp: any XMPProvider,
-        fileLock: XMPFileLock
+        fileLock: XMPFileLock,
+        settingsService: SettingsService
     ) {
         self.metadataService = metadataService
         self.deliveryRepo = deliveryRepo
         self.stateWriter = DeliveryStateWriter(repo: deliveryRepo)
         self.xmp = xmp
         self.fileLock = fileLock
+        self.templateStore = MetadataTemplateStore(settings: settingsService)
+        self.batchStore = MetadataApplyBatchStore(settings: settingsService)
+        self.templateService = MetadataTemplateService(
+            templates: templateStore,
+            batches: batchStore,
+            metadata: metadataService,
+            xmp: xmp
+        )
     }
 
     // MARK: - 读取
+
+    /// P1 / IPTC：只读元数据详情（缓存投影，不触发磁盘解析）。
+    public func metadata(_ photoId: String) async throws -> PhotoMetadataDetail {
+        try map { try metadataService.photoDetail(photoId: photoId) }
+    }
 
     public func conflicts(_ sessionId: String) async throws -> [MetadataConflict] {
         let id = try LiveAPIInput.requireSessionId(sessionId)
@@ -119,6 +137,180 @@ public final class LiveMetadataAPI: MetadataAPI {
 
     public func orphans() async throws -> [MetadataOrphan] {
         try map { try listOrphans() }
+    }
+
+    // MARK: - P1 / E：triage 写回
+
+    public func applyTriageWriteback(_ input: Confirmed<TriageWritebackInput>) async throws -> TriageWritebackResult {
+        let payload = input.value
+        let service = TriageWritebackService(xmp: xmp, metadata: metadataService, batches: batchStore)
+        let batchId = UUID().uuidString
+        // 逐张从缓存投影取当前星级：缓存是 XMP 的全应用投影，无需再读盘。
+        var decisions: [TriageWritebackDecision] = []
+        for item in payload.items {
+            // "只写空评级"必须以盘上为准：缓存可能落后于外部软件刚写的星级。
+            // 读不到盘上星级时用非 0 哨兵跳过 rating：绝不能拿缓存/0 覆盖用户星级。
+            var rating = 1
+            do {
+                let detail = try metadataService.photoDetail(photoId: item.photoId)
+                do {
+                    let disk = try await xmp.readAttributes(photoPath: detail.filepath)
+                    rating = Int(disk.rating ?? 0)
+                } catch {
+                    rating = 1
+                }
+            } catch {
+                rating = 1
+            }
+            if let decision = TriageWritebackPlanner.plan(
+                photoId: item.photoId,
+                verdict: item.verdict,
+                currentRating: rating,
+                manuallyDecided: item.manuallyDecided,
+                policy: payload.policy
+            ) {
+                decisions.append(decision)
+            }
+        }
+        let outcome = await service.apply(decisions, batchId: batchId, now: nowISOString())
+        return TriageWritebackResult(
+            batchId: batchId,
+            written: outcome.written,
+            skipped: outcome.skipped,
+            failed: outcome.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+        )
+    }
+
+    public func undoTriageWriteback(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> TriageWritebackResult {
+        let service = TriageWritebackService(xmp: xmp, metadata: metadataService, batches: batchStore)
+        let outcome = try await service.undo(batchId: input.value.batchId)
+        return TriageWritebackResult(
+            batchId: input.value.batchId,
+            written: outcome.written,
+            skipped: outcome.skipped,
+            failed: outcome.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+        )
+    }
+
+    // MARK: - P1 / B2：元数据模板
+
+    public func templates() async throws -> [MetadataTemplateSummary] {
+        try map {
+            templateStore.list().map { summary($0) }
+        }
+    }
+
+    public func saveTemplate(_ input: MetadataTemplateSaveInput) async throws -> MetadataTemplateSummary {
+        try map {
+            let id = input.id ?? UUID().uuidString
+            let saved = try templateStore.save(
+                MetadataTemplate(id: id, name: input.name, fields: input.fields,
+                                 createdAt: "", updatedAt: ""),
+                now: nowISOString()
+            )
+            return summary(saved)
+        }
+    }
+
+    public func templateFields(id: String) async throws -> DescriptiveMetadata {
+        try map {
+            guard let template = templateStore.get(id: id) else {
+                throw MetadataTemplateServiceError.templateNotFound(id)
+            }
+            return template.fields
+        }
+    }
+
+    public func deleteTemplate(_ input: Confirmed<MetadataTemplateDeleteInput>) async throws {
+        try map { try templateStore.delete(id: input.value.templateId) }
+    }
+
+    public func previewTemplate(_ input: MetadataTemplatePreviewInput) async throws -> MetadataTemplatePreviewResult {
+        try await mapAsync {
+            guard let template = templateStore.get(id: input.templateId) else {
+                throw MetadataTemplateServiceError.templateNotFound(input.templateId)
+            }
+            var photos: [(photoId: String, current: DescriptiveMetadata, disk: DescriptiveMetadata?)] = []
+            for photoId in input.photoIds {
+                let detail = try metadataService.photoDetail(photoId: photoId)
+                let disk = (try? await xmp.readAttributes(photoPath: detail.filepath))?.descriptive
+                photos.append((photoId, detail.descriptive, disk))
+            }
+            let preview = MetadataTemplatePreviewBuilder.build(
+                template: template, photos: photos, policy: input.policy
+            )
+            let photoPreviews = preview.impacts.map { impact in
+                MetadataPhotoPreview(
+                    photoId: impact.photoId,
+                    writes: impact.fields.filter { $0.action == .write }.map { $0.field.rawValue },
+                    clears: impact.fields.filter { $0.action == .clear }.map { $0.field.rawValue },
+                    conflicts: impact.fields.filter { $0.action == .conflict }.map { $0.field.rawValue }
+                )
+            }
+            return MetadataTemplatePreviewResult(
+                templateId: preview.templateId,
+                templateName: preview.templateName,
+                totalPhotos: preview.totalPhotos,
+                changedPhotos: preview.changedPhotos,
+                changedFields: preview.changedFields,
+                conflictFields: preview.conflictFields,
+                photos: photoPreviews
+            )
+        }
+    }
+
+    public func applyTemplate(_ input: Confirmed<MetadataTemplateApplyInput>) async throws -> MetadataTemplateApplyOutcome {
+        let payload = input.value
+        let result = try await templateService.apply(
+            templateId: payload.templateId,
+            photoIds: payload.photoIds,
+            policy: payload.policy,
+            now: nowISOString()
+        )
+        return MetadataTemplateApplyOutcome(
+            batchId: result.batchId,
+            written: result.written,
+            skipped: result.skipped,
+            conflicts: result.conflicts,
+            failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+        )
+    }
+
+    public func recentBatches(limit: Int) async throws -> [MetadataBatchSummary] {
+        try map {
+            batchStore.list().prefix(max(0, limit)).map { batch in
+                MetadataBatchSummary(
+                    batchId: batch.id,
+                    kind: batch.templateId == TriageWritebackService.batchTemplateID
+                        ? "triage" : "template",
+                    name: batch.templateName,
+                    appliedAt: batch.appliedAt,
+                    undone: batch.undone,
+                    photoCount: batch.snapshots.count
+                )
+            }
+        }
+    }
+
+    public func undoTemplate(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> MetadataTemplateApplyOutcome {
+        let result = try await templateService.undo(batchId: input.value.batchId)
+        return MetadataTemplateApplyOutcome(
+            batchId: result.batchId,
+            written: result.written,
+            skipped: result.skipped,
+            conflicts: result.conflicts,
+            failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+        )
+    }
+
+    private func summary(_ template: MetadataTemplate) -> MetadataTemplateSummary {
+        MetadataTemplateSummary(
+            id: template.id,
+            name: template.name,
+            fieldCount: template.fields.nonNilFieldCount,
+            createdAt: template.createdAt,
+            updatedAt: template.updatedAt
+        )
     }
 
     // MARK: - 冲突/孤儿处置（Confirmed<T>）
@@ -303,6 +495,9 @@ public final class LiveMetadataAPI: MetadataAPI {
         var hasKeywords = false
         for item in items {
             let attributes = item.attributes
+            // descriptive/triageSignal 是块级载荷，不参与字段级裁决（baseline/local/
+            // remote 都是 null，给用户一个无法判断的"空/空"选项只会误导）。
+            if attributes["descriptive"] != nil || attributes["triageSignal"] != nil { continue }
             if attributes["rating"] != nil { hasRating = true }
             if attributes["label"] != nil { hasLabel = true }
             // 只删词的 delta 项 keywordList（after）可能为空，仍必须参与冲突裁决。
@@ -315,7 +510,7 @@ public final class LiveMetadataAPI: MetadataAPI {
         if hasRating { fields.append(.rating) }
         if hasLabel { fields.append(.label) }
         if hasKeywords { fields.append(.keywords) }
-        return fields.isEmpty ? MetadataField.allCases : fields
+        return fields.isEmpty ? [.rating, .label, .keywords] : fields
     }
 
     /// baseline 取交付行的 base_values_json（旧 outbox base_values 的同一语义）。
@@ -329,6 +524,9 @@ public final class LiveMetadataAPI: MetadataAPI {
             return (value == nil || value == .null) ? .string("") : value!
         case .rating:
             return base["rating"] ?? .null
+        case .descriptive:
+            // P1 / IPTC：描述性元数据未接入交付队列的冲突解析，按"无基线"处理。
+            return .null
         }
     }
 
@@ -354,6 +552,9 @@ public final class LiveMetadataAPI: MetadataAPI {
                 }
             }
             return .array(list.map { .string($0) })
+        case .descriptive:
+            // 同上：描述性元数据按块写入，不参与字段级冲突裁决。
+            return .null
         }
     }
 
@@ -369,6 +570,8 @@ public final class LiveMetadataAPI: MetadataAPI {
             return .string(remote.label ?? "")
         case .rating:
             return remote.rating.map { .number($0) } ?? .null
+        case .descriptive:
+            return .null
         }
     }
 

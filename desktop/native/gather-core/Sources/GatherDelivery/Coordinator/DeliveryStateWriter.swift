@@ -308,7 +308,8 @@ public struct DeliveryStateWriter: Sendable {
         photoId: String,
         sessionId: String,
         attributes: [String: JSONValue],
-        keywords: [String]?
+        keywords: [String]?,
+        baseFingerprint: String = ""
     ) throws -> DeliveryRow {
         try repo.applyMetadataMutation(
             xmpPath: xmpPath,
@@ -316,7 +317,8 @@ public struct DeliveryStateWriter: Sendable {
             photoId: photoId,
             sessionId: sessionId,
             attributes: attributes,
-            keywords: keywords
+            keywords: keywords,
+            baseFingerprint: baseFingerprint
         )
     }
 

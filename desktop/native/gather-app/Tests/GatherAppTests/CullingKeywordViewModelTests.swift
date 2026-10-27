@@ -13,6 +13,7 @@ private struct KeywordPhotoPathPolicy: PhotoPathPolicy {
 }
 
 private final class KeywordPhotoAPIStub: PhotoAPI, @unchecked Sendable {
+    func facets(_ input: PhotoFacetInput) async throws -> [PhotoFacetGroup] { [] }
     let pathPolicy: any PhotoPathPolicy = KeywordPhotoPathPolicy()
     var suggestionResult: [FilterSuggestion] = []
     var suggestionError: (any Error)?

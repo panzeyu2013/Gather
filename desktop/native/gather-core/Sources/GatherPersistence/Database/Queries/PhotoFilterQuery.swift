@@ -68,6 +68,25 @@ public final class PhotoFilterQuery {
         "gps_latitude", "gps_longitude", "width", "height", "file_size", "file_mtime", "label",
     ]
 
+    /// P1 / C：iptc_json 里可按列语义查询的字段（field 名 → JSON key）。
+    /// 注意 caption 的对外字段名是 description（IPTC "Description"），内部 JSON key 是 caption。
+    public static let jsonFields: [String: String] = [
+        "title": "title",
+        "description": "caption",
+        "headline": "headline",
+        "creator": "creator",
+        "copyright": "copyrightNotice",
+        "city": "city",
+        "state": "state",
+        "country": "country",
+        "country_code": "countryCode",
+        "location": "location",
+        "person_in_image": "personInImage",
+    ]
+
+    /// 值为 JSON 数组的字段：eq/in/contains 必须对数组元素判定，不能比较整段 JSON。
+    public static let jsonArrayFields: Set<String> = ["creator", "person_in_image"]
+
     private let connection: DBConnection
 
     public init(connection: DBConnection) {
@@ -143,19 +162,25 @@ public final class PhotoFilterQuery {
             "FROM matching JOIN photos p ON p.rowid = matching.photo_rowid",
             "), representatives AS (",
             "SELECT asset_key, photo_rowid FROM ranked WHERE preference_rank = 1",
+            "), asset_rollup AS (",
+            // 一次分组聚合替代两个逐行相关子查询；100k 会话下这是主要成本。
+            "SELECT COALESCE(NULLIF(member.asset_id, ''), member.id) AS asset_key,",
+            "GROUP_CONCAT(DISTINCT member.session_id) AS session_ids,",
+            "GROUP_CONCAT(DISTINCT member_session.name) AS session_names",
+            "FROM photos member",
+            "JOIN sessions member_session ON member_session.id = member.session_id",
+            "GROUP BY asset_key",
             ")",
             "SELECT p.id AS photo_id, COALESCE(NULLIF(p.asset_id, ''), p.id) AS asset_id,",
             "p.session_id, s.name AS session_name, p.filename, p.filepath, p.status,",
             "COALESCE(pmc.rating, 0) AS rating, COALESCE(pmc.label, '') AS label,",
             "COALESCE(pmc.keywords, '[]') AS keywords,",
-            "(SELECT GROUP_CONCAT(DISTINCT member.session_id) FROM photos member",
-            " WHERE COALESCE(NULLIF(member.asset_id, ''), member.id) = representatives.asset_key) AS session_ids,",
-            "(SELECT GROUP_CONCAT(DISTINCT member_session.name) FROM photos member",
-            " JOIN sessions member_session ON member_session.id = member.session_id",
-            " WHERE COALESCE(NULLIF(member.asset_id, ''), member.id) = representatives.asset_key) AS session_names",
+            "asset_rollup.session_ids AS session_ids,",
+            "asset_rollup.session_names AS session_names",
             "FROM representatives JOIN photos p ON p.rowid = representatives.photo_rowid",
             "LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id",
             "JOIN sessions s ON p.session_id = s.id",
+            "LEFT JOIN asset_rollup ON asset_rollup.asset_key = representatives.asset_key",
             sortBy != nil
                 ? "ORDER BY \(resolveSortColumn(sortBy!)) \(sortOrder == "asc" ? "ASC" : "DESC")"
                 : "ORDER BY p.rowid",
@@ -233,10 +258,10 @@ public final class PhotoFilterQuery {
         var suggestions: [FilterSuggestion] = []
 
         if trimmed.count >= 2 {
-            let pattern = "%\(trimmed)%"
+            let pattern = "%\(escapeLike(trimmed))%"
             let cameraRows = try connection.prepare("""
                 SELECT DISTINCT camera_make FROM photo_metadata_cache
-                WHERE session_id = ? AND camera_make LIKE ?
+                WHERE session_id = ? AND camera_make LIKE ? ESCAPE '\\'
                 LIMIT 5
                 """).query([.text(sessionId), .text(pattern)])
             let cameras = cameraRows.compactMap { $0[0].textValue }
@@ -247,9 +272,9 @@ public final class PhotoFilterQuery {
 
         let keywordRows = try connection.prepare("""
             SELECT keywords FROM photo_metadata_cache
-            WHERE session_id = ? AND keywords LIKE ?
+            WHERE session_id = ? AND keywords LIKE ? ESCAPE '\\'
             LIMIT 200
-            """).query([.text(sessionId), .text("%\(trimmed)%")])
+            """).query([.text(sessionId), .text("%\(escapeLike(trimmed))%")])
         let needle = KeywordNormalizer.fold(trimmed)
         var seen = Set<String>()
         var keywords: [String] = []
@@ -357,12 +382,59 @@ public final class PhotoFilterQuery {
             break
         }
 
-        let resolved = try resolveField(field)
-        let fullCol = "\(resolved.prefix).\(resolved.col)"
+        // P1 / C：描述性元数据存在 photo_metadata_cache.iptc_json（单列 JSON），
+        // 用 json_extract 投影成列，使搜索/筛选与普通列同构（操作符语义完全一致）。
+        let fullCol: String
+        if field == "date_taken" {
+            // EXIF 原样存 "2024:05:01 10:00:00"，侧车/相册可能是 ISO：先归一
+            // 到 "2024-05-01 10:00:00" 再做文本比较/排序，否则混合数据 BETWEEN
+            // 会整段丢 EXIF 行。
+            fullCol = Self.normalizedDateTaken
+        } else if let jsonKey = Self.jsonFields[field] {
+            fullCol = "json_extract(pmc.iptc_json, '$.\(jsonKey)')"
+        } else {
+            let resolved = try resolveField(field)
+            fullCol = "\(resolved.prefix).\(resolved.col)"
+        }
+
+        // 数组字段：对 json_each 的每个元素判定（creator=["张三","李四"]）。
+        if Self.jsonArrayFields.contains(field) {
+            let each = "SELECT 1 FROM json_each(\(fullCol))"
+            switch op {
+            case .eq:
+                return ("EXISTS (\(each) WHERE value = ?)", [value.toDBValue])
+            case .neq:
+                return ("NOT EXISTS (\(each) WHERE value = ?)", [value.toDBValue])
+            case .contains:
+                return ("EXISTS (\(each) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')",
+                        [.text(escapeLike(stringValue(value)))])
+            case .containsAny:
+                let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
+                if arr.isEmpty { return (sql: "1=0", params: []) }
+                let ors = arr.map { _ in "EXISTS (\(each) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')" }
+                return ("(\(ors.joined(separator: " OR ")))", arr.map { DBValue.text(escapeLike($0)) })
+            case .containsAll:
+                let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
+                if arr.isEmpty { return (sql: "1=0", params: []) }
+                let ands = arr.map { _ in "EXISTS (\(each) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')" }
+                return ("(\(ands.joined(separator: " AND ")))", arr.map { DBValue.text(escapeLike($0)) })
+            case .in:
+                let arr = value.arrayElements ?? []
+                if arr.isEmpty { return (sql: "1=0", params: []) }
+                let placeholders = arr.map { _ in "?" }.joined(separator: ", ")
+                return ("EXISTS (\(each) WHERE value IN (\(placeholders)))", arr.map { $0.toDBValue })
+            case .exists:
+                return ("json_array_length(\(fullCol)) > 0", [])
+            case .gt, .lt, .gte, .lte, .between, .startsWith:
+                return ("1=0", [])
+            }
+        }
 
         switch op {
         case .eq: return ("\(fullCol) = ?", [value.toDBValue])
-        case .neq: return ("\(fullCol) != ?", [value.toDBValue])
+        case .neq:
+            // NULL 是"未填写"：不等于 X 必须保留未填写的照片（与数组分支一致）。
+            return ("(\(fullCol) IS NULL OR \(fullCol) != ?)", [value.toDBValue])
         case .gt: return ("\(fullCol) > ?", [value.toDBValue])
         case .lt: return ("\(fullCol) < ?", [value.toDBValue])
         case .gte: return ("\(fullCol) >= ?", [value.toDBValue])
@@ -381,19 +453,21 @@ public final class PhotoFilterQuery {
             let placeholders = arr.map { _ in "?" }.joined(separator: ", ")
             return ("\(fullCol) IN (\(placeholders))", arr.map { $0.toDBValue })
         case .contains:
-            return ("\(fullCol) LIKE '%' || ? || '%'", [.text(stringValue(value))])
+            return ("\(fullCol) LIKE '%' || ? || '%' ESCAPE '\\'",
+                    [.text(escapeLike(stringValue(value)))])
         case .startsWith:
-            return ("\(fullCol) LIKE ? || '%'", [.text(stringValue(value))])
+            return ("\(fullCol) LIKE ? || '%' ESCAPE '\\'",
+                    [.text(escapeLike(stringValue(value)))])
         case .containsAny:
             let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
             if arr.isEmpty { return (sql: "1=0", params: []) }
-            let orParts = arr.map { _ in "\(fullCol) LIKE '%' || ? || '%'" }
-            return ("(\(orParts.joined(separator: " OR ")))", arr.map(DBValue.text))
+            let orParts = arr.map { _ in "\(fullCol) LIKE '%' || ? || '%' ESCAPE '\\'" }
+            return ("(\(orParts.joined(separator: " OR ")))", arr.map { DBValue.text(escapeLike($0)) })
         case .containsAll:
             let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
             if arr.isEmpty { return (sql: "1=0", params: []) }
-            let andParts = arr.map { _ in "\(fullCol) LIKE '%' || ? || '%'" }
-            return ("(\(andParts.joined(separator: " AND ")))", arr.map(DBValue.text))
+            let andParts = arr.map { _ in "\(fullCol) LIKE '%' || ? || '%' ESCAPE '\\'" }
+            return ("(\(andParts.joined(separator: " AND ")))", arr.map { DBValue.text(escapeLike($0)) })
         case .exists:
             return ("\(fullCol) IS NOT NULL", [])
         }
@@ -403,6 +477,11 @@ public final class PhotoFilterQuery {
         let op = `operator`
         let arr = value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)]
         switch op {
+        case .contains:
+            return (
+                sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')",
+                params: [.text(escapeLike(stringValue(value)))]
+            )
         case .containsAny:
             if arr.isEmpty { return (sql: "1=0", params: []) }
             let placeholders = arr.map { _ in "?" }.joined(separator: ", ")
@@ -468,8 +547,8 @@ public final class PhotoFilterQuery {
             )
         case .contains:
             return (
-                sql: "EXISTS (SELECT 1 FROM person_photos pp JOIN persons per ON pp.person_id = per.id WHERE pp.photo_id = p.id AND per.name LIKE '%' || ? || '%')",
-                params: [.text(stringValue(value))]
+                sql: "EXISTS (SELECT 1 FROM person_photos pp JOIN persons per ON pp.person_id = per.id WHERE pp.photo_id = p.id AND per.name LIKE '%' || ? || '%' ESCAPE '\\')",
+                params: [.text(escapeLike(stringValue(value)))]
             )
         case .neq:
             return (
@@ -479,10 +558,10 @@ public final class PhotoFilterQuery {
         case .containsAny:
             let names = value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)]
             if names.isEmpty { return (sql: "1=0", params: []) }
-            let parts = names.map { _ in "per.name LIKE '%' || ? || '%'" }
+            let parts = names.map { _ in "per.name LIKE '%' || ? || '%' ESCAPE '\\'" }
             return (
                 sql: "EXISTS (SELECT 1 FROM person_photos pp JOIN persons per ON pp.person_id = per.id WHERE pp.photo_id = p.id AND (\(parts.joined(separator: " OR "))))",
-                params: names.map(DBValue.text)
+                params: names.map { DBValue.text(escapeLike($0)) }
             )
         case .in:
             let ids = value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)]
@@ -503,15 +582,10 @@ public final class PhotoFilterQuery {
     // MARK: 辅助
 
     private func membershipSql(_ sessionId: String?) -> String {
+        // 选中工作区时必须限制代表行本身属于该会话；只要求"资产在该会话有成员"
+        // 会让跨会话资产把别的会话行选成代表，UI 打开后跳到错误会话。
         guard sessionId != nil else { return "" }
-        return """
-            AND EXISTS (
-              SELECT 1 FROM photos member
-              WHERE COALESCE(NULLIF(member.asset_id, ''), member.id) =
-                COALESCE(NULLIF(p.asset_id, ''), p.id)
-                AND member.session_id = ?
-            )
-        """
+        return "AND p.session_id = ?"
     }
 
     private func resolveField(_ field: String) throws -> (prefix: String, col: String) {
@@ -525,10 +599,18 @@ public final class PhotoFilterQuery {
     }
 
     private func resolveSortColumn(_ sortBy: String) -> String {
+        if sortBy == "date_taken" { return Self.normalizedDateTaken }
         if Self.simpleFields.contains(sortBy) { return "p.\(sortBy)" }
         if Self.metadataFields.contains(sortBy) { return "pmc.\(sortBy)" }
         return "p.filename"
     }
+
+    /// 归一化后的拍摄时间（EXIF 冒号日期 → ISO 文本，其余原样）。
+    static let normalizedDateTaken = """
+        CASE WHEN pmc.date_taken LIKE '____:__:__%'
+             THEN replace(substr(pmc.date_taken, 1, 10), ':', '-') || substr(pmc.date_taken, 11)
+             ELSE pmc.date_taken END
+        """
 
     private func rowToPhotoRow(_ row: NamedRow) throws -> FilteredPhotoRow {
         FilteredPhotoRow(

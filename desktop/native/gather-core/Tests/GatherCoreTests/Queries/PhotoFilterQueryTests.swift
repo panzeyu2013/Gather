@@ -33,7 +33,7 @@ struct PhotoFilterQueryBoundaryTests {
             ("status", "p.status"), ("created_at", "p.created_at"),
         ]
         let metadata: [(String, String)] = [
-            ("date_taken", "pmc.date_taken"), ("camera_make", "pmc.camera_make"),
+            ("camera_make", "pmc.camera_make"),
             ("camera_model", "pmc.camera_model"), ("lens_model", "pmc.lens_model"),
             ("focal_length", "pmc.focal_length"), ("f_number", "pmc.f_number"),
             ("exposure_time", "pmc.exposure_time"), ("iso", "pmc.iso"),
@@ -43,16 +43,96 @@ struct PhotoFilterQueryBoundaryTests {
             ("file_mtime", "pmc.file_mtime"), ("label", "pmc.label"),
         ]
         #expect(PhotoFilterQuery.simpleFields.count == simple.count)
-        #expect(PhotoFilterQuery.metadataFields.count == metadata.count)
+        #expect(PhotoFilterQuery.metadataFields.count == metadata.count + 1)
         #expect(PhotoFilterQuery.simpleFields.union(PhotoFilterQuery.metadataFields).count == 21)
         for (field, column) in simple + metadata {
             let clause = try query.whereClause(group(rule(field, .eq, .string("v"))))
             #expect(clause.sql == "\(column) = ?", "字段 \(field) 必须解析到 \(column)")
             #expect(clause.params == [.text("v")])
         }
+        let dateClause = try query.whereClause(group(rule("date_taken", .eq, .string("v"))))
+        #expect(dateClause.sql == "\(PhotoFilterQuery.normalizedDateTaken) = ?")
         #expect(throws: PhotoFilterQueryError.fieldUnknown("notes")) {
             _ = try query.whereClause(group(rule("notes", .eq, .string("x"))))
         }
+    }
+
+    @Test("date_taken 混合 EXIF/ISO：between 与排序按归一化文本")
+    func dateTakenMixedFormats() throws {
+        let db = try makeQueryTestDB()
+        let sessionId = "s-date"
+        try queryInsertSession(db, id: sessionId)
+        for id in ["p1", "p2"] {
+            try queryInsertPhoto(db, id: id, sessionId: sessionId)
+            try queryInsertCache(db, photoId: id, sessionId: sessionId)
+        }
+        try db.prepare("UPDATE photo_metadata_cache SET date_taken = ? WHERE photo_id = 'p1'")
+            .run([.text("2024:05:01 10:00:00")])
+        try db.prepare("UPDATE photo_metadata_cache SET date_taken = ? WHERE photo_id = 'p2'")
+            .run([.text("2023-12-31T23:00:00")])
+        let query = PhotoFilterQuery(connection: db)
+        let between = [JSONValue.string("2024-01-01"), .string("2024-12-31")]
+        let hit = try query.filterPhotos(
+            sessionId: sessionId,
+            criteria: group(rule("date_taken", .between, .array(between))),
+            sortBy: "date_taken", sortOrder: "asc"
+        )
+        #expect(hit.map(\.id) == ["p1"], "EXIF 冒号日期必须与 ISO 同口径比较")
+        let all = try query.filterPhotos(
+            sessionId: sessionId, criteria: emptyGroup(),
+            sortBy: "date_taken", sortOrder: "asc")
+        #expect(all.map(\.id) == ["p2", "p1"], "排序也必须按归一化时间")
+    }
+
+    @Test("neq 保留未填写行；关键词 contains 走子串匹配")
+    func neqKeepsNullsAndKeywordSubstring() throws {
+        let db = try makeQueryTestDB()
+        let sessionId = "s-neq"
+        try queryInsertSession(db, id: sessionId)
+        for id in ["p1", "p2"] {
+            try queryInsertPhoto(db, id: id, sessionId: sessionId)
+            try queryInsertCache(db, photoId: id, sessionId: sessionId)
+        }
+        try db.prepare("UPDATE photo_metadata_cache SET label = NULL, keywords = ? WHERE photo_id = 'p1'")
+            .run([.text(#"["日落 海边"]"#)])
+        try db.prepare("UPDATE photo_metadata_cache SET label = 'Red', keywords = ? WHERE photo_id = 'p2'")
+            .run([.text(#"["城市"]"#)])
+
+        let query = PhotoFilterQuery(connection: db)
+        func ids(_ rule: FilterRule) throws -> [String] {
+            try query.filterPhotos(sessionId: sessionId, criteria: group(rule)).map(\.id).sorted()
+        }
+        #expect(try ids(rule("label", .neq, .string("Red"))) == ["p1"], "未填色标的照片不能被 neq 丢掉")
+        #expect(try ids(rule("keywords", .contains, .string("日落"))) == ["p1"], "关键词搜索应为子串")
+    }
+
+    @Test("多字段搜索：IPTC title/creator 数组/country/city 都走 json_extract 且语义正确")
+    func iptcJsonMultiFieldSearch() throws {
+        let db = try makeQueryTestDB()
+        let sessionId = "s-iptc"
+        try queryInsertSession(db, id: sessionId)
+        try queryInsertPhoto(db, id: "p1", sessionId: sessionId)
+        try queryInsertPhoto(db, id: "p2", sessionId: sessionId)
+        try queryInsertCache(db, photoId: "p1", sessionId: sessionId)
+        try queryInsertCache(db, photoId: "p2", sessionId: sessionId)
+        let p1 = #"{"title":"落日","creator":["张三","李四"],"city":"上海","country":"中国"}"#
+        let p2 = #"{"title":"城市夜景","creator":["王五"],"city":"北京","country":"中国"}"#
+        try db.prepare("UPDATE photo_metadata_cache SET iptc_json = ? WHERE photo_id = 'p1'")
+            .run([.text(p1)])
+        try db.prepare("UPDATE photo_metadata_cache SET iptc_json = ? WHERE photo_id = 'p2'")
+            .run([.text(p2)])
+
+        let query = PhotoFilterQuery(connection: db)
+        func ids(_ rule: FilterRule) throws -> [String] {
+            try query.filterPhotos(sessionId: sessionId, criteria: group(rule))
+                .map(\.id).sorted()
+        }
+        #expect(try ids(rule("title", .contains, .string("落日"))) == ["p1"])
+        #expect(try ids(rule("creator", .eq, .string("张三"))) == ["p1"], "数组字段按元素判定")
+        #expect(try ids(rule("creator", .eq, .string("王五"))) == ["p2"])
+        #expect(try ids(rule("city", .contains, .string("上海"))) == ["p1"])
+        #expect(try ids(rule("country", .eq, .string("中国"))) == ["p1", "p2"])
+        #expect(try ids(rule("creator", .exists, .bool(true))) == ["p1", "p2"])
     }
 
     @Test("递归组的 SQL 括号与参数保持遍历顺序")

@@ -3,7 +3,7 @@
 //
 // 为什么需要这组测试：V1 一次成型、没有迁移链兜底，任何「少一列 / 少一索引 /
 // 少一外键」都只会在运行期以静默错列（SELECT * 按位置取值）的形式暴露（draft §8 R1）。
-// 因此这里把 43 / 373 / 69 / 62 / user_version=1 五个数字、43 张表的逐表列数、
+// 因此这里把 44 / 384 / 72 / 65 / user_version=4 五个数字、44 张表的逐表列数、
 // CHECK 与 FK 的拒绝路径、CASCADE / SET NULL / RESTRICT 的删除语义全部钉成回归。
 //
 // 用户数据 FK（D-025）：role_bindings.cluster_id、person_photos.photo_id / session_id 是
@@ -64,7 +64,7 @@ private let schemaCurrentColumnCounts: [SchemaCurrentTableSpec] = [
     SchemaCurrentTableSpec(table: "person_embeddings", columns: 7),
     SchemaCurrentTableSpec(table: "person_photos", columns: 7),
     SchemaCurrentTableSpec(table: "persons", columns: 8),
-    SchemaCurrentTableSpec(table: "photo_metadata_cache", columns: 22),
+    SchemaCurrentTableSpec(table: "photo_metadata_cache", columns: 23),
     SchemaCurrentTableSpec(table: "photos", columns: 14),
     SchemaCurrentTableSpec(table: "role_bindings", columns: 7),
     SchemaCurrentTableSpec(table: "session_assets", columns: 5),
@@ -382,7 +382,7 @@ struct SchemaCurrentTests {
 
     // MARK: 建库与总量
 
-    @Test("exec(SchemaCurrent.createSQL) 成功：44 张表 / 383 列")
+    @Test("exec(SchemaCurrent.createSQL) 成功：44 张表 / 384 列")
     func appliesSchema() throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }
@@ -396,7 +396,7 @@ struct SchemaCurrentTests {
         for table in tables {
             columns += try db.prepare("PRAGMA table_info(\(table))").query([]).count
         }
-        #expect(columns == 383, "列数漂移：期望 383，实际 \(columns)")
+        #expect(columns == 384, "列数漂移：期望 384，实际 \(columns)")
     }
 
     @Test("索引 72 个（含 8 个 UNIQUE）")
@@ -442,16 +442,16 @@ struct SchemaCurrentTests {
         #expect(dirty == 0, "空库的 foreign_key_check 必须干净（否则 FK 的父键不是 PK/UNIQUE）")
     }
 
-    @Test("当前 schema user_version = 3；内存库由 Database.open 建到同一版本")
+    @Test("当前 schema user_version = 4；内存库由 Database.open 建到同一版本")
     func userVersion() throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }
-        #expect(SchemaCurrent.userVersion == 3)
+        #expect(SchemaCurrent.userVersion == 4)
         #expect(try scalarInt(db, "PRAGMA user_version") == SchemaCurrent.userVersion)
 
         let current = try Database.openInMemory()
         defer { current.close() }
-        #expect(try scalarInt(current.connection, "PRAGMA user_version") == 3)
+        #expect(try scalarInt(current.connection, "PRAGMA user_version") == 4)
     }
 
     // MARK: 逐表列数（删列漂移门禁）

@@ -75,15 +75,3 @@ enum GatherMetrics {
         static let standard: Double = 0.18
     }
 }
-
-extension View {
-    /// 页面画布：统一底色。页面内容层使用，不要包住 Form / List 的系统背景。
-    func gatherCanvas() -> some View {
-        background(GatherTheme.canvas)
-    }
-
-    /// 行内数字：等宽数字，避免进度 / 计数跳动。
-    func gatherNumber(_ font: Font = GatherFont.mono) -> some View {
-        self.font(font).monospacedDigit()
-    }
-}

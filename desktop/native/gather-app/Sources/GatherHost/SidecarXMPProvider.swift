@@ -123,7 +123,9 @@ public final class SidecarXMPProvider: XMPProvider {
             label: parsed.resolvedLabel,
             dateTaken: parsed.dateTaken,
             latitude: parsed.latitude,
-            longitude: parsed.longitude
+            longitude: parsed.longitude,
+            descriptive: parsed.descriptive.isEmpty ? nil : parsed.descriptive,
+            triageSignal: parsed.triageSignal
         )
     }
 
@@ -242,6 +244,10 @@ public final class SidecarXMPProvider: XMPProvider {
         var dateTaken: String?
         var latitude: Double?
         var longitude: Double?
+        /// P1 / IPTC：描述性元数据（由 IPTCXMLDelegate 二次解析填入）。
+        var descriptive = DescriptiveMetadata()
+        /// P1 / E：私有命名空间信号（gather:Triage）。
+        var triageSignal: String?
 
         /// TS: CAPTURE_ONE_URGENCY_LABEL（urgency → color label）。
         var resolvedLabel: String? {
@@ -273,7 +279,16 @@ public final class SidecarXMPProvider: XMPProvider {
             // preserveValuesOnCorruptSidecar 的判别依据），不抛错；写入路径则抛。
             return ParsedSidecar()
         }
-        return delegate.result
+        var result = delegate.result
+        // P1 / IPTC：同一份数据再跑一次描述性字段收集（表驱动，与写入共用 descriptor 表）。
+        let iptcParser = XMLParser(data: data)
+        let iptcDelegate = IPTCXMLDelegate()
+        iptcParser.delegate = iptcDelegate
+        if iptcParser.parse() {
+            result.descriptive = iptcDelegate.descriptive
+            result.triageSignal = iptcDelegate.triageSignal
+        }
+        return result
     }
 
     private static func assertWellFormed(_ text: String, xmpPath: String) throws {

@@ -45,6 +45,57 @@ extension SidecarXMPProvider {
                     xmpPath: xmpPath, field: .label, expected: label, actual: actualLabel)
             }
         }
+        // P1 / E：triage 信号必须落盘（空串 = 清除，读回 nil）。
+        if let signal = expected.triageSignal {
+            let normalized = signal.isEmpty ? nil : signal
+            if actual.triageSignal != normalized {
+                throw SidecarXMPError.verificationFailed(
+                    xmpPath: xmpPath, field: .descriptive,
+                    expected: normalized ?? "nil", actual: actual.triageSignal ?? "nil")
+            }
+        }
+        // P1 / IPTC：逐字段校验（只校验被显式设置的字段；清空的字段期望读到 nil）。
+        if let descriptive = expected.descriptive, !descriptive.isEmpty {
+            let actualDescriptive = actual.descriptive ?? DescriptiveMetadata()
+            for field in descriptive.explicitlySetFields {
+                // 清空语义 + 读侧 trim：比较前用同一口径归一化，否则首尾空白
+                // 会造成"写成功却抛 verificationFailed"。
+                let normalizedExpected = normalizedValue(descriptive.value(for: field))
+                let normalizedActual = normalizedValue(actualDescriptive.value(for: field))
+                if normalizedExpected != normalizedActual {
+                    throw SidecarXMPError.verificationFailed(
+                        xmpPath: xmpPath, field: .descriptive,
+                        expected: describe(normalizedExpected), actual: describe(normalizedActual))
+                }
+            }
+        }
+    }
+
+    /// 读侧 trim + 丢空列表项；写入校验必须用同一口径。
+    static func normalizedValue(_ value: XMPFieldValue?) -> XMPFieldValue? {
+        switch value {
+        case .text(let text):
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : .text(trimmed)
+        case .list(let values):
+            let items = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return items.isEmpty ? nil : .list(items)
+        case .contact(let contact):
+            return contact.isEmpty ? nil : .contact(contact)
+        case .none:
+            return nil
+        }
+    }
+
+    /// 校验失败的诊断文本（值形状不同也要稳定可比）。
+    private static func describe(_ value: XMPFieldValue?) -> String {
+        switch value {
+        case .text(let text): return text
+        case .list(let values): return "[" + values.joined(separator: ",") + "]"
+        case .contact: return "<contact>"
+        case .none: return "nil"
+        }
     }
 
     private static func describeList(_ values: [String]) -> String {
@@ -109,6 +160,53 @@ extension SidecarXMPProvider {
             }
         }
 
+        // P1 / IPTC：描述性元数据（32 字段）按 descriptor 表逐字段 insert-or-replace。
+        if let descriptive = attributes.descriptive, !descriptive.isEmpty {
+            for patch in Self.descriptivePatches(descriptive) {
+                prefixes.append((patch.prefix, patch.namespace))
+                // 属性形式对结构值非法：先清残留，再替换或插入元素。
+                // contact 的成员可能以 CiAdrCity/CiEmailWork 等属性挂在
+                // rdf:Description 上，必须一并删除，否则旧属性会与写入的结构共存。
+                parts.openTag = removeAttribute(parts.openTag, name: patch.qname)
+                if patch.shape == .structure {
+                    for member in DescriptiveContact.members {
+                        parts.openTag = removeAttribute(parts.openTag, name: member.qname)
+                    }
+                }
+                var replacement = patch.element ?? ""
+                // rdf:Alt 是"多语言容器"：只替换/清空 x-default，保留其它语言的
+                // rdf:li。整块替换会把用户/其它软件的翻译一起删掉。
+                // 写入（有 altText）时保留其它语言；清空（altText == nil）时整块删除
+                // —— "清空这个字段"是用户的显式动作，不能只删默认语言留个空壳。
+                if patch.shape == .alt || patch.shape == .text,
+                   let existing = Self.elementBlock(parts.inner, name: patch.qname),
+                   patch.shape == .alt || existing.contains("<rdf:Alt") {
+                    // altText == nil 是清空：mergedAltElement 会保留其它语言，
+                    // 只把 x-default 置空（整块删除会让翻译与 undo 都丢）。
+                    replacement = Self.mergedAltElement(
+                        existing, qname: patch.qname, defaultText: patch.altText)
+                }
+                if let replaced = replaceElement(parts.inner, name: patch.qname, with: replacement) {
+                    parts.inner = replaced
+                } else if let element = patch.element, !element.isEmpty {
+                    insertions.append(element)
+                }
+            }
+        }
+
+        // P1 / E：triage 可移植信号（私有命名空间 gather:Triage）。
+        if let signal = attributes.triageSignal {
+            let qname = "gather:Triage"
+            prefixes.append(("gather", XMPNamespaces.gatherTriage))
+            parts.openTag = removeAttribute(parts.openTag, name: qname)
+            let replacement = signal.isEmpty ? "" : simpleElement(qname, value: signal)
+            if let replaced = replaceElement(parts.inner, name: qname, with: replacement) {
+                parts.inner = replaced
+            } else if !replacement.isEmpty {
+                insertions.append(replacement)
+            }
+        }
+
         if !insertions.isEmpty {
             parts.inner = appendChildren(parts.inner, insertions)
         }
@@ -120,14 +218,21 @@ extension SidecarXMPProvider {
     }
 
     /// rdf:Description 的切分结果（before + openTag + inner + suffix 重组即原文）。
-    private struct DescriptionParts {
+    struct DescriptionParts {
         let before: String
         var openTag: String
         var inner: String
         let suffix: String
     }
 
-    private static func splitDescription(_ xml: String, xmpPath: String) throws -> DescriptionParts {
+    static func splitDescription(_ xml: String, xmpPath: String) throws -> DescriptionParts {
+        // 多 rdf:Description 的合法 XMP：只改第一块会重复属性/旧值胜出。宁可
+        // 显式拒绝写入，也不产出损坏文件。注意 contact 结构内部也有嵌套
+        // rdf:Description，必须只数 rdf:RDF 直系的第一层块。
+        guard !hasSecondTopLevelDescription(xml) else {
+            throw SidecarXMPError.documentUnsupported(
+                xmpPath: xmpPath, reason: "multiple rdf:Description")
+        }
         guard let openRange = findOpenTag(xml, name: "rdf:Description") else {
             throw SidecarXMPError.documentUnsupported(xmpPath: xmpPath, reason: "missing rdf:Description")
         }
@@ -143,11 +248,15 @@ extension SidecarXMPProvider {
                 before: before, openTag: head + ">", inner: "",
                 suffix: "</rdf:Description>" + afterTag)
         }
-        guard let closeRange = xml.range(of: "</rdf:Description>", range: tagEnd..<xml.endIndex) else {
+        // 必须按嵌套深度找闭合：contact 结构内部还有一层 rdf:Description，
+        // 取第一个闭合会把后续新字段追加进 contact 内部（C1 顶层读不到）。
+        guard let closeEnd = matchingDescriptionEnd(xml, from: openRange.lowerBound) else {
             throw SidecarXMPError.documentCorrupt(xmpPath: xmpPath)
         }
-        let inner = String(xml[tagEnd..<closeRange.lowerBound])
-        let suffix = String(xml[closeRange.lowerBound...])
+        let closing = "</rdf:Description>"
+        let closeStart = xml.index(closeEnd, offsetBy: -closing.count)
+        let inner = String(xml[tagEnd..<closeStart])
+        let suffix = String(xml[closeStart...])
         return DescriptionParts(before: before, openTag: rawOpenTag, inner: inner, suffix: suffix)
     }
 
@@ -162,7 +271,7 @@ extension SidecarXMPProvider {
             + newline + "</dc:subject>"
     }
 
-    private static func simpleElement(_ name: String, value: String) -> String {
+    static func simpleElement(_ name: String, value: String) -> String {
         "<" + name + ">" + xmlEscape(value) + "</" + name + ">"
     }
 
@@ -219,12 +328,56 @@ extension SidecarXMPProvider {
         return nil
     }
 
-    /// 元素级 replace：命中 name 元素块时整块替换为 replacement（空串即删除）；
-    /// 未命中返回 nil，由调用方决定插入。
-    private static func replaceElement(_ text: String, name: String, with replacement: String) -> String? {
+    /// 是否存在第二个顶层 rdf:Description（嵌套结构块不算）。
+    private static func hasSecondTopLevelDescription(_ xml: String) -> Bool {
+        guard let first = findOpenTag(xml, name: "rdf:Description"),
+              let end = matchingDescriptionEnd(xml, from: first.lowerBound)
+        else { return false }
+        return xml.range(of: "<rdf:Description", range: end..<xml.endIndex) != nil
+    }
+
+    /// 从第一个 rdf:Description 开标签起，按标签嵌套深度找到它的闭合位置。
+    private static func matchingDescriptionEnd(
+        _ xml: String, from start: String.Index
+    ) -> String.Index? {
+        var index = start
+        var depth = 0
+        while index < xml.endIndex {
+            guard let open = xml[index...].firstIndex(of: "<"),
+                  let end = findTagEnd(xml, from: open) else { return nil }
+            let tag = String(xml[open..<end])
+            let selfClosing = tag.hasSuffix("/>")
+            if tag.hasPrefix("</rdf:Description") {
+                depth -= 1
+                if depth == 0 { return end }
+            } else if tag.hasPrefix("<rdf:Description") {
+                if selfClosing, depth == 0 { return end }
+                if !selfClosing { depth += 1 }
+            }
+            index = end
+        }
+        return nil
+    }
+
+    /// 取出 name 元素块原文（含起止标签）；未命中返回 nil。
+    static func elementBlock(_ text: String, name: String) -> String? {
         guard let openRange = findOpenTag(text, name: name) else { return nil }
         guard let tagEnd = findTagEnd(text, from: openRange.lowerBound) else { return nil }
-        let selfClosing = text[text.index(before: tagEnd)] == "/"
+        if text[openRange.lowerBound..<tagEnd].hasSuffix("/>") {
+            return String(text[openRange.lowerBound..<tagEnd])
+        }
+        guard let closeRange = text.range(of: "</" + name + ">", range: tagEnd..<text.endIndex) else {
+            return nil
+        }
+        return String(text[openRange.lowerBound..<closeRange.upperBound])
+    }
+
+    /// 元素级 replace：命中 name 元素块时整块替换为 replacement（空串即删除）；
+    /// 未命中返回 nil，由调用方决定插入。
+    static func replaceElement(_ text: String, name: String, with replacement: String) -> String? {
+        guard let openRange = findOpenTag(text, name: name) else { return nil }
+        guard let tagEnd = findTagEnd(text, from: openRange.lowerBound) else { return nil }
+        let selfClosing = text[openRange.lowerBound..<tagEnd].hasSuffix("/>")
         if selfClosing {
             return text.replacingCharacters(in: openRange.lowerBound..<tagEnd, with: replacement)
         }
@@ -235,7 +388,7 @@ extension SidecarXMPProvider {
     }
 
     /// 删除开标签上的属性（含其值）；不存在时原样返回。属性形式的 XMP 在此被规整掉。
-    private static func removeAttribute(_ tag: String, name: String) -> String {
+    static func removeAttribute(_ tag: String, name: String) -> String {
         guard tag.hasPrefix("<"), tag.hasSuffix(">") else { return tag }
         var content = String(tag[tag.startIndex..<tag.index(before: tag.endIndex)])
         while let range = findAttribute(content, name: name) {
@@ -302,7 +455,7 @@ extension SidecarXMPProvider {
     /// 「缺失」= 进入该元素时不在作用域内（openTag 自身声明 ∪ 未闭合祖先的声明）。
     /// 注：随块消失的声明、以及只在已闭合兄弟元素上声明过的前缀都会被重新注入；
     /// 冗余声明是合法 XML，正确性优先。
-    private static func injectNamespaces(
+    static func injectNamespaces(
         _ document: String,
         required: [(String, String)],
         xmpPath: String
@@ -452,7 +605,7 @@ extension SidecarXMPProvider {
     }
 
     /// 把新元素追加到 rdf:Description 内容的末尾（保留闭合标签缩进）。
-    private static func appendChildren(_ inner: String, _ children: [String]) -> String {
+    static func appendChildren(_ inner: String, _ children: [String]) -> String {
         var body = inner
         var closeIndent = ""
         if let lastNewline = body.lastIndex(of: "\n") {
@@ -495,7 +648,7 @@ extension SidecarXMPProvider {
     }
 
     /// TS xmp-utils INVALID_XML_TEXT 过滤 + XML 转义。
-    private static func xmlEscape(_ value: String) -> String {
+    static func xmlEscape(_ value: String) -> String {
         var escaped = ""
         for scalar in value.unicodeScalars {
             if scalar.value < 0x20 && scalar.value != 0x09 && scalar.value != 0x0A && scalar.value != 0x0D {

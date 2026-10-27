@@ -45,6 +45,8 @@ public protocol PhotoRepository {
     func updateIndexedFile(photoId: String, width: Int, height: Int, changed: Bool) throws
     func updateChecksum(photoId: String, checksum: String, fileSize: Int, fileMtimeMs: Double) throws
     func markMissing(photoIds: [String]) throws
+    /// P1 / D：淘汰移动后改写登记路径（照片仍在库内，只换位置）。
+    func updateFilepath(photoId: String, filepath: String) throws
     /// WorkspaceStatus：按状态计数（offlinePhotos 的缺失照片数）。
     func countByStatus(sessionId: String, status: String) throws -> Int
     /// MetadataService：分块 IN 查询（800/块）。

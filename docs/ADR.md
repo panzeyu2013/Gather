@@ -10,7 +10,7 @@
 > 已随迁移失效，语义与不变量不变，**原生对应实现位置见下表**（未列条目以
 > `desktop/native/gather-core` / `gather-app` 代码为准）。
 >
-> 当前 schema：3（唯一版本；`SchemaCurrent`，44 表 / 383 列 / 72 索引 / 65 外键）。
+> 当前 schema：4（唯一版本；`SchemaCurrent`，44 表 / 384 列 / 72 索引 / 65 外键）。
 > V1/V2 迁移链已删除：旧版本库默认 fail closed，只有显式 reset 才归档
 > db/-wal/-shm 后重建。下文历史 ADR 中的 schema 33/34/35 是当时版本，不是当前代码版本。
 
@@ -18,7 +18,7 @@
 
 | ADR | Electron 时代路径（已删除） | 原生实现（迁移后） |
 |---|---|---|
-| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`（唯一 DDL；旧迁移链已删除）；fresh/形态校验 `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift`（44 表 / 383 列） |
+| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`（唯一 DDL；旧迁移链已删除）；fresh/形态校验 `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift`（44 表 / 384 列） |
 | 007 | `services/image/disk-cache.ts` | `gather-core/Sources/GatherPersistence/Database/SHA256.swift`（**ImageCache 类已删除**，见 ADR-028；文件已由 ImageCache.swift 更名为 SHA256.swift，仅保留生产在用的哈希工具） |
 | 012/013 | `services/workspace/workspace-status.service.ts` | `gather-core/Sources/GatherApplication/Services/WorkspaceStatusService.swift` |
 | 014 | `ipc/session.ipc.ts`、`services/session/session.service.ts` | `gather-core/Sources/GatherApplication/Services/SessionService.swift` |
@@ -64,7 +64,7 @@
 ## ADR-005 数据库建库不变量与不兼容库重置（2026-10-26 收敛）
 
 - 唯一建库入口是 `Database.open(at:)`：新库在单事务内执行
-  `SchemaCurrent.createSQL` 并写 `PRAGMA user_version = 3`；打开后自检版本、`foreign_keys`
+  `SchemaCurrent.createSQL` 并写 `PRAGMA user_version = 4`；打开后自检版本、`foreign_keys`
   与 `foreign_key_check`。
 - 只有两种状态可继续：空库（建库）与当前版本（打开）。旧版本（V1/V2）、更高版本、
   版本 0 有表、形态不符、非 SQLite 文件一律不兼容，默认 **fail closed**（只抛错、
@@ -76,13 +76,13 @@
 ## ADR-006 Schema 唯一真相源
 
 - 唯一 DDL 真相源是 `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`
-  （44 表 / 383 列 / 72 索引 / 65 外键，一次成型；含 triage_suggestions 与
+  （44 表 / 384 列 / 72 索引 / 65 外键，一次成型；含 triage_suggestions 与
   face_cluster_constraints）。索引 SQL 文本参与列形指纹，逐字保留。
 - `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift` 校验 fresh 库（直接 exec
-  `SchemaCurrent.createSQL` 与经 `Database.open` 两种路径）同形：版本 3、44 表、
+  `SchemaCurrent.createSQL` 与经 `Database.open` 两种路径）同形：版本 4、44 表、
   无悬空外键、逐表列数与 CHECK 约束不漂移。Schema 变更只改这一份 DDL 并同步计数/指纹。
 - `docs/archive/schema.snapshot-v35.json` 是旧迁移链时代（schema 35）的**历史快照**，
-  只作归档，不参与门禁；当前 schema 以 `SchemaCurrent`（44 表 / user_version=3）为准。
+  只作归档，不参与门禁；当前 schema 以 `SchemaCurrent`（44 表 / user_version=4）为准。
 
 ---
 
@@ -772,8 +772,8 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
 - `face_cluster_constraints`：set-vs-set（`member_keys_json` + `peer_keys_json`），
   用于拆分在重聚类后保持；1 个索引。
 
-计数：44 表 / 383 列 / 72 显式索引 / 65 外键；列形指纹
-`fa0f3c87ef2b6cd0fc5e937b116149f2aaa7f4a88dc002794a05730b3e1d2bcc`。建库在单事务内执行 DDL + 版本号；fresh 建库与旧库校验共用同一份 DDL
+计数：44 表 / 384 列 / 72 显式索引 / 65 外键；列形指纹
+`4e47485e25a30f20c64a37c84650f41a2875dc513238de1bede3e39f41c4506e`。建库在单事务内执行 DDL + 版本号；fresh 建库与旧库校验共用同一份 DDL
 （`IF NOT EXISTS`），索引 SQL 文本进入指纹，禁止两份 DDL。
 
 ## ADR-034：T0 技术质量初筛（保守、只写决策）

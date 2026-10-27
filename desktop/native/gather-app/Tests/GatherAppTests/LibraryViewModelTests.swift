@@ -298,8 +298,21 @@ struct LibraryViewModelTests {
             if case .rule(let rule) = condition { return rule }
             return nil
         }
+        // P1 / C：搜索是 OR 子组。查找顺序必须"先顶层再嵌套"，
+        // 否则会先撞上搜索组里的同名 keywords 规则（语义不同：containsAny 搜词）。
+        func findRule(_ field: String, in conditions: [FilterCondition]) -> FilterRule? {
+            for condition in conditions {
+                if case .rule(let rule) = condition, rule.field == field { return rule }
+            }
+            for condition in conditions {
+                if case .group(let group) = condition, let hit = findRule(field, in: group.conditions) {
+                    return hit
+                }
+            }
+            return nil
+        }
         func rule(_ field: String) -> FilterRule? {
-            rules.first { $0.field == field }
+            findRule(field, in: criteria.conditions)
         }
         // 自由文本 trim 后入条件。
         #expect(rule("filename")?.operator == .contains)
@@ -441,11 +454,18 @@ struct LibraryViewModelTests {
         viewModel.onFilterChanged()
         #expect(await waitUntilAsync { stub.fetchCalls.count == 2 })
         let call = stub.fetchCalls[1]
-        let rules = call.criteria.conditions.compactMap { condition -> FilterRule? in
-            if case .rule(let rule) = condition { return rule }
+        func findRule(_ field: String, in conditions: [FilterCondition]) -> FilterRule? {
+            for condition in conditions {
+                switch condition {
+                case .rule(let rule):
+                    if rule.field == field { return rule }
+                case .group(let group):
+                    if let hit = findRule(field, in: group.conditions) { return hit }
+                }
+            }
             return nil
         }
-        #expect(rules.first { $0.field == "filename" }?.value == .string("DSC_00"))
+        #expect(findRule("filename", in: call.criteria.conditions)?.value == .string("DSC_00"))
     }
 
     // criteriaKey 变更 → 页码归零（TS useEffect setPage(0)）。

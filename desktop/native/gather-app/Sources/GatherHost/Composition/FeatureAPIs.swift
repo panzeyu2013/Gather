@@ -79,7 +79,8 @@ struct FeatureAPIs {
             filterEngine: composition.filterEngine,
             imagePreloadService: composition.imagePreloadService,
             settingsService: composition.settingsService,
-            jobAPI: job
+            jobAPI: job,
+            facetQuery: FacetQuery(connection: composition.db)
         )
     }
 
@@ -103,7 +104,13 @@ struct FeatureAPIs {
         LiveCullingAPI(
             cullingService: composition.cullingService,
             triageService: composition.triageService,
-            sessionRepo: SessionRepo(connection: composition.db)
+            sessionRepo: SessionRepo(connection: composition.db),
+            photoRepo: composition.photoRepo,
+            relocateAfterMove: { photoId, oldPath, newPath in
+                try composition.assetRepo.relocatePhotoPathsAfterMove(
+                    photoId: photoId, oldPhotoPath: oldPath, newPhotoPath: newPath,
+                    timestamp: nowISOString())
+            }
         )
     }
 
@@ -149,7 +156,8 @@ struct FeatureAPIs {
             metadataService: composition.metadataService,
             deliveryRepo: composition.deliveryRepo,
             xmp: composition.xmpProvider,
-            fileLock: composition.xmpFileLock
+            fileLock: composition.xmpFileLock,
+            settingsService: composition.settingsService
         )
     }
 

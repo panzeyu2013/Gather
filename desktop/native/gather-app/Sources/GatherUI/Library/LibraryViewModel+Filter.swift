@@ -12,9 +12,10 @@ extension LibraryViewModel {
     /// 任一筛选字段变更后调用：四个自由文本字段 300ms 防抖，其余立即提交。
     /// 提交后 criteriaKey 变化 → 页码归零并重新取数（TS useEffect setPage(0)）。
     public func onFilterChanged() {
+        // 规则编辑器也是自由输入：逐键提交会在单连接上堆积 page+facet+count。
         let debouncedTouched = LibraryFilterState.debouncedFields.contains {
             filter[keyPath: $0] != committed[keyPath: $0]
-        }
+        } || filter.rules != committed.rules
         if debouncedTouched {
             debounceTask?.cancel()
             debounceTask = Task { [weak self] in

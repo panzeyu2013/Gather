@@ -60,7 +60,8 @@ public protocol DeliveryWriting: Sendable {
     func updateItemKeywords(_ updates: [(itemId: Int64, keywords: [String])]) throws
     func applyMetadataMutation(
         xmpPath: String, photoPath: String, photoId: String, sessionId: String,
-        attributes: [String: JSONValue], keywords: [String]?
+        attributes: [String: JSONValue], keywords: [String]?,
+        baseFingerprint: String
     ) throws -> DeliveryRow
     func deleteOrphanDelivery(xmpPath: String, revision: Int64) throws -> Bool
     func resetConfirmations(xmpPath: String) throws -> Int

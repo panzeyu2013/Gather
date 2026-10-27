@@ -224,6 +224,29 @@ public final class GalleryViewModel: PageVisibility {
     public var isFetchingNextPage: Bool { fetchingGeneration != nil }
     public internal(set) var actionError: CommandError?
     public internal(set) var selectedIds: Set<String> = []
+    /// P1 / A3：只读元数据面板（选中单张时按需加载；不触发磁盘解析）。
+    let metadataAPI: (any MetadataAPI)?
+    public internal(set) var metadataDetail: PhotoMetadataDetail?
+    private var metadataRequestID = 0
+
+    /// 选中单张时加载只读元数据详情；多选/无选中清空。
+    public func loadMetadataDetail() {
+        guard let api = metadataAPI, selectedIds.count == 1, let photoId = selectedIds.first else {
+            metadataDetail = nil
+            return
+        }
+        metadataRequestID += 1
+        let request = metadataRequestID
+        metadataDetail = nil
+        Task { @MainActor [weak self] in
+            let detail: PhotoMetadataDetail?
+            do { detail = try await api.metadata(photoId) } catch { detail = nil }
+            guard let self, self.metadataRequestID == request,
+                  self.selectedIds == [photoId],
+                  detail?.photoId == photoId else { return }
+            self.metadataDetail = detail
+        }
+    }
     /// 网格缩略图解码尺寸（load() 时经 provider 读取 settings thumbnail_size 分桶）。
     public internal(set) var thumbnailSize = 1024
     /// 工作区索引状态（workspace.status；索引头数据源，轮询 + 事件驱动）。
@@ -248,6 +271,7 @@ public final class GalleryViewModel: PageVisibility {
         sessionId: String,
         provider: GalleryDataProvider,
         job: any JobAPI,
+        metadata: (any MetadataAPI)? = nil,
         debounceDelay: Duration = .milliseconds(300),
         // 默认值与 defaultActive/IdleStatusPollInterval 一致；public init 的默认
         // 参数不能引用 internal static，故此处写字面量（常量仅供测试引用）。
@@ -257,6 +281,7 @@ public final class GalleryViewModel: PageVisibility {
         self.sessionId = sessionId
         self.provider = provider
         self.jobAPI = job
+        self.metadataAPI = metadata
         self.debounceDelay = debounceDelay
         self.activeStatusPollInterval = activeStatusPollInterval
         self.idleStatusPollInterval = idleStatusPollInterval

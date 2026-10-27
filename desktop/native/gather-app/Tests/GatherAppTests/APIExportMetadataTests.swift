@@ -627,7 +627,8 @@ private struct MetadataAPIFixture {
             metadataService: metadataService,
             deliveryRepo: deliveryRepo,
             xmp: xmp,
-            fileLock: fileLock
+            fileLock: fileLock,
+            settingsService: SettingsService(repo: SettingsRepo(connection: db))
         )
     }
 

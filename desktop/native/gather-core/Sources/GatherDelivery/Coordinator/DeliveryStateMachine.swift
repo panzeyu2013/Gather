@@ -84,11 +84,6 @@ enum DeliveryStateMachine {
         deliveryTable[target] ?? []
     }
 
-    /// 稳定排序的来源态（日志/测试/诊断用；SQL 仍由仓储按枚举派生）。
-    static func orderedSources(for target: DeliveryStatus) -> [DeliveryStatus] {
-        DeliveryStatus.allCases.filter { allows($0, target) }
-    }
-
     // MARK: - 交付项级迁移
 
     enum ItemTransition: CaseIterable, Sendable {

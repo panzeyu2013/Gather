@@ -121,6 +121,22 @@ extension LibraryView {
                         primaryFilterControls
                     }
                 }
+
+                // P1 / C：facet 栏。计数随"已提交筛选"变化（与网格一致）。
+                // 必须在 ViewThatFits 之外：宽布局分支命中时也要渲染并加载。
+                // 智能相册的网格口径是相册 criteria，facet 用 filter criteria；
+                // 两者不一致时 facet 是死控件，直接隐藏（切回全部照片再显示）。
+                if viewModel.selectedAlbumId == nil, !viewModel.facets.isEmpty {
+                    LibraryFacetBar(
+                        groups: viewModel.facets,
+                        filter: $viewModel.filter,
+                        l10n: l10n,
+                        onCommit: { viewModel.onFilterChanged() }
+                    )
+                }
+            }
+            .task(id: viewModel.criteriaKey) {
+                await viewModel.refreshFacets()
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -147,6 +163,13 @@ extension LibraryView {
 
     private var advancedFilters: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // P1 / C：规则编辑器（AND/OR、between/in），直接编辑 FilterGroup。
+            FilterRuleEditor(
+                group: $viewModel.filter.rules,
+                l10n: l10n,
+                onChange: { viewModel.onFilterChanged() }
+            )
+            Divider()
             advancedField(l10n("关键词"), text: $viewModel.filter.keyword)
             advancedField(l10n("人物"), text: $viewModel.filter.person)
             advancedField(l10n("目录路径前缀"), text: $viewModel.filter.directory)

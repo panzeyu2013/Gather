@@ -61,6 +61,16 @@ extension WritebackService {
                 record("cache.updateLabel", error)
             }
         }
+        // P1 / IPTC：描述性元数据写盘后同步本地投影（下一次 preview/面板不再读旧值）。
+        if let descriptiveValue = attrs["descriptive"],
+           let descriptive = try? descriptiveValue.decode(DescriptiveMetadata.self) {
+            do {
+                try metadataCacheRepo.updateDescriptive(
+                    photoId: entry.itemPhotoId, descriptive: descriptive)
+            } catch {
+                record("cache.updateDescriptive", error)
+            }
+        }
         if let keywords = attrs["keywords"]?.arrayElements?.compactMap({ $0.stringValue }) {
             do {
                 try metadataCacheRepo.updateKeywords(photoId: entry.itemPhotoId, keywords: keywords)

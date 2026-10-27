@@ -163,6 +163,67 @@ private struct B6bMetadataState {
 final class B6bMetadataAPIStub: MetadataAPI, @unchecked Sendable {
     private let box = LockedBox(B6bMetadataState())
 
+    func applyTriageWriteback(_ input: Confirmed<TriageWritebackInput>) async throws -> TriageWritebackResult {
+        TriageWritebackResult(batchId: "triage-stub", written: input.value.items.map(\.photoId), skipped: [], failed: [])
+    }
+
+    func undoTriageWriteback(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> TriageWritebackResult {
+        TriageWritebackResult(batchId: input.value.batchId, written: [], skipped: [], failed: [])
+    }
+
+    /// P1 / B2：模板 stub 状态（默认空表；apply 返回固定 batchId）。
+    var templateList: [MetadataTemplateSummary] = []
+    var lastAppliedBatchId: String = "batch-stub"
+
+    func templates() async throws -> [MetadataTemplateSummary] { templateList }
+
+    func saveTemplate(_ input: MetadataTemplateSaveInput) async throws -> MetadataTemplateSummary {
+        let summary = MetadataTemplateSummary(
+            id: input.id ?? "template-stub", name: input.name,
+            fieldCount: input.fields.nonNilFieldCount, createdAt: "", updatedAt: ""
+        )
+        templateList.append(summary)
+        return summary
+    }
+
+    func templateFields(id: String) async throws -> DescriptiveMetadata { DescriptiveMetadata() }
+
+    func deleteTemplate(_ input: Confirmed<MetadataTemplateDeleteInput>) async throws {
+        templateList.removeAll { $0.id == input.value.templateId }
+    }
+
+    func previewTemplate(_ input: MetadataTemplatePreviewInput) async throws -> MetadataTemplatePreviewResult {
+        MetadataTemplatePreviewResult(
+            templateId: input.templateId, templateName: "stub", totalPhotos: input.photoIds.count,
+            changedPhotos: 0, changedFields: 0, conflictFields: 0,
+            photos: input.photoIds.map { MetadataPhotoPreview(photoId: $0, writes: [], clears: [], conflicts: []) }
+        )
+    }
+
+    func applyTemplate(_ input: Confirmed<MetadataTemplateApplyInput>) async throws -> MetadataTemplateApplyOutcome {
+        MetadataTemplateApplyOutcome(
+            batchId: lastAppliedBatchId, written: input.value.photoIds, skipped: [], conflicts: [], failed: []
+        )
+    }
+
+    func undoTemplate(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> MetadataTemplateApplyOutcome {
+        MetadataTemplateApplyOutcome(batchId: input.value.batchId, written: [], skipped: [], conflicts: [], failed: [])
+    }
+
+    func recentBatches(limit: Int) async throws -> [MetadataBatchSummary] { [] }
+
+    /// P1 / IPTC：只读详情。测试默认给"空快照"，需要具体值时用 setter 注入。
+    var detail: PhotoMetadataDetail?
+
+    func metadata(_ photoId: String) async throws -> PhotoMetadataDetail {
+        if let detail { return detail }
+        return PhotoMetadataDetail(
+            photoId: photoId, sessionId: "", filepath: "", filename: "",
+            xmpPath: "", hasXMP: false, exif: PhotoExifSnapshot(),
+            descriptive: DescriptiveMetadata(), cachedAt: "", updatedAt: ""
+        )
+    }
+
     var conflicts: [MetadataConflict] {
         get { box.lock.withLock { box.conflicts } }
         set { box.lock.withLock { box.conflicts = newValue } }

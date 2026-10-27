@@ -100,6 +100,7 @@ extension SchemaCurrent {
       file_size INTEGER,
       file_mtime TEXT,
       keywords TEXT NOT NULL DEFAULT '[]',
+      iptc_json TEXT NOT NULL DEFAULT '{}',
       cached_at TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT ''
     );

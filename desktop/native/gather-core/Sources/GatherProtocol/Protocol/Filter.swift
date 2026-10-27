@@ -258,3 +258,41 @@ public struct SmartAlbumDetailData: Codable, Equatable, Sendable {
         self.photoCount = photoCount
     }
 }
+
+public extension FilterGroup {
+    /// P1 / C：剔除某字段的全部规则（facet 计数用：同维度不能用自己的筛选自证）。
+    ///
+    /// 只在**全 AND 路径**上剔除同维条件。
+    /// OR 子树里删一个分支等于放宽剩余分支（示例：AND[OR[camera=A,label=Red]]），
+    /// facet 会显示网格中 0 张的桶；因此 OR 内的同维条件必须保留。
+    func removing(field: String) -> FilterGroup {
+        removing(field: field, andContext: true)
+    }
+
+    private func removing(field: String, andContext: Bool) -> FilterGroup {
+        var result: FilterGroup = self
+        let canRemove = andContext && logic == .and
+        result.conditions = conditions.compactMap { condition in
+            switch condition {
+            case .rule(let rule):
+                if canRemove, rule.field == field { return nil }
+                return .rule(rule)
+            case .group(let group):
+                let pruned = group.removing(field: field, andContext: canRemove)
+                if canRemove, pruned.conditions.isEmpty { return nil }
+                return .group(pruned)
+            }
+        }
+        return result
+    }
+
+    /// 该组是否引用了某字段（facet UI 判断"这一维是否已被筛过"）。
+    func references(field: String) -> Bool {
+        conditions.contains { condition in
+            switch condition {
+            case .rule(let rule): return rule.field == field
+            case .group(let group): return group.references(field: field)
+            }
+        }
+    }
+}

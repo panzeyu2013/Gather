@@ -27,6 +27,8 @@ public struct MetadataCacheRow {
     public let keywordsJSON: String
     public let cachedAt: String
     public let updatedAt: String
+    /// P1 / IPTC：描述性元数据 JSON（DescriptiveMetadata 的编码）。
+    public let iptcJSON: String
 
     public init(row: DBRow) {
         id = row[0].intValue ?? 0
@@ -51,10 +53,20 @@ public struct MetadataCacheRow {
         keywordsJSON = row[19].textValue ?? "[]"
         cachedAt = row[20].textValue ?? ""
         updatedAt = row[21].textValue ?? ""
+        iptcJSON = row[22].textValue ?? "{}"
     }
 
     public var keywords: [String] {
         ((try? JSONValue.parse(keywordsJSON)) as JSONValue?)?.arrayValue ?? []
+    }
+
+    /// P1 / IPTC：解析描述性元数据；损坏/空视为"未设置"而非抛错。
+    public var descriptive: DescriptiveMetadata {
+        guard let value = try? JSONValue.parse(iptcJSON),
+              let decoded = try? value.decode(DescriptiveMetadata.self) else {
+            return DescriptiveMetadata()
+        }
+        return decoded
     }
 }
 
@@ -78,6 +90,8 @@ public struct MetadataCacheInput {
     public var fileSize: Int64?
     public var fileMtime: String?
     public var keywords: [String]?
+    /// P1 / IPTC：描述性元数据；nil 表示本次不更新（沿用现有 JSON）。
+    public var descriptive: DescriptiveMetadata?
 
     public init(
         sessionId: String? = nil,
@@ -97,7 +111,8 @@ public struct MetadataCacheInput {
         height: Int64? = nil,
         fileSize: Int64? = nil,
         fileMtime: String? = nil,
-        keywords: [String]? = nil
+        keywords: [String]? = nil,
+        descriptive: DescriptiveMetadata? = nil
     ) {
         self.sessionId = sessionId
         self.dateTaken = dateTaken
@@ -117,6 +132,7 @@ public struct MetadataCacheInput {
         self.fileSize = fileSize
         self.fileMtime = fileMtime
         self.keywords = keywords
+        self.descriptive = descriptive
     }
 }
 
@@ -134,8 +150,9 @@ public final class MetadataCacheRepo {
             INSERT INTO photo_metadata_cache
              (photo_id, session_id, date_taken, camera_make, camera_model, lens_model,
               focal_length, f_number, exposure_time, iso, rating, label,
-              gps_latitude, gps_longitude, width, height, file_size, file_mtime, keywords, cached_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              gps_latitude, gps_longitude, width, height, file_size, file_mtime, keywords,
+              iptc_json, cached_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(photo_id) DO UPDATE SET
               session_id = excluded.session_id,
               date_taken = excluded.date_taken,
@@ -155,6 +172,11 @@ public final class MetadataCacheRepo {
               file_size = excluded.file_size,
               file_mtime = excluded.file_mtime,
               keywords = excluded.keywords,
+              -- nil 描述性元数据表示"本次不更新"（flag=0）：评分/关键词等局部更新
+              -- 不得把已有 IPTC 冲掉；扫描显式传空值时可清空（flag=1）。
+              iptc_json = CASE
+                WHEN ? = 1 THEN excluded.iptc_json
+                ELSE photo_metadata_cache.iptc_json END,
               cached_at = excluded.cached_at
           """).run([
             .text(photoId),
@@ -176,12 +198,22 @@ public final class MetadataCacheRepo {
             optDB(data.fileSize),
             optDB(data.fileMtime),
             .text(try JSONValue.stringify(JSONValue.array((data.keywords ?? []).map { JSONValue.string($0) }))),
+            .text(try Self.encodeDescriptive(data.descriptive)),
             .text(now),
+            // 与 SQL 中的 CASE ? 对应：只有调用方明确给出 descriptive（含空值 = 清空）
+            // 才更新 iptc_json；nil 表示本次不触碰。
+            .int(data.descriptive == nil ? 0 : 1),
         ])
     }
 
+    /// 描述性元数据 → JSON 文本；nil 编码为 '{}'（配合同名 CASE WHEN 表达"不更新"）。
+    static func encodeDescriptive(_ descriptive: DescriptiveMetadata?) throws -> String {
+        guard let descriptive, !descriptive.isEmpty else { return "{}" }
+        return try JSONValue.stringify(JSONValue(encoding: descriptive))
+    }
+
     public func get(_ photoId: String) throws -> MetadataCacheRow? {
-        // photo_metadata_cache：22 列（TableColumns.photoMetadataCache，列序 = MetadataCacheRow 0-21）
+        // photo_metadata_cache：23 列（TableColumns.photoMetadataCache，列序 = MetadataCacheRow 0-22）
         guard let row = try connection.prepare("SELECT \(TableColumns.sql(TableColumns.photoMetadataCache)) FROM photo_metadata_cache WHERE photo_id = ?")
             .get([.text(photoId)]) else { return nil }
         return MetadataCacheRow(row: row)
@@ -232,6 +264,23 @@ public final class MetadataCacheRepo {
               label = excluded.label,
               cached_at = excluded.cached_at
           """).run([.text(label), .text(now), .text(photoId)])
+    }
+
+    /// P1 / IPTC：描述性元数据写盘后的本地投影刷新（读回值 → 缓存）。
+    /// 显式覆盖：空 DescriptiveMetadata 表示盘上已无这些字段。
+    public func updateDescriptive(photoId: String, descriptive: DescriptiveMetadata) throws {
+        let now = nowISOString()
+        let json = try Self.encodeDescriptive(descriptive)
+        _ = try connection.prepare("""
+            INSERT INTO photo_metadata_cache
+              (photo_id, session_id, rating, keywords, iptc_json, cached_at)
+            SELECT id, session_id, 0, '[]', ?, ?
+            FROM photos
+            WHERE id = ?
+            ON CONFLICT(photo_id) DO UPDATE SET
+              iptc_json = excluded.iptc_json,
+              cached_at = excluded.cached_at
+          """).run([.text(json), .text(now), .text(photoId)])
     }
 
     public func updateKeywords(photoId: String, keywords: [String]) throws {

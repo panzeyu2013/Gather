@@ -200,8 +200,6 @@ public final class IndexerService: @unchecked Sendable {
         #endif
     }
 
-    /// TS: sha256File —— 实现已下沉到 Persistence 的 `FileHasher`（Cut 3a / E-02）。
-
     /// TS: canonicalPath / textualPath / isWithin 三个纯函数已收敛到
     /// ScanPath（定义见 Database/ScanPath.swift）：扫描与导入两条链路共用同一归一化口径，
     /// 不得再各写一份。

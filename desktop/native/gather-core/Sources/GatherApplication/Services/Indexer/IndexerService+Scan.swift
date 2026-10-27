@@ -39,7 +39,24 @@ extension IndexerService {
                 throw IndexerServiceError.sourceRootForbidden
             }
         }
-        let excludedRoots = managedCacheRoots()
+        // 缓存清扫会 DELETE 命中的 photos（级联删决策/人脸）。缓存目录若被配置成
+        // 会话目录或其祖先，绝不能执行清扫——否则一次扫描就清空整个会话的裁片数据。
+        let sessionRoot = session.sourcePath.isEmpty
+            ? nil : ScanPath.canonical(session.sourcePath)
+        // 只豁免会话根下的 _rejects；用户自己的 2024/_rejects 目录仍正常扫描。
+        let rejectsRoot = sessionRoot.map { $0 + "/" + RejectedMover.folderName }
+        let excludedRoots = managedCacheRoots().filter { cacheRoot in
+            // source_path 为空（单文件/跨目录导入）时无法证明缓存根与会话照片
+            // 不相交：宁可不清扫，也绝不能 DELETE 库行。
+            guard let sessionRoot else { return false }
+            let overlaps = ScanPath.isWithin(candidate: sessionRoot, root: cacheRoot)
+            if overlaps {
+                GatherLogger.log(
+                    "metadata.scan: ignore unsafe cache root \(cacheRoot) (contains session root)",
+                    level: .warn)
+            }
+            return !overlaps
+        }
         var existing = try self.photoRepo.getBySessionProjection(sessionId: sessionId)
 
         /// 按归一化路径归约：首见者胜（getBySessionProjection 按 rowid 升序返回，
@@ -387,7 +404,9 @@ extension IndexerService {
                             continue
                         }
                         for name in entries.sorted() {
-                            queue.append(ScanPath.canonical(filepath + "/" + name))
+                            let full = ScanPath.canonical(filepath + "/" + name)
+                            if let rejectsRoot, full == rejectsRoot { continue }
+                            queue.append(full)
                         }
                         continue
                     }
@@ -408,6 +427,7 @@ extension IndexerService {
                         directory: ScanPath.canonical(session.sourcePath),
                         isRoot: true,
                         excludedRoots: excludedRoots,
+                        rejectsRoot: rejectsRoot,
                         channel: channel
                     )
                     channel.close()
@@ -446,14 +466,34 @@ extension IndexerService {
                 if !pending.isEmpty { try await scanBatch(pending) }
             }
 
+            // 扫描期间可能有并发写者改 photos.filepath（淘汰移出）。existing 快照
+            // 是旧路径，若直接 markMissing 会把已移走的行判成 missing 且此后不再
+            // 对账（新路径在 _rejects 被排除）。按 id 重读当前路径再判。
+            var currentPaths: [String: String] = [:]
+            do {
+                for row in try self.photoRepo.getBySessionProjection(sessionId: sessionId) {
+                    currentPaths[row.id] = row.filepath
+                }
+            } catch {
+                // 重读失败时退回旧快照语义（宁可漏标 missing，也不误标）。
+            }
             for photo in existing {
+                if let current = currentPaths[photo.id],
+                   ScanPath.canonical(current) != ScanPath.canonical(photo.filepath) {
+                    continue
+                }
                 let normalized = ScanPath.canonical(photo.filepath)
                 // 全树扫描覆盖每条存量路径；显式集合只覆盖展开后的并集——
                 // 集合外的照片不属于本次扫描范围，不得误标 missing。
                 let inRequested = requestedPaths == nil || requestedCoverage.contains(normalized)
-                if inRequested
-                    && !discoveredSet.contains(normalized)
-                    && !relinkedPhotoIds.contains(photo.id) {
+                // 淘汰件被移到 _rejects（已在库中改过 filepath）：全树扫描不遍历该目录，
+                // 绝不能因此把它们判成 missing/offline。
+                let inRejects = rejectsRoot.map {
+                    ScanPath.isWithin(candidate: normalized, root: $0)
+                } ?? false
+                if inRequested, !inRejects,
+                    !discoveredSet.contains(normalized),
+                    !relinkedPhotoIds.contains(photo.id) {
                     missing.append(photo)
                 }
             }
@@ -516,6 +556,7 @@ extension IndexerService {
         directory: String,
         isRoot: Bool,
         excludedRoots: [String],
+        rejectsRoot: String?,
         channel: WalkChannel
     ) async {
         let entries: [String]
@@ -530,10 +571,15 @@ extension IndexerService {
             return
         }
         for name in entries {
+            // 淘汰移动的落地目录：不是工作区照片，重扫不得把它们再登记回来。
+            // 只跳过会话根下那一个，用户自有同名目录照常扫描。
             let full = directory + "/" + name
+            if let rejectsRoot, ScanPath.canonical(full) == rejectsRoot { continue }
             if excludedRoots.contains(where: { ScanPath.isWithin(candidate: full, root: $0) }) { continue }
             if ScanPath.isDirectory(full) {
-                await traverse(directory: full, isRoot: false, excludedRoots: excludedRoots, channel: channel)
+                await traverse(
+                    directory: full, isRoot: false, excludedRoots: excludedRoots,
+                    rejectsRoot: rejectsRoot, channel: channel)
             } else if supportedExtensions.contains(TSPath.extname(name).lowercased()) {
                 await channel.push(.file(full))
             }

@@ -513,6 +513,11 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
         return result
     }
 
+    // P1 / D：淘汰移动（stub：直接回成功，不碰文件系统）。
+    func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult {
+        CullingMoveRejectedResult(moved: input.value.photoIds, newPaths: [], failed: [])
+    }
+
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus {
         let (error, result, delay): ((any Error)?, CullingSyncStatus, Duration) = box.lock.withLock {
             box.syncStatusCalls.append(sessionId)

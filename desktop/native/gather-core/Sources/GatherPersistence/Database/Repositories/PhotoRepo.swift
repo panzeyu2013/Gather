@@ -341,6 +341,18 @@ public final class PhotoRepo {
         ).run([.text(checksum), .int(Int64(fileSize)), .real(fileMtimeMs), .text(nowISOString()), .text(photoId)])
     }
 
+    /// P1 / D：淘汰移动后改写登记路径与文件名（一起改，避免路径与文件名不一致）。
+    public func updateFilepath(photoId: String, filepath: String) throws {
+        _ = try connection.prepare("""
+            UPDATE photos SET filepath = ?, filename = ?, updated_at = ? WHERE id = ?
+            """).run([
+                .text(filepath),
+                .text((filepath as NSString).lastPathComponent),
+                .text(nowISOString()),
+                .text(photoId),
+            ])
+    }
+
     public func markMissing(photoIds: [String]) throws {
         let statement = try connection.prepare("UPDATE photos SET status = 'missing', updated_at = ? WHERE id = ?")
         try connection.transaction {
