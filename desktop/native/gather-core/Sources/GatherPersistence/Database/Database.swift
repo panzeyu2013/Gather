@@ -2,7 +2,7 @@
 // Database facade（docs/refactor-decisions.md D-035）。
 //
 // 定位：**唯一**的库入口。职责只有三件事：
-//   1. 打开即保证 schema 就绪：user_version == SchemaCurrent.userVersion（3）**且**
+//   1. 打开即保证 schema 就绪：user_version == SchemaCurrent.userVersion（4）**且**
 //      列形与指纹一致（44 表 / 384 列 / 72 显式索引 / 65 外键）；
 //      0 且无表 → 建当前 schema；当前版本 → 直接打开；旧版本 / 更高版本 / 版本 0 有表 /
 //      形态不符 / 非 SQLite 文件 → **默认 fail closed**（只抛错，不改名、不删文件）；

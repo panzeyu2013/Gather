@@ -39,6 +39,7 @@ public final class DirectoryWatcher: @unchecked Sendable {
         self.latency = latency
         self.handler = handler
         self.queue = DispatchQueue(label: "app.gather.directory-watcher", qos: .utility)
+        self.queue.setSpecific(key: Self.queueKey, value: 1)
     }
 
     /// 启动；sinceEventID 为 0 表示"只看启动之后的变化"。
@@ -105,8 +106,17 @@ public final class DirectoryWatcher: @unchecked Sendable {
         guard let current else { return }
         FSEventStreamStop(current)
         FSEventStreamInvalidate(current)
+        // 回调通过 passUnretained(self) 取回 watcher：先解绑 dispatch queue，再把在途
+        // 回调排空，最后才 release，否则"stop 后析构 + 迟到的回调"就是 use-after-free。
+        FSEventStreamSetDispatchQueue(current, nil)
+        if DispatchQueue.getSpecific(key: Self.queueKey) == nil {
+            queue.sync {}
+        }
         FSEventStreamRelease(current)
     }
+
+    /// 标记"当前是否运行在本 watcher 的队列上"（在队列内 sync 会自锁）。
+    private static let queueKey = DispatchSpecificKey<UInt8>()
 
     deinit { stop() }
 

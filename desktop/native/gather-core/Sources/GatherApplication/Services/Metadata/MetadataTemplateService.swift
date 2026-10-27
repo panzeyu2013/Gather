@@ -84,7 +84,7 @@ public extension MetadataPhotoImpact {
     }
 }
 
-public final class MetadataTemplateService: @unchecked Sendable {
+public final class MetadataTemplateService: Sendable {
     private let templates: MetadataTemplateStore
     private let batches: MetadataApplyBatchStore
     private let metadata: MetadataService

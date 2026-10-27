@@ -48,8 +48,9 @@ public enum IngestRenameTemplate {
         for (token, value) in replacements {
             result = result.replacingOccurrences(of: token, with: value)
         }
-        // {seq:N} 支持任意宽度
-        if let range = result.range(of: "\\{seq:[0-9]+\\}", options: .regularExpression) {
+        // {seq:N} 支持任意宽度，且模板里可以出现多处（不同宽度各自成形）：
+        // 替换后该 token 不再匹配，循环必然收敛。
+        while let range = result.range(of: "\\{seq:[0-9]+\\}", options: .regularExpression) {
             let token = String(result[range])
             let width = Int(token.dropFirst(5).dropLast()) ?? 4
             result = result.replacingOccurrences(of: token, with: pad(sequence, width))

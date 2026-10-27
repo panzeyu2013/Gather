@@ -103,11 +103,13 @@ struct SettingsServiceTests {
         #expect(try harness.repo.get(key: "thumbnail_size")?.value == "1024")
     }
 
-    // TS: 默认值表规模与关键值对齐；删除 14 个无消费者的旧 Node 缓存/C1/防抖键后为 49。
+    // TS: 默认值表规模与关键值对齐；删除 14 个无消费者的旧 Node 缓存/C1/防抖键后为 49，
+    // 之后随 P0/P1 迭代增补至 52；2026-10-27 增加 metadata.applyBatches.corrupt
+    // （仅作批次 JSON 解析失败的留证，无 UI 消费者）→ 53。
     // set 的键校验直接由此表派生，少一个键就意味着对应设置永远写不进去。
     @Test func defaultsMatchTS() {
         let defaults = SettingsService.getDefaults()
-        #expect(defaults.count == 52)
+        #expect(defaults.count == 53)
         #expect(defaults["grid_default_sort"] == "import")
         #expect(defaults["grid_density"] == "m")
         #expect(defaults["triage_enabled"] == "0")

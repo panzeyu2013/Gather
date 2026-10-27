@@ -98,7 +98,8 @@ public final class NavigationService {
         try validateNavigationParameters(burstGapSeconds: burstGapSeconds, sceneGapSeconds: sceneGapSeconds)
         let rows = try captureRows(sessionId: sessionId)
         let capturedAt = Dictionary(rows.map { ($0.id, $0.capturedAt) }, uniquingKeysWith: { first, _ in first })
-        let fingerprint = fingerprintHash(burst: burstGapSeconds, scene: sceneGapSeconds, rows: rows)
+        let fingerprint = try fingerprintHash(
+            burst: burstGapSeconds, scene: sceneGapSeconds, rows: rows)
 
         if !dryRun {
             let cached = try list(sessionId: sessionId, capturedAt: capturedAt)
@@ -406,7 +407,9 @@ public final class NavigationService {
     // MARK: 指纹
 
     /// TS: sha256(JSON.stringify([...]))。
-    private func fingerprintHash(burst: Double, scene: Double, rows: [CaptureRow]) -> String {
+    private func fingerprintHash(
+        burst: Double, scene: Double, rows: [CaptureRow]
+    ) throws -> String {
         let payload: [Any] = [
             burst,
             scene,
@@ -421,7 +424,9 @@ public final class NavigationService {
                 ]
             },
         ]
-        let data = try! JSONSerialization.data(withJSONObject: payload)
+        // 载荷全是 String/Double/[String]，编码失败只可能是"将来有人塞了非 JSON 值"；
+        // 抛给 analyze 的错误通道，别再让 try! 把进程带走。
+        let data = try JSONSerialization.data(withJSONObject: payload)
         return SHA256.hash(Data(data)).map { String(format: "%02x", $0) }.joined()
     }
 

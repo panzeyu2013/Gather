@@ -56,6 +56,8 @@ private final class TriageXMP: XMPProvider, @unchecked Sendable {
 private final class TriageMutations: MetadataMutationPort, @unchecked Sendable {
     private let lock = NSLock()
     var onKeywordDelta: (([String], [String]) -> Void)?
+    /// 按 photoId 注入"删关键词阶段失败"，用于覆盖 undo 的失败累积语义。
+    var failKeywordDeltaFor: Set<String> = []
     private var queued: [(photoId: String, values: [String: JSONValue])] = []
     func drain() -> [(photoId: String, values: [String: JSONValue])] {
         lock.lock(); defer { lock.unlock() }
@@ -74,6 +76,9 @@ private final class TriageMutations: MetadataMutationPort, @unchecked Sendable {
         sessionId: String, photoId: String, added: [String], removed: [String],
         owned: [String: Set<MetadataMutationSource>], existingKeywords: [String]?
     ) async throws -> MetadataMutationResult? {
+        if failKeywordDeltaFor.contains(photoId) {
+            throw GatherError.invalidParameter(field: "photoId", reason: "injected keyword delta failure")
+        }
         onKeywordDelta?(added, removed)
         return MetadataMutationResult(
             photoId: photoId, xmpPath: "", dirtyFields: [.keywords],
@@ -143,5 +148,69 @@ struct TriageWritebackServiceTests {
         #expect(restored.keywords == ["old"])
         #expect(restored.triageSignal == nil, "撤销必须清空私有信号")
         #expect(try batches.get(id: "b1")?.undone == true)
+    }
+
+    @Test("undo：关键词删除失败不得被后续成功覆盖（批次保持未撤销）")
+    func undoKeepsKeywordRemovalFailures() async throws {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-triage-(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: dir) } catch {}
+        }
+        let sessionId = "s-1"
+        let p1 = "p-1", p2 = "p-2"
+        try insertSession(db, sessionId)
+        let path1 = (dir as NSString).appendingPathComponent("a.CR3")
+        let path2 = (dir as NSString).appendingPathComponent("b.CR3")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: path1))
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: path2))
+        try insertPhoto(db, id: p1, sessionId: sessionId, filepath: path1)
+        try insertPhoto(db, id: p2, sessionId: sessionId, filepath: path2)
+        let cache = MetadataCacheRepo(connection: db)
+        try cache.upsert(photoId: p1, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
+        try cache.upsert(photoId: p2, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
+
+        let xmp = TriageXMP()
+        xmp.seed(path1, MetadataWriteAttributes(keywords: ["old"]))
+        xmp.seed(path2, MetadataWriteAttributes(keywords: ["old"]))
+        let mutations = TriageMutations()
+        let paths = [p1: path1, p2: path2]
+        mutations.onKeywordDelta = { _, removed in
+            xmp.removeKeywords(path1, removed)
+        }
+        let metadata = MetadataService(
+            metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
+            transactions: db, mutations: mutations,
+            flushPending: { _ in
+                for entry in mutations.drain() {
+                    let attributes = try MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    try await xmp.writeAttributes(
+                        photoPath: paths[entry.photoId] ?? path1, attributes: attributes)
+                }
+                return WritebackResult(
+                    totalAffected: 1, written: 1, failed: 0, skipped: 0,
+                    errors: [], failedItems: [], report: "")
+            })
+        let settings = SettingsService(repo: SettingsRepo(connection: db))
+        let batches = MetadataApplyBatchStore(settings: settings)
+        let service = TriageWritebackService(xmp: xmp, metadata: metadata, batches: batches)
+
+        _ = await service.apply(
+            [
+                TriageWritebackDecision(
+                    photoId: p1, rating: 3, keyword: "Gather|AI|Keep", namespaceValue: "keep"),
+                TriageWritebackDecision(
+                    photoId: p2, rating: 3, keyword: "Gather|AI|Keep", namespaceValue: "keep"),
+            ],
+            batchId: "b1", now: "2026-10-27T00:00:00Z")
+
+        // p1 的"删关键词"阶段失败、p2 正常：第二阶段的成功不得把 p1 的失败冲掉
+        // （否则批会被 markUndone，残留关键词且无法重试）。
+        mutations.failKeywordDeltaFor = [p1]
+        let undone = try await service.undo(batchId: "b1")
+        #expect(undone.failed.map(\.photoId) == [p1])
+        #expect(try batches.get(id: "b1")?.undone == false, "有失败时不得标记已撤销")
     }
 }

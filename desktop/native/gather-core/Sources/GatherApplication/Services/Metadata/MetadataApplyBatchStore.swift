@@ -65,6 +65,8 @@ public struct MetadataApplyBatch: Codable, Equatable, Sendable, Identifiable {
 
 public final class MetadataApplyBatchStore: @unchecked Sendable {
     public static let settingsKey = "metadata.applyBatches"
+    /// 解析失败时的原文留证键（只保留最近一份，见 preserveCorruptPayloadLocked）。
+    public static let corruptKey = "metadata.applyBatches.corrupt"
     /// 保留最近批次数：足够"手滑撤销"，又不让 settings 无限膨胀。
     public static let retention = 20
     private let settings: SettingsService
@@ -114,12 +116,22 @@ public final class MetadataApplyBatchStore: @unchecked Sendable {
 
     private func loadLocked() -> [MetadataApplyBatch] {
         let raw = settings.get(Self.settingsKey, defaultValue: "") ?? ""
-        guard !raw.isEmpty,
-              let value = try? JSONValue.parse(raw),
-              let batches = try? value.decode([MetadataApplyBatch].self) else {
+        guard !raw.isEmpty else { return [] }
+        do {
+            let value = try JSONValue.parse(raw)
+            return try value.decode([MetadataApplyBatch].self)
+        } catch {
+            // 历史损坏不能静默消失：把原文转存到 corrupt 键留证，再按"无历史"继续。
+            // 否则下一次 record 会用新批次整体覆盖，损坏原因再也查不到。
+            preserveCorruptPayloadLocked(raw)
             return []
         }
-        return batches
+    }
+
+    /// 解析失败的原文只保留最近一份（避免单键无限增长）。
+    private func preserveCorruptPayloadLocked(_ raw: String) {
+        guard (settings.get(Self.corruptKey, defaultValue: "") ?? "") != raw else { return }
+        _ = try? settings.set(Self.corruptKey, value: raw)
     }
 
     private func persistLocked(_ batches: [MetadataApplyBatch]) throws {

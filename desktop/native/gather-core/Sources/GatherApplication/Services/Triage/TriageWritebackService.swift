@@ -31,7 +31,7 @@ public struct TriageWritebackOutcome: Equatable, Sendable {
     }
 }
 
-public final class TriageWritebackService: @unchecked Sendable {
+public final class TriageWritebackService: Sendable {
     /// 批次存储里 triage 批次的模板标识（避免多处魔法串漂移）。
     public static let batchTemplateID = "triage"
     private let xmp: any XMPProvider
@@ -186,13 +186,16 @@ public final class TriageWritebackService: @unchecked Sendable {
             do {
                 let outcome = try await metadata.applyMetadataAttributes(inputs, source: .manual)
                 written = outcome.written
-                failed = outcome.failed.map {
+                // 追加而不是覆盖：上一阶段"删关键词"的失败必须留在结果里，否则
+                // 下面的 failed.isEmpty 会把这次撤销当成成功并对批次 markUndone
+                // ——盘上关键词残留、批次又不可重试（undo 有 batchAlreadyUndone 守卫）。
+                failed.append(contentsOf: outcome.failed.map {
                     TriageWritebackFailure(photoId: $0.photoId, message: $0.message)
-                }
+                })
             } catch {
-                failed = inputs.map {
+                failed.append(contentsOf: inputs.map {
                     TriageWritebackFailure(photoId: $0.photoId, message: String(describing: error))
-                }
+                })
             }
         }
         if failed.isEmpty { try batches.markUndone(id: batchId) }

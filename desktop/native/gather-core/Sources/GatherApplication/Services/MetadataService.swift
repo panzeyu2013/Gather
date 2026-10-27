@@ -917,8 +917,14 @@ public final class MetadataService: @unchecked Sendable {
                         // 兄弟刷新是投影优化；失败不回滚已写盘的文件。
                     }
                 }
-                let key = TSPath.normalize(TSPath.xmpSidecarPath(readPath))
-                let targets = siblingIDsByXmp[key] ?? [input.photoId]
+                // 兄弟索引按 photos.filepath 建键；asset_read_mode=asset 时 readPath 是
+                // 解析后的资产路径，两者不同。只查 readPath 会让兄弟照片在 asset 模式下
+                // 永不刷新（面板继续显示旧 IPTC），所以两个键都要试。
+                let readKey = TSPath.normalize(TSPath.xmpSidecarPath(readPath))
+                let dbKey = TSPath.normalize(TSPath.xmpSidecarPath(photo.filepath))
+                let targets = siblingIDsByXmp[readKey]
+                    ?? siblingIDsByXmp[dbKey]
+                    ?? [input.photoId]
                 for sibling in targets {
                     try? metadataCacheRepo.updateDescriptive(
                         photoId: sibling,

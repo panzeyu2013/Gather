@@ -501,7 +501,7 @@ public final class PhotoFilterQuery {
             return (sql: "pmc.keywords IS NOT NULL AND pmc.keywords != '[]'", params: [])
         case .eq:
             let sorted = arr.sorted()
-            let sortedJSON = try! JSONSerialization.data(withJSONObject: sorted)
+            let sortedJSON = try JSONSerialization.data(withJSONObject: sorted)
             let jsonString = String(data: sortedJSON, encoding: .utf8) ?? "[]"
             return (
                 sql: """
