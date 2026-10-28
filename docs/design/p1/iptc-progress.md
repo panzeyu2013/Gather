@@ -2,7 +2,7 @@
 
 ## 结论
 
-剩余项按推荐方案收尾完成：core **1323/199**、app **713/82** 全绿；12 个 check-*.sh（strict 可用者带 `--strict`，另跑 test-catalog `--self-test` 负例）、schema verify（44/384/72/65、user_version=4、0 违规）、docs/l10n 全过。
+剩余项按推荐方案收尾完成：core **1327/199**、app **713/82** 全绿；12 个 check-*.sh（strict 可用者带 `--strict`，另跑 test-catalog `--self-test` 负例）、schema verify（44/384/72/65、user_version=4、0 违规）、docs/l10n 全过。
 
 ## 本轮收尾
 
@@ -63,6 +63,24 @@ FSEventStreamRef、两个 `*Store` 的缓存 + NSLock），在 macOS 14 目标�
   （写回前已存在的同名词保留）；投影刷新/写前指纹读取失败改为带日志。
 - **UI/文案**：批次撤销加确认弹窗（不再是"一键改整批 XMP"）；zh-Hans 恢复为 9 个占位键
   （本批误加的 169 条 identity 条目移除），文档数字同步到实测。
+
+### 复评补丁（2026-10-28 第二轮）
+
+4 个只读复评代理在合并后复检，发现并已修：
+
+- 摄取：第二目的地 + 共享侧车时第二张 100% 假失败（改为内容一致即复用）；
+  回滚增加 `mainCreated` 标志，目标已存在（并发/重复执行）时不再删除既有的他人文件；
+  兄弟归组改按 (源目录, 源 stem)，无 .xmp 的 RAW+JPEG 也能配对；冲突传播整组；
+  回滚失败写进失败原因；删掉已无赋值点的 `destSidecarOverride`。
+- 门禁：`check-docs` 恢复「当前 schema 为/是 N」「当前 schema N」形态（只认冒号会让
+  这类断言从判红变判绿），仍用 `user_version` 兜住 44 表那句。
+- triage：输入上限 10k→100k（覆盖大库全会话写回），UI 不再用 `try?` 吞校验错误；
+  批次记录失败保留已累积的失败；关键词按 fold 去重（与 undo 判定同口径）；
+  整批零写入时把批次标记已撤销，避免"可撤销的假入口"。
+- 观测：指纹读取失败改为 fail-closed（XMP_DOCUMENT_READ_FAILED）；投影刷新失败
+  聚合为一条 warn；`FSEventStreamStart` 失败即 `return false`。
+- UI：模板面板的整批撤销也加确认弹窗；批次历史弹窗按 triage/模板给不同说明；
+  `en` 补 3 个新 key。
 
 ## 剩余（人工/产品确认）
 

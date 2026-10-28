@@ -29,6 +29,8 @@ struct MetadataTemplateSheet: View {
     @State private var editorFields: DescriptiveMetadata?
     @State private var showClearEditor = false
     @State private var showDeleteConfirm = false
+    /// 撤销整批写回同样是破坏性动作：必须走确认弹窗后再构造 Confirmed。
+    @State private var showUndoConfirm = false
 
     /// 目标：多选优先，否则当前照片。
     private var targetPhotoIds: [String] {
@@ -123,8 +125,20 @@ struct MetadataTemplateSheet: View {
                     .disabled(preview == nil || (preview?.changedFields ?? 0) == 0 || isBusy)
                 Spacer()
                 if let appliedBatchId {
-                    Button(l10n("撤销此次套用")) { Task { await runUndo(batchId: appliedBatchId) } }
+                    Button(l10n("撤销此次套用")) { showUndoConfirm = true }
                         .disabled(isBusy)
+                        .confirmationDialog(
+                            l10n("撤销这次写回？"),
+                            isPresented: $showUndoConfirm,
+                            titleVisibility: .visible
+                        ) {
+                            Button(l10n("撤销"), role: .destructive) {
+                                Task { await runUndo(batchId: appliedBatchId) }
+                            }
+                            Button(l10n("取消"), role: .cancel) {}
+                        } message: {
+                            Text(l10n("还原这批照片的描述性字段；冲突字段按套用前快照恢复。"))
+                        }
                 }
                 Button(l10n("关闭")) { dismiss() }
             }

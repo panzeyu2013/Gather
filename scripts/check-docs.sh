@@ -139,12 +139,16 @@ fi
 # 避免“当前 schema 为\n 3”这种折行漏检。
 #
 # 两种形态都要扫：
-#   1) `当前 schema：N`（冒号形式）；
-#   2) `user_version = N` / `user_version=N`。后者能覆盖
-#      “当前 schema 以 `SchemaCurrent`（44 表 / user_version=4）为准”这类句子——
-#      它与“当前 schema”隔着 20 多个字节，固定窗口只能退化成把 44 当版本号。
+#   1) `当前 schema：N` / `当前 schema 为 N` / `当前 schema 是 N` / `当前 schema N`
+#      （只允许分隔符后紧跟数字，避免把“当前 schema 以 `SchemaCurrent`（44 表…）”的 44
+#      当版本号）；
+#   2) `user_version = N` / `user_version=N`。后者覆盖“当前 schema 以
+#      `SchemaCurrent`（44 表 / user_version=4）为准”这类句子——它与“当前 schema”
+#      隔着 20 多个字节，前缀窗口会把 44 误当版本号。
 adr_flat=$(tr '\n' ' ' < "$ADR" 2>/dev/null | tr -s ' ')
-colon_versions=$(printf '%s' "$adr_flat" | grep -oE '当前 schema[：:][[:space:]]*[0-9]+' 2>/dev/null | grep -oE '[0-9]+' || true)
+colon_versions=$(printf '%s' "$adr_flat" \
+  | grep -oE '当前 schema[[:space:]]*(为|是)?[[:space:]]*[：:]?[[:space:]]*[0-9]+' 2>/dev/null \
+  | grep -oE '[0-9]+$' || true)
 user_version_versions=$(printf '%s' "$adr_flat" | grep -oE 'user_version[^0-9]{0,4}[0-9]+' 2>/dev/null | grep -oE '[0-9]+$' || true)
 doc_versions=$(printf '%s\n%s\n' "$colon_versions" "$user_version_versions" | grep -E '^[0-9]+$' | sort -n | uniq | tr '\n' ' ' || true)
 if [ -n "$doc_versions" ]; then

@@ -85,7 +85,9 @@ struct MetadataBatchSheet: View {
             }
             Button(l10n("取消"), role: .cancel) { pendingUndo = nil }
         } message: {
-            Text(l10n("还原 rating/关键词，并清除私有命名空间信号。"))
+            Text(pendingUndo?.kind == "triage"
+                 ? l10n("还原 rating/关键词，并清除私有命名空间信号。")
+                 : l10n("还原这批照片的描述性字段与 rating。"))
         }
     }
 

@@ -105,7 +105,7 @@ public final class RejectedMover: @unchecked Sendable {
                 }
                 var message = String(describing: error)
                 if !rollbackErrors.isEmpty {
-                    message += "；回滚失败（文件可能留在 (Self.folderName)，需人工恢复）："
+                    message += "；回滚失败（文件可能留在 \(Self.folderName)，需人工恢复）："
                         + rollbackErrors.joined(separator: " | ")
                 }
                 failed.append(RejectedMoveFailure(photoId: photo.photoId, message: message))

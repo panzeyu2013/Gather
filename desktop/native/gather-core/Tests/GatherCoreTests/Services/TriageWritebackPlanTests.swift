@@ -91,7 +91,8 @@ struct TriageWritebackPlanTests {
             _ = try TriageWritebackInput(policy: .ratingOnlyWhenEmpty,
                                          items: [duplicate, duplicate])
         }
-        let overflow = try (0..<10_001).map {
+        // 上限 100k（覆盖大库全会话写回）：超过即显式失败。
+        let overflow = try (0...100_000).map {
             try TriageWritebackItem(photoId: "p\($0)", verdict: "keep")
         }
         #expect(throws: GatherError.self) {

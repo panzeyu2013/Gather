@@ -411,8 +411,9 @@ extension AssetRepo {
             ).get([.text(newNormalized)])?.first?.textValue
             if let targetId {
                 // 目标路径已登记（上次移出后又被扫描回来）：不覆盖目标行，也不假装迁移成功。
-                // 下一轮扫描会按校验和/identity 把 photos.asset_file_id 重连到目标行；
-                // 这里只留一条可追踪的 warn，避免"两表各不相同却完全静默"。
+                // 注意：扫描只重连 asset_id/asset_file_id 为 NULL 的照片（AssetRepo+Scan），
+                // 所以这里不会自动"自愈"——photos.asset_file_id 仍指向旧行（其路径已不存在），
+                // 需要人工/后台修复。留 warn 是为了让这种不一致可见，而不是声称已处理。
                 GatherLogger.log(
                     "relocatePhotoPathsAfterMove: 目标 asset_files 已存在，保留原行待重连 "
                         + "(old=\(oldNormalized) new=\(newNormalized) target=\(targetId))",

@@ -79,22 +79,19 @@ public struct IngestItem: Equatable, Sendable {
     public var size: Int
     /// 与照片同名的 XMP 侧车（存在才搬；否则移动照片会把元数据留在卡上）。
     public var sidecarPath: String?
-    /// 共享侧车（RAW+JPEG 同 stem）的第二张必须复用第一张的目标侧车，
-    /// 不能各自按目标 stem 再生成一份。
-    public var destSidecarOverride: String?
     public init(sourcePath: String, destPath: String, conflict: Bool, size: Int,
-                sidecarPath: String? = nil, destSidecarPath: String? = nil) {
+                sidecarPath: String? = nil) {
         self.sourcePath = sourcePath
         self.destPath = destPath
         self.conflict = conflict
         self.size = size
         self.sidecarPath = sidecarPath
-        self.destSidecarOverride = destSidecarPath
     }
 
-    /// 侧车在目标目录的同名路径（照片扩展名换成 .xmp）。
+    /// 侧车在目标目录的同名路径（照片扩展名换成 .xmp）。兄弟共用目标 stem，
+    /// 因此同一个 (目录, stem) 组里的照片推导出同一个侧车路径。
     public var destSidecarPath: String {
-        destSidecarOverride ?? ((destPath as NSString).deletingPathExtension + ".xmp")
+        (destPath as NSString).deletingPathExtension + ".xmp"
     }
 }
 
@@ -185,10 +182,12 @@ public final class IngestService: @unchecked Sendable {
         var sequence = 1
         var usedDestinations = Set<String>()
         var seenSources = Set<String>()
-        /// 共享侧车（RAW+JPEG 同 stem）→ 第一张的目标 stem（不含扩展名）。
+        /// (源目录, 源 stem) → 第一张的目标 stem（相对目的地根、不含扩展名）。
         /// 兄弟必须复用同一 stem：侧车按 stem 推导，stem 不同会让第二张解析到不存在的
         /// .xmp，RAW/JPEG 的配对键（stem）也会一起失配。
-        var sharedSidecarStems: [String: String] = [:]
+        var sharedStems: [String: String] = [:]
+        /// 已有同组冲突的 stem：整组都按冲突处理，避免与既有文件混成一对。
+        var conflictedStems = Set<String>()
 
         for source in sourcePaths {
             // 同一目录与其子项一起传入时只处理一次，避免同文件两份拷贝。
@@ -234,9 +233,14 @@ public final class IngestService: @unchecked Sendable {
                 let sidecarCandidate = TSPath.xmpSidecarPath(file)
                 let sidecarPath: String? = fileManager.fileExists(atPath: sidecarCandidate)
                     ? sidecarCandidate : nil
-                let sidecarKey = sidecarPath.map { ($0 as NSString).standardizingPath }
+                // 兄弟判定按 (源目录, 源 stem)——与 RAW/JPEG 配对键同源（AssetRepo+Scan
+                // 按 stem 分组）。侧车只决定"要不要跟着搬"，不能拿它当归组键：没有 .xmp
+                // 的 RAW+JPEG 同样必须落在同一目标 stem，否则配对候选一条都生成不了。
+                // 目录保持原样：大小写敏感卷上 A/ 与 a/ 是不同目录，不能并组。
+                let stemKey = TSPath.dirname(file) + "\u{0}"
+                    + TSPath.stem(name).lowercased()
                 let relative: String
-                if let sidecarKey, let sharedStem = sharedSidecarStems[sidecarKey] {
+                if let sharedStem = sharedStems[stemKey] {
                     // 兄弟沿用第一张的 stem，只保留自己的扩展名。
                     relative = sharedStem + "." + ext
                 } else {
@@ -268,13 +272,15 @@ public final class IngestService: @unchecked Sendable {
                     }
                     conflict = true
                 }
-                // 只有真正入选的计划项才占据序号/共享 stem（被跳过/冲突项不能占位）。
-                if sidecarKey.flatMap({ sharedSidecarStems[$0] }) == nil {
+                // 同组里任一张与既有文件冲突 → 整组都按冲突处理：否则兄弟会被
+                // 放进一个内容不同的既有文件旁边，形成错误的配对候选。
+                if conflictedStems.contains(stemKey) { conflict = true }
+                if conflict { conflictedStems.insert(stemKey) }
+                // 冲突项也占序号：同名模板（{seq}）下不占位会与后续照片撞名。
+                let isFirstOfStem = sharedStems[stemKey] == nil
+                if isFirstOfStem {
                     sequence += 1
-                }
-                if let sidecarKey {
-                    // 存相对 stem（不含扩展名）：兄弟拼自己的扩展名后仍然落在同一目录。
-                    sharedSidecarStems[sidecarKey] = (relative as NSString).deletingPathExtension
+                    sharedStems[stemKey] = (relative as NSString).deletingPathExtension
                 }
                 items.append(IngestItem(
                     sourcePath: file, destPath: dest, conflict: conflict, size: size,
@@ -296,12 +302,17 @@ public final class IngestService: @unchecked Sendable {
                 skipped.append(item.sourcePath)
                 continue
             }
-            // 单张原子性：只回滚这张自己产出的文件。共享侧车可能由兄弟创建，
-            // 不能因为后一张失败就把兄弟的侧车删掉。
+            // 单张原子性：只回滚这张自己产出的文件。
+            // - mainCreated 只在 transfer 成功后置位：目标已存在（并发/重复 execute）时
+            //   绝不能把别人已落地的文件删掉；
+            // - 共享侧车可能由兄弟创建，也不能因为后一张失败就删兄弟的 xmp。
+            var mainCreated = false
             var sidecarMovedFrom: String?
             var sidecarCreated: String?
             var secondPath: String?
             var secondCopyStarted = false
+            var secondSidecarPath: String?
+            var secondSidecarStarted = false
             do {
                 // 防御性复核：计划之后路径仍不得逃逸目的地根目录。
                 guard Self.isWithin(item.destPath, root: options.destinationRoot) else {
@@ -312,6 +323,7 @@ public final class IngestService: @unchecked Sendable {
                 try transfer(
                     item.sourcePath, to: item.destPath,
                     move: options.moveInsteadOfCopy, verify: options.verifyChecksum)
+                mainCreated = true
 
                 if let sidecar = item.sidecarPath,
                    fileManager.fileExists(atPath: sidecar) {
@@ -355,36 +367,64 @@ public final class IngestService: @unchecked Sendable {
                         let destSidecar = item.destSidecarPath
                         if fileManager.fileExists(atPath: destSidecar) {
                             let secondSidecar = (target as NSString).deletingPathExtension + ".xmp"
-                            try fileManager.copyItem(atPath: destSidecar, toPath: secondSidecar)
+                            if fileManager.fileExists(atPath: secondSidecar) {
+                                // 兄弟已把它复制过去（共享侧车 + 共享 stem）：内容一致就复用，
+                                // 不一致绝不覆盖。不判存在会让每对里的第二张 100% 假失败。
+                                guard try checksum(destSidecar) == checksum(secondSidecar) else {
+                                    throw IngestError.destinationExists(secondSidecar)
+                                }
+                            } else {
+                                secondSidecarPath = secondSidecar
+                                secondSidecarStarted = true
+                                try fileManager.copyItem(atPath: destSidecar, toPath: secondSidecar)
+                            }
                         }
                     }
                     secondCopied.append(target)
                 }
                 copied.append(item.destPath)
             } catch {
-                // 回滚本张产物（与落地顺序相反）：第二副本 → 侧车 → 照片。
+                // 回滚本张产物（与落地顺序相反）：第二侧车 → 第二副本 → 侧车 → 照片。
+                // 回滚本身失败不能静默：把需人工确认的路径写进失败原因。
+                var rollbackErrors: [String] = []
+                func note(_ action: () throws -> Void, _ label: String) {
+                    do { try action() } catch { rollbackErrors.append("\(label): \(error)") }
+                }
+                if secondSidecarStarted, let secondSidecarPath,
+                   fileManager.fileExists(atPath: secondSidecarPath) {
+                    note({ try fileManager.removeItem(atPath: secondSidecarPath) },
+                         secondSidecarPath)
+                }
                 if secondCopyStarted, let secondPath,
                    fileManager.fileExists(atPath: secondPath) {
-                    try? fileManager.removeItem(atPath: secondPath)
+                    note({ try fileManager.removeItem(atPath: secondPath) }, secondPath)
                 }
                 if let sidecarCreated,
                    fileManager.fileExists(atPath: sidecarCreated) {
-                    try? fileManager.removeItem(atPath: sidecarCreated)
+                    note({ try fileManager.removeItem(atPath: sidecarCreated) }, sidecarCreated)
                 }
                 if let sidecarMovedFrom,
                    fileManager.fileExists(atPath: item.destSidecarPath) {
-                    try? fileManager.moveItem(atPath: item.destSidecarPath, toPath: sidecarMovedFrom)
+                    note({ try fileManager.moveItem(
+                        atPath: item.destSidecarPath, toPath: sidecarMovedFrom) },
+                         "\(item.destSidecarPath) -> \(sidecarMovedFrom)")
                 }
-                if fileManager.fileExists(atPath: item.destPath) {
+                if mainCreated, fileManager.fileExists(atPath: item.destPath) {
                     if options.moveInsteadOfCopy {
-                        try? fileManager.moveItem(atPath: item.destPath, toPath: item.sourcePath)
+                        note({ try fileManager.moveItem(
+                            atPath: item.destPath, toPath: item.sourcePath) },
+                             "\(item.destPath) -> \(item.sourcePath)")
                     } else {
-                        try? fileManager.removeItem(atPath: item.destPath)
+                        note({ try fileManager.removeItem(atPath: item.destPath) },
+                             item.destPath)
                     }
                 }
-                failed.append(IngestFailure(
-                    sourcePath: item.sourcePath,
-                    message: String(describing: error)))
+                var message = String(describing: error)
+                if !rollbackErrors.isEmpty {
+                    message += "；回滚失败（文件可能留在目的地，需人工确认）："
+                        + rollbackErrors.joined(separator: " | ")
+                }
+                failed.append(IngestFailure(sourcePath: item.sourcePath, message: message))
             }
         }
         return IngestResult(

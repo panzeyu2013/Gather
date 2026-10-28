@@ -1729,6 +1729,8 @@
 "撤销上次建议写回？" = "Undo the last suggestion write-back?";
 "撤销这次写回？" = "Undo this write-back?";
 "还原 rating/关键词，并清除私有命名空间信号。" = "Restores ratings/keywords and clears the private namespace signal.";
+"还原这批照片的描述性字段与 rating。" = "Restores descriptive fields and ratings for these photos.";
+"还原这批照片的描述性字段；冲突字段按套用前快照恢复。" = "Restores descriptive fields for these photos; conflicting fields are restored from the pre-apply snapshot.";
 "其中 %lld 个字段会被清空" = "of which %lld fields will be cleared";
 "无法确定会话目录，请手动选择目标文件夹" = "Cannot determine the session folder; choose a destination manually";
 "已复制但未登记：%lld 张" = "Copied but not registered: %lld";

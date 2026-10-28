@@ -72,7 +72,13 @@ public final class TriageWritebackService: Sendable {
                 if let rating = decision.rating { attributes.rating = Double(rating) }
                 if let keyword = decision.keyword {
                     var keywords = current.keywords ?? []
-                    if !keywords.contains(keyword) { keywords.append(keyword) }
+                    // 按 fold 去重（与 undo 的"写回前已存在"判定同一口径）：盘上已有
+                    // 大小写/空白变体时不再追加规范词，否则 undo 会因"已存在"跳过删除、
+                    // 把这个变体残留下来。
+                    let folded = KeywordNormalizer.fold(keyword)
+                    if !keywords.contains(where: { KeywordNormalizer.fold($0) == folded }) {
+                        keywords.append(keyword)
+                    }
                     attributes.keywords = keywords
                     // 并集语义：不得覆盖 culling 尚未落盘的 delta 意图。
                     attributes.keywordsMode = "merge"
@@ -121,10 +127,11 @@ public final class TriageWritebackService: Sendable {
                     appliedAt: now,
                     snapshots: inputs.compactMap { snapshots[$0.photoId] }))
             } catch {
+                // 保留前面累积的读取/读盘失败：它们既不在 written 也不该被这次早退吞掉。
                 return TriageWritebackOutcome(
                     written: [],
                     skipped: skipped,
-                    failed: inputs.map {
+                    failed: failed + inputs.map {
                         TriageWritebackFailure(
                             photoId: $0.photoId,
                             message: "批次记录失败，未写盘：\(error)")
@@ -144,6 +151,17 @@ public final class TriageWritebackService: Sendable {
                 failed.append(contentsOf: inputs.map {
                     TriageWritebackFailure(photoId: $0.photoId, message: String(describing: error))
                 })
+            }
+        }
+        if written.isEmpty, !failed.isEmpty, let batches {
+            // 整批一张都没写成：批次快照没有对应落盘，留着只会给 UI 一个"可撤销的
+            // 假入口"（撤销会写回/清信号，反而制造改动）。标记已撤销。
+            do {
+                try batches.markUndone(id: batchId)
+            } catch {
+                GatherLogger.log(
+                    "triage batch markUndone after empty write failed (batch=\(batchId)): \(error)",
+                    level: .warn)
             }
         }
         return TriageWritebackOutcome(written: written, skipped: skipped, failed: failed)
