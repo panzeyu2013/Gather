@@ -1338,7 +1338,7 @@ public final class MetadataService: @unchecked Sendable {
                         photoId: input.photoId, keywords: [])
                 }
             }
-            // P1：JPEG 的内嵌 IPTC/XMP 无法靠写 .xmp 附属文件清空。写后盘上值仍带
+            // P1：JPEG 的内嵌 IPTC/XMP 无法靠写 .xmp sidecar 清空。写后盘上值仍带
             // 旧字段、而 sidecar 已没有该字段 = sidecar 写入成功但内嵌值还在：必须显式
             // 失败（fail-closed），不能让调用方以为"清空成功"。
             if let clearFailure = Self.jpegEmbeddedClearFailure(
@@ -1437,9 +1437,6 @@ public final class MetadataService: @unchecked Sendable {
                 return true
             }
         }
-        // P1：成员级联系人清空不算"整体为空"，只体现在 clearedContactMembers 里；
-        // 漏判会让内嵌不可读时的清空按 written 放行（旧值仍在 APP1）。
-        if let cleared = attributes.clearedContactMembers, !cleared.isEmpty { return true }
         // P1：成员级联系人清空不体现在"整体为空"里，只挂在 clearedContactMembers 上；
         // 漏判会让内嵌不可读时的清空按 written 放行（旧值仍在 APP1）。
         if let cleared = attributes.clearedContactMembers, !cleared.isEmpty { return true }

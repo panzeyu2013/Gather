@@ -59,7 +59,7 @@ struct PendingSimilarityCleanup: Identifiable {
 
     func scopeText(with l10n: L10n) -> String {
         l10n.format(
-            "将恢复或移除本次相似度写回生成的 %lld 个临时 XMP sidecar 文件；只应在 Capture One 已加载元数据并确认同步后执行。取消不会改动任何文件。",
+            "将恢复或移除本次相似度写回生成的 %lld 个临时 XMP 附属文件；只应在 Capture One 已加载元数据并确认同步后执行。取消不会改动任何文件。",
             writtenCount
         )
     }

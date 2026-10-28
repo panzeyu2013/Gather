@@ -203,24 +203,35 @@ if [ -f "$SHAPE_FILE" ]; then
       # 只认「<当前表数> 表 …」的行：ROADMAP/ADR 保留历史基线（45 表、旧 user_version），
       # 那些行是历史记录，不能当成现行声明（否则门禁要么假红、要么漏掉陈旧数字）。
       #
-      # 两条硬约束（评审 P1：旧实现可被「改措辞」和「折行」绕过）：
-      #   1) 按行内含「历史 / 已删除」排除，不能靠把「44 表」改写成「44 张表」逃检
-      #      —— 那种改法会让门禁对现行声明永久失明；
-      #   2) 折行声明（「44 表 /」换行「386 列 / user_version=1）」）按窗口拼接后再匹配，
-      #      否则第二行的数字永远不被检查。
-      current_lines=$(awk -v want="${code_tables} 表" '
-        { line[NR] = $0 }
-        END {
-          for (i = 1; i <= NR; i++) {
-            # BSD awk 对多字节正则不可靠：一律用 index() 做字节子串判断。
-            if (index(line[i], "历史") > 0 || index(line[i], "已删除") > 0) continue
-            text = line[i]
-            # 只在「声明被折行」时拼接（行尾是 /），否则会把下一段的历史数字算进来。
-            if (index(text, "列") == 0 && text ~ /\/$/) text = text " " line[i + 1]
-            if (index(text, "列") == 0 && text ~ /\/$/) text = text " " line[i + 2]
-            if (index(text, want) > 0) print text
-          }
-        }' "$f")
+      # 用 python 做形状收行（bash/awk 的坑：多字节正则不可靠、折行断点不定）：
+      #   * 「<N> 表」「<N> 张表」「<N> 个表」都算**现行声明**——不能靠加量词逃检；
+      #   * 本条没有「N 列」就把后续两行拼进来（折行可能断在任意位置，不只在 / 处）；
+      #   * 「历史 / 已删除」且不含「当前」的行跳过（历史基线不该被当现行口径；
+      #     但 ROADMAP 那种"历史快照"作为小标题、正文却写当前数字的行必须检查）。
+      current_lines=$(python3 - "$f" "${code_tables}" <<'PY'
+import re, sys
+
+path, tables = sys.argv[1], sys.argv[2]
+pattern = re.compile(r'(?<![0-9])' + re.escape(tables) + r'\s*[张个]?\s*表')
+try:
+    lines = open(path, encoding='utf-8').read().splitlines()
+except OSError:
+    sys.exit(0)
+for i, line in enumerate(lines):
+    # 只跳过**整行都是历史叙述**的行；同一行里还写着「当前」的（例如 ROADMAP 的
+    # 「| SchemaCurrent / 历史快照 | …当前 44 表 / 386 列… |」）是现行声明，必须检查。
+    if ('历史' in line or '已删除' in line) and '当前' not in line:
+        continue
+    text, j = line, i
+    while '列' not in text and j + 1 < len(lines) and j - i < 2:
+        if '历史' in lines[j + 1] or '已删除' in lines[j + 1]:
+            break
+        j += 1
+        text += ' ' + lines[j]
+    if pattern.search(text):
+        print(text)
+PY
+)
       while IFS= read -r claim; do
         [ -n "$claim" ] || continue
         if [ "$claim" != "$code_columns" ]; then

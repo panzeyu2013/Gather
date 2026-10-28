@@ -68,6 +68,7 @@ public struct XMPDeliveryFilePort: DeliveryFilePort {
         let isSidecar = lowered.hasSuffix(".xmp")
         let isControlledBackup = lowered.contains(".gather-backup-")
             || lowered.contains(".gather-header-")
+            || lowered.contains(".gather-archived-")
         guard isSidecar || isControlledBackup else {
             throw DeliveryBackupPathError.unsafeXMPPath(path)
         }

@@ -217,7 +217,7 @@ extension SimilarityViewModel {
             writebackResult = nil
             writebackPreview = nil
             notice = SimilarityNotice(
-                "清理完成：已恢复或移除 %lld 个 sidecar 文件。",
+                "清理完成：已恢复或移除 %lld 个附属文件。",
                 params: ["\(cleanup.deletedCount)"]
             )
             actionError = nil

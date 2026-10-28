@@ -66,9 +66,9 @@ grep -n 'addColumn(db, "face_clusters"' desktop/native/gather-core/Sources/Gathe
 | 6 | asset_members | 保留（+created_at） | 6 → 7 | 资产↔文件的多对多成员关系与主文件标记、绑定来源。 |
 | 7 | asset_link_candidates | 保留 | 9 → 9 | 待人工确认的资产合并候选（RAW/JPEG 配对）与其裁决状态。 |
 | 8 | session_assets | 保留 | 5 → 5 | 会话↔资产的出现关系（含展示文件与导入序）。 |
-| 9 | sidecar_bindings | 保留 | 7 → 7 | sidecar（XMP）绑定：一张 XMP 对应哪些文件的归一化键。 |
-| 10 | sidecar_binding_files | 保留（+created_at） | 2 → 3 | sidecar 绑定↔物理文件的关联行。 |
-| 11 | sidecar_metadata_state | 保留 | 6 → 6 | sidecar 可写元数据的当前值（rating/label/keywords）与内容指纹。 |
+| 9 | sidecar_bindings | 保留 | 7 → 7 | 侧车（XMP）绑定：一张 XMP 对应哪些文件的归一化键。 |
+| 10 | sidecar_binding_files | 保留（+created_at） | 2 → 3 | 侧车绑定↔物理文件的关联行。 |
+| 11 | sidecar_metadata_state | 保留 | 6 → 6 | 侧车可写元数据的当前值（rating/label/keywords）与内容指纹。 |
 | 12 | asset_backfill_state | 保留（−2） | 11 → 9 | 资产回填游标与批次统计（断点续跑）。 |
 | 13 | analysis_jobs | 保留 | 24 → 24 | 异步任务队列：去重键、租约/心跳、进度、checkpoint、错误。 |
 | 14 | asset_analysis | 保留 | 11 → 11 | 文件级分析结果（技术质量等）与输入指纹，按指纹去重。 |
@@ -100,9 +100,9 @@ grep -n 'addColumn(db, "face_clusters"' desktop/native/gather-core/Sources/Gathe
 | 40 | **asset_file_metadata** | **删除** | 15 → — | 上一代 EXIF 镜像表，全仓 0 读写（`grep` 见 §1.1）。 |
 | 41 | **schema_version** | **删除** | 2 → — | 迁移版本表，由 `PRAGMA user_version` 取代。 |
 | 42 | **metadata_outbox** | **替换** → deliveries / delivery_items | 16 → — | 交互式 XMP 写回队列（旧状态机）。 |
-| 43 | **metadata_outbox_sessions** | **替换** → delivery_sessions | 4 → — | sidecar↔会话的确认关系。 |
+| 43 | **metadata_outbox_sessions** | **替换** → delivery_sessions | 4 → — | 侧车↔会话的确认关系。 |
 | 44 | **writeback_items** | **替换** → delivery_items | 14 → — | 批量写回项（第二套状态机）。 |
-| 45 | **deliveries**（新） | 新增 | — → 14 | 以 XMP sidecar 为单位的交付聚合（状态/基线/备份/租约）。 |
+| 45 | **deliveries**（新） | 新增 | — → 14 | 以 XMP 侧车为单位的交付聚合（状态/基线/备份/租约）。 |
 | 46 | **delivery_sessions**（新） | 新增 | — → 4 | 交付↔会话的确认关系（多对多）。 |
 | 47 | **delivery_items**（新） | 新增 | — → 11 | 交付内逐（照片, 模块）的写回项与状态。 |
 | 48 | **delivery_intents**（新） | 新增 | — → 8 | 跨事务的意图日志（prepared/fileDone/applied），供崩溃回放。 |
@@ -397,7 +397,7 @@ V1 的强制要求（写进 Cut 2 验收）：
 
 ### 4.4 明确**不加** CHECK 的列（避免发明值域）
 
-`asset_analysis.analysis_type`（自由字符串，如 `technical_quality`，无 enum）、`sidecar_metadata_state.label` / `photo_metadata_cache.label`（XMP sidecar 可能含任意标签值）、`analysis_jobs.scope_type`（当前只写 `'session'`，但作用域尚未收敛为 enum，V1 只加非空约束，Cut 3 引入 `JobScopeType` 后再收紧）、`binding_rule`（当前只写 `same_basename`，但属规则引擎输入，留扩展）、`confidence` 各列（无文档化值域）。
+`asset_analysis.analysis_type`（自由字符串，如 `technical_quality`，无 enum）、`sidecar_metadata_state.label` / `photo_metadata_cache.label`（XMP 侧车可能含任意标签值）、`analysis_jobs.scope_type`（当前只写 `'session'`，但作用域尚未收敛为 enum，V1 只加非空约束，Cut 3 引入 `JobScopeType` 后再收紧）、`binding_rule`（当前只写 `same_basename`，但属规则引擎输入，留扩展）、`confidence` 各列（无文档化值域）。
 
 ### 4.5 状态机与 enum 漂移（现存 3 处，V1 必须一并清掉）
 
@@ -476,7 +476,7 @@ CREATE TABLE delivery_intents (
 
 | # | §4.3 的写法 | V1 的写法 | 理由 |
 | --- | --- | --- | --- |
-| 1 | `deliveries.xmp_path TEXT PRIMARY KEY` | `id INTEGER PK` + `xmp_path TEXT NOT NULL UNIQUE` | **xmp_path 会变**：`AssetRepo.relocateMetadataState`（`:687`）在照片改名时会迁移 sidecar 键，TEXT 主键意味着「改父键 + 改全部子行」，而 `ON DELETE CASCADE` 会让「删旧行」把子行一起带走。代理键把改名降为一条 `UPDATE deliveries SET xmp_path=?`。 |
+| 1 | `deliveries.xmp_path TEXT PRIMARY KEY` | `id INTEGER PK` + `xmp_path TEXT NOT NULL UNIQUE` | **xmp_path 会变**：`AssetRepo.relocateMetadataState`（`:687`）在照片改名时会迁移侧车键，TEXT 主键意味着「改父键 + 改全部子行」，而 `ON DELETE CASCADE` 会让「删旧行」把子行一起带走。代理键把改名降为一条 `UPDATE deliveries SET xmp_path=?`。 |
 | 2 | 无 `photo_path` | 加 `deliveries.photo_path` | `writeback_items.photo_path`（`WritebackRepo.swift:80`）与 `metadata_outbox.photo_path` 都是既有列，改名迁移需要它（`AssetRepo.swift:729/739` 直接 UPDATE 该列）。 |
 | 3 | `deliveries.source_module` | **不加** | 归属已由 `delivery_items.module` 结构化表达；再加一个"主模块"列就会变成下一条死列（正是 `owner_session_id` 的教训）。`WorkspaceStatusService.swift:192` 的 `o.source_module='culling'` 谓词改为 `delivery_items.module='culling'`。 |
 | 4 | `revison`/`persisted_revision` 两列 | 只留 `revision` | `persisted_revision` 的唯一消费方是 `MetadataSyncSummary.persistedRevision`（`Culling.swift:484`），无 UI 读取（app 侧 grep 为 0），语义上就是「最后一次成功写盘的 revision」，取 `deliveries.revision` 即可。 |
@@ -490,7 +490,7 @@ CREATE TABLE delivery_intents (
 func confirm(sessionId: String) throws -> DeliveryConfirmSummary {
   try connection.transaction {
     let now = nowISOString()
-    // 1. 本会话在共享 sidecar 上的全部链接行置确认（语义：per-(session, delivery) 视图，
+    // 1. 本会话在共享侧车上的全部链接行置确认（语义：per-(session, delivery) 视图，
     //    不是 per 字段归属；否则非归属会话永远无法确认，行永远停在 written）
     UPDATE delivery_sessions SET confirmed_at = ? WHERE session_id = ?
     // 2. 只有「所有关联会话都确认」的 written 交付才翻 synced
@@ -772,7 +772,7 @@ CREATE TABLE session_assets (
   PRIMARY KEY (session_id, asset_id)
 );
 
--- 9. sidecar 绑定
+-- 9. 侧车绑定
 CREATE TABLE sidecar_bindings (
   id TEXT PRIMARY KEY,
   xmp_path TEXT NOT NULL,
@@ -783,7 +783,7 @@ CREATE TABLE sidecar_bindings (
   updated_at TEXT NOT NULL
 );
 
--- 10. sidecar↔文件
+-- 10. 侧车↔文件
 CREATE TABLE sidecar_binding_files (
   sidecar_binding_id TEXT NOT NULL REFERENCES sidecar_bindings(id) ON DELETE CASCADE,
   file_id TEXT NOT NULL REFERENCES asset_files(id) ON DELETE CASCADE,
@@ -791,7 +791,7 @@ CREATE TABLE sidecar_binding_files (
   PRIMARY KEY (sidecar_binding_id, file_id)
 );
 
--- 11. sidecar 元数据现值
+-- 11. 侧车元数据现值
 CREATE TABLE sidecar_metadata_state (
   sidecar_binding_id TEXT PRIMARY KEY REFERENCES sidecar_bindings(id) ON DELETE CASCADE,
   rating INTEGER CHECK (rating IS NULL OR rating BETWEEN 0 AND 5),
@@ -1178,7 +1178,7 @@ CREATE TABLE workflow_templates (
   updated_at TEXT NOT NULL
 );
 
--- 40. 交付聚合（XMP sidecar 为单位的单一状态机）
+-- 40. 交付聚合（XMP 侧车为单位的单一状态机）
 CREATE TABLE deliveries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   xmp_path TEXT NOT NULL UNIQUE,

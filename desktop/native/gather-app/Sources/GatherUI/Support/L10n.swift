@@ -71,7 +71,7 @@ final class L10nStringCache: Sendable {
     /// 是每次渲染都新建的值，缓存必须是共享的才有意义。
     static let shared = L10nStringCache()
 
-    /// 条目上限：≈2.3 倍当前 en 表条目（1,748）。正常界面不会触顶；动态 key 若把
+    /// 条目上限：≈2.3 倍当前 en 表条目（1,749）。正常界面不会触顶；动态 key 若把
     /// 用户文本当 key 使用，触顶时整体清空，保证内存有界（O(1) 淘汰）。
     private let limit: Int
     private let state: OSAllocatedUnfairLock<State>

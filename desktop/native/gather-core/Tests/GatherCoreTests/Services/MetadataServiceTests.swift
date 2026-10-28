@@ -346,5 +346,26 @@ struct MetadataServiceTests {
         #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(keywords: [])))
         #expect(!MetadataService.hasClearAttempt(MetadataWriteAttributes(keywords: ["k"])))
         #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(label: "  ")))
+        // P1 回归：成员级联系人清空不体现在"整体为空"里，只挂在 clearedContactMembers 上。
+        // 漏判 → 内嵌不可读时 clear 被当成 written（旧值仍在 APP1）。
+        #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")),
+            replaceContact: true,
+            clearedContactMembers: ["city"])))
+        #expect(!MetadataService.hasClearAttempt(MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")))))
+    }
+
+    /// P2：读侧空结构不等于"显式清空"。
+    ///
+    /// 外部工具常留一个空 `CreatorContactInfo` 壳；若解析成 `.contact(空)`，
+    /// mergeAttributes 的 overlay 语义会把 JPEG 内嵌联系人整块抹掉。显式清空只走写侧
+    /// （clearedContactMembers / replaceContact）。
+    @Test("空 contact 结构不覆盖已有联系人")
+    func emptyContactStructureDoesNotWipe() {
+        let base = DescriptiveMetadata(contactInfo: DescriptiveContact(city: "上海"))
+        let overlayWithoutContact = DescriptiveMetadata(caption: "无联系人壳")
+        let merged = MetadataService.mergeDescriptive(base, overlayWithoutContact)
+        #expect(merged?.contactInfo?.city == "上海", "空 overlay 不得抹掉内嵌联系人")
     }
 }

@@ -137,6 +137,11 @@ public final class TriageRepo: TriageRepository {
     }
 
     /// model_review 行数 + 最后更新时间（重跑模型 → 建议 stale）。
+    ///
+    /// 口径与 `photoFingerprint` 一致：**按全量行计，不叠加可见性谓词**。
+    /// 归档/找回一张照片只改变候选集，不应该让整个 session 的建议过期；
+    /// 若这里只统计可见行，移出一张跑过模型的照片就会让整批建议 stale，
+    /// 而 photoFingerprint 不变——同一个指纹两套口径。
     private func modelReviewFingerprint(
         sessionId: String
     ) throws -> (count: Int, maxUpdatedAt: String) {
@@ -145,7 +150,6 @@ public final class TriageRepo: TriageRepository {
             FROM asset_analysis aa
             JOIN photos p ON p.asset_file_id = aa.asset_file_id
             WHERE aa.analysis_type = 'model_review' AND p.session_id = ?
-              AND \(PhotoVisibility.visiblePredicate(alias: "p"))
             """).query([.text(sessionId)]).first
         return (Int(row?[0].intValue ?? 0), row?[1].textValue ?? "")
     }

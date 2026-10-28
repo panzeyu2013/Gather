@@ -36,7 +36,7 @@ feat 的模型初审/交付/内嵌写回 + main 的 `PhotoVisibility` 谓词收�
 | 项 | 合并前（两侧各自） | 合并后 | 落点 |
 |---|---|---|---|
 | 错误码 | 186 / 194 | **195** | `Core.swift`、两个契约测试、`GatherLocalization.errorMessages`、ADR-017、DEVELOPMENT、ROADMAP |
-| en 键 | 1,680 / 1,746 | **1,748**（侧车术语轮补 model.review 文案后为 1,749） | README、ROADMAP、DEVELOPMENT（`zh-Hans` 仍 9 占位） |
+| en 键 | 1,680 / 1,746 | **1,748**（sidecar 术语轮补 model.review 文案后为 1,749） | README、ROADMAP、DEVELOPMENT（`zh-Hans` 仍 9 占位） |
 | schema 形状 | 44/385/v5（main）、44/386/v1（feat） | **44 / 386 / 72 / 65，`user_version=1`** | README、ROADMAP、ADR、DEVELOPMENT；`gather-schema verify` 实测 |
 | 死代码告警 | feat 新增 2 处 | 清零 | `OutputService.swift:142` `var→let`；`:321` 删未用的 `day` 局部量与随之失效的 `date` 形参 |
 

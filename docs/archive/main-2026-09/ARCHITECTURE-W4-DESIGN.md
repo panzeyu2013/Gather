@@ -47,7 +47,7 @@ W4-0 前置（SHA256.stream/MetadataFileSystem/事务计数器）→ W4-1 Store 
 - 双包 0 error；core ≥948 + 25~35 新增；app 172/19；旧用例无孤儿。
 - 门禁：`Services layer` 25→15；`raw SQL outside Store` 保持 0 且 Services 内 7 处 `database.*` 清零；`unchecked Sendable` 8→4；`batchAsync` 4→1；**新增 enforced：`Metadata/**` 0 SQL/0 SQLiteDatabase/0 NSLock/0 unchecked**；新增 tracked（目标 0）：非良性 `try?`、`Data(contentsOf:`。
 - 错误码逐字：XMP_* 16、WRITEBACK_* 5、METADATA_*、CULLING_PHOTO_NOT_IN_SESSION、ASSET_MIGRATION_INCOMPLETE。
-- 性能：同路径 100 次 schedule → 恰 1 次写；1000 项/100 sidecar 事务增量 ≤3；启动恢复 1000 行 <2s；无整文件读。
+- 性能：同路径 100 次 schedule → 恰 1 次写；1000 项/100 侧车事务增量 ≤3；启动恢复 1000 行 <2s；无整文件读。
 
 ## 6. 待裁决（12 项，摘要）
 1 方法名保持旧名（建议）；2 provider 接线深度（EXIF 是否有真实实现 / 是否只接尺寸）；3 `writeback_items` 是否加 outbox_revision 列（建议不加）；4 批量 merge 事务粒度（建议 ≤500/事务）；5 重试语义（5 档第 5 档）对照 TS；6 PhotoAssetResolver 由 W4 吸收（建议）；7 MetadataSessionState 权威来源（UI 改造归 W5/R6）；8 CullingService 端口切型时机（与 W2b 串行，二者取一）；9 删 4 个零调用 Store 方法（建议同批）；10 `SQLiteDatabase` 注释里的 unchecked 字样（建议顺手改写使度量 8→3，**主代理批准**）；11 `skipReloadAck` 仅测试注入；12 error 改名时机（W4 先改）。

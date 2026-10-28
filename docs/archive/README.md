@@ -7,6 +7,8 @@
   [ADR.md](../ADR.md) 与 [refactor-progress.md](../refactor-progress.md) 为准。
 - 归档文档之间的相对链接已随搬迁修正；**不要再按旧 `docs/reviews/<name>.md` 或 `docs/<cut>.md` 路径引用**，
   旧路径不再保留 redirect stub，统一使用本目录路径。
+- **术语不回填**：2026-10-28 的 sidecar 术语统一（侧车/边车 → 附属文件 / sidecar）只扫现行文档，
+  归档正文保持当时的写法（`git grep '侧车\|边车' docs/archive` 仍会命中，属预期）。
 - 归档正文里指向旧 `gather-app/Sources/GatherApp/*` 的**源码链接**（`visual-design-review.md` 30 条、
   `ui-review-2026-09-29-round2-fixes.md` 3 条）按快照保留，不逐条回填；当前有效文档的链接已另行修正。
 

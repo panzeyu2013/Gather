@@ -338,7 +338,7 @@ fi
 #    2026-10-28 两次合并后收紧：2115/225 → 2193/241（feat 合入 +73/+15；本轮补
 #    输出/写目标/模型初审契约测试 +5/+1）。见 docs/reviews/feat-merge-2026-10-28.md
 #    与 docs/reviews/sidecar-merge-2026-10-28.md。
-BASELINE_TEST_DECL=2193
+BASELINE_TEST_DECL=2194
 BASELINE_SUITE_DECL=241
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \

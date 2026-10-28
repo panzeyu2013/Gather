@@ -133,7 +133,7 @@ struct PendingFaceCleanup: Identifiable {
 
     func scopeText(with l10n: L10n) -> String {
         l10n.format(
-            "将恢复或移除本次人脸写回生成的 %lld 个备份 sidecar 文件；只应在 Capture One 已重新加载并确认同步后执行。取消不会改动任何文件。",
+            "将恢复或移除本次人脸写回生成的 %lld 个备份附属文件；只应在 Capture One 已重新加载并确认同步后执行。取消不会改动任何文件。",
             writtenCount
         )
     }

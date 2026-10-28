@@ -212,8 +212,9 @@ extension SchemaCurrent {
 
     -- 40. 交付聚合（**写目标**为单位的单一状态机）
     -- xmp_path 是写目标路径：sidecar 模式 = <photo>.xmp；embedded 模式 = 照片自身。
-    -- target_kind 是**记录**用的写目标标记（sidecar/embedded），供审计与恢复选择；
-    -- 当下读路径仍按 xmp_path 后缀与备份名标记分派（见 DeliveryFilePhase），本列不参与决策。
+    -- target_kind 只是**记录**：写目标类型（sidecar/embedded）落库供审计与排障。
+    -- 读写路径都不读它——恢复按备份名标记分派（MetadataWriteRouter）、删除按 .xmp 后缀
+    -- 守卫（DeliveryFilePhase）。加读侧之前不要把它写成语义真相。
     CREATE TABLE deliveries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       xmp_path TEXT NOT NULL UNIQUE,

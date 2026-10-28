@@ -5,7 +5,7 @@
 
 | # | 级别 | 问题 | 修复 | 验收（探针实际输出） |
 | --- | --- | --- | --- | --- |
-| **D1** | P1 | sidecar 写入失败后删除了原本已有的导出照片 | 引入 `FileInstallToken`：覆盖前留底（照片 + sidecar），提交才丢弃备份；失败**回滚**（本次新建则删除半成品）。完成检查点只在整套提交后写入 | `failedSidecar: failed=1,priorPhotoExists=true` ✅（修复前 `priorPhotoExists=false`） |
+| **D1** | P1 | 边车写入失败后删除了原本已有的导出照片 | 引入 `FileInstallToken`：覆盖前留底（照片 + 边车），提交才丢弃备份；失败**回滚**（本次新建则删除半成品）。完成检查点只在整套提交后写入 | `failedSidecar: failed=1,priorPhotoExists=true` ✅（修复前 `priorPhotoExists=false`） |
 | **D2** | P1 | 孤儿恢复使用等待前的旧快照，可能删掉原有 XMP | `waitForIdle` 后**重取孤儿行**并校验仍是孤儿；恢复用最新 `backupPath`；删除带 revision CAS | `orphanRestore: originalSidecarExists=true,backupLeft=false` ✅（修复前 `false/true`） |
 | **D3** | P1 | 清理跨 await 后无条件删行，吞掉新修改 | 整个清理阶段以**起始 revision** 为 CAS 条件（读指纹前、删行前各校验一次），仓库新增 `deleteIfRevision` | `cleanup: deleted=0,newRevision=Optional(2),backupExists=true` ✅（修复前 `deleted=1,newRevision=nil`） |
 | **D4** | P2 | 取消防抖任务反而立即启动写回 | 睡眠取消即 `return`（不再用 `try?` 吞错继续）；新增**计时器代数**守卫，只有当前计时器能消费排程；预排程任务加停止/取消检查 | `debounce: writesBeforeDeadline=0,status=pending` ✅（修复前 `writesBeforeDeadline=1,status=written`） |

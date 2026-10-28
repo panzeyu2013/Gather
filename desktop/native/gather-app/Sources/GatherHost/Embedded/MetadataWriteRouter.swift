@@ -200,6 +200,7 @@ final class MetadataWriteRouter: XMPProvider {
         let isSidecar = lowered.hasSuffix(".xmp")
         let isControlledBackup = lowered.contains(".gather-backup-")
             || lowered.contains(".gather-header-")
+            || lowered.contains(".gather-archived-")
         guard isSidecar || isControlledBackup else {
             throw MetadataWriteRouterError.embeddedWriteFailed(
                 "refusing to remove a non-metadata path")

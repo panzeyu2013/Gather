@@ -705,7 +705,7 @@
 "正在索引 %lld / %lld（%lld%%）" = "Indexing %lld / %lld (%lld%%)";
 "正在索引 %lld…" = "Indexing %lld…";
 "淘汰 %lld" = "Reject %lld";
-"清理完成：已恢复或移除 %lld 个 sidecar 文件。" = "Cleanup complete: %lld sidecar files restored or removed.";
+"清理完成：已恢复或移除 %lld 个附属文件。" = "Cleanup complete: %lld sidecar files restored or removed.";
 "相似组 · %lld 张" = "Similar groups · %lld photos";
 "确定要删除 \"%@\" 吗？这将移除该工作区中的所有照片和结果。" = "Delete “%@”? This will remove all photos and results in this workspace.";
 "确定要删除选中的 %lld 个工作区吗？这将移除这些工作区中的所有照片和结果，不可恢复。" = "Delete the %lld selected workspaces? This will remove all photos and results in those workspaces and cannot be undone.";
@@ -969,7 +969,7 @@
 "重试失败写入项" = "Retry failed write items";
 "将 %lld 个相似组、%lld 张照片的关键词「%@」合并写入 XMP（共 %lld 个文件，新建或更新），不修改原图。" = "Write the keyword of %lld similar groups and %lld photos (“%@”) into XMP (%lld files, created or updated) without modifying the originals.";
 "取消不会写入任何文件。" = "Cancelling writes nothing.";
-"将恢复或移除本次相似度写回生成的 %lld 个临时 XMP sidecar 文件；只应在 Capture One 已加载元数据并确认同步后执行。取消不会改动任何文件。" = "Restore or remove the %lld temporary XMP sidecar files created by this similarity writeback; only run this after Capture One has loaded the metadata and you have confirmed sync. Cancelling changes nothing.";
+"将恢复或移除本次相似度写回生成的 %lld 个临时 XMP 附属文件；只应在 Capture One 已加载元数据并确认同步后执行。取消不会改动任何文件。" = "Restore or remove the %lld temporary XMP sidecar files created by this similarity writeback; only run this after Capture One has loaded the metadata and you have confirmed sync. Cancelling changes nothing.";
 "确认后 Gather 认为 Capture One 已读取 XMP 临时变更，之后才可执行清理。若尚未在 Capture One 中执行「加载元数据」，请取消。" = "After confirming, Gather treats Capture One as having read the temporary XMP changes, which is what unlocks cleanup. If you have not run Load Metadata in Capture One yet, cancel.";
 "确认写入 XMP？" = "Write to XMP?";
 "确认重试失败项？" = "Retry the failed items?";
@@ -984,7 +984,7 @@
 "确认后 Gather 认为 Capture One 已完成「加载元数据」，之后才会开放清理备份。若尚未在 Capture One 中加载，请取消。" = "After confirming, Gather treats Capture One as having finished Load Metadata, which is what unlocks backup cleanup. If you have not loaded metadata in Capture One yet, cancel.";
 "将把「%@」（%@）从簇 #%lld「%@」中移除；照片本身不会删除，但该成员不再参与这个簇的写回。" = "Remove “%@” (%@) from cluster #%lld “%@”; the photo itself is not deleted, but this member no longer takes part in this cluster's writeback.";
 "将把簇 #%lld「%@」（%lld 张）合并进簇 #%lld「%@」（%lld 张）；源簇随即消失，界面暂不提供撤销入口。" = "Merge cluster #%lld “%@” (%lld photos) into cluster #%lld “%@” (%lld photos); the source cluster disappears and the UI does not offer undo yet.";
-"将恢复或移除本次人脸写回生成的 %lld 个备份 sidecar 文件；只应在 Capture One 已重新加载并确认同步后执行。取消不会改动任何文件。" = "Restore or remove the %lld backup sidecar files created by this face writeback; only run this after Capture One has reloaded and you have confirmed sync. Cancelling changes nothing.";
+"将恢复或移除本次人脸写回生成的 %lld 个备份附属文件；只应在 Capture One 已重新加载并确认同步后执行。取消不会改动任何文件。" = "Restore or remove the %lld backup sidecar files created by this face writeback; only run this after Capture One has reloaded and you have confirmed sync. Cancelling changes nothing.";
 "写回人脸关键字" = "Write back face keywords";
 "确认重试失败的写回项？" = "Retry the failed writeback items?";
 "确认解除人脸绑定？" = "Unbind this face cluster?";

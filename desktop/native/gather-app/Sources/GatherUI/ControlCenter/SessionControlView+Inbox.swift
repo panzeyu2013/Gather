@@ -120,7 +120,16 @@ extension SessionControlView {
             // 原始诊断不落 UI 文案）。
             // 明细在 job.message，不在 job.code 里：只传码会把 {{detail}} 插成空串
             // （控制中心显示「…失败（）」，而同一任务的 JobRowView 用 jobErrorMessage 是对的）。
-            let raw = job.message.isEmpty ? job.code : job.code + ": " + job.message
+            // 注意：JobService 落库的 message 本身就是「CODE: 散文」，重复拼接会把英文码
+            // 印两遍，所以先判 message 是否已以码开头。
+            let raw: String
+            if job.message.isEmpty {
+                raw = job.code
+            } else if job.message.hasPrefix(job.code) {
+                raw = job.message
+            } else {
+                raw = job.code + ": " + job.message
+            }
             let detail = l10n.resolvedTemplate(for: raw)
             items.append(InboxItem(
                 id: "job_failed-\(index)", kind: .jobFailed,

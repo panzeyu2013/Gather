@@ -5,11 +5,11 @@
 
 | # | 级别 | 问题 | 修复 | 回归 |
 | --- | --- | --- | --- | --- |
-| 1 | P1 | 改 XMP 后导出续跑仍交付旧元数据（指纹不含 sidecar 版本；续跑只检查照片存在） | `deliveryFingerprint` 每张加入 `sidecarVersion(forSource:)`（毫秒 mtime+size，缺省 "none"）；续跑跳过条件增加「需要 XMP 时必须确认目标 sidecar 存在」 | `deliveryFingerprintIncludesPhotoIdAndSidecarVersion`（改 XMP / 删 XMP 都改变指纹） |
+| 1 | P1 | 改 XMP 后导出续跑仍交付旧元数据（指纹不含边车版本；续跑只检查照片存在） | `deliveryFingerprint` 每张加入 `sidecarVersion(forSource:)`（毫秒 mtime+size，缺省 "none"）；续跑跳过条件增加「需要 XMP 时必须确认目标边车存在」 | `deliveryFingerprintIncludesPhotoIdAndSidecarVersion`（改 XMP / 删 XMP 都改变指纹） |
 | 2 | P1 | 同会话不同导出互相影响取消（取消位按 session；execute 入口清公共标志） | 取消改为 **run 级**：`execute(..., runId:)` 由路由传 `job.id`；`cancel(runId:)` 精确取消；`cancel(sessionId:)` 保留为「取消本会话全部 run」 | `cancellingOneRunDoesNotAffectAnotherForSameSession`（A 取消留 skipped、B 完整导出 4/4） |
 | 3 | P1 | 迁移回滚先删活库再 move，存在「路径无数据库」窗口；WAL 在替换前被删 | 改为同卷 `replaceItemAt`（失败保留原库、重开连接）；WAL/SHM 只在替换成功后清理；临时库 0 字节拒绝替换 | 代码级；无崩溃/磁盘故障注入（见下） |
 | 4 | P1 | `close()` 不取连接锁；`DBStatement` 在连接关闭后把 stmt 指针当 db 指针（静默返回 0） | `close()`/`open()` 纳入同一把锁；新增 `isClosed`；`query/run/get` 入口与 `bind` 都校验；删除 ownerHandle 回退，错误消息与 `sqlite3_changes` 只用 db 句柄 | `statementsFailAfterClose`（prepare/run/get 关闭后必须抛 DBError）——该测试还发现「无参数语句绕过检查」的真实缺口并已修 |
-| 5 | P2 | 指纹里 `photo.id` 是字面量（漏插值），不同照片身份可能碰撞 | 修正插值（并与 #1 一起编码 sidecar 版本） | `deliveryFingerprintSeparatesPhotoIdsWithIdenticalContent` |
+| 5 | P2 | 指纹里 `photo.id` 是字面量（漏插值），不同照片身份可能碰撞 | 修正插值（并与 #1 一起编码边车版本） | `deliveryFingerprintSeparatesPhotoIdsWithIdenticalContent` |
 | 6 | P2 | 非有限数值设置（inf/1e999）会让 `Int(Double)` trap | `SettingsService.getNumber` 过滤 `isFinite`；路由新增 `clampedInt(_:fallback:range:)`，模型信息与缩略图尺寸全部改为分界安全转换 | `nonFiniteNumericSettingsFallBack`（inf/-inf/1e999/nan 全部回落默认） |
 | 7 | P2 | Capture One 桥接只在 terminationHandler 读管道，大批量路径写满 pipe 会卡死 | `run` 之前挂两条管道的 `readabilityHandler` 持续排空，退出后再读残余；缓冲用锁保护的引用盒子（Swift 6 并发安全） | 编译级；真实 C1 大量选片未验证 |
 | 8 | P2 | 图库返回仍未用统一 `goBack`（gallery/similarity/dashboard 合并成回工作台） | `backFromGallery()` 改用 `goBack(sessionId:)`（精确恢复到上一个完整页面） | `galleryBackReturnsToPreviousTabNotDashboard`（控制中心 → 图库 → 返回 = 控制中心） |
