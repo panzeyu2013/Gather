@@ -98,7 +98,7 @@ feat 带来大量新文案/注释，合并只覆盖了 sidecar 分叉点之前�
 | `gather-schema verify` | `tables=44 columns=386 indexes=72 fks=65 user_version=1 violations=0`，exit 0 |
 | 12 个 `check-*.sh` | **12/12 exit 0**（strict 可用者带 `--strict`） |
 
-## 6. 残余清零（第三轮，提交 `fix(residual)`）
+## 6. 残余清零（第三轮，提交 `92a03c2c`）
 
 上一版列出的五条残余已全部处理：
 

@@ -198,9 +198,8 @@ final class MetadataWriteRouter: XMPProvider {
         // 这里是最靠近 removeItem 的一道关，宁可多拦。
         let lowered = path.lowercased()
         let isSidecar = lowered.hasSuffix(".xmp")
-        let isControlledBackup = lowered.contains(".gather-backup-")
-            || lowered.contains(".gather-header-")
-            || lowered.contains(".gather-archived-")
+        // 白名单唯一来源在 XMPBackupNaming（与 DeliveryTypes 共用，避免两处漂移）。
+        let isControlledBackup = XMPBackupNaming.isControlledName(path)
         guard isSidecar || isControlledBackup else {
             throw MetadataWriteRouterError.embeddedWriteFailed(
                 "refusing to remove a non-metadata path")

@@ -11,6 +11,23 @@ import Foundation
 
 public enum XMPBackupNaming {
     public static let marker = ".gather-backup-"
+    /// 内嵌交付的"头部备份"标记（<photo>.gather-header-<uuid>）。
+    public static let headerMarker = ".gather-header-"
+    /// 计划中的 sidecar 归档标记（<xmp>.gather-archived-<ts>，迁移功能尚未实现）。
+    public static let archivedMarker = ".gather-archived-"
+
+    /// 受控名标记全集：**删除守卫的唯一来源**。以前 DeliveryTypes 与
+    /// MetadataWriteRouter 各抄一份白名单，加一个前缀要改两处（已经漂移过一次）。
+    public static let controlledMarkers = [marker, headerMarker, archivedMarker]
+
+    /// 是否是"受控备份 / 归档名"（大小写不敏感的子串判断，与历史实现一致）。
+    ///
+    /// 注意：这是**白名单**，只用于"允许删除"；不是路径合法性校验——
+    /// 后者仍然走 `DeliveryBackupPath.validate`。
+    public static func isControlledName(_ path: String) -> Bool {
+        let lowered = path.lowercased()
+        return controlledMarkers.contains { lowered.contains($0) }
+    }
 
     /// 备份名 = sidecar 完整文件名 + marker + 后缀（生成端使用）。
     public static func make(xmpPath: String, suffix: String) -> String {
