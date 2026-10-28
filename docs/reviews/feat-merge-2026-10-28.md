@@ -7,7 +7,9 @@
 
 ## 1. 合并
 
-- `git merge --no-ff feat`；merge-base `726622ee`，main 侧 7 提交、feat 侧 1 提交。
+- `git merge --no-ff feat` → 合并提交 **`b35ea4d3`**（父 `f859ed2c` + `a59a2fbc`）；merge-base `726622ee`，
+  main 侧 7 提交、feat 侧 1 提交。`git diff --diff-filter=D f859ed2c HEAD` 为空（无删除），
+  feat 新增文件在合并树中逐一存在。
 - 规模：135 文件 / +9,437 −343（相对 `f859ed2c`），新增 30 个文件。
 - 三块主题：GatherProtocol 新契约（ModelReview / Output / MetadataTarget，错误码 186→194 再 +1 两侧合计 195）、
   GatherPersistence schema 重置为 v1（44 表 / 386 列 / 72 索引 / 65 外键）、GatherHost 的 JPEG 内嵌写回
