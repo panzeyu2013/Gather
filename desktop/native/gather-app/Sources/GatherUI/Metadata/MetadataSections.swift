@@ -32,8 +32,8 @@ struct MetadataSections: View {
                 VStack(alignment: .leading, spacing: 4) {
                     row(l10n("文件名"), detail.filename)
                     row(l10n("路径"), detail.filepath)
-                    // 内嵌模式下「写目标」是照片本身：显示成侧车会让用户以为没写进去。
-                    row(l10n(detail.xmpPath == detail.filepath ? "写入目标" : "侧车"),
+                    // 内嵌模式下「写目标」是照片本身：显示成 sidecar 会让用户以为没写进去。
+                    row(l10n(detail.xmpPath == detail.filepath ? "写入目标" : "附属文件"),
                         detail.hasXMP ? detail.xmpPath : l10n("无（尚未写入 XMP）"))
                     if selectionCount > 1 {
                         Text(l10n("已选多张，仅显示主文件"))

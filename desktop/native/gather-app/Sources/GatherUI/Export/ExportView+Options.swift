@@ -85,7 +85,7 @@ struct ExportOptionsSection: View {
                     .labelsHidden()
                 }
             }
-            Toggle(l10n("复制 XMP 侧车文件"), isOn: $viewModel.includeXmp)
+            Toggle(l10n("复制 XMP 附属文件"), isOn: $viewModel.includeXmp)
             if viewModel.transformsAllowed {
                 Toggle(l10n("添加文字水印"), isOn: $viewModel.watermarkEnabled)
                 if viewModel.watermarkEnabled {

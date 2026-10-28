@@ -4,17 +4,17 @@
 
 ## 结论
 
-A1/A2/A3/B1/B2/C1/C2 全部落地。**最终基线：core 1373 / 201 suites、app 733 / 85 suites（`--no-parallel`）全绿**；12 个 `check-*.sh`（strict）+ test-catalog `--self-test` + `gather-schema verify`（44/385/72/65、user_version=5、0 违规）+ `check-docs --strict` 全过。本轮在合并基线（1369/200、728/84）上新增 9 条回归（JPEG 写后回读 3 + 归档计数 2 + 可见性门禁 1 + 错误文案插值 1 + 共享侧车移出 1 + 清空诊断分支 1）；清理 ratchet 的 `try?` 收敛到 248（新增路径以显式 do/catch / 失败分支为主），protocol 基线按实测重写（310 类型 / 1751 声明）。
+A1/A2/A3/B1/B2/C1/C2 全部落地。**最终基线：core 1373 / 201 suites、app 733 / 85 suites（`--no-parallel`）全绿**；12 个 `check-*.sh`（strict）+ test-catalog `--self-test` + `gather-schema verify`（44/385/72/65、user_version=5、0 违规）+ `check-docs --strict` 全过。本轮在合并基线（1369/200、728/84）上新增 9 条回归（JPEG 写后回读 3 + 归档计数 2 + 可见性门禁 1 + 错误文案插值 1 + 共享 sidecar 移出 1 + 清空诊断分支 1）；清理 ratchet 的 `try?` 收敛到 248（新增路径以显式 do/catch / 失败分支为主），protocol 基线按实测重写（310 类型 / 1751 声明）。
 
 ## A1 淘汰移出语义
 
 - **schema v5**：`photos.archived_at`（DDL 末尾追加，不改既有列序）；`userVersion=5`、列数 385、指纹 `38bd1540…`；`Schema.swift` 镜像同步并在 `SchemaCurrentTests` 加"镜像 == userVersion"断言。
 - **可见性单一入口**：`GatherPersistence/Database/Queries/PhotoVisibility.swift`；接入挑片网格/计数/摘要/选择集、图库 `filterPhotos/filterGlobally/countGlobally/countPhotos`、facet、导航、triage 候选/eligible 计数、导出范围、重复/相似成员。
 - **移出服务端**（`LiveCullingAPI.moveRejected`）：按逻辑资产展开变体；逐张过滤（not_in_session / not_rejected / already_archived）返回 `skipped`，不再整批拒绝；输入上限 20k。
-- **共享边车**（`RejectedMover`）：`sharesSidecar` 时复制 `.xmp` 与 `gather-backup-*`，全部移出才移动；回滚按 copy/move 逆操作。DB 侧 `copySidecarBindingForVariant` 为新 xmp 建 binding、复制 metadata state、把被移文件从旧 binding 解绑。
+- **共享 sidecar**（`RejectedMover`）：`sharesSidecar` 时复制 `.xmp` 与 `gather-backup-*`，全部移出才移动；回滚按 copy/move 逆操作。DB 侧 `copySidecarBindingForVariant` 为新 xmp 建 binding、复制 metadata state、把被移文件从旧 binding 解绑。
 - **归档写入同一事务**：`AssetRepo.relocatePhotoPathsAfterMove(sharesSidecar:archivedAt:)`。
 - **跨页选择**：新增 `CullingAPI.selection` + `CullingService.selectableIds` + `representativeIds` SQL；VM 的 `selectedPhotoIds` 不再被页刷新裁剪；⌘A 走 `selectAllInScope()`；`moveRejectedOut` 提交完整选择集、只把真正移出的从选择集移除。
-- 测试：`PhotoVisibilityTests`（网格/计数/摘要/选择集/图库/facet/跨页 120+30）、`RejectedMoverTests` 新增共享侧车复制/归档/复制回滚、`CullingViewModelAPITests` 新增跨页提交/skipped/全选。
+- 测试：`PhotoVisibilityTests`（网格/计数/摘要/选择集/图库/facet/跨页 120+30）、`RejectedMoverTests` 新增共享 sidecar 复制/归档/复制回滚、`CullingViewModelAPITests` 新增跨页提交/skipped/全选。
 
 ## A2 triage 安全
 
@@ -31,18 +31,18 @@ A1/A2/A3/B1/B2/C1/C2 全部落地。**最终基线：core 1373 / 201 suites、ap
 ## B1 JPEG 内嵌 IPTC
 
 - `MetadataService.embeddedAttributesFromParse` 增 `descriptive`：dc/xmp 优先、IPTC-IIM 回退（`Caption/Abstract`、`ObjectName`、`CopyrightNotice`、`Byline`、`City`、`Province/State`、`Country/PrimaryLocation*`、`SubLocation`、`Writer/Editor`、`Scene` 等）；`textValue/listValue` 解包 ImageIO 的 Alt/tag 数组。
-- `mergeAttributes` 描述性元数据改逐字段 `applying`（侧车覆盖、内嵌补缺）；删除"IPTC-only 关键词 → nil"的死分支（ImageIO 会合成 dc:subject，实测）。
-- 新公开入口 `MetadataService.diskAttributes(photoPath:)`：JPEG 内嵌 + 侧车；模板 apply/preview、triage apply/undo 全部改用它。
+- `mergeAttributes` 描述性元数据改逐字段 `applying`（sidecar 覆盖、内嵌补缺）；删除"IPTC-only 关键词 → nil"的死分支（ImageIO 会合成 dc:subject，实测）。
+- 新公开入口 `MetadataService.diskAttributes(photoPath:)`：JPEG 内嵌 + sidecar；模板 apply/preview、triage apply/undo 全部改用它。
 - 测试：`mapsEmbeddedDescriptiveMetadata`、`readsRealJpegIPTCDescriptive`（真实 JPEG 写 IIM 再读）、`mergesDescriptivePerField`。
 
 ### P1 hotfix（2026-10-28 复查）
 
-- `applyMetadataAttributes` 的写后回读从 `xmp.readAttributes`（仅侧车）改为
-  `diskAttributes`（JPEG 内嵌 + 侧车）；缓存投影按每张照片的盘上值刷新。
-- **兄弟缓存逐张读盘**：RAW+JPEG 共享侧车时，不再拿写回目标的侧车快照整列刷新
-  兄弟；JPEG 兄弟按自己的内嵌值 + 共享侧车合成（`IMG_102.CR3` 编辑后 JPEG 的
+- `applyMetadataAttributes` 的写后回读从 `xmp.readAttributes`（仅 sidecar）改为
+  `diskAttributes`（JPEG 内嵌 + sidecar）；缓存投影按每张照片的盘上值刷新。
+- **兄弟缓存逐张读盘**：RAW+JPEG 共享 sidecar 时，不再拿写回目标的 sidecar 快照整列刷新
+  兄弟；JPEG 兄弟按自己的内嵌值 + 共享 sidecar 合成（`IMG_102.CR3` 编辑后 JPEG 的
   `title/copyrightNotice` 仍在缓存）。
-- **JPEG 清空 fail-closed**：侧车元素删除成功但盘上合成值仍有该字段（侧车已清空）
+- **JPEG 清空 fail-closed**：sidecar 元素删除成功但盘上合成值仍有该字段（sidecar 已清空）
   = 内嵌残留，新增错误码 `JPEG_EMBEDDED_CLEAR_UNSUPPORTED`，照片进
   `failed + uncertain`（可撤销），缓存保留盘上真实值；编辑器/模板页显示失败原因，
   文案明确"内嵌字段需在 Bridge/Capture One 清空"。
@@ -108,7 +108,7 @@ A1/A2/A3/B1/B2/C1/C2 全部落地。**最终基线：core 1373 / 201 suites、ap
   undo 跳过星级时出提示。
 - **P1 B1**：`descriptiveFromParse` 改表驱动，补 `location`、`intellectualGenre`、
   `subjectCode`、event/person/org 等；真实 JPEG 测试断言 IIM ContentLocationName。
-- **P2**：共享侧车不再复制备份（孤儿）；模板无日期/相机占位符时跳过 EXIF 解析；
+- **P2**：共享 sidecar 不再复制备份（孤儿）；模板无日期/相机占位符时跳过 EXIF 解析；
   `photos.requiredTableColumns` 加 archived_at。
 - `summary.totalGroups` 从 stats_json 扣掉"成员全部归档"的组；部分归档不改快照
   口径（避免破坏既有摘要契约）。
@@ -126,13 +126,13 @@ A1/A2/A3/B1/B2/C1/C2 全部落地。**最终基线：core 1373 / 201 suites、ap
 - watcher 全树保底校验返回 job 的 checkpoint；仍被更窄任务挡住时不 ack、保留 pending
   并重新排队。
 - 淘汰移出先筛出实际可移行再算 movingIds；资产内未淘汰兄弟不再被误判为“将移动”，
-  共享侧车不会被搬走。
+  共享 sidecar 不会被搬走。
 - 重复组 `resolveGroup` 与组级 resolution 派生只使用可见成员，归档件不参与 keep_one 评分。
 - 新增 4 条测试（triage 探测失败/盘上基线、beforeSnapshot、重复组归档）；core 1364（当轮）。
 
 ## 未做 / 需人工验收
 
-1. **真机矩阵**：C1 存储卡 RAW+JPEG、Bridge 写内嵌 IPTC 的 JPEG、跨页 100 张移出、共享边车移出、500 张模板、undo 星级守卫；本机未跑（需要真实素材）。
+1. **真机矩阵**：C1 存储卡 RAW+JPEG、Bridge 写内嵌 IPTC 的 JPEG、跨页 100 张移出、共享 sidecar 移出、500 张模板、undo 星级守卫；本机未跑（需要真实素材）。
 2. **关键词层级/facet、Gallery facet/规则、交付联系表、AI 决策门**：按计划留到 W2，本轮未动。
 3. **移出不可撤销**：仍为单向（`_rejects` 人工找回），无 unarchive API/UI；本轮未做（需要"原路径/重名策略"，不能只靠 `_rejects` 里已改名的文件倒推）。
 4. `sessions.photo_count` 已改为与 `PhotoVisibility` 同口径（移出后回落；新增读面由 `PhotoVisibilityGateTests` 挡住裸 SQL 谓词）；UI 未加"已移出 M"文案，属于后续 polish。

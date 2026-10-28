@@ -344,7 +344,7 @@ enum ExecutorRegistry {
                 } ?? [:]
                 var completedIds = Set(job.checkpoint["completedPhotoIds"]?.arrayElements?.compactMap(\.stringValue) ?? [])
                 var completedSnapshot = Array(completedIds)
-                // 问题 1：完成记录必须带上当时的边车版本（键缺失 → 视为不可信，重新交付）。
+                // 问题 1：完成记录必须带上当时的 sidecar 版本（键缺失 → 视为不可信，重新交付）。
                 var completedSidecarVersions = job.checkpoint["sidecarVersions"]?.objectValue?.compactMapValues { $0.stringValue } ?? [:]
                 // D01 交付身份：指纹已在 dedupeKey 里（output.run:<session>:<指纹>），
                 // 任务仓库只会把**同一次交付**的完成清单继承过来；不同参数/照片集合拿到的是

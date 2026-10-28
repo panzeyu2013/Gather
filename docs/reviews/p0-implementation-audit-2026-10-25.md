@@ -39,7 +39,7 @@
 | F0 | P2 review 游标找不到成员时按 cohesion 回退，可能跳/重 | 找不到即 `FACE_REVIEW_CURSOR_INVALID`，不再数值回退 | 代码路径 |
 | F0 | P2 复核每页重算全部 embedding/cohesion | `reviewRevision` 聚合版本 + 会话/簇/阈值缓存；拆分后 revision 变化自动失效 | 拆分前后 review 测试 |
 | K0 | P2 100 词限额按归一化前计数 | 先去重归一化再限额 | `editLimitAfterNormalization` |
-| K0 | P2 共享侧车只回填首张照片 cache | 按 xmp 分组回填全部变体 | 代码路径 |
+| K0 | P2 共享 sidecar 只回填首张照片 cache | 按 xmp 分组回填全部变体 | 代码路径 |
 | K0 | P2 跨 session apply 只 flush 最后一个 session | 明确拒绝跨 session（`photoIds must belong to one session`） | 代码路径 |
 | G0 | P2 Esc 只清选择，不退出全屏 | 全屏时先 `toggleFullScreen`，否则清选择 | 代码路径 |
 | G0 | P2 service 只校验 cursor.sort/rowId，不校验 keyKind | service 层补 import/date/number key 校验，缺失即 `CULLING_CURSOR_INVALID` | `listPageValidation` |

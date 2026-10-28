@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Tests/GatherAppTests/MetadataWriteRouterTests.swift
-// 写目标策略与路由：JPEG 内嵌 / 侧车 / RAW 的选择，以及 backup→write→restore 闭环。
+// 写目标策略与路由：JPEG 内嵌 / sidecar / RAW 的选择，以及 backup→write→restore 闭环。
 
 import Foundation
 import Testing
@@ -39,7 +39,7 @@ private func makeRouterDir() throws -> String {
 @Suite("元数据写目标路由")
 struct MetadataWriteRouterTests {
 
-    @Test("策略表：非 JPEG/已有侧车/模式")
+    @Test("策略表：非 JPEG/已有 sidecar/模式")
     func policyTable() {
         #expect(MetadataTargetPolicy.resolve(
             photoPath: "/a.CR3", mode: "embedded", sidecarExists: false, isJPEG: false) == .sidecar)
@@ -70,12 +70,12 @@ struct MetadataWriteRouterTests {
             photoPath: path, attributes: MetadataWriteAttributes(descriptive: descriptive))
 
         let sidecarPath = SidecarXMPProvider.resolveSidecarPath(path)
-        #expect(!FileManager.default.fileExists(atPath: sidecarPath), "内嵌模式不得创建侧车")
+        #expect(!FileManager.default.fileExists(atPath: sidecarPath), "内嵌模式不得创建 sidecar")
         let attributes = try await router.readAttributes(photoPath: path)
         #expect(attributes.descriptive?.caption == "内嵌标题")
     }
 
-    @Test("已有 .xmp：即使模式为 embedded 也写侧车（一份真相）")
+    @Test("已有 .xmp：即使模式为 embedded 也写 sidecar（一份真相）")
     func sidecarWinsWhenPresent() async throws {
         let dir = try makeRouterDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -88,14 +88,14 @@ struct MetadataWriteRouterTests {
         let router = MetadataWriteRouter(modeProvider: { "embedded" })
         #expect(router.target(for: path).kind == .sidecar)
         var descriptive = DescriptiveMetadata()
-        descriptive.set(.text("侧车标题"), for: .caption)
+        descriptive.set(.text("sidecar 标题"), for: .caption)
         try await router.writeAttributes(
             photoPath: path, attributes: MetadataWriteAttributes(descriptive: descriptive))
         let sidecarAttributes = try await SidecarXMPProvider().readAttributes(photoPath: path)
-        #expect(sidecarAttributes.descriptive?.caption == "侧车标题")
+        #expect(sidecarAttributes.descriptive?.caption == "sidecar 标题")
     }
 
-    @Test("RAW 永远走侧车")
+    @Test("RAW 永远走 sidecar")
     func rawAlwaysSidecar() async throws {
         let dir = try makeRouterDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -128,7 +128,7 @@ struct MetadataWriteRouterTests {
     }
 
 
-    @Test("RAW 兄弟存在时 JPEG 跟随侧车，避免两个真相源")
+    @Test("RAW 兄弟存在时 JPEG 跟随 sidecar，避免两个真相源")
     func rawSiblingForcesSidecar() throws {
         let dir = try makeRouterDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }

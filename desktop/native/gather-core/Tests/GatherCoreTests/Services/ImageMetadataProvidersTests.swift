@@ -67,7 +67,7 @@ struct ImageMetadataProvidersTests {
         #expect(try await ImageIODimensionsProvider().metadata(filePath: missing) == nil)
     }
 
-    @Test("内嵌 XMP：rating/label 走消费端契约读出（无侧车也不丢星级/色标）")
+    @Test("内嵌 XMP：rating/label 走消费端契约读出（无 sidecar 也不丢星级/色标）")
     func parsesEmbeddedXMPAttributes() async throws {
         let dir = NSTemporaryDirectory() + "gather-xmp-" + UUID().uuidString
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -197,15 +197,15 @@ struct ImageMetadataProvidersTests {
         #expect(descriptive.location == "外滩", "IIM ContentLocationName 必须回退可读")
     }
 
-    @Test("侧车覆盖内嵌：逐字段合并，不整块丢弃内嵌 IPTC（P0 / B1）")
+    @Test("sidecar 覆盖内嵌：逐字段合并，不整块丢弃内嵌 IPTC（P0 / B1）")
     func mergesDescriptivePerField() {
         let embedded = DescriptiveMetadata(caption: "内嵌说明", copyrightNotice: "内嵌版权", city: "上海")
-        let sidecar = DescriptiveMetadata(title: "侧车标题", caption: "侧车说明")
+        let sidecar = DescriptiveMetadata(title: "sidecar 标题", caption: "sidecar 说明")
         let merged = MetadataService.mergeDescriptive(embedded, sidecar)
-        #expect(merged?.caption == "侧车说明")
-        #expect(merged?.copyrightNotice == "内嵌版权", "侧车没写的字段必须保留内嵌值")
+        #expect(merged?.caption == "sidecar 说明")
+        #expect(merged?.copyrightNotice == "内嵌版权", "sidecar 没写的字段必须保留内嵌值")
         #expect(merged?.city == "上海")
-        #expect(merged?.title == "侧车标题")
+        #expect(merged?.title == "sidecar 标题")
     }
 
     /// 写一张带 IPTC 或内嵌 XMP dc:subject 的真实 JPEG。

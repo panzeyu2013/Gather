@@ -824,7 +824,7 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
 
 状态：已实现。
 
-- **写目标单一化**：`MetadataTargetPolicy`（非 JPEG→侧车；已有 `.xmp`→侧车；独立 JPEG 按 `metadata_write_mode`）。
+- **写目标单一化**：`MetadataTargetPolicy`（非 JPEG→sidecar；已有 `.xmp`→sidecar；独立 JPEG 按 `metadata_write_mode`）。
   `MetadataWriteRouter` 实现完整 XMPProvider；内嵌写走 `JPEGMetadataWriter`（APP1 XMP + APP13 IRB 0x0404、
   scan 字节不变、头部备份、写后双读校验）。交付层新增 `MetadataTargetResolver`，`deliveries.xmp_path` 即写目标路径。
 - **清空三段式**：IIM 删 dataset（前提）→ XMP 删元素（补充）→ `MetadataParseSegments.xmpPresentKeys` 阻断回退（兜底）。

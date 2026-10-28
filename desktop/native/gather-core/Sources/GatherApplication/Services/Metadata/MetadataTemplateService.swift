@@ -1,7 +1,7 @@
 // desktop/native/gather-core/Sources/GatherApplication/Services/Metadata/MetadataTemplateService.swift
 // P1 / B2：模板套用执行 + 撤销（preview 由 Round 3/5 的两层提供，本文件是 confirm 与 undo）。
 //
-// 写路径：所有侧车写入都经 MetadataService.applyMetadataAttributes → 交付队列
+// 写路径：所有 sidecar 写入都经 MetadataService.applyMetadataAttributes → 交付队列
 // （备份 / 冲突检测 / reload-ack / 审计），本文件不直接调用 XMPProvider.writeAttributes。
 // 事务边界：逐张独立入队；一张失败不影响其它张。批次记录只在**有实际写入**时落库，
 // 记录的是"改动前的值 + 本次触碰的字段"，撤销按 before 反向写（原本不存在的字段清空）。
@@ -176,7 +176,7 @@ public final class MetadataTemplateService: Sendable {
         let outcomes = try await batchAsync(uniqueIds, concurrency: 8) { photoId -> PlanOutcome in
             do {
                 let detail = try self.metadata.photoDetail(photoId: photoId)
-                // P0 / B1：盘上值必须含 JPEG 内嵌 IPTC（只读侧车会漏掉 Bridge 写入的值）。
+                // P0 / B1：盘上值必须含 JPEG 内嵌 IPTC（只读 sidecar 会漏掉 Bridge 写入的值）。
                 // P1：读盘失败不得降级成"未知"后照写——keepExternal 语义下未知必须
                 // 视为冲突；这里让错误走 catch，把整张标 failed 而不是静默覆盖。
                 let disk = try await self.metadata.diskAttributes(

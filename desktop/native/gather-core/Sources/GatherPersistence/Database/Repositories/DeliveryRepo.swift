@@ -268,7 +268,7 @@ public final class DeliveryRepo: Sendable {
 
     // MARK: - 创建 / 读取
 
-    /// 标记写目标类型（内嵌 vs 侧车）。只改这一列，不触碰 revision/基线/状态。
+    /// 标记写目标类型（内嵌 vs sidecar）。只改这一列，不触碰 revision/基线/状态。
     public func setTargetKind(xmpPath: String, kind: MetadataTargetKind) throws {
         let path = try normalizedPath(xmpPath)
         _ = try connection.prepare("""

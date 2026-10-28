@@ -213,7 +213,7 @@ struct DeliveryFilePhase: Sendable {
         }
     }
 
-    /// 把备份内容恢复回侧车；无备份时删除本次写入的侧车（旧 cleanup 语义）。
+    /// 把备份内容恢复回 sidecar；无备份时删除本次写入的 sidecar（旧 cleanup 语义）。
     /// 两种形态都幂等：恢复是覆盖写，删除前先看存在性。
     private func performCleanup(
         xmpPath: String,
@@ -224,7 +224,7 @@ struct DeliveryFilePhase: Sendable {
         try DeliveryXMPPath.requireSafeSidecar(
             xmpPath: xmpPath, photoPath: payload.photoPath)
         if payload.backupPath.isEmpty {
-            // 只允许删除**侧车**：内嵌模式下 xmpPath 就是照片本身，无备份时删它
+            // 只允许删除**sidecar**：内嵌模式下 xmpPath 就是照片本身，无备份时删它
             // 等于删用户的原片。没有备份的内嵌交付只能"什么也不做"。
             guard xmpPath.lowercased().hasSuffix(".xmp") else {
                 throw DeliveryCoordinatorError.filePhaseInvalidated(

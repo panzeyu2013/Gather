@@ -29,7 +29,7 @@ public final class MetadataKeywordOriginRepo {
         }
     }
 
-    /// 批量读取某个来源在多个侧车上的全部 active origin（一次 IN 查询）。
+    /// 批量读取某个来源在多个 sidecar 上的全部 active origin（一次 IN 查询）。
     /// 调用方在 Swift 侧用 fold 比对，避免大小写/NFC 差异绕过生成词保护。
     public func activeKeywordOrigins(
         xmpPaths: [String],

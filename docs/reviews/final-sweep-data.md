@@ -13,7 +13,7 @@
 | 1 | finalize 备份顺序（文件阶段不删 → DB 提交后删 → replay fileDone 后置 → 失败保留行+备份） | **已闭合** | `DeliveryFilePhase.run` 的 finalize 分支只 verify 不碰盘；唯一删除点 `removeFinalizeBackup` 只在 `applyFinalize` 返回 `.deleted/.alreadyGone` 后调用；CAS 拒绝分支保留备份；replay 两条路径共用同一后置删除点 |
 | 2 | lease owner CAS 覆盖 markWritten/markFailed/markConflict；renew 失败不收敛；confirm 单事务门禁/status；confirmSync 是否仍可绕过 | **已闭合（confirmSync 无旁路）** | 三个 mark 入口共用 `leaseAwareTransition`（CAS 带 `lease_owner=?`）；execute 收敛/崩溃归位都在 renew 失败后 `continue`；`DeliveryRepo.confirm` 用 `transaction(.immediate)` 把门禁读+写确认+翻 synced 放同一事务；`WritebackService.confirmSync` 与三域 `confirmSync` 全部委托 `DeliveryCoordinator.confirm`（生产默认 `requireReloadAck=true`） |
 | 3 | 370 列迁移：shape 识别、ALTER、备份、回滚、指纹；未知 371 仍 corrupt | **已闭合** | `HistoricalV1Shape`（43/370/69/62 + 8 关键列 + 固定指纹）在 `OpenState` 仅对 `from==.v1` 放行；`MigrationV1ToV2` 逐列 ALTER（定义与 DDL 逐字一致）；备份先于迁移、失败在事务内回滚、提交前校验目标 373 指纹；370+1 未知列（=371）走 shapeMismatch→corrupt，测试显式断言 `columnCount == 371` |
-| 4 | backup_path 校验；历史备份 fail-closed 的发布影响 | **部分闭合（1 个 P1）** | 同目录/前缀/`..`/NUL/symlink/常规文件都覆盖；但"同目录/前缀"是**大小写与 Unicode 规范化敏感的字符串比较**，而 backup_path 由宿主按盘上真实大小写生成、xmp_path 由 `TSPath` 生成小写 `.xmp` → 大写 `.XMP` 侧车会被 fail-closed 永久拒绝；宿主孤儿 restore/remove 入口完全没接校验 |
+| 4 | backup_path 校验；历史备份 fail-closed 的发布影响 | **部分闭合（1 个 P1）** | 同目录/前缀/`..`/NUL/symlink/常规文件都覆盖；但"同目录/前缀"是**大小写与 Unicode 规范化敏感的字符串比较**，而 backup_path 由宿主按盘上真实大小写生成、xmp_path 由 `TSPath` 生成小写 `.xmp` → 大写 `.XMP` sidecar 会被 fail-closed 永久拒绝；宿主孤儿 restore/remove 入口完全没接校验 |
 | 5 | replay claim 进程内 vs 跨进程；trace 脱敏是否覆盖 reason；临时文件 sweep 安全性 | **未闭合（claim 实际 per-call，弱于台账）** | `claims` 是 `DeliveryReplayFlow` 的实例字段，而 `DeliveryCoordinator.makeReplayFlow()` 每次 `replay()` 都新建 flow ⇒ 两次并发 `replay()` 各持独立 claim 集合，互不排斥；进程内跨调用都不生效，"仅进程内"的台账口径不成立。trace 的 reason 已脱敏（含二级兜底），但仍有 4 处非 trace 日志打印绝对路径；sweep 另有文档-实现漂移与锁外删除 |
 | 6 | 遗漏/竞态/错误码回归 | **无错误码回归，遗漏/竞态见 §2** | 对 `GatherDelivery` 全树做 `4bbfa8d^` vs HEAD 的 `XMP_[A-Z_]*` 集合比较：**0 个旧码消失**、新增 11 个；`GatherPersistence` 的 `DELIVERY_*` 码同样 0 增 0 删 |
 
@@ -82,7 +82,7 @@
 
 未覆盖的入口（P2-2 / P2-3）：
 - `LiveMetadataAPI.resolveOrphan` 直接调 `xmp.restore/removeFile`，绕开 `XMPDeliveryFilePort`（`LiveMetadataAPI.swift:240-249, 258-270`），而 `DeliveryTypes.swift:34-35` 的注释声称"LiveMetadataAPI.resolveOrphan 直接走这里"——与实现不符；`gather-app/Sources` 全树 0 处 `DeliveryBackupPath` 引用。
-- `DeliveryFilePhase.performCleanup` 的"无备份删除侧车"分支直接 `removeFile(xmpPath)`（`:210-213`），不经任何校验；有备份分支的 restore 目标由 `payload.photoPath` 推导（`:222-225`），只校验了 backup 与 `xmpPath` 同目录，没有断言 `xmpPath == TSPath.xmpSidecarPath(photoPath)`。
+- `DeliveryFilePhase.performCleanup` 的"无备份删除 sidecar"分支直接 `removeFile(xmpPath)`（`:210-213`），不经任何校验；有备份分支的 restore 目标由 `payload.photoPath` 推导（`:222-225`），只校验了 backup 与 `xmpPath` 同目录，没有断言 `xmpPath == TSPath.xmpSidecarPath(photoPath)`。
 
 历史备份的发布影响：历史行只要 `backup_path` 不是"与当时 xmp_path 同串大小写 + 精确前缀"，就从"能清理/能恢复"退化为"永久拒绝"：cleanup 以 `XMP_CLEANUP_BACKUP_PATH_INVALID` 收尾 intent（`DeliveryCleanupFlow.swift:285-305`），finalize 以 `XMP_FINALIZE_BACKUP_PATH_INVALID` 收尾（`:606-626`），replay 同样 fail-closed（`DeliveryReplayFlow.swift:232-251`）。行与备份都保留（不误删、不误恢复，安全性方向正确），但用户侧表现为"清理永远失败 + 备份文件永久残留"，且错误码是新增的、UI 未见过。台账只写"历史非受控 backup_path 会 fail-closed"，未写大小写这一最常见触发面（P1-1）。
 
@@ -107,15 +107,15 @@
 
 ### P1
 
-#### P1-1（已确认，代码路径；触发面待实机）backup_path 校验对大小写/Unicode 规范化敏感，大写 `.XMP` 侧车会让 cleanup/finalize 永久 fail-closed
+#### P1-1（已确认，代码路径；触发面待实机）backup_path 校验对大小写/Unicode 规范化敏感，大写 `.XMP` sidecar 会让 cleanup/finalize 永久 fail-closed
 
 - 位置：`DeliveryBackupPath.swift:85-96`（`backupDirectory == xmpDirectory`、`backupName.hasPrefix(expectedPrefix)` 均为逐字节字符串比较）；产生端 `SidecarXMPProvider.swift:177-186`（`backupPath = resolveSidecarPath(photoPath) + ".gather-backup-UUID"`），`:216-231` 的 `resolveSidecarPath` 明确"返回磁盘上真实存在的条目"（保留大小写）；DB 端 xmp_path 在默认 `asset_read_mode=dual` 下取 legacy 分支（`PhotoAssetResolver.swift:61,73,139-147`），即 `TSPath.xmpSidecarPath`（`RepositorySupport.swift:180-183`，扩展名固定小写 `.xmp`），且 `preview` 用该值 `createOrGet`（`WritebackService.swift:684,697,727`）。
-- 证据链：xmp_path `/shoot/IMG_1.xmp`；盘上侧车 `/shoot/IMG_1.XMP`；写入/备份走 `resolveSidecarPath` → backup_path `/shoot/IMG_1.XMP.gather-backup-<uuid>`；`validate` 的 expectedPrefix 是 `IMG_1.xmp.gather-backup-` → 不匹配 → `.unexpectedName`。
-- 支持"大写侧车是受支持布局"的证据：`SidecarXMPProviderTests.swift:216-233` 专门测试"大写 .XMP 侧车：读写落在实际存在的文件上，不另建小写侧车"。
-- 影响：cleanup 在 `DeliveryFilePhase.verify` 返回 `.invalidBackup`（`DeliveryFilePhase.swift:144-153`），intent 被标终态（`DeliveryCleanupFlow.swift:285-305`），交付行永久停在 synced、侧车不被恢复、备份文件永久残留；finalize 同样保留行+备份并报 `XMP_FINALIZE_BACKUP_PATH_INVALID`（`:606-626`）；replay 同样拒绝（`DeliveryReplayFlow.swift:232-251`）。数据方向安全（不会误删/误覆盖），但这是主清理路径的功能性回归，且用户无法自愈（每次 finalize 还会新建并终结一个 intent）。
-- 触发面：macOS 默认大小写不敏感卷上，任何历史大写 `.XMP`（Capture One 常见）或侧车 stem 大小写与照片 stem 不一致的目录；同类风险还包括 Unicode NFC/NFD 不一致。Linux 大小写敏感卷上，provider 只按"实际存在"匹配，xmp_path 仍是小写串，校验同样失败。
+- 证据链：xmp_path `/shoot/IMG_1.xmp`；盘上 sidecar `/shoot/IMG_1.XMP`；写入/备份走 `resolveSidecarPath` → backup_path `/shoot/IMG_1.XMP.gather-backup-<uuid>`；`validate` 的 expectedPrefix 是 `IMG_1.xmp.gather-backup-` → 不匹配 → `.unexpectedName`。
+- 支持"大写 sidecar 是受支持布局"的证据：`SidecarXMPProviderTests.swift:216-233` 专门测试"大写 .XMP sidecar：读写落在实际存在的文件上，不另建小写 sidecar"。
+- 影响：cleanup 在 `DeliveryFilePhase.verify` 返回 `.invalidBackup`（`DeliveryFilePhase.swift:144-153`），intent 被标终态（`DeliveryCleanupFlow.swift:285-305`），交付行永久停在 synced、sidecar 不被恢复、备份文件永久残留；finalize 同样保留行+备份并报 `XMP_FINALIZE_BACKUP_PATH_INVALID`（`:606-626`）；replay 同样拒绝（`DeliveryReplayFlow.swift:232-251`）。数据方向安全（不会误删/误覆盖），但这是主清理路径的功能性回归，且用户无法自愈（每次 finalize 还会新建并终结一个 intent）。
+- 触发面：macOS 默认大小写不敏感卷上，任何历史大写 `.XMP`（Capture One 常见）或 sidecar stem 大小写与照片 stem 不一致的目录；同类风险还包括 Unicode NFC/NFD 不一致。Linux 大小写敏感卷上，provider 只按"实际存在"匹配，xmp_path 仍是小写串，校验同样失败。
 - 未验证：没有真实大写 `.XMP` 目录的 end-to-end 用例；`DeliveryBackupPathTests.swift` 只测全小写 `IMG_1.xmp`。标注"代码已确认 / 触发面需实机目录确认"。
-- 建议：比较改为文件系统等价判定（大小写+规范化不敏感），或在写入时把 provider 的真实侧车路径作为 xmp_path 落库；补"大写扩展名/NFD"回归；对历史行提供一次性 `backup_path` 归一化或"同 inode"校验的迁移路径。
+- 建议：比较改为文件系统等价判定（大小写+规范化不敏感），或在写入时把 provider 的真实 sidecar 路径作为 xmp_path 落库；补"大写扩展名/NFD"回归；对历史行提供一次性 `backup_path` 归一化或"同 inode"校验的迁移路径。
 
 ### P2
 
@@ -128,7 +128,7 @@
 #### P2-2（已确认，威胁模型内）宿主的孤儿 restore/remove 入口完全没接 backup_path 校验，且注释与实现不符
 
 - `LiveMetadataAPI.swift:247`（keep/删行后 `xmp.removeFile(row.backupPath)`）、`:264`（restore 时 `xmp.restore(photoPath: row.photoPath, backupPath: row.backupPath)`）、`:268`（无备份时 `xmp.removeFile(row.xmpPath)`）都直接走 `XMPProvider`；`gather-app/Sources` 全树 0 处 `DeliveryBackupPath` 引用；`DeliveryTypes.swift:34-35` 注释声称该入口"直接走这里"（指 `XMPDeliveryFilePort`），与实现矛盾。
-- 影响：P2-12 威胁模型（DB 被手工篡改/迁移残留一条恶意路径）在 `metadata.resolve_orphan` 上仍然成立：伪造一条无 `delivery_sessions` 关联的 deliveries 行（`orphanDeliveries` 不筛状态，`DeliveryRepo.swift:1126-1135`），用户在确认弹窗后选 keep 即删任意可写文件、选 restore 即把任意可读文件拷进 `row.photoPath` 推导的侧车。孤儿行不需要 item/link 图，构造成本比 cleanup 更低。
+- 影响：P2-12 威胁模型（DB 被手工篡改/迁移残留一条恶意路径）在 `metadata.resolve_orphan` 上仍然成立：伪造一条无 `delivery_sessions` 关联的 deliveries 行（`orphanDeliveries` 不筛状态，`DeliveryRepo.swift:1126-1135`），用户在确认弹窗后选 keep 即删任意可写文件、选 restore 即把任意可读文件拷进 `row.photoPath` 推导的 sidecar。孤儿行不需要 item/link 图，构造成本比 cleanup 更低。
 - 建议：该入口改用 `XMPDeliveryFilePort`（或显式调用 `DeliveryBackupPath.validate`），并修正注释；`row.xmpPath` 的裸 `removeFile` 也要有受控目录/扩展名断言。
 
 #### P2-3（已确认，威胁模型内）Delivery 文件阶段的两个未锚定路径：无备份删 `xmp_path`、restore 目标来自 `photo_path`

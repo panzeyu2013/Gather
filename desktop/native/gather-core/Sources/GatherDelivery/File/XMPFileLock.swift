@@ -4,7 +4,7 @@
 //
 // 背景：DeliveryCoordinator 的 revision/指纹守卫只能**事后**发现新输入，无法阻止
 // 文件阶段（restore / remove / 写盘）本身与另一写者交错。旧备份一旦在新 XMP 落盘
-// 之后恢复，就会把新内容覆盖回旧值（数据丢失）。本 actor 把「同一归一化侧车路径」
+// 之后恢复，就会把新内容覆盖回旧值（数据丢失）。本 actor 把「同一归一化 sidecar 路径」
 // 的文件阶段排成一条队列：
 // - cleanup/finalize/replay 的 verify → restore/remove → 事后 verify 整体在锁内；
 // - WritebackService 每个交付组的 backup → read → writeAttributes 在锁内；
@@ -43,7 +43,7 @@ public actor XMPFileLock {
 
     /// 在 `path` 的文件锁内执行 `operation`，完成后释放（抛错同样释放）。
     ///
-    /// - Parameter path: 侧车路径；内部用 `TSPath.normalize` 归一化，
+    /// - Parameter path: sidecar 路径；内部用 `TSPath.normalize` 归一化，
     ///   因此 `./a.xmp` 与 `a.xmp` 视为同一把锁。
     /// - Parameter operation: 只能是文件阶段；返回的 `T` 需 Sendable。
     public func run<T: Sendable>(

@@ -190,7 +190,7 @@ public struct DeliverySummaryQuery: Sendable {
 
     /// 把本会话（可再按 module 收窄）的交付聚合映射成旧 `MetadataSyncSummary`。
     ///
-    /// 口径（与旧 outbox 摘要对齐，每交付一行 = 每侧车一行）：
+    /// 口径（与旧 outbox 摘要对齐，每交付一行 = 每个 sidecar 一行）：
     /// 1. 计数按**交付**去重，绝不把 delivery 与 delivery_items 的数量相加
     ///    （同一张照片的 rating/label 与 keyword 可能落在不同 item，相加会虚高）；
     /// 2. item 的未完成态（pending/failed）会把交付的展示态升级：交付已 written

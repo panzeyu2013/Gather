@@ -48,7 +48,7 @@ extension ExportViewModel {
         }
         return ExportConfirmation(
             destination: destinationSnapshot,
-            // D09：确认文案用物理文件数（照片 + 边车）。
+            // D09：确认文案用物理文件数（照片 + sidecar）。
             fileCount: preview?.physicalFileCount ?? 0,
             scopeLabel: ExportConfirmation.scopeLabel(for: scopeSnapshot),
             planSignature: signature,

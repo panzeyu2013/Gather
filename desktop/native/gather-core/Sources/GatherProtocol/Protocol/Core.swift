@@ -183,7 +183,7 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case XMP_CONFIRM_OTHER_SESSION_PENDING
     case XMP_EXTERNALLY_MODIFIED
     case XMP_BACKUP_MISSING
-    // 侧车文档本身的读写故障（SidecarXMPProvider 抛出，客户端按键分流处理）
+    // sidecar 文档本身的读写故障（SidecarXMPProvider 抛出，客户端按键分流处理）
     case XMP_DOCUMENT_CORRUPT
     case XMP_DOCUMENT_UNSUPPORTED
     case XMP_DOCUMENT_READ_FAILED
@@ -200,8 +200,8 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case XMP_ORPHAN_NOT_FOUND
     case XMP_ORPHAN_NOT_RETRYABLE
     case XMP_WRITER_TIMEOUT
-    /// P1：JPEG 内嵌 IPTC/XMP 无法靠写 .xmp 侧车清空（Bridge/C1 仍读到旧值）。
-    /// 写侧车成功但盘上合成值仍带被清空的字段 = 显式失败，不谎报成功。
+    /// P1：JPEG 内嵌 IPTC/XMP 无法靠写 .xmp 附属文件清空（Bridge/C1 仍读到旧值）。
+    /// 写 sidecar 成功但盘上合成值仍带被清空的字段 = 显式失败，不谎报成功。
     case JPEG_EMBEDDED_CLEAR_UNSUPPORTED
     case WRITEBACK_OTHER_MODULE_ACTIVE
     case WRITEBACK_UNDO_FACE_FAILED

@@ -76,7 +76,7 @@ public final class WritebackService: @unchecked Sendable {
     /// 本服务实例的写租约 owner（P1-2）：进程内稳定，跨 execute 复用同一身份，
     /// 崩溃后新进程会拿到新 owner，只能等旧 heartbeat 过期后抢占。
     let leaseOwner: String
-    /// 写目标解析（侧车或照片自身）；冲突指纹与恢复校验都按它取路径。
+    /// 写目标解析（sidecar 或照片自身）；冲突指纹与恢复校验都按它取路径。
     let target: MetadataTargetResolver
 
     public init(
@@ -169,7 +169,7 @@ public final class WritebackService: @unchecked Sendable {
             )
         }
 
-        // 按侧车去重（首见照片保留，与 TS uniquePhotos 一致）。
+        // 按 sidecar 去重（首见照片保留，与 TS uniquePhotos 一致）。
         var targetSidecars: [String] = []
         var firstPhotoBySidecar: [String: (id: String, filepath: String)] = [:]
         var seenSidecars = Set<String>()
@@ -197,7 +197,7 @@ public final class WritebackService: @unchecked Sendable {
             do {
                 existingKeywords = try await xmp.readKeywords(photoPath: photo.filepath)
             } catch {
-                // 缺失侧车 = 空；读取失败必须可见（否则会把外部关键词静默当空列表）。
+                // 缺失 sidecar = 空；读取失败必须可见（否则会把外部关键词静默当空列表）。
                 if xmp.fileExists(sidecarPath) {
                     // P2-5：非 trace 日志也不能输出绝对路径；basename#hash 保留定位能力。
                     GatherLogger.log(
@@ -260,7 +260,7 @@ public final class WritebackService: @unchecked Sendable {
         let deliveryModule = try mapModule(module)
         var items: [WritebackItem] = []
         // 已入队的项即使照片随后被移出（archived_at）**仍然写完**：写回队列是用户在
-        // preview 时点下的显式动作，文件与侧车一起被搬到 _rejects，写进去不会丢数据；
+        // preview 时点下的显式动作，文件与 sidecar 一起被搬到 _rejects，写进去不会丢数据；
         // 中途撤回会让 pending 项永远悬着（进度/失败聚合卡死）。可见性只约束
         // preview 的目标集合（见 preview 的归档过滤）与用户读面。
         // 默认只消费 pending：failed 必须由显式 retry 入口重试，否则用户已看到
@@ -309,7 +309,7 @@ public final class WritebackService: @unchecked Sendable {
             for keyword in entry.keywords { current.keywords.insert(keyword) }
             byPath[entry.xmpPath] = current
         }
-        // 直写（S5c-2b-3b-2a）：撤销不再经 outbox/协调器排队——逐侧车读当前
+        // 直写（S5c-2b-3b-2a）：撤销不再经 outbox/协调器排队——逐 sidecar 读当前
         // 属性、移除本模块引入的词、原子写回；写成功后才注销 origin 记录。
         var removed: [String] = []
         for (xmpPath, entry) in byPath.sorted(by: { $0.key < $1.key }) {
@@ -430,7 +430,7 @@ public final class WritebackService: @unchecked Sendable {
     /// 新一轮 pending 项——在这里清掉会让后台以无 UI 记录的方式把未确认关键词
     /// 写进 XMP（故全非 synced 时抛 XMP_CLEANUP_REQUIRES_LOADED，保留旧语义）。
     ///
-    /// 文件阶段（恢复备份/删侧车）与 DB 段（items/links/delivery + intent 前滚）
+    /// 文件阶段（恢复备份/删 sidecar）与 DB 段（items/links/delivery + intent 前滚）
     /// 统一由 DeliveryCoordinator.cleanup 承担：本服务不再自己删 delivery_items，
     /// 也不再经旧 outbox 清理。
     public func cleanup(sessionId: String, module: String) async throws -> CleanupResult {
@@ -443,7 +443,7 @@ public final class WritebackService: @unchecked Sendable {
         let summary = try await delivery.cleanup(sessionId: sessionId, module: deliveryModule)
         var errors = summary.errors
         // 外部修改冲突：交付已标 conflict（不恢复不删行），按旧码回填到 errors，
-        // 让调用方的报告卡能显示哪些侧车被外部改过（与 CullingService 同口径）。
+        // 让调用方的报告卡能显示哪些 sidecar 被外部改过（与 CullingService 同口径）。
         for path in summary.conflictedXmpPaths {
             errors.append(
                 MetadataWritebackFailure.from(

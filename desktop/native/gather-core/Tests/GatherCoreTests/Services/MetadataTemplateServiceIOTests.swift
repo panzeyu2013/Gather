@@ -207,7 +207,7 @@ struct MetadataTemplateServiceIOTests {
         #expect(try fx.batches.get(id: applied.batchId)?.undone == true)
     }
 
-    @Test("模板只填部分联系人成员：apply 走成员级合并，不删侧车其它成员")
+    @Test("模板只填部分联系人成员：apply 走成员级合并，不删 sidecar 其它成员")
     func templatePartialContactMerges() async throws {
         let fx = try makeFixture()
         defer { fx.cleanup() }

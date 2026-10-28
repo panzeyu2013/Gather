@@ -78,8 +78,8 @@ extension DeliveryRepo {
         return try itemRow(deliveryId: delivery.id, photoId: photoId, module: module)
     }
 
-    /// 按 (xmp_path, module) 读取该侧车的交付项（不区分首张照片）。
-    /// K0 delta 的 item 身份必须按侧车而不是照片：同一侧车换首张（JPEG→RAW）
+    /// 按 (xmp_path, module) 读取该 sidecar 的交付项（不区分首张照片）。
+    /// K0 delta 的 item 身份必须按 sidecar 而不是照片：同一 sidecar 换首张（JPEG→RAW）
     /// 不能生成第二条 item，否则 cumulative added/removed 会丢失。
     public func item(xmpPath: String, module: DeliveryModule) throws -> DeliveryItemRow? {
         guard let delivery = try get(xmpPath) else { return nil }
@@ -139,7 +139,7 @@ extension DeliveryRepo {
 
     /// 会话视角的 conflict 交付（旧 metadata_outbox 的 status='conflict' 行等价物）。
     ///
-    /// 冲突是**交付级**事实（一个侧车文件一个状态），按 delivery_sessions 反查会话，
+    /// 冲突是**交付级**事实（一个 sidecar 文件一个状态），按 delivery_sessions 反查会话，
     /// 与旧 getBySession(sessionId).filter(status == conflict) 同一口径。
     public func conflictDeliveries(sessionId: String) throws -> [DeliveryRow] {
         guard !sessionId.isEmpty else {

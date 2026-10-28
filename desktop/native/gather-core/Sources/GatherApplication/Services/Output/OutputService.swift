@@ -112,7 +112,7 @@ public final class OutputService: @unchecked Sendable {
                 tiffCompression: recipe.format == .tiff ? .lzw : nil,
                 watermark: recipe.watermark,
                 naming: recipe.naming,
-                // includeMetadata 目前等价于“把源侧车随成片带过去”，
+                // includeMetadata 目前等价于“把源 sidecar 随成片带过去”，
                 // 不能作为死字段：否则批量交付默认 includeXmp=false 会丢 caption/关键词。
                 includeXmp: recipe.includeXmp || recipe.includeMetadata,
                 destination: destination)
@@ -124,7 +124,7 @@ public final class OutputService: @unchecked Sendable {
             // 且每张照片多两次 stat）。续跑跳过但文件仍在的也回调，保证画廊完整。
             var written: [(photoId: String, url: URL, name: String)] = []
             // 指纹 = 配方参数（不含 artifacts）+ 范围 + 源内容摘要。
-            // 源摘要复用单导出路径的 deliveryFingerprint（含 checksum/size/mtime/命名/侧车版本），
+            // 源摘要复用单导出路径的 deliveryFingerprint（含 checksum/size/mtime/命名/sidecar 版本），
             // 否则「改了源片再交付」会因 completedPhotoIds 命中而整批跳过、manifest 谎报成功。
             let sourceDigest = (try? exportService.deliveryFingerprint(
                 sessionId: input.sessionId, options: options)) ?? ""

@@ -201,7 +201,7 @@ extension DeliveryRepo {
     ///
     /// 三步原先由 MetadataMutationService 分别调用、各自提交：中间任一步失败会留下
     /// 「revision 已 +1、status=pending，但没有任何 item/link」的幽灵交付（永久阻断
-    /// 该侧车其它模块 confirm，且无 item 可执行），或 linkSession 被 FK 拒绝后留下
+    /// 该 sidecar 其它模块 confirm，且无 item 可执行），或 linkSession 被 FK 拒绝后留下
     /// 孤儿 pending item（会话/UI/cleanup 都看不到）。原子化后任何一步失败整体回滚：
     /// revision 不推进、不产生 delivery_items / delivery_sessions 行。
     ///

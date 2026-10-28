@@ -327,7 +327,7 @@ extension CullingService {
     /// DeliveryCleanupSummary → 旧 CleanupResult（协议/UI 契约不变）。
     /// - errors 原样保留（可重试失败，intent 已保留）；
     /// - 外部修改冲突按路径回填 XMP_EXTERNALLY_MODIFIED（旧链路 throw
-    ///   externallyModified 产生的同码文案），用户仍能看到哪些侧车被改过。
+    ///   externallyModified 产生的同码文案），用户仍能看到哪些 sidecar 被改过。
     private static func cleanupResult(from summary: DeliveryCleanupSummary) -> CleanupResult {
         var errors = summary.errors
         for path in summary.conflictedXmpPaths {

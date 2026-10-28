@@ -104,7 +104,7 @@ private final class FakeWritebackPort: CullingWritebackPort {
 
 // MARK: - 交付端口替身（S5c-2a）
 
-/// 内存侧车假件：restore 是覆盖写（幂等），removeFile 只删内存键；
+/// 内存 sidecar 假件：restore 是覆盖写（幂等），removeFile 只删内存键；
 /// 可注入 restore 失败验证「失败保留 intent、replay 可重试」。
 private final class FakeDeliveryFiles: DeliveryFilePort, @unchecked Sendable {
     private let lock = NSLock()
@@ -675,7 +675,7 @@ struct CullingBatchTests {
             patch: CullingUpdatePatch(rating: 5)
         )
 
-        // RAW/JPEG 共享同一侧车：一条操作结果。
+        // RAW/JPEG 共享同一 sidecar：一条操作结果。
         #expect(results.count == 1)
         #expect(results[0].xmpPath == "/shoot/asset-1.xmp")
         // 但两张照片都被 upsert。
@@ -1499,7 +1499,7 @@ struct CullingDeliverySyncTests {
         #expect(result.deletedCount == 1)
         #expect(result.errors.isEmpty)
         #expect(try harness.deliveryRepo.get("/shoot/p1.xmp") == nil)
-        // 文件阶段：备份内容恢复回侧车（restore 幂等覆盖）。
+        // 文件阶段：备份内容恢复回 sidecar（restore 幂等覆盖）。
         #expect(harness.deliveryFiles.restoreTargets == ["/shoot/p1.xmp"])
         #expect(harness.deliveryFiles.contents("/shoot/p1.xmp") == "original")
         #expect(harness.writeback.cleanupCalls.isEmpty)
@@ -1584,7 +1584,7 @@ struct CullingDeliverySyncTests {
         }
     }
 
-    @Test("默认文件端口：restore 覆盖写回侧车、removeFile 幂等、缺备份报错")
+    @Test("默认文件端口：restore 覆盖写回 sidecar、removeFile 幂等、缺备份报错")
     func fileSystemPortRestoresSidecar() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-delivery-port-\(UUID().uuidString)", isDirectory: true)
@@ -2106,7 +2106,7 @@ struct CullingSingleTruthSourceTests {
             .map(\.photo.id) == ["p1"])
     }
 
-    @Test("交付侧车键走 DeliveryPath.sidecar：去重拼写的 photo 路径仍规范化")
+    @Test("交付 sidecar 键走 DeliveryPath.sidecar：去重拼写的 photo 路径仍规范化")
     func sidecarKeyIsCanonical() throws {
         let harness = try makeHarness()
         try addPhoto(harness.db, id: "p1", filepath: "/shoot/sub/../a.jpg")
@@ -2114,7 +2114,7 @@ struct CullingSingleTruthSourceTests {
             sessionId: "session", photoId: "p1", expectedRevision: 0,
             patch: CullingUpdatePatch(rating: 4)
         )
-        // 侧车键是规范化后的 /shoot/a.xmp（裸拼会得到 /shoot/sub/../a.xmp）。
+        // sidecar 键是规范化后的 /shoot/a.xmp（裸拼会得到 /shoot/sub/../a.xmp）。
         #expect(result.xmpPath == "/shoot/a.xmp")
         let page = try harness.service.listPage(sessionId: "session", scope: .all, limit: 200)
         #expect(page.assets.count == 1)

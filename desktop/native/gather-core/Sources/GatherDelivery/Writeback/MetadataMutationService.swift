@@ -2,7 +2,7 @@
 // 变更入队服务（S5c-2b-3b-2b-2：outbox → 统一交付模型）。
 //
 // 唯一写路径的入口：queuePhotoValues 只写 deliveries / delivery_items（先落库），
-// 本文件绝不直接触碰 XMP 侧车；刷盘由交付执行器（WritebackService）或
+// 本文件绝不直接触碰 XMP sidecar；刷盘由交付执行器（WritebackService）或
 // DeliveryCoordinator 在 preview/execute/retry/cleanup 时消费 pending 项。
 //
 // 与旧实现的差异（D-089 / S5c-2b-3b-2b-2）：
@@ -179,7 +179,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         if dirtyFields.isEmpty {
             throw MetadataMutationError.empty
         }
-        // 写目标是解析后的物理文件：侧车 = <photo>.xmp；内嵌 = 照片自身。
+        // 写目标是解析后的物理文件：sidecar = <photo>.xmp；内嵌 = 照片自身。
         let xmpPath = TSPath.normalize(target.path(resolved.filepath))
         var attributes: [String: JSONValue] = [:]
         if let rating = values["rating"] { attributes["rating"] = rating }
@@ -204,7 +204,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         }
         // P1-3：开行（mergeInput）+ 合并 item + 链接会话必须同一事务提交。
         // 分三步各自提交时，中间失败会留下 revision 已 +1、没有任何 item/link 的
-        // 幽灵 pending（永久阻断该侧车其它模块 confirm），或 linkSession 的 FK
+        // 幽灵 pending（永久阻断该 sidecar 其它模块 confirm），或 linkSession 的 FK
         // 拒绝后留下孤儿 pending item。原子入口在 DeliveryRepo 内完成，
         // 失败整体回滚（revision 不推进、无 item / delivery_sessions 行）。
         // 首次入队时记录写前指纹：执行器在 plan→write 窗口内检测外部改动。
@@ -214,8 +214,8 @@ public final class MetadataMutationService: MetadataMutationPort {
             do {
                 base = try MetadataFingerprint.contentFingerprintSync(xmpPath)
             } catch {
-                // contentFingerprintSync 对 ENOENT 返回 ""（无侧车是正常情况），
-                // 走到这里说明侧车存在但读不到内容（权限/坏链接/IO 错误）。此时空基线
+                // contentFingerprintSync 对 ENOENT 返回 ""（无 sidecar 是正常情况），
+                // 走到这里说明 sidecar 存在但读不到内容（权限/坏链接/IO 错误）。此时空基线
                 // 会让执行器整段跳过外部改动检测（fail-open，可能覆盖外部编辑），
                 // 所以宁可让这次写入显式失败。
                 throw GatherError(
@@ -259,7 +259,7 @@ public final class MetadataMutationService: MetadataMutationPort {
         existingKeywords: [String]? = nil
     ) async throws -> MetadataMutationResult? {
         let resolved = try assetResolver.resolve(sessionId: sessionId, photoId: photoId)
-        // 写目标是解析后的物理文件：侧车 = <photo>.xmp；内嵌 = 照片自身。
+        // 写目标是解析后的物理文件：sidecar = <photo>.xmp；内嵌 = 照片自身。
         let xmpPath = TSPath.normalize(target.path(resolved.filepath))
         return try await chain.run(path: xmpPath) {
             let diskKeywords: [String]
@@ -269,8 +269,8 @@ public final class MetadataMutationService: MetadataMutationPort {
                 let current = try await self.xmp.readAttributes(photoPath: resolved.filepath)
                 diskKeywords = current.keywords ?? []
             }
-            // item 身份按 (xmpPath, module)：同一侧车换首张照片也必须复用同一行，
-            // 否则 cumulative added/removed 丢失、同侧车被写两遍；DB 错误不再吞掉。
+            // item 身份按 (xmpPath, module)：同一 sidecar 换首张照片也必须复用同一行，
+            // 否则 cumulative added/removed 丢失、同一 sidecar 被写两遍；DB 错误不再吞掉。
             let pendingItem = try self.deliveryRepo.item(xmpPath: xmpPath, module: .metadata)
             // 只有“尚未落盘”的 item（pending/failed）才能代表本地基线；written/synced
             // 的 item.keywords 是上一次写盘时的旧快照，外部在 C1 里新增的词不在其中，

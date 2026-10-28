@@ -39,11 +39,11 @@
 //   （见 CullingDecisionRepo 文件头注）。
 // 取舍（pick/reject/pending）：唯一真相源是 culling_decisions.decision。
 //
-// ── 侧车/xmp 路径口径（写回内核已冻结）────────────────────────────
+// ── sidecar/xmp 路径口径（写回内核已冻结）────────────────────────────
 // 一切交付键、linkedByXmp 键统一走
 // DeliveryPath.sidecar(photo) = TSPath.xmpSidecarPath(ScanPath.canonical(photo))
 // （helper 名沿用旧 outbox 命名，但只做路径归一化，不读写旧表）。
-// 禁止裸拼 TSPath.xmpSidecarPath（符号链接/相对路径/已是侧车三种输入下与内核键
+// 禁止裸拼 TSPath.xmpSidecarPath（符号链接/相对路径/已是 sidecar 三种输入下与内核键
 // 不一致，会查不到行或造出重复行）。
 
 import Foundation

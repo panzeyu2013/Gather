@@ -7,7 +7,7 @@
 // P1 的 metadata/templates/triage 入口是类型化新增，没有历史命令。
 //
 // 依赖（2b-2 起不再持有 MetadataSyncCoordinator；P1-2 起写路径收口）：
-// - metadataService：关键词预览/应用/重试（缓存指纹、可写字段白名单、侧车分组串行）；
+// - metadataService：关键词预览/应用/重试（缓存指纹、可写字段白名单、sidecar 分组串行）；
 // - deliveryRepo：**只读**查询（conflictDeliveries / items / orphanDeliveries /
 //   get / metadataSummary），本文件不再调用它的任何写方法；
 // - stateWriter：交付状态与交付项写入的唯一入口（acceptExternalState /
@@ -302,7 +302,7 @@ public final class LiveMetadataAPI: MetadataAPI {
             policy: payload.policy,
             // 只有补丁本身带了 contact 才整块替换：编辑器只改文字字段时 draft 不提交
             // contactInfo，若仍置 true，executor 会用空结构清掉整块 CreatorContactInfo
-            // （P0：静默删除侧车联系人）。
+            // （P0：静默删除 sidecar 联系人）。
             replaceContact: payload.fields.contactInfo != nil,
             clearedContactMembers: payload.clearedContactMembers ?? [],
             now: nowISOString()
@@ -534,7 +534,7 @@ public final class LiveMetadataAPI: MetadataAPI {
 
     /// 待裁决字段：从交付项派生（rating/label 在 attributes_json，keywords 在列里）。
     ///
-    /// 一个侧车可有多条项（RAW+JPEG 共享侧车、多个模块先后写入），同一字段出现
+    /// 一个 sidecar 可有多条项（RAW+JPEG 共享 sidecar、多个模块先后写入），同一字段出现
     /// 任意一次即视为本次冲突的待裁决字段；完全推导不出时退回三个可写字段
     /// （交付级冲突仍必须有裁决出口）。
     private static func dirtyFields(items: [DeliveryItemRow]) -> [MetadataField] {
@@ -662,7 +662,7 @@ public final class LiveMetadataAPI: MetadataAPI {
     /// 只有 DeliveryRepo.confirm 在“全部 delivery_sessions.confirmed_at 非空”的
     /// 单事务里才能翻转；否则一个会话的裁决会把其它会话未确认的新内容当成已确认，
     /// 随后的 confirm 的 itemsSynced 子查询会把它们的 written item 一起翻 synced，
-    /// cleanup 便能删掉未确认内容。backup_path 原样保留（cleanup 仍能恢复原侧车）。
+    /// cleanup 便能删掉未确认内容。backup_path 原样保留（cleanup 仍能恢复原 sidecar）。
     private func acceptExternalState(
         delivery: DeliveryRow,
         remote: MetadataWriteAttributes

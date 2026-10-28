@@ -1,10 +1,10 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Services/MetadataServiceTests.swift
-// MetadataService 缓存/陈旧键/损坏侧车守卫的直测（用真实文件 + 计数 ExifProvider 做独立 oracle）。
+// MetadataService 缓存/陈旧键/损坏 sidecar 守卫的直测（用真实文件 + 计数 ExifProvider 做独立 oracle）。
 //
 // 覆盖此前 0 覆盖的两条数据安全契约：
-// 1) 缓存陈旧键判据是 **且**：源文件大小相同但侧车 mtime 变化必须重新提取；
-//    若判据退化为或，外部对侧车的修改永远不会被重新读取。
-// 2) 损坏侧车（readAttributes 返回空但侧车文件存在）不得用空值覆盖有效缓存。
+// 1) 缓存陈旧键判据是 **且**：源文件大小相同但 sidecar mtime 变化必须重新提取；
+//    若判据退化为或，外部对 sidecar 的修改永远不会被重新读取。
+// 2) 损坏 sidecar（readAttributes 返回空但 sidecar 文件存在）不得用空值覆盖有效缓存。
 import Foundation
 import Testing
 import GatherTestSupport
@@ -99,7 +99,7 @@ struct MetadataServiceTests {
         let photoId = "p-\(UUID().uuidString)"
         let photoPath = dir + "/photo.cr3"
         try Data("raw-bytes".utf8).write(to: URL(fileURLWithPath: photoPath))
-        // 侧车真实存在：陈旧键包含侧车 mtime，这是"外部改了 XMP"的唯一廉价信号。
+        // sidecar 真实存在：陈旧键包含 sidecar mtime，这是"外部改了 XMP"的唯一廉价信号。
         try Data("sidecar".utf8).write(to: URL(fileURLWithPath: TSPath.xmpSidecarPath(photoPath)))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: photoPath)
         let exif = CountingExif()
@@ -161,8 +161,8 @@ struct MetadataServiceTests {
         }
     }
 
-    /// P1 / IPTC：扫描必须把侧车描述性元数据投影到缓存（否则只读面板永远为空）。
-    @Test("扫描：侧车 IPTC 投影到缓存；侧车消失后清空投影")
+    /// P1 / IPTC：扫描必须把 sidecar 描述性元数据投影到缓存（否则只读面板永远为空）。
+    @Test("扫描：sidecar IPTC 投影到缓存；sidecar 消失后清空投影")
     func scanProjectsDescriptiveMetadata() async throws {
         let fx = try makeFixture()
         defer { fx.cleanup() }
@@ -177,18 +177,18 @@ struct MetadataServiceTests {
         #expect(cached?.city == "上海")
         #expect(cached?.contactInfo?.email == "a@b.c")
 
-        // 侧车被删除（合法清空）：守卫只针对"文件在但读不出"的损坏场景。
+        // sidecar 被删除（合法清空）：守卫只针对"文件在但读不出"的损坏场景。
         fx.xmp.setAttributes(MetadataWriteAttributes())
         fx.xmp.setSidecarExists(false)
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(300)], ofItemAtPath: fx.photoPath)
         _ = try await fx.service.getMetadata(photoIds: [fx.photoId])
-        #expect(try repo.get(fx.photoId)?.descriptive.title == nil, "侧车被删除后缓存必须同步清空")
+        #expect(try repo.get(fx.photoId)?.descriptive.title == nil, "sidecar 被删除后缓存必须同步清空")
     }
 
-    /// 变异守卫：缓存命中判据 && 退化为 || 时，源文件大小不变、仅侧车 mtime 变化
-    /// 的情况会被误判为命中 —— 外部软件写进侧车的关键词/星级永远读不到。
-    @Test("缓存陈旧键：指纹未变命中缓存；仅侧车 mtime 变化必须重新提取")
+    /// 变异守卫：缓存命中判据 && 退化为 || 时，源文件大小不变、仅 sidecar mtime 变化
+    /// 的情况会被误判为命中 —— 外部软件写进 sidecar 的关键词/星级永远读不到。
+    @Test("缓存陈旧键：指纹未变命中缓存；仅 sidecar mtime 变化必须重新提取")
     func cacheStalenessKeyRequiresBothSizeAndMtime() async throws {
         let fx = try makeFixture()
         defer { fx.cleanup() }
@@ -200,32 +200,32 @@ struct MetadataServiceTests {
         #expect(first[fx.photoId]?.iso == 200)
         #expect(first[fx.photoId]?.make == "GatherCam")
         #expect(first[fx.photoId]?.width == 100)
-        #expect(first[fx.photoId]?.rating == 3, "侧车 rating 覆盖 EXIF 缺省")
+        #expect(first[fx.photoId]?.rating == 3, "sidecar rating 覆盖 EXIF 缺省")
         #expect(first[fx.photoId]?.keywords == ["k1", "k2"])
         #expect(first[fx.photoId]?.label == "Green")
 
-        // 源文件与侧车都没动 → 必须命中缓存，不再调用 exif。
+        // 源文件与 sidecar 都没动 → 必须命中缓存，不再调用 exif。
         _ = try await fx.service.getMetadata(photoIds: [fx.photoId])
         #expect(fx.exif.callCount() == 1, "指纹未变时必须命中缓存")
 
-        // 只动侧车 mtime（源文件大小/内容/mtime 全不变）→ 陈旧键变化 → 必须重新提取。
+        // 只动 sidecar mtime（源文件大小/内容/mtime 全不变）→ 陈旧键变化 → 必须重新提取。
         let future = Date().addingTimeInterval(120)
         try FileManager.default.setAttributes(
             [.modificationDate: future], ofItemAtPath: TSPath.xmpSidecarPath(fx.photoPath))
         _ = try await fx.service.getMetadata(photoIds: [fx.photoId])
-        #expect(fx.exif.callCount() == 2, "仅侧车 mtime 变化也必须使缓存失效（判据是且，不是或）")
+        #expect(fx.exif.callCount() == 2, "仅 sidecar mtime 变化也必须使缓存失效（判据是且，不是或）")
     }
 
-    /// 变异守卫：损坏侧车守卫取反（或有侧车就早退）时，空读取会用空关键词/0 星
+    /// 变异守卫：损坏 sidecar 守卫取反（或有 sidecar 就早退）时，空读取会用空关键词/0 星
     /// 覆盖缓存里的有效值，直到文件再次变更前一直显示错误值。
-    @Test("损坏侧车（文件在但读回空）必须保留缓存里的关键词/星级/色标")
+    @Test("损坏 sidecar（文件在但读回空）必须保留缓存里的关键词/星级/色标")
     func corruptSidecarPreservesCachedValues() async throws {
         let fx = try makeFixture()
         defer { fx.cleanup() }
         fx.xmp.setAttributes(MetadataWriteAttributes(keywords: ["k1", "k2"], rating: 3, label: "Green"))
         _ = try await fx.service.getMetadata(photoIds: [fx.photoId])
 
-        // 侧车仍存在，但读取返回空（损坏）→ 同时让源文件 mtime 前移，强制走重新提取。
+        // sidecar 仍存在，但读取返回空（损坏）→ 同时让源文件 mtime 前移，强制走重新提取。
         fx.xmp.setAttributes(MetadataWriteAttributes())
         fx.xmp.setSidecarExists(true)
         try FileManager.default.setAttributes(
@@ -233,14 +233,14 @@ struct MetadataServiceTests {
 
         let second = try await fx.service.getMetadata(photoIds: [fx.photoId])
         #expect(fx.exif.callCount() == 2, "源文件 mtime 变化必须重新提取（前置条件）")
-        #expect(second[fx.photoId]?.keywords == ["k1", "k2"], "损坏侧车不得用空值覆盖有效缓存")
-        #expect(second[fx.photoId]?.rating == 3, "损坏侧车不得把星级清零")
-        #expect(second[fx.photoId]?.label == "Green", "损坏侧车不得把色标抹掉")
+        #expect(second[fx.photoId]?.keywords == ["k1", "k2"], "损坏 sidecar 不得用空值覆盖有效缓存")
+        #expect(second[fx.photoId]?.rating == 3, "损坏 sidecar 不得把星级清零")
+        #expect(second[fx.photoId]?.label == "Green", "损坏 sidecar 不得把色标抹掉")
     }
 
-    /// 对照：侧车**不存在**（合法的空初始状态）时不保留旧值 —— 守卫不能被理解成
+    /// 对照：sidecar**不存在**（合法的空初始状态）时不保留旧值 —— 守卫不能被理解成
     /// "永远保留缓存"（那会让真正被外部清空的关键词永远复活）。
-    @Test("侧车不存在时不得复活缓存旧值（守卫只针对损坏）")
+    @Test("sidecar 不存在时不得复活缓存旧值（守卫只针对损坏）")
     func absentSidecarDoesNotResurrectCachedValues() async throws {
         let fx = try makeFixture()
         defer { fx.cleanup() }
@@ -270,9 +270,9 @@ struct MetadataServiceTests {
         #expect(MetadataService.normalizeKeywordList(.none) == nil)
     }
 
-    /// P1：JPEG 清空诊断覆盖 descriptive / keywords / label；RAW 与"侧车也没写"
-    /// 不得误报（侧车写失败走通用 write-back verification）。
-    @Test("JPEG 内嵌清空诊断：多字段命中，RAW 与侧车未清空不误报")
+    /// P1：JPEG 清空诊断覆盖 descriptive / keywords / label；RAW 与"sidecar 也没写"
+    /// 不得误报（sidecar 写失败走通用 write-back verification）。
+    @Test("JPEG 内嵌清空诊断：多字段命中，RAW 与 sidecar 未清空不误报")
     func jpegEmbeddedClearDiagnostics() {
         let expected = MetadataWriteAttributes(
             keywords: [],
@@ -290,11 +290,11 @@ struct MetadataServiceTests {
         #expect(message?.contains("keywords") == true)
         #expect(message?.contains("label") == true)
 
-        // RAW 只有侧车一个真相源：同样的差异是普通写后校验，不是内嵌残留。
+        // RAW 只有 sidecar 一个真相源：同样的差异是普通写后校验，不是内嵌残留。
         #expect(MetadataService.jpegEmbeddedClearFailure(
             expected: expected, disk: disk, sidecar: sidecar, isJpeg: false) == nil)
 
-        // 侧车仍带值 = 侧车没写成功：交给通用 verification，不谎报"内嵌不支持"。
+        // sidecar 仍带值 = sidecar 没写成功：交给通用 verification，不谎报"内嵌不支持"。
         let sidecarStillHasValue = MetadataWriteAttributes(
             keywords: ["k1"],
             label: "Red",
@@ -322,7 +322,7 @@ struct MetadataServiceTests {
             expected: expected, disk: disk, sidecar: sidecar, isJpeg: true)
         #expect(message?.contains("contactInfo.city") == true, "\(message ?? "-")")
 
-        // 侧车仍带该成员 = 侧车没写成功，交给通用校验，不谎报"内嵌不支持"。
+        // sidecar 仍带该成员 = sidecar 没写成功，交给通用校验，不谎报"内嵌不支持"。
         let sidecarStillHasCity = MetadataWriteAttributes(
             descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(city: "上海")))
         #expect(MetadataService.jpegEmbeddedClearFailure(

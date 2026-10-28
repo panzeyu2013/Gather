@@ -7,7 +7,7 @@
 //   ImageDimensionsProvider（sharp 兜底）。
 // - TS 的 sharp(filePath).metadata() 经 ImageDimensionsProvider 注入。
 // - TS `MetadataWriterRouter.selectForRead()`（JPEG 内嵌 XMP）经 EmbeddedXMPReader
-//   注入；RAW/侧车模式与 selectSidecar 统一由 XMPProvider 服务（TS 中
+//   注入；RAW/sidecar 模式与 selectSidecar 统一由 XMPProvider 服务（TS 中
 //   selected === sidecar 分支的映射）。exiftool/文件系统实现留在 gather-app。
 // - 指纹/缓存过期判定（cacheStalenessKey）为纯逻辑，真实文件系统直接计算。
 
@@ -155,7 +155,7 @@ public final class MetadataService: @unchecked Sendable {
     private let embeddedReader: (any EmbeddedXMPReader)?
     /// K0：生成词来源（face/similarity/culling/template），用于阻止删除。
     private let origins: MetadataKeywordOriginRepo?
-    /// 写目标解析（侧车 / 内嵌）：信息面板必须显示**真实写入位置**，不能恒说侧车。
+    /// 写目标解析（sidecar / 内嵌）：信息面板必须显示**真实写入位置**，不能恒说 sidecar。
     private let writeTarget: (@Sendable (String) -> MetadataTarget)?
 
     public init(
@@ -262,7 +262,7 @@ public final class MetadataService: @unchecked Sendable {
 
     // MARK: - 有效属性合成
 
-    /// TS: readEffectiveAttributes —— 内嵌读取 + 侧车读取合并（后者覆盖前者）。
+    /// TS: readEffectiveAttributes —— 内嵌读取 + sidecar 读取合并（后者覆盖前者）。
     private func readEffectiveAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
         if let embeddedReader {
             let embedded = try await embeddedReader.readAttributes(photoPath: photoPath)
@@ -276,8 +276,8 @@ public final class MetadataService: @unchecked Sendable {
     ///
     /// 与 readEffectiveAttributesOnce 的差别：
     /// - 面向"任意路径"（不是 session 内照片），不做缓存投影；
-    /// - JPEG 走内嵌解析（XMP + IPTC）再叠加侧车；RAW 只读侧车；
-    /// - 解析失败不抛错，退化为侧车读（模板 preview 的 disk=nil 语义由调用方处理）。
+    /// - JPEG 走内嵌解析（XMP + IPTC）再叠加 sidecar；RAW 只读 sidecar；
+    /// - 解析失败不抛错，退化为 sidecar 读（模板 preview 的 disk=nil 语义由调用方处理）。
     ///
     /// 为什么必须读内嵌：Bridge/Lightroom 把 caption/版权写在 JPEG 的 IPTC-IIM 里，
     /// 只读 .xmp 会让 preview 把"盘上已有值"当成未知（keepExternal 失效），
@@ -296,10 +296,10 @@ public final class MetadataService: @unchecked Sendable {
         let embeddedReadable: Bool
     }
 
-    /// 已读侧车的盘上值合成（写后回读用：一次侧车读同时服务校验与缓存投影）。
+    /// 已读 sidecar 的盘上值合成（写后回读用：一次 sidecar 读同时服务校验与缓存投影）。
     ///
-    /// P1：JPEG 必须叠加内嵌 IPTC/XMP。侧车只是 JPEG 的"可写投影"，Bridge/C1
-    /// 写的标题/版权仍在 APP1 里；只看侧车会把它们从缓存投影里清掉。
+    /// P1：JPEG 必须叠加内嵌 IPTC/XMP。sidecar 只是 JPEG 的"可写投影"，Bridge/C1
+    /// 写的标题/版权仍在 APP1 里；只看 sidecar 会把它们从缓存投影里清掉。
     private func diskSnapshot(
         photoPath: String,
         sidecar: MetadataWriteAttributes
@@ -318,7 +318,7 @@ public final class MetadataService: @unchecked Sendable {
             return DiskSnapshot(
                 attributes: mergeAttributes(embedded, sidecar), embeddedReadable: true)
         } catch {
-            // 内嵌解析失败：退化为只读侧车（面板不阻断），但标记不可读供清空判定用。
+            // 内嵌解析失败：退化为只读 sidecar（面板不阻断），但标记不可读供清空判定用。
             GatherLogger.log(
                 "diskAttributes embedded parse failed (path token=\(TSPath.basename(photoPath))): "
                     + "\(error)", level: .debug)
@@ -333,8 +333,8 @@ public final class MetadataService: @unchecked Sendable {
     }
 
     /// TS: readEffectiveAttributesOnce —— 单次读取路径：
-    /// - RAW / sidecar-mode（TS: selected === sidecar）：一次侧车读。
-    /// - JPEG 且内嵌派生可用（IPTC-only 关键词之外）：从已解析段派生 + 一次侧车读。
+    /// - RAW / sidecar-mode（TS: selected === sidecar）：一次 sidecar 读。
+    /// - JPEG 且内嵌派生可用（IPTC-only 关键词之外）：从已解析段派生 + 一次 sidecar 读。
     /// - 其余回退 readEffectiveAttributes（exiftool 池）。
     private func readEffectiveAttributesOnce(
         photoPath: String,
@@ -363,8 +363,8 @@ public final class MetadataService: @unchecked Sendable {
             dateTaken: overlay.dateTaken ?? base.dateTaken,
             latitude: overlay.latitude ?? base.latitude,
             longitude: overlay.longitude ?? base.longitude,
-            // P0 / B1：描述性元数据**逐字段**合并（侧车覆盖内嵌，内嵌补侧车空缺）。
-            // 旧实现整块 overlay：侧车只要有一个字段，JPEG 里的其它 IPTC 就全丢。
+            // P0 / B1：描述性元数据**逐字段**合并（sidecar 覆盖内嵌，内嵌补 sidecar 空缺）。
+            // 旧实现整块 overlay：sidecar 只要有一个字段，JPEG 里的其它 IPTC 就全丢。
             descriptive: Self.mergeDescriptive(base.descriptive, overlay.descriptive)
         )
     }
@@ -602,12 +602,12 @@ public final class MetadataService: @unchecked Sendable {
         }
         let row = try metadataCacheRepo.get(photoId)
         // asset_read_mode=asset 时写盘/预览都必须用解析后的资产路径；photos.filepath
-        // 可能还是旧路径（写回执行器同样经 resolver），否则会读错侧车。
+        // 可能还是旧路径（写回执行器同样经 resolver），否则会读错 sidecar。
         let resolved = try? assetResolver?.resolve(sessionId: lookup.sessionId, photoId: photoId)
         let filepath = resolved?.filepath ?? lookup.filepath
         let filename = (filepath as NSString).lastPathComponent
         // 写目标优先用注入的解析器：内嵌模式下「写目标」就是照片本身，
-        // 面板若仍显示侧车路径，用户会误判写回失败（EMBEDDED 模式下恒显示「尚未写入 XMP」）。
+        // 面板若仍显示 sidecar 路径，用户会误判写回失败（EMBEDDED 模式下恒显示「尚未写入 XMP」）。
         let target = writeTarget?(filepath)
         let xmpPath = target?.writePath ?? resolved?.xmpPath ?? TSPath.xmpSidecarPath(filepath)
         let exif = PhotoExifSnapshot(
@@ -657,7 +657,7 @@ public final class MetadataService: @unchecked Sendable {
         if !previousKeywords.isEmpty { attributes.keywords = previousKeywords }
         if previous.rating != 0 { attributes.rating = Double(previous.rating) }
         if previous.label != nil { attributes.label = previous.label }
-        // P1 / IPTC：损坏侧车读不出 IPTC 时同样保留旧投影，避免一次坏文件清空面板。
+        // P1 / IPTC：损坏 sidecar 读不出 IPTC 时同样保留旧投影，避免一次坏文件清空面板。
         let previousDescriptive = previous.descriptive
         if !previousDescriptive.isEmpty { attributes.descriptive = previousDescriptive }
     }
@@ -902,7 +902,7 @@ public final class MetadataService: @unchecked Sendable {
             }
         }
 
-        // 500 张/共享侧车时串行读 XMP 是秒级；按 8 路分块并发读，保持原顺序。
+        // 500 张/共享 sidecar 时串行读 XMP 是秒级；按 8 路分块并发读，保持原顺序。
         let snapshots = await readKeywordSnapshots(targets)
         var items: [WritebackItem] = []
         var blockedKeyword: String?
@@ -985,7 +985,7 @@ public final class MetadataService: @unchecked Sendable {
         )
     }
 
-    /// 按侧车分组、每侧车一次 delta 入队，最后统一 flush 一次。
+    /// 按 sidecar 分组、每个 sidecar 一次 delta 入队，最后统一 flush 一次。
     public func applyKeywordDelta(
         photoIds: [String],
         added: [String],
@@ -1034,7 +1034,7 @@ public final class MetadataService: @unchecked Sendable {
         }
         let targets = try keywordTargets(photos)
         for target in targets {
-            // RAW/JPEG 共享侧车：每侧车只入队一次（首张照片作为 item 身份）。
+            // RAW/JPEG 共享 sidecar：每个 sidecar 只入队一次（首张照片作为 item 身份）。
             _ = try await mutations.queueKeywordDelta(
                 sessionId: target.photo.sessionId,
                 photoId: target.photo.id,
@@ -1049,7 +1049,7 @@ public final class MetadataService: @unchecked Sendable {
         guard let flushPending else { return emptyKeywordResult() }
         let result = try await flushPending(sid)
         // 写后回读并回填 cache（读不到保留旧 cache，不拿空值覆盖）。
-        // 同侧车可能还有不在本次请求里的兄弟变体（只选 RAW 写词时 JPEG 不在
+        // 同一 sidecar 可能还有不在本次请求里的兄弟变体（只选 RAW 写词时 JPEG 不在
         // keywordTargets 里）；按会话投影建立 xmpPath → 全部 photoId，避免面板旧词。
         var siblingIds: [String: [String]] = [:]
         do {
@@ -1077,7 +1077,7 @@ public final class MetadataService: @unchecked Sendable {
     /// P1 / IPTC：把逐张的属性写入（描述性元数据 / rating / label / keywords）
     /// 经交付队列落盘。
     ///
-    /// 为什么必须走队列：侧车写入的唯一路径是 deliveries（备份 → 冲突检测 → 写盘
+    /// 为什么必须走队列：sidecar 写入的唯一路径是 deliveries（备份 → 冲突检测 → 写盘
     /// → reload-ack）。模板与 triage 直接调 XMPProvider 会绕过备份与审计，撤销也
     /// 没有交付行可追溯；这里统一入队后 flush，再回读校验并刷新缓存投影。
     public func applyMetadataAttributes(
@@ -1167,8 +1167,8 @@ public final class MetadataService: @unchecked Sendable {
         // RAW+JPEG 共享同一 .xmp：写后投影要刷新全部兄弟照片，否则兄弟面板/下次
         // plan 仍读旧值并误判冲突（关键词路径已有同样处理）。
         //
-        // P1：兄弟刷新必须**逐张读盘上值**。JPEG 内嵌 IPTC 与侧车是两份数据；
-        // 用写回目标的 actual（侧车快照）整列刷新 JPEG 兄弟，会把兄弟的内嵌
+        // P1：兄弟刷新必须**逐张读盘上值**。JPEG 内嵌 IPTC 与 sidecar 是两份数据；
+        // 用写回目标的 actual（sidecar 快照）整列刷新 JPEG 兄弟，会把兄弟的内嵌
         // 标题/版权从缓存里清掉。
         var siblingPhotosByXmp: [String: [(id: String, filepath: String)]] = [:]
         var loadedSessions = Set<String>()
@@ -1186,7 +1186,7 @@ public final class MetadataService: @unchecked Sendable {
             guard let photo = photoById[input.photoId] else { continue }
             let readPath = (try? assetResolver?.resolve(
                 sessionId: photo.sessionId, photoId: input.photoId))?.filepath ?? photo.filepath
-            // P1：回读必须走盘上合成值（JPEG = 内嵌 + 侧车）。只读侧车会漏掉
+            // P1：回读必须走盘上合成值（JPEG = 内嵌 + sidecar）。只读 sidecar 会漏掉
             // 内嵌字段，并让"清空 JPEG 内嵌字段"看起来成功。
             let sidecar: MetadataWriteAttributes
             do {
@@ -1202,7 +1202,7 @@ public final class MetadataService: @unchecked Sendable {
             let disk = snapshot.attributes
             // 缓存投影以回读的**盘上值**为准（写入可能是"字段合并"，本地输入不等于
             // 最终文件）。只有本次明确写了描述性元数据才刷新 IPTC 投影：rating/
-            // 关键词写回时若侧车解析失败，不能用空值把面板已有 IPTC 抹掉。
+            // 关键词写回时若 sidecar 解析失败，不能用空值把面板已有 IPTC 抹掉。
             if input.attributes.descriptive != nil {
                 refreshProjection("descriptive", photoId: input.photoId) {
                     try metadataCacheRepo.updateDescriptive(
@@ -1244,7 +1244,7 @@ public final class MetadataService: @unchecked Sendable {
                     }
                     siblingPlans.append((siblingId, siblingPath))
                 }
-                // 并发读盘：共享侧车的兄弟组通常 2–4 张，串行 ImageIO 解析在大批次
+                // 并发读盘：共享 sidecar 的兄弟组通常 2–4 张，串行 ImageIO 解析在大批次
                 // 模板套用（2000 张）下会退化成 O(k²) 读盘。写缓存仍串行。
                 let siblingReads: [SiblingRead]
                 do {
@@ -1323,8 +1323,8 @@ public final class MetadataService: @unchecked Sendable {
                         + ": embedded metadata unreadable"))
                 continue
             }
-            // P1：JPEG 的内嵌 IPTC/XMP 无法靠写 .xmp 侧车清空。写后盘上值仍带
-            // 旧字段、而侧车已没有该字段 = 侧车写入成功但内嵌值还在：必须显式
+            // P1：JPEG 的内嵌 IPTC/XMP 无法靠写 .xmp 附属文件清空。写后盘上值仍带
+            // 旧字段、而 sidecar 已没有该字段 = sidecar 写入成功但内嵌值还在：必须显式
             // 失败（fail-closed），不能让调用方以为"清空成功"。
             if let clearFailure = Self.jpegEmbeddedClearFailure(
                 expected: input.attributes, disk: disk, sidecar: sidecar,
@@ -1355,14 +1355,14 @@ public final class MetadataService: @unchecked Sendable {
 
     /// P1：JPEG 内嵌字段的"清空失败"诊断。
     ///
-    /// 侧车是 JPEG 的唯一可写面；Bridge/C1 写在 APP1 里的 IPTC/XMP 不会被
-    /// 写侧车删掉。判据必须同时看两份：
+    /// sidecar 是 JPEG 的唯一可写面；Bridge/C1 写在 APP1 里的 IPTC/XMP 不会被
+    /// 写 sidecar 删掉。判据必须同时看两份：
     /// - 盘上合成值仍有该字段（清空没生效）；
-    /// - 侧车已没有该字段（说明不是侧车写失败，而是内嵌值残留）。
+    /// - sidecar 已没有该字段（说明不是 sidecar 写失败，而是内嵌值残留）。
     ///
     /// 返回 JPEG_EMBEDDED_CLEAR_UNSUPPORTED: <字段列表>（错误码留在前缀，
     /// UI 经 L10n.resolvedTemplate 的 "CODE: 参数" 形态本地化）。RAW 不走该判定：
-    /// RAW 只有侧车一个真相源，读回不符就是普通写后校验失败。
+    /// RAW 只有 sidecar 一个真相源，读回不符就是普通写后校验失败。
     static func jpegEmbeddedClearFailure(
         expected: MetadataWriteAttributes,
         disk: MetadataWriteAttributes,
@@ -1378,8 +1378,8 @@ public final class MetadataService: @unchecked Sendable {
                 // 只检查"显式清空"：nil = 不触碰（不在 explicitlySetFields 里）。
                 guard normalizedValue(descriptive.value(for: field)) == nil else { continue }
                 guard normalizedValue(diskDescriptive.value(for: field)) != nil else { continue }
-                // 侧车仍带值 = 侧车写入失败，交给通用 write-back verification 报错；
-                // 侧车已清空但盘上仍有值 = 内嵌残留（本诊断）。
+                // sidecar 仍带值 = sidecar 写入失败，交给通用 write-back verification 报错；
+                // sidecar 已清空但盘上仍有值 = 内嵌残留（本诊断）。
                 guard normalizedValue(sidecarDescriptive.value(for: field)) == nil else { continue }
                 fields.append(field.rawValue)
             }

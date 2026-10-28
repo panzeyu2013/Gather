@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherHost/SidecarXMPProvider.swift
-// XMP 侧车（<photo>.xmp）宿主读写实现 —— R4 全量重写。
+// XMP sidecar（<photo>.xmp）宿主读写实现 —— R4 全量重写。
 //
 // 与旧实现（replaceElementBlock / insertElement 版）的语义差异，逐条固定为契约：
 // 1. 补丁器 insert-or-replace：dc:subject / xmp:Rating / xmp:Label 缺失时插入到
@@ -12,11 +12,11 @@
 //    读取识别属性形式，写入删除该属性并落为元素形式。
 // 4. 写入后重读校验目标字段真的落盘；不一致抛类型化
 //    SidecarXMPError.verificationFailed（携带 xmpPath 与字段名），不再用 NSError 散文。
-// 5. 侧车路径大小写回退：磁盘上是 photo.XMP 时读写 photo.XMP，绝不另建 photo.xmp。
+// 5. sidecar 路径大小写回退：磁盘上是 photo.XMP 时读写 photo.XMP，绝不另建 photo.xmp。
 // 6. 原子写：临时文件 + replace（目标不存在时 move）；目标不存在也能落盘。
 // 7. 未知命名空间与未知字段逐字节保留：只改本宿主拥有的四个字段。
-// 8. 读取优先级（本 provider 的契约）：侧车文件是本 provider 的唯一读取来源；
-//    内嵌 XMP 与侧车的合并由 GatherApplication.MetadataService 负责（侧车覆盖内嵌）。
+// 8. 读取优先级（本 provider 的契约）：sidecar 文件是本 provider 的唯一读取来源；
+//    内嵌 XMP 与 sidecar 的合并由 GatherApplication.MetadataService 负责（sidecar 覆盖内嵌）。
 // 注（WP5 拆分）：写入管线（补丁 / 命名空间 / 原子落盘）见 SidecarXMPProvider+Patching.swift；
 
 import Foundation
@@ -52,7 +52,7 @@ public enum SidecarXMPError: Error, Equatable, Sendable, CustomStringConvertible
         }
     }
 
-    /// 错误涉及的侧车路径（报告卡结构化字段）。
+    /// 错误涉及的 sidecar 路径（报告卡结构化字段）。
     public var xmpPath: String {
         switch self {
         case .documentCorrupt(let path), .documentUnsupported(let path, _), .readFailed(let path, _),
@@ -99,7 +99,7 @@ extension SidecarXMPError: MetadataCodedError {
     }
 }
 
-/// XMP 侧车（photoPath 同名 .xmp）的宿主读写实现。
+/// XMP sidecar（photoPath 同名 .xmp）的宿主读写实现。
 public final class SidecarXMPProvider: XMPProvider {
     /// 故障注入点（测试专用）：写盘前对补丁结果做一次变换，用于构造「盘上没生效」的
     /// 写入器以验证写后校验路径。生产构造不传即 nil；校验本身不可关闭。
@@ -131,9 +131,9 @@ public final class SidecarXMPProvider: XMPProvider {
 
     // MARK: - XMPProvider（写入）
 
-    /// 并发契约（明确且不可违反）：**同一侧车路径的 write/backup/restore 必须由调用方串行**。
+    /// 并发契约（明确且不可违反）：**同一 sidecar 路径的 write/backup/restore 必须由调用方串行**。
     ///
-    /// 为什么不在 provider 内加锁：锁只能约束本进程，而侧车同时被外部软件（Capture One /
+    /// 为什么不在 provider 内加锁：锁只能约束本进程，而 sidecar 同时被外部软件（Capture One /
     /// Bridge）改写，跨进程互斥本就无法用进程内锁解决；加锁还会掩盖调用方违约（两个并发
     /// 写各自 read-modify-write，后写覆盖先写，静默丢更新）。
     ///
@@ -143,10 +143,10 @@ public final class SidecarXMPProvider: XMPProvider {
     /// 2. 变更入队：MetadataMutationService 的 actor PathSerialChain 按同一归一化路径串行
     ///    "读当前文件 → 合并 → 入队"。
     /// 3. 写并发上限 2（SlotGate）只跨路径，不跨同一路径。
-    /// 因此生产路径不存在两个并发写同一侧车；外部软件并发由租约 + 指纹冲突检测兜底
+    /// 因此生产路径不存在两个并发写同一 sidecar；外部软件并发由租约 + 指纹冲突检测兜底
     /// （写前比对 base_fingerprint，冲突转 conflict 交用户裁决，绝不静默覆盖）。
     public func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {
-        // 没有任何目标字段：不改写、也不创建空侧车（消灭旧的「写空文档报成功」）。
+        // 没有任何目标字段：不改写、也不创建空 sidecar（消灭旧的「写空文档报成功」）。
         guard !attributes.isEmpty else { return }
         let xmpPath = Self.resolveSidecarPath(photoPath)
         let document: String
@@ -219,8 +219,8 @@ public final class SidecarXMPProvider: XMPProvider {
 
     // MARK: - 路径解析（大小写回退）
 
-    /// 侧车的实际路径：优先返回磁盘上真实存在的条目（photo.XMP → photo.XMP），
-    /// 找不到时才使用规范的 .xmp 小写路径（新建侧车）。
+    /// sidecar 的实际路径：优先返回磁盘上真实存在的条目（photo.XMP → photo.XMP），
+    /// 找不到时才使用规范的 .xmp 小写路径（新建 sidecar）。
     static func resolveSidecarPath(_ photoPath: String) -> String {
         let canonical = TSPath.xmpSidecarPath(photoPath)
         let url = URL(fileURLWithPath: canonical)
@@ -300,7 +300,7 @@ public final class SidecarXMPProvider: XMPProvider {
         guard parser.parse() else { throw SidecarXMPError.documentCorrupt(xmpPath: xmpPath) }
     }
 
-    // MARK: - 新建侧车的骨架文档
+    // MARK: - 新建 sidecar 的骨架文档
 
     /// 最小 XMP 骨架：xmpmeta / rdf:RDF / rdf:Description 与三个命名空间齐全。
     private static let emptyXmpDoc = """

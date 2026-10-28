@@ -35,7 +35,7 @@ extension FaceKeywordingView {
                 }
                 .gatherPrimaryActionButton()
                 .disabled(!viewModel.canWriteback)
-                .help(l10n("确认后写入 XMP 侧车文件；不修改原始照片"))
+                .help(l10n("确认后写入 XMP 附属文件；不修改原始照片"))
             }
             if !viewModel.analysisDone {
                 // 前置条件写在可见文案里：.help 在禁用按钮上不会显示。

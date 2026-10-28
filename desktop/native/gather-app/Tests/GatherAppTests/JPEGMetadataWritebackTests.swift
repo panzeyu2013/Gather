@@ -1,9 +1,9 @@
 // desktop/native/gather-app/Tests/GatherAppTests/JPEGMetadataWritebackTests.swift
-// P1 回归：JPEG 的"盘上值"= 内嵌 IPTC/XMP + 侧车。
+// P1 回归：JPEG 的"盘上值"= 内嵌 IPTC/XMP + sidecar。
 //
 // 两件事必须同时成立：
 // 1) 写后回读/缓存投影走 diskAttributes：只改 caption 不得清掉内嵌 title；
-// 2) 侧车无法清空 JPEG 内嵌字段：显式失败（JPEG_EMBEDDED_CLEAR_UNSUPPORTED），
+// 2) sidecar 无法清空 JPEG 内嵌字段：显式失败（JPEG_EMBEDDED_CLEAR_UNSUPPORTED），
 //    缓存保留盘上真实值，用户不会误以为清空成功。
 //
 // 用真实 JPEG（ImageIO 写入 IPTC）+ 真实 SidecarXMPProvider + 真实交付执行器，
@@ -146,22 +146,22 @@ struct JPEGMetadataWritebackTests {
 
         let outcome = try await fx.metadata.applyMetadataAttributes(
             [("p-jpeg", MetadataWriteAttributes(
-                descriptive: DescriptiveMetadata(caption: "侧车新说明")))],
+                descriptive: DescriptiveMetadata(caption: "sidecar 新说明")))],
             source: .manual)
         #expect(outcome.failed.isEmpty, "只改 caption 不应失败：\(outcome.failed)")
         #expect(outcome.written == ["p-jpeg"])
         #expect(outcome.uncertain.isEmpty)
 
         let cached = try #require(try fx.cache.get("p-jpeg")?.descriptive)
-        #expect(cached.caption == "侧车新说明")
-        #expect(cached.title == "内嵌标题", "JPEG 内嵌 title 不得被侧车快照清出缓存")
+        #expect(cached.caption == "sidecar 新说明")
+        #expect(cached.title == "内嵌标题", "JPEG 内嵌 title 不得被 sidecar 快照清出缓存")
         #expect(cached.copyrightNotice == "© 2026 Gather",
-                "JPEG 内嵌 copyright 不得被侧车快照清出缓存")
+                "JPEG 内嵌 copyright 不得被 sidecar 快照清出缓存")
 
-        // 盘上侧车只有改动字段；内嵌值仍在（Bridge 仍能读到）。
+        // 盘上 sidecar 只有改动字段；内嵌值仍在（Bridge 仍能读到）。
         let sidecar = try await fx.xmp.readAttributes(
             photoPath: (fx.tempRoot as NSString).appendingPathComponent("IMG_100.JPG"))
-        #expect(sidecar.descriptive?.caption == "侧车新说明")
+        #expect(sidecar.descriptive?.caption == "sidecar 新说明")
         #expect(sidecar.descriptive?.title == nil)
     }
 
@@ -172,11 +172,11 @@ struct JPEGMetadataWritebackTests {
         let photoPath = try fx.addPhoto(
             id: "p-jpeg", name: "IMG_101.JPG",
             title: "内嵌标题", caption: "内嵌说明", copyright: "© 2026 Gather")
-        // 先有一个真实侧车：证明后面确实发生了"侧车元素删除"，而不是根本没写。
+        // 先有一个真实 sidecar：证明后面确实发生了"sidecar 元素删除"，而不是根本没写。
         try await fx.xmp.writeAttributes(
             photoPath: photoPath,
             attributes: MetadataWriteAttributes(
-                descriptive: DescriptiveMetadata(title: "侧车旧标题", city: "上海")))
+                descriptive: DescriptiveMetadata(title: "sidecar 旧标题", city: "上海")))
 
         var cleared = DescriptiveMetadata()
         cleared.clear(.caption)
@@ -186,7 +186,7 @@ struct JPEGMetadataWritebackTests {
             [("p-jpeg", MetadataWriteAttributes(descriptive: cleared))], source: .manual)
 
         #expect(outcome.written.isEmpty, "清空未生效不得报 written")
-        #expect(outcome.uncertain == ["p-jpeg"], "可能已写侧车：必须进 uncertain/撤销批次")
+        #expect(outcome.uncertain == ["p-jpeg"], "可能已写 sidecar：必须进 uncertain/撤销批次")
         #expect(outcome.undoable == ["p-jpeg"])
         let failure = try #require(outcome.failed.first)
         #expect(failure.message.hasPrefix("JPEG_EMBEDDED_CLEAR_UNSUPPORTED:"),
@@ -198,20 +198,20 @@ struct JPEGMetadataWritebackTests {
                 "CreatorContactInfo 必须映射并纳入清空判定：\(failure.message)")
 
         let cached = try #require(try fx.cache.get("p-jpeg")?.descriptive)
-        #expect(cached.title == "侧车旧标题", "缓存必须反映侧车的最终值")
+        #expect(cached.title == "sidecar 旧标题", "缓存必须反映 sidecar 的最终值")
         #expect(cached.caption == "内嵌说明", "失败时缓存不得丢掉内嵌字段")
         #expect(cached.webStatement == "https://example.com/license")
         #expect(cached.contactInfo?.city == "上海")
         #expect(cached.contactInfo?.email == "a@b.c")
 
-        // 侧车文件存在且元素确实被删除了；失败来自内嵌值残留，而不是侧车没写。
+        // sidecar 存在且元素确实被删除了；失败来自内嵌值残留，而不是 sidecar 没写。
         let xmpPath = TSPath.xmpSidecarPath(photoPath)
         #expect(FileManager.default.fileExists(atPath: xmpPath))
         let sidecar = try await fx.xmp.readAttributes(photoPath: photoPath)
         #expect(sidecar.descriptive?.caption == nil)
         #expect(sidecar.descriptive?.webStatement == nil)
         #expect(sidecar.descriptive?.contactInfo == nil)
-        #expect(sidecar.descriptive?.title == "侧车旧标题", "未清空的侧车字段必须保留")
+        #expect(sidecar.descriptive?.title == "sidecar 旧标题", "未清空的 sidecar 字段必须保留")
     }
 
     @Test("清空联系人单个成员：内嵌仍保留时必须失败（成员级信号）")
@@ -221,7 +221,7 @@ struct JPEGMetadataWritebackTests {
         let photoPath = try fx.addPhoto(
             id: "p-jpeg", name: "IMG_103.JPG",
             title: "内嵌标题", caption: "内嵌说明", copyright: "© 2026 Gather")
-        // 先落一份带城市的侧车：证明后面确实发生了成员删除，而不是根本没写。
+        // 先落一份带城市的 sidecar：证明后面确实发生了成员删除，而不是根本没写。
         try await fx.xmp.writeAttributes(
             photoPath: photoPath,
             attributes: MetadataWriteAttributes(
@@ -236,10 +236,10 @@ struct JPEGMetadataWritebackTests {
             source: .manual)
 
         #expect(outcome.written.isEmpty, "成员级清空未生效不得报 written")
-        #expect(outcome.uncertain == ["p-jpeg"], "可能已写侧车：必须进 uncertain/撤销批次")
+        #expect(outcome.uncertain == ["p-jpeg"], "可能已写 sidecar：必须进 uncertain/撤销批次")
         let failure = try #require(outcome.failed.first)
         #expect(failure.message.contains("contactInfo"), "\(failure.message)")
-        // 侧车已无城市（成员被删），盘上仍有（来自内嵌 IPTC）。
+        // sidecar 已无城市（成员被删），盘上仍有（来自内嵌 IPTC）。
         let sidecar = try await fx.xmp.readAttributes(photoPath: photoPath)
         #expect(sidecar.descriptive?.contactInfo?.city == nil)
         let cached = try #require(try fx.cache.get("p-jpeg")?.descriptive)
@@ -256,7 +256,7 @@ struct JPEGMetadataWritebackTests {
         try fx.addPhoto(
             id: "p-jpeg", name: "IMG_102.JPG",
             title: "内嵌标题", caption: "内嵌说明", copyright: "© 2026 Gather")
-        // 让两个变体共享同一个侧车：CR3 与 JPG 同 stem（xmpSidecarPath 均落 IMG_102.xmp）。
+        // 让两个变体共享同一个 sidecar：CR3 与 JPG 同 stem（xmpSidecarPath 均落 IMG_102.xmp）。
         #expect(TSPath.normalize(TSPath.xmpSidecarPath(rawPath))
             == TSPath.normalize(TSPath.xmpSidecarPath(
                 (fx.tempRoot as NSString).appendingPathComponent("IMG_102.JPG"))))
@@ -277,9 +277,9 @@ struct JPEGMetadataWritebackTests {
         let rawCached = try #require(try fx.cache.get("p-raw")?.descriptive)
         #expect(rawCached.caption == "RAW 新说明")
         let jpegCached = try #require(try fx.cache.get("p-jpeg")?.descriptive)
-        #expect(jpegCached.caption == "RAW 新说明", "共享侧车的写入要投影到兄弟")
+        #expect(jpegCached.caption == "RAW 新说明", "共享 sidecar 的写入要投影到兄弟")
         #expect(jpegCached.title == "内嵌标题",
-                "兄弟刷新必须逐张读盘：RAW 侧车快照不能清掉 JPEG 内嵌 title")
+                "兄弟刷新必须逐张读盘：RAW sidecar 快照不能清掉 JPEG 内嵌 title")
         #expect(jpegCached.copyrightNotice == "© 2026 Gather")
         #expect(jpegCached.webStatement == "https://example.com/license")
         #expect(jpegCached.contactInfo?.city == "上海")

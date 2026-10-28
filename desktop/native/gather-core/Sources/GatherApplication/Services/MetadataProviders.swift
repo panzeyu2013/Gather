@@ -17,7 +17,7 @@ import Foundation
 import GatherProtocol
 
 /// TS: MetadataWriterRouter.selectForRead() —— 内嵌 XMP 读取（仅 JPEG 走宿主
-/// exiftool 池；RAW/侧车模式由 XMPProvider 直接服务，不注入本协议）。
+/// exiftool 池；RAW/sidecar 模式由 XMPProvider 直接服务，不注入本协议）。
 public protocol EmbeddedXMPReader: Sendable {
     func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes
 }

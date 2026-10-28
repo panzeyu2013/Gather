@@ -23,7 +23,7 @@ import GatherPersistence
 
 /// cleanup 删除交付前的 item 门禁（P1-8）。
 ///
-/// 交付是“一个侧车文件”粒度，item 是“(交付, 照片, 模块)”粒度；一个文件可以同时
+/// 交付是“一个 sidecar 文件”粒度，item 是“(交付, 照片, 模块)”粒度；一个文件可以同时
 /// 有 culling 与 metadata 的 item。模块级 cleanup 不能把其它模块的输入一起删掉：
 /// - 任一 item 还不是 synced（pending/failed/written）→ 整条交付 skip；
 /// - 全部 synced、但仍有其它模块的 item → 只清本模块 item，保留交付（留给
@@ -226,7 +226,7 @@ struct DeliveryDBPhase: Sendable {
         try connection.transaction {
             // P2-2：finalize 也必须过跨模块 item 门禁。cleanup 的差异化语义
             // （retainForeign）在这里刻意不适用：finalize 不 restore，只是按
-            // 「一个侧车文件」丢弃整条交付，其它模块已 synced 的 item 会随同一
+            // 「一个 sidecar 文件」丢弃整条交付，其它模块已 synced 的 item 会随同一
             // 文件生命周期一起删除；真正危险的是**非 synced** item（pending/
             // failed/written），那意味着仍有未落盘的输入，必须 fail-closed。
             //

@@ -236,7 +236,7 @@ extension WritebackService {
         return result
     }
 
-    /// 归位时解析写盘路径（优先资产解析，其次交付行/侧车推导）；空白路径表示无法回读。
+    /// 归位时解析写盘路径（优先资产解析，其次交付行/sidecar 推导）；空白路径表示无法回读。
     private func recoveryPhotoPath(
         sessionId: String,
         delivery: DeliveryRow,

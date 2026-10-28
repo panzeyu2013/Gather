@@ -28,11 +28,11 @@ struct ExportPreviewSection: View {
                         color: GatherTheme.warning
                     )
                 }
-                // D09：清单描述**输出**（目标名 + 格式 + 边车），并给出逐项可执行性诊断；
+                // D09：清单描述**输出**（目标名 + 格式 + sidecar），并给出逐项可执行性诊断；
                 // 旧实现列的是源文件名 + 源大小，与真正写出的文件无关。
                 if preview.sidecarCount > 0 {
                     Text(l10n.format(
-                        "将写入 %lld 张照片 + %lld 个 XMP 边车，共 %lld 个文件。",
+                        "将写入 %lld 张照片 + %lld 个 XMP 附属文件，共 %lld 个文件。",
                         preview.photoCount,
                         preview.sidecarCount,
                         preview.physicalFileCount

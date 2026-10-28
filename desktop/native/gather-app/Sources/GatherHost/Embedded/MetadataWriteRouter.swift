@@ -1,11 +1,11 @@
 // desktop/native/gather-app/Sources/GatherHost/Embedded/MetadataWriteRouter.swift
-// 写目标路由：把 XMPProvider 的调用按 MetadataTargetPolicy 分派到侧车或 JPEG 内嵌。
+// 写目标路由：把 XMPProvider 的调用按 MetadataTargetPolicy 分派到 sidecar 或 JPEG 内嵌。
 //
 // 存在的意义：交付队列（deliveries/delivery_items/WritebackService）已经把"目标"
 // 当成一个可指纹、可备份、可恢复的文件；路由只决定这个文件是谁，其余机制不动。
 //
 // 备份语义：
-// - 侧车：原样委托（复制 .xmp）。
+// - sidecar：原样委托（复制 .xmp）。
 // - 内嵌：只备份 SOI…SOS 头部（几 KB–几百 KB），restore = 旧头部 + 当前 scan。
 //   backup() 生成的路径会挂到 pending，write() 复用它（避免两份备份/孤儿文件）。
 import Foundation
@@ -49,8 +49,8 @@ final class MetadataWriteRouter: XMPProvider {
             mode: modeProvider(),
             sidecarExists: hasSidecar,
             isJPEG: MetadataTargetPolicy.isJPEG(photoPath))
-        // RAW+JPEG 同资产：RAW 只能走侧车；JPEG 兄弟必须跟随侧车，
-        // 否则同一资产会同时存在内嵌与侧车两个真相源。
+        // RAW+JPEG 同资产：RAW 只能走 sidecar；JPEG 兄弟必须跟随 sidecar，
+        // 否则同一资产会同时存在内嵌与 sidecar 两个真相源。
         // 只在 auto 模式下做这个覆盖：用户显式选 embedded 时尊重选择。
         if kind == .embedded, modeProvider() == "auto", Self.rawSiblingExists(for: photoPath) {
             kind = .sidecar
@@ -158,8 +158,8 @@ final class MetadataWriteRouter: XMPProvider {
         // 这个已经用过的路径（成功后也不删）→ 原片旁堆积 .gather-header-* 孤儿。
         _ = takePendingBackup(for: photoPath)
         guard !backupPath.isEmpty else { return }
-        // 备份名的 kind 标记优先于“当下的写目标”：备份创建后侧车可能才出现，
-        // 按当下 target 分派会把 .gather-header- 备份当成侧车内容拷进 .xmp。
+        // 备份名的 kind 标记优先于“当下的写目标”：备份创建后 sidecar 可能才出现，
+        // 按当下 target 分派会把 .gather-header- 备份当成 sidecar 内容拷进 .xmp。
         let isHeaderBackup = backupPath.contains(".gather-header-")
         let isSidecarBackup = backupPath.contains(".gather-backup-")
         if isHeaderBackup && !isSidecarBackup {
@@ -196,14 +196,14 @@ final class MetadataWriteRouter: XMPProvider {
         try await sidecar.removeFile(path)
     }
 
-    // MARK: - 内嵌读（内嵌 + 侧车逐字段合并，侧车优先）
+    // MARK: - 内嵌读（内嵌 + sidecar 逐字段合并，sidecar 优先）
 
     private func readEmbedded(photoPath: String) async throws -> MetadataWriteAttributes {
         let parsed = try await ImageIOExifProvider().parse(filePath: photoPath, isJpeg: true)
         let embedded = parsed.flatMap(MetadataService.embeddedAttributesFromParse)
             ?? MetadataWriteAttributes()
         // 内嵌目标也允许存在外部 .xmp（策略上不会走到这里，但直接调用 readAttributes
-        // 时仍要给出有效值）。合并规则与 MetadataService 一致：侧车逐字段覆盖。
+        // 时仍要给出有效值）。合并规则与 MetadataService 一致：sidecar 逐字段覆盖。
         let sidecarPath = SidecarXMPProvider.resolveSidecarPath(photoPath)
         guard FileManager.default.fileExists(atPath: sidecarPath) else { return embedded }
         let overlay: MetadataWriteAttributes

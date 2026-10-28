@@ -19,7 +19,7 @@
 
 | 文件 | main 侧 | feat 侧 | 决策 |
 |---|---|---|---|
-| `Services/MetadataService.swift` | 回读走 `diskSnapshot`（内嵌+侧车合成 + `embeddedReadable`），写后校验用 `disk`；新增 WebStatement、联系人结构解析、兄弟刷新 | 回读改 `diskAttributes`；`usageTerms` 去掉 IIM 回退；描述性字段加 `xmpPresentKeys` presence 阻断 | 取 main 的回读/校验骨架（feat 的意图"内嵌+侧车合成"已由 `diskSnapshot` 覆盖且更强），保留 feat 的 `usageTerms` 无 IIM 与 presence 阻断，并保留 main 新增的 `webStatement` 表项 |
+| `Services/MetadataService.swift` | 回读走 `diskSnapshot`（内嵌+sidecar 合成 + `embeddedReadable`），写后校验用 `disk`；新增 WebStatement、联系人结构解析、兄弟刷新 | 回读改 `diskAttributes`；`usageTerms` 去掉 IIM 回退；描述性字段加 `xmpPresentKeys` presence 阻断 | 取 main 的回读/校验骨架（feat 的意图"内嵌+sidecar 合成"已由 `diskSnapshot` 覆盖且更强），保留 feat 的 `usageTerms` 无 IIM 与 presence 阻断，并保留 main 新增的 `webStatement` 表项 |
 | `Protocol/ErrorCodeContractTests.swift` | 186 码 | 194 码 | 合并清单已自动并集为 195 条（逐条核对：枚举 195 / 清单 195 / 与枚举零差集），注释与断言改 195 |
 | `Protocol/SessionContractTests.swift` | 186 | 194 | 同上，注释按时间线重写为 `…→186（JPEG 内嵌清空）→195（OUTPUT_*×5 + WEBDAV_*×4）`，断言 `== 195` |
 | `docs/README.md` | 44/385/v5、1,380/202、735/85、en 1,680 | 44/386/v1、1,416/211、754/88、en 1,746 | 取 feat 的结构与口径，数字按合并树实测重采样（§3） |

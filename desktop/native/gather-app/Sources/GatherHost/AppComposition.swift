@@ -65,7 +65,7 @@ public struct AppComposition {
     var maintenanceService: MaintenanceService { core.maintenanceService }
     var exportService: ExportService { core.exportService }
     var imagePreloadService: ImagePreloadService { core.imagePreloadService }
-    /// XMP 侧车宿主实现（LiveMetadataAPI 的冲突 remote 读 / 孤儿 restore 用）。
+    /// XMP sidecar 宿主实现（LiveMetadataAPI 的冲突 remote 读 / 孤儿 restore 用）。
     var xmpProvider: any XMPProvider { core.xmpProvider }
     /// 唯一交付编排器（四域共用；AppRuntime.start 的启动回放执行者）。
     var deliveryCoordinator: DeliveryCoordinator { core.deliveryCoordinator }

@@ -5,7 +5,7 @@
 
 ## 1. 背景
 
-三条需求分别针对：初筛只有「闭眼=眼部梯度比、模糊=512px 梯度」的代理信号；IPTC 写入只落侧车、清空会被内嵌旧值复活；导出只有单套参数、交付要在别的软件收尾。
+三条需求分别针对：初筛只有「闭眼=眼部梯度比、模糊=512px 梯度」的代理信号；IPTC 写入只落 sidecar、清空会被内嵌旧值复活；导出只有单套参数、交付要在别的软件收尾。
 
 ## 2. 决策
 
@@ -16,7 +16,7 @@
 | D3 | **只并进 `quality.score` 第二段**，不新增 job 类型 | 复用解码、取消、进度、重试；模型失败只记 failed 行 | job 内两个阶段共享超时预算 |
 | D4 | **眼睛/微笑用几何单调分**，不做概率、不加权复合 | 没有标注集时，伪概率与手写权重会制造虚假精度 | 只能组内相对比较 + 保守阈值 |
 | D5 | **内嵌写走段级改写**（APP1 XMP + APP13 IRB 0x0404） | 实测 ImageIO `CopyImageSource` 忽略 IPTC 字典；「清空」要求 IIM 数据集消失 | 自己维护 JPEG 段表/头部备份 |
-| D6 | **一个物理写目标**：有 `.xmp` → 侧车；独立 JPEG → 内嵌 | 两个真相源正是"清空不生效"的根因 | 需要 `target_kind` 贯穿交付层 |
+| D6 | **一个物理写目标**：有 `.xmp` → sidecar；独立 JPEG → 内嵌 | 两个真相源正是"清空不生效"的根因 | 需要 `target_kind` 贯穿交付层 |
 | D7 | **清空三段式**：IIM 删 dataset → XMP 删元素 → 读侧 presence 阻断回退 | 任一缺失都会让旧值复活 | 读侧多一个 presence 集合 |
 | D8 | **交付 = 配方 × 照片集**：`output.run` 逐配方执行 + manifest + 可选联系表/画廊 | 一个 job 收尾；复用既有续跑/回滚/指纹 | 配方持久化走 settings JSON |
 | D9 | **画廊/校样本地优先**，发布只做用户自备 WebDAV（Keychain） | 守住"不做云端同步"的产品红线 | 无厂商托管/在线校样 |
@@ -85,7 +85,7 @@
 | major | 删光配方后“运行交付”复活默认配方并真的导出 | 区分“从未保存”与“保存了空数组”；空列表提示、不再回填 |
 | major | 模型指纹含 size/mtime → 内嵌写回后全量重算 | 改为 尺寸 + checksum（元数据写回不失效，重新导入失效） |
 | major | 模型段串行且不可取消 | 按 analyzeConcurrency 分批并发 + 每批取消检查 |
-| major | RAW+JPEG 同资产路由不一致 | auto 模式下有 RAW 兄弟则 JPEG 跟随侧车 |
+| major | RAW+JPEG 同资产路由不一致 | auto 模式下有 RAW 兄弟则 JPEG 跟随 sidecar |
 | major | 自建 header 备份成为无主孤儿 | 成功写完后删除自建备份（交付层备份保持） |
 | major | 批量交付 job 污染导出页横幅/进度 | applyJobEvent 过滤 checkpoint.outputRun=true |
 | major | 取消位残留导致重试整批跳过却报成功 | registerRun 清 cancelledRuns 里同 runId 的残留 |
@@ -191,7 +191,7 @@ metadata_write_mode 升级提示（产品决策）、交付根 canonical 校验�
 | 客户校样勾选（source=imported）不在人工保护集合里，应用建议会把客户选中的 keep 翻成 reject | `CullingDecisionSource.isHumanDecision`（manual + imported）与 `humanDecisionSQLList` 单一来源；apply / 生成 / 摘要 / 资产页过滤四处统一；补 apply 跳过测试 |
 | 清空 location / intellectualGenre / scene 时 IIM dataset 不删 → 旧值复活，或内嵌写后校验失败回滚 | 补 IIM 映射（2:27 / 2:4 / 2:202，实测 ImageIO 读回键名）；usageTerms 确认 IIM 无对应 dataset（2:130 读作 ImageType）→ 读侧不再回退 IIM；补「清空后 IIM dataset 消失 + 回读 nil」测试 |
 | 第 2 个及以后的 APP13 被整段丢弃（Photoshop 拆段的缩略图/裁剪路径/大 IPTC 消失） | 合并全部 APP13 的 IRB 资源后按资源边界重新拆段写回；`.keep` 原样保留；补多 APP13 / 超 64KB 拆段测试 |
-| 交付指纹两个方向都错：改源片会被续跑跳过（manifest 谎报成功），改「联系表/画廊」开关却让指纹失效 → 整批重导成 _2 副本 | 配方身份去掉 artifacts（`OutputRecipe.withoutArtifacts`），job 去重键与 `recipeFingerprint` 都不含联系表/画廊选项；指纹并入 `deliveryFingerprint`（checksum/size/mtime/命名/侧车版本），源变即失效 |
+| 交付指纹两个方向都错：改源片会被续跑跳过（manifest 谎报成功），改「联系表/画廊」开关却让指纹失效 → 整批重导成 _2 副本 | 配方身份去掉 artifacts（`OutputRecipe.withoutArtifacts`），job 去重键与 `recipeFingerprint` 都不含联系表/画廊选项；指纹并入 `deliveryFingerprint`（checksum/size/mtime/命名/sidecar 版本），源变即失效 |
 | `OUTPUT_*` / `WEBDAV_*` 错误码不在 `GatherErrorCode`，交付失败在 UI 退化成「发生未知错误」 | 9 个码进枚举 + 中文模板 + en 表；`translateCommon` 对 job 失败取 `CODE:` 首段；错误码清单契约（194）与交叉契约测试同步 |
 | 取消整套交付 → 红条「发生未知错误」且结果区整块消失 | `ExportViewModel.isCancellation`（JobCancellationMarker / CancellationError）→ 走 notice「交付已取消；已写出的成片仍在交付目录中」，不再落错误条 |
 | WebDAV 发布不可取消、无进度；取消被吞成逐文件失败继续跑 | `publish` 增加 `onProgress` 并接到面板进度；每文件前 `Task.checkCancellation()`、`CancellationError` 原样抛出；面板加「停止发布」与关闭即取消 |
@@ -202,7 +202,7 @@ metadata_write_mode 升级提示（产品决策）、交付根 canonical 校验�
 
 - 内嵌写：备份改原子写；restore 先解析校验再覆盖；`restore` 消费 pending 备份（不再复用旧路径堆积孤儿）；
   APP13 解析失败降级为「只写 XMP」而不是整次失败；写盘不再把整份 JPEG 解析两次、triage 校验只扫 XMP 包体。
-- 信息面板：按写目标显示「写入目标（照片本身）」而不是恒显示「侧车：无」。
+- 信息面板：按写目标显示「写入目标（照片本身）」而不是恒显示「sidecar：无」。
 - 画廊：删旧目录失败只记 warn（不再把已成功的替换报成失败）；去掉提交后整本 `stat` 的 `directorySize` 与死代码。
 - 联系表：context 创建失败也删除临时 PDF。
 - manifest：不进 WebDAV 发布白名单（含本机绝对路径，只用于本地审计）。

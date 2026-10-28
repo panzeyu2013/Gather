@@ -25,7 +25,7 @@
 // - cancelAnalysis：jobService.cancelScope(.similarityAnalyze) + 服务层 abort
 //   （job 信号也会链接到占用槽，两条路径都保留）；
 // - previewWriteback：getResult → buildSimilarityKeywordPlan → 模块 preview →
-//   只保留命中侧车的项并按顺序合并关键词 → persistKeywords（旧命令面 的
+//   只保留命中 sidecar 的项并按顺序合并关键词 → persistKeywords（旧命令面 的
 //   buildSimilarityKeywordPreview 逐字复刻）；
 // - writeback：threshold 指定时先查 hasResult；再按 itemIds 过滤 pending 行，
 //   数量不符即 SIM_PREVIEW_STALE；最后 execute。
@@ -162,7 +162,7 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
         let preview = try await mapAsync {
             try await similarityService.previewWriteback(sessionId: input.sessionId)
         }
-        // 只保留命中本次 plan 的侧车；关键词按“现有在前、新增去重追加”的顺序合并
+        // 只保留命中本次 plan 的 sidecar；关键词按“现有在前、新增去重追加”的顺序合并
         // （TS orderedUnion(...)，与 buildSimilarityKeywordPlan 同序）。
         let selectedItems = preview.items
             .filter { plan.keywordsBySidecar[$0.xmpPath] != nil }

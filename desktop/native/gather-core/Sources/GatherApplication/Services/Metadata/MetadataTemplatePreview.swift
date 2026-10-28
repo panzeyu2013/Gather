@@ -36,7 +36,7 @@ public struct MetadataTemplatePreview: Equatable, Sendable {
 }
 
 public enum MetadataTemplatePreviewBuilder {
-    /// photos 的 current 来自缓存投影，disk 来自盘上读取（nil = 读不到/无侧车）。
+    /// photos 的 current 来自缓存投影，disk 来自盘上读取（nil = 读不到/无 sidecar）。
     public static func build(
         template: MetadataTemplate,
         photos: [(photoId: String, current: DescriptiveMetadata, disk: DescriptiveMetadata?)],

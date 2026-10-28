@@ -64,7 +64,7 @@ SessionCommandRouter（3258 行 / 24 个注入依赖）
 GatherCore Services（28 个）──────► 18 个 Repository ──► 单条 SQLite 连接（WAL + 递归锁）
    │
    ├── JobService（唯一后台执行器：租约 / 心跳 / 取消宽限 / 恢复 / checkpoint）
-   ├── MetadataSyncCoordinator ──► metadata_outbox ──► XMP 侧车
+   ├── MetadataSyncCoordinator ──► metadata_outbox ──► XMP sidecar
    └── Face / Similarity / Image（纯算法 + CoreML/Vision）
 ```
 

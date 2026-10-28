@@ -46,7 +46,7 @@ extension DeliveryCleanupFlow {
 
             // P1-8：删除前检查该交付的**所有**模块 item（文件级交付可能同时有
             // culling/metadata/... 的输入）。必须在 prepare/文件阶段之前：确认
-            // 不能删时不得 restore/remove 侧车，也不得建 intent。
+            // 不能删时不得 restore/remove sidecar，也不得建 intent。
             let itemGate: CleanupItemGate
             do {
                 itemGate = try dbPhase.cleanupItemGate(

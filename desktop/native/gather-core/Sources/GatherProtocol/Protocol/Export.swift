@@ -129,7 +129,7 @@ public struct ExportPreviewFile: Codable, Equatable, Sendable {
     public var outputName: String
     /// 输出格式：original / jpeg / tiff。
     public var format: String
-    /// 是否会为该照片额外写出一个 .xmp 边车。
+    /// 是否会为该照片额外写出一个 .xmp sidecar。
     public var includesXmp: Bool
     /// 逐项可执行性诊断（源文件缺失等）；nil = 可正常导出。
     public var issue: String?
@@ -187,7 +187,7 @@ public struct ExportPreview: Codable, Equatable, Sendable {
     public var files: [ExportPreviewFile]
     /// 照片数（= totalFiles，显式命名以避免"照片/文件"混用）。
     public var photoCount: Int
-    /// 会写出的 XMP 边车数（只计源侧确实存在 sidecar 的项）。
+    /// 会写出的 XMP sidecar 数（只计源侧确实存在 sidecar 的项）。
     public var sidecarCount: Int
     /// 真正会写到磁盘的文件数 = photoCount + sidecarCount；确认文案必须用它。
     public var physicalFileCount: Int

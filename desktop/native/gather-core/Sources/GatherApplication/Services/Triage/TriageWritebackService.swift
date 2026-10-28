@@ -81,7 +81,7 @@ public final class TriageWritebackService: Sendable {
             outcomes = try await batchAsync(decisions, concurrency: 8) { decision -> DecisionOutcome in
             do {
                 let detail = try self.metadata.photoDetail(photoId: decision.photoId)
-                // 撤销基线必须取盘上真实值（含 JPEG 内嵌 IPTC）；侧车/缓存都可能
+                // 撤销基线必须取盘上真实值（含 JPEG 内嵌 IPTC）；sidecar/缓存都可能
                 // 落后于外部软件。读不到就整张失败，不拿空值写盘。
                 let current = try await self.metadata.diskAttributes(
                     photoPath: detail.filepath)

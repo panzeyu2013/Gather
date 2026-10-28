@@ -15,7 +15,7 @@ import GatherProtocol
 ///
 /// SchemaCurrent 的 delivery_intents.kind 只有 cleanup/write 两个合法值（S5c-2b-1 不改
 /// Schema），finalize 复用 kind=.cleanup，用 payload.op 区分文件阶段：
-/// - cleanup：恢复备份（或删除本次写入的侧车），然后删行；
+/// - cleanup：恢复备份（或删除本次写入的 sidecar），然后删行；
 /// - finalize：保留 XMP 原样，只删除备份文件，然后删行（dropWithoutRestore）。
 /// 旧 intent（S5c-2a）没有 op 键 → 默认 cleanup，回放向前兼容。
 enum DeliveryIntentAction: String, Equatable {
@@ -35,7 +35,7 @@ struct DeliveryCleanupPayload: Equatable {
     let photoPath: String
     /// prepare 时的 deliveries.base_fingerprint（S5c 写入基线）。
     ///
-    /// P0-1：文件阶段（restore / 无备份删侧车 / replay prepared）前必须用它
+    /// P0-1：文件阶段（restore / 无备份删 sidecar / replay prepared）前必须用它
     /// 与重读的交付行 + 盘上指纹三方比对。旧 intent 没有该键 → ""：
     /// 仍做 id/revision/status 守卫，指纹退回当前行的 base_fingerprint。
     let baseFingerprint: String

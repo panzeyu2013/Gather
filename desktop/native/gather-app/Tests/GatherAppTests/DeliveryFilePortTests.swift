@@ -44,7 +44,7 @@ struct DeliveryFilePortTests {
         #expect(FileManager.default.fileExists(atPath: path))
     }
 
-    @Test("侧车文件仍可删除")
+    @Test("sidecar 仍可删除")
     func removesSidecar() async throws {
         let path = try makeTempFile("IMG_1.xmp")
         defer { try? FileManager.default.removeItem(atPath: path) }

@@ -71,7 +71,7 @@ public struct CullingTriageRow: Equatable, Sendable {
     }
 }
 
-/// delivery_items 的 module 投影（按侧车路径）。
+/// delivery_items 的 module 投影（按 sidecar 路径）。
 public struct CullingDeliveryModuleRow: Equatable, Sendable {
     public let xmpPath: String
     public let module: String
@@ -230,7 +230,7 @@ public final class CullingReadQuery {
         }
     }
 
-    /// 交付项的 module 投影（每侧车取最近更新的 item）。
+    /// 交付项的 module 投影（每个 sidecar 取最近更新的 item）。
     public func deliveryModuleRows(xmpPaths: [String]) throws -> [CullingDeliveryModuleRow] {
         let unique = Array(Set(xmpPaths))
         guard !unique.isEmpty else { return [] }

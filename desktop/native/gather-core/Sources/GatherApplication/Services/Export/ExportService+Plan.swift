@@ -79,7 +79,7 @@ extension ExportService {
             resolved[photo.id] = outputName
             let outputURL = destination.appendingPathComponent(outputName)
             // 目标 sidecar 三态判定（P1-3 → 问题 1 验收后修订）：执行改为
-            // 「新交付覆盖目标边车」（原子写），因此冲突不再是错误；三态仍用于
+            // 「新交付覆盖目标 sidecar」（原子写），因此冲突不再是错误；三态仍用于
             // 续跑跳过判定（见 shouldSkipCompleted）与物理文件计数。
             var includesXmp = false
             let issue = sourceIssue(for: photo.filepath)
@@ -91,7 +91,7 @@ extension ExportService {
                     // 执行确实不会再写（copyXMPIfPresent 内容相同即 return）。
                     includesXmp = false
                 case .conflicting:
-                    // 问题 1 验收后的语义：目标边车与源不同 → 本次会**覆盖**它
+                    // 问题 1 验收后的语义：目标 sidecar 与源不同 → 本次会**覆盖**它
                     //（与照片文件的覆盖语义一致）。不再标记为会失败，否则预览说
                     // 失败、执行却成功（P1-3 当年要解决的正是这种不一致）。
                     includesXmp = true
@@ -160,7 +160,7 @@ extension ExportService {
         let photos = try filteredPhotos(sessionId: sessionId, options: options)
         let sessionName = try sessionRepo.get(id: sessionId)?.name ?? sessionId
         let destination = URL(fileURLWithPath: options.destination).standardizedFileURL
-        // 与 execute 调用同一个 buildPlan：名字、边车判定、诊断三项都不会漂移。
+        // 与 execute 调用同一个 buildPlan：名字、sidecar 判定、诊断三项都不会漂移。
         let built = buildPlan(
             photos: photos,
             options: options,
@@ -232,7 +232,7 @@ extension ExportService {
     }
 
     /// 源侧是否存在与照片同名的 sidecar（与 copyXMPIfPresent 的判定保持一致）。
-    /// 边车版本（问题 1）：不存在 = "none"；存在 = 毫秒 mtime + size。
+    /// sidecar 版本（问题 1）：不存在 = "none"；存在 = 毫秒 mtime + size。
     /// 只做一次 stat，但足以让「改了 XMP」变成新交付。
     func sidecarVersion(forSource path: String) -> String {
         let sidecar = URL(fileURLWithPath: path).deletingPathExtension().appendingPathExtension("xmp")
@@ -242,10 +242,10 @@ extension ExportService {
         return "\(Int64(mtime.timeIntervalSince1970 * 1000)):\(size)"
     }
 
-    /// 目标边车是否存在（问题 1 的续跑校验）。
+    /// 目标 sidecar 是否存在（问题 1 的续跑校验）。
     /// 续跑跳过判定（问题 1 验收）。只有同时满足下列条件才复用完成记录：
-    /// 目标照片存在；且（不需要边车，或）目标边车与源**内容一致**并且交付记录里
-    /// 的边车版本与当前源一致。目标边车缺失（.absent）/ 内容不同（.conflicting）
+    /// 目标照片存在；且（不需要 sidecar，或）目标 sidecar 与源**内容一致**并且交付记录里
+    /// 的 sidecar 版本与当前源一致。目标 sidecar 缺失（.absent）/ 内容不同（.conflicting）
     /// 都视为不可信 → 重新交付（会覆盖）。
     func shouldSkipCompleted(
         plan: PlannedOutput,
@@ -370,7 +370,7 @@ extension ExportService {
                 timeFormatter: timeFormatter
             )
             // 问题 5（第三轮审查）：原为字面量 "(photo.id)"（漏插值），不同照片会
-            // 产生相同指纹 → 任务去重身份碰撞。同时补边车版本（问题 1）：源 XMP 变了
+            // 产生相同指纹 → 任务去重身份碰撞。同时补 sidecar 版本（问题 1）：源 XMP 变了
             // 必须形成**新交付**，否则续跑会沿用旧元数据。
             rows.append("\(photo.id)|\(photo.checksum)|\(photo.checksumFileSize)|\(photo.checksumFileMtimeMs)|\(planned)|\(sidecarVersion(forSource: photo.filepath))")
         }

@@ -91,13 +91,13 @@ struct CompositionCore {
         // delivery_items（module=.metadata）。
         _ = metadataWriteDebounceMs
         // 写目标路由：默认 auto —— 独立 JPEG 直接写内嵌 XMP+IPTC；
-        // 有 .xmp / RAW / 有 RAW 兄弟的照片走侧车（一份真相）。
-        // metadata_write_mode=sidecar 可强制回到全侧车（旧行为）。
+        // 有 .xmp / RAW / 有 RAW 兄弟的照片走 sidecar（一份真相）。
+        // metadata_write_mode=sidecar 可强制回到全 sidecar（旧行为）。
         let xmp: any XMPProvider = xmpProvider ?? MetadataWriteRouter(
             modeProvider: {
                 settingsService.get("metadata_write_mode", defaultValue: "auto")
             })
-        // 交付层只知道"目标是个文件"：由路由器回答是侧车还是照片自身。
+        // 交付层只知道"目标是个文件"：由路由器回答是 sidecar 还是照片自身。
         let targetResolver = MetadataTargetResolver(
             path: { photoPath in
                 (xmp as? MetadataWriteRouter)?.target(for: photoPath).writePath

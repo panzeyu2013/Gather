@@ -101,7 +101,7 @@ struct AppCompositionTests {
             )
 
             let deliveryRepo = composition.deliveryRepo
-            // 默认 metadata_write_mode=auto：无侧车的独立 JPEG 的写目标就是照片自身。
+            // 默认 metadata_write_mode=auto：无 sidecar 的独立 JPEG 的写目标就是照片自身。
             let xmpPath = TSPath.normalize(photoPath)
             let delivery = try #require(try deliveryRepo.get(xmpPath))
             #expect(delivery.typedStatus == .pending)

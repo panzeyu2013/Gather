@@ -1,6 +1,6 @@
 // desktop/native/gather-core/Sources/GatherApplication/Services/Export/ExportService+Run.swift
 // P1-4 收口：ExportService 按角色拆分（纯移动——方法体/错误/事务边界/顺序逐字未改）。
-// 角色：执行（安装回滚凭据、原图复制、ImageIO 转码、边车覆盖、取消登记、进度回调）。
+// 角色：执行（安装回滚凭据、原图复制、ImageIO 转码、sidecar 覆盖、取消登记、进度回调）。
 import Foundation
 import GatherAnalysis
 import GatherPersistence
@@ -32,7 +32,7 @@ extension ExportService {
         /// 已在目标目录留底的旧照片（同目录，保证同卷）。
         var photoBackup: URL? { backup }
 
-        /// 写边车前留底：目标边车已存在才复制。
+        /// 写 sidecar 前留底：目标 sidecar 已存在才复制。
         func backupSidecar() {
             let sidecar = destination.deletingPathExtension().appendingPathExtension("xmp")
             sidecarDestination = sidecar
@@ -126,7 +126,7 @@ extension ExportService {
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
 
         var state = resume ?? NativeExportResumeState()
-        // D09：执行消费与预览**同一份** buildPlan（命名/重名/边车判定唯一实现）。
+        // D09：执行消费与预览**同一份** buildPlan（命名/重名/sidecar 判定唯一实现）。
         // 旧实现把命名循环写在 execute 里，preview 另抄一份 → 两处规则可能漂移
         //（预览显示的名字与真正写出的名字不一致）。
         let built = buildPlan(
@@ -174,7 +174,7 @@ extension ExportService {
             }
 
             // D1（深审）：安装回滚凭据 —— 覆盖既有文件前先留底，后续任一步失败
-            // 都把旧照片/旧边车恢复回来（旧实现按 created 无条件删除目标，
+            // 都把旧照片/旧 sidecar 恢复回来（旧实现按 created 无条件删除目标，
             // 会把用户此前的交付删掉）。
             var installToken: FileInstallToken?
             do {
@@ -195,7 +195,7 @@ extension ExportService {
                 }
                 let bytes = (try? FileManager.default.attributesOfItem(atPath: plan.url.path)[.size] as? NSNumber)
                     .map { Int($0.int64Value) } ?? 0
-                // 整套产物（照片 + 边车）都写成了才丢弃备份：完成检查点也在此之后写入。
+                // 整套产物（照片 + sidecar）都写成了才丢弃备份：完成检查点也在此之后写入。
                 installToken?.commit()
                 exported += 1
                 completed += 1
@@ -240,7 +240,7 @@ extension ExportService {
             let sourceData = try Data(contentsOf: source)
             let destinationData = try Data(contentsOf: destination)
             if sourceData == destinationData { return }
-            // 问题 1（第三轮审查）验收：XMP 更新必须形成**新交付** —— 目标边车内容
+            // 问题 1（第三轮审查）验收：XMP 更新必须形成**新交付** —— 目标 sidecar 内容
             // 与源不同时覆盖（原子写），而不是抛冲突或静默跳过。
             try sourceData.write(to: destination, options: .atomic)
             return

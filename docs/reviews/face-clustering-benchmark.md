@@ -73,7 +73,7 @@
 
 | 产品 | 是否写回原文件 | 人脸区域 | 备注 |
 | --- | --- | --- | --- |
-| **本仓** | 写回 **XMP 侧车**（不碰原图），仅 `dc:subject` 扁平词 | ❌ 无 mwg-rs | 有 `.gather-backup-UUID` + restore 可回滚 |
+| **本仓** | 写回 **XMP sidecar**（不碰原图），仅 `dc:subject` 扁平词 | ❌ 无 mwg-rs | 有 `.gather-backup-UUID` + restore 可回滚 |
 | PhotoPrism | **不写回**（除方向）：结果在 DB + 可读 YAML sidecar | 读取 MWG/Adobe/digiKam 区域需显式开 `PHOTOPRISM_XMP_FACES`（默认 false） | ["does not yet offer … write … back"](https://docs.photoprism.app/user-guide/library/metadata/) |
 | Immich | 只写 `.xmp` sidecar（Description/Rating/DateTime/Location/Tags） | ❌（PR [#30704](https://github.com/immich-app/immich/pull/30704) 的 mwg-rs 导出已关闭未合并） | 互相操作弱（[#31629](https://github.com/immich-app/immich/issues/31629)） |
 | digiKam | **默认写回**（tag 路径 + 人脸矩形，通常 XMP/MWG）；可关 | ✅ | 可配置为"只写 sidecar" |

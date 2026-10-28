@@ -1,7 +1,7 @@
 // desktop/native/gather-app/Sources/GatherHost/Embedded/XMPPacketStore.swift
 // JPEG 内嵌 XMP 包体（APP1 / http://ns.adobe.com/xap/1.0/）的补丁。
 //
-// 复用侧车同一条 patchDocument 管线（同一张 32 字段表、同一套三态语义、同一份
+// 复用 sidecar 同一条 patchDocument 管线（同一张 32 字段表、同一套三态语义、同一份
 // 命名空间注入），差别只在"文档来自 JPEG 段"而不是 .xmp 文件。
 import Foundation
 import GatherProtocol

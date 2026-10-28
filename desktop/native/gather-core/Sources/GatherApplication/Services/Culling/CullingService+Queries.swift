@@ -150,7 +150,7 @@ extension CullingService {
     }
     // MARK: - 富查询（TS buildRichLookup 及支撑）
 
-    /// 交付项的 module → 旧 MetadataMutationSource 投影（每侧车取最近更新的 item）。
+    /// 交付项的 module → 旧 MetadataMutationSource 投影（每个 sidecar 取最近更新的 item）。
     ///
     /// 旧 outbox 的 patch_json.source 已无生产写入；V1 的归属由
     /// delivery_items.module 结构化表达（schema-v1-draft §5.3-3）。module 值不在
@@ -162,7 +162,7 @@ extension CullingService {
         guard !unique.isEmpty else { return [:] }
         let rows = try richQuery.deliveryModuleRows(xmpPaths: unique)
         var result: [String: MetadataMutationSource] = [:]
-        // 每个侧车取最近更新的 item（SQL 已按 updated_at DESC, id DESC 排序）。
+        // 每个 sidecar 取最近更新的 item（SQL 已按 updated_at DESC, id DESC 排序）。
         for row in rows where result[row.xmpPath] == nil {
             result[row.xmpPath] = MetadataMutationSource(rawValue: row.module)
         }
@@ -523,7 +523,7 @@ extension CullingService {
 
     /// TS: matchesFilters。
     /// metadataConflictOnly 与 SQL 下推用**同一条规则**：该资产首选变体的 photo_path
-    /// 存在 status='conflict' 的 outbox 行。用 syncStatus（每资产首选的侧车行）会让
+    /// 存在 status='conflict' 的 outbox 行。用 syncStatus（每资产首选的 sidecar 行）会让
     /// 两遍在「变体与首选不同行」时发散，故这里显式用同一集合。
     func matchesFilters(
         _ asset: CullingAsset,
