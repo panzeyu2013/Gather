@@ -24,7 +24,7 @@
 | 014 | `ipc/session.ipc.ts`、`services/session/session.service.ts` | `gather-core/Sources/GatherApplication/Services/SessionService.swift` |
 | 015 | `services/capture-one/sync-state.ts` | `gather-core/Sources/GatherApplication/Services/CaptureOneSyncState.swift`（**`CaptureOneSyncState` 类与 `C1BridgeProvider` 已删除**，见 ADR-028；保留纯函数 `aggregateSessionState`） |
 | 016/019/020 | `renderer/locales/`（i18next）、`main/menu.ts`、`main/locale.ts` | `gather-app/Sources/GatherUI/Support/GatherLocalization.swift` + `Resources/{en,zh-Hans}.lproj`；`gather-app/Sources/GatherHost/GatherAppDelegate.swift`（`installMenu` 两语言重建，`languageChanged` 驱动） |
-| 017 | `packages/shared/src/errors.ts` | `gather-core` 错误枚举（错误码语义不变）+ `L10n.errorText`（185 项映射；B03 前为 `GatherLocalization.errorText`） |
+| 017 | `packages/shared/src/errors.ts` | `gather-core` 错误枚举（错误码语义不变）+ `L10n.errorText`（186 项映射；B03 前为 `GatherLocalization.errorText`） |
 | 018 | `renderer/components/Dialog/Dialog.tsx` | 历史记录：自研 APG 焦点管理仅存在于 Electron 版；原生版由系统 sheet/`confirmationDialog` 天然覆盖（见 DEVELOPMENT.md HIG 约定），"拒绝 roving tabindex"的结论对原生列表仍成立 |
 
 ---
