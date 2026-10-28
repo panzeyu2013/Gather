@@ -76,8 +76,8 @@ A1/A2/A3/B1/B2/C1/C2 全部落地。**最终基线：core 1373 / 201 suites、ap
 
 | 项 | 结果 |
 |---|---|
-| core | 1379 tests / 202 suites，12.5s（--no-parallel；并行约 1.8s） |
-| app | 734 tests / 85 suites，12.9s（--no-parallel） |
+| core | 1380 tests / 202 suites，10.5s（--no-parallel；并行约 1.8s） |
+| app | 735 tests / 85 suites，12.3s（--no-parallel） |
 | schema verify | tables=44 columns=385 indexes=72 fks=65 user_version=5 violations=0 |
 | check-*.sh ×12 | 全 EXIT=0（strict 可用者带 --strict；cleanup 默认即硬门禁） |
 | test-catalog --self-test | SELFTEST OK |

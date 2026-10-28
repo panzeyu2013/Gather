@@ -31,6 +31,15 @@ struct PhotoVisibilityGateTests {
         let swiftPredicate = try NSRegularExpression(
             pattern: #"archivedAt\s*(==|!=)\s*nil"#)
         let allPredicates = sqlPredicates + [swiftPredicate]
+        // 运行期拼接（"archived_at" + " IS NULL"）本身抓不到，但**引号里的片段**可以：
+        // 只含 archived_at 片段、没有 SQL 动词的字面量（列清单不会带 IS/=/<>）说明
+        // 谓词是拼出来的。SELECT 里的 "… archived_at FROM" 含动词，不会误报。
+        let quotedFragment = try NSRegularExpression(
+            pattern: #""([^"]*archived_at[^"]*)""#)
+        let sqlVerb = try NSRegularExpression(
+            pattern: #"(?i)\b(select|update|insert|delete|where|join|set)\b"#)
+        let fragmentPredicate = try NSRegularExpression(
+            pattern: #"(?i)archived_at\s*(is|not\s+null|isnull|notnull|=|<>|!=)"#)
 
         let testFile = URL(fileURLWithPath: #filePath)
         // Queries -> GatherCoreTests -> Tests -> gather-core
@@ -71,6 +80,37 @@ struct PhotoVisibilityGateTests {
                 scannedInRoot += 1
                 let source = text as NSString
                 let fullRange = NSRange(location: 0, length: source.length)
+                // 拼接片段：引号里带 archived_at 且带比较运算符、但没有 SQL 动词。
+                // SchemaCurrent* 的 expected-columns 列表本身就是裸列名（DDL 元数据），
+                // 不算拼接谓词；该文件仍受上面的主规则约束。
+                let isSchemaDDL = url.lastPathComponent.hasPrefix("SchemaCurrent")
+                if !isSchemaDDL {
+                quotedFragment.enumerateMatches(in: text, range: fullRange) { match, _, _ in
+                    guard let match, let literalRange = Range(match.range, in: text) else { return }
+                    let literal = String(text[literalRange])
+                    let literalRangeNS = NSRange(literal.startIndex..<literal.endIndex, in: literal)
+                    // 命中两种拼接：裸列名（"archived_at" + " IS NULL"）与
+                    // 自带比较但没有 SQL 动词的片段（"AND archived_at IS NULL"）。
+                    let bareColumn = literal
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                        .trimmingCharacters(in: .whitespaces)
+                        .lowercased() == "archived_at"
+                    let fragment = fragmentPredicate.firstMatch(
+                        in: literal, range: literalRangeNS) != nil
+                        && sqlVerb.firstMatch(in: literal, range: literalRangeNS) == nil
+                    guard bareColumn || fragment else { return }
+                    let lineRange = source.lineRange(
+                        for: NSRange(location: match.range.location, length: 0))
+                    let trimmed = source.substring(with: lineRange)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.hasPrefix("//"), !trimmed.hasPrefix("*"),
+                          !trimmed.hasPrefix("--") else { return }
+                    let lineNumber = source
+                        .substring(to: match.range.location)
+                        .components(separatedBy: "\n").count
+                    offenders.append("\(url.path):\(lineNumber): 拼接谓词 \(literal)")
+                }
+                }
                 for predicate in allPredicates {
                     predicate.enumerateMatches(in: text, range: fullRange) { match, _, _ in
                         guard let match else { return }

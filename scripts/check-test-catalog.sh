@@ -335,7 +335,7 @@ fi
 # 6) 用例/套件 ratchet：删一条 @Test 或 @Suite 不会让任何用例变红，是历史空白。
 #    下限按 2026-10-28 实测值钉死；新增用例只会让数字变大，删用例必须显式改这里
 #    并在台账记账（与 cleanup/protocol ratchet 同一套"只许收紧"的约定）。
-BASELINE_TEST_DECL=2113
+BASELINE_TEST_DECL=2115
 BASELINE_SUITE_DECL=225
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \

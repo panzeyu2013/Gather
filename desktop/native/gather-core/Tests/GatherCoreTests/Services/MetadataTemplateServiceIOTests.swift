@@ -207,6 +207,30 @@ struct MetadataTemplateServiceIOTests {
         #expect(try fx.batches.get(id: applied.batchId)?.undone == true)
     }
 
+    @Test("模板只填部分联系人成员：apply 走成员级合并，不删侧车其它成员")
+    func templatePartialContactMerges() async throws {
+        let fx = try makeFixture()
+        defer { fx.cleanup() }
+        let cache = MetadataCacheRepo(connection: fx.db)
+        let original = DescriptiveMetadata(
+            contactInfo: DescriptiveContact(city: "上海", email: "a@b.c"))
+        try cache.upsert(photoId: fx.photoId, sessionId: fx.sessionId, data: MetadataCacheInput(
+            descriptive: original))
+        fx.xmp.seed(fx.photoPath, MetadataWriteAttributes(descriptive: original))
+
+        _ = try fx.templates.save(MetadataTemplate(
+            id: "t-contact", name: "地点", fields: DescriptiveMetadata(
+                contactInfo: DescriptiveContact(city: "北京")),
+            createdAt: "", updatedAt: ""), now: "2026-10-26T00:00:00Z")
+
+        let applied = try await fx.service.apply(
+            templateId: "t-contact", photoIds: [fx.photoId], now: "2026-10-26T00:00:00Z")
+        #expect(applied.written == [fx.photoId], "\(applied.failed)")
+        let contact = fx.xmp.attributes(fx.photoPath).descriptive?.contactInfo
+        #expect(contact?.city == "北京")
+        #expect(contact?.email == "a@b.c", "模板没写的成员必须保留：模板不算整块替换")
+    }
+
     @Test("applyFields：内联批次可撤销；replaceContact 整块替换联系人（P0 / B2）")
     func inlineFieldsAndContactReplacement() async throws {
         let fx = try makeFixture()

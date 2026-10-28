@@ -905,4 +905,84 @@ struct APICullingTests {
         #expect(try sessionRepo.get(id: session.id)?.photoCount == 0,
                 "侧栏照片数必须随归档回落")
     }
+
+    /// 跨页整选（120 张，超过单页 100）一次移出：文件全部落到 _rejects、
+    /// 物理行保留、可见数归零。替代"跨页 100 张移出"的真机矩阵，走真实
+    /// RejectedMover + 真实文件系统（无 GUI）。
+    @Test("moveRejected：120 张跨页整选全部移到 _rejects，计数同步归零")
+    func moveRejectedHandlesCrossPageSelection() async throws {
+        let db = try makeTestDB()
+        let dir = try makeTempDir()
+        defer {
+            try? FileManager.default.removeItem(atPath: dir)
+            db.close()
+        }
+        let sessionRepo = SessionRepo(connection: db)
+        let session = try sessionRepo.create(
+            name: "Bulk", source: "test", sourcePath: dir)
+        let photoRepo = PhotoRepo(connection: db)
+        var inputs: [PhotoAddInput] = []
+        for index in 0..<120 {
+            let path = (dir as NSString).appendingPathComponent(
+                String(format: "IMG_%03d.CR3", index))
+            try Data("raw-\(index)".utf8).write(to: URL(fileURLWithPath: path))
+            inputs.append(PhotoAddInput(filepath: path, width: 100, height: 100))
+        }
+        let ids = try photoRepo.addPhotos(
+            sessionId: session.id, filepaths: inputs, "test").ids
+        try sessionRepo.updatePhotoCount(id: session.id, count: ids.count)
+
+        let decisionRepo = CullingDecisionRepo(connection: db)
+        let historyRepo = CullingHistoryRepo(connection: db)
+        let service = CullingService(
+            photoRepo: photoRepo,
+            cullingDecisionRepo: decisionRepo,
+            similarityResultRepo: SimilarityResultRepo(connection: db),
+            metadataCacheRepo: MetadataCacheRepo(connection: db),
+            connection: db,
+            metadataMutations: CullingTestMutationPort(),
+            writeback: CullingTestWritebackPort(),
+            cullingHistoryRepo: historyRepo
+        )
+        let triageService = TriageService(
+            repository: TriageRepo(connection: db),
+            decisions: decisionRepo,
+            history: historyRepo,
+            transactions: db
+        )
+        let timestamp = "2026-10-28T00:00:00.000Z"
+        let api = LiveCullingAPI(
+            cullingService: service,
+            triageService: triageService,
+            sessionRepo: sessionRepo,
+            photoRepo: photoRepo,
+            relocateAfterMove: { photoId, oldPath, newPath, shares in
+                try AssetRepo(connection: db).relocatePhotoPathsAfterMove(
+                    photoId: photoId,
+                    oldPhotoPath: oldPath,
+                    newPhotoPath: newPath,
+                    sharesSidecar: shares,
+                    archivedAt: timestamp,
+                    timestamp: timestamp)
+            },
+            fileLock: XMPFileLock()
+        )
+        _ = try await api.batchUpdate(CullingBatchUpdateInput(
+            sessionId: session.id, photoIds: ids,
+            patch: CullingUpdatePatch(pickState: .rejected)))
+
+        let result = try await api.moveRejected(Confirmed(
+            try CullingMoveRejectedInput(sessionId: session.id, photoIds: ids),
+            source: .userDialog))
+        #expect(result.failed.isEmpty, "\(result.failed.prefix(3))")
+        #expect(result.moved.count == 120)
+        #expect(result.newPaths.count == 120)
+        #expect(result.newPaths.allSatisfy {
+            $0.contains("_rejects") && FileManager.default.fileExists(atPath: $0)
+        }, "每张都必须真的落到 _rejects 目录")
+        #expect(try photoRepo.countBySession(sessionId: session.id) == 120,
+                "只移动不删除")
+        #expect(try photoRepo.countVisibleBySession(sessionId: session.id) == 0)
+        #expect(try sessionRepo.get(id: session.id)?.photoCount == 0)
+    }
 }

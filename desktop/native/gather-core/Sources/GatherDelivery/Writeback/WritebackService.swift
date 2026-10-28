@@ -254,6 +254,10 @@ public final class WritebackService: @unchecked Sendable {
     ) async throws -> WritebackResult {
         let deliveryModule = try mapModule(module)
         var items: [WritebackItem] = []
+        // 已入队的项即使照片随后被移出（archived_at）**仍然写完**：写回队列是用户在
+        // preview 时点下的显式动作，文件与侧车一起被搬到 _rejects，写进去不会丢数据；
+        // 中途撤回会让 pending 项永远悬着（进度/失败聚合卡死）。可见性只约束
+        // preview 的目标集合（见 preview 的归档过滤）与用户读面。
         // 默认只消费 pending：failed 必须由显式 retry 入口重试，否则用户已看到
         // "失败"的项会在一段时间后被无关 flush 静默写盘（模板/triage 批次的撤销
         // 入口可能已被关闭）。
