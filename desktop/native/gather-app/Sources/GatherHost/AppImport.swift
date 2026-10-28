@@ -65,7 +65,6 @@ enum AppImport {
             } else {
                 // 目录条目不写照片行（避免把目录当成一张「解码失败的照片」上报），
                 // 交给索引器在 requestedPaths 范围内展开。
-                let filepaths = normalized.filter { !isDirectory($0) }
                 let parent = commonParentDirectory(filepaths: normalized)
                 let base = parent.isEmpty
                     ? URL(fileURLWithPath: normalized[0]).deletingPathExtension().lastPathComponent

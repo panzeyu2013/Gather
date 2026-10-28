@@ -21,6 +21,21 @@ import Testing
 
 @Suite("照片可见性谓词门禁")
 struct PhotoVisibilityGateTests {
+    /// 把**整行注释**（`//` / `///` / `*` / `--` 开头）替换成等长空格，换行保留。
+    ///
+    /// 只处理行首注释：谓词只可能出现在代码里，而注释常要引用 SQL 来解释"为什么不能
+    /// 手写"，那种引用不该判红。整块注释的中段（不以 `*` 开头）由下面的行首前缀跳过兜底。
+    static func strippingLineComments(_ text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                let trimmed = line.drop { $0 == " " || $0 == "\t" }
+                guard trimmed.hasPrefix("//") || trimmed.hasPrefix("*")
+                        || trimmed.hasPrefix("--") else { return String(line) }
+                return String(repeating: " ", count: line.count)
+            }
+            .joined(separator: "\n")
+    }
+
     @Test("全仓 Sources 不得手写 archived_at / archivedAt 可见性谓词")
     func rawPredicatesAreCentralized() throws {
         let sqlPatterns = [
@@ -70,13 +85,16 @@ struct PhotoVisibilityGateTests {
                 guard url.pathExtension == "swift" else { continue }
                 // 唯一实现文件本身当然会命中；除此之外不设白名单。
                 if url.lastPathComponent == "PhotoVisibility.swift" { continue }
-                let text: String
+                var text: String
                 do {
                     text = try String(contentsOf: url, encoding: .utf8)
                 } catch {
                     Issue.record("无法读取源码文件 \(url.path)：\(error)")
                     continue
                 }
+                // 注释里引用 SQL（解释"为什么不能这么写"）不该判红：把整行注释抹成
+                // 等长空格再扫描；换行保留，行号换算不受影响。
+                text = Self.strippingLineComments(text)
                 scannedInRoot += 1
                 let source = text as NSString
                 let fullRange = NSRange(location: 0, length: source.length)

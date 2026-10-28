@@ -249,7 +249,7 @@ extension SidecarXMPProvider {
     private static func mergeTopLevelDescriptions(
         _ xml: String, xmpPath: String
     ) throws -> DescriptionParts {
-        var parts = try firstDescriptionParts(xml, xmpPath: xmpPath)
+        let parts = try firstDescriptionParts(xml, xmpPath: xmpPath)
         let firstAbout = attributeValue(in: parts.openTag, name: "rdf:about") ?? ""
         var inner = parts.inner
         var openTag = parts.openTag

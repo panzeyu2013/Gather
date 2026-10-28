@@ -47,6 +47,23 @@ struct ExportDeliverySection: View {
                 .gatherPrimaryActionButton()
                 .disabled(viewModel.isDelivering || viewModel.deliveryRecipes.isEmpty)
             }
+            if let progress = viewModel.deliveryProgress {
+                // 长交付此前只有"正在交付…"按钮文案，像卡死；这里给进度 + 相位。
+                HStack(spacing: GatherMetrics.Space.s) {
+                    ProgressView(
+                        value: Double(progress.current),
+                        total: Double(max(progress.total, 1)))
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 220)
+                    Text(l10n.progressPhaseText(viewModel.deliveryPhase))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.secondary)
+                    Text("\(progress.current)/\(progress.total)")
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
             if viewModel.cullingAPI != nil {
                 HStack(spacing: GatherMetrics.Space.s) {
                     Button(viewModel.isImportingSelection

@@ -16,11 +16,12 @@
 #                           ResponseID / ErrorDetail / ResponseErrorBody /
 #                           ResponseOk / ResponseErr / Response<T>。目标 0。
 #
-# 基线：docs/protocol-surface-baseline.json（--write-baseline 重写）。
+# 基线：docs/protocol-surface-baseline.json（--write-baseline 重写；上涨需 --allow-growth）。
 # 默认 warning 模式 exit 0；--strict 时任一指标高于 baseline 即 exit 1。
 # 指标回落不自动收紧 baseline；收紧必须显式 --write-baseline 并在台账记账。
 #
-# 用法：./scripts/check-protocol-surface.sh [--strict] [--write-baseline]
+# 用法：./scripts/check-protocol-surface.sh [--strict] [--write-baseline [--allow-growth]]
+#   --write-baseline 只允许持平或收紧；指标上涨必须同时给 --allow-growth 并在台账记账。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,10 +34,12 @@ BASELINE="docs/protocol-surface-baseline.json"
 
 STRICT=0
 WRITE_BASELINE=0
+ALLOW_GROWTH=0
 for arg in "$@"; do
   case "$arg" in
     --strict) STRICT=1 ;;
     --write-baseline) WRITE_BASELINE=1 ;;
+    --allow-growth) ALLOW_GROWTH=1 ;;
     -h|--help)
       sed -n '2,29p' "$0"
       exit 0
@@ -153,6 +156,27 @@ write_baseline() {
 }
 JSON
 }
+
+# 门禁自证（评审 P2）：--write-baseline 曾可把任意膨胀一条命令洗白。现在要求"涨"必须
+# 显式批准：先比一遍旧基线，任何指标上涨都拒绝重写，除非同时给 --allow-growth。
+if [ "$WRITE_BASELINE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
+  grew=0
+  for kv in "public_types:$public_types" "public_declarations:$public_declarations"             "zero_reference_types:$zero_reference_types"             "router_envelope_types:$router_envelope_types"; do
+    key=$(printf '%s' "$kv" | cut -d: -f1)
+    cur=$(printf '%s' "$kv" | cut -d: -f2-)
+    base=$(baseline_value "$key" || true)
+    [ -n "$base" ] || continue
+    if [ "$cur" -gt "$base" ]; then
+      echo "  涨：$key $base -> $cur" >&2
+      grew=1
+    fi
+  done
+  if [ "$grew" -ne 0 ]; then
+    echo "check-protocol-surface: REFUSED — 基线膨胀必须显式批准" >&2
+    echo "  公开面只能收紧；确需扩张时加 --allow-growth，并在 docs/reviews/ 台账记账。" >&2
+    exit 1
+  fi
+fi
 
 if [ "$WRITE_BASELINE" -eq 1 ]; then
   write_baseline

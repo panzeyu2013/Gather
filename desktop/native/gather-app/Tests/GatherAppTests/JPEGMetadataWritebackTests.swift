@@ -136,6 +136,34 @@ private struct JPEGWritebackFixture {
 
 @Suite("JPEG 元数据写后回读")
 struct JPEGMetadataWritebackTests {
+    /// P2（评审）：生产默认 `auto` → 无 .xmp 的独立 JPEG 走**内嵌**写目标，
+    /// 而其余用例都只用 `SidecarXMPProvider`，内嵌分支缺回归。
+    ///
+    /// 这里直接驱 `MetadataWriteRouter`：断言"不创建 .xmp"且"值真的进了 APP1"。
+    @Test("内嵌写目标：无 .xmp 的 JPEG 走内嵌，不生成 sidecar 且能读回")
+    func embeddedTargetWritesIntoJPEG() async throws {
+        let dir = try makeTempDir()
+        let photo = (dir as NSString).appendingPathComponent("IMG_9001.JPG")
+        try writeJPEG(at: photo, title: "旧标题", caption: "旧说明", copyright: "旧版权")
+        let sidecarPath = SidecarXMPProvider.resolveSidecarPath(photo)
+        #expect(!FileManager.default.fileExists(atPath: sidecarPath), "夹具不应带 sidecar")
+
+        let router = MetadataWriteRouter(
+            sidecar: SidecarXMPProvider(), modeProvider: { "auto" })
+        #expect(router.target(for: photo).kind == .embedded, "无 .xmp 的 JPEG 必须走内嵌")
+
+        var attributes = MetadataWriteAttributes()
+        attributes.descriptive = DescriptiveMetadata(caption: "内嵌新说明")
+        try await router.writeAttributes(photoPath: photo, attributes: attributes)
+
+        #expect(!FileManager.default.fileExists(atPath: sidecarPath),
+                "内嵌模式不得创建 sidecar（一份真相）")
+        let parsed = try await ImageIOExifProvider().parse(filePath: photo, isJpeg: true)
+        let disk = parsed.flatMap(MetadataService.embeddedAttributesFromParse)
+        #expect(disk?.descriptive?.caption == "内嵌新说明", "值必须真的写进 APP1")
+        #expect(disk?.descriptive?.title == "旧标题", "未触碰的内嵌字段不得丢")
+    }
+
     @Test("只改 caption：写后缓存仍保留 JPEG 内嵌 title/copyright")
     func editingCaptionKeepsEmbeddedTitle() async throws {
         let fx = try JPEGWritebackFixture()

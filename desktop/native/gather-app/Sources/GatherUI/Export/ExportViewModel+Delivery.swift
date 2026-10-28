@@ -151,8 +151,10 @@ extension ExportViewModel {
                     localPath: localPath, baseURL: baseURL,
                     username: username, remoteFolder: remoteFolder,
                     includePrefixes: includePrefixes)),
-                onProgress: { done, total in
-                    Task { @MainActor [weak self] in
+                // 外层闭包显式弱持有：内层 Task 的 [weak self] 与外层的强捕获不一致
+                // （#ImplicitStrongCapture），也避免发布流程被闭包延长 VM 生命周期。
+                onProgress: { [weak self] done, total in
+                    Task { @MainActor in
                         // 守卫：只在"仍在发布中 + 结果尚未落地"时更新。取消/成功后
                         // 迟到的进度帧会把已清空的进度条写回「已上传 n/N」。
                         guard let self, self.isPublishing, self.webDAVPublish == nil else {

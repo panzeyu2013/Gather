@@ -476,7 +476,7 @@ public final class DBStatement {
 
     deinit {
         // finalize 必须与同一连接的其它语句互斥（池化连接会被不同线程复用）。
-        owner.withConnectionLock { sqlite3_finalize(stmt) }
+        _ = owner.withConnectionLock { sqlite3_finalize(stmt) }
         pooledReturn?()
     }
 

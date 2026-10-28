@@ -98,19 +98,25 @@ feat 带来大量新文案/注释，合并只覆盖了 sidecar 分叉点之前�
 | `gather-schema verify` | `tables=44 columns=386 indexes=72 fks=65 user_version=1 violations=0`，exit 0 |
 | 12 个 `check-*.sh` | **12/12 exit 0**（strict 可用者带 `--strict`） |
 
-## 6. 残余（未修，明确记账）
+## 6. 残余清零（第三轮，提交 `fix(residual)`）
 
-- `check-protocol-surface.sh --write-baseline` 仍可把任意膨胀洗白（评审 P2）：本轮只记录，
-  未加"基线不可上涨"只读开关——那会改变门禁语义，需要单独决策。
-- `check-test-catalog` 的 ratchet 数的是**声明**而非执行（`.disabled` / `#if false` 都算），
-  删真补空仍可能绿。
-- 合并接缝评审建议的"交付页独立进度字段"未做（`ExportViewModel` 按 checkpoint 过滤掉
-  `output.run` 帧是**有意**的，给交付页单开进度需要新的状态与 UI，属功能改动）。
-- `JPEGMetadataWritebackTests` 仍只覆盖 sidecar 路径（生产默认 auto→embedded）：补 router 用例
-  需要新的测试脚手架，列为下一步。
-- 设置项 `metadata_write_mode` 的 `sidecar` 选项标签仍是英文技术名「XMP Sidecar」
-  （en 值同名，见 `Localizable.strings` 的 SelectOption 说明）：按"格式名保持英文"的既有约定**有意保留**，
-  只把自动项的误译（原「RAW 侧边栏」）改成「RAW 附属文件」。
-- `PhotoVisibilityGateTests` 会把**文档注释里**引用的 SQL 片段（`archived_at IS NULL`）判成
-  裸谓词——本轮改述注释才通过。门禁的注释跳过只看行首前缀，遇到跨行拼接仍会误报（P2）。
+上一版列出的五条残余已全部处理：
+
+| 原残余 | 处置 | 证据 |
+|---|---|---|
+| `--write-baseline` 可把膨胀洗白 | 加 `--allow-growth` 闸门：指标上涨时`--write-baseline` 直接 REFUSED（exit 1）并打印涨幅；确需扩张必须显式批准并在台账记账 | 人为压低 `public_types` 到 292 后实测 REFUSED，`--allow-growth` 才放行 |
+| test-catalog ratchet 只数声明 | 追加**断言 ratchet**（`#expect` + `#require` = 10,199），删真补空会让断言数掉 | `check-test-catalog.sh` 的 §7 |
+| 交付页无进度（`output.run` 帧被过滤） | `ExportViewModel` 增 `deliveryProgress`/`deliveryPhase`，交付区渲染进度条 + 相位 + n/N；原过滤只针对"单张导出"那套状态 | `ExportViewModel.applyJobEvent`、`ExportView+Delivery` |
+| JPEG 内嵌写回缺 router 用例 | 新增"无 .xmp 的 JPEG 走内嵌、不生成 sidecar、值真进 APP1"用例（真 JPEG + 真 router） | `JPEGMetadataWritebackTests.embeddedTargetWritesIntoJPEG` |
+| `PhotoVisibilityGateTests` 误报文档注释里的 SQL | 门禁改为**先抹掉整行注释再扫描**（行数不变，行号仍准）；并故意把 `archived_at IS NULL` 写回注释验证不再误报 | `PhotoVisibilityGateTests.strippingLineComments` |
+
+同时在第三轮清掉了 **7 处源码告警**（`AppBootstrap` 未用返回值、`AppImport` 死变量、
+`SidecarXMPProvider+Patching` `var→let`、`DB.swift` 未用结果、`CullingViewModel` 冗余
+`internal(set)` ×2、`ExportViewModel+Delivery` 的 weak 捕获归属），冷构建实测 **0 告警**。
+
+仍未做（环境/范围所限，不是缺陷）：
 - 未做 GUI 验收、未做签名/公证；WebDAV 仍是 fake transport。
+- `.gather-archived-<ts>` 的 sidecar→embedded 迁移功能未实现（白名单已预留），它属于
+  `docs/design/p2-review-delivery/plan-2026-10-28.md` §2.5 的功能项，不在本轮范围。
+- 设置项 `metadata_write_mode` 的 `sidecar` 选项标签仍是英文技术名「XMP Sidecar」
+  （en 值同名）：按"格式名保持英文"的既有约定有意保留。

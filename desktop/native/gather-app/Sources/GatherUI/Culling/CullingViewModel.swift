@@ -192,9 +192,9 @@ public final class CullingViewModel: PageVisibility {
     /// P0/G0：排序（所有排序统一走 nextCursor）。
     public var sortMode: CullingSort = .importOrder
     /// 用户在本窗口内显式改过排序：设置默认值不得覆盖。
-    internal(set) var isSortUserSet = false
+    var isSortUserSet = false
     /// 设置 `grid_density` 的窗口默认值（SceneStorage 未设置时使用）。
-    internal(set) var defaultGridDensity: CullingGridDensity = .m
+    var defaultGridDensity: CullingGridDensity = .m
     /// Host 注入：读取 grid_default_sort / grid_density 的原始字符串（async SettingsAPI）。
     public var gridDefaultsProvider: (@MainActor () async -> (sortRaw: String?, densityRaw: String?))?
     /// P0/G0：网格 200/页；单图/对比/胶片条沿用 500。

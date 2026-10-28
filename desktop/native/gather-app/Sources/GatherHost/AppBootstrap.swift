@@ -314,7 +314,8 @@ package final class AppBootstrap {
         // 放到 detached 执行；AppRuntime 是 @unchecked Sendable（内部 NSLock 保护生命周期）。
         // B0：刚完成跨进程恢复时不再回放 pending delivery（恢复前的语义已由 journal 承接）。
         let replayPendingDeliveries = !didRestore
-        try await Task.detached(priority: .userInitiated) {
+        // start 返回本次恢复的 job 类型列表，这里不需要（恢复结果由 runtime 内部落库）。
+        _ = try await Task.detached(priority: .userInitiated) {
             try runtime.start(replayPendingDeliveries: replayPendingDeliveries)
         }.value
         // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。

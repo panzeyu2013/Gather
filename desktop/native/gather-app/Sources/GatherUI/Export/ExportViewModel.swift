@@ -216,6 +216,12 @@ public final class ExportViewModel: PageVisibility {
     /// 确认流程是否在进行中（D03：确认计算期间禁止重复发起）。
     public internal(set) var isConfirming = false
 
+    /// 整套交付（output.run 批量任务）的进度：交付页此前零反馈，长任务看起来像卡死。
+    /// 与单张导出的 `exportProgress` 分开存，互不覆盖。
+    public internal(set) var deliveryProgress: (current: Int, total: Int)?
+    /// 交付相位（`output.<recipeIndex>/<recipeCount>`，由 `progressPhaseText` 渲染）。
+    public internal(set) var deliveryPhase: String?
+
     /// events.job-progress 消费：仅当前工作区 output.run 任务的进度帧。
     /// output.run 的 checkpoint 携带 destinations（photoId → 导出文件名）
     /// 与按完成顺序追加的 completedPhotoIds；最近完成的 photoId 即当前文件。
@@ -223,8 +229,18 @@ public final class ExportViewModel: PageVisibility {
         guard event.job.type == .outputRun,
               event.job.scopeId == sessionId else { return }
         // 整套交付与单张导出共用 job 类型：批量 job 的终态帧会把本页改成
-        // “当前范围没有可导出的照片”，这里按 checkpoint 标记过滤。
-        if event.job.checkpoint["outputRun"]?.boolValue == true { return }
+        // “当前范围没有可导出的照片”，这里按 checkpoint 标记过滤**单张导出**那套状态，
+        // 但要把进度喂给交付页自己的字段。
+        if event.job.checkpoint["outputRun"]?.boolValue == true {
+            if event.isTerminal {
+                deliveryProgress = nil
+                deliveryPhase = nil
+            } else if let current = event.update.current, let total = event.update.total {
+                deliveryProgress = (current, total)
+                deliveryPhase = event.update.phase
+            }
+            return
+        }
         if let current = event.update.current, let total = event.update.total {
             exportProgress = (current, total)
             currentFileName = Self.fileName(from: event.update.checkpoint)
