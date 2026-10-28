@@ -269,4 +269,38 @@ struct MetadataServiceTests {
         #expect(MetadataService.normalizeKeywordList(.number(7)) == ["7"])
         #expect(MetadataService.normalizeKeywordList(.none) == nil)
     }
+
+    /// P1：JPEG 清空诊断覆盖 descriptive / keywords / label；RAW 与"侧车也没写"
+    /// 不得误报（侧车写失败走通用 write-back verification）。
+    @Test("JPEG 内嵌清空诊断：多字段命中，RAW 与侧车未清空不误报")
+    func jpegEmbeddedClearDiagnostics() {
+        let expected = MetadataWriteAttributes(
+            keywords: [],
+            label: "",
+            descriptive: DescriptiveMetadata(caption: ""))
+        let disk = MetadataWriteAttributes(
+            keywords: ["k1"],
+            label: "Red",
+            descriptive: DescriptiveMetadata(caption: "旧说明"))
+        let sidecar = MetadataWriteAttributes()
+
+        let message = MetadataService.jpegEmbeddedClearFailure(
+            expected: expected, disk: disk, sidecar: sidecar, isJpeg: true)
+        #expect(message?.contains("caption") == true)
+        #expect(message?.contains("keywords") == true)
+        #expect(message?.contains("label") == true)
+
+        // RAW 只有侧车一个真相源：同样的差异是普通写后校验，不是内嵌残留。
+        #expect(MetadataService.jpegEmbeddedClearFailure(
+            expected: expected, disk: disk, sidecar: sidecar, isJpeg: false) == nil)
+
+        // 侧车仍带值 = 侧车没写成功：交给通用 verification，不谎报"内嵌不支持"。
+        let sidecarStillHasValue = MetadataWriteAttributes(
+            keywords: ["k1"],
+            label: "Red",
+            descriptive: DescriptiveMetadata(caption: "旧说明"))
+        #expect(MetadataService.jpegEmbeddedClearFailure(
+            expected: expected, disk: disk,
+            sidecar: sidecarStillHasValue, isJpeg: true) == nil)
+    }
 }

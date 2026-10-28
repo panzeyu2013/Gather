@@ -200,6 +200,9 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case XMP_ORPHAN_NOT_FOUND
     case XMP_ORPHAN_NOT_RETRYABLE
     case XMP_WRITER_TIMEOUT
+    /// P1：JPEG 内嵌 IPTC/XMP 无法靠写 .xmp 侧车清空（Bridge/C1 仍读到旧值）。
+    /// 写侧车成功但盘上合成值仍带被清空的字段 = 显式失败，不谎报成功。
+    case JPEG_EMBEDDED_CLEAR_UNSUPPORTED
     case WRITEBACK_OTHER_MODULE_ACTIVE
     case WRITEBACK_UNDO_FACE_FAILED
     case WRITEBACK_FAILURES_PENDING

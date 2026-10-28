@@ -280,6 +280,12 @@ struct MetadataTemplateSheet: View {
                     templateId: id, photoIds: targetPhotoIds, policy: policy),
                     source: .userDialog))
             outcome = result
+            // P1：失败原因必须可见。JPEG 内嵌字段无法清空时只显示"失败 N 张"，
+            // 用户会误以为清空完成；首条失败的码/参数由渲染期本地化。
+            errorText = result.failed.first.map { failure in
+                CommandErrorText.resolve(
+                    CommandError(APIError.failed(failure.message)), with: l10n)
+            }
             // 失败也可能已入队/已写盘（批次已记录），保留撤销入口。
             appliedBatchId = (result.written.isEmpty && result.failed.isEmpty)
                 ? nil : result.batchId

@@ -160,9 +160,11 @@ struct SessionContractTests {
         // → 177。Cut 1 D-010 再补 2 个通用码（INVALID_PARAM / PHOTO_NOT_FOUND）→ 179。
         // P0 T0 再补 4 个初筛码（TRIAGE_NOT_READY / _STALE / _APPLY_INVALID /
         // _POLICY_INVALID）→ 185；P0 补 19 → 204；清理 Template/死码后 → 184；
-        // 淘汰移出目标路径冲突再补 1（ASSET_RELINK_TARGET_EXISTS）→ 185。增删错误码时必须
-        // 同步此断言、ErrorCodeContractTests 的清单与 GatherLocalization.errorMessages。
-        #expect(GatherErrorCode.allCases.count == 185)
+        // 淘汰移出目标路径冲突再补 1（ASSET_RELINK_TARGET_EXISTS）→ 185；
+        // P1 JPEG 内嵌清空失败再补 1（JPEG_EMBEDDED_CLEAR_UNSUPPORTED）→ 186。
+        // 增删错误码时必须同步此断言、ErrorCodeContractTests 的清单与
+        // GatherLocalization.errorMessages。
+        #expect(GatherErrorCode.allCases.count == 186)
     }
 
     @Test func gatherErrorCodeRawValueMatchesCaseName() {

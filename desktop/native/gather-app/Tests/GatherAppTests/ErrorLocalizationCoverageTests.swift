@@ -89,6 +89,22 @@ struct ErrorLocalizationCoverageTests {
         }
     }
 
+    @Test("JPEG 内嵌清空错误码：中英文模板都必须把字段列表插值进去")
+    func jpegEmbeddedClearMessageInterpolatesFields() {
+        AppLanguageLock.withStableCopy {
+            let raw = "JPEG_EMBEDDED_CLEAR_UNSUPPORTED: title, caption"
+            let zh = L10n(language: .zhCN).errorText(raw)
+            #expect(zh.contains("title, caption"), "中文文案必须带上具体字段：\(zh)")
+            #expect(!zh.contains("{{"), "占位符不得原样上屏：\(zh)")
+            #expect(zh.contains("Bridge"), "必须给出可操作的清空位置：\(zh)")
+
+            let en = L10n(language: .en).errorText(raw)
+            #expect(en.contains("title, caption"), "英文文案必须带上具体字段：\(en)")
+            #expect(!en.contains("{{"), "占位符不得原样上屏：\(en)")
+            #expect(en.contains("Bridge"))
+        }
+    }
+
     @Test("英文文案的占位符序列必须与中文 key 一致（错位会让 String(format:) 取错参数）")
     func englishPlaceholdersMatchKeys() {
         let table = parseStrings(stringsFileURL)
