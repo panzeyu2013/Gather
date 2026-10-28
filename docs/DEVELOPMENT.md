@@ -256,7 +256,7 @@ App Sandbox**：当前签名与运行模型没有沙盒容器，授权路径访�
 
 ```text
 SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
-  ↓ AppServices（16 个域 API / 129 个类型化方法，同进程直连）
+  ↓ AppServices（16 个域 API / 134 个类型化方法，同进程直连）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication 服务（交付编排在 GatherDelivery）
@@ -480,7 +480,7 @@ Cut 1 后字符串命令面已删除；当前机器判据（CI 的 boundary job 
 ./scripts/check-test-catalog.sh --strict # 测试文件头注释 / skip 元数据（.enabled、@Suite(.disabled)、owner/到期/原因）
 ./scripts/check-test-catalog.sh --self-test # 负例：缺元数据应 exit 1，补齐后 exit 0（非独立门禁）
 ./scripts/check-select-star.sh           # Sources 4 处 / Tests 白名单 1 处
-./scripts/check-preview-surface.sh --strict  # 18 个 #Preview / 13 个文件
+./scripts/check-preview-surface.sh --strict  # 14 个 #Preview / 12 个文件
 ./scripts/check-coded-errors.sh          # 错误码类型化：Persistence 无裸码字符串；Host 反解须标 allow: string-code
 ./scripts/check-backlog-evidence.sh      # cleanup-backlog 的 pending/deferred 段必须有证据标记
 ./scripts/check-design-system.sh         # 设计系统 ratchet（scripts/design-system-baseline.json）
@@ -495,7 +495,7 @@ CL 段必须写可复核的证据（`证据` / `未完成原因` / `实测` / `�
 
 ## 类型化 API 契约（Cut 1 收口）
 
-Cut 1 已用 **16 个域协议 / 129 个方法**替代 118 条字符串命令：
+Cut 1 已用 **16 个域协议 / 134 个方法**替代 118 条字符串命令：
 Session、Culling、Export、Job、Duplicate、Face、Similarity、Photo、Album、Person、
 Metadata、Settings、Navigation、Asset、Quality、Maintenance（`GatherProtocol/API/*API.swift`；
 Template 域已于 2026-10-24 按 ADR-031 删除）。

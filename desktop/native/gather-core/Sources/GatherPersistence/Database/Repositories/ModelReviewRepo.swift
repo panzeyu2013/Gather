@@ -87,27 +87,6 @@ public final class ModelReviewRepo {
         return result
     }
 
-    /// 按资产文件取最新结果（triage 候选装配：与 quality 同一条 JOIN 口径）。
-    public func latestByAssetFile(assetFileIds: [String]) throws -> [String: String] {
-        guard !assetFileIds.isEmpty else { return [:] }
-        var result: [String: String] = [:]
-        for chunk in chunks(assetFileIds, size: 400) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare("""
-                SELECT asset_file_id, result_json
-                FROM asset_analysis
-                WHERE analysis_type = 'model_review' AND asset_file_id IN (\(placeholders))
-                ORDER BY updated_at DESC, id DESC
-                """).query(chunk.map { .text($0) })
-            for row in rows {
-                let fileId = row[0].textValue ?? ""
-                if result[fileId] != nil { continue }
-                result[fileId] = row[1].textValue ?? ""
-            }
-        }
-        return result
-    }
-
     private func chunks(_ ids: [String], size: Int) -> [[String]] {
         guard ids.count > size else { return [ids] }
         return stride(from: 0, to: ids.count, by: size).map {

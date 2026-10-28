@@ -66,7 +66,7 @@ public struct XMPDeliveryFilePort: DeliveryFilePort {
         // 因此不能只认 .xmp 后缀（否则 finalize 永远删不掉备份、intent 永久 pending）。
         let lowered = path.lowercased()
         let isSidecar = lowered.hasSuffix(".xmp")
-        // 白名单唯一来源在 XMPBackupNaming（以前这里与 MetadataWriteRouter 各抄一份）。
+        // 白名单唯一来源在 DeliveryBackupPath（以前这里与 MetadataWriteRouter 各抄一份）。
         let isControlledBackup = DeliveryBackupPath.isControlledName(path)
         guard isSidecar || isControlledBackup else {
             throw DeliveryBackupPathError.unsafeXMPPath(path)

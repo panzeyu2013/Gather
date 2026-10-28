@@ -83,12 +83,16 @@ public enum DeliveryBackupPath {
         ".gather-backup-", ".gather-header-", ".gather-archived-",
     ]
 
-    /// 是否属于"受控备份 / 归档名"（大小写不敏感子串判断，与历史实现一致）。
+    /// 是否属于"受控备份 / 归档名"。
+    ///
+    /// **只看最后一段路径**：以前对整串 `contains`，目录名里出现 `.gather-backup-`
+    /// 就能让该目录下的任意文件（内嵌模式下甚至是原片）通过最后一道删除守卫。
+    /// 备份/归档名一定把标记放在文件名里，所以限制到 lastPathComponent 既够用也更安全。
     ///
     /// 这是**允许删除**的白名单，不是路径合法性校验——后者仍走 `validate`。
     public static func isControlledName(_ path: String) -> Bool {
-        let lowered = path.lowercased()
-        return controlledMarkers.contains { lowered.contains($0) }
+        let name = ((path as NSString).lastPathComponent).lowercased()
+        return controlledMarkers.contains { name.contains($0) }
     }
 
     public static func validate(xmpPath: String, backupPath: String) throws -> String {

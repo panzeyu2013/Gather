@@ -94,7 +94,7 @@ feat 带来大量新文案/注释，合并只覆盖了 sidecar 分叉点之前�
 | 项 | 结果 |
 |---|---|
 | core 构建 / 测试 | exit 0；**1433 tests / 214 suites**（含新增契约测试），exit 0 |
-| app 构建 / 测试（`--no-parallel`） | exit 0；**761 tests / 89 suites**，exit 0 |
+| app 构建 / 测试（`--no-parallel`） | exit 0；**762 tests / 89 suites**，exit 0 |
 | `gather-schema verify` | `tables=44 columns=386 indexes=72 fks=65 user_version=1 violations=0`，exit 0 |
 | 12 个 `check-*.sh` | **12/12 exit 0**（strict 可用者带 `--strict`） |
 
@@ -105,7 +105,7 @@ feat 带来大量新文案/注释，合并只覆盖了 sidecar 分叉点之前�
 | 原残余 | 处置 | 证据 |
 |---|---|---|
 | `--write-baseline` 可把膨胀洗白 | 加 `--allow-growth` 闸门：指标上涨时`--write-baseline` 直接 REFUSED（exit 1）并打印涨幅；确需扩张必须显式批准并在台账记账 | 人为压低 `public_types` 到 292 后实测 REFUSED，`--allow-growth` 才放行 |
-| test-catalog ratchet 只数声明 | 追加**断言 ratchet**（`#expect` + `#require` = 10,199），删真补空会让断言数掉 | `check-test-catalog.sh` 的 §7 |
+| test-catalog ratchet 只数声明 | 追加**断言 ratchet**（`#expect` + `#require` = 10,204），删真补空会让断言数掉 | `check-test-catalog.sh` 的 §7 |
 | 交付页无进度（`output.run` 帧被过滤） | `ExportViewModel` 增 `deliveryProgress`/`deliveryPhase`，交付区渲染进度条 + 相位 + n/N；原过滤只针对"单张导出"那套状态 | `ExportViewModel.applyJobEvent`、`ExportView+Delivery` |
 | JPEG 内嵌写回缺 router 用例 | 新增"无 .xmp 的 JPEG 走内嵌、不生成 sidecar、值真进 APP1"用例（真 JPEG + 真 router） | `JPEGMetadataWritebackTests.embeddedTargetWritesIntoJPEG` |
 | `PhotoVisibilityGateTests` 误报文档注释里的 SQL | 门禁改为**先抹掉整行注释再扫描**（行数不变，行号仍准）；并故意把 `archived_at IS NULL` 写回注释验证不再误报 | `PhotoVisibilityGateTests.strippingLineComments` |

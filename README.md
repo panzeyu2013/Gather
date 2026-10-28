@@ -98,7 +98,7 @@ and re-reads the signed entitlements. Assembly also asserts the bundled
 
 ```text
 SwiftUI (GatherUI)
-  ↓ AppServices：16 个域协议 / 129 个类型化方法（同进程直连）
+  ↓ AppServices：16 个域协议 / 134 个类型化方法（同进程直连）
 GatherHost（AppComposition 组合根 / AppRuntime / Live*API）
   ↓
 GatherApplication（服务编排、JobService）

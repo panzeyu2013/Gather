@@ -199,7 +199,7 @@ final class MetadataWriteRouter: XMPProvider {
         // 这里是最靠近 removeItem 的一道关，宁可多拦。
         let lowered = path.lowercased()
         let isSidecar = lowered.hasSuffix(".xmp")
-        // 白名单唯一来源在 XMPBackupNaming（与 DeliveryTypes 共用，避免两处漂移）。
+        // 白名单唯一来源在 DeliveryBackupPath（与 DeliveryTypes 共用，避免两处漂移）。
         let isControlledBackup = DeliveryBackupPath.isControlledName(path)
         guard isSidecar || isControlledBackup else {
             throw MetadataWriteRouterError.embeddedWriteFailed(
@@ -227,36 +227,8 @@ final class MetadataWriteRouter: XMPProvider {
                 level: .debug)
             return embedded
         }
-        return MetadataWriteRouter.merge(embedded, overlay)
-    }
-
-    static func merge(
-        _ base: MetadataWriteAttributes,
-        _ overlay: MetadataWriteAttributes
-    ) -> MetadataWriteAttributes {
-        MetadataWriteAttributes(
-            keywords: overlay.keywords ?? base.keywords,
-            rating: overlay.rating ?? base.rating,
-            label: overlay.label ?? base.label,
-            dateTaken: overlay.dateTaken ?? base.dateTaken,
-            latitude: overlay.latitude ?? base.latitude,
-            longitude: overlay.longitude ?? base.longitude,
-            descriptive: descriptiveMerge(base.descriptive, overlay.descriptive),
-            triageSignal: overlay.triageSignal ?? base.triageSignal,
-            keywordsMode: overlay.keywordsMode ?? base.keywordsMode,
-            replaceContact: overlay.replaceContact ?? base.replaceContact)
-    }
-
-    private static func descriptiveMerge(
-        _ base: DescriptiveMetadata?,
-        _ overlay: DescriptiveMetadata?
-    ) -> DescriptiveMetadata? {
-        switch (base, overlay) {
-        case (nil, nil): return nil
-        case (let base?, nil): return base
-        case (nil, let overlay?): return overlay
-        case (let base?, let overlay?): return base.applying(overlay)
-        }
+        // 合并表唯一实现在 core（以前这里抄了一份，漏了三个字段）。
+        return MetadataService.mergeAttributes(embedded, overlay)
     }
 
     // MARK: - pending 备份表

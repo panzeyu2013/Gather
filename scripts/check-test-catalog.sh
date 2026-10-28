@@ -335,9 +335,8 @@ fi
 # 6) 用例/套件 ratchet：删一条 @Test 或 @Suite 不会让任何用例变红，是历史空白。
 #    下限按实测值钉死；新增用例只会让数字变大，删用例必须显式改这里并在台账记账
 #    （与 cleanup/protocol ratchet 同一套"只许收紧"的约定）。
-#    2026-10-28 两次合并后收紧：2115/225 → 2193/241（feat 合入 +73/+15；本轮补
-#    输出/写目标/模型初审契约测试 +5/+1）。见 docs/reviews/feat-merge-2026-10-28.md
-#    与 docs/reviews/sidecar-merge-2026-10-28.md。
+#    2026-10-28 两轮合并 + 三轮评审后累计收紧：2115/225 → 2195/241（feat 合入 +73/+15；
+#    契约测试与回归 +7/+1）。见 docs/reviews/{feat-merge,sidecar-merge,final-review}-2026-10-2*.md。
 BASELINE_TEST_DECL=2195
 BASELINE_SUITE_DECL=241
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \

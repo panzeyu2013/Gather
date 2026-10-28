@@ -17,12 +17,8 @@ enum XMPPacketStoreError: Error, Equatable, CustomStringConvertible {
         }
     }
 
-    var description: String {
-        switch self {
-        case .notUTF8: "EMBEDDED_XMP_NOT_UTF8"
-        case .malformedAfterPatch: "EMBEDDED_XMP_MALFORMED"
-        }
-    }
+    /// 与 `code` 同串：调用方只认 "CODE: detail" 形态，不维护第二份字面量。
+    var description: String { code }
 }
 
 enum XMPPacketStore {

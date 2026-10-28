@@ -16,8 +16,6 @@ enum WebDAVKeychainError: Error, CustomStringConvertible {
 }
 
 enum WebDAVCredentialStore {
-    private static let service = "app.gather.webdav"
-
     static func save(server: URL, username: String, password: String) throws {
         let base = server.absoluteString
         let query: [String: Any] = [

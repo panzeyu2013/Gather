@@ -11,7 +11,7 @@
 #   GatherAnalysis  不得 import GatherPersistence
 #   GatherApplication    不得 import SwiftUI
 #
-# 当前仓库尚未拆分 target：输出 "not split yet" 并 exit 0（Cut 0 基线模式）。
+# 20 条方向全部 fail-closed（Cut 0 的 "not split yet" 早退分支已删除，勿再加回）。
 # 用法：./scripts/check-layering.sh
 set -euo pipefail
 

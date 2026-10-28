@@ -23,7 +23,7 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 
 ## 架构一句话
 
-**SwiftUI 页面 → 16 个域 API（129 个类型化方法，`AppServices` 注入）→ 8 个
+**SwiftUI 页面 → 16 个域 API（134 个类型化方法，`AppServices` 注入）→ 8 个
 SwiftPM target**：`GatherProtocol`（值类型/协议/错误码）、`GatherPersistence`
 （SchemaCurrent/Database/仓储）、`GatherDelivery`（交付引擎）、`GatherAnalysis`
 （聚类/人脸/图像）、`GatherApplication`（服务与任务）、`GatherUI`（页面/状态层）、

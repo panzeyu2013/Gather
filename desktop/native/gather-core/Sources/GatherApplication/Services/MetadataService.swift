@@ -267,7 +267,7 @@ public final class MetadataService: @unchecked Sendable {
         if let embeddedReader {
             let embedded = try await embeddedReader.readAttributes(photoPath: photoPath)
             let sidecar = try await xmp.readAttributes(photoPath: photoPath)
-            return mergeAttributes(embedded, sidecar)
+            return Self.mergeAttributes(embedded, sidecar)
         }
         return try await xmp.readAttributes(photoPath: photoPath)
     }
@@ -316,7 +316,7 @@ public final class MetadataService: @unchecked Sendable {
                 return DiskSnapshot(attributes: sidecar, embeddedReadable: true)
             }
             return DiskSnapshot(
-                attributes: mergeAttributes(embedded, sidecar), embeddedReadable: true)
+                attributes: Self.mergeAttributes(embedded, sidecar), embeddedReadable: true)
         } catch {
             // 内嵌解析失败：退化为只读 sidecar（面板不阻断），但标记不可读供清空判定用。
             GatherLogger.log(
@@ -346,13 +346,17 @@ public final class MetadataService: @unchecked Sendable {
         }
         if let embedded = MetadataService.embeddedAttributesFromParse(parsed) {
             let sidecar = try await xmp.readAttributes(photoPath: photoPath)
-            return mergeAttributes(embedded, sidecar)
+            return Self.mergeAttributes(embedded, sidecar)
         }
         return try await readEffectiveAttributes(photoPath: photoPath)
     }
 
     /// TS: `{ ...selectedAttributes, ...sidecarAttributes }`（后者按 key 覆盖）。
-    private func mergeAttributes(
+    ///
+    /// **唯一实现**：宿主内的 JPEG 读路径（`MetadataWriteRouter.readEmbedded`）也走这里。
+    /// 以前路由里另抄一份，抄的时候漏了 `triageSignal`/`keywordsMode`/`replaceContact`，
+    /// 导致"内嵌 + sidecar 合成"会静默丢这三个字段。
+    public static func mergeAttributes(
         _ base: MetadataWriteAttributes,
         _ overlay: MetadataWriteAttributes
     ) -> MetadataWriteAttributes {
@@ -365,7 +369,10 @@ public final class MetadataService: @unchecked Sendable {
             longitude: overlay.longitude ?? base.longitude,
             // P0 / B1：描述性元数据**逐字段**合并（sidecar 覆盖内嵌，内嵌补 sidecar 空缺）。
             // 旧实现整块 overlay：sidecar 只要有一个字段，JPEG 里的其它 IPTC 就全丢。
-            descriptive: Self.mergeDescriptive(base.descriptive, overlay.descriptive)
+            descriptive: mergeDescriptive(base.descriptive, overlay.descriptive),
+            triageSignal: overlay.triageSignal ?? base.triageSignal,
+            keywordsMode: overlay.keywordsMode ?? base.keywordsMode,
+            replaceContact: overlay.replaceContact ?? base.replaceContact
         )
     }
 
