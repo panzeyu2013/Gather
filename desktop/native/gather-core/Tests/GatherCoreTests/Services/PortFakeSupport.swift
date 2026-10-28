@@ -97,7 +97,9 @@ final class PortFakePhotoRepo: PhotoRepository {
         return projectionRows
     }
 
-    func getBySessionPage(sessionId: String, afterRowId: Int64?, limit: Int) throws -> [PhotoPageRow] {
+    func getBySessionPage(
+        sessionId: String, afterRowId: Int64?, limit: Int, visibleOnly: Bool
+    ) throws -> [PhotoPageRow] {
         pageCalls.append(afterRowId)
         // 首趟返回一页；keyset 游标推进后无更多待回填行。
         return afterRowId == nil ? pageRows : []

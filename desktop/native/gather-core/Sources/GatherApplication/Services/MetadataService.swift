@@ -280,32 +280,46 @@ public final class MetadataService: @unchecked Sendable {
     /// 也会让 triage undo 拿到错误的"当前星级"。
     public func diskAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
         let sidecar = try await xmp.readAttributes(photoPath: photoPath)
-        return try await diskAttributes(photoPath: photoPath, sidecar: sidecar)
+        return await diskSnapshot(photoPath: photoPath, sidecar: sidecar).attributes
+    }
+
+    /// 盘上合成值 + "内嵌是否读得到"。
+    ///
+    /// P1：JPEG 的 APP1 读不到时（parse 返回 nil 或抛错）不能当成"没有内嵌信息"——
+    /// 清空类写入在看不到内嵌值的情况下必须按**不确定**处理，否则会谎报清空成功。
+    struct DiskSnapshot {
+        let attributes: MetadataWriteAttributes
+        let embeddedReadable: Bool
     }
 
     /// 已读侧车的盘上值合成（写后回读用：一次侧车读同时服务校验与缓存投影）。
     ///
     /// P1：JPEG 必须叠加内嵌 IPTC/XMP。侧车只是 JPEG 的"可写投影"，Bridge/C1
     /// 写的标题/版权仍在 APP1 里；只看侧车会把它们从缓存投影里清掉。
-    private func diskAttributes(
+    private func diskSnapshot(
         photoPath: String,
         sidecar: MetadataWriteAttributes
-    ) async throws -> MetadataWriteAttributes {
-        guard Self.isJpegPath(photoPath), let exif else { return sidecar }
+    ) async -> DiskSnapshot {
+        guard Self.isJpegPath(photoPath), let exif else {
+            return DiskSnapshot(attributes: sidecar, embeddedReadable: true)
+        }
         do {
-            if let parsed = try await exif.parse(filePath: photoPath, isJpeg: true) {
-                if let embedded = MetadataService.embeddedAttributesFromParse(parsed) {
-                    return mergeAttributes(embedded, sidecar)
-                }
-                return sidecar
+            guard let parsed = try await exif.parse(filePath: photoPath, isJpeg: true) else {
+                // 读不到 APP1：无法判定内嵌值，标记不可读。
+                return DiskSnapshot(attributes: sidecar, embeddedReadable: false)
             }
+            guard let embedded = MetadataService.embeddedAttributesFromParse(parsed) else {
+                return DiskSnapshot(attributes: sidecar, embeddedReadable: true)
+            }
+            return DiskSnapshot(
+                attributes: mergeAttributes(embedded, sidecar), embeddedReadable: true)
         } catch {
-            // 内嵌解析失败 = 没有内嵌信息：退化为只读侧车，不阻断元数据面板。
+            // 内嵌解析失败：退化为只读侧车（面板不阻断），但标记不可读供清空判定用。
             GatherLogger.log(
                 "diskAttributes embedded parse failed (path token=\(TSPath.basename(photoPath))): "
                     + "\(error)", level: .debug)
+            return DiskSnapshot(attributes: sidecar, embeddedReadable: false)
         }
-        return sidecar
     }
 
     /// JPEG 判定（扩展名大小写不敏感）。
@@ -1116,13 +1130,11 @@ public final class MetadataService: @unchecked Sendable {
         // 投影刷新失败只降级、不改变 written 语义；但失败次数要聚合上报——逐张逐字段
         // 打日志在万张批次下会刷数万行，反而淹没真正的信号。
         var projectionFailures = 0
-        var lastProjectionError: (any Error)?
         func refreshProjection(_ field: String, photoId: String, _ body: () throws -> Void) {
             do {
                 try body()
             } catch {
                 projectionFailures += 1
-                lastProjectionError = error
                 GatherLogger.log(
                     "metadata cache projection refresh failed (field=\(field) photo=\(photoId)): \(error)",
                     level: .debug)
@@ -1136,6 +1148,12 @@ public final class MetadataService: @unchecked Sendable {
         // 标题/版权从缓存里清掉。
         var siblingPhotosByXmp: [String: [(id: String, filepath: String)]] = [:]
         var loadedSessions = Set<String>()
+        /// 兄弟照片的盘上读盘结果（并发读、串行写缓存）。
+        struct SiblingRead: Sendable {
+            let photoId: String
+            let attributes: MetadataWriteAttributes?
+            let error: String?
+        }
         for input in queued {
             if let message = failureByPhoto[input.photoId] {
                 failed.append(MetadataApplyFailure(photoId: input.photoId, message: message))
@@ -1147,16 +1165,17 @@ public final class MetadataService: @unchecked Sendable {
             // P1：回读必须走盘上合成值（JPEG = 内嵌 + 侧车）。只读侧车会漏掉
             // 内嵌字段，并让"清空 JPEG 内嵌字段"看起来成功。
             let sidecar: MetadataWriteAttributes
-            let disk: MetadataWriteAttributes
             do {
                 sidecar = try await xmp.readAttributes(photoPath: readPath)
-                disk = try await diskAttributes(photoPath: readPath, sidecar: sidecar)
             } catch {
                 uncertain.append(input.photoId)
                 failed.append(MetadataApplyFailure(
-                    photoId: input.photoId, message: "read-back failed: \(error)"))
+                    photoId: input.photoId,
+                    message: GatherErrorCode.XMP_DOCUMENT_READ_FAILED.rawValue + ": \(error)"))
                 continue
             }
+            let snapshot = await diskSnapshot(photoPath: readPath, sidecar: sidecar)
+            let disk = snapshot.attributes
             // 缓存投影以回读的**盘上值**为准（写入可能是"字段合并"，本地输入不等于
             // 最终文件）。只有本次明确写了描述性元数据才刷新 IPTC 投影：rating/
             // 关键词写回时若侧车解析失败，不能用空值把面板已有 IPTC 抹掉。
@@ -1188,6 +1207,7 @@ public final class MetadataService: @unchecked Sendable {
                 let targets = siblingPhotosByXmp[readKey]
                     ?? siblingPhotosByXmp[dbKey]
                     ?? []
+                var siblingPlans: [(id: String, path: String)] = []
                 for (siblingId, siblingFilepath) in targets where siblingId != input.photoId {
                     var siblingPath = siblingFilepath
                     if let assetResolver {
@@ -1198,20 +1218,46 @@ public final class MetadataService: @unchecked Sendable {
                             // 解析失败退回 photos.filepath：兄弟刷新是投影优化。
                         }
                     }
-                    do {
-                        let siblingDisk = try await diskAttributes(photoPath: siblingPath)
-                        refreshProjection("descriptive", photoId: siblingId) {
-                            try metadataCacheRepo.updateDescriptive(
-                                photoId: siblingId,
-                                descriptive: siblingDisk.descriptive ?? DescriptiveMetadata())
+                    siblingPlans.append((siblingId, siblingPath))
+                }
+                // 并发读盘：共享侧车的兄弟组通常 2–4 张，串行 ImageIO 解析在大批次
+                // 模板套用（2000 张）下会退化成 O(k²) 读盘。写缓存仍串行。
+                let siblingReads: [SiblingRead]
+                do {
+                    siblingReads = try await batchAsync(
+                        siblingPlans, concurrency: 4
+                    ) { plan -> SiblingRead in
+                        do {
+                            let sidecar = try await self.xmp.readAttributes(photoPath: plan.path)
+                            let snapshot = await self.diskSnapshot(
+                                photoPath: plan.path, sidecar: sidecar)
+                            return SiblingRead(
+                                photoId: plan.id, attributes: snapshot.attributes, error: nil)
+                        } catch {
+                            // 单张失败降级为诊断（已写盘的文件不回滚，缓存保留旧值）。
+                            return SiblingRead(
+                                photoId: plan.id, attributes: nil,
+                                error: String(describing: error))
                         }
-                    } catch {
+                    }
+                } catch {
+                    projectionFailures += 1
+                    siblingReads = []
+                }
+                for read in siblingReads {
+                    guard let attributes = read.attributes else {
                         // 兄弟读盘失败只降级为诊断：已写盘的文件不回滚，缓存保留旧值。
                         projectionFailures += 1
-                        lastProjectionError = error
                         GatherLogger.log(
-                            "metadata cache projection read failed (descriptive photo=\(siblingId)): \(error)",
+                            "metadata cache projection read failed "
+                                + "(descriptive photo=\(read.photoId)): \(read.error ?? "-")",
                             level: .debug)
+                        continue
+                    }
+                    refreshProjection("descriptive", photoId: read.photoId) {
+                        try metadataCacheRepo.updateDescriptive(
+                            photoId: read.photoId,
+                            descriptive: attributes.descriptive ?? DescriptiveMetadata())
                     }
                 }
             }
@@ -1225,12 +1271,33 @@ public final class MetadataService: @unchecked Sendable {
                 refreshProjection("label", photoId: input.photoId) {
                     try metadataCacheRepo.updateLabel(photoId: input.photoId, label: label)
                 }
+            } else if let wantedLabel = input.attributes.label,
+                      wantedLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // 显式清空最后一个 label：回读 nil 也必须把缓存清零，否则面板留旧值。
+                refreshProjection("label", photoId: input.photoId) {
+                    try metadataCacheRepo.updateLabel(photoId: input.photoId, label: "")
+                }
             }
             if let keywords = disk.keywords {
                 refreshProjection("keywords", photoId: input.photoId) {
                     try metadataCacheRepo.updateKeywords(
                         photoId: input.photoId, keywords: keywords)
                 }
+            } else if let wantedKeywords = input.attributes.keywords, wantedKeywords.isEmpty {
+                refreshProjection("keywords", photoId: input.photoId) {
+                    try metadataCacheRepo.updateKeywords(
+                        photoId: input.photoId, keywords: [])
+                }
+            }
+            // P1：内嵌读不到（JPEG 的 APP1 解析失败）时，清空类写入无法判定是否真的
+            // 清掉，必须按不确定处理（进 failed + uncertain），不能报 written。
+            if !snapshot.embeddedReadable, Self.hasClearAttempt(input.attributes) {
+                uncertain.append(input.photoId)
+                failed.append(MetadataApplyFailure(
+                    photoId: input.photoId,
+                    message: GatherErrorCode.XMP_WRITE_VERIFICATION_FAILED.rawValue
+                        + ": embedded metadata unreadable"))
+                continue
             }
             // P1：JPEG 的内嵌 IPTC/XMP 无法靠写 .xmp 侧车清空。写后盘上值仍带
             // 旧字段、而侧车已没有该字段 = 侧车写入成功但内嵌值还在：必须显式
@@ -1246,15 +1313,15 @@ public final class MetadataService: @unchecked Sendable {
             guard Self.attributesMatch(input.attributes, disk) else {
                 uncertain.append(input.photoId)
                 failed.append(MetadataApplyFailure(
-                    photoId: input.photoId, message: "write-back verification failed"))
+                    photoId: input.photoId,
+                    message: GatherErrorCode.XMP_WRITE_VERIFICATION_FAILED.rawValue))
                 continue
             }
             written.append(input.photoId)
         }
         if projectionFailures > 0 {
             GatherLogger.log(
-                "metadata cache projection refresh failed \(projectionFailures) time(s) "
-                    + "（最后错误：\(lastProjectionError.map { String(describing: $0) } ?? "-")）",
+                "metadata cache projection refresh failed \(projectionFailures) time(s)",
                 level: .warn)
         }
         return MetadataAttributesApplyOutcome(
@@ -1293,6 +1360,19 @@ public final class MetadataService: @unchecked Sendable {
                 fields.append(field.rawValue)
             }
         }
+        // P1：成员级联系人清空。内联编辑器提交完整 contact 结构，"为 nil 的成员"
+        // 只有列在 clearedContactMembers 里才算显式清空（模板的成员级合并不算）。
+        if let cleared = expected.clearedContactMembers, !cleared.isEmpty,
+           let expectedContact = expected.descriptive?.contactInfo {
+            let diskContact = disk.descriptive?.contactInfo ?? DescriptiveContact()
+            let sidecarContact = sidecar.descriptive?.contactInfo ?? DescriptiveContact()
+            for member in cleared {
+                guard Self.isBlank(expectedContact.memberValue(member)) else { continue }
+                guard !Self.isBlank(diskContact.memberValue(member)) else { continue }
+                guard Self.isBlank(sidecarContact.memberValue(member)) else { continue }
+                fields.append("contactInfo.\(member)")
+            }
+        }
         if let keywords = expected.keywords, keywords.isEmpty {
             let diskKeywords = (disk.keywords ?? []).filter { !$0.isEmpty }
             let sidecarKeywords = (sidecar.keywords ?? []).filter { !$0.isEmpty }
@@ -1308,6 +1388,25 @@ public final class MetadataService: @unchecked Sendable {
         guard !fields.isEmpty else { return nil }
         return GatherErrorCode.JPEG_EMBEDDED_CLEAR_UNSUPPORTED.rawValue
             + ": " + fields.joined(separator: ", ")
+    }
+
+    /// 本次补丁是否包含"清空"意图（字段清空 / 空关键词 / 空 label）。
+    static func hasClearAttempt(_ attributes: MetadataWriteAttributes) -> Bool {
+        if let descriptive = attributes.descriptive {
+            for field in descriptive.explicitlySetFields
+            where normalizedValue(descriptive.value(for: field)) == nil {
+                return true
+            }
+        }
+        if let keywords = attributes.keywords, keywords.isEmpty { return true }
+        if let label = attributes.label, isBlank(label) { return true }
+        return false
+    }
+
+    /// 文本是否"空"（nil / 全空白）。
+    static func isBlank(_ value: String?) -> Bool {
+        guard let value else { return true }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// 写后回读判定：描述性元数据逐字段（空值等价于不存在），其余字段精确比较。

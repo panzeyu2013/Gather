@@ -60,7 +60,10 @@ extension FaceKwService {
             let embeddingDim = getNumber("embedding_dim", 512).safeInt(fallback: 512)
             // 照片与 index_seq 快照共享一个读事务（design §8）。
             let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try transactions.transaction {
-                (PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId)),
+                // P2：已移出工作区的照片不参与人脸聚类（与列表/导出/写回同口径）。
+                (PhotoAssets.collapse(
+                    try photoRepo.getBySessionProjection(sessionId: sessionId)
+                        .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }),
                  try sessionRepo.getIndexSeq(id: sessionId))
             }
             if snapshot.photos.isEmpty { throw FaceKwServiceError.noPhotos }
@@ -472,7 +475,10 @@ extension FaceKwService {
         defer { removeControllerIfCurrent(signal, for: sessionId) }
         // 照片 + index_seq 一个读事务（旧实现只读照片；C 的守卫需要 run 起点的序号）。
         let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try transactions.transaction {
-            (PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId)),
+            // P2：重聚类同样只看工作区可见照片。
+            (PhotoAssets.collapse(
+                try photoRepo.getBySessionProjection(sessionId: sessionId)
+                    .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }),
              try sessionRepo.getIndexSeq(id: sessionId))
         }
         let clusterOptions = Self.clusterOptions(from: getNumber)

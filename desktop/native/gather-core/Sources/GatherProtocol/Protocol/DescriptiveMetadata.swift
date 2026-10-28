@@ -107,6 +107,36 @@ public struct DescriptiveContact: Codable, Equatable, Sendable {
             && region == nil && email == nil && telephone == nil && url == nil
     }
 
+    /// 按成员 key（city/country/…）读值；未知 key 返回 nil。
+    public func memberValue(_ key: String) -> String? {
+        switch key {
+        case "city": return city
+        case "country": return country
+        case "address": return address
+        case "postalCode": return postalCode
+        case "region": return region
+        case "email": return email
+        case "telephone": return telephone
+        case "url": return url
+        default: return nil
+        }
+    }
+
+    /// 按成员 key 写值（nil = 清空）；未知 key 忽略。
+    public mutating func setMember(_ key: String, _ value: String?) {
+        switch key {
+        case "city": city = value
+        case "country": country = value
+        case "address": address = value
+        case "postalCode": postalCode = value
+        case "region": region = value
+        case "email": email = value
+        case "telephone": telephone = value
+        case "url": url = value
+        default: break
+        }
+    }
+
     /// 成员级合并：只覆盖 other 中非 nil 的成员。
     /// 模板里的部分联系方式不得把盘上未填的成员整块删掉。
     public func merging(_ other: DescriptiveContact) -> DescriptiveContact {

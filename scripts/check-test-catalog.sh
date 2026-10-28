@@ -332,9 +332,32 @@ if [ "$skip_expired_n" -gt 0 ]; then
   printf '%s' "$skip_expired_list"
 fi
 
+# 6) 用例/套件 ratchet：删一条 @Test 或 @Suite 不会让任何用例变红，是历史空白。
+#    下限按 2026-10-28 实测值钉死；新增用例只会让数字变大，删用例必须显式改这里
+#    并在台账记账（与 cleanup/protocol ratchet 同一套"只许收紧"的约定）。
+BASELINE_TEST_DECL=2113
+BASELINE_SUITE_DECL=225
+test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
+  desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
+  --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
+suite_decl=$(grep -rhE '^[[:space:]]*@Suite([[:space:]]|\()' \
+  desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
+  --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
+ratchet_bad=0
+if [ "${test_decl:-0}" -lt "$BASELINE_TEST_DECL" ]; then
+  echo "FAIL @Test 声明数回落：${test_decl} < baseline ${BASELINE_TEST_DECL}（删用例必须显式下调 baseline 并记账）" >&2
+  ratchet_bad=1
+fi
+if [ "${suite_decl:-0}" -lt "$BASELINE_SUITE_DECL" ]; then
+  echo "FAIL @Suite 声明数回落：${suite_decl} < baseline ${BASELINE_SUITE_DECL}" >&2
+  ratchet_bad=1
+fi
+echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite ${suite_decl}/$BASELINE_SUITE_DECL"
+
 echo "----"
 if [ "$STRICT" -eq 1 ]; then
-  if [ "$header_missing" -gt 0 ] || [ "$skip_missing_n" -gt 0 ] || [ "$skip_expired_n" -gt 0 ]; then
+  if [ "$header_missing" -gt 0 ] || [ "$skip_missing_n" -gt 0 ] || [ "$skip_expired_n" -gt 0 ] \
+     || [ "$ratchet_bad" -ne 0 ]; then
     echo "check-test-catalog: FAILED (--strict)" >&2
     exit 1
   fi

@@ -1779,6 +1779,7 @@
 "将写入 %lld 个字段" = "%lld fields will be written";
 "应用" = "Apply";
 "没有改动" = "No changes";
+"没有写入：与盘上值冲突或无需改动，请关闭后重新读取再试" = "Nothing was written: the values conflict with the disk or need no change. Close this sheet, reload, and try again.";
 "无法读取元数据" = "Unable to read metadata";
 "直接编辑当前照片的 IPTC 字段；空值清空侧车字段，JPEG 内嵌字段需在 Bridge/Capture One 清空" = "Edit the current photo's IPTC fields directly; empty values clear sidecar fields, while JPEG embedded fields must be cleared in Bridge or Capture One";
 "已写入 %lld 张" = "Wrote %lld photos";

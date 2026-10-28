@@ -258,6 +258,19 @@ extension AssetRepo {
                     UPDATE photos SET archived_at = NULL, updated_at = ?
                     WHERE asset_file_id = ? AND \(PhotoVisibility.archivedPredicate(alias: ""))
                   """).run([.text(timestamp), .text(match.id)])
+                // 恢复成"可见"会改变工作区照片数：同一事务内把受影响会话的
+                // photo_count 收敛，否则要等下一次**成功**扫描才回落
+                // （扫描被取消/报错时侧栏会长期偏小）。
+                _ = try connection.prepare("""
+                    UPDATE sessions SET photo_count = (
+                      SELECT COUNT(*) FROM photos
+                      WHERE photos.session_id = sessions.id
+                        AND \(PhotoVisibility.visiblePredicate(alias: ""))
+                    )
+                    WHERE id IN (
+                      SELECT DISTINCT session_id FROM photos WHERE asset_file_id = ?
+                    )
+                  """).run([.text(match.id)])
             }
             try relocateSidecarBinding(
                 oldPhotoPath: match.normalizedPath,

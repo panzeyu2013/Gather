@@ -303,4 +303,48 @@ struct MetadataServiceTests {
             expected: expected, disk: disk,
             sidecar: sidecarStillHasValue, isJpeg: true) == nil)
     }
+
+    /// P1：成员级联系人清空。内联编辑器提交完整 contact 结构，nil 成员只有列在
+    /// clearedContactMembers 里才算"清空"（模板的成员级合并不算）。
+    @Test("JPEG 成员级联系人清空：只认显式上报的成员")
+    func jpegEmbeddedClearDetectsContactMembers() {
+        let expected = MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")),
+            replaceContact: true,
+            clearedContactMembers: ["city"])
+        let disk = MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(
+                contactInfo: DescriptiveContact(city: "上海", email: "a@b.c")))
+        let sidecar = MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")))
+
+        let message = MetadataService.jpegEmbeddedClearFailure(
+            expected: expected, disk: disk, sidecar: sidecar, isJpeg: true)
+        #expect(message?.contains("contactInfo.city") == true, "\(message ?? "-")")
+
+        // 侧车仍带该成员 = 侧车没写成功，交给通用校验，不谎报"内嵌不支持"。
+        let sidecarStillHasCity = MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(city: "上海")))
+        #expect(MetadataService.jpegEmbeddedClearFailure(
+            expected: expected, disk: disk, sidecar: sidecarStillHasCity, isJpeg: true) == nil)
+
+        // 没有上报的成员（模板成员级合并）不得被当成清空。
+        let unreported = MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")),
+            replaceContact: true)
+        #expect(MetadataService.jpegEmbeddedClearFailure(
+            expected: unreported, disk: disk, sidecar: sidecar, isJpeg: true) == nil)
+    }
+
+    @Test("清空意图判定：字段/关键词/label 的空值都算清空尝试")
+    func clearAttemptDetection() {
+        #expect(!MetadataService.hasClearAttempt(MetadataWriteAttributes()), "空补丁没有清空意图")
+        #expect(!MetadataService.hasClearAttempt(MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(caption: "有值"))))
+        #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(caption: ""))))
+        #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(keywords: [])))
+        #expect(!MetadataService.hasClearAttempt(MetadataWriteAttributes(keywords: ["k"])))
+        #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(label: "  ")))
+    }
 }

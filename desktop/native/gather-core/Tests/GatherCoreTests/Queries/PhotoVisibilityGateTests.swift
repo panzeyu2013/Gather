@@ -39,11 +39,14 @@ struct PhotoVisibilityGateTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let roots = [
-            coreRoot.appendingPathComponent("Sources"),
-            coreRoot.deletingLastPathComponent()
-                .appendingPathComponent("gather-app/Sources"),
-        ]
+        // 只拿 gather-core 的单包 checkout 没有兄弟 app 目录：跳过 app 面而不是判失败；
+        // 兄弟包在但 Sources 缺失 = 路径写错，仍由 exists 检查报红。
+        let appPackage = coreRoot.deletingLastPathComponent()
+            .appendingPathComponent("gather-app")
+        var roots = [coreRoot.appendingPathComponent("Sources")]
+        if FileManager.default.fileExists(atPath: appPackage.path) {
+            roots.append(appPackage.appendingPathComponent("Sources"))
+        }
         var offenders: [String] = []
         var scanned = 0
         for root in roots {

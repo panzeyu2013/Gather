@@ -205,17 +205,23 @@ public final class PhotoRepo {
         return try rows.map { try PhotoProjectionRow(row: $0) }
     }
 
-    /// 物理行分页（**含已移出/归档行**）：checksum 回填专用；用户可见列表走
-    /// getAssetPage（已带 PhotoVisibility 谓词）。新增读面不要直接调用本方法。
-    public func getBySessionPage(sessionId: String, afterRowId: Int64? = nil, limit: Int = 200) throws -> [PhotoPageRow] {
+    /// 物理行分页。visibleOnly 默认 true：新增读面不写谓词也不会把 _rejects
+    /// 里的照片重新列出来；checksum 回填显式传 false（归档件也要补校验和）。
+    public func getBySessionPage(
+        sessionId: String,
+        afterRowId: Int64? = nil,
+        limit: Int = 200,
+        visibleOnly: Bool = true
+    ) throws -> [PhotoPageRow] {
+        let filter = visibleOnly ? " AND \(PhotoVisibility.visiblePredicate(alias: "p"))" : ""
         let rows: [DBRow]
         if let afterRowId {
             rows = try connection.prepare(
-                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ? AND p.rowid > ? ORDER BY p.rowid LIMIT ?"
+                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ? AND p.rowid > ?\(filter) ORDER BY p.rowid LIMIT ?"
             ).query([.text(sessionId), .int(afterRowId), .int(Int64(limit))])
         } else {
             rows = try connection.prepare(
-                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ? ORDER BY p.rowid LIMIT ?"
+                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ?\(filter) ORDER BY p.rowid LIMIT ?"
             ).query([.text(sessionId), .int(Int64(limit))])
         }
         return try rows.map { try PhotoPageRow(row: $0) }

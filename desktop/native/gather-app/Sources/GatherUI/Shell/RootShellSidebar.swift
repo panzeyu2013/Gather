@@ -67,6 +67,12 @@ extension RootView {
             // 打开独立的设置窗口，与 Xcode / Safari / 访达一致。
         }
         .listStyle(.sidebar)
+        // 侧栏照片数读 DashboardViewModel.sessions，而离开工作台会停轮询：
+        // 移出/恢复照片后（sessions.photo_count 已在库里回落）订阅领域事件按需重拉，
+        // 否则同一页面里的侧栏数字会一直停在旧值。
+        .refreshOnDomainEvents([.culling, .metadata, .library]) {
+            await viewModel.refreshSessions()
+        }
         .navigationTitle("Gather")
         .toolbar {
             rootSidebarToolbar

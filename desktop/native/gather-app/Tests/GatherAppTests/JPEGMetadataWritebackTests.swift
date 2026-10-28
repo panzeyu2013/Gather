@@ -214,6 +214,38 @@ struct JPEGMetadataWritebackTests {
         #expect(sidecar.descriptive?.title == "侧车旧标题", "未清空的侧车字段必须保留")
     }
 
+    @Test("清空联系人单个成员：内嵌仍保留时必须失败（成员级信号）")
+    func clearingSingleContactMemberFailsClosed() async throws {
+        let fx = try JPEGWritebackFixture()
+        defer { fx.cleanup() }
+        let photoPath = try fx.addPhoto(
+            id: "p-jpeg", name: "IMG_103.JPG",
+            title: "内嵌标题", caption: "内嵌说明", copyright: "© 2026 Gather")
+        // 先落一份带城市的侧车：证明后面确实发生了成员删除，而不是根本没写。
+        try await fx.xmp.writeAttributes(
+            photoPath: photoPath,
+            attributes: MetadataWriteAttributes(
+                descriptive: DescriptiveMetadata(city: "上海")))
+
+        // 用户只清空城市，邮箱保留 → contact 结构非空 + replaceContact 整块替换。
+        let outcome = try await fx.metadata.applyMetadataAttributes(
+            [("p-jpeg", MetadataWriteAttributes(
+                descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")),
+                replaceContact: true,
+                clearedContactMembers: ["city"]))],
+            source: .manual)
+
+        #expect(outcome.written.isEmpty, "成员级清空未生效不得报 written")
+        #expect(outcome.uncertain == ["p-jpeg"], "可能已写侧车：必须进 uncertain/撤销批次")
+        let failure = try #require(outcome.failed.first)
+        #expect(failure.message.contains("contactInfo"), "\(failure.message)")
+        // 侧车已无城市（成员被删），盘上仍有（来自内嵌 IPTC）。
+        let sidecar = try await fx.xmp.readAttributes(photoPath: photoPath)
+        #expect(sidecar.descriptive?.contactInfo?.city == nil)
+        let cached = try #require(try fx.cache.get("p-jpeg")?.descriptive)
+        #expect(cached.contactInfo?.city == "上海", "缓存保留盘上真值")
+    }
+
     @Test("兄弟刷新：编辑 RAW 时 JPEG 兄弟按自己的盘上值刷新，不丢内嵌 title")
     func siblingRefreshUsesEachPhotosDiskValues() async throws {
         let fx = try JPEGWritebackFixture()

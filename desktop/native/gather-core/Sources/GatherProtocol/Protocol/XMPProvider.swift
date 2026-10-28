@@ -27,6 +27,11 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
     public var keywordsMode: String?
     /// P1：撤销结构字段时整块替换 contact（而不是成员级合并），才能删除模板新增成员。
     public var replaceContact: Bool?
+    /// P1：本次补丁**显式清空**的联系人成员（city/country/address/postalCode/region/
+    /// email/telephone/url 的 key）。内联编辑器会提交完整 contact 结构，成员为 nil
+    /// 既可能是"清空"也可能是"不触碰"；只有这里列出的成员才按清空处理，
+    /// JPEG 内嵌残留因此能被判成失败（否则静默报 written）。
+    public var clearedContactMembers: [String]?
 
     public init(
         keywords: [String]? = nil,
@@ -38,7 +43,8 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
         descriptive: DescriptiveMetadata? = nil,
         triageSignal: String? = nil,
         keywordsMode: String? = nil,
-        replaceContact: Bool? = nil
+        replaceContact: Bool? = nil,
+        clearedContactMembers: [String]? = nil
     ) {
         self.keywords = keywords
         self.rating = rating
@@ -50,6 +56,7 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
         self.triageSignal = triageSignal
         self.keywordsMode = keywordsMode
         self.replaceContact = replaceContact
+        self.clearedContactMembers = clearedContactMembers
     }
 
     /// TS: `Object.keys(attributes).length === 0`（corrupt sidecar 守卫）。
@@ -76,6 +83,9 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
         if let triageSignal { object["triageSignal"] = .string(triageSignal) }
         if let keywordsMode { object["keywords_mode"] = .string(keywordsMode) }
         if replaceContact == true { object["replace_contact"] = .bool(true) }
+        if let clearedContactMembers, !clearedContactMembers.isEmpty {
+            object["cleared_contact_members"] = .array(clearedContactMembers.map { .string($0) })
+        }
         return .object(object)
     }
 
@@ -91,7 +101,8 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
             descriptive: try? jsonValue["descriptive"]?.decode(DescriptiveMetadata.self),
             triageSignal: jsonValue["triageSignal"]?.stringValue,
             keywordsMode: jsonValue["keywords_mode"]?.stringValue,
-            replaceContact: jsonValue["replace_contact"]?.boolValue
+            replaceContact: jsonValue["replace_contact"]?.boolValue,
+            clearedContactMembers: jsonValue["cleared_contact_members"]?.arrayValue
         )
     }
 }

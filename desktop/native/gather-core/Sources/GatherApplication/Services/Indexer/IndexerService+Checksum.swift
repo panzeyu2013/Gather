@@ -119,7 +119,8 @@ extension IndexerService {
         var lastRowId: Int64?
         for _ in 0... {
             let page = try self.photoRepo.getBySessionPage(
-                sessionId: sessionId, afterRowId: cursor, limit: Self.checksumBackfillPageSize
+                sessionId: sessionId, afterRowId: cursor,
+                limit: Self.checksumBackfillPageSize, visibleOnly: false
             )
             if page.isEmpty { break }
             lastRowId = page[page.count - 1].rowid

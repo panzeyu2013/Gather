@@ -116,6 +116,38 @@ enum MetadataDisplay {
         return parts.joined(separator: " · ")
     }
 
+    /// 失败信息 → 当前语言文案。
+    ///
+    /// 服务层给出的 \`JPEG_EMBEDDED_CLEAR_UNSUPPORTED: title, webStatement\` 里的字段名
+    /// 是跨语言稳定的 DescriptiveField.rawValue；上屏前换成字段标题（模板里的
+    /// {{field}} 必须是用户认得的名字，不能是内部标识）。
+    static func localizedFailure(_ message: String, with l10n: L10n) -> String {
+        let prefix = GatherErrorCode.JPEG_EMBEDDED_CLEAR_UNSUPPORTED.rawValue + ": "
+        guard message.hasPrefix(prefix) else {
+            return CommandErrorText.resolve(CommandError(APIError.failed(message)), with: l10n)
+        }
+        let names = message.dropFirst(prefix.count)
+            .split(separator: ",")
+            .map { token -> String in
+                let trimmed = token.trimmingCharacters(in: .whitespaces)
+                switch trimmed {
+                case "keywords": return l10n("关键词")
+                case "label": return l10n("色标")
+                default: break
+                }
+                // contactInfo.city 这类成员级条目按整块报（文案只说"联系方式"）。
+                let base = trimmed.split(separator: ".").first.map(String.init) ?? trimmed
+                if let field = DescriptiveField(rawValue: base) {
+                    return l10n(fieldTitle(field))
+                }
+                return trimmed
+            }
+        let localized = GatherErrorCode.JPEG_EMBEDDED_CLEAR_UNSUPPORTED.rawValue
+            + ": " + names.joined(separator: "、")
+        return CommandErrorText.resolve(
+            CommandError(APIError.failed(localized)), with: l10n)
+    }
+
     /// 字段标题（中文是 l10n 的 key；en/zh 资源各有一份翻译）。
     static func fieldTitle(_ field: DescriptiveField) -> String {
         switch field {

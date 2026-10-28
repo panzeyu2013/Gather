@@ -140,7 +140,10 @@ public final class WritebackService: @unchecked Sendable {
         try assertNoActiveOtherModule(sessionId: sessionId, module: module)
 
         // 轻投影：preview 只需要照片身份与 filepath，重 JSON 列从不读取。
+        // P2：已移出工作区的照片不属于写回范围——与"移出=不导出"同一口径，
+        // 否则预览里的"将写回 N 张"仍把 _rejects 里的照片算进来。
         let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+            .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }
         let filtered = photoIds.map { ids in photos.filter { ids.contains($0.id) } } ?? photos
 
         // 与 execute 完全相同的资产解析：asset_read_mode='asset' 且 relink 后，

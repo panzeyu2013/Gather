@@ -191,7 +191,9 @@ public final class QualityService: @unchecked Sendable {
         photoIds: [String]? = nil,
         context: JobRunContext? = nil
     ) async throws -> [QualityResult] {
+        // P2：分析输入与工作区可见性同口径（移出的照片不再参与评分与排名）。
         let sessionPhotos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+            .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }
         let requested = photoIds.map(Set.init)
         let photos: [PhotoProjectionRow] = requested
             .map { set in sessionPhotos.filter { set.contains($0.id) } }
@@ -389,6 +391,7 @@ public final class QualityService: @unchecked Sendable {
     /// TS: get —— 每照片最新一条 technical_quality 结果（IN 分块 + latest-map）。
     public func get(sessionId: String, photoIds: [String]? = nil) throws -> [QualityResult] {
         let projection = try photoRepo.getBySessionProjection(sessionId: sessionId)
+            .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }
         let sessionIds = Set(projection.map(\.id))
         let ids: [String] = photoIds
             .map { Array(Set($0)).filter { sessionIds.contains($0) } }

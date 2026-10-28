@@ -183,21 +183,32 @@ struct MetadataEditorSheet: View {
     private func apply() async {
         isBusy = true
         defer { isBusy = false }
-        guard let edited = MetadataEditorDraft.changes(
+        guard let patch = MetadataEditorDraft.changes(
             values: values, initial: initialValues,
             contact: contact, initialContact: initialContact) else {
             errorText = l10n("没有改动")
             return
         }
         do {
-            let input = try MetadataInlineApplyInput(photoIds: [photoId], fields: edited)
+            let input = try MetadataInlineApplyInput(
+                photoIds: [photoId], fields: patch.fields,
+                clearedContactMembers: patch.clearedContactMembers.isEmpty
+                    ? nil : patch.clearedContactMembers)
             let outcome = try await api.applyDescriptive(Confirmed(input, source: .userDialog))
             // P1：失败（尤其是 JPEG 内嵌字段无法清空）必须留在编辑器里可见；
             // 同时重新读盘，让输入框回到盘上真实值，而不是用户刚敲的空值。
             if let failure = outcome.failed.first {
-                errorText = CommandErrorText.resolve(
-                    CommandError(APIError.failed(failure.message)), with: l10n)
+                errorText = MetadataDisplay.localizedFailure(failure.message, with: l10n)
                 await load(reportError: false)
+                // 可能已写侧车（批次可撤销）：外层仍要刷新并保留撤销入口。
+                onApplied(outcome)
+                return
+            }
+            // 冲突/跳过导致一张都没写：不能悄悄关闭当成成功。
+            if outcome.written.isEmpty,
+               !(outcome.conflicts.isEmpty && outcome.skipped.isEmpty) {
+                errorText = l10n("没有写入：与盘上值冲突或无需改动，请关闭后重新读取再试")
+                onApplied(outcome)
                 return
             }
             onApplied(outcome)

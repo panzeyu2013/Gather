@@ -31,10 +31,11 @@ struct MetadataEditorDraftTests {
         let edited = MetadataEditorDraft.changes(
             values: values, initial: initial,
             contact: DescriptiveContact(), initialContact: DescriptiveContact())
-        #expect(edited?.caption == "新说明")
-        #expect(edited?.city == "", "空白 = 显式清空（value(for:) 非 nil）")
-        #expect(edited?.personInImage == ["张三", "王五"])
-        #expect(edited?.title == nil, "未改动的字段不出现（nil = 不触碰）")
+        #expect(edited?.fields.caption == "新说明")
+        #expect(edited?.fields.city == "", "空白 = 显式清空（value(for:) 非 nil）")
+        #expect(edited?.fields.personInImage == ["张三", "王五"])
+        #expect(edited?.fields.title == nil, "未改动的字段不出现（nil = 不触碰）")
+        #expect(edited?.clearedContactMembers.isEmpty == true, "未改联系人时没有清空成员")
         #expect(MetadataEditorDraft.changedFieldCount(
             values: values, initial: initial,
             contact: DescriptiveContact(), initialContact: DescriptiveContact()) == 3)
@@ -46,7 +47,9 @@ struct MetadataEditorDraftTests {
         let contact = DescriptiveContact(city: "北京")
         let edited = MetadataEditorDraft.changes(
             values: [:], initial: [:], contact: contact, initialContact: initialContact)
-        #expect(edited?.contactInfo == contact)
+        #expect(edited?.fields.contactInfo == contact)
+        // 原电话 123 被清空 → 必须显式上报（服务端靠它判断 JPEG 内嵌残留）。
+        #expect(edited?.clearedContactMembers == ["telephone"])
         #expect(MetadataEditorDraft.changedFieldCount(
             values: [:], initial: [:], contact: contact, initialContact: initialContact) == 1)
     }

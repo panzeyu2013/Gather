@@ -40,12 +40,22 @@ public struct MetadataApplyResult: Equatable, Sendable {
     public var skipped: [String]
     public var conflicts: [String]
     public var failed: [MetadataApplyFailure]
-    public init(batchId: String, written: [String], skipped: [String], conflicts: [String], failed: [MetadataApplyFailure]) {
+    /// 批次里是否留有可撤销快照（written ∪ uncertain 非空）。
+    public var undoAvailable: Bool
+    public init(
+        batchId: String,
+        written: [String],
+        skipped: [String],
+        conflicts: [String],
+        failed: [MetadataApplyFailure],
+        undoAvailable: Bool = false
+    ) {
         self.batchId = batchId
         self.written = written
         self.skipped = skipped
         self.conflicts = conflicts
         self.failed = failed
+        self.undoAvailable = undoAvailable
     }
 }
 
@@ -59,7 +69,8 @@ public extension MetadataPhotoImpact {
     /// 没有任何动作时返回 nil（不产生空写）。
     func writeAttributes(
         template: DescriptiveMetadata,
-        replaceContact: Bool = false
+        replaceContact: Bool = false,
+        clearedContactMembers: [String] = []
     ) -> MetadataWriteAttributes? {
         var toWrite = DescriptiveMetadata()
         for impact in fields where impact.action == .write || impact.action == .clear {
@@ -73,7 +84,12 @@ public extension MetadataPhotoImpact {
             }
         }
         guard !toWrite.isEmpty else { return nil }
-        return MetadataWriteAttributes(descriptive: toWrite, replaceContact: replaceContact)
+        // 只有补丁带 contact 时"清空成员"才有意义；contact 不在本次补丁里时忽略该信号。
+        let members = toWrite.contactInfo == nil || clearedContactMembers.isEmpty
+            ? nil : clearedContactMembers
+        return MetadataWriteAttributes(
+            descriptive: toWrite, replaceContact: replaceContact,
+            clearedContactMembers: members)
     }
 
     /// 改动前的值（撤销输入）：只包含即将被改动的字段。
@@ -139,6 +155,7 @@ public final class MetadataTemplateService: Sendable {
         photoIds: [String],
         policy: MetadataConflictPolicy = .keepExternal,
         replaceContact: Bool = false,
+        clearedContactMembers: [String] = [],
         now: String,
         batchId: String = UUID().uuidString
     ) async throws -> MetadataApplyResult {
@@ -172,7 +189,8 @@ public final class MetadataTemplateService: Sendable {
                     policy: policy
                 )
                 guard let attributes = plan.writeAttributes(
-                    template: fields, replaceContact: replaceContact) else {
+                    template: fields, replaceContact: replaceContact,
+                    clearedContactMembers: clearedContactMembers) else {
                     return .skipped(photoId)
                 }
                 let snapshot = MetadataApplySnapshot(
@@ -264,7 +282,8 @@ public final class MetadataTemplateService: Sendable {
             }
             return MetadataApplyResult(
                 batchId: batchId, written: outcome.written, skipped: skipped,
-                conflicts: conflicts, failed: failed
+                conflicts: conflicts, failed: failed,
+                undoAvailable: !attemptedSnapshots.isEmpty
             )
         }
         return MetadataApplyResult(
@@ -301,7 +320,8 @@ public final class MetadataTemplateService: Sendable {
             try batches.markUndone(id: batchId)
         }
         return MetadataApplyResult(
-            batchId: batchId, written: written, skipped: [], conflicts: [], failed: failed
+            batchId: batchId, written: written, skipped: [], conflicts: [], failed: failed,
+            undoAvailable: !failed.isEmpty
         )
     }
 

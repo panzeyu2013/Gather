@@ -277,7 +277,8 @@ public final class LiveMetadataAPI: MetadataAPI {
             written: result.written,
             skipped: result.skipped,
             conflicts: result.conflicts,
-            failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+            failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) },
+            undoAvailable: result.undoAvailable
         )
     }
 
@@ -303,6 +304,7 @@ public final class LiveMetadataAPI: MetadataAPI {
             // contactInfo，若仍置 true，executor 会用空结构清掉整块 CreatorContactInfo
             // （P0：静默删除侧车联系人）。
             replaceContact: payload.fields.contactInfo != nil,
+            clearedContactMembers: payload.clearedContactMembers ?? [],
             now: nowISOString()
         )
         return MetadataTemplateApplyOutcome(
@@ -310,7 +312,8 @@ public final class LiveMetadataAPI: MetadataAPI {
             written: result.written,
             skipped: result.skipped,
             conflicts: result.conflicts,
-            failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+            failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) },
+            undoAvailable: result.undoAvailable
         )
     }
 
@@ -339,7 +342,8 @@ public final class LiveMetadataAPI: MetadataAPI {
             written: result.written,
             skipped: result.skipped,
             conflicts: result.conflicts,
-            failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+            failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) },
+            undoAvailable: result.undoAvailable
         )
     }
 

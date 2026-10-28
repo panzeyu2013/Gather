@@ -13,6 +13,10 @@ public struct MetadataInlineApplyInput: Decodable, Sendable, Equatable {
     public let fields: DescriptiveMetadata
     /// 内联编辑默认覆盖（用户看着当前值改）；调用方可显式传 keepExternal。
     public let policy: MetadataConflictPolicy
+    /// 本次**显式清空**的联系人成员（DescriptiveContact.members 的 key）。
+    /// contact 结构里 nil 成员既可能是"清空"也可能是"不触碰"，只有列在这里的
+    /// 才算清空——JPEG 内嵌残留的判定依赖这条信号。
+    public let clearedContactMembers: [String]?
 
     /// 与模板 apply 同值：一次内联编辑不会超过整批模板套用的规模。
     public static let maxPhotoIds = 2_000
@@ -22,7 +26,8 @@ public struct MetadataInlineApplyInput: Decodable, Sendable, Equatable {
     public init(
         photoIds: [String],
         fields: DescriptiveMetadata,
-        policy: MetadataConflictPolicy = .overwrite
+        policy: MetadataConflictPolicy = .overwrite,
+        clearedContactMembers: [String]? = nil
     ) throws {
         let values = try APIValidation.nonEmpty(
             photoIds, field: "photoIds", maxCount: Self.maxPhotoIds)
@@ -30,9 +35,17 @@ public struct MetadataInlineApplyInput: Decodable, Sendable, Equatable {
             throw GatherError.invalidParameter(field: "fields", reason: "must set at least one field")
         }
         try Self.validate(fields)
+        if let clearedContactMembers {
+            let known = Set(DescriptiveContact.members.map(\.key))
+            if let unknown = clearedContactMembers.first(where: { !known.contains($0) }) {
+                throw GatherError.invalidParameter(
+                    field: "clearedContactMembers", reason: "unknown member: \(unknown)")
+            }
+        }
         self.photoIds = values
         self.fields = fields
         self.policy = policy
+        self.clearedContactMembers = clearedContactMembers
     }
 
     public init(from decoder: Decoder) throws {
@@ -41,11 +54,15 @@ public struct MetadataInlineApplyInput: Decodable, Sendable, Equatable {
             photoIds: try container.decode([String].self, forKey: .photoIds),
             fields: try container.decode(DescriptiveMetadata.self, forKey: .fields),
             policy: try container.decodeIfPresent(MetadataConflictPolicy.self, forKey: .policy)
-                ?? .overwrite
+                ?? .overwrite,
+            clearedContactMembers: try container.decodeIfPresent(
+                [String].self, forKey: .clearedContactMembers)
         )
     }
 
-    private enum CodingKeys: String, CodingKey { case photoIds, fields, policy }
+    private enum CodingKeys: String, CodingKey {
+        case photoIds, fields, policy, clearedContactMembers
+    }
 
     /// 逐字段长度/数量上限：超长描述会写进 XMP，不能无限大。
     private static func validate(_ fields: DescriptiveMetadata) throws {

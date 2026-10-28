@@ -31,10 +31,11 @@ public struct PhotoReportRow: Equatable, Sendable {
 public protocol PhotoRepository {
     func getBySession(sessionId: String) throws -> [PhotoRow]
     func getBySessionProjection(sessionId: String) throws -> [PhotoProjectionRow]
-    /// 物理行分页（**含已移出/归档行**）：只给"按行做数据维护"的路径用
-    /// （当前唯一调用者是 checksum 回填，归档件也要补校验和）。
-    /// 面向用户的列表必须走 getAssetPage / getBySessionProjection + PhotoVisibility。
-    func getBySessionPage(sessionId: String, afterRowId: Int64?, limit: Int) throws -> [PhotoPageRow]
+    /// 物理行分页。默认 **visibleOnly = true**（面向用户的列表必须过滤归档件）；
+    /// 只有"按行做数据维护"的路径（checksum 回填：归档件也要补校验和）才传 false。
+    func getBySessionPage(
+        sessionId: String, afterRowId: Int64?, limit: Int, visibleOnly: Bool
+    ) throws -> [PhotoPageRow]
     func pendingChecksumCount(sessionId: String) throws -> Int
     /// 物理登记行数（**含归档行**）：不是"工作区照片数"，不能用于侧栏/控制中心展示。
     func countBySession(sessionId: String) throws -> Int
@@ -64,7 +65,7 @@ public protocol PhotoRepository {
 
 public extension PhotoRepository {
     func getBySessionPage(sessionId: String) throws -> [PhotoPageRow] {
-        try getBySessionPage(sessionId: sessionId, afterRowId: nil, limit: 200)
+        try getBySessionPage(sessionId: sessionId, afterRowId: nil, limit: 200, visibleOnly: true)
     }
 
     func getAssetPage(sessionId: String) throws -> (rows: [PhotoPageRow], cursor: Int64?) {

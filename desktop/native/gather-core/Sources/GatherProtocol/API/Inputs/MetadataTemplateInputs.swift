@@ -200,11 +200,22 @@ public struct MetadataTemplateApplyOutcome: Codable, Equatable, Sendable {
     public var skipped: [String]
     public var conflicts: [String]
     public var failed: [MetadataApplyFailureDTO]
-    public init(batchId: String, written: [String], skipped: [String], conflicts: [String], failed: [MetadataApplyFailureDTO]) {
+    /// 这批是否真的有可撤销快照（written ∪ uncertain 非空）。false 时 UI 不显示
+    /// 撤销入口——否则"全失败且批次已标 undone"会给出点了必然报错的假入口。
+    public var undoAvailable: Bool
+    public init(
+        batchId: String,
+        written: [String],
+        skipped: [String],
+        conflicts: [String],
+        failed: [MetadataApplyFailureDTO],
+        undoAvailable: Bool = false
+    ) {
         self.batchId = batchId
         self.written = written
         self.skipped = skipped
         self.conflicts = conflicts
         self.failed = failed
+        self.undoAvailable = undoAvailable
     }
 }

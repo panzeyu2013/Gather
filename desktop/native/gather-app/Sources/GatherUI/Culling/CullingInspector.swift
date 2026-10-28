@@ -148,8 +148,12 @@ struct CullingInspector: View {
                                 photoId: photoId,
                                 api: viewModel.metadataAPI,
                                 onApplied: { outcome in
-                                    viewModel.notice = CullingNotice(
-                                        "已写入 %lld 张", params: ["\(outcome.written.count)"])
+                                    // 失败/冲突时也可能已写侧车：只刷新、不报"已写入 0 张"。
+                                    if !outcome.written.isEmpty {
+                                        viewModel.notice = CullingNotice(
+                                            "已写入 %lld 张",
+                                            params: ["\(outcome.written.count)"])
+                                    }
                                     // 面板要立刻显示新值，否则要切图才刷新（P2）。
                                     viewModel.loadMetadataDetail()
                                 })

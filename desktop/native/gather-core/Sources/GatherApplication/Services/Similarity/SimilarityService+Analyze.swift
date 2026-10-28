@@ -50,7 +50,10 @@ extension SimilarityService {
             // 照片与 index_seq 快照共享一个读事务（design §8）：
             // 快照保证 run.index_seq 与本次分析的照片一致。
             let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try transactions.transaction {
-                (PhotoAssets.collapse(try photoRepo.getBySessionProjection(sessionId: sessionId)),
+                // P2：已移出工作区的照片不参与聚类（与列表/导出/写回同口径）。
+                (PhotoAssets.collapse(
+                    try photoRepo.getBySessionProjection(sessionId: sessionId)
+                        .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }),
                  try sessionRepo.getIndexSeq(id: sessionId))
             }
             if snapshot.photos.isEmpty { throw SimilarityServiceError.noPhotos }

@@ -176,6 +176,9 @@ extension CullingViewModel {
             }
             // 路径已变：重新拉页，避免网格继续用旧路径取缩略图。
             await loadPage(reset: true)
+            // 归档改变了工作区可见集合（sessions.photo_count 已回落）：广播出去，
+            // 侧栏/图库/控制中心才会跟着刷新。
+            if !result.moved.isEmpty { postCullingChange() }
         } catch {
             errorMessage = CommandError(error)
         }

@@ -69,6 +69,22 @@ struct MetadataTemplatePlannerTests {
         #expect(overwrite.fields.first { $0.field == .city }?.action == .write)
     }
 
+    @Test("JPEG 清空 + 缓存落后：keepExternal 判冲突，不生成写盘补丁（UI 不得当成功）")
+    func clearOnStaleCacheProducesNoPatch() {
+        // 用户清空联系人城市；缓存仍是"上海"，盘上已在 Bridge 改成"北京"。
+        let template = DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c"))
+        let cached = DescriptiveMetadata(
+            contactInfo: DescriptiveContact(city: "上海", email: "a@b.c"))
+        let disk = DescriptiveMetadata(
+            contactInfo: DescriptiveContact(city: "北京", email: "a@b.c"))
+        let plan = MetadataTemplatePlanner.plan(
+            template: template, photoId: "p1", current: cached, disk: disk)
+        #expect(plan.conflictCount == 1)
+        #expect(plan.writeAttributes(
+            template: template, replaceContact: true, clearedContactMembers: ["city"]) == nil,
+            "没有任何 write/clear 时不得生成补丁：调用方会把它记成 skipped")
+    }
+
     @Test("盘上已读且字段不存在：beforeSnapshot 不得回退缓存")
     func beforeSnapshotDoesNotFallBackToCache() {
         let current = DescriptiveMetadata(title: "缓存旧值")

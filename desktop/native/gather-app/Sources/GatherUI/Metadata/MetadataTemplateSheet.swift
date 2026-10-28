@@ -286,12 +286,11 @@ struct MetadataTemplateSheet: View {
             // P1：失败原因必须可见。JPEG 内嵌字段无法清空时只显示"失败 N 张"，
             // 用户会误以为清空完成；首条失败的码/参数由渲染期本地化。
             errorText = result.failed.first.map { failure in
-                CommandErrorText.resolve(
-                    CommandError(APIError.failed(failure.message)), with: l10n)
+                MetadataDisplay.localizedFailure(failure.message, with: l10n)
             }
-            // 失败也可能已入队/已写盘（批次已记录），保留撤销入口。
-            appliedBatchId = (result.written.isEmpty && result.failed.isEmpty)
-                ? nil : result.batchId
+            // 只有真的留下可撤销快照才给撤销入口：写前就失败（批次未入库）时
+            // 点撤销只会得到"批次不存在"。
+            appliedBatchId = result.undoAvailable ? result.batchId : nil
             preview = nil
             await viewModel.loadPage(reset: true)
             viewModel.loadMetadataDetail()
@@ -318,7 +317,10 @@ struct MetadataTemplateSheet: View {
             await viewModel.loadPage(reset: true)
             viewModel.loadMetadataDetail()
         } catch {
-            errorText = String(describing: error)
+            // 撤销失败也走码表本地化，不把 "批次不存在：<uuid>" 这类内部文本上屏。
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+            // 撤销入口在当前批次上已无意义（批次缺失/已撤销），收回按钮。
+            appliedBatchId = nil
         }
     }
 }

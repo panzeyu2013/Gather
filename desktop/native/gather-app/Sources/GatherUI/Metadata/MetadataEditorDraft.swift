@@ -22,14 +22,22 @@ enum MetadataEditorDraft {
         return count
     }
 
+    /// 编辑结果：字段补丁 + 显式清空的联系人成员。
+    struct Patch: Equatable {
+        var fields: DescriptiveMetadata
+        /// 原来有值、现在被用户清空的联系人成员（DescriptiveContact.members 的 key）。
+        var clearedContactMembers: [String]
+    }
+
     /// 生成三态补丁；nil = 没有任何改动（调用方禁用以按钮）。
     static func changes(
         values: [DescriptiveField: String],
         initial: [DescriptiveField: String],
         contact: DescriptiveContact,
         initialContact: DescriptiveContact
-    ) -> DescriptiveMetadata? {
+    ) -> Patch? {
         var edited = DescriptiveMetadata()
+        var clearedMembers: [String] = []
         for field in DescriptiveField.allCases where field != .contactInfo {
             let before = normalized(initial[field])
             let after = normalized(values[field])
@@ -47,8 +55,18 @@ enum MetadataEditorDraft {
         }
         if contact != initialContact {
             edited.contactInfo = contact
+            // contact 结构里 nil 既可能是"清空"也可能是"不触碰"：只有"原本有值、
+            // 现在为空"的成员才算显式清空，服务端据此判断 JPEG 内嵌残留。
+            clearedMembers = DescriptiveContact.members.map(\.key).filter { key in
+                let before = initialContact.memberValue(key)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let after = contact.memberValue(key)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return !before.isEmpty && after.isEmpty
+            }
         }
-        return edited.isEmpty ? nil : edited
+        guard !edited.isEmpty else { return nil }
+        return Patch(fields: edited, clearedContactMembers: clearedMembers)
     }
 
     private static func normalized(_ text: String?) -> String {

@@ -235,6 +235,43 @@ if [ -f "$SHAPE_FILE" ]; then
   fi
 fi
 
+# 6) 计数一致性：错误码枚举 / 错误码文案表 / en 键数 与文档声明。
+#    这些数字以前只能靠人肉同步（删测试、改枚举都不会红），这里至少把"文档声明的
+#    数字与代码实测值"钉住；en 键数变化必须同步文档。
+EN_STRINGS="desktop/native/gather-app/Sources/GatherUI/Resources/en.lproj/Localizable.strings"
+CODE_ENUM="desktop/native/gather-core/Sources/GatherProtocol/Protocol/Core.swift"
+LOC_TABLE="desktop/native/gather-app/Sources/GatherUI/Support/GatherLocalization.swift"
+count_note="未检查（缺文件）"
+count_mismatch=0
+if [ -f "${EN_STRINGS}" ] && [ -f "${CODE_ENUM}" ] && [ -f "${LOC_TABLE}" ]; then
+  en_keys=$(grep -cE '^"' "${EN_STRINGS}" || true)
+  enum_cases=$(awk '/public enum GatherErrorCode/,/^}/' "${CODE_ENUM}" \
+    | grep -cE '^[[:space:]]+case ' || true)
+  message_keys=$(grep -cE '^[[:space:]]*"[A-Z0-9_]+":' "${LOC_TABLE}" || true)
+  count_note="一致（错误码 ${enum_cases} / 文案 ${message_keys} / en ${en_keys} 键）"
+  if [ "${enum_cases}" != "${message_keys}" ]; then
+    count_note="${count_note}；错误码 ${enum_cases} != 文案表 ${message_keys}"
+    count_mismatch=1
+  fi
+  for f in README.md docs/DEVELOPMENT.md docs/README.md docs/ROADMAP.md "${ADR}"; do
+    [ -f "$f" ] || continue
+    while IFS= read -r claim; do
+      [ -n "$claim" ] || continue
+      if [ "$claim" != "${enum_cases}" ]; then
+        count_note="${count_note}；${f}: 错误码 ${claim} 项 != code ${enum_cases}"
+        count_mismatch=1
+      fi
+    done <<< "$(grep -E '错误码|GatherErrorCode' "$f" | grep -oE '[0-9]+ 项' | grep -oE '^[0-9]+' | sort -u || true)"
+    while IFS= read -r claim; do
+      [ -n "$claim" ] || continue
+      if [ "${claim//,/}" != "${en_keys}" ]; then
+        count_note="${count_note}；${f}: en ${claim} 键 != code ${en_keys}"
+        count_mismatch=1
+      fi
+    done <<< "$(grep -oE '[0-9][0-9,]* 键' "$f" | grep -oE '^[0-9][0-9,]*' | sort -u || true)"
+  done
+fi
+
 echo "check-docs:"
 echo "  ADR 反引号路径      ${path_total}（缺失 ${missing}）"
 echo "  当前文档 md 链接    ${link_total}（缺失 ${link_missing}；docs 非 archive + 根 README）"
@@ -246,6 +283,7 @@ else
 fi
 echo "  ADR schema 数字     ${doc_versions}（${schema_scope}）"
 echo "  schema 形状         ${shape_note}"
+echo "  错误码/l10n 计数    ${count_note}"
 
 fail=0
 
@@ -263,6 +301,11 @@ fi
 
 if [ "$review_count" -gt 20 ] && [ "$archive_state" = "missing" ]; then
   echo "WARN docs/reviews 有 $review_count 篇历史文档且 docs/archive 未建立（Cut 6 归档目标）。"
+  fail=1
+fi
+
+if [ "$count_mismatch" -ne 0 ]; then
+  echo "WARN 错误码/en 键数与文档声明不一致：${count_note}"
   fail=1
 fi
 
