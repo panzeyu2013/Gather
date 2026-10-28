@@ -10,7 +10,7 @@
 public enum SchemaSQL {
     /// 当前库版本（镜像 SchemaCurrent.userVersion；见文件头）。
     // 注意：不要写类型标注（check-docs.sh 按 currentSchemaVersion = <n> 提取）。
-    public static let currentSchemaVersion = 4
+    public static let currentSchemaVersion = 5
 
     /// 活跃 job 状态集合的 **SQL 字面量唯一真相源**（顺序是语义的一部分）：
     /// 改顺序或改写成绑定参数都会让 AnalysisJobRepo.activeRow 失去

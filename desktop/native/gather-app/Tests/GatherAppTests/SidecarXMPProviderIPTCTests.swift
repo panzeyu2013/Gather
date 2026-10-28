@@ -385,8 +385,8 @@ struct SidecarXMPProviderIPTCTests {
         #expect(after?.city == "上海")
     }
 
-    @Test("多 rdf:Description：写入显式拒绝，避免重复属性/旧值胜出")
-    func refusesMultipleDescriptions() async throws {
+    @Test("多 rdf:Description（同 about）：合并写入，同名元素取第一块")
+    func mergesMultipleDescriptions() async throws {
         let dir = try makeTempDir()
         let photo = try makePhoto(dir, name: "IMG_0009.CR3")
         let sidecarPath = (dir as NSString).appendingPathComponent("IMG_0009.xmp")
@@ -403,13 +403,17 @@ struct SidecarXMPProviderIPTCTests {
         </x:xmpmeta>
         """
         try document.write(toFile: sidecarPath, atomically: true, encoding: .utf8)
-        await #expect(throws: SidecarXMPError.self) {
-            try await SidecarXMPProvider().writeAttributes(
-                photoPath: photo, attributes: MetadataWriteAttributes(
-                    descriptive: DescriptiveMetadata(title: "x")))
-        }
+        let provider = SidecarXMPProvider()
+        try await provider.writeAttributes(
+            photoPath: photo,
+            attributes: MetadataWriteAttributes(descriptive: DescriptiveMetadata(title: "x")))
+
         let after = try String(contentsOfFile: sidecarPath, encoding: .utf8)
-        #expect(after == document, "拒绝写入时文件必须保持原样")
+        #expect(after.components(separatedBy: "<rdf:Description").count - 1 == 1,
+                "多块必须先合并成一块")
+        let attributes = try await provider.readAttributes(photoPath: photo)
+        #expect(attributes.descriptive?.city == "上海", "同名元素取第一块的值")
+        #expect(attributes.descriptive?.title == "x")
     }
 
     @Test("写后校验：盘上没生效时抛 descriptive 校验错误")

@@ -57,7 +57,10 @@ public extension MetadataPhotoImpact {
 
     /// 把计划翻译成"要写盘的 attributes"：只包含 write/clear 的字段；
     /// 没有任何动作时返回 nil（不产生空写）。
-    func writeAttributes(template: DescriptiveMetadata) -> MetadataWriteAttributes? {
+    func writeAttributes(
+        template: DescriptiveMetadata,
+        replaceContact: Bool = false
+    ) -> MetadataWriteAttributes? {
         var toWrite = DescriptiveMetadata()
         for impact in fields where impact.action == .write || impact.action == .clear {
             switch impact.action {
@@ -70,36 +73,43 @@ public extension MetadataPhotoImpact {
             }
         }
         guard !toWrite.isEmpty else { return nil }
-        return MetadataWriteAttributes(descriptive: toWrite)
+        return MetadataWriteAttributes(descriptive: toWrite, replaceContact: replaceContact)
     }
 
     /// 改动前的值（撤销输入）：只包含即将被改动的字段。
     var beforeSnapshot: DescriptiveMetadata {
         var before = DescriptiveMetadata()
         for impact in fields where impact.action == .write || impact.action == .clear {
-            // 撤销基线取盘上值：overwrite 策略下外部改动不能被"撤销"成缓存旧值。
-            if let value = impact.disk ?? impact.current { before.set(value, for: impact.field) }
+            // 撤销基线取盘上值：overwrite 策略下外部改动不能被“撤销”成缓存旧值。
+            if impact.diskKnown {
+                // 盘上读过且字段确实不存在：before 保持 nil，undo 会 clear 该字段；
+                // 绝不能回退缓存，否则会复活外部已删除的值。
+                if let value = impact.disk { before.set(value, for: impact.field) }
+            } else if let value = impact.current {
+                before.set(value, for: impact.field)
+            }
         }
         return before
     }
 }
 
 public final class MetadataTemplateService: Sendable {
+    /// P0 / B2：内联编辑的批次身份（模板列表/最近批次 UI 靠它区分来源）。
+    public static let inlineBatchTemplateID = "inline"
+    public static let inlineBatchName = "手动编辑"
+
     private let templates: MetadataTemplateStore
     private let batches: MetadataApplyBatchStore
     private let metadata: MetadataService
-    private let xmp: any XMPProvider
 
     public init(
         templates: MetadataTemplateStore,
         batches: MetadataApplyBatchStore,
-        metadata: MetadataService,
-        xmp: any XMPProvider
+        metadata: MetadataService
     ) {
         self.templates = templates
         self.batches = batches
         self.metadata = metadata
-        self.xmp = xmp
     }
 
     /// 应用模板：逐张独立提交；冲突按策略跳过；返回批次 id 供撤销。
@@ -113,6 +123,25 @@ public final class MetadataTemplateService: Sendable {
         guard let template = templates.get(id: templateId) else {
             throw MetadataTemplateServiceError.templateNotFound(templateId)
         }
+        return try await applyFields(
+            fields: template.fields, templateId: template.id, templateName: template.name,
+            photoIds: photoIds, policy: policy, now: now, batchId: batchId)
+    }
+
+    /// P0 / B2：套用任意字段集（模板与单张内联编辑共用）。
+    ///
+    /// 只多两个"批次身份"参数：内联编辑用 templateId="inline"、名称"手动编辑"，
+    /// 撤销仍走同一套 MetadataApplyBatchStore，不复制一份写路径。
+    public func applyFields(
+        fields: DescriptiveMetadata,
+        templateId: String,
+        templateName: String,
+        photoIds: [String],
+        policy: MetadataConflictPolicy = .keepExternal,
+        replaceContact: Bool = false,
+        now: String,
+        batchId: String = UUID().uuidString
+    ) async throws -> MetadataApplyResult {
         var seen = Set<String>()
         let uniqueIds = photoIds.filter { seen.insert($0).inserted }
         var skipped: [String] = []
@@ -130,16 +159,18 @@ public final class MetadataTemplateService: Sendable {
         let outcomes = try await batchAsync(uniqueIds, concurrency: 8) { photoId -> PlanOutcome in
             do {
                 let detail = try self.metadata.photoDetail(photoId: photoId)
-                let disk = (try? await self.xmp.readAttributes(
+                // P0 / B1：盘上值必须含 JPEG 内嵌 IPTC（只读侧车会漏掉 Bridge 写入的值）。
+                let disk = (try? await self.metadata.diskAttributes(
                     photoPath: detail.filepath))?.descriptive
                 let plan = MetadataTemplatePlanner.plan(
-                    template: template.fields,
+                    template: fields,
                     photoId: photoId,
                     current: detail.descriptive,
                     disk: disk,
                     policy: policy
                 )
-                guard let attributes = plan.writeAttributes(template: template.fields) else {
+                guard let attributes = plan.writeAttributes(
+                    template: fields, replaceContact: replaceContact) else {
                     return .skipped(photoId)
                 }
                 let snapshot = MetadataApplySnapshot(
@@ -172,7 +203,7 @@ public final class MetadataTemplateService: Sendable {
             // 没有任何批次可撤销"且调用方只看到一条失败。
             do {
                 try batches.record(MetadataApplyBatch(
-                    id: batchId, templateId: template.id, templateName: template.name,
+                    id: batchId, templateId: templateId, templateName: templateName,
                     appliedAt: now, snapshots: inputs.compactMap { snapshots[$0.photoId] }
                 ))
             } catch {
@@ -185,12 +216,30 @@ public final class MetadataTemplateService: Sendable {
                     conflicts: conflicts, failed: failed
                 )
             }
-            let outcome = try await metadata.applyMetadataAttributes(inputs, source: .template)
+            // 批次已记录、写盘尚未发生；applyMetadataAttributes 在入队前抛错
+            // （例如照片在预览与提交之间被删除）时不能把批次留在 store：否则后续
+            // undo 会用"从未写过的 before 值"覆盖当前文件。
+            let outcome: MetadataAttributesApplyOutcome
+            do {
+                outcome = try await metadata.applyMetadataAttributes(inputs, source: .template)
+            } catch {
+                do {
+                    try batches.markUndone(id: batchId)
+                } catch {
+                    GatherLogger.log(
+                        "template batch markUndone after apply failure failed (batch=\(batchId)): \(error)",
+                        level: .warn)
+                }
+                throw error
+            }
             skipped.append(contentsOf: outcome.skipped)
             failed.append(contentsOf: outcome.failed)
-            // 回读校验失败也可能已写盘：按 attempted 裁剪快照；一张都没 attempted 时
-            // 批次没有实际效果，标记已撤销，避免 UI 给出"可撤销"的假入口。
-            let attemptedSnapshots = outcome.attempted.compactMap { snapshots[$0] }
+            // P0 / A2：裁剪口径 = written ∪ uncertain（回读失败也可能已写盘）。
+            // 一张都没有时批次没有实际效果，标记已撤销，避免 UI 给出"可撤销"的假入口。
+            let undoableIDs = Set(outcome.undoable)
+            let attemptedSnapshots = inputs.compactMap { item in
+                undoableIDs.contains(item.photoId) ? snapshots[item.photoId] : nil
+            }
             if attemptedSnapshots.isEmpty {
                 do {
                     try batches.markUndone(id: batchId)
@@ -202,7 +251,7 @@ public final class MetadataTemplateService: Sendable {
             } else if attemptedSnapshots.count < inputs.count {
                 do {
                     try batches.record(MetadataApplyBatch(
-                        id: batchId, templateId: template.id, templateName: template.name,
+                        id: batchId, templateId: templateId, templateName: templateName,
                         appliedAt: now, snapshots: attemptedSnapshots
                     ))
                 } catch {

@@ -69,6 +69,19 @@ struct MetadataTemplatePlannerTests {
         #expect(overwrite.fields.first { $0.field == .city }?.action == .write)
     }
 
+    @Test("盘上已读且字段不存在：beforeSnapshot 不得回退缓存")
+    func beforeSnapshotDoesNotFallBackToCache() {
+        let current = DescriptiveMetadata(title: "缓存旧值")
+        let disk = DescriptiveMetadata() // 读过盘，盘上没有 title
+        let plan = MetadataTemplatePlanner.plan(
+            template: DescriptiveMetadata(title: "新值"), photoId: "p1",
+            current: current, disk: disk, policy: .overwrite)
+        let impact = plan.fields.first { $0.field == .title }
+        #expect(impact?.action == .write)
+        #expect(impact?.diskKnown == true)
+        #expect(plan.beforeSnapshot.title == nil, "盘上无此字段 → undo 应清空，不应复活缓存旧值")
+    }
+
     @Test("keepExternal：模板清空同样判冲突，绝不删外部新值")
     func clearConflictsWithExternal() {
         let current = DescriptiveMetadata(copyrightNotice: "旧版权")
@@ -78,13 +91,20 @@ struct MetadataTemplatePlannerTests {
         #expect(plan.fields.first { $0.field == .copyrightNotice }?.action == .conflict)
     }
 
-    @Test("缓存无该字段但盘上有值：不误判外部改动（未扫描不是冲突）")
-    func unknownCacheIsNotConflict() {
+    @Test("缓存无该字段但盘上有值：keepExternal 视为冲突（未知不得覆盖）")
+    func unknownCacheIsConflictUnderKeepExternal() {
         let disk = DescriptiveMetadata(title: "盘上标题")
         let plan = MetadataTemplatePlanner.plan(
             template: template(), photoId: "p1", current: DescriptiveMetadata(), disk: disk)
-        #expect(plan.fields.first { $0.field == .title }?.action == .write)
-        #expect(plan.conflictCount == 0)
+        #expect(plan.fields.first { $0.field == .title }?.action == .conflict)
+        #expect(plan.conflictCount == 1)
+
+        // overwrite 是显式覆盖：同一份输入必须判 write。
+        let overwrite = MetadataTemplatePlanner.plan(
+            template: template(), photoId: "p1", current: DescriptiveMetadata(), disk: disk,
+            policy: .overwrite)
+        #expect(overwrite.fields.first { $0.field == .title }?.action == .write)
+        #expect(overwrite.conflictCount == 0)
     }
 
     @Test("批量汇总：N 张里只统计会改动的张数")

@@ -90,7 +90,10 @@ public final class CullingAssetPageQuery {
         let base: (sql: String, params: [DBValue?])
         switch scope {
         case .all:
-            base = ("p.session_id = ?", [.text(sessionId)])
+            base = (
+                "p.session_id = ? AND \(PhotoVisibility.visiblePredicate())",
+                [.text(sessionId)]
+            )
         case .filtered:
             base = filteredWhere(sessionId: sessionId, filter: filter)
         case .similarityGroup:
@@ -98,7 +101,8 @@ public final class CullingAssetPageQuery {
             guard let similarity else { return ([], nil) }
             let clause = similarityClause(sessionId: sessionId, scope: similarity)
             base = (
-                "p.session_id = ? AND \(clause.sql) AND \(preferredRowPredicate())",
+                "p.session_id = ? AND \(clause.sql) AND \(preferredRowPredicate())"
+                    + " AND \(PhotoVisibility.visiblePredicate())",
                 [.text(sessionId)] + clause.params
             )
         }
@@ -233,9 +237,60 @@ public final class CullingAssetPageQuery {
                   FROM photos p
                   WHERE p.session_id = ? AND \(clause.sql)
                     AND \(preferredRowPredicate())
+                    AND \(PhotoVisibility.visiblePredicate())
                   GROUP BY gid)
           """).get([.text(sessionId)] + clause.params)
         return Int(row?[0].intValue ?? 0)
+    }
+
+    /// P0 / A1：当前 scope/filters 下的代表行 id（跨页"全选"与移出用）。
+    ///
+    /// 与 pageSorted 共用同一套 WHERE/代表行规则，只是不排序键集、只取 id：
+    /// - 多取一行用于判断 truncated（UI 必须知道"没全选上"）；
+    /// - 已归档照片同样被 PhotoVisibility 排除。
+    public func representativeIds(
+        sessionId: String,
+        scope: CullingScope,
+        filter: CullingPageFilter,
+        similarity: CullingSimilarityScope?,
+        limit: Int
+    ) throws -> (ids: [String], truncated: Bool) {
+        let base: (sql: String, params: [DBValue?])
+        switch scope {
+        case .all:
+            base = (
+                "p.session_id = ? AND \(PhotoVisibility.visiblePredicate())",
+                [.text(sessionId)]
+            )
+        case .filtered:
+            base = filteredWhere(sessionId: sessionId, filter: filter)
+        case .similarityGroup:
+            guard let similarity else { return ([], false) }
+            let clause = similarityClause(sessionId: sessionId, scope: similarity)
+            base = (
+                "p.session_id = ? AND \(clause.sql)"
+                    + " AND \(preferredRowPredicate()) AND \(PhotoVisibility.visiblePredicate())",
+                [.text(sessionId)] + clause.params
+            )
+        }
+        let sql = """
+            SELECT p.id
+            FROM photos p
+            LEFT JOIN photo_metadata_cache c ON c.photo_id = p.id
+            LEFT JOIN culling_decisions d
+              ON d.session_id = p.session_id AND d.photo_id = p.id
+            WHERE \(base.sql) AND \(preferredRowPredicate())
+            ORDER BY p.rowid
+            LIMIT ?
+            """
+        var params = base.params
+        params.append(.int(Int64(max(1, limit) + 1)))
+        let rows = try connection.prepare(sql).query(params)
+        let ids = rows.compactMap { $0[0].textValue }
+        if ids.count > limit {
+            return (Array(ids.prefix(limit)), true)
+        }
+        return (ids, false)
     }
 
     // MARK: - 谓词（原 CullingService 内联拼接）
@@ -254,6 +309,7 @@ public final class CullingAssetPageQuery {
                 SELECT \(PhotoRepo.photoPageColumns)
                 FROM photos p
                 WHERE p.session_id = ? AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders))
+                  AND \(PhotoVisibility.visiblePredicate())
                 ORDER BY p.rowid
               """).query([.text(sessionId)] + chunk.map { .text($0) })
             rows.append(contentsOf: try chunkRows.map { try PhotoPageRow(row: $0) })
@@ -268,6 +324,9 @@ public final class CullingAssetPageQuery {
             "SELECT p2.id FROM photos p2" +
             " WHERE p2.session_id = p.session_id" +
             " AND COALESCE(NULLIF(p2.asset_id, ''), p2.id) = COALESCE(NULLIF(p.asset_id, ''), p.id)" +
+            // P0：首选行必须在**可见**变体里选。否则 RAW 被移出后，子查询仍返回
+            // 已归档的 RAW，可见的 JPEG 永远不等于它，整个资产从筛选/选择集消失。
+            " AND \(PhotoVisibility.visiblePredicate(alias: "p2"))" +
             " ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p2"))" +
             " LIMIT 1" +
         ")"
@@ -278,7 +337,9 @@ public final class CullingAssetPageQuery {
         sessionId: String,
         filter: CullingPageFilter
     ) -> (sql: String, params: [DBValue?]) {
-        var clauses: [String] = ["p.session_id = ?"]
+        var clauses: [String] = [
+            "p.session_id = ?", PhotoVisibility.visiblePredicate(),
+        ]
         var params: [DBValue?] = [.text(sessionId)]
         if filter.unreviewedOnly == true {
             clauses.append("COALESCE(d.decision, 'pending') = 'pending'")

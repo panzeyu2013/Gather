@@ -46,7 +46,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     /// P1 / D：淘汰移动需要写 photos.filepath；nil = 未接线（调用显式报错）。
     private let photoRepo: (any PhotoRepository)?
     /// P1：移出后的跨表路径迁移（photos/deliveries/intents/origins/bindings/assets）。
-    private let relocateAfterMove: ((String, String, String) throws -> Void)?
+    private let relocateAfterMove: ((String, String, String, Bool) throws -> Void)?
     /// P0-1：与写回/清理共用的按 xmpPath 文件锁。搬侧车也在锁内，否则与
     /// 写回的 temp→rename 交错会把刚写回的内容覆盖回旧值。nil = 测试/未接线。
     private let fileLock: XMPFileLock?
@@ -59,7 +59,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         triageService: TriageService,
         sessionRepo: SessionRepo? = nil,
         photoRepo: (any PhotoRepository)? = nil,
-        relocateAfterMove: ((String, String, String) throws -> Void)? = nil,
+        relocateAfterMove: ((String, String, String, Bool) throws -> Void)? = nil,
         fileLock: XMPFileLock? = nil
     ) {
         self.cullingService = cullingService
@@ -83,22 +83,68 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         let payload = input.value
         // 同步部分（校验 + 目标目录）沿用 map 的错误归一；文件搬移必须按单张进
         // XMPFileLock（与写回/清理同一把锁），所以拆成「校验 → 逐张加锁搬移」。
-        let (lookups, destination) = try map { () -> ([PhotoLookupRow], String) in
-            let lookups = try photoRepo.getLookupByIds(payload.photoIds)
-            guard lookups.count == Set(payload.photoIds).count,
-                  lookups.allSatisfy({ $0.sessionId == payload.sessionId }) else {
-                throw GatherError.invalidParameter(
-                    field: "photoIds", reason: "must belong to the session")
+        //
+        // P0 / A1 两处语义修正：
+        // 1. **按资产展开**：挑片决策是资产级（CullingService.updateState 把 pickState
+        //    写到同资产全部变体），只移代表行会把另一半变体留在工作区且仍是已淘汰。
+        // 2. **按张过滤而不是整批拒绝**：混进保留件/已移出件时返回 skipped，
+        //    其余照常移出（旧实现 allSatisfy 失败 → 一张都动不了）。
+        let (targets, skipped, destination) = try map { () -> ([RejectedMoveItem], [CullingMoveRejectedSkip], String) in
+            let rows = try photoRepo.getBySessionProjection(sessionId: payload.sessionId)
+            let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+            var skipped: [CullingMoveRejectedSkip] = []
+            var skippedIds = Set<String>()
+            func skip(_ photoId: String, _ reason: String) {
+                guard skippedIds.insert(photoId).inserted else { return }
+                skipped.append(CullingMoveRejectedSkip(photoId: photoId, reason: reason))
             }
-            // 只允许移动已淘汰的照片：保持"淘汰移动"语义，避免误把保留件搬出工作区。
+
+            var requested: [PhotoProjectionRow] = []
+            for photoId in payload.photoIds {
+                if let row = byId[photoId] { requested.append(row) } else { skip(photoId, "not_in_session") }
+            }
             let rejected = Set(
                 try cullingService.getDecisions(sessionId: payload.sessionId)
                     .filter { $0.decision == CullingDecisionValue.reject.rawValue }
                     .map(\.photoId))
-            guard lookups.allSatisfy({ rejected.contains($0.id) }) else {
-                throw GatherError.invalidParameter(
-                    field: "photoIds", reason: "contains photos that are not rejected")
+
+            // 资产展开：保持"请求顺序 → 资产内导入序"的确定性。
+            var targetIds = Set<String>()
+            var orderedIds: [String] = []
+            func addTarget(_ photoId: String) {
+                if targetIds.insert(photoId).inserted { orderedIds.append(photoId) }
             }
+            for row in requested {
+                if let assetId = row.assetId, !assetId.isEmpty {
+                    for variant in rows where variant.assetId == assetId { addTarget(variant.id) }
+                } else {
+                    addTarget(row.id)
+                }
+            }
+            var visibleByXmp: [String: [String]] = [:]
+            for row in rows where row.archivedAt == nil {
+                let key = TSPath.normalize(TSPath.xmpSidecarPath(row.filepath))
+                visibleByXmp[key, default: []].append(row.id)
+            }
+            // 先把“实际会移动”的行筛出来，再算 movingIds。资产展开会包含未淘汰的
+            // 兄弟；若把这些兄弟也算作 moving，sharesSidecar 会被误判为 false，
+            // 移出已淘汰变体时就会把共享 .xmp 从留下的兄弟身边搬走。
+            var movingRows: [(photoId: String, row: PhotoProjectionRow)] = []
+            for photoId in orderedIds {
+                guard let row = byId[photoId] else { continue }
+                if row.archivedAt != nil { skip(photoId, "already_archived"); continue }
+                guard rejected.contains(photoId) else { skip(photoId, "not_rejected"); continue }
+                movingRows.append((photoId, row))
+            }
+            let movingIds = Set(movingRows.map { $0.photoId })
+            var items: [RejectedMoveItem] = []
+            for (photoId, row) in movingRows {
+                let key = TSPath.normalize(TSPath.xmpSidecarPath(row.filepath))
+                let siblingsRemain = (visibleByXmp[key] ?? []).contains { !movingIds.contains($0) }
+                items.append(RejectedMoveItem(
+                    photoId: photoId, filepath: row.filepath, sharesSidecar: siblingsRemain))
+            }
+
             let session = try sessionRepo?.get(id: payload.sessionId)
             let root: String
             if let explicit = payload.destinationRoot {
@@ -115,18 +161,18 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             } else if let sourcePath = session?.sourcePath, !sourcePath.isEmpty {
                 root = sourcePath
             } else {
-                root = lookups.first.map { ($0.filepath as NSString).deletingLastPathComponent } ?? ""
+                root = requested.first.map { ($0.filepath as NSString).deletingLastPathComponent } ?? ""
             }
-            return (lookups, (root as NSString).appendingPathComponent(RejectedMover.folderName))
+            return (items, skipped, (root as NSString).appendingPathComponent(RejectedMover.folderName))
         }
 
         var moved: [String] = []
         var newPaths: [String] = []
         var failures: [MetadataApplyFailureDTO] = []
-        for lookup in lookups {
+        for item in targets {
             let one: RejectedMoveResult
             do {
-                one = try await withFileLock(path: TSPath.xmpSidecarPath(lookup.filepath)) {
+                one = try await withFileLock(path: TSPath.xmpSidecarPath(item.filepath)) {
                     // 只捕获 self（@unchecked Sendable 的不可变依赖）；直接捕获局部
                     // photoRepo 会触发 Swift 6 的 non-Sendable 捕获错误。
                     guard let repo = self.photoRepo else {
@@ -135,11 +181,11 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                             params: ["field": "photoRepo", "reason": "move_rejected 未接线"])
                     }
                     return RejectedMover(photoRepo: repo, relocate: self.relocateAfterMove)
-                        .move(photos: [(lookup.id, lookup.filepath)], destinationRoot: destination)
+                        .move(items: [item], destinationRoot: destination)
                 }
             } catch {
                 failures.append(MetadataApplyFailureDTO(
-                    photoId: lookup.id, message: String(describing: error)))
+                    photoId: item.photoId, message: String(describing: error)))
                 continue
             }
             moved.append(contentsOf: one.moved)
@@ -148,7 +194,13 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                 MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message)
             })
         }
-        return CullingMoveRejectedResult(moved: moved, newPaths: newPaths, failed: failures)
+        return CullingMoveRejectedResult(
+            moved: moved, newPaths: newPaths, skipped: skipped, failed: failures)
+    }
+
+    /// P0 / A1：当前 scope/filters 下的完整选中集（代表行）。
+    public func selection(_ query: CullingSelectionQuery) async throws -> CullingSelectionIds {
+        try map { try cullingService.selectableIds(query) }
     }
 
     /// 文件搬移与写回/清理共用同一把按 xmpPath 的锁（未接线时退化为不加锁）。

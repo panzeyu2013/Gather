@@ -616,4 +616,23 @@ struct WorkspaceStatusServiceTests {
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
         #expect(try #require(status).softFlags.exported == true)
     }
+
+    @Test("工作区阶段只数可见照片：全部移出后回到 created（P1）")
+    func archivedPhotosDoNotAdvanceStage() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, harness.sessionId, "p1")
+        try addPhoto(harness.db, harness.sessionId, "p2")
+        #expect(try #require(try harness.service.getStatus(
+            sessionId: harness.sessionId)).stage == .imported)
+
+        _ = try harness.db.prepare("UPDATE photos SET archived_at = ? WHERE id = 'p1'")
+            .run([.text("2026-10-28T00:00:00.000Z")])
+        #expect(try #require(try harness.service.getStatus(
+            sessionId: harness.sessionId)).stage == .imported, "还剩 1 张可见")
+
+        _ = try harness.db.prepare("UPDATE photos SET archived_at = ? WHERE id = 'p2'")
+            .run([.text("2026-10-28T00:00:00.000Z")])
+        #expect(try #require(try harness.service.getStatus(
+            sessionId: harness.sessionId)).stage == .created, "全部移出后不得再声称已导入")
+    }
 }

@@ -98,8 +98,7 @@ public final class LiveMetadataAPI: MetadataAPI {
         self.templateService = MetadataTemplateService(
             templates: templateStore,
             batches: batchStore,
-            metadata: metadataService,
-            xmp: xmp
+            metadata: metadataService
         )
     }
 
@@ -156,7 +155,7 @@ public final class LiveMetadataAPI: MetadataAPI {
             do {
                 let detail = try metadataService.photoDetail(photoId: item.photoId)
                 do {
-                    let disk = try await xmp.readAttributes(photoPath: detail.filepath)
+                    let disk = try await metadataService.diskAttributes(photoPath: detail.filepath)
                     rating = Int(disk.rating ?? 0)
                 } catch {
                     rating = 1
@@ -169,7 +168,8 @@ public final class LiveMetadataAPI: MetadataAPI {
                 verdict: item.verdict,
                 currentRating: rating,
                 manuallyDecided: item.manuallyDecided,
-                policy: payload.policy
+                policy: payload.policy,
+                ratingMode: payload.ratingMode
             ) {
                 decisions.append(decision)
             }
@@ -179,7 +179,8 @@ public final class LiveMetadataAPI: MetadataAPI {
             batchId: batchId,
             written: outcome.written,
             skipped: outcome.skipped,
-            failed: outcome.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+            failed: outcome.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) },
+            undoAvailable: !outcome.undoable.isEmpty
         )
     }
 
@@ -190,7 +191,8 @@ public final class LiveMetadataAPI: MetadataAPI {
             batchId: input.value.batchId,
             written: outcome.written,
             skipped: outcome.skipped,
-            failed: outcome.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+            failed: outcome.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) },
+            undoAvailable: false
         )
     }
 
@@ -235,7 +237,8 @@ public final class LiveMetadataAPI: MetadataAPI {
             var photos: [(photoId: String, current: DescriptiveMetadata, disk: DescriptiveMetadata?)] = []
             for photoId in input.photoIds {
                 let detail = try metadataService.photoDetail(photoId: photoId)
-                let disk = (try? await xmp.readAttributes(photoPath: detail.filepath))?.descriptive
+                let disk = (try? await metadataService.diskAttributes(
+                    photoPath: detail.filepath))?.descriptive
                 photos.append((photoId, detail.descriptive, disk))
             }
             let preview = MetadataTemplatePreviewBuilder.build(
@@ -278,13 +281,46 @@ public final class LiveMetadataAPI: MetadataAPI {
         )
     }
 
+    public func diskDescriptive(_ photoId: String) async throws -> DescriptiveMetadata {
+        try await mapAsync {
+            let detail = try metadataService.photoDetail(photoId: photoId)
+            let attributes = try await metadataService.diskAttributes(photoPath: detail.filepath)
+            return attributes.descriptive ?? DescriptiveMetadata()
+        }
+    }
+
+    public func applyDescriptive(
+        _ input: Confirmed<MetadataInlineApplyInput>
+    ) async throws -> MetadataTemplateApplyOutcome {
+        let payload = input.value
+        let result = try await templateService.applyFields(
+            fields: payload.fields,
+            templateId: MetadataTemplateService.inlineBatchTemplateID,
+            templateName: MetadataTemplateService.inlineBatchName,
+            photoIds: payload.photoIds,
+            policy: payload.policy,
+            // 内联编辑器展示 contact 的全部成员 → 提交的是完整状态，可以整块替换。
+            replaceContact: true,
+            now: nowISOString()
+        )
+        return MetadataTemplateApplyOutcome(
+            batchId: result.batchId,
+            written: result.written,
+            skipped: result.skipped,
+            conflicts: result.conflicts,
+            failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
+        )
+    }
+
     public func recentBatches(limit: Int) async throws -> [MetadataBatchSummary] {
         try map {
             batchStore.list().prefix(max(0, limit)).map { batch in
                 MetadataBatchSummary(
                     batchId: batch.id,
                     kind: batch.templateId == TriageWritebackService.batchTemplateID
-                        ? "triage" : "template",
+                        ? "triage"
+                        : (batch.templateId == MetadataTemplateService.inlineBatchTemplateID
+                            ? "inline" : "template"),
                     name: batch.templateName,
                     appliedAt: batch.appliedAt,
                     undone: batch.undone,

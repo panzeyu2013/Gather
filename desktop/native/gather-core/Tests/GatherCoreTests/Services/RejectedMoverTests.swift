@@ -29,7 +29,7 @@ struct RejectedMoverTests {
 
         let mover = RejectedMover(photoRepo: PhotoRepo(connection: db))
         let destination = (dir as NSString).appendingPathComponent("_rejects")
-        let result = mover.move(photos: [(photoId, photoPath)], destinationRoot: destination)
+        let result = mover.move(items: [RejectedMoveItem(photoId: photoId, filepath: photoPath, sharesSidecar: false)], destinationRoot: destination)
 
         #expect(result.failed.isEmpty)
         #expect(result.moved == [photoId])
@@ -57,20 +57,20 @@ struct RejectedMoverTests {
 
         var relocated = false
         let failing = RejectedMover(photoRepo: PhotoRepo(connection: db),
-                                    relocate: { _, _, _ in
+                                    relocate: { _, _, _, _ in
             relocated = true
             throw NSError(domain: "test", code: 1)
         })
-        let failed = failing.move(photos: [(photoId, photoPath)], destinationRoot: destination)
+        let failed = failing.move(items: [RejectedMoveItem(photoId: photoId, filepath: photoPath, sharesSidecar: false)], destinationRoot: destination)
         #expect(relocated)
         #expect(failed.failed.count == 1)
         #expect(FileManager.default.fileExists(atPath: photoPath), "事务失败必须把文件移回")
 
         let ok = RejectedMover(photoRepo: PhotoRepo(connection: db),
-                               relocate: { id, _, newPath in
+                               relocate: { id, _, newPath, _ in
             try PhotoRepo(connection: db).updateFilepath(photoId: id, filepath: newPath)
         })
-        let result = ok.move(photos: [(photoId, photoPath)], destinationRoot: destination)
+        let result = ok.move(items: [RejectedMoveItem(photoId: photoId, filepath: photoPath, sharesSidecar: false)], destinationRoot: destination)
         #expect(result.failed.isEmpty)
         let row = try db.prepare("SELECT filepath FROM photos WHERE id = ?").get([.text(photoId)])
         #expect(row?[0].textValue == result.newPaths[0])
@@ -224,12 +224,12 @@ struct RejectedMoverTests {
 
         let mover = RejectedMover(
             photoRepo: PhotoRepo(connection: db),
-            relocate: { id, old, new in
+            relocate: { id, old, new, _ in
                 try AssetRepo(connection: db).relocatePhotoPathsAfterMove(
                     photoId: id, oldPhotoPath: old, newPhotoPath: new,
                     timestamp: "2026-10-28T00:00:00.000Z")
             })
-        let result = mover.move(photos: [(photoId, photoPath)], destinationRoot: destination)
+        let result = mover.move(items: [RejectedMoveItem(photoId: photoId, filepath: photoPath, sharesSidecar: false)], destinationRoot: destination)
         #expect(result.failed.isEmpty)
         let newPath = try #require(result.newPaths.first)
         #expect(newPath.hasSuffix("IMG_1-2.CR3"))
@@ -258,7 +258,7 @@ struct RejectedMoverTests {
 
         let destination = (dir as NSString).appendingPathComponent("_rejects")
         let mover = RejectedMover(photoRepo: PhotoRepo(connection: db))
-        let result = mover.move(photos: [(photoId, photoPath)], destinationRoot: destination)
+        let result = mover.move(items: [RejectedMoveItem(photoId: photoId, filepath: photoPath, sharesSidecar: false)], destinationRoot: destination)
         #expect(result.failed.isEmpty)
         let newPath = try #require(result.newPaths.first)
         let newXmp = TSPath.xmpSidecarPath(newPath)
@@ -286,9 +286,105 @@ struct RejectedMoverTests {
         try Data("old-reject".utf8).write(to: URL(fileURLWithPath: existing))
 
         let mover = RejectedMover(photoRepo: PhotoRepo(connection: db))
-        let result = mover.move(photos: [(photoId, photoPath)], destinationRoot: destination)
+        let result = mover.move(items: [RejectedMoveItem(photoId: photoId, filepath: photoPath, sharesSidecar: false)], destinationRoot: destination)
         #expect(result.failed.isEmpty)
         #expect(result.newPaths[0].hasSuffix("IMG_1-2.CR3"))
         #expect(try String(contentsOfFile: existing, encoding: .utf8) == "old-reject")
+    }
+
+    @Test("共享侧车：只移 JPEG 时复制 .xmp，留下的 RAW 仍有同名侧车")
+    func sharedSidecarIsCopied() throws {
+        let db = try makeTestDB()
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try insertSession(db, "s-1")
+        let rawPath = (dir as NSString).appendingPathComponent("IMG_9.CR3")
+        let jpegPath = (dir as NSString).appendingPathComponent("IMG_9.JPG")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: rawPath))
+        try Data("jpeg".utf8).write(to: URL(fileURLWithPath: jpegPath))
+        let sidecarPath = TSPath.xmpSidecarPath(rawPath)
+        try Data("<xmp>shared</xmp>".utf8).write(to: URL(fileURLWithPath: sidecarPath))
+        let backupPath = sidecarPath + ".gather-backup-abc"
+        try Data("<backup/>".utf8).write(to: URL(fileURLWithPath: backupPath))
+        try insertPhoto(db, id: "p-raw", sessionId: "s-1", filepath: rawPath)
+        try insertPhoto(db, id: "p-jpg", sessionId: "s-1", filepath: jpegPath)
+
+        let destination = (dir as NSString).appendingPathComponent("_rejects")
+        let mover = RejectedMover(photoRepo: PhotoRepo(connection: db))
+        let result = mover.move(
+            items: [RejectedMoveItem(photoId: "p-jpg", filepath: jpegPath, sharesSidecar: true)],
+            destinationRoot: destination)
+        #expect(result.failed.isEmpty)
+
+        #expect(FileManager.default.fileExists(atPath: sidecarPath), "留下的 RAW 必须仍能用原 .xmp")
+        let copied = (destination as NSString).appendingPathComponent("IMG_9.xmp")
+        #expect(FileManager.default.fileExists(atPath: copied), "移出的 JPEG 必须有自己的 .xmp")
+        #expect(try String(contentsOfFile: copied, encoding: .utf8) == "<xmp>shared</xmp>")
+        // P2：共享侧车的备份不复制（没有 deliveries 指向 _rejects 的副本，只会是孤儿）。
+        #expect(FileManager.default.fileExists(atPath: backupPath))
+        #expect(!FileManager.default.fileExists(
+            atPath: (destination as NSString).appendingPathComponent(
+                "IMG_9.xmp.gather-backup-abc")))
+    }
+
+    @Test("移出写 archived_at；迁移闭包拿到 sharesSidecar")
+    func moveArchivesPhoto() throws {
+        let db = try makeTestDB()
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try insertSession(db, "s-1")
+        let photoPath = (dir as NSString).appendingPathComponent("IMG_3.CR3")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: photoPath))
+        try insertPhoto(db, id: "p-1", sessionId: "s-1", filepath: photoPath)
+
+        var sawShared = false
+        let mover = RejectedMover(
+            photoRepo: PhotoRepo(connection: db),
+            relocate: { id, old, new, shares in
+                sawShared = shares
+                try AssetRepo(connection: db).relocatePhotoPathsAfterMove(
+                    photoId: id, oldPhotoPath: old, newPhotoPath: new,
+                    sharesSidecar: shares, archivedAt: "2026-10-28T00:00:00.000Z",
+                    timestamp: "2026-10-28T00:00:00.000Z")
+            })
+        let result = mover.move(
+            items: [RejectedMoveItem(photoId: "p-1", filepath: photoPath, sharesSidecar: false)],
+            destinationRoot: (dir as NSString).appendingPathComponent("_rejects"))
+        #expect(result.failed.isEmpty)
+        #expect(!sawShared)
+        let row = try #require(try db.prepare(
+            "SELECT archived_at, filepath FROM photos WHERE id = ?").get([.text("p-1")]))
+        #expect(row[0].textValue == "2026-10-28T00:00:00.000Z")
+        #expect(row[1].textValue == result.newPaths[0])
+    }
+
+    @Test("共享侧车复制后迁移失败：删除副本、照片搬回，原侧车不动")
+    func copyRollbackRemovesCopy() throws {
+        let db = try makeTestDB()
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try insertSession(db, "s-1")
+        let rawPath = (dir as NSString).appendingPathComponent("IMG_4.CR3")
+        let jpegPath = (dir as NSString).appendingPathComponent("IMG_4.JPG")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: rawPath))
+        try Data("jpeg".utf8).write(to: URL(fileURLWithPath: jpegPath))
+        let sidecarPath = TSPath.xmpSidecarPath(rawPath)
+        try Data("<xmp>shared</xmp>".utf8).write(to: URL(fileURLWithPath: sidecarPath))
+        try insertPhoto(db, id: "p-raw", sessionId: "s-1", filepath: rawPath)
+        try insertPhoto(db, id: "p-jpg", sessionId: "s-1", filepath: jpegPath)
+
+        let destination = (dir as NSString).appendingPathComponent("_rejects")
+        let mover = RejectedMover(
+            photoRepo: PhotoRepo(connection: db),
+            relocate: { _, _, _, _ in throw NSError(domain: "test", code: 7) })
+        let result = mover.move(
+            items: [RejectedMoveItem(photoId: "p-jpg", filepath: jpegPath, sharesSidecar: true)],
+            destinationRoot: destination)
+        #expect(result.failed.count == 1)
+        #expect(FileManager.default.fileExists(atPath: jpegPath), "照片必须搬回")
+        #expect(FileManager.default.fileExists(atPath: sidecarPath))
+        #expect(!FileManager.default.fileExists(
+            atPath: (destination as NSString).appendingPathComponent("IMG_4.xmp")),
+            "复制出来的侧车必须随回滚删除")
     }
 }

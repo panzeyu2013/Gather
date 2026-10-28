@@ -336,4 +336,66 @@ struct SidecarXMPProviderTests {
         // 永久卡在 backupMissing（审查 N6）。
         #expect(provider.fileExists(backupPath))
     }
+
+    @Test("多 rdf:Description：合并成单块后写入，两块字段都保留（P2）")
+    func writesMultiDescriptionDocument() async throws {
+        let dir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let photo = dir + "/multi.cr3"
+        let xmpPath = TSPath.xmpSidecarPath(photo)
+        let original = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about="" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">
+              <photoshop:City>上海</photoshop:City>
+            </rdf:Description>
+            <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+              <dc:description><rdf:Alt><rdf:li xml:lang="x-default">旧说明</rdf:li></rdf:Alt></dc:description>
+              <xmp:Rating>2</xmp:Rating>
+            </rdf:Description>
+          </rdf:RDF>
+        </x:xmpmeta>
+        """
+        try writeText(xmpPath, original)
+        let provider = SidecarXMPProvider()
+
+        try await provider.writeAttributes(
+            photoPath: photo,
+            attributes: MetadataWriteAttributes(
+                rating: 5, descriptive: DescriptiveMetadata(caption: "新说明")))
+
+        let document = try readText(xmpPath)
+        #expect(document.components(separatedBy: "<rdf:Description").count - 1 == 1,
+                "两块必须合并成一块，实际：\(document)")
+        #expect(document.contains("<photoshop:City>上海</photoshop:City>"), "第一块之外的字段不得丢")
+        #expect(document.contains("新说明"))
+        #expect(try await provider.readAttributes(photoPath: photo).rating == 5,
+                "写后回读：星级必须落盘")
+        // 旧值不得残留成第二个 dc:description（补丁只针对合并后的唯一块）。
+        #expect(document.components(separatedBy: "<dc:description>").count - 1 == 1)
+    }
+
+    @Test("多 rdf:Description 但 rdf:about 不同：拒绝写入（不猜语义）")
+    func rejectsMultiDescriptionWithDifferentSubjects() async throws {
+        let dir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let photo = dir + "/multi-about.cr3"
+        let xmpPath = TSPath.xmpSidecarPath(photo)
+        let original = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about="urn:a"><dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">A</dc:title></rdf:Description>
+            <rdf:Description rdf:about="urn:b"><dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">B</dc:title></rdf:Description>
+          </rdf:RDF>
+        </x:xmpmeta>
+        """
+        try writeText(xmpPath, original)
+        let provider = SidecarXMPProvider()
+        await #expect(throws: SidecarXMPError.self) {
+            try await provider.writeAttributes(
+                photoPath: photo, attributes: MetadataWriteAttributes(rating: 3))
+        }
+    }
 }

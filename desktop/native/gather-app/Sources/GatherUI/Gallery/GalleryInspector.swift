@@ -103,6 +103,13 @@ extension GalleryView {
                         .task(id: viewModel.selectedIds) {
                             viewModel.loadMetadataDetail()
                         }
+                    // P0 / B2：从图库直接编辑当前照片（写说明/版权不必回挑片页）。
+                    GatherInspectorSection(l10n("元数据")) {
+                        Button(l10n("编辑元数据…")) { showMetadataEditor = true }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            .disabled(viewModel.metadataAPI == nil)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -110,5 +117,12 @@ extension GalleryView {
         }
         // 同 CullingView：理想列宽会计入最小宽度，收窄以避免窄窗口下的约束循环。
         .inspectorColumnWidth(min: GatherChromeMetrics.inspectorMinWidth, ideal: GatherChromeMetrics.inspectorIdealWidth, max: GatherChromeMetrics.inspectorMaxWidth)
+        .sheet(isPresented: $showMetadataEditor) {
+            if let api = viewModel.metadataAPI, let photoId = viewModel.selectedIds.first {
+                MetadataEditorSheet(
+                    photoId: photoId, api: api,
+                    onApplied: { _ in viewModel.loadMetadataDetail() })
+            }
+        }
     }
 }

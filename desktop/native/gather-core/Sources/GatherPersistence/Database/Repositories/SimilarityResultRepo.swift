@@ -181,13 +181,48 @@ public final class SimilarityResultRepo {
         photoGroupMapCache = photoGroupMapCache.filter { !$0.key.hasPrefix(prefix) }
     }
 
+    /// 每个组的原始成员数（未过滤归档）：区分"组本来只有 1 张"与"归档后只剩 1 张"。
+    public func groupMemberCounts(sessionId: String, resultId: Int64) throws -> [Int: Int] {
+        let rows = try connection.prepare("""
+            SELECT group_index, COUNT(*) FROM similarity_result_members
+            WHERE result_id = ? AND session_id = ?
+            GROUP BY group_index
+          """).query([.int(resultId), .text(sessionId)])
+        var counts: [Int: Int] = [:]
+        for row in rows {
+            counts[Int(row[0].intValue ?? 0)] = Int(row[1].intValue ?? 0)
+        }
+        return counts
+    }
+
+    public func countFullyArchivedGroups(sessionId: String, resultId: Int64) throws -> Int {
+        let row = try connection.prepare("""
+            SELECT COUNT(*) FROM (
+              SELECT m.group_index
+              FROM similarity_result_members m
+              JOIN photos p ON p.id = m.photo_id
+              WHERE m.result_id = ? AND m.session_id = ?
+              GROUP BY m.group_index
+              HAVING SUM(CASE WHEN p.archived_at IS NULL THEN 1 ELSE 0 END) = 0
+            )
+          """).get([.int(resultId), .text(sessionId)])
+        return Int(row?[0].intValue ?? 0)
+    }
+
     /// 组成员行（JOIN photos 带 filepath），按成员表隐式 rowid 排序；
     /// 无成员行时返回 nil（老数据仅 groups_json 一种来源）。
     public func getGroupMembers(sessionId: String, resultId: Int64) throws -> [SimilarityGroupMember]? {
+        // nil = 该结果完全没有成员行（旧数据，只有 groups_json）；
+        // 有成员行但全部归档时返回 []（不能再回退 groups_json，否则归档成员又出现）。
+        let total = try connection.prepare("""
+            SELECT COUNT(*) FROM similarity_result_members
+            WHERE result_id = ? AND session_id = ?
+          """).get([.int(resultId), .text(sessionId)])?[0].intValue ?? 0
+        guard total > 0 else { return nil }
         let rows = try connection.prepare(
-            "SELECT m.group_index, m.photo_id, p.filepath FROM similarity_result_members m JOIN photos p ON p.id = m.photo_id WHERE m.result_id = ? AND m.session_id = ? ORDER BY m.rowid"
+            "SELECT m.group_index, m.photo_id, p.filepath FROM similarity_result_members m JOIN photos p ON p.id = m.photo_id WHERE m.result_id = ? AND m.session_id = ? AND p.archived_at IS NULL ORDER BY m.rowid"
         ).query([.int(resultId), .text(sessionId)])
-        if rows.isEmpty { return nil }
+        if rows.isEmpty { return [] }
         return rows.map { row in
             SimilarityGroupMember(
                 groupIndex: Int(row[0].intValue ?? 0),

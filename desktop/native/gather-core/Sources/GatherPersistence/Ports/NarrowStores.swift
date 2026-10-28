@@ -32,8 +32,11 @@ public protocol MetadataCacheStore {
     func updateRating(photoId: String, rating: Int64) throws
     func updateLabel(photoId: String, label: String) throws
     func updateKeywords(photoId: String, keywords: [String]) throws
-    /// P1 / IPTC：描述性元数据写盘后的投影刷新。
+    /// P1 / IPTC：描述性元数据写盘后的投影刷新（完整快照，整列替换）。
     func updateDescriptive(photoId: String, descriptive: DescriptiveMetadata) throws
+    /// P0 / A3：增量补丁合并（未触碰字段保留；撤销时整块替换 contact）。
+    func mergeDescriptive(
+        photoId: String, patch: DescriptiveMetadata, replaceContact: Bool) throws
 }
 
 extension DeliveryRepo: DeliveryReadStore {}

@@ -265,10 +265,14 @@ public protocol DuplicateGroupReading {
     func getGroups(ids: [Int]) throws -> [DuplicateGroupRow]
     /// SELECT * FROM duplicate_group_members（列序 0-7）WHERE group_id = ?（无 ORDER BY，与旧实现逐字一致）
     func getMembers(groupId: Int) throws -> [DuplicateMemberRow]
+    /// 同上，但 JOIN photos 排除已归档成员（resolveGroup 的决策输入）。
+    func getVisibleMembers(groupId: Int) throws -> [DuplicateMemberRow]
     /// SELECT dgm.*, p.filepath, p.filename ... ORDER BY dgm.id（列序 0-7 + 8/9）
     func getMembers(groupIds: [Int]) throws -> [Int: [DuplicateGroupMemberDetail]]
     /// SELECT is_kept, resolution ... ORDER BY id（组级 resolution 派生）。
     func getMemberStates(groupId: Int) throws -> [DuplicateMemberState]
+    /// 同上，但只返回可见成员（组级 resolution 派生不阻塞在归档件上）。
+    func getVisibleMemberStates(groupId: Int) throws -> [DuplicateMemberState]
 }
 
 extension DuplicateRepo: DuplicateRepository {}

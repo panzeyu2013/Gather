@@ -3,11 +3,11 @@
 //
 // final-cleanup 纯拆分：本片段与拆分前 SchemaCurrent.ddl 的对应区间逐字节相同；三段按
 // ddlCore → ddlDomain → ddlIndexes 拼接（见 SchemaCurrent.swift），不得重排或改字。
-// 修改 DDL 必须同步 SchemaCurrent.expectedShapeFingerprint（4e47485e…）。
+// 修改 DDL 必须同步 SchemaCurrent.expectedShapeFingerprint（38bd1540…）。
 extension SchemaCurrent {
     /// DDL 片段 1/3（internal：仅供 SchemaCurrent.ddl 拼接，不是公开 API）。
     static let ddlCore: String = """
-    -- SchemaCurrent · Gather 本地库最终形态（44 表 / 384 列 / 72 索引 / 65 外键）
+    -- SchemaCurrent · Gather 本地库最终形态（44 表 / 385 列 / 72 索引 / 65 外键）
     -- 约定：时间戳为 ISO-8601 TEXT（与 nowISOString 同格式）；布尔为 INTEGER 0/1；mtime 为 REAL 毫秒。
     -- 约束分层：CHECK 只兜「非法值」，状态转移合法性由 Swift 状态机负责。
 
@@ -89,7 +89,12 @@ extension SchemaCurrent {
       width INTEGER NOT NULL DEFAULT 0 CHECK (width >= 0),
       height INTEGER NOT NULL DEFAULT 0 CHECK (height >= 0),
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      -- P0 / A1：淘汰移出的唯一可见性真相源。
+      -- NULL = 仍在工作区；有值 = 已移到 _rejects（文件不删除，可人工找回）。
+      -- 所有"用户可见"读面必须加 archived_at IS NULL（PhotoVisibility），
+      -- 显式 id 操作（撤销/审计）不过滤。列追加在末尾，不改变既有列序。
+      archived_at TEXT
     );
 
     -- 5. 分析运行记录

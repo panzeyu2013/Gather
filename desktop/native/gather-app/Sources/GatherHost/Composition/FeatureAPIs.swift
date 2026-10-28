@@ -106,9 +106,10 @@ struct FeatureAPIs {
             triageService: composition.triageService,
             sessionRepo: SessionRepo(connection: composition.db),
             photoRepo: composition.photoRepo,
-            relocateAfterMove: { photoId, oldPath, newPath in
+            relocateAfterMove: { photoId, oldPath, newPath, sharesSidecar in
                 try composition.assetRepo.relocatePhotoPathsAfterMove(
                     photoId: photoId, oldPhotoPath: oldPath, newPhotoPath: newPath,
+                    sharesSidecar: sharesSidecar, archivedAt: nowISOString(),
                     timestamp: nowISOString())
             },
             fileLock: composition.xmpFileLock

@@ -10,7 +10,7 @@
 > 已随迁移失效，语义与不变量不变，**原生对应实现位置见下表**（未列条目以
 > `desktop/native/gather-core` / `gather-app` 代码为准）。
 >
-> 当前 schema：4（唯一版本；`SchemaCurrent`，44 表 / 384 列 / 72 索引 / 65 外键）。
+> 当前 schema：5（唯一版本；`SchemaCurrent`，44 表 / 385 列 / 72 索引 / 65 外键）。
 > V1/V2 迁移链已删除：旧版本库默认 fail closed，只有显式 reset 才归档
 > db/-wal/-shm 后重建。下文历史 ADR 中的 schema 33/34/35 是当时版本，不是当前代码版本。
 
@@ -64,7 +64,7 @@
 ## ADR-005 数据库建库不变量与不兼容库重置（2026-10-26 收敛）
 
 - 唯一建库入口是 `Database.open(at:)`：新库在单事务内执行
-  `SchemaCurrent.createSQL` 并写 `PRAGMA user_version = 4`；打开后自检版本、`foreign_keys`
+  `SchemaCurrent.createSQL` 并写 `PRAGMA user_version = 5`；打开后自检版本、`foreign_keys`
   与 `foreign_key_check`。
 - 只有两种状态可继续：空库（建库）与当前版本（打开）。旧版本（V1/V2）、更高版本、
   版本 0 有表、形态不符、非 SQLite 文件一律不兼容，默认 **fail closed**（只抛错、
@@ -76,13 +76,13 @@
 ## ADR-006 Schema 唯一真相源
 
 - 唯一 DDL 真相源是 `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`
-  （44 表 / 384 列 / 72 索引 / 65 外键，一次成型；含 triage_suggestions 与
+  （44 表 / 385 列 / 72 索引 / 65 外键，一次成型；含 triage_suggestions 与
   face_cluster_constraints）。索引 SQL 文本参与列形指纹，逐字保留。
 - `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift` 校验 fresh 库（直接 exec
-  `SchemaCurrent.createSQL` 与经 `Database.open` 两种路径）同形：版本 4、44 表、
+  `SchemaCurrent.createSQL` 与经 `Database.open` 两种路径）同形：版本 5、44 表、
   无悬空外键、逐表列数与 CHECK 约束不漂移。Schema 变更只改这一份 DDL 并同步计数/指纹。
 - `docs/archive/schema.snapshot-v35.json` 是旧迁移链时代（schema 35）的**历史快照**，
-  只作归档，不参与门禁；当前 schema 以 `SchemaCurrent`（44 表 / user_version=4）为准。
+  只作归档，不参与门禁；当前 schema 以 `SchemaCurrent`（44 表 / user_version=5）为准。
 
 ---
 
@@ -625,11 +625,11 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
    `docs/archive/schema.snapshot-v35.json` 记为 34/35（43 表不变）；该轮对应的 schema
    为 3（44 表），旧迁移链已删除，见 ADR-005/006。
 
-   **schema 4（当前唯一版本，44 表 / 384 列）**：`photo_metadata_cache` 追加
-   `iptc_json`（描述性元数据 32 字段的只读投影，字段表见
-   `desktop/native/gather-core/Sources/GatherProtocol/Protocol/DescriptiveMetadata.swift`）。
-   v3 库按 fail-closed 处理，
-   不就地迁移，需显式重置重建（开发期库可丢弃）。
+   **schema 5（当前唯一版本，44 表 / 385 列）**：schema 4 给 `photo_metadata_cache`
+   追加 `iptc_json`（描述性元数据 32 字段的只读投影，字段表见
+   `desktop/native/gather-core/Sources/GatherProtocol/Protocol/DescriptiveMetadata.swift`）；
+   schema 5 给 `photos` 追加 `archived_at`（淘汰移出的可见性真相源，见 PhotoVisibility）。
+   旧版本库按 fail-closed 处理，不就地迁移，需显式重置重建（开发期库可丢弃）。
 
 **决策（第二轮：把"接口留缝"改成"缝里真的有实现"，2026-09-28）**
 

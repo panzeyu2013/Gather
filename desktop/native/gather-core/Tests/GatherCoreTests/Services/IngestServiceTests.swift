@@ -42,7 +42,7 @@ struct IngestServiceTests {
     }
 
     @Test("计划：按模板分配连续序号，扩展名/原名保留")
-    func planAssignsSequence() throws {
+    func planAssignsSequence() async throws {
         let source = try makeSource(["b.CR3", "a.CR3"], contents: [:])
         let dest = try makeDestination()
         defer {
@@ -50,7 +50,7 @@ struct IngestServiceTests {
             try? FileManager.default.removeItem(atPath: dest)
         }
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
-        let plan = try service.plan(
+        let plan = try await service.plan(
             sourcePaths: [source],
             options: IngestOptions(destinationRoot: dest, renameTemplate: "{orig}-{seq:3}.{ext}")
         )
@@ -60,7 +60,7 @@ struct IngestServiceTests {
     }
 
     @Test("执行：复制 + 校验 + 第二目的地都成功")
-    func executeCopiesAndVerifies() throws {
+    func executeCopiesAndVerifies() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload-a"])
         let dest = try makeDestination()
         let second = try makeDestination()
@@ -71,7 +71,7 @@ struct IngestServiceTests {
         let options = IngestOptions(
             destinationRoot: dest, renameTemplate: "{orig}.{ext}", secondDestinationRoot: second
         )
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         let result = service.execute(plan, options: options)
 
         #expect(result.failed.isEmpty)
@@ -83,14 +83,14 @@ struct IngestServiceTests {
     }
 
     @Test("模板里的 ../ 不得把文件写到目的地根目录之外")
-    func rejectsPathTraversalTemplate() throws {
+    func rejectsPathTraversalTemplate() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "x"])
         let dest = try makeDestination()
         defer {
             [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
         }
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
-        let plan = try service.plan(
+        let plan = try await service.plan(
             sourcePaths: [source],
             options: IngestOptions(destinationRoot: dest, renameTemplate: "../{orig}.{ext}")
         )
@@ -99,7 +99,7 @@ struct IngestServiceTests {
     }
 
     @Test("移动模式 + 校验：源文件被移走且目标内容完整（不得先移后校验导致丢源）")
-    func executeMovesAndVerifies() throws {
+    func executeMovesAndVerifies() async throws {
         let source = try makeSource(["move.CR3"], contents: ["move.CR3": "move-payload"])
         let dest = try makeDestination()
         defer {
@@ -108,7 +108,7 @@ struct IngestServiceTests {
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(
             destinationRoot: dest, renameTemplate: "{orig}.{ext}", moveInsteadOfCopy: true)
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         let result = service.execute(plan, options: options)
         #expect(result.failed.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: plan.items[0].sourcePath), "移动后源文件应消失")
@@ -116,7 +116,7 @@ struct IngestServiceTests {
     }
 
     @Test("XMP 侧车随照片一起搬（主目的地与第二目的地都带上）")
-    func sidecarTravelsWithPhoto() throws {
+    func sidecarTravelsWithPhoto() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "raw"])
         let sidecar = (source as NSString).appendingPathComponent("a.xmp")
         try Data("<xmp/>".utf8).write(to: URL(fileURLWithPath: sidecar))
@@ -128,7 +128,7 @@ struct IngestServiceTests {
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(
             destinationRoot: dest, renameTemplate: "{orig}.{ext}", secondDestinationRoot: second)
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         #expect(plan.items.first?.sidecarPath != nil)
         let result = service.execute(plan, options: options)
         #expect(result.failed.isEmpty)
@@ -139,7 +139,7 @@ struct IngestServiceTests {
     }
 
     @Test("已导入校验和命中 → 计划阶段跳过（不重复占盘）")
-    func existingChecksumSkipsDuplicate() throws {
+    func existingChecksumSkipsDuplicate() async throws {
         let source = try makeSource(["dup.CR3"], contents: ["dup.CR3": "dup-payload"])
         let dest = try makeDestination()
         defer {
@@ -148,7 +148,7 @@ struct IngestServiceTests {
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let path = (source as NSString).appendingPathComponent("dup.CR3")
         let sum = try service.checksum(path)
-        let plan = try service.plan(
+        let plan = try await service.plan(
             sourcePaths: [source],
             options: IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}"),
             existingChecksums: [sum: "existing-photo"])
@@ -157,7 +157,7 @@ struct IngestServiceTests {
     }
 
     @Test("RAW+JPEG 共享侧车：第二张不因源侧车已被第一张移走而假失败")
-    func sharedSidecarDoesNotFakeFailure() throws {
+    func sharedSidecarDoesNotFakeFailure() async throws {
         let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
         let sidecar = (source as NSString).appendingPathComponent("a.xmp")
         try Data("<xmp/>".utf8).write(to: URL(fileURLWithPath: sidecar))
@@ -167,7 +167,7 @@ struct IngestServiceTests {
         }
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         #expect(plan.items.count == 2)
         let result = service.execute(plan, options: options)
         #expect(result.failed.isEmpty)
@@ -177,7 +177,7 @@ struct IngestServiceTests {
     }
 
     @Test("{seq} 模板下 RAW+JPEG 共享侧车：兄弟共用同一目标 stem，只复制一份侧车")
-    func sharedSidecarWithSequenceTemplate() throws {
+    func sharedSidecarWithSequenceTemplate() async throws {
         let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
         let sidecar = (source as NSString).appendingPathComponent("a.xmp")
         try Data("<xmp/>".utf8).write(to: URL(fileURLWithPath: sidecar))
@@ -187,7 +187,7 @@ struct IngestServiceTests {
         }
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(destinationRoot: dest, renameTemplate: "{seq}.{ext}")
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         #expect(plan.items.count == 2)
         // 兄弟必须同 stem：侧车按 stem 推导，stem 不同会让第二张解析到不存在的 .xmp，
         // RAW/JPEG 的配对键（stem）也会一起失配。
@@ -205,7 +205,7 @@ struct IngestServiceTests {
     }
 
     @Test("第二目的地撞名：整张回滚，源文件保留且不会同时进 copied 与 failed")
-    func secondDestinationConflictRollsBack() throws {
+    func secondDestinationConflictRollsBack() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
         let dest = try makeDestination()
         let second = try makeDestination()
@@ -218,7 +218,7 @@ struct IngestServiceTests {
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(
             destinationRoot: dest, renameTemplate: "{orig}.{ext}", secondDestinationRoot: second)
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         let result = service.execute(plan, options: options)
         #expect(result.failed.count == 1)
         #expect(result.copied.isEmpty, "失败项不得同时进 copied（否则会被登记成幽灵）")
@@ -232,7 +232,7 @@ struct IngestServiceTests {
     }
 
     @Test("侧车目标已存在且内容不同：整张失败并回滚，不覆盖既有侧车")
-    func sidecarContentConflictRollsBack() throws {
+    func sidecarContentConflictRollsBack() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
         try Data("<xmp>new</xmp>".utf8).write(
             to: URL(fileURLWithPath: (source as NSString).appendingPathComponent("a.xmp")))
@@ -244,7 +244,7 @@ struct IngestServiceTests {
         try Data("<xmp>old</xmp>".utf8).write(to: URL(fileURLWithPath: existingSidecar))
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         let result = service.execute(plan, options: options)
         #expect(result.failed.count == 1)
         #expect(result.failed.first?.message.contains("目标已存在") == true,
@@ -257,7 +257,7 @@ struct IngestServiceTests {
     }
 
     @Test("默认模板 + 第二目的地 + RAW/JPEG 成对：第二张不假失败，二目的地只有一份侧车")
-    func secondDestinationWithSharedSidecar() throws {
+    func secondDestinationWithSharedSidecar() async throws {
         let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
         try Data("<xmp/>".utf8).write(
             to: URL(fileURLWithPath: (source as NSString).appendingPathComponent("a.xmp")))
@@ -269,7 +269,7 @@ struct IngestServiceTests {
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         // 默认模板就含 {seq:4}，兄弟必然共用目标 stem。
         let options = IngestOptions(destinationRoot: dest, secondDestinationRoot: second)
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         #expect(plan.items.count == 2)
         let result = service.execute(plan, options: options)
         #expect(result.failed.isEmpty, "共享侧车 + 第二目的地不得让第二张假失败")
@@ -280,7 +280,7 @@ struct IngestServiceTests {
     }
 
     @Test("同一 plan 重复执行：目标已存在时失败，但绝不删除既有文件")
-    func reexecuteDoesNotDeleteExistingFile() throws {
+    func reexecuteDoesNotDeleteExistingFile() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
         let dest = try makeDestination()
         defer {
@@ -288,7 +288,7 @@ struct IngestServiceTests {
         }
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         let first = service.execute(plan, options: options)
         #expect(first.copied.count == 1)
         let second = service.execute(plan, options: options)
@@ -300,7 +300,7 @@ struct IngestServiceTests {
     }
 
     @Test("回滚清理（copy）：第二目的地冲突时照片与侧车都不得留在目的地")
-    func rollbackRemovesPhotoAndSidecarInCopyMode() throws {
+    func rollbackRemovesPhotoAndSidecarInCopyMode() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
         try Data("<xmp/>".utf8).write(
             to: URL(fileURLWithPath: (source as NSString).appendingPathComponent("a.xmp")))
@@ -314,7 +314,7 @@ struct IngestServiceTests {
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(
             destinationRoot: dest, renameTemplate: "{orig}.{ext}", secondDestinationRoot: second)
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         let result = service.execute(plan, options: options)
         #expect(result.failed.count == 1)
         #expect(!FileManager.default.fileExists(
@@ -328,7 +328,7 @@ struct IngestServiceTests {
     }
 
     @Test("回滚清理（move）：照片与侧车都必须回到源目录，源不得丢")
-    func rollbackRestoresSourceInMoveMode() throws {
+    func rollbackRestoresSourceInMoveMode() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
         try Data("<xmp/>".utf8).write(
             to: URL(fileURLWithPath: (source as NSString).appendingPathComponent("a.xmp")))
@@ -343,7 +343,7 @@ struct IngestServiceTests {
         let options = IngestOptions(
             destinationRoot: dest, renameTemplate: "{orig}.{ext}",
             secondDestinationRoot: second, moveInsteadOfCopy: true)
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         let result = service.execute(plan, options: options)
         #expect(result.failed.count == 1)
         #expect(FileManager.default.fileExists(
@@ -357,7 +357,7 @@ struct IngestServiceTests {
     }
 
     @Test("同 stem 兄弟：既有异内容文件 → 整组冲突，谁都不得落地")
-    func siblingConflictPropagates() throws {
+    func siblingConflictPropagates() async throws {
         let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
         let dest = try makeDestination()
         defer {
@@ -367,7 +367,7 @@ struct IngestServiceTests {
         try Data("different".utf8).write(to: URL(fileURLWithPath: existing))
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         #expect(plan.items.count == 2)
         let allConflict = plan.items.allSatisfy { $0.conflict }
         #expect(allConflict, "兄弟必须一起判冲突，不能只判后来者")
@@ -378,14 +378,14 @@ struct IngestServiceTests {
     }
 
     @Test("目录与其内文件同时传入：同一文件只计划一次")
-    func dedupesNestedSources() throws {
+    func dedupesNestedSources() async throws {
         let source = try makeSource(["a.CR3", "b.CR3"], contents: [:])
         let dest = try makeDestination()
         defer {
             [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
         }
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
-        let plan = try service.plan(
+        let plan = try await service.plan(
             sourcePaths: [source, (source as NSString).appendingPathComponent("a.CR3")],
             options: IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
         )
@@ -393,7 +393,7 @@ struct IngestServiceTests {
     }
 
     @Test("目标已有不同内容 → 冲突，执行时跳过且绝不覆盖")
-    func conflictIsNotOverwritten() throws {
+    func conflictIsNotOverwritten() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "new"])
         let dest = try makeDestination()
         defer {
@@ -405,7 +405,7 @@ struct IngestServiceTests {
 
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
         let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
-        let plan = try service.plan(sourcePaths: [source], options: options)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
         #expect(plan.conflictCount == 1)
 
         let result = service.execute(plan, options: options)
@@ -415,7 +415,7 @@ struct IngestServiceTests {
     }
 
     @Test("目标是同内容 → 计划阶段直接跳过（幂等重跑）")
-    func identicalDestinationIsSkipped() throws {
+    func identicalDestinationIsSkipped() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "same"])
         let dest = try makeDestination()
         defer {
@@ -426,11 +426,81 @@ struct IngestServiceTests {
         try Data("same".utf8).write(to: URL(fileURLWithPath: existing))
 
         let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
-        let plan = try service.plan(
+        let plan = try await service.plan(
             sourcePaths: [source],
             options: IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
         )
         #expect(plan.items.isEmpty)
         #expect(plan.skipped.count == 1)
+    }
+
+    // MARK: - P0 / C1：日期与相机来自 EXIF
+
+    @Test("摄取模板：EXIF DateTimeOriginal 决定目录，{camera} 用 Model")
+    func planUsesExifDateAndCamera() async throws {
+        let source = try makeSource(["a.CR3", "b.CR3"], contents: [:])
+        let dest = try makeDestination()
+        defer {
+            try? FileManager.default.removeItem(atPath: source)
+            try? FileManager.default.removeItem(atPath: dest)
+        }
+        // now 故意设成"今天"：若代码回退到导入时间，目录会变成 1970/01/01。
+        let service = IngestService(
+            now: { Date(timeIntervalSince1970: 0) },
+            exif: IngestStubExif(date: "2024:05:01 10:20:30", model: "X-T5"))
+        let plan = try await service.plan(
+            sourcePaths: [source],
+            options: IngestOptions(
+                destinationRoot: dest,
+                renameTemplate: "{yyyy}/{MM}/{dd}/{camera}-{seq:4}.{ext}"))
+        #expect(plan.items.count == 2)
+        for item in plan.items {
+            let relative = String(item.destPath.dropFirst(dest.count + 1))
+            #expect(relative.hasPrefix("2024/05/01/X-T5-"), "实际：\(relative)")
+        }
+    }
+
+    @Test("摄取模板：没有 EXIF 时回退文件 mtime，不落到导入当天")
+    func planFallsBackToMtime() async throws {
+        let source = try makeSource(["a.CR3"], contents: [:])
+        let dest = try makeDestination()
+        defer {
+            try? FileManager.default.removeItem(atPath: source)
+            try? FileManager.default.removeItem(atPath: dest)
+        }
+        let file = (source as NSString).appendingPathComponent("a.CR3")
+        let mtime = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: mtime], ofItemAtPath: file)
+
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let plan = try await service.plan(
+            sourcePaths: [source],
+            options: IngestOptions(
+                destinationRoot: dest, renameTemplate: "{yyyy}/{MM}/{dd}/{orig}.{ext}"))
+        let first = try #require(plan.items.first)
+        let relative = String(first.destPath.dropFirst(dest.count + 1))
+        // 日期按本地时区解释：期望值同样用当前日历推导，避免 UTC+8 下跨日。
+        let parts = Calendar(identifier: .gregorian)
+            .dateComponents(in: .current, from: mtime)
+        let expected = String(
+            format: "%04d/%02d/%02d/", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+        #expect(relative.hasPrefix(expected), "实际：\(relative)")
+    }
+}
+
+/// P0 / C1：可注入的 EXIF 端口（只回拍摄日期与型号）。
+private struct IngestStubExif: ExifProvider, @unchecked Sendable {
+    var date: String?
+    var model: String?
+
+    func parse(filePath: String, isJpeg: Bool) async throws -> MetadataParseSegments? {
+        var ifd0: [String: JSONValue] = [:]
+        if let model { ifd0["Model"] = .string(model) }
+        var exif: [String: JSONValue] = [:]
+        if let date { exif["DateTimeOriginal"] = .string(date) }
+        return MetadataParseSegments(
+            ifd0: ifd0.isEmpty ? nil : .object(ifd0),
+            exif: exif.isEmpty ? nil : .object(exif))
     }
 }

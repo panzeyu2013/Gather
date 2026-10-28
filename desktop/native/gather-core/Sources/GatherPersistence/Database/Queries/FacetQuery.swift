@@ -81,6 +81,7 @@ public final class FacetQuery {
               FROM photos p
               LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
               WHERE \(sessionFilter) AND (\(clause.sql.isEmpty ? "1=1" : clause.sql))
+                AND \(PhotoVisibility.visiblePredicate())
             )
             SELECT v, COUNT(*) AS n
             FROM ranked

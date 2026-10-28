@@ -43,14 +43,20 @@ public enum TriageWritebackPlanner {
         verdict: String,
         currentRating: Int,
         manuallyDecided: Bool,
-        policy: TriageWritebackPolicy
+        policy: TriageWritebackPolicy,
+        ratingMode: TriageRatingMode = .keep3Reject1
     ) -> TriageWritebackDecision? {
         guard policy != .off else { return nil }
         let normalized = verdict.lowercased()
         guard normalized == "keep" || normalized == "reject" else { return nil }
 
         let isKeep = normalized == "keep"
-        let targetRating = isKeep ? 3 : 1
+        // P0 / A2：默认保持 3/1（不改用户现状）；keep3Only / none 由 UI 显式选择。
+        let targetRating: Int? = switch ratingMode {
+        case .keep3Reject1: isKeep ? 3 : 1
+        case .keep3Only: isKeep ? 3 : nil
+        case .none: nil
+        }
         let canWriteRating = !manuallyDecided && currentRating == 0
         let rating: Int? = canWriteRating ? targetRating : nil
         let keyword: String? = (policy == .ratingAndKeyword) ? (isKeep ? keywordKeep : keywordReject) : nil
@@ -65,12 +71,13 @@ public enum TriageWritebackPlanner {
 
     public static func planBatch(
         photos: [(photoId: String, verdict: String, currentRating: Int, manuallyDecided: Bool)],
-        policy: TriageWritebackPolicy
+        policy: TriageWritebackPolicy,
+        ratingMode: TriageRatingMode = .keep3Reject1
     ) -> [TriageWritebackDecision] {
         photos.compactMap { photo in
             plan(photoId: photo.photoId, verdict: photo.verdict,
                  currentRating: photo.currentRating, manuallyDecided: photo.manuallyDecided,
-                 policy: policy)
+                 policy: policy, ratingMode: ratingMode)
         }
     }
 }

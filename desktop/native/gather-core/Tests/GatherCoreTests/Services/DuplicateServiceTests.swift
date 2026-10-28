@@ -706,6 +706,47 @@ struct DuplicateResolveTests {
         #expect(flags.map(\.1) == [1, 0])
     }
 
+    @Test("keep_one 忽略归档成员：归档件分数最高也不得被选中")
+    func resolveGroupIgnoresArchivedMembers() throws {
+        let db = try makeTestDB()
+        try insertSession(db, "session")
+        _ = try db.prepare("""
+            INSERT INTO photos (id, session_id, filepath, filename, status, created_at, updated_at)
+            VALUES ('p1', 'session', '/p1.jpg', 'p1.jpg', 'ready', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+                   ('p2', 'session', '/p2.jpg', 'p2.jpg', 'ready', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+                   ('p3', 'session', '/p3.jpg', 'p3.jpg', 'ready', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+            """).run()
+        _ = try db.prepare("UPDATE photos SET archived_at = ? WHERE id = 'p3'")
+            .run([.text("2026-10-28T00:00:00.000Z")])
+        _ = try db.prepare("""
+            INSERT INTO duplicate_groups (session_id, group_type, checksum, hash_hex, member_count, resolution, created_at)
+            VALUES ('session', 'exact', 'abc', NULL, 3, NULL, '2026-01-01T00:00:00.000Z')
+            """).run()
+        let groupId = Int(db.lastInsertRowid)
+        // p3（归档）分数最高：若参与评分，keep_one 会选中它，可见成员全被丢弃。
+        _ = try db.prepare("""
+            INSERT INTO duplicate_group_members (group_id, photo_id, session_id, is_kept, file_size, file_mtime)
+            VALUES (?, 'p1', 'session', 1, 100, '2024-01-01T00:00:00.000Z'),
+                   (?, 'p2', 'session', 1, 200, '2025-01-01T00:00:00.000Z'),
+                   (?, 'p3', 'session', 1, 999999999, '2026-01-01T00:00:00.000Z')
+            """).run([.int(Int64(groupId)), .int(Int64(groupId)), .int(Int64(groupId))])
+
+        try DuplicateService(connection: db).resolveGroup(groupId: groupId, resolution: .keepOne)
+
+        let flags = try db.prepare(
+            "SELECT photo_id, is_kept FROM duplicate_group_members WHERE group_id = ? ORDER BY id"
+        ).query([.int(Int64(groupId))]).map { ($0[0].textValue ?? "", $0[1].intValue ?? 0) }
+        #expect(flags.map(\.1) == [0, 1, 1], "可见的 p2 保留；归档 p3 不被重写")
+        let resolution = try db.prepare(
+            "SELECT resolution FROM duplicate_groups WHERE id = ?"
+        ).get([.int(Int64(groupId))])?[0].textValue
+        #expect(resolution == "keep_one", "组级 resolution 不应被归档成员阻塞")
+        let statuses = try db.prepare(
+            "SELECT id, status FROM photos WHERE session_id = ? ORDER BY id"
+        ).query([.text("session")]).map { ($0[0].textValue ?? "", $0[1].textValue ?? "") }
+        #expect(statuses.map(\.1) == ["removed", "ready", "ready"])
+    }
+
     /// 平局规则：score 严格大于才替换 ⇒ 同分时保留先出现的成员（首个 member 行）。
     /// 变异验证：> 改 >= 后既有用例全绿（它们构造不出同分），本用例是唯一守卫。
     @Test("keep_one 平分时保留先出现的成员（确定性平局规则）")

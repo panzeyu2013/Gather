@@ -43,6 +43,18 @@ public final class DuplicateGroupQuery {
         ).query([.int(Int64(groupId))]).map { DuplicateMemberRow(row: $0) }
     }
 
+    /// resolveGroup 的可见成员读取：归档件不参与 keep_one 评分与状态重算。
+    /// 无 ORDER BY，保持与 getMembers 相同的自然行序（平局规则依赖它）。
+    public func getVisibleMembers(groupId: Int) throws -> [DuplicateMemberRow] {
+        try connection.prepare("""
+            SELECT dgm.id, dgm.group_id, dgm.photo_id, dgm.session_id,
+                   dgm.is_kept, dgm.file_size, dgm.file_mtime, dgm.resolution
+            FROM duplicate_group_members dgm
+            JOIN photos p ON p.id = dgm.photo_id
+            WHERE dgm.group_id = ? AND p.archived_at IS NULL
+            """).query([.int(Int64(groupId))]).map { DuplicateMemberRow(row: $0) }
+    }
+
     /// TS: duplicate_group_members JOIN photos（filepath/filename）按 dgm.id 排序。
     public func getMembers(groupIds: [Int]) throws -> [Int: [DuplicateGroupMemberDetail]] {
         guard !groupIds.isEmpty else { return [:] }
@@ -52,6 +64,7 @@ public final class DuplicateGroupQuery {
             FROM duplicate_group_members dgm
             JOIN photos p ON p.id = dgm.photo_id
             WHERE dgm.group_id IN (\(placeholders))
+              AND \(PhotoVisibility.visiblePredicate())
             ORDER BY dgm.id
             """).query(groupIds.map { .int(Int64($0)) })
         var memberMap: [Int: [DuplicateGroupMemberDetail]] = [:]
@@ -67,6 +80,22 @@ public final class DuplicateGroupQuery {
         try connection.prepare(
             "SELECT is_kept, resolution FROM duplicate_group_members WHERE group_id = ? ORDER BY id"
         ).query([.int(Int64(groupId))]).map { row in
+            DuplicateMemberState(
+                isKept: (row[0].intValue ?? 1) != 0,
+                resolution: row[1].textValue
+            )
+        }
+    }
+
+    /// 可见成员状态：组级 resolution 派生只应被可见成员阻塞。
+    public func getVisibleMemberStates(groupId: Int) throws -> [DuplicateMemberState] {
+        try connection.prepare("""
+            SELECT dgm.is_kept, dgm.resolution
+            FROM duplicate_group_members dgm
+            JOIN photos p ON p.id = dgm.photo_id
+            WHERE dgm.group_id = ? AND p.archived_at IS NULL
+            ORDER BY dgm.id
+            """).query([.int(Int64(groupId))]).map { row in
             DuplicateMemberState(
                 isKept: (row[0].intValue ?? 1) != 0,
                 resolution: row[1].textValue

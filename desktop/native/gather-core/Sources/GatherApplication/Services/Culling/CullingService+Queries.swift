@@ -16,7 +16,10 @@ extension CullingService {
         filters: CullingFilters? = nil,
         requestedGroupId: String? = nil
     ) throws -> [CullingAsset] {
-        let photos = try photoRepo.getBySession(sessionId: sessionId).map { CullingPhotoRow(row: $0) }
+        // P1：只列仍在工作区的照片（归档件从所有列表/代表行消失）。
+        let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+            .filter { $0.archivedAt == nil }
+            .map { CullingPhotoRow(row: $0) }
         let lookup = try buildRichLookup(photos: photos, sessionId: sessionId, mode: .session)
         return filterVisible(
             assembleAssets(photos: photos, lookup: lookup),
@@ -31,11 +34,14 @@ extension CullingService {
         guard let resultRow = try similarityResultRepo.getLatest(sessionId: sessionId) else {
             return []
         }
-        // 轻投影：只取 id/filepath/filename，重 JSON 列跳过。
+        // 轻投影：只取 id/filepath/filename，重 JSON 列跳过；归档变体不参与组结构。
         let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+            .filter { $0.archivedAt == nil }
             .map { CullingPhotoRow(row: $0) }
         let photoById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
         let membership = try similarityResultRepo.getPhotoGroupMap(sessionId: sessionId, resultId: resultRow.id)
+        let originalCounts = try similarityResultRepo.groupMemberCounts(
+            sessionId: sessionId, resultId: resultRow.id)
         var membersByGroup: [String: [String]] = [:]
         for photo in photos {
             guard let groupId = membership[photo.id] else { continue }
@@ -79,7 +85,14 @@ extension CullingService {
             insertion += 1
         }
         // 稳定排序（TS Array.sort 稳定；Swift sort 不保证稳定，同索引时按首见序）。
+        // P1：只剩 1 个可见成员的组不具备"相似组"语义（决策要求 ≥2 张），直接隐藏；
+        // 否则用户会看到一个无法决策的幽灵组。
         return groups
+            .filter { entry in
+                // 归档导致成员不足才隐藏；minGroupSize=1 的合法单成员组保留。
+                let original = originalCounts[entry.group.groupIndex] ?? entry.group.images.count
+                return entry.group.images.count >= 2 || original < 2
+            }
             .sorted { $0.index == $1.index ? $0.insertion < $1.insertion : $0.index < $1.index }
             .map(\.group)
     }
@@ -114,11 +127,14 @@ extension CullingService {
         let lookup = try getSessionLookup(sessionId: sessionId)
         var totalGroups = 0
         if let resultRow = lookup.resultRow {
-            if !lookup.groupCountResolved {
-                lookup.groupCount = parseTotalGroups(resultRow)
-                lookup.groupCountResolved = true
-            }
-            totalGroups = lookup.groupCount
+            // 契约：总组数来自相似度 stats_json（分析快照）；只扣掉"成员全部归档"
+            // 的组，避免整组移出后摘要仍显示旧组数（部分归档不改动快照口径）。
+            totalGroups = max(
+                0,
+                parseTotalGroups(resultRow)
+                    - (try similarityResultRepo.countFullyArchivedGroups(
+                        sessionId: sessionId, resultId: resultRow.id))
+            )
         }
         let labels = Self.colorLabels.filter { $0 != .none }.map(\.rawValue).sorted()
         let counts = try richQuery.summaryCounts(sessionId: sessionId, colorLabels: labels)

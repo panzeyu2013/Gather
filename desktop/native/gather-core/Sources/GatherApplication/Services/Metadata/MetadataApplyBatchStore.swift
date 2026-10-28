@@ -18,6 +18,9 @@ public struct MetadataApplySnapshot: Codable, Equatable, Sendable {
     public var touchedFields: [DescriptiveField]?
     /// P1 / E：triage 写回改动前的星级（nil = 该批次没动 rating）。
     public var beforeRating: Int?
+    /// P0 / A2：本批**实际写入**的星级。undo 只在"盘上现值 == 写入值"时回滚，
+    /// 避免把写回后人工改的新星级清回旧值。旧批次为 nil = 不回写 rating（fail-closed）。
+    public var appliedRating: Int?
     /// P1 / E：triage 写回改动前的关键词表（nil = 该批次没动关键词）。
     public var beforeKeywords: [String]?
     /// P1：本次实际追加的关键词；撤销只删这一个，保留之后新增的词。
@@ -32,6 +35,7 @@ public struct MetadataApplySnapshot: Codable, Equatable, Sendable {
         before: DescriptiveMetadata,
         touchedFields: [DescriptiveField]? = nil,
         beforeRating: Int? = nil,
+        appliedRating: Int? = nil,
         beforeKeywords: [String]? = nil,
         appliedKeyword: String? = nil,
         beforeTriageSignal: String? = nil
@@ -41,6 +45,7 @@ public struct MetadataApplySnapshot: Codable, Equatable, Sendable {
         self.before = before
         self.touchedFields = touchedFields
         self.beforeRating = beforeRating
+        self.appliedRating = appliedRating
         self.beforeKeywords = beforeKeywords
         self.appliedKeyword = appliedKeyword
         self.beforeTriageSignal = beforeTriageSignal

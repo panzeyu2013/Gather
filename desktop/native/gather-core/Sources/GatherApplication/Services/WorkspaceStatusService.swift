@@ -62,7 +62,8 @@ public final class WorkspaceStatusService {
     public func getStatus(sessionId: String) throws -> WorkspaceStatus? {
         guard let session = try sessionRepo.get(id: sessionId) else { return nil }
 
-        let photoCount = try photoRepo.countBySession(sessionId: sessionId)
+        // P1：工作区总数只算仍在工作区的照片（归档件不参与阶段判定/展示）。
+        let photoCount = try photoRepo.countVisibleBySession(sessionId: sessionId)
         let scanJob = try latestScanJob(sessionId)
         // 索引 job 按 dedupeKey `metadata.scan:<sessionId>` 创建且终态行会被
         // 复用为 retry，因此同一 session 至多一条 metadata.scan 行；"最近一次

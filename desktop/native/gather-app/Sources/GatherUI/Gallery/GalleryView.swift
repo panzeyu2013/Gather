@@ -42,6 +42,8 @@ package struct GalleryView: View {
     @State var pendingInitialPhotoId: String?
     /// 只有路径的调用方（相似度成员行）用：id 匹配不到时按 filepath 匹配。
     @State var pendingInitialPhotoPath: String?
+    /// P0 / B2：单张元数据编辑 sheet（检查器扩展不能自带存储属性）。
+    @State var showMetadataEditor = false
     /// 生产装配（Cut 4 / 4a-2a-2）：VM 来自会话工作区（workspace.gallery），
     /// 外壳不再维护 gallery 单槽，也不再在导航时替换 VM。
     ///

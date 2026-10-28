@@ -131,6 +131,7 @@ public final class NavigationRepo {
             LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
             LEFT JOIN similarity_hashes sh ON sh.photo_id = p.id AND sh.session_id = p.session_id
             WHERE p.session_id = ? AND p.status != 'missing'
+              AND \(PhotoVisibility.visiblePredicate())
             ORDER BY captured_at, p.rowid
         """).query([.text(sessionId)])
 

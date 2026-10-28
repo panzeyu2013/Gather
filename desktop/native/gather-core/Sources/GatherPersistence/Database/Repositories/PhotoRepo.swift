@@ -65,12 +65,15 @@ public struct PhotoProjectionRow: Equatable, Sendable {
     public let height: Int
     public let createdAt: String
     public let updatedAt: String
+    /// P0 / A1：非 nil = 已移出工作区（文件在 _rejects）。读面按 PhotoVisibility 过滤。
+    public let archivedAt: String?
 
     // SELECT 列序: id(0), session_id(1), filepath(2), filename(3), checksum(4),
     // checksum_file_size(5), checksum_file_mtime_ms(6), status(7), asset_id(8),
-    // asset_file_id(9), width(10), height(11), created_at(12), updated_at(13)
+    // asset_file_id(9), width(10), height(11), created_at(12), updated_at(13),
+    // archived_at(14)
     init(row: DBRow) throws {
-        guard row.count >= 14 else { throw DBError.message("PhotoProjectionRow 列数不足: \(row.count)") }
+        guard row.count >= 15 else { throw DBError.message("PhotoProjectionRow 列数不足: \(row.count)") }
         id = row[0].textValue ?? ""
         sessionId = row[1].textValue ?? ""
         filepath = row[2].textValue ?? ""
@@ -85,6 +88,7 @@ public struct PhotoProjectionRow: Equatable, Sendable {
         height = Int(row[11].intValue ?? 0)
         createdAt = row[12].textValue ?? ""
         updatedAt = row[13].textValue ?? ""
+        archivedAt = row[14].textValue
     }
 }
 
@@ -196,7 +200,7 @@ public final class PhotoRepo {
 
     public func getBySessionProjection(sessionId: String) throws -> [PhotoProjectionRow] {
         let rows = try connection.prepare(
-            "SELECT id, session_id, filepath, filename, checksum, checksum_file_size, checksum_file_mtime_ms, status, asset_id, asset_file_id, width, height, created_at, updated_at FROM photos WHERE session_id = ? ORDER BY rowid"
+            "SELECT id, session_id, filepath, filename, checksum, checksum_file_size, checksum_file_mtime_ms, status, asset_id, asset_file_id, width, height, created_at, updated_at, archived_at FROM photos WHERE session_id = ? ORDER BY rowid"
         ).query([.text(sessionId)])
         return try rows.map { try PhotoProjectionRow(row: $0) }
     }
@@ -242,10 +246,12 @@ public final class PhotoRepo {
             SELECT gid, MIN(first_rowid) AS first_rowid FROM (
               SELECT asset_id AS gid, MIN(rowid) AS first_rowid
                 FROM photos WHERE session_id = ? AND asset_id IS NOT NULL
+                  AND archived_at IS NULL
                 GROUP BY asset_id
               UNION ALL
               SELECT id AS gid, rowid AS first_rowid
                 FROM photos WHERE session_id = ? AND asset_id IS NULL
+                  AND archived_at IS NULL
             )
             GROUP BY gid
             HAVING MIN(first_rowid) > ?
@@ -262,16 +268,23 @@ public final class PhotoRepo {
             let chunk = gids[chunkStart..<min(chunkStart + 800, gids.count)].map { $0.gid }
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             let chunkRows = try connection.prepare(
-                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ? AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders)) ORDER BY p.rowid"
+                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ? AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders)) AND p.archived_at IS NULL ORDER BY p.rowid"
             ).query([.text(sessionId)] + chunk.map { .text($0) })
             rows.append(contentsOf: try chunkRows.map { try PhotoPageRow(row: $0) })
         }
         return (rows, gids[gids.count - 1].firstRowid)
     }
 
+    public func countVisibleBySession(sessionId: String) throws -> Int {
+        let row = try connection.prepare(
+            "SELECT COUNT(*) AS count FROM photos WHERE session_id = ? AND archived_at IS NULL"
+        ).get([.text(sessionId)])
+        return Int(row?[0].intValue ?? 0)
+    }
+
     public func countAssetsBySession(sessionId: String) throws -> Int {
         let row = try connection.prepare(
-            "SELECT COUNT(*) AS count FROM (SELECT COALESCE(NULLIF(asset_id, ''), id) AS gid FROM photos WHERE session_id = ? GROUP BY gid)"
+            "SELECT COUNT(*) AS count FROM (SELECT COALESCE(NULLIF(asset_id, ''), id) AS gid FROM photos WHERE session_id = ? AND archived_at IS NULL GROUP BY gid)"
         ).get([.text(sessionId)])
         return Int(row?[0].intValue ?? 0)
     }

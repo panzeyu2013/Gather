@@ -18,7 +18,7 @@ struct CullingInspector: View {
     @State private var confirmMoveRejected = false
     /// 检查器内的互斥 sheet（SwiftUI 同视图叠多个 .sheet 行为不稳定）。
     private enum InspectorSheet: String, Identifiable {
-        case ingest, templates, batches
+        case ingest, templates, batches, editor
         var id: String { rawValue }
     }
     @State private var activeSheet: InspectorSheet?
@@ -142,7 +142,26 @@ struct CullingInspector: View {
                         MetadataTemplateSheet(viewModel: viewModel)
                     case .batches:
                         MetadataBatchSheet(viewModel: viewModel)
+                    case .editor:
+                        if let photoId = viewModel.currentAsset?.photo.id {
+                            MetadataEditorSheet(
+                                photoId: photoId,
+                                api: viewModel.metadataAPI,
+                                onApplied: { outcome in
+                                    viewModel.notice = CullingNotice(
+                                        "已写入 %lld 张", params: ["\(outcome.written.count)"])
+                                })
+                        }
                     }
+                }
+
+                // P0 / B2：单张元数据直接编辑（写说明/版权不必再建模板）。
+                GatherInspectorSection(l10n("元数据")) {
+                    Button(l10n("编辑元数据…")) { activeSheet = .editor }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .disabled(isBusy || viewModel.currentAsset == nil)
+                        .help(l10n("直接编辑当前照片的 IPTC 字段；空值表示清空"))
                 }
 
                 // P1 / B2：模板批量套用入口（选中集或当前照片）。
@@ -169,6 +188,18 @@ struct CullingInspector: View {
                 // P1 / E：把技术建议写成 rating（只写空值）+ 私有命名空间，可回溯。
                 GatherInspectorSection(l10n("技术建议写回")) {
                     VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+                        // P0 / A2：星级策略显式可选（默认保持 3/1，不偷偷改用户现状）。
+                        Picker(l10n("建议星级"), selection: Binding(
+                            get: { viewModel.triageRatingMode },
+                            set: { viewModel.triageRatingMode = $0 }
+                        )) {
+                            Text(l10n("保留 3★ / 淘汰 1★")).tag(TriageRatingMode.keep3Reject1)
+                            Text(l10n("只给保留 3★")).tag(TriageRatingMode.keep3Only)
+                            Text(l10n("不写星级")).tag(TriageRatingMode.none)
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .disabled(isBusy)
                         Button(l10n("把建议写成评级")) {
                             Task {
                                 pendingTriageInput = await viewModel.prepareTriageWriteback()

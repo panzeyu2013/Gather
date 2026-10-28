@@ -495,9 +495,11 @@ public final class DuplicateService: @unchecked Sendable {
         let groupRows = try groupQuery.getGroups(sessionId: sessionId)
         if groupRows.isEmpty { return [] }
         let memberMap = makeMembers(try groupQuery.getMembers(groupIds: groupRows.map(\.id)))
+        // P1：归档成员不参与重复组；只剩 0–1 个可见成员的组没有可决策内容，隐藏。
         return groupRows.map { row in
             makeGroup(row: row, memberMap: memberMap)
         }
+        .filter { $0.members.count >= 2 }
     }
 
     /// TS: resolveGroup —— keep_one 按分数（size*1000 + mtimeMs）取最优保留，
@@ -508,7 +510,9 @@ public final class DuplicateService: @unchecked Sendable {
                 DuplicateGroupResolutionWrite(groupId: groupId, resolution: resolution.rawValue)
             ])
 
-            let members = try groupQuery.getMembers(groupId: groupId)
+            // 归档件不参与 keep_one 评分：否则归档成员可能被选中为“保留”，
+            // 可见成员全部被标为不保留。组成员状态也只对可见成员重算。
+            let members = try groupQuery.getVisibleMembers(groupId: groupId)
             if members.isEmpty {
                 throw DuplicateServiceError.groupNotFound(groupId)
             }
@@ -566,7 +570,7 @@ public final class DuplicateService: @unchecked Sendable {
     private func syncGroupResolutions(groupIds: [Int]) throws {
         var writes: [DuplicateGroupResolutionWrite] = []
         for groupId in groupIds {
-            let rows = try groupQuery.getMemberStates(groupId: groupId)
+            let rows = try groupQuery.getVisibleMemberStates(groupId: groupId)
             guard !rows.isEmpty else { continue }
             var allResolved = true
             var keptCount = 0
@@ -621,6 +625,7 @@ public final class DuplicateService: @unchecked Sendable {
         return groupRows.map { row in
             makeGroup(row: row, memberMap: memberMap)
         }
+        .filter { $0.members.count >= 2 }
     }
 
     /// 读模型 → 协议成员（列序解码在 Persistence，这里只做字段映射）。
@@ -650,7 +655,8 @@ public final class DuplicateService: @unchecked Sendable {
             groupType: row.groupType == "exact" ? .exact : .visual,
             checksum: row.checksum,
             hashHex: row.hashHex,
-            memberCount: row.memberCount,
+            // 成员数用可见成员实时值（归档后与 row.memberCount 不一致）。
+            memberCount: memberMap[row.id]?.count ?? row.memberCount,
             members: memberMap[row.id] ?? [],
             resolution: row.resolution,
             createdAt: row.createdAt

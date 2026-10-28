@@ -61,6 +61,13 @@ public enum IngestRenameTemplate {
         return result
     }
 
+    /// 模板是否用到了日期/相机占位符（决定摄取时要不要读 EXIF）。
+    /// 只用 {orig}/{ext}/{seq} 的模板无需为每张照片做一次 EXIF 解析。
+    public static func usesCaptureMetadata(_ pattern: String) -> Bool {
+        ["{yyyy}", "{MM}", "{dd}", "{HH}", "{mm}", "{ss}", "{camera}"]
+            .contains { pattern.contains($0) }
+    }
+
     /// 路径分隔符与平台保留字符替换成下划线（模板里写 {camera} 时尤其需要）。
     private static func sanitize(_ value: String) -> String {
         value.replacingOccurrences(of: "/", with: "_")
@@ -157,13 +164,84 @@ public struct IngestResult: Equatable, Sendable {
 
 // MARK: - 服务
 
+/// 单张源文件的拍摄元数据（摄取重命名模板的输入）。
+public struct IngestCaptureMetadata: Equatable, Sendable {
+    /// EXIF DateTimeOriginal（缺失时回退文件 mtime；仍缺失则由调用方用 now()）。
+    public var date: Date?
+    /// 相机型号（{camera} 占位符）；缺失为 nil。
+    public var cameraModel: String?
+
+    public init(date: Date? = nil, cameraModel: String? = nil) {
+        self.date = date
+        self.cameraModel = cameraModel
+    }
+}
+
 public final class IngestService: @unchecked Sendable {
     private let fileManager: FileManager
     private let now: @Sendable () -> Date
+    /// P0 / C1：EXIF 读取端口（宿主注入 ImageIO 实现）。nil = 只按 mtime/now 命名。
+    private let exif: (any ExifProvider)?
 
-    public init(fileManager: FileManager = .default, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(
+        fileManager: FileManager = .default,
+        now: @escaping @Sendable () -> Date = { Date() },
+        exif: (any ExifProvider)? = nil
+    ) {
         self.fileManager = fileManager
         self.now = now
+        self.exif = exif
+    }
+
+    /// EXIF 时间戳是"相机本地时间"，不带时区：按当前时区解释（与 Lightroom/Bridge 一致）。
+    private static let exifDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        return formatter
+    }()
+
+    /// 递归枚举目录下的普通文件（不跟随符号链接目录，排序保证计划确定性）。
+    private func enumerateFiles(under root: String) -> [String] {
+        var found: [String] = []
+        guard let enumerator = fileManager.enumerator(atPath: root) else { return found }
+        for case let relative as String in enumerator {
+            let full = (root as NSString).appendingPathComponent(relative)
+            var childIsDir: ObjCBool = false
+            if fileManager.fileExists(atPath: full, isDirectory: &childIsDir),
+               !childIsDir.boolValue {
+                found.append(full)
+            }
+        }
+        return found.sorted()
+    }
+
+    /// 读取单张源文件的拍摄日期/相机型号。
+    ///
+    /// 优先级：DateTimeOriginal → DateTimeDigitized → 文件 mtime → nil（调用方用 now()）。
+    /// 解析失败只降级、不抛错：一张损坏的 EXIF 不能让整批摄取失败。
+    private func captureMetadata(
+        for file: String,
+        attributes: [FileAttributeKey: Any]?
+    ) async -> IngestCaptureMetadata {
+        var result = IngestCaptureMetadata()
+        if let exif {
+            let isJpeg = ["jpg", "jpeg"].contains((file as NSString).pathExtension.lowercased())
+            if let parsed = try? await exif.parse(filePath: file, isJpeg: isJpeg) {
+                let rawDate = parsed.exif?["DateTimeOriginal"]?.stringValue
+                    ?? parsed.exif?["DateTimeDigitized"]?.stringValue
+                if let rawDate {
+                    result.date = Self.exifDateFormatter.date(from: rawDate)
+                }
+                result.cameraModel = parsed.ifd0?["Model"]?.stringValue
+                    ?? parsed.exif?["Model"]?.stringValue
+            }
+        }
+        if result.date == nil {
+            result.date = attributes?[.modificationDate] as? Date
+        }
+        return result
     }
 
     /// 计划：扫描源目录（不递归子目录之外的东西，不碰库）。
@@ -175,7 +253,7 @@ public final class IngestService: @unchecked Sendable {
             "jpg", "jpeg", "tif", "tiff", "png", "webp", "heic", "heif", "psd",
         ],
         existingChecksums: [String: String] = [:]
-    ) throws -> IngestPlan {
+    ) async throws -> IngestPlan {
         var items: [IngestItem] = []
         var skipped: [String] = []
         var unreadable: [String] = []
@@ -199,24 +277,9 @@ public final class IngestService: @unchecked Sendable {
                 unreadable.append(source)
                 continue
             }
-            let files: [String]
-            if isDirectory.boolValue {
-                // 卡片根/DCIM 的照片常在子目录：递归枚举，避免"选目录却 0 张"。
-                var found: [String] = []
-                if let enumerator = fileManager.enumerator(atPath: source) {
-                    for case let relative as String in enumerator {
-                        let full = (source as NSString).appendingPathComponent(relative)
-                        var childIsDir: ObjCBool = false
-                        if fileManager.fileExists(atPath: full, isDirectory: &childIsDir),
-                           !childIsDir.boolValue {
-                            found.append(full)
-                        }
-                    }
-                }
-                files = found.sorted()
-            } else {
-                files = [source]
-            }
+            // 卡片根/DCIM 的照片常在子目录：递归枚举，避免"选目录却 0 张"。
+            // NSEnumerator 的迭代器在 async 上下文不可用，枚举本身放进同步方法。
+            let files = isDirectory.boolValue ? enumerateFiles(under: source) : [source]
             for file in files {
                 // 目录与其内文件同时传入时，枚举结果也要进去重集合（否则会复制两份）。
                 guard seenSources.insert((file as NSString).standardizingPath).inserted else { continue }
@@ -225,6 +288,11 @@ public final class IngestService: @unchecked Sendable {
                 let attrs = try? fileManager.attributesOfItem(atPath: file)
                 let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
                 let name = (file as NSString).lastPathComponent
+                // P0 / C1：命名模板的日期/相机来自 EXIF，不是导入时间。
+                // P2：模板没用到日期/相机时不读 EXIF（大卡导入少一轮 IO）。
+                let capture = IngestRenameTemplate.usesCaptureMetadata(options.renameTemplate)
+                    ? await captureMetadata(for: file, attributes: attrs)
+                    : IngestCaptureMetadata()
                 // 已有照片校验和命中 → 已导入过，跳过（不重复占盘）。
                 if !existingChecksums.isEmpty, let sum = try? checksum(file),
                    existingChecksums[sum] != nil {
@@ -246,8 +314,9 @@ public final class IngestService: @unchecked Sendable {
                     relative = sharedStem + "." + ext
                 } else {
                     relative = IngestRenameTemplate.expand(
-                        options.renameTemplate, originalName: name, date: now(),
-                        sequence: sequence, cameraModel: nil)
+                        options.renameTemplate, originalName: name,
+                        date: capture.date ?? now(),
+                        sequence: sequence, cameraModel: capture.cameraModel)
                 }
                 let dest = (options.destinationRoot as NSString).appendingPathComponent(relative)
                 // 模板是自由文本：{orig}/手写 ../ 都可能把文件送出目的地根目录。

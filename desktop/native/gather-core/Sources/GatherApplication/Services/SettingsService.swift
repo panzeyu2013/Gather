@@ -97,6 +97,7 @@ public final class SettingsService: @unchecked Sendable {
 
             // P1 / B2：元数据模板（单键 JSON 数组）
             "metadata.templates": "[]",
+            "metadata.templates.corrupt": "",
             "metadata.applyBatches": "[]",
             // 解析失败时的原文留证（见 MetadataApplyBatchStore.preserveCorruptPayload）
             "metadata.applyBatches.corrupt": "",

@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/MetadataAPI.swift
-// Cut 1 / 阶段 1A：元数据域协议（18 个方法）。
+// Cut 1 / 阶段 1A：元数据域协议（20 个方法；P0 / B2 追加 applyDescriptive 与 diskDescriptive）。
 //
 // 职责：冲突与孤儿列表、冲突/孤儿处置、关键词预览/应用/重试；P1 起追加
 // 只读元数据详情（metadata）、元数据模板（templates/saveTemplate/templateFields/
@@ -39,6 +39,14 @@ public protocol MetadataAPI: Sendable {
     func previewTemplate(_ input: MetadataTemplatePreviewInput) async throws -> MetadataTemplatePreviewResult
     /// 应用：逐张独立提交，冲突按策略跳过；返回 batchId 供撤销。
     func applyTemplate(_ input: Confirmed<MetadataTemplateApplyInput>) async throws -> MetadataTemplateApplyOutcome
+
+    /// P0 / B2：单张（或少量）照片的直接字段编辑。批次 templateId = "inline"，
+    /// undo 复用 undoTemplate 的批次机制；返回类型与模板套用一致。
+    func applyDescriptive(_ input: Confirmed<MetadataInlineApplyInput>) async throws -> MetadataTemplateApplyOutcome
+
+    /// P0 / B2：**盘上**当前描述性元数据（含 JPEG 内嵌 IPTC），编辑器初值用。
+    /// 不能拿缓存当初值：缓存落后时用户会看到旧值，保存会静默覆盖外部改动。
+    func diskDescriptive(_ photoId: String) async throws -> DescriptiveMetadata
     /// 撤销：按批次记录反向写；已撤销的批次拒绝重复回滚。
     func undoTemplate(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> MetadataTemplateApplyOutcome
 

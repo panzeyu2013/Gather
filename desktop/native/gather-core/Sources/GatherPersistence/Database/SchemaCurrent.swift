@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift
-// 当前 schema 的唯一 DDL 与结构基线（44 表 / 384 列 / 72 索引 / 65 外键，user_version=4）。
+// 当前 schema 的唯一 DDL 与结构基线（44 表 / 385 列 / 72 索引 / 65 外键，user_version=5）。
 //
 // 唯一真相源：DDL 字面量按表组拆在 Schema/SchemaCurrent+DDL*.swift，本文件按
 // ddlCore → ddlDomain → ddlIndexes → addendumDDL 顺序拼接。addendumDDL 含
@@ -25,21 +25,24 @@
 // 必须含 'auto_raw_jpeg'；photos.status 不收 WorkspaceStage 的 'indexed'。
 public enum SchemaCurrent {
     /// 当前（唯一）库版本号（PRAGMA user_version）。
-    public static let userVersion: Int = 4
+    public static let userVersion: Int = 5
 
     /// 期望的表/列/索引/外键总数（与 createSQL 同源；任何 DDL 变更必须同步改）。
     ///
     /// user_version 只证明曾按该版本建库，不能证明列形完整；Database.open 同时校验
     /// 计数、关键列与指纹，形态不符按不兼容库处理。
     public static let expectedTableCount: Int = 44
-    public static let expectedColumnCount: Int = 384
+    public static let expectedColumnCount: Int = 385
     public static let expectedExplicitIndexCount: Int = 72
     public static let expectedForeignKeyCount: Int = 65
 
     /// 关键表必须存在的列（子集）。缺失即视为旧库/损坏库；全量列形由指纹兜底。
     public static let requiredTableColumns: [String: Set<String>] = [
         "sessions": ["id", "status", "index_seq", "source_path"],
-        "photos": ["id", "session_id", "filepath", "status", "asset_id", "asset_file_id"],
+        "photos": [
+            "id", "session_id", "filepath", "status", "asset_id", "asset_file_id",
+            "archived_at",
+        ],
         "person_photos": ["person_id", "photo_id", "session_id"],
         "role_bindings": ["cluster_id", "session_id", "role_name"],
         "deliveries": ["id", "xmp_path", "status", "revision", "base_fingerprint", "lease_owner"],
@@ -62,9 +65,9 @@ public enum SchemaCurrent {
     ///
     /// 口径见 Database.readSchemaShape：canonical 文本排序后取 SHA-256。更新 DDL 后必须
     /// 同步更新本值（先让正确库的 open 报出实际指纹，再粘贴；不要用 DDL 自动计算，
-    /// 否则旧库也能自证「当前」）。当前值对应 44 表 / 384 列 / 72 索引 / 65 外键。
+    /// 否则旧库也能自证「当前」）。当前值对应 44 表 / 385 列 / 72 索引 / 65 外键。
     public static let expectedShapeFingerprint: String =
-        "4e47485e25a30f20c64a37c84650f41a2875dc513238de1bede3e39f41c4506e"
+        "38bd1540b3872b4d2e635f376f5f073881ebfa0310074ed046f275b5f3875dd2"
 
     /// 列形期望的类型化视图：Database.open / BackupVerifier 共用同一份计数、关键列与指纹。
     /// 与上面四个 expected* 常量同源，禁止另写第二份。
@@ -79,7 +82,7 @@ public enum SchemaCurrent {
 
     /// 建库 DDL 主体（单次 exec 执行；含 PRAGMA foreign_keys，不含 user_version）。
     ///
-    /// createSQL = ddl + PRAGMA user_version = 4；唯一版本，没有迁移链/快照层，
+    /// createSQL = ddl + PRAGMA user_version = 5；唯一版本，没有迁移链/快照层，
     /// 拆分只为把 DDL 字面量按表组分开维护。
     ///
     /// final-cleanup 纯拆分：DDL 字面量按表组存放在 Schema/SchemaCurrent+DDL*.swift，
@@ -123,6 +126,6 @@ public enum SchemaCurrent {
     public static let ddl: String =
         ddlCore + "\n" + ddlDomain + "\n" + ddlIndexes + "\n" + addendumDDL
 
-    /// 唯一建库 SQL：当前 DDL + user_version = 4。
-    public static let createSQL: String = ddl + "\nPRAGMA user_version = 4;\n"
+    /// 唯一建库 SQL：当前 DDL + user_version = 5。
+    public static let createSQL: String = ddl + "\nPRAGMA user_version = 5;\n"
 }

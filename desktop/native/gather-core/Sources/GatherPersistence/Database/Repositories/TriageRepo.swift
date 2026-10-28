@@ -167,7 +167,7 @@ public final class TriageRepo: TriageRepository {
             rep AS (
               SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
               FROM photos p
-              WHERE p.session_id = ?
+              WHERE p.session_id = ? AND \(PhotoVisibility.visiblePredicate())
               GROUP BY gid
             )
             SELECT COUNT(*) FROM rep WHERE gid NOT IN (SELECT gid FROM manual_gid)
@@ -321,6 +321,7 @@ public final class TriageRepo: TriageRepository {
                          WHERE p2.session_id = p.session_id
                            AND COALESCE(NULLIF(p2.asset_id, ''), p2.id)
                                = COALESCE(NULLIF(p.asset_id, ''), p.id)
+                           AND p2.archived_at IS NULL
                          ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p2"))
                          LIMIT 1) AS rep_id,
                        p.id, p.rowid, d.decision, d.decision_source, d.revision, d.group_id,
@@ -388,7 +389,7 @@ public final class TriageRepo: TriageRepository {
                    COALESCE(af.file_size, p.checksum_file_size, 0)
             FROM photos p
             LEFT JOIN asset_files af ON af.id = p.asset_file_id
-            WHERE p.session_id = ?
+            WHERE p.session_id = ? AND \(PhotoVisibility.visiblePredicate())
             ORDER BY p.rowid
             """).query([.text(sessionId)])
         return rows.map {
@@ -411,10 +412,11 @@ public final class TriageRepo: TriageRepository {
                      WHERE p2.session_id = p.session_id
                        AND COALESCE(NULLIF(p2.asset_id, ''), p2.id)
                            = COALESCE(NULLIF(p.asset_id, ''), p.id)
+                       AND p2.archived_at IS NULL
                      ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p2"))
                      LIMIT 1) AS rep_id
             FROM photos p
-            WHERE p.session_id = ?
+            WHERE p.session_id = ? AND \(PhotoVisibility.visiblePredicate())
             GROUP BY gid
             """).query([.text(sessionId)])
         let repByGid = Dictionary(
@@ -648,11 +650,13 @@ public final class TriageRepo: TriageRepository {
               AND aa.asset_file_id IN (
                 SELECT p.asset_file_id FROM photos p
                 WHERE p.session_id = ? AND p.asset_file_id IS NOT NULL
+                  AND p.archived_at IS NULL
                   AND p.id = (
                     SELECT p2.id FROM photos p2
                     WHERE p2.session_id = p.session_id
                       AND COALESCE(NULLIF(p2.asset_id, ''), p2.id)
                           = COALESCE(NULLIF(p.asset_id, ''), p.id)
+                      AND p2.archived_at IS NULL
                     ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p2"))
                     LIMIT 1
                   )
@@ -690,7 +694,9 @@ public final class TriageRepo: TriageRepository {
             SELECT
               (SELECT COUNT(*) FROM (
                  SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
-                 FROM photos p WHERE p.session_id = ? GROUP BY gid
+                 FROM photos p
+                 WHERE p.session_id = ? AND p.archived_at IS NULL
+                 GROUP BY gid
                )),
               (SELECT COUNT(*) FROM (
                  SELECT COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid,
@@ -698,9 +704,12 @@ public final class TriageRepo: TriageRepository {
                           WHERE p2.session_id = p.session_id
                             AND COALESCE(NULLIF(p2.asset_id, ''), p2.id)
                                 = COALESCE(NULLIF(p.asset_id, ''), p.id)
+                            AND p2.archived_at IS NULL
                           ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p2"))
                           LIMIT 1) AS rep_id
-                 FROM photos p WHERE p.session_id = ? GROUP BY gid
+                 FROM photos p
+                 WHERE p.session_id = ? AND p.archived_at IS NULL
+                 GROUP BY gid
                ) r
                JOIN photos p ON p.id = r.rep_id
                WHERE p.asset_file_id IS NOT NULL

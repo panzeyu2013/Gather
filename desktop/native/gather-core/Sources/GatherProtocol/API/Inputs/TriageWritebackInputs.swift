@@ -14,6 +14,17 @@ public enum TriageWritebackPolicy: String, Codable, CaseIterable, Sendable {
     case ratingAndKeyword
 }
 
+/// P0 / A2：星级策略（产品未拍板前不偷偷改默认，而是把它显式暴露给用户）。
+///
+/// - keep3Reject1（默认，保持现状）：keep→3★，reject→1★；
+/// - keep3Only：只给 keep 写 3★，reject 不写星级（避免 1★ 与人工 1★ 混淆）；
+/// - none：完全不写星级，只写私有命名空间/关键词。
+public enum TriageRatingMode: String, Codable, CaseIterable, Sendable {
+    case keep3Reject1
+    case keep3Only
+    case none
+}
+
 public struct TriageWritebackItem: Decodable, Sendable, Equatable {
     public let photoId: String
     /// "keep" / "reject"（大小写不敏感，统一归一到小写；其它值显式失败）。
@@ -49,9 +60,14 @@ public struct TriageWritebackItem: Decodable, Sendable, Equatable {
 
 public struct TriageWritebackInput: Decodable, Sendable, Equatable {
     public let policy: TriageWritebackPolicy
+    public let ratingMode: TriageRatingMode
     public let items: [TriageWritebackItem]
 
-    public init(policy: TriageWritebackPolicy, items: [TriageWritebackItem]) throws {
+    public init(
+        policy: TriageWritebackPolicy,
+        ratingMode: TriageRatingMode = .keep3Reject1,
+        items: [TriageWritebackItem]
+    ) throws {
         // 上限对齐"大库全会话写回"（UI 分页 500×200 = 100k，项目目标含 100k 级会话）：
         // 太小会让合法的整会话写回直接被拒绝。真正非法的是空/重复/超大数组。
         let values = try APIValidation.nonEmpty(items, field: "items", maxCount: 100_000)
@@ -59,6 +75,7 @@ public struct TriageWritebackInput: Decodable, Sendable, Equatable {
             throw GatherError.invalidParameter(field: "items", reason: "photoId must be unique")
         }
         self.policy = policy
+        self.ratingMode = ratingMode
         self.items = values
     }
 
@@ -66,11 +83,12 @@ public struct TriageWritebackInput: Decodable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
             policy: try container.decodeIfPresent(TriageWritebackPolicy.self, forKey: .policy) ?? .ratingOnlyWhenEmpty,
+            ratingMode: try container.decodeIfPresent(TriageRatingMode.self, forKey: .ratingMode) ?? .keep3Reject1,
             items: try container.decode([TriageWritebackItem].self, forKey: .items)
         )
     }
 
-    private enum CodingKeys: String, CodingKey { case policy, items }
+    private enum CodingKeys: String, CodingKey { case policy, ratingMode, items }
 }
 
 public struct TriageWritebackResult: Codable, Equatable, Sendable {
@@ -79,10 +97,20 @@ public struct TriageWritebackResult: Codable, Equatable, Sendable {
     public var written: [String]
     public var skipped: [String]
     public var failed: [MetadataApplyFailureDTO]
-    public init(batchId: String, written: [String], skipped: [String], failed: [MetadataApplyFailureDTO]) {
+    /// P1：批次是否真的可撤销（written ∪ uncertain 非空）。UI 不得用 written.isEmpty
+    /// 推导——回读失败的照片仍可能已写盘，批次必须保留撤销入口。
+    public var undoAvailable: Bool
+    public init(
+        batchId: String,
+        written: [String],
+        skipped: [String],
+        failed: [MetadataApplyFailureDTO],
+        undoAvailable: Bool = false
+    ) {
         self.batchId = batchId
         self.written = written
         self.skipped = skipped
         self.failed = failed
+        self.undoAvailable = undoAvailable
     }
 }

@@ -30,7 +30,7 @@ decisions back through metadata.
 
 - **Local-first:** photos, indexes, models, and metadata processing stay on the
   computer; the app does not run a local web service.
-- **Native workflow:** SwiftUI pages call 16 typed domain APIs (126 methods)
+- **Native workflow:** SwiftUI pages call 16 typed domain APIs (129 methods)
   in-process across eight functional SwiftPM targets (15 total, incl. test/tool targets); there is no Electron, browser
   renderer, JavaScript IPC runtime, or string-command router.
 - **Recoverable writeback:** metadata changes are persisted in the `deliveries`
@@ -44,6 +44,10 @@ decisions back through metadata.
 | --- | --- |
 | **Dashboard and Library** | Workspaces, cross-workspace browsing, filters, logical RAW/JPEG assets, and paginated galleries. |
 | **Culling** | Pick/reject, ratings, color labels, comparison, undo/redo, metadata sync, retry, and cleanup. |
+| **Ingest** | Card/folder import with EXIF-based rename templates, checksum verification, optional second destination, and the same RAW/JPEG pairing as the library. |
+| **Metadata and IPTC** | Read effective EXIF/XMP/IPTC (including IPTC embedded in JPEGs), edit 32 IPTC Core/Extension fields on a single photo, apply named templates to a batch, and undo either path from the batch history. |
+| **Triage suggestions** | Technical-quality hints (Beta) written as portable signals (empty-rating only by default, private namespace, optional keywords) with a batch undo guard. |
+| **Reject move** | Move rejected photos to `_rejects` without deleting them; RAW/JPEG variants move together and a shared `.xmp` is copied, never stolen from the file that stays. |
 | **Similarity and duplicates** | dHash clustering, threshold review, exact/visual duplicate groups, and safe resolution. |
 | **People and face keywords** | Native Vision analysis orchestration, cluster review, person binding, and XMP keyword writeback. |
 | **Export and jobs** | Preview, variant-aware output, JPEG/TIFF conversion, XMP copy, resumable jobs, cancellation, and reports. |

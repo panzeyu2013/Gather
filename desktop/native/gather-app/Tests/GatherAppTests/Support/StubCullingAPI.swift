@@ -158,6 +158,10 @@ private struct B8CullingState {
     var decideGroupError: (any Error)?
     var groupsError: (any Error)?
     var summaryError: (any Error)?
+    var selectionError: (any Error)?
+    var selectionResult = CullingSelectionIds(ids: [])
+    /// nil = 回显请求里的 photoIds（旧行为）。
+    var moveRejectedResult: CullingMoveRejectedResult?
 
     var syncStatusError: (any Error)?
     var resetError: (any Error)?
@@ -178,6 +182,8 @@ private struct B8CullingState {
     var decideGroupInputs: [CullingDecideGroupInput] = []
     var groupCalls: [String] = []
     var summaryCalls: [String] = []
+    var selectionQueries: [CullingSelectionQuery] = []
+    var moveRejectedInputs: [Confirmed<CullingMoveRejectedInput>] = []
     var syncStatusCalls: [String] = []
     /// B8.2e：按调用顺序覆盖 syncStatus 的结果/延迟（用于验证 async 刷新乱序）。
     var syncStatusResults: [CullingSyncStatus] = []
@@ -234,6 +240,24 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
     var summaryResult: CullingSummary {
         get { box.lock.withLock { box.summaryResult } }
         set { box.lock.withLock { box.summaryResult = newValue } }
+    }
+
+    var selectionResult: CullingSelectionIds {
+        get { box.lock.withLock { box.selectionResult } }
+        set { box.lock.withLock { box.selectionResult = newValue } }
+    }
+
+    var moveRejectedResult: CullingMoveRejectedResult? {
+        get { box.lock.withLock { box.moveRejectedResult } }
+        set { box.lock.withLock { box.moveRejectedResult = newValue } }
+    }
+
+    var selectionQueries: [CullingSelectionQuery] {
+        box.lock.withLock { box.selectionQueries }
+    }
+
+    var moveRejectedInputs: [Confirmed<CullingMoveRejectedInput>] {
+        box.lock.withLock { box.moveRejectedInputs }
     }
 
     var syncStatusResult: CullingSyncStatus {
@@ -513,9 +537,23 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
         return result
     }
 
-    // P1 / D：淘汰移动（stub：直接回成功，不碰文件系统）。
+    // P1 / D：淘汰移动（stub：默认回显成功，不碰文件系统）。
     func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult {
-        CullingMoveRejectedResult(moved: input.value.photoIds, newPaths: [], failed: [])
+        let configured: CullingMoveRejectedResult? = box.lock.withLock {
+            box.moveRejectedInputs.append(input)
+            return box.moveRejectedResult
+        }
+        return configured
+            ?? CullingMoveRejectedResult(moved: input.value.photoIds, newPaths: [], failed: [])
+    }
+
+    func selection(_ query: CullingSelectionQuery) async throws -> CullingSelectionIds {
+        let (error, result): ((any Error)?, CullingSelectionIds) = box.lock.withLock {
+            box.selectionQueries.append(query)
+            return (box.selectionError, box.selectionResult)
+        }
+        if let error { throw error }
+        return result
     }
 
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus {
