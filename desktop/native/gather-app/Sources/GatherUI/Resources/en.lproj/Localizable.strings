@@ -31,9 +31,9 @@
 "同步模式" = "Synchronization Mode";
 "off=OFF（关闭）, normal=NORMAL（正常）, full=FULL（完整）" = "off=OFF, normal=NORMAL, full=FULL";
 "元数据" = "Metadata";
-"自动（RAW侧边栏，成品格式内嵌）" = "Automatic (RAW sidecar, embedded in rendered formats)";
+"自动（RAW 附属文件，成品格式内嵌）" = "Automatic (RAW sidecar, embedded in rendered formats)";
 "写入方式" = "Write Method";
-"auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded" = "auto=Automatic (RAW sidecar, embedded in rendered formats), sidecar=XMP Sidecar, embedded=Embedded";
+"auto=自动（RAW 附属文件，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded" = "auto=Automatic (RAW sidecar, embedded in rendered formats), sidecar=XMP Sidecar, embedded=Embedded";
 "模型下载返回了非 2xx 状态码" = "Model download returned a non-2xx status code";
 "重新检测" = "Check Again";
 "恢复所有设置默认值？" = "Restore all settings to defaults?";
@@ -577,7 +577,7 @@
 "不限制" = "No Limit";
 "TIFF 压缩" = "TIFF Compression";
 "无压缩" = "No Compression";
-"复制 XMP 侧车文件" = "Copy XMP Sidecar Files";
+"复制 XMP 附属文件" = "Copy XMP Sidecar Files";
 "添加文字水印" = "Add Text Watermark";
 "水印文字" = "Watermark Text";
 "位置" = "Position";
@@ -801,10 +801,10 @@
 "未找到该恢复项" = "This recovery item was not found";
 "只有待处理或失败的项目可以重试" = "Only pending or failed items can be retried";
 "等待 XMP 写入超时，请重试" = "Timed out waiting for the XMP write. Please try again";
-"照片旁的 XMP 侧车文件已损坏，无法解析。请先备份该 .xmp 文件，用支持 XMP 的软件修复或重建后再重试写回。" = "The XMP sidecar file next to this photo is corrupted and cannot be parsed. Back up the .xmp file first, repair or rebuild it with XMP-capable software, then retry the writeback.";
-"XMP 侧车文件的结构不受支持（不是可识别的 RDF/XMP 文档）。请确认该 .xmp 文件内容，或替换为标准 XMP 文档后重试。" = "The XMP sidecar file has an unsupported structure (not a recognizable RDF/XMP document). Check the contents of the .xmp file, or replace it with a standard XMP document and try again.";
-"无法读取 XMP 侧车文件。请检查文件是否存在、磁盘是否可访问，以及当前用户是否有读取权限，然后重试。" = "Could not read the XMP sidecar file. Check that the file exists, that the disk is accessible, and that the current user has read permission, then try again.";
-"写入 XMP 侧车文件失败。请检查磁盘剩余空间、文件写入权限，以及该文件是否被其他软件占用，然后重试。" = "Failed to write the XMP sidecar file. Check the free disk space, the file write permission, and whether another application has the file open, then try again.";
+"照片旁的 XMP 附属文件已损坏，无法解析。请先备份该 .xmp 文件，用支持 XMP 的软件修复或重建后再重试写回。" = "The XMP sidecar file next to this photo is corrupted and cannot be parsed. Back up the .xmp file first, repair or rebuild it with XMP-capable software, then retry the writeback.";
+"XMP 附属文件的结构不受支持（不是可识别的 RDF/XMP 文档）。请确认该 .xmp 文件内容，或替换为标准 XMP 文档后重试。" = "The XMP sidecar file has an unsupported structure (not a recognizable RDF/XMP document). Check the contents of the .xmp file, or replace it with a standard XMP document and try again.";
+"无法读取 XMP 附属文件。请检查文件是否存在、磁盘是否可访问，以及当前用户是否有读取权限，然后重试。" = "Could not read the XMP sidecar file. Check that the file exists, that the disk is accessible, and that the current user has read permission, then try again.";
+"写入 XMP 附属文件失败。请检查磁盘剩余空间、文件写入权限，以及该文件是否被其他软件占用，然后重试。" = "Failed to write the XMP sidecar file. Check the free disk space, the file write permission, and whether another application has the file open, then try again.";
 "XMP 写入后校验未通过，内容可能未完整落盘。请检查磁盘空间与文件权限后重试；若反复失败，请先备份该 .xmp 文件再排查磁盘错误。" = "Post-write verification of the XMP failed; the contents may not have been fully written to disk. Check disk space and file permissions and try again; if it keeps failing, back up the .xmp file first and check for disk errors.";
 "创建 XMP 备份失败，已停止写入以保护原文件。请检查备份目录的磁盘空间与写入权限，然后重试。" = "Failed to create the XMP backup; the write stopped to protect the original file. Check the free disk space and write permission of the backup directory, then try again.";
 "从备份恢复 XMP 失败，原文件未被改动。请确认备份文件存在且可写、磁盘空间充足，然后重试恢复。" = "Failed to restore the XMP from the backup; the original file was left unchanged. Make sure the backup file exists and is writable and that there is enough disk space, then retry the restore.";
@@ -944,7 +944,7 @@
 "拒绝资源关联前需要明确确认" = "Rejecting an asset link requires explicit confirmation";
 "重连资源根目录前需要明确确认" = "Relinking an asset root requires explicit confirmation";
 /* 新增错误码（GatherErrorCode 163→169）：关联会话阻塞 / 视觉阈值 / 重连根目录校验 */
-"同一 XMP 侧车文件仍被其他工作区占用且尚未确认同步（{{session}}）。请先在该工作区完成「加载元数据并确认同步」，再回来结清。" = "This XMP sidecar file is still in use by another workspace that has not confirmed sync yet ({{session}}). Load metadata and confirm sync in that workspace first, then finish here.";
+"同一 XMP 附属文件仍被其他工作区占用且尚未确认同步（{{session}}）。请先在该工作区完成「加载元数据并确认同步」，再回来结清。" = "This XMP sidecar file is still in use by another workspace that has not confirmed sync yet ({{session}}). Load metadata and confirm sync in that workspace first, then finish here.";
 "视觉相似度阈值必须是 0 到 64 之间的整数" = "The visual similarity threshold must be an integer between 0 and 64";
 "新资源根目录与当前根目录相同，无需重连" = "The new asset root is the same as the current one; no relink is needed";
 "新旧资源根目录存在嵌套关系，不能互相重连" = "The old and new asset roots are nested; they cannot be relinked to each other";
@@ -1046,10 +1046,10 @@
 "保留 XMP 并结束同步" = "Keep XMP & Finish Sync";
 "将清空本会话 %lld 张照片的挑片决策、星级与色标（只改 Gather 数据库，不写 XMP、不删除照片文件）。" = "This clears the culling decisions, ratings, and color labels of %lld photos in this session (Gather database only — no XMP writes, no photo files deleted).";
 "将删除 %lld 项已确认同步的备份；未确认的项会恢复原 XMP 并标记冲突，原因会显示在面板里。" = "This deletes %lld confirmed-sync backups; unconfirmed items get their original XMP restored and are marked as conflicts, with the reasons shown in the panel.";
-"将把 %lld 张已决策照片的当前星级写入 XMP 侧车（会创建备份，可在同步完成后清理）。" = "This writes the current ratings of %lld decided photos into their XMP sidecars (backups are created and can be cleaned up after the sync completes).";
-"将把 %lld 张已决策照片的当前颜色标签写入 XMP 侧车（会创建备份）。" = "This writes the current color labels of %lld decided photos into their XMP sidecars (backups are created).";
+"将把 %lld 张已决策照片的当前星级写入 XMP 附属文件（会创建备份，可在同步完成后清理）。" = "This writes the current ratings of %lld decided photos into their XMP sidecars (backups are created and can be cleaned up after the sync completes).";
+"将把 %lld 张已决策照片的当前颜色标签写入 XMP 附属文件（会创建备份）。" = "This writes the current color labels of %lld decided photos into their XMP sidecars (backups are created).";
 "将把 %lld 张已决策照片的 culling:keep / culling:reject 关键词合并进 XMP（不覆盖其它关键词）。" = "This merges culling:keep / culling:reject keywords for %lld decided photos into their XMP (other keywords are preserved).";
-"将重试 %lld 个失败写回项并覆盖对应 XMP 侧车。" = "This retries %lld failed writeback items and overwrites their XMP sidecars.";
+"将重试 %lld 个失败写回项并覆盖对应 XMP 附属文件。" = "This retries %lld failed writeback items and overwrites their XMP sidecars.";
 "将确认同步并删除 %lld 项备份，之后无法再从备份恢复原 XMP。" = "This confirms the sync and deletes %lld backups; afterwards the original XMP can no longer be restored from backups.";
 "将丢弃 Gather 待写入值、采用外部值，结清 %@ 的冲突。" = "This discards Gather’s pending values, accepts the external values, and settles the conflict for %@.";
 "将把 Gather 的值写回 %@（覆盖外部修改）并结清冲突。" = "This writes Gather’s values back to %@ (overwriting the external changes) and settles the conflict.";
@@ -1167,7 +1167,7 @@
 "步骤" = "Steps";
 "没有其他簇可合并。" = "No other clusters to merge with.";
 "用角色名称与关键字绑定该簇" = "Bind this cluster with a role name and keywords";
-"确认后写入 XMP 侧车文件；不修改原始照片" = "Writes XMP sidecar files after confirmation; original photos are not modified";
+"确认后写入 XMP 附属文件；不修改原始照片" = "Writes XMP sidecar files after confirmation; original photos are not modified";
 "第 %lld 张，共 %lld 张" = "Photo %lld of %lld";
 "筛选" = "Filter";
 "索引进度" = "Indexing progress";
@@ -1332,7 +1332,7 @@
    Host 侧栏菜单标题（显示侧栏 / 隐藏侧栏，en 界面此前一直显示中文）。 */
 
 "重新分析人脸" = "Re-analyze faces";
-"将写入 %lld 张照片 + %lld 个 XMP 边车，共 %lld 个文件。" = "Will write %lld photos + %lld XMP sidecars, %lld files in total.";
+"将写入 %lld 张照片 + %lld 个 XMP 附属文件，共 %lld 个文件。" = "Will write %lld photos + %lld XMP sidecars, %lld files in total.";
 "其中 %lld 项存在问题，导出时会失败。" = "%lld items have issues and will fail to export.";
 "未在当前工作区找到这张照片（可能已被移除或不在本工作区）。" = "This photo was not found in the current workspace (it may have been removed or belong to another workspace).";
 "模型包缺少必需文件：%@" = "The model package is missing required files: %@";
@@ -1605,7 +1605,7 @@
 "尚未填写" = "Not set yet";
 "文件名" = "File Name";
 "路径" = "Path";
-"侧车" = "Sidecar";
+"附属文件" = "Sidecar";
 "无（尚未写入 XMP）" = "None (no XMP written yet)";
 "尚未选择照片" = "No photo selected";
 "尚未解析" = "Not scanned yet";
@@ -1764,7 +1764,7 @@
 "没有可移出的淘汰照片" = "No rejected photos to move";
 "编辑元数据" = "Edit metadata";
 "编辑元数据…" = "Edit metadata…";
-"初值来自盘上（含 JPEG 内嵌 IPTC）；只提交改动过的字段，留空表示清空该字段。JPEG 的写入仍落在同名 .xmp 侧车。" = "Values start from what is on disk (including IPTC embedded in JPEGs); only changed fields are submitted, and an empty field clears it. JPEG writes still go to the matching .xmp sidecar.";
+"初值来自盘上（含 JPEG 内嵌 IPTC）；只提交改动过的字段，留空表示清空该字段。JPEG 的写入仍落在同名 .xmp 附属文件。" = "Values start from what is on disk (including IPTC embedded in JPEGs); only changed fields are submitted, and an empty field clears it. JPEG writes still go to the matching .xmp sidecar.";
 "无法读取盘上元数据，为避免覆盖外部改动，保存已禁用。请关闭后重试。" = "The on-disk metadata could not be read. Saving is disabled to avoid overwriting external changes; close and try again.";
 "未填写" = "Not set";
 "联系人" = "Contact";

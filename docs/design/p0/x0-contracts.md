@@ -139,7 +139,7 @@ public struct MetadataKeywordApplyResult: Codable, Equatable, Sendable {
 }
 ```
 
-- preview 只读，**不建 pending**；apply 每侧车一次 `keywords_mode=delta`；
+- preview 只读，**不建 pending**；apply 每个 sidecar 一次 `keywords_mode=delta`；
   内部键 `keywords_added` / `keywords_remove` 落 `delivery_items.attributes_json`。
 - 删除生成词 → `KEYWORD_OWNED_BY_SOURCE`（params: keyword/source）。
 - 选择集可跨页累积到 500（CullingViewModel 单页 limit=500 + loadedPhotoIds）；预览不建 pending。

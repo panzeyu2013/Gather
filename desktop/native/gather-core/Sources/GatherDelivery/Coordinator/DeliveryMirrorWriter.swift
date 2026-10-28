@@ -2,7 +2,7 @@
 // WP2b：写回镜像（自 DeliveryCoordinator.swift 抽出，语义逐字保留）。
 //
 // 把旧 WritebackService 的执行结果镜像进 deliveries / delivery_items / delivery_sessions：
-// - 每个 xmpPath 一条 delivery（与旧 outbox 的侧车粒度一致）；同侧车的多张照片
+// - 每个 xmpPath 一条 delivery（与旧 outbox 的 sidecar 粒度一致）；同一 sidecar 的多张照片
 //   （RAW+JPEG）各一条 item；
 // - 已有交付收到新输入 → revision + 1、状态回到 pending 再走 writing；
 //   旧 revision 的 CAS 写入口因此不会覆盖本轮结果；

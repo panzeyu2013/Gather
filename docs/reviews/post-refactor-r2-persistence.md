@@ -59,7 +59,7 @@
 **位置**
 - `DeliveryCoordinator.swift:566-658`（cleanup：重读 573 → 指纹 585 → prepare 624 → **await 文件阶段 636** → advance 644 → DB 删除 653）
 - `DeliveryCoordinator.swift:1012-1051`（replay：prepared 直接 **performFilePhase 1028-1029**，之后才 advance/DB）
-- `DeliveryCoordinator.swift:1106-1123`（restore 覆盖写 1118-1121；无备份时**删除整个侧车** 1110-1113）
+- `DeliveryCoordinator.swift:1106-1123`（restore 覆盖写 1118-1121；无备份时**删除整个 sidecar** 1110-1113）
 - `DeliveryCoordinator.swift:309-348`（intent payload 只有 action/delivery_id/revision/backup_path/photo_path，**没有 base_fingerprint**）
 - `DeliveryRepo.swift:925-965`（deleteSyncedDelivery 的 revision/status 守卫只在 DB 段，晚于文件段）
 - `gather-app/Sources/GatherHost/APIs/LiveMetadataAPI.swift:209-228`（orphan restore：先 restore/removeFile，再 deleteOrphanDelivery；同一缺陷的第二个入口）
@@ -68,12 +68,12 @@
 1. cleanup 在 prepare 之后、restore 之前不再复核 revision/状态：573 的重读发生在 prepare 之前；636 的 `await performFilePhase` 期间新输入可经 `mergeInput` 把 revision+1、status 置 pending（`DeliveryRepo.swift:433-444`），而 restore 不读这些字段。
 2. restore 后 `applyCleanupDB` 才做 CAS，得到 `.revisionChanged/.stateChanged` 时走 `finish(error:)`（`DeliveryCoordinator.swift:1156-1189`），此时文件已经被旧备份覆盖；intent 还会被标 applied 并在下次 replayAll 删除（`DeliveryIntentRepo.swift:325-331`），丢失“文件已旧、DB 未删”的事实。
 3. replay 的 prepared 分支无条件重做文件（1028-1029），payload 无指纹，无法像 cleanup 那样做外部修改检测（cleanup 的指纹检查在 585-609，replay 完全没有对应逻辑）。`flush`/`retrySync` 会直接触发 replay（`CullingService.swift:1218,1227`；`FaceKwService.swift:1263`；`SimilarityService.swift:718`）。
-4. 无备份场景（backup_path 为空）会删除当前 xmp（1110-1113），同样不校验 revision；新输入写出的侧车会被直接 unlink。
+4. 无备份场景（backup_path 为空）会删除当前 xmp（1110-1113），同样不校验 revision；新输入写出的 sidecar 会被直接 unlink。
 5. 第二入口：`LiveMetadataAPI.resolveOrphan` 的 restore 分支（209-228）同样在 restore 之后才用 `deleteOrphanDelivery` 做 revision 守卫；期间该 xmp 被新会话/新输入重新链接时，文件已被旧备份覆盖，delete 返回 false 只被当作“并发改写”忽略（220-224）。
 
 **影响**
 - 两条触发路径：①首次 cleanup 的指纹/restore await 窗口内用户继续编辑/写回；②restore 失败后 prepared intent 留存，用户继续编辑，再点 flush/retry 或重启应用。两者都会让旧备份覆盖新 XMP；DB 因 revisionChanged 保留新行，但**文件内容已是旧的**，用户的新关键词/rating/label 或外部编辑被静默丢弃。
-- 无备份场景是直接删除新侧车，破坏性更大。
+- 无备份场景是直接删除新 sidecar，破坏性更大。
 - 触发不要求进程崩溃：cleanup 的指纹/恢复是 async，写回只需要落在 await 窗口内。
 
 **建议**
@@ -113,7 +113,7 @@ s1 的新输入把交付重新打开后，**s2 从未看到新内容，但它的
 
 **建议**
 - `mergeInput` 在同一事务内 `UPDATE delivery_sessions SET confirmed_at='' WHERE delivery_id=`（所有会话一起失效）；`linkSession` 的重置语义保持不变（仅本会话）。
-- 修正 834-835 注释；补“共享侧车：s1 新输入 → s2 必须重新确认”的回归测试（现有 `confirmWaitsForAllLinkedSessions` 只覆盖首次确认，未覆盖 re-edit）。
+- 修正 834-835 注释；补“共享 sidecar：s1 新输入 → s2 必须重新确认”的回归测试（现有 `confirmWaitsForAllLinkedSessions` 只覆盖首次确认，未覆盖 re-edit）。
 
 **置信度：已确认（SQL 复现 + 源码路径）**。
 
@@ -132,7 +132,7 @@ s1 的新输入把交付重新打开后，**s2 从未看到新内容，但它的
 - confirm 门禁把 writing 列为阻断（`DeliverySummaryQuery.swift:94-105` + `DeliveryCoordinator.swift:531-534`），cleanup 候选只收 synced（132-169），finalize 也只收 synced（715），因此没有自动出路。
 
 **影响**
-- 崩溃/强退后该侧车在用户重跑一次完整 writeback（preview+execute）之前无法 confirm、无法 cleanup；metadata 手动队列没有对应的 retry writing 入口，因此可能长期卡死。
+- 崩溃/强退后该 sidecar 在用户重跑一次完整 writeback（preview+execute）之前无法 confirm、无法 cleanup；metadata 手动队列没有对应的 retry writing 入口，因此可能长期卡死。
 - “租约”字段是装饰性的，无法防止两个写者同时进入（见 P1-6），也无法判断过期。
 
 **建议**
@@ -152,7 +152,7 @@ s1 的新输入把交付重新打开后，**s2 从未看到新内容，但它的
 
 **证据**
 - 三个事务之间没有外层事务；openDelivery 的 mergeInput 提交后，mergeItem 若抛错（约束/磁盘/并发）或进程退出，delivery 已经是 revision+1、status=pending、但没有任何 delivery_item。
-- 此时该 delivery 对会话可见且 `delivery:pending` 阻断 confirm；在用户对同一侧车再跑一次 preview+execute 之前无法收口，cleanup 只收 synced 也无法清理；用户看到“有未完成写回”但没有可执行项。
+- 此时该 delivery 对会话可见且 `delivery:pending` 阻断 confirm；在用户对同一 sidecar 再跑一次 preview+execute 之前无法收口，cleanup 只收 synced 也无法清理；用户看到“有未完成写回”但没有可执行项。
 - 反之若 mergeItem 成功、linkSession 失败（例如 session 被并发删除，FK 拒绝），item 存在但没有 delivery_sessions 链接，会话/UI/cleanup 都看不到，成为孤儿 pending。
 - queuePhotoValues 绕过 PathSerialChain：与 queueMutation 混用时同一 xmp 的“读当前文件→合并→入队”不是全串行；keywords append/remove 的整表替换可能覆盖另一入口刚写的词表。
 
@@ -212,7 +212,7 @@ s1 的新输入把交付重新打开后，**s2 从未看到新内容，但它的
 
 **置信度：已确认（代码与注释直接矛盾）**。
 
-### P1-6 同一侧车的并发写没有串行化，culling 还被豁免于跨模块门禁
+### P1-6 同一 sidecar 的并发写没有串行化，culling 还被豁免于跨模块门禁
 
 **位置**
 - `WritebackService.swift:234-248`（assertNoActiveOtherModule；245 行 `typed == .culling` 直接 continue）
@@ -221,7 +221,7 @@ s1 的新输入把交付重新打开后，**s2 从未看到新内容，但它的
 - `DeliveryState.swift:47-74`（writing→writing 合法）+ `DeliveryRepo.swift:386-391`（allowedFrom 包含 writing）
 
 **证据**
-- 两个并发的 execute（例如 culling 与人脸关键词同时写同一张照片的侧车，或两个会话共享侧车）都会通过门禁：culling 被显式豁免；同一 xmp 的写者是“读当前属性→合并关键词/rating→写回”，两个写者的 RMW 交错时后写者会覆盖先写者的新增关键词。
+- 两个并发的 execute（例如 culling 与人脸关键词同时写同一张照片的 sidecar，或两个会话共享 sidecar）都会通过门禁：culling 被显式豁免；同一 xmp 的写者是“读当前属性→合并关键词/rating→写回”，两个写者的 RMW 交错时后写者会覆盖先写者的新增关键词。
 - 没有 per-xmp 的 actor/NSLock/文件锁；`DeliveryRepo.markWriting` 的 CAS 对 writing 也成立，不能充当互斥。
 - `beginDeliveryWrite` 对 writing 直接复用，等于第二个写者不需要抢锁就能进入。
 
@@ -230,7 +230,7 @@ s1 的新输入把交付重新打开后，**s2 从未看到新内容，但它的
 
 **建议**
 - 对 xmpPath 建共享串行执行器（actor 或 lock map），preview/execute/mirror/cleanup/replay 的文件阶段都取同一把锁；或把 writing 做成真正的租约（owner+heartbeat+CAS），第二个写者必须失败/等待。
-- 去掉 culling 的全局豁免，或给出“culling 永不与其它模块写同一侧车”的不变量并用测试钉住。
+- 去掉 culling 的全局豁免，或给出“culling 永不与其它模块写同一 sidecar”的不变量并用测试钉住。
 
 **置信度：代码已确认（无互斥）；实际触发需要并发调用，本次未实跑并发复现，标记为“疑似高频”。**
 
@@ -268,14 +268,14 @@ indexer delete blocked: FOREIGN KEY constraint failed
 - `WritebackService.swift:234-248`（assertNoActiveOtherModule 只拦 written/synced，不拦 pending/failed）
 
 **证据**
-1. delivery 是“一个侧车文件”粒度，item 是“(delivery, photo, module)”粒度；一个文件可同时有 culling 与 metadata 两个 item。
+1. delivery 是“一个 sidecar 文件”粒度，item 是“(delivery, photo, module)”粒度；一个文件可同时有 culling 与 metadata 两个 item。
 2. 用户先 queue 手动 metadata（item=pending，module=.metadata），再执行 culling writeback：culling 的 assertNoActiveOtherModule 只看到 metadata item 是 pending（不是 written/synced），放行；culling 写盘成功后 delivery=written、culling item=written、metadata item 仍 pending。
 3. 会话确认 culling：`DeliveryCoordinator.confirm` 的 `summaryQuery.summary(sessionId, module: .culling)` 只统计 culling item（DeliverySummaryQuery:353-368），看不到 metadata pending，门禁通过；`DeliveryRepo.confirm` 把 delivery 翻 synced，只把 written item 翻 synced（1044-1051），metadata pending 保持。
 4. 随后 cleanup culling：候选只要求 culling item 全 synced（139-169），于是 `deleteSyncedDelivery` 执行 `DELETE FROM delivery_items WHERE delivery_id=?`（947-948），metadata 的 pending 输入被静默删除，没有任何错误或摘要提示。
 
 **影响**
 - 用户已入队但尚未写盘的手动 rating/label/keywords（或其它模块的 failed item）会随着另一个模块的 cleanup/finalize 被删除；属于用户输入丢失，且 UI 不会告警。
-- 与 draft §5.4“一个侧车文件是一次原子写入，文件内容没有模块边界”的表述矛盾：确认按文件原子处理，删除却按模块判定。
+- 与 draft §5.4“一个 sidecar 文件是一次原子写入，文件内容没有模块边界”的表述矛盾：确认按文件原子处理，删除却按模块判定。
 
 **建议**
 - 删除候选与 confirm 的收口条件改为“该 delivery 的**所有** item（跨 session、跨 module）均为 synced，或不存在 pending/failed/written”；
@@ -295,12 +295,12 @@ indexer delete blocked: FOREIGN KEY constraint failed
 **证据/影响链**
 1. 用户改 rating/label/keywords → `MetadataService.setMetadata` 写 delivery_items(module=.metadata, status=pending)，同时更新 photo_metadata_cache（`MetadataService.swift:547`），UI 显示“已保存”。
 2. 这个 item 永远不会被消费：rating/label 只有在用户另行触发 culling 写回时，才可能被 culling 计划从 photo_metadata_cache 顺带写入（CullingService:1261 的口径）；手动 keywords 没有这条旁路（culling 关键词来自决策/计划，不读 metadata item）。
-3. 由于 `mergeInput` 已把 delivery 置 pending，`DeliverySummaryQuery.summary` 的 blockers 会返回 `delivery:pending=1`（94-105）；在用户对同一侧车再执行一次 culling/face/sim writeback 之前，这些模块的 confirm（`DeliveryCoordinator.swift:531-534`）都会被阻断。重写只能把 delivery 拉回 written，**metadata item 本身仍无消费者、永远不会落盘**。
+3. 由于 `mergeInput` 已把 delivery 置 pending，`DeliverySummaryQuery.summary` 的 blockers 会返回 `delivery:pending=1`（94-105）；在用户对同一 sidecar 再执行一次 culling/face/sim writeback 之前，这些模块的 confirm（`DeliveryCoordinator.swift:531-534`）都会被阻断。重写只能把 delivery 拉回 written，**metadata item 本身仍无消费者、永远不会落盘**。
 4. 叠加 P1-8：culling 若通过其它路径重新写成 written 并 confirm/cleanup，metadata pending item 会被直接删除。
 
 **影响**
 - 手动元数据编辑“元数据缓存已更新、对应的 delivery item 永不落盘”；rating/label 可能被 culling 顺带写，keywords 则没有旁路。属于用户可见的静默丢失。
-- 会让同一侧车的其它模块 confirm 永久报 XMP_CONFIRM_INCOMPLETE（blockers=delivery:pending），且没有可执行的恢复入口。
+- 会让同一 sidecar 的其它模块 confirm 永久报 XMP_CONFIRM_INCOMPLETE（blockers=delivery:pending），且没有可执行的恢复入口。
 
 **建议**
 - 增加 metadata 写回执行入口（命令/job/flush 均可），加载 `listItems(module: .metadata, status: .pending/.failed)` 后调用 `WritebackService.execute(sessionId:module:"metadata")`；或把 rating/label/keywords 合并进下一次 culling/face/sim 的写回计划。
@@ -317,7 +317,7 @@ indexer delete blocked: FOREIGN KEY constraint failed
 - `DeliveryRepo.swift:1031-1051`（confirm：只有 status=written 才翻 synced；但 itemsSynced 子查询会把**任何已是 synced 的** target delivery 的 written items 一起翻 synced）
 
 **证据**
-1. 共享侧车 s1/s2：delivery=conflict，s1 调 resolve_conflict 全部选 useRemote → `acceptExternalState` 直接把 delivery 标 synced；s2 的 delivery_sessions.confirmed_at 原样（未确认新内容）。
+1. 共享 sidecar s1/s2：delivery=conflict，s1 调 resolve_conflict 全部选 useRemote → `acceptExternalState` 直接把 delivery 标 synced；s2 的 delivery_sessions.confirmed_at 原样（未确认新内容）。
 2. 之后 s1 confirm：step 1 只写 s1 的链接；step 2 因 delivery 已是 synced 不改；step 3 的 itemsSynced 子查询 `WHERE d.status='synced' AND d.id IN (targetSQL)` 仍会把该 delivery 的 written items 全部标 synced（1044-1051），即使 s2 的 confirmed_at 为空。
 3. 只要 s2 之后（或之前）任意一次 confirm 把自己的链接写非空，cleanup 候选（139-169：所有 link 非空 + 本会话 module item 全 synced）就会命中并删除行；s2 从未对新内容确认。
 
@@ -328,9 +328,9 @@ indexer delete blocked: FOREIGN KEY constraint failed
 **建议**
 - acceptExternalState 只推进到 `written`（或 `pending`），把 synced 留给 DeliveryRepo.confirm 的“所有链接已确认”判定；
 - 若要一次性结清所有会话，显式把它们的 confirmed_at 一起写入并在同一事务校验，而不是绕过；
-- 补“共享侧车 s1 接受远程后 s2 未确认 → delivery 不得 synced / cleanup 不得命中”的测试。
+- 补“共享 sidecar s1 接受远程后 s2 未确认 → delivery 不得 synced / cleanup 不得命中”的测试。
 
-**置信度：已确认（代码路径；共享侧车为触发条件）。**
+**置信度：已确认（代码路径；共享 sidecar 为触发条件）。**
 
 
 ### P2-1 metadataSummary 的 item 计数不按 module/session 收窄
@@ -386,7 +386,7 @@ preview 对 written/synced/failed/conflict 调 `reopenDeliveryForInput`（`Write
 
 ### P2-10 relink 不迁移 delivery_intents，回放可能操作旧路径
 - `AssetRepo.swift:699-734` 只 UPDATE deliveries.xmp_path/photo_path（721-728），不更新 delivery_intents.xmp_path；`SchemaV1.swift:670-681` 刻意无 FK。
-- 影响：若 relink 时存在 prepared/fileDone intent，replay 会按旧 xmp_path 查 delivery（alreadyGone）但按 payload.photo_path 执行 restore，可能在旧位置生成一个旧侧车副本；DB 里新路径的 delivery 仍是 synced，需要第二次 cleanup。当前无测试覆盖。
+- 影响：若 relink 时存在 prepared/fileDone intent，replay 会按旧 xmp_path 查 delivery（alreadyGone）但按 payload.photo_path 执行 restore，可能在旧位置生成一个旧 sidecar 副本；DB 里新路径的 delivery 仍是 synced，需要第二次 cleanup。当前无测试覆盖。
 - 建议：relink 事务内同步 UPDATE delivery_intents SET xmp_path=新路径（payload 内 photo_path 也需同步，或 replay 时以 deliveries 行解析），或 relink 前拒绝/回放未完成 intent。
 - 置信度：代码已确认；触发需 relink 时有未完成 intent，标记“疑似低频”。
 
@@ -420,11 +420,11 @@ preview 对 written/synced/failed/conflict 调 `reopenDeliveryForInput`（`Write
 | P1-3 | enqueue 三事务，部分失败丢输入/留幽灵 pending | 已确认（结构） |
 | P1-4 | mirror/execute 多事务部分失败不回滚 | 已确认（结构）；触发未实跑 |
 | P1-5 | user_version=1 不校验列形，旧库运行期报错 | 已确认（代码/注释矛盾） |
-| P1-6 | 同侧车并发写无互斥，culling 豁免 | 代码已确认；实际触发疑似 |
+| P1-6 | 同一 sidecar 并发写无互斥，culling 豁免 | 代码已确认；实际触发疑似 |
 | P1-7 | IndexerService 删 photos 撞 person_photos RESTRICT | 已确认（SQL 模拟）；触发低频 |
 | P1-8 | 模块级 cleanup 删除文件级交付，其他模块 pending/failed item 被静默删 | 已确认（代码路径）；触发需多模块 item |
 | P1-9 | 手动 metadata 队列无生产执行器，item 永不落盘 | 已确认（grep 全仓 execute 调用点 + MetadataService 依赖） |
-| P1-10 | 冲突“全部接受远程”直接 markSynced，绕过跨会话门禁 | 已确认（代码路径；共享侧车触发） |
+| P1-10 | 冲突“全部接受远程”直接 markSynced，绕过跨会话门禁 | 已确认（代码路径；共享 sidecar 触发） |
 | P2-1/2/3/5/6/8/9/10 | 摘要口径、N+1、revision、启动开销、零 item 交付、边界健壮性、备份泄漏、relink intent | 已确认（代码）；P2-10 触发低频 |
 | P2-11 | reset 目标唯一性只查主库 | 已确认（窄窗口） |
 | P2-12 | 交付写回写放大/事务碎片 | 已确认（代码） |
@@ -446,7 +446,7 @@ preview 对 written/synced/failed/conflict 调 `reopenDeliveryForInput`（`Write
 
 **建议顺序**
 1. P0-1：intent payload 加 base_fingerprint；cleanup/replay 文件阶段前做 revision+指纹双校验，并与 mergeInput 共用 per-xmp 锁；补 await 窗口测试。
-2. P1-1：mergeInput 单事务重置全部 delivery_sessions.confirmed_at；补共享侧车 re-edit 测试。
+2. P1-1：mergeInput 单事务重置全部 delivery_sessions.confirmed_at；补共享 sidecar re-edit 测试。
 3. P1-2/P1-4：deliveries 的 leaseOwner/heartbeat 真正落地 + 启动归位；每交付 DB 段单事务。
 4. P1-3：enqueue 单事务 + queuePhotoValues 走 chain。
 5. P1-8：cleanup/finalize 候选改为“全部 item 已 synced”；P1-9：接 metadata 写回执行器（或在接线前禁止 manual item 阻断 delivery）；P1-10：acceptExternalState 只到 written；P1-5：schema 指纹或 bump userVersion；P1-7：Indexer 删除顺序。

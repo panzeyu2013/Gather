@@ -210,7 +210,7 @@ extension SchemaCurrent {
       updated_at TEXT NOT NULL
     );
 
-    -- 40. 交付聚合（XMP 侧车为单位的单一状态机）
+    -- 40. 交付聚合（XMP sidecar 为单位的单一状态机）
     CREATE TABLE deliveries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       xmp_path TEXT NOT NULL UNIQUE,

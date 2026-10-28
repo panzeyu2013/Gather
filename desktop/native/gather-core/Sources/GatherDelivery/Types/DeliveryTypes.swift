@@ -32,7 +32,7 @@ public struct XMPDeliveryFilePort: DeliveryFilePort {
 
     public func restore(photoPath: String, backupPath: String) async throws {
         // P2-12：宿主 restore 也必须过同一校验（LiveMetadataAPI.resolveOrphan
-        // 直接走这里）。目标侧车由 photoPath 推导，备份必须与它同目录。
+        // 直接走这里）。目标 sidecar 由 photoPath 推导，备份必须与它同目录。
         let target = TSPath.xmpSidecarPath(photoPath)
         let validated = try DeliveryBackupPath.validate(
             xmpPath: target, backupPath: backupPath)
@@ -65,7 +65,7 @@ public enum DeliveryCoordinatorError: Error, Equatable, CustomStringConvertible,
     /// 在「不能收口」时抛的就是这个码；旧的 XMP_RELOAD_NOT_ACKED 仍由
     /// MetadataSyncCoordinator 保留（S5c-2b-3 删除旧链路后自然消失）。
     case reloadNotAcknowledged(sessionId: String)
-    /// cleanup 的备份文件不存在（不删 DB、不误删侧车）。
+    /// cleanup 的备份文件不存在（不删 DB、不误删 sidecar）。
     case backupMissing(xmpPath: String)
     /// 回放时 payload_json 缺字段/损坏。
     case invalidPayload(intentId: Int64, reason: String)
@@ -116,7 +116,7 @@ public struct DeliveryCleanupSummary: Sendable, Equatable {
     public let skippedCount: Int
     /// 可重试的失败（文件/DB/intent 写入），对应 intent 被保留。
     public let errors: [String]
-    /// 检测到外部修改、已标 conflict 的侧车路径（按发现顺序）。
+    /// 检测到外部修改、已标 conflict 的 sidecar 路径（按发现顺序）。
     /// 与 errors 分开：冲突不是「可重试失败」，而是需要用户裁决的外部修改；
     /// 调用方（如 CullingService.cleanup）据此把冲突按路径回填到旧 CleanupResult.errors。
     public let conflictedXmpPaths: [String]

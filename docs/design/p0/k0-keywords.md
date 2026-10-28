@@ -15,7 +15,7 @@
 | 现状 | 位置 | 对 K0 的影响 |
 |---|---|---|
 | `applyMetadata` 以 `.replace` 入队关键词、source=`.manual`，只与 **cache** 合并 | `GatherApplication/Services/MetadataService.swift:547-589` | 直接复用 `set/batchSet` 会覆盖外部词；K0 需独立 delta 路径 |
-| `batchSet` 按侧车分组、每会话只 flush 一次 | 同文件 `:614-703` | 500 张按 XMP 分组的批处理可复用 |
+| `batchSet` 按 sidecar 分组、每会话只 flush 一次 | 同文件 `:614-703` | 500 张按 XMP 分组的批处理可复用 |
 | `WritebackService.preview` 只支持 `keywordAdditions`，且会写 pending 交付行 | `GatherDelivery/Writeback/WritebackService.swift:131-239` | 不能直接用于“只读预览 + 删除” |
 | 执行器已有 `merge`/`replace` 两种 `keywords_mode`，在文件锁内读盘合并 | `GatherDelivery/Writeback/WritebackService+Execute.swift:379-402` | 增加 `delta` 分支即可保证并发安全 |
 | `suggest` 只查 `camera_make`、忽略 sessionId、≥2 字符、limit 5 | `GatherPersistence/Database/Queries/PhotoFilterQuery.swift:229-240` | 需扩展关键词建议并修正会话过滤 |
@@ -42,7 +42,7 @@
 
 **一次确认**：预览 sheet 是唯一的确认入口，`Confirmed<MetadataKeywordApplyInput>` 只能从“确认写入”分支构造；取消不建任何交付项，也不改 cache。  
 **500 张**：API 上限 500；`CullingViewModel` 单页 `limit=500`，且 `loadedPhotoIds` 跨页 `formUnion`、选择集 `formIntersection(loadedPhotoIds)`，因此**连续加载多页后选 500 张是可行路径**；P0 验收直接按 500（加载 1 页即可选满，跨页加载验证累积）。超过 500 时 UI 直接拒绝并提示分批（P1 再自动分块）。  
-**失败路径**：无选中/无变更 → 按钮禁用；离线照片 → 跳过并在结果条列出；单侧车读失败 → 该项 `errorMessage`，其它项继续；写盘失败 → `failedItems` 可见、可重试；预览后外部改词 → `externalChanged` 提示，写入仍按最新盘上内容执行；连点“确认” → `isApplying` 门控，避免重复 revision。
+**失败路径**：无选中/无变更 → 按钮禁用；离线照片 → 跳过并在结果条列出；单个 sidecar 读失败 → 该项 `errorMessage`，其它项继续；写盘失败 → `failedItems` 可见、可重试；预览后外部改词 → `externalChanged` 提示，写入仍按最新盘上内容执行；连点“确认” → `isApplying` 门控，避免重复 revision。
 
 ### 2.1 状态机
 
@@ -205,7 +205,7 @@ func retryKeywordWriteback(_ input: Confirmed<SessionReference>) async throws ->
 
 - **不复用 `batchSet`**：`batchSet` 对关键词是 `.replace`（`MetadataService.swift:572-574`），会把预览后外部新增的词覆盖掉；K0 只用它做“覆盖全部”的 P1 备选。  
 - `preview` **不写 delivery 行**（与 `WritebackService.preview` 的“预览即入队”不同，原因：取消预览不能让 pending 项被后续 metadata flush 意外执行）。  
-- `applyKeywords` 内部：解析 → 按 XMP 分组 → 每侧车 `queueKeywordDelta` → 一次 `flushKeywordQueue(sessionId)`（module=metadata，含该模块其它 pending）→ 读回写入结果 → 回填 cache。  
+- `applyKeywords` 内部：解析 → 按 XMP 分组 → 每个 sidecar `queueKeywordDelta` → 一次 `flushKeywordQueue(sessionId)`（module=metadata，含该模块其它 pending）→ 读回写入结果 → 回填 cache。  
 - `retryKeywordWriteback` 只调 `flushPending`（executePending 会消费 pending+failed），不重新计算 delta。  
 - **flush 语义**：现有 `flushMetadataQueue` 在 `failed > 0` 时抛 `writebackFailed`；K0 新增 `flushKeywordQueue`，直接返回 `WritebackResult`（逐项失败进 failedItems），避免“部分失败”被当成整体异常。  
 - 返回的 `status` 由 `LiveMetadataAPI` 用 `deliveryRepo.metadataSummary(sessionId:module:.metadata)` 投影，UI 用它显示 pending/failed/conflict。
@@ -302,14 +302,14 @@ case "delta":
 - **入队过滤缺口（必须修）**：普通 `enqueue(values:)` 只按 `MetadataField.writableNames` 复制 rating/label/keywords，`keywords_added`/`keywords_remove` 会被静默丢弃。因此 K0 用**专用** `enqueueKeywordDelta`（或在 `enqueue` 显式放行这两个内部键），并在 `delivery_items.attributes_json` 断言两者存在（§8-16）。
 - **端口**：`queueKeywordDelta` 需加入 `MetadataMutationPort`（`MetadataService` 只持有 `any MetadataMutationPort`），测试替身同步实现。  
 - **flush**：`applyKeywordDelta` 使用新增的 `flushKeywordQueue`（返回 `WritebackResult`，逐项失败不抛整体错误），再读回结果。  
-- **批量预载**：`applyKeywordDelta` 先按目标 xmpPath 一次性查 `metadata_keyword_origins`（`active=1`），得到 `[xmpPath: [fold(keyword): Set<source>]]`，再逐侧车调用 `queueKeywordDelta(..., owned:)`；预览同理，`removed` 为空时完全不查 origins。  
-- **每侧车只入队一次**：按 xmpPath 分组后取首张照片作为 item 的 `photoId`（RAW+JPEG 共享侧车），避免同一侧车重复 item/revision；`queueKeywordDelta` 返回 nil 的侧车跳过。  
+- **批量预载**：`applyKeywordDelta` 先按目标 xmpPath 一次性查 `metadata_keyword_origins`（`active=1`），得到 `[xmpPath: [fold(keyword): Set<source>]]`，再逐 sidecar 调用 `queueKeywordDelta(..., owned:)`；预览同理，`removed` 为空时完全不查 origins。  
+- **每个 sidecar 只入队一次**：按 xmpPath 分组后取首张照片作为 item 的 `photoId`（RAW+JPEG 共享 sidecar），避免同一 sidecar 重复 item/revision；`queueKeywordDelta` 返回 nil 的 sidecar 跳过。  
 - 仍在 `XMPFileLock.run(path:)` 内读-改-写；`MetadataKeywordWriteMode` 增加 `.delta`。
 - `delivery_items.keywords` 存 `plan.after`（冲突投影/展示用）；真正写盘用 attributes 里的 added/removed。**K0-4 必改**：`LiveMetadataAPI.dirtyFields` 目前只看 `keywordList` 非空——`keywords_mode=delta` 时即使 after 为空也要把 `.keywords` 计入冲突字段，否则“只删词”的冲突不会出现在裁决 UI。
 - **预览必须完全绕开 `WritebackService.preview`**：后者会 `createOrGet`/`reopenDeliveryForInput`/`upsertItem`，留下 pending 行；`metadata.preview` 走 `MetadataService.previewKeywords` 纯读路径，预览前后 `delivery_items` 行数不变（§8-15）。
 - **手动词不写 origins**：`metadata_keyword_origins` 的 CHECK 无 `manual`，D2 又禁止改表；因此只在“生成词”上查 `activeSources`，手动词没有来源行（§8-5）。
 - **重试范围**：`retryKeywordWriteback` 调用 `flushPending(sessionId)`，会重放 **module=metadata 的全部 pending/failed**（不限于关键词；rating/label 的手动项也会一起执行）。这是安全且幂等的行为，但 UI 文案必须写“重试元数据写回”，不能写“只重试关键词”。
-- 写后 `xmp.readKeywords` 回读，更新 `photo_metadata_cache.keywords`（仅目标侧车；以现有 cache 行为基底，只换 keywords；无行则下次 `getMetadata` 重新提取）；失败保留旧 cache 并记日志。
+- 写后 `xmp.readKeywords` 回读，更新 `photo_metadata_cache.keywords`（仅目标 sidecar；以现有 cache 行为基底，只换 keywords；无行则下次 `getMetadata` 重新提取）；失败保留旧 cache 并记日志。
 - 幂等：同一 delta 重复执行时，执行器第二次 `(disk ∪ added) − removed` 结果不变；失败重试不会产生重复词。
 
 ### 5.5 自动补全（不新增 API）
@@ -363,7 +363,7 @@ WHERE xmp_path IN (?, ...) AND active = 1;
 | manual 来源 | **不写** origins；CHECK 无 manual，改表违反 D2 | 无法区分“手动加”与“外部软件加” |
 | 生成词 | 保留；删除前查 origins，四个来源都阻止 | 生成词若被外部删除，下次人脸/相似写回会补回 |
 | 审计 | 依赖 delivery `backup_path` + `cleanup` 恢复；失败项可见 | 无逐词历史；⌘Z 不支持关键词写回 |
-| JPEG 内嵌 XMP | 预览/写入以 `XMPProvider` 侧车读写为准（与执行器同源） | 内嵌词与侧车不一致时，预览可能不显示内嵌词；P0 不改写回路径 |
+| JPEG 内嵌 XMP | 预览/写入以 `XMPProvider` sidecar 读写为准（与执行器同源） | 内嵌词与 sidecar 不一致时，预览可能不显示内嵌词；P0 不改写回路径 |
 | 后续 | 若评审要求逐词审计，V4 加 `manual_keyword_edits`（非 P0） | — |
 
 ## 7. 性能预算与测量
@@ -380,12 +380,12 @@ WHERE xmp_path IN (?, ...) AND active = 1;
 
 | # | 用例 | 期望 |
 |---|---|---|
-| 1 | 500 张/250 侧车 批量加 | 一次确认，written=250，cache 更新 |
+| 1 | 500 张/250 sidecar 批量加 | 一次确认，written=250，cache 更新 |
 | 2 | 重复/大小写/空白输入 | 去重为首次拼写，无重复写盘 |
 | 3 | NFC/NFD（é） | 视为同一词 |
 | 4 | 空会话/无关键词 | 预览空，按钮禁用，无交付行 |
 | 5 | face 生成词 + 手动加/删 | 加不重复；删被阻止并提示解绑 |
-| 6 | RAW+JPEG 共享侧车 | sharedPhotoCount=2，只写一次 |
+| 6 | RAW+JPEG 共享 sidecar | sharedPhotoCount=2，只写一次 |
 | 7 | 预览后外部新增词 | apply 保留外部词（delta） |
 | 8 | 预览后外部改词 | externalChanged=true；apply 仍安全 |
 | 9 | XMP 只读/磁盘满 | failedItems 可见；修复后 retry 成功 |

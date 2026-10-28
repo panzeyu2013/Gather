@@ -9,7 +9,7 @@
 // - 先计划后执行：plan 阶段完成重名检测、{seq} 一次性分配、去重判定；
 // - 执行时先写 .gather-part 临时文件，校验通过后 rename（半成品不会顶着正式文件名）；
 // - 第二目的地只在主目的地校验通过后才复制；任何一步失败都记进结果，不抛出中断整批；
-// - 单张原子性：主副本落地后任一步失败（侧车/第二目的地）都会把这张已落地的文件
+// - 单张原子性：主副本落地后任一步失败（sidecar/第二目的地）都会把这张已落地的文件
 //   回滚，避免同一张同时出现在 copied（被登记）与 failed（用户以为没摄进来）。
 import Foundation
 import CryptoKit
@@ -84,7 +84,7 @@ public struct IngestItem: Equatable, Sendable {
     /// 已存在同名文件且校验和不同 → 冲突，执行时跳过并上报。
     public var conflict: Bool
     public var size: Int
-    /// 与照片同名的 XMP 侧车（存在才搬；否则移动照片会把元数据留在卡上）。
+    /// 与照片同名的 XMP sidecar（存在才搬；否则移动照片会把元数据留在卡上）。
     public var sidecarPath: String?
     public init(sourcePath: String, destPath: String, conflict: Bool, size: Int,
                 sidecarPath: String? = nil) {
@@ -95,8 +95,8 @@ public struct IngestItem: Equatable, Sendable {
         self.sidecarPath = sidecarPath
     }
 
-    /// 侧车在目标目录的同名路径（照片扩展名换成 .xmp）。兄弟共用目标 stem，
-    /// 因此同一个 (目录, stem) 组里的照片推导出同一个侧车路径。
+    /// sidecar 在目标目录的同名路径（照片扩展名换成 .xmp）。兄弟共用目标 stem，
+    /// 因此同一个 (目录, stem) 组里的照片推导出同一个 sidecar 路径。
     public var destSidecarPath: String {
         (destPath as NSString).deletingPathExtension + ".xmp"
     }
@@ -262,7 +262,7 @@ public final class IngestService: @unchecked Sendable {
         var usedDestinationsFolded = Set<String>()
         var seenSources = Set<String>()
         /// (源目录, 源 stem) → 第一张的目标 stem（相对目的地根、不含扩展名）。
-        /// 兄弟必须复用同一 stem：侧车按 stem 推导，stem 不同会让第二张解析到不存在的
+        /// 兄弟必须复用同一 stem：sidecar 按 stem 推导，stem 不同会让第二张解析到不存在的
         /// .xmp，RAW/JPEG 的配对键（stem）也会一起失配。
         var sharedStems: [String: String] = [:]
         /// 每项所属的 stem 组（与 items 平行）；冲突传播在收集结束后统一做。
@@ -304,7 +304,7 @@ public final class IngestService: @unchecked Sendable {
                 let sidecarPath: String? = fileManager.fileExists(atPath: sidecarCandidate)
                     ? sidecarCandidate : nil
                 // 兄弟判定按 (源目录, 源 stem)——与 RAW/JPEG 配对键同源（AssetRepo+Scan
-                // 按 stem 分组）。侧车只决定"要不要跟着搬"，不能拿它当归组键：没有 .xmp
+                // 按 stem 分组）。sidecar 只决定"要不要跟着搬"，不能拿它当归组键：没有 .xmp
                 // 的 RAW+JPEG 同样必须落在同一目标 stem，否则配对候选一条都生成不了。
                 // 目录保持原样：大小写敏感卷上 A/ 与 a/ 是不同目录，不能并组。
                 let stemKey = TSPath.dirname(file) + "\u{0}"
@@ -388,7 +388,7 @@ public final class IngestService: @unchecked Sendable {
             // 单张原子性：只回滚这张自己产出的文件。
             // - mainCreated 只在 transfer 成功后置位：目标已存在（并发/重复 execute）时
             //   绝不能把别人已落地的文件删掉；
-            // - 共享侧车可能由兄弟创建，也不能因为后一张失败就删兄弟的 xmp。
+            // - 共享 sidecar 可能由兄弟创建，也不能因为后一张失败就删兄弟的 xmp。
             var mainCreated = false
             var sidecarMovedFrom: String?
             var sidecarCreated: String?
@@ -408,11 +408,11 @@ public final class IngestService: @unchecked Sendable {
 
                 if let sidecar = item.sidecarPath,
                    fileManager.fileExists(atPath: sidecar) {
-                    // 共享侧车：同批 RAW/JPEG 的第一张已把 <stem>.xmp 移走，第二张
+                    // 共享 sidecar：同批 RAW/JPEG 的第一张已把 <stem>.xmp 移走，第二张
                     // 看到源不存在是正常情况，不是失败。
                     let destSidecar = item.destSidecarPath
                     if fileManager.fileExists(atPath: destSidecar) {
-                        // 共享侧车（RAW+JPEG 同批）第二张会看到第一张已落地的目标；
+                        // 共享 sidecar（RAW+JPEG 同批）第二张会看到第一张已落地的目标；
                         // 内容相同 → 正常复用；不同 → 绝不覆盖，整张失败并回滚。
                         guard try checksum(sidecar) == checksum(destSidecar) else {
                             throw IngestError.destinationExists(destSidecar)
@@ -452,7 +452,7 @@ public final class IngestService: @unchecked Sendable {
                         if fileManager.fileExists(atPath: destSidecar) {
                             let secondSidecar = (target as NSString).deletingPathExtension + ".xmp"
                             if fileManager.fileExists(atPath: secondSidecar) {
-                                // 兄弟已把它复制过去（共享侧车 + 共享 stem）：内容一致就复用，
+                                // 兄弟已把它复制过去（共享 sidecar + 共享 stem）：内容一致就复用，
                                 // 不一致绝不覆盖。不判存在会让每对里的第二张 100% 假失败。
                                 guard try checksum(destSidecar) == checksum(secondSidecar) else {
                                     throw IngestError.destinationExists(secondSidecar)
@@ -469,7 +469,7 @@ public final class IngestService: @unchecked Sendable {
                 }
                 copied.append(item.destPath)
             } catch {
-                // 回滚本张产物（与落地顺序相反）：第二副本 → 侧车 → 照片。
+                // 回滚本张产物（与落地顺序相反）：第二副本 → sidecar → 照片。
                 // 回滚本身失败不能静默：把需人工确认的路径写进失败原因。
                 var rollbackErrors: [String] = []
                 func note(_ action: () throws -> Void, _ label: String) {

@@ -12,7 +12,7 @@
 //    用于将来「软删除/审计型清理」；当前 cleanup 事务仍是物理删除（见 draft §5.5）。
 // 2. 不再保留「clean → synced」这类旧数据归一化迁移：V1 是新建库，不迁移旧行。
 // 3. written/failed/conflict/synced → pending 保留（D-031）：新输入把旧状态重新打开，
-//    否则同一条侧车在第二次编辑时只能新建行，违反 xmp_path UNIQUE；cleaned 是审计终态，
+//    否则同一条 sidecar 在第二次编辑时只能新建行，违反 xmp_path UNIQUE；cleaned 是审计终态，
 //    不允许回到 pending（要重写就新建行）。
 
 import Foundation

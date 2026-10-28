@@ -208,7 +208,7 @@ public final class DeliveryIntentRepo: Sendable {
     ///
     /// payload 原样写入 payload_json（例如 cleanup 的 backup_path/delivery_id/revision）；
     /// 本方法不校验 payload 结构（仓储不解释业务字段）。
-    /// 每条 intent 独立成行，没有 (xmp_path, kind) 唯一约束——同一侧车可以有多条
+    /// 每条 intent 独立成行，没有 (xmp_path, kind) 唯一约束——同一 sidecar 可以有多条
     /// 未完成的意图，调用方负责在 finish 后不再 prepare。
     @discardableResult
     public func prepare(

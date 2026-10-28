@@ -255,8 +255,8 @@ public final class WorkspaceStatusService {
 
     /// 交付摘要投影：`DeliverySummaryQuery.metadataSummary` 把本会话的交付聚合成
     /// 旧 MetadataSyncSummary（一交付一行）。只统计 culling / face-keyword /
-    /// similarity 三个写回模块；同一共享侧车可能同时命中多个模块的摘要，按
-    /// xmpPath 合并并取最高严重度，避免重复计数（计数单位仍是侧车交付，不是 item）。
+    /// similarity 三个写回模块；同一共享 sidecar 可能同时命中多个模块的摘要，按
+    /// xmpPath 合并并取最高严重度，避免重复计数（计数单位仍是 sidecar 交付，不是 item）。
     ///
     /// 与旧 outbox 计数的差异：手动队列（MetadataMutationService）在 2b-2 之前仍写
     /// 旧表，这些尚未产生交付行的手动变更不再进入工作区 xmp 计数（过渡缺口，见文件头）。

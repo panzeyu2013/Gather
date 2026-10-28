@@ -47,7 +47,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     private let photoRepo: (any PhotoRepository)?
     /// P1：移出后的跨表路径迁移（photos/deliveries/intents/origins/bindings/assets）。
     private let relocateAfterMove: ((String, String, String, Bool) throws -> Void)?
-    /// P0-1：与写回/清理共用的按 xmpPath 文件锁。搬侧车也在锁内，否则与
+    /// P0-1：与写回/清理共用的按 xmpPath 文件锁。搬 sidecar 也在锁内，否则与
     /// 写回的 temp→rename 交错会把刚写回的内容覆盖回旧值。nil = 测试/未接线。
     private let fileLock: XMPFileLock?
 

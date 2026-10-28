@@ -46,7 +46,7 @@ public struct NativeExportProgress: Equatable, Sendable {
 public struct NativeExportResumeState {
     public var destinations: [String: String]
     public var completedPhotoIds: Set<String>
-    /// 每张已完成照片**当时**的边车版本（问题 1，第三轮审查）：只记录
+    /// 每张已完成照片**当时**的 sidecar 版本（问题 1，第三轮审查）：只记录
     /// completedPhotoIds 无法区分「目标 XMP 已存在」与「目标 XMP 仍是最新」——
     /// 源 XMP 改过之后必须重新交付，而不是静默跳过。
     public var sidecarVersions: [String: String]

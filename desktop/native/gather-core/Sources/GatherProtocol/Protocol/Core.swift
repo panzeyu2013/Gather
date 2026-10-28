@@ -183,7 +183,7 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case XMP_CONFIRM_OTHER_SESSION_PENDING
     case XMP_EXTERNALLY_MODIFIED
     case XMP_BACKUP_MISSING
-    // 侧车文档本身的读写故障（SidecarXMPProvider 抛出，客户端按键分流处理）
+    // sidecar 文档本身的读写故障（SidecarXMPProvider 抛出，客户端按键分流处理）
     case XMP_DOCUMENT_CORRUPT
     case XMP_DOCUMENT_UNSUPPORTED
     case XMP_DOCUMENT_READ_FAILED

@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Services/RejectedMoverTests.swift
-// P1 / D：淘汰移动——照片与 XMP 侧车一起搬，登记路径同步改写。
+// P1 / D：淘汰移动——照片与 XMP sidecar 一起搬，登记路径同步改写。
 
 import Foundation
 import Testing
@@ -10,7 +10,7 @@ import GatherTestSupport
 
 @Suite("淘汰移动")
 struct RejectedMoverTests {
-    @Test("移动照片时侧车跟着走，photos.filepath 同步改到 _rejects")
+    @Test("移动照片时 sidecar 跟着走，photos.filepath 同步改到 _rejects")
     func movesPhotoAndSidecar() throws {
         let db = try makeTestDB()
         let dir = FileManager.default.temporaryDirectory
@@ -36,7 +36,7 @@ struct RejectedMoverTests {
         #expect(FileManager.default.fileExists(atPath: result.newPaths[0]))
         #expect(FileManager.default.fileExists(
             atPath: (destination as NSString).appendingPathComponent("IMG_1.xmp")))
-        #expect(!FileManager.default.fileExists(atPath: sidecarPath), "侧车不得留在原目录")
+        #expect(!FileManager.default.fileExists(atPath: sidecarPath), "sidecar 不得留在原目录")
         let row = try db.prepare("SELECT filepath FROM photos WHERE id = ?").get([.text(photoId)])
         #expect(row?[0].textValue == result.newPaths[0])
     }
@@ -249,7 +249,7 @@ struct RejectedMoverTests {
         try insertSession(db, sessionId)
         let photoPath = (dir as NSString).appendingPathComponent("IMG_1.CR3")
         try Data("raw".utf8).write(to: URL(fileURLWithPath: photoPath))
-        // 盘上侧车与备份用大写扩展名（外部工具/历史数据常见）。
+        // 盘上 sidecar 与备份用大写扩展名（外部工具/历史数据常见）。
         let upperSidecar = (dir as NSString).appendingPathComponent("IMG_1.XMP")
         try Data("<xmp/>".utf8).write(to: URL(fileURLWithPath: upperSidecar))
         let upperBackup = upperSidecar + ".gather-backup-AbC"
@@ -292,7 +292,7 @@ struct RejectedMoverTests {
         #expect(try String(contentsOfFile: existing, encoding: .utf8) == "old-reject")
     }
 
-    @Test("共享侧车：只移 JPEG 时复制 .xmp，留下的 RAW 仍有同名侧车")
+    @Test("共享 sidecar：只移 JPEG 时复制 .xmp，留下的 RAW 仍有同名 sidecar")
     func sharedSidecarIsCopied() throws {
         let db = try makeTestDB()
         let dir = try makeTempDir()
@@ -320,7 +320,7 @@ struct RejectedMoverTests {
         let copied = (destination as NSString).appendingPathComponent("IMG_9.xmp")
         #expect(FileManager.default.fileExists(atPath: copied), "移出的 JPEG 必须有自己的 .xmp")
         #expect(try String(contentsOfFile: copied, encoding: .utf8) == "<xmp>shared</xmp>")
-        // P2：共享侧车的备份不复制（没有 deliveries 指向 _rejects 的副本，只会是孤儿）。
+        // P2：共享 sidecar 的备份不复制（没有 deliveries 指向 _rejects 的副本，只会是孤儿）。
         #expect(FileManager.default.fileExists(atPath: backupPath))
         #expect(!FileManager.default.fileExists(
             atPath: (destination as NSString).appendingPathComponent(
@@ -358,7 +358,7 @@ struct RejectedMoverTests {
         #expect(row[1].textValue == result.newPaths[0])
     }
 
-    @Test("共享侧车复制后迁移失败：删除副本、照片搬回，原侧车不动")
+    @Test("共享 sidecar 复制后迁移失败：删除副本、照片搬回，原 sidecar 不动")
     func copyRollbackRemovesCopy() throws {
         let db = try makeTestDB()
         let dir = try makeTempDir()
@@ -385,6 +385,6 @@ struct RejectedMoverTests {
         #expect(FileManager.default.fileExists(atPath: sidecarPath))
         #expect(!FileManager.default.fileExists(
             atPath: (destination as NSString).appendingPathComponent("IMG_4.xmp")),
-            "复制出来的侧车必须随回滚删除")
+            "复制出来的 sidecar 必须随回滚删除")
     }
 }

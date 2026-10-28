@@ -49,7 +49,7 @@ extension WritebackService {
 
         let persistedEntries = try loadEntries(sessionId: sessionId, module: deliveryModule)
         // 崩溃归位（P1-2）：上一轮在 markItem 与 markWritten 之间中断时交付停在
-        // writing。先续租/抢占并收敛它，避免该侧车永久无法 confirm/cleanup。
+        // writing。先续租/抢占并收敛它，避免该 sidecar 永久无法 confirm/cleanup。
         let leaseRecovery = await recoverInterruptedWrites(
             sessionId: sessionId, entries: persistedEntries)
         errors.append(contentsOf: leaseRecovery.errors)
@@ -67,7 +67,7 @@ extension WritebackService {
         let entryById = entryIndex
         let resolvedByPhoto = try preloadResolvedTargets(sessionId: sessionId, entries: persistedEntries)
 
-        // 分组键是交付主键（deliveries.xmp_path）：一条交付 = 一个侧车文件；共享侧车的
+        // 分组键是交付主键（deliveries.xmp_path）：一条交付 = 一个 sidecar 文件；共享 sidecar 的
         // 多张照片（RAW+JPEG）在 preview 已收敛到同一条交付，组内保持输入顺序串行合并。
         var groups: [String: [WritebackItem]] = [:]
         for item in items {
@@ -156,7 +156,7 @@ extension WritebackService {
         failedItems.append(contentsOf: phaseOne.failedItemsSnapshot)
         failed += phaseOne.failedCount
         var firstErrorByPath = phaseOne.pathErrorsSnapshot
-        // 写前备份快照（xmpPath → 真实备份文件；空串 = 原侧车不存在）。
+        // 写前备份快照（xmpPath → 真实备份文件；空串 = 原 sidecar 不存在）。
         let backupByPath = phaseOne.backupsSnapshot
         // 交付级 photo_path/已有备份快照：markWritten 需要与交付行同源的路径。
         var photoPathByPath: [String: String] = [:]
@@ -324,7 +324,7 @@ extension WritebackService {
     ///
     /// 调用方必须已持有 XMPFileLock（同一 xmpPath）：backup → readAttributes →
     /// writeAttributes 必须原子成组，否则 cleanup 的 restore/remove 可能插在
-    /// “读旧值”与“写新值”之间。组内仍按输入顺序串行（RAW+JPEG 共享侧车时
+    /// “读旧值”与“写新值”之间。组内仍按输入顺序串行（RAW+JPEG 共享 sidecar 时
     /// 后一项看到前一项刚写入的内容），批次/排序语义不变。
     private func writeGroupItems(
         xmpPath: String,
@@ -358,10 +358,10 @@ extension WritebackService {
             do {
                 // 写盘目标按 execute 时的资产状态解析：preview 与 execute 之间
                 // 可能已完成 relink（asset_read_mode='asset'），用 preview 快照
-                // 会写到旧路径/旧侧车。
+                // 会写到旧路径/旧 sidecar。
                 let resolvedTarget = resolvedByPhoto[entry.item.photoId]
                 let writePhotoPath = resolvedTarget?.filepath ?? photoPath
-                // P1：写前基线校验。plan/入队到真正写盘之间外部可能改过侧车；
+                // P1：写前基线校验。plan/入队到真正写盘之间外部可能改过 sidecar；
                 // 有 base_fingerprint 时先比对，避免 keepExternal 计划被静默覆盖。
                 if (entry.item.typedModule == .metadata
                         || entry.item.typedModule == .template),
@@ -447,7 +447,7 @@ extension WritebackService {
                     // 撤销模板时结构字段必须整块还原（含删除模板新增的 contact 成员）；
                     // 普通套用仍走成员级合并，绝不覆盖外部填写的其它成员。
                     // P0：标志为真但补丁没带 contact 时，绝不能拿空结构整块替换——
-                    // 那会把侧车里的 CreatorContactInfo 静默删光。
+                    // 那会把 sidecar 里的 CreatorContactInfo 静默删光。
                     if entry.item.attributes["replace_contact"]?.boolValue == true,
                        let contact = descriptive.contactInfo {
                         merged.set(.contact(contact), for: .contactInfo)

@@ -115,7 +115,7 @@ struct IngestServiceTests {
         #expect(try String(contentsOfFile: result.copied[0], encoding: .utf8) == "move-payload")
     }
 
-    @Test("XMP 侧车随照片一起搬（主目的地与第二目的地都带上）")
+    @Test("XMP sidecar 随照片一起搬（主目的地与第二目的地都带上）")
     func sidecarTravelsWithPhoto() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "raw"])
         let sidecar = (source as NSString).appendingPathComponent("a.xmp")
@@ -156,7 +156,7 @@ struct IngestServiceTests {
         #expect(plan.skipped.count == 1)
     }
 
-    @Test("RAW+JPEG 共享侧车：第二张不因源侧车已被第一张移走而假失败")
+    @Test("RAW+JPEG 共享 sidecar：第二张不因源 sidecar 已被第一张移走而假失败")
     func sharedSidecarDoesNotFakeFailure() async throws {
         let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
         let sidecar = (source as NSString).appendingPathComponent("a.xmp")
@@ -176,7 +176,7 @@ struct IngestServiceTests {
             atPath: (dest as NSString).appendingPathComponent("a.xmp")))
     }
 
-    @Test("{seq} 模板下 RAW+JPEG 共享侧车：兄弟共用同一目标 stem，只复制一份侧车")
+    @Test("{seq} 模板下 RAW+JPEG 共享 sidecar：兄弟共用同一目标 stem，只复制一份 sidecar")
     func sharedSidecarWithSequenceTemplate() async throws {
         let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
         let sidecar = (source as NSString).appendingPathComponent("a.xmp")
@@ -189,7 +189,7 @@ struct IngestServiceTests {
         let options = IngestOptions(destinationRoot: dest, renameTemplate: "{seq}.{ext}")
         let plan = try await service.plan(sourcePaths: [source], options: options)
         #expect(plan.items.count == 2)
-        // 兄弟必须同 stem：侧车按 stem 推导，stem 不同会让第二张解析到不存在的 .xmp，
+        // 兄弟必须同 stem：sidecar 按 stem 推导，stem 不同会让第二张解析到不存在的 .xmp，
         // RAW/JPEG 的配对键（stem）也会一起失配。
         #expect(Set(plan.items.map { TSPath.stem($0.destPath) }).count == 1,
                 "RAW+JPEG 兄弟必须落在同一目标 stem 上")
@@ -200,7 +200,7 @@ struct IngestServiceTests {
         #expect(result.failed.isEmpty)
         let xmps = try FileManager.default.contentsOfDirectory(atPath: dest)
             .filter { $0.hasSuffix(".xmp") }
-        #expect(xmps.count == 1, "共享侧车不能在目标端分裂成两份")
+        #expect(xmps.count == 1, "共享 sidecar 不能在目标端分裂成两份")
         #expect(result.copied.count == 2)
     }
 
@@ -231,7 +231,7 @@ struct IngestServiceTests {
                 "既有第二目的地文件不得被覆盖")
     }
 
-    @Test("侧车目标已存在且内容不同：整张失败并回滚，不覆盖既有侧车")
+    @Test("sidecar 目标已存在且内容不同：整张失败并回滚，不覆盖既有 sidecar")
     func sidecarContentConflictRollsBack() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
         try Data("<xmp>new</xmp>".utf8).write(
@@ -251,12 +251,12 @@ struct IngestServiceTests {
                 "失败原因必须说明是目标已存在的冲突")
         #expect(result.copied.isEmpty)
         #expect(try String(contentsOfFile: existingSidecar, encoding: .utf8) == "<xmp>old</xmp>",
-                "既有侧车不得被覆盖")
+                "既有 sidecar 不得被覆盖")
         #expect(try String(contentsOfFile: (source as NSString).appendingPathComponent("a.CR3"),
                            encoding: .utf8) == "payload", "失败后源文件必须仍在")
     }
 
-    @Test("默认模板 + 第二目的地 + RAW/JPEG 成对：第二张不假失败，二目的地只有一份侧车")
+    @Test("默认模板 + 第二目的地 + RAW/JPEG 成对：第二张不假失败，二目的地只有一份 sidecar")
     func secondDestinationWithSharedSidecar() async throws {
         let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
         try Data("<xmp/>".utf8).write(
@@ -272,11 +272,11 @@ struct IngestServiceTests {
         let plan = try await service.plan(sourcePaths: [source], options: options)
         #expect(plan.items.count == 2)
         let result = service.execute(plan, options: options)
-        #expect(result.failed.isEmpty, "共享侧车 + 第二目的地不得让第二张假失败")
+        #expect(result.failed.isEmpty, "共享 sidecar + 第二目的地不得让第二张假失败")
         #expect(result.copied.count == 2)
         #expect(result.secondCopied.count == 2)
         let xmps = try recursiveFiles(second).filter { $0.hasSuffix(".xmp") }
-        #expect(xmps.count == 1, "第二目的地也只能有一份共享侧车")
+        #expect(xmps.count == 1, "第二目的地也只能有一份共享 sidecar")
     }
 
     @Test("同一 plan 重复执行：目标已存在时失败，但绝不删除既有文件")
@@ -299,7 +299,7 @@ struct IngestServiceTests {
         #expect(try String(contentsOfFile: first.copied[0], encoding: .utf8) == "payload")
     }
 
-    @Test("回滚清理（copy）：第二目的地冲突时照片与侧车都不得留在目的地")
+    @Test("回滚清理（copy）：第二目的地冲突时照片与 sidecar 都不得留在目的地")
     func rollbackRemovesPhotoAndSidecarInCopyMode() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
         try Data("<xmp/>".utf8).write(
@@ -320,14 +320,14 @@ struct IngestServiceTests {
         #expect(!FileManager.default.fileExists(
             atPath: (dest as NSString).appendingPathComponent("a.CR3")), "已落地的照片必须回滚")
         #expect(!FileManager.default.fileExists(
-            atPath: (dest as NSString).appendingPathComponent("a.xmp")), "已复制的侧车必须回滚")
+            atPath: (dest as NSString).appendingPathComponent("a.xmp")), "已复制的 sidecar 必须回滚")
         #expect(FileManager.default.fileExists(
             atPath: (source as NSString).appendingPathComponent("a.CR3")), "copy 模式保留源")
         #expect(FileManager.default.fileExists(
             atPath: (source as NSString).appendingPathComponent("a.xmp")))
     }
 
-    @Test("回滚清理（move）：照片与侧车都必须回到源目录，源不得丢")
+    @Test("回滚清理（move）：照片与 sidecar 都必须回到源目录，源不得丢")
     func rollbackRestoresSourceInMoveMode() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
         try Data("<xmp/>".utf8).write(

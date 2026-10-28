@@ -213,7 +213,7 @@ struct DeliveryFilePhase: Sendable {
         }
     }
 
-    /// 把备份内容恢复回侧车；无备份时删除本次写入的侧车（旧 cleanup 语义）。
+    /// 把备份内容恢复回 sidecar；无备份时删除本次写入的 sidecar（旧 cleanup 语义）。
     /// 两种形态都幂等：恢复是覆盖写，删除前先看存在性。
     private func performCleanup(
         xmpPath: String,

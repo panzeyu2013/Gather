@@ -77,7 +77,7 @@ extension CullingService {
     /// 映射。组索引按相似度结果版本键控：每次访问重查版本，结果替换即重建，
     /// 绝不再写旧结果的无主 "${oldResultId}:${i}" 组 id。xmp 联动只依赖照片集，
     /// 与其一起重建（见 refreshSessionUpdateContext）。与照片加载分离，让调用方
-    /// 能在任何相似度读之前校验照片 id，O(n) 侧车扫描每条目/每版本一次而非每次
+    /// 能在任何相似度读之前校验照片 id，O(n) sidecar 扫描每条目/每版本一次而非每次
     /// 点击一次。
     func ensureUpdateExtras(entry: SessionUpdateEntry, sessionId: String) throws {
         let lookup = try getSessionLookup(sessionId: sessionId)

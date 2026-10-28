@@ -96,7 +96,7 @@ public struct MetadataWriteAttributes: Codable, Equatable, Sendable {
     }
 }
 
-/// TS: MetadataReader + MetadataWriter（XMP 侧车 writer 的最小面）。
+/// TS: MetadataReader + MetadataWriter（XMP sidecar writer 的最小面）。
 /// 实现由 gather-app 宿主提供（exiftool/文件系统桥，3.4 页面阶段），
 /// 本层所有服务只依赖该协议。
 public protocol XMPProvider: Sendable {

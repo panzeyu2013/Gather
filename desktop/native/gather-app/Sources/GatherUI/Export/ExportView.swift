@@ -131,7 +131,7 @@ public struct ExportView: View {
             title: l10n("开始导出？"),
             confirmLabel: { _ in l10n("开始导出") },
             message: { request in
-                // D09：承诺的文件数必须是**物理文件数**（照片 + XMP 边车），
+                // D09：承诺的文件数必须是**物理文件数**（照片 + XMP sidecar），
                 // 旧实现只报照片数，勾选「复制 XMP」时承诺与实际不符。
                 l10n.format(
                     "范围「%@」：将向「%@」写入 %lld 个文件；重名文件会自动改名，不会覆盖已有文件。",

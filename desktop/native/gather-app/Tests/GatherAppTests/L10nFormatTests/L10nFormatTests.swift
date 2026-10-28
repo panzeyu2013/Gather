@@ -107,11 +107,11 @@ struct L10nFormatTests {
 
     @Test("format：多参数按占位符顺序插值，三个 %lld 不错位")
     func formatKeepsArgumentOrder() {
-        let key = "将写入 %lld 张照片 + %lld 个 XMP 边车，共 %lld 个文件。"
+        let key = "将写入 %lld 张照片 + %lld 个 XMP 附属文件，共 %lld 个文件。"
         #expect(L10n(language: .en).format(key, 1, 2, 3)
             == "Will write 1 photos + 2 XMP sidecars, 3 files in total.")
         #expect(L10n(language: .zhCN).format(key, 1, 2, 3)
-            == "将写入 1 张照片 + 2 个 XMP 边车，共 3 个文件。")
+            == "将写入 1 张照片 + 2 个 XMP 附属文件，共 3 个文件。")
     }
 
     @Test("format：%@ 与 %lld 混排时按顺序配对（文本/整数/浮点）")

@@ -35,7 +35,7 @@ public enum MetadataFingerprint {
         return "\(info.size):\(Int64(info.mtimeMs.rounded())):\(hex)"
     }
 
-    /// TS: cacheStalenessKey —— 廉价陈旧键：源文件大小 + { 源 mtime : 侧车 mtime }。
+    /// TS: cacheStalenessKey —— 廉价陈旧键：源文件大小 + { 源 mtime : sidecar mtime }。
     /// 刻意不读文件内容（缓存失效提示，非持久性守卫）。不可读返回 nil。
     public static func cacheStalenessKey(_ photoPath: String) async throws -> (size: Int, value: String)? {
         guard let sourceStat = tsStat(photoPath) else { return nil }

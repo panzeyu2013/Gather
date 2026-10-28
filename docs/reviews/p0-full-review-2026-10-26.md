@@ -47,7 +47,7 @@
 | P2 | K0 apply 中途 blocked 可能留下已入队 pending | 先全量预检 blocked，或事务化入队 |
 | P2 | K0 culling/similarity origin 只标记不注销 | 外部删除/模块清理后可能误报 owned；模块清理时 deactivate |
 | P2 | F0 review makePage 每页 filter+sort 全部 items | 缓存排序后的数组/前缀索引 |
-| P2 | Metadata preview/apply 串行逐 XMP 读 | 500 张/共享侧车可能秒级；按 xmp 去重 + bounded concurrency |
+| P2 | Metadata preview/apply 串行逐 XMP 读 | 500 张/共享 sidecar 可能秒级；按 xmp 去重 + bounded concurrency |
 | P2 | F0 绑定簇合并现在拒绝，但 UI 候选未过滤绑定簇 | 服务已兜底；UI 应提前禁用/提示 |
 | P2 | F0 cache 内存 8 条全量 items | 10k 复核下内存需实测；可只缓存排序索引 |
 | P2 | 关键词草稿切换照片直接 reset，无确认 | 切换前确认/保留草稿；chip remove 的 VoiceOver 动作需独立 |
@@ -81,7 +81,7 @@
 - 翻页已不再拉 summary/groups/sync/history；但首屏仍全量读 photos/decisions/suggestions，20k 时是下一次优化重点。
 - T0 generate/apply 已移出 MainActor；首屏 summary 已 SQL 聚合、groups 懒加载。
 - F0 复核缓存省了 evaluate，但每页仍排序全部 items；10k 复核时是 O(n log n)/页。
-- K0 preview 串行读 XMP，500 张/共享侧车是潜在秒级操作。
+- K0 preview 串行读 XMP，500 张/共享 sidecar 是潜在秒级操作。
 - 2GB 备份/恢复、20k 读路径目前有足够余量；不建议继续微优化，先把首屏/后台生成做对。
 
 ## 6. 完整性与最优性

@@ -399,7 +399,7 @@ public final class PhotoFilterQuery {
         // 用 json_extract 投影成列，使搜索/筛选与普通列同构（操作符语义完全一致）。
         let fullCol: String
         if field == "date_taken" {
-            // EXIF 原样存 "2024:05:01 10:00:00"，侧车/相册可能是 ISO：先归一
+            // EXIF 原样存 "2024:05:01 10:00:00"，sidecar/相册可能是 ISO：先归一
             // 到 "2024-05-01 10:00:00" 再做文本比较/排序，否则混合数据 BETWEEN
             // 会整段丢 EXIF 行。
             fullCol = Self.normalizedDateTaken

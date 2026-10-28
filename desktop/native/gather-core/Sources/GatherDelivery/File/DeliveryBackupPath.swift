@@ -5,7 +5,7 @@
 // 文件端口做 restore/remove。若 DB 被手工篡改/迁移残留一条恶意路径，旧实现可以
 // 删除或覆盖任意可写文件。本文件把「可被文件阶段信任的备份路径」收敛成一个
 // 判定：
-// 1. 必须与 xmpPath 同目录（同一受控侧车目录；仓库的备份约定是
+// 1. 必须与 xmpPath 同目录（同一受控 sidecar 目录；仓库的备份约定是
 //    <xmp>.gather-backup-<uuid>，由宿主 XMPProvider.backup 生成）；
 // 2. 必须是 <xmp basename>.gather-backup-<non-empty>，拒绝任意文件名；
 // 3. 原始路径不得含 .. 组件或 NUL（TSPath.normalize 会折叠 ..，因此必须在
@@ -38,7 +38,7 @@ enum DeliveryBackupPathError: Error, Equatable, CustomStringConvertible, Localiz
     case notRegularFile(String)
     /// xmp_path 自身不安全（空/相对/含 NUL/含 .. 组件）。
     case unsafeXMPPath(String)
-    /// xmp_path 不在 photo_path 的同目录（侧车必须与照片同目录）。
+    /// xmp_path 不在 photo_path 的同目录（sidecar 必须与照片同目录）。
     case xmpNotSiblingOfPhoto(String)
 
     var code: String {
@@ -148,7 +148,7 @@ public enum DeliveryBackupPath {
 /// cleanup/replay 会据此 remove/restore。旧实现只校验 backup_path，xmp_path
 /// 零校验（相对路径/.. /NUL 都直接交给文件端口）。这里要求：
 /// 1. 绝对路径、无 NUL、无 .. 组件；
-/// 2. 与 photo_path 同目录（侧车约定），两侧都过 TSPath.normalize 后比较。
+/// 2. 与 photo_path 同目录（sidecar 约定），两侧都过 TSPath.normalize 后比较。
 public enum DeliveryXMPPath {
     public static func requireSafeSidecar(xmpPath: String, photoPath: String) throws {
         guard !xmpPath.isEmpty, !xmpPath.contains("\0"), xmpPath.hasPrefix("/"),

@@ -11,7 +11,7 @@
 - filterGlobally：两个逐行 GROUP_CONCAT 子查询改为 asset_rollup 一次分组聚合；会话筛选限制代表行属于该会话。
 - facet：先按资产选代表行再分桶，计数与网格同口径。
 - triage：apply 读盘 8 路并发；undo 只删本次追加关键词（delta）。
-- 摄取：懒 checksum 对存量现算；{seq} 下共享侧车复用第一张目标；目录递归/全格式；symlink 解析。
+- 摄取：懒 checksum 对存量现算；{seq} 下共享 sidecar 复用第一张目标；目录递归/全格式；symlink 解析。
 - inode relink：旧路径仍存在时拒绝，防硬链接/inode 复用误并。
 - FSEvents：start/stop 增加 starting/cancelled 守卫；eventID 仅在扫描任务成功入队后推进。
 - 模板：清空/赋值编辑器（文本、列表、contact 只读+清空）。
@@ -50,8 +50,8 @@ FSEventStreamRef、两个 `*Store` 的缓存 + NSLock），在 macOS 14 目标�
 
 全量修复评审发现的 3 条 P1 + 10 条 P2：
 
-- **摄取**：共享侧车的 RAW/JPEG 兄弟改为共用同一目标 stem（`{seq}` 模板不再把配对拆散）；
-  单张失败（侧车冲突/第二目的地撞名）整体回滚，`copied` 与 `failed` 互斥；目录+其中文件
+- **摄取**：共享 sidecar 的 RAW/JPEG 兄弟改为共用同一目标 stem（`{seq}` 模板不再把配对拆散）；
+  单张失败（sidecar 冲突/第二目的地撞名）整体回滚，`copied` 与 `failed` 互斥；目录+其中文件
   同时传入只计划一次。
 - **淘汰移出**：`asset_files` 迁移同时改写 `filename/extension/online_status/last_seen_at`
   （配对键是 `stem(filename)`）；目标路径已登记时留 warn 待扫描重连；回滚失败写进失败原因。
@@ -68,7 +68,7 @@ FSEventStreamRef、两个 `*Store` 的缓存 + NSLock），在 macOS 14 目标�
 
 4 个只读复评代理在合并后复检，发现并已修：
 
-- 摄取：第二目的地 + 共享侧车时第二张 100% 假失败（改为内容一致即复用）；
+- 摄取：第二目的地 + 共享 sidecar 时第二张 100% 假失败（改为内容一致即复用）；
   回滚增加 `mainCreated` 标志，目标已存在（并发/重复执行）时不再删除既有的他人文件；
   兄弟归组改按 (源目录, 源 stem)，无 .xmp 的 RAW+JPEG 也能配对；冲突传播整组；
   回滚失败写进失败原因；删掉已无赋值点的 `destSidecarOverride`。

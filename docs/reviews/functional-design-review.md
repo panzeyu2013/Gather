@@ -139,7 +139,7 @@ core **818 tests / 117 suites**（约 1.8s）、app **185 tests / 21 suites**（
 | `StubSimilarityProvider` | 未覆写 `syncStateItems` | 8.1 的 P0（协议 requirement 缺失） | 已修 + 用例转严格 |
 | `IndexerServiceTests.getSetting` | 未知键 identity 返回默认值 | 设置键名写错/默认值改错全绿（M2/M3 证明） | 补 `settingsKeysAndDefaultsArePinned` 钉死 (key, default) |
 | `StubMutationPort.queueMutation` | "成功但什么都不写" | 撤销/写回丢失 | 改为显式抛错 |
-| `FakeFSXMPProvider.backup/restore` | 无侧车仍返回备份路径；备份缺失静默删侧车 | 与真实 `SidecarXMPProvider` 语义不符 | 对齐真实（返回 `""`／抛 `backupMissing`） |
+| `FakeFSXMPProvider.backup/restore` | 无 sidecar 仍返回备份路径；备份缺失静默删 sidecar | 与真实 `SidecarXMPProvider` 语义不符 | 对齐真实（返回 `""`／抛 `backupMissing`） |
 | `StubCommandRouter` / `RecordingCommandRouter` | 恒 `ok`、忽略 params | 命令失败路径、FaceKw 错误路径 | 已记录；失败路径由 Failing/EmptyData router 部分覆盖 |
 
 ### 8.4 新增的契约护栏
@@ -148,7 +148,7 @@ core **818 tests / 117 suites**（约 1.8s）、app **185 tests / 21 suites**（
 - **错误码 ↔ 本地化交叉契约**（app 侧 `ErrorLocalizationCoverageTests.swift`）：① 每个码都必须有文案（否则 `errorText` 落通用兜底"发生未知错误"）；② 文案表不得含枚举外的码（防生产者在枚举外自造裸字符串）。**该护栏当场抓出 2 例**：`C1_SCRIPT_TIMEOUT`（`CaptureOneBridge` 里是裸字符串）、`C1_NO_SELECTED_PHOTOS`（`GatherAppDelegate` 通知载荷）——已收进枚举，生产者改取 `rawValue`。
 - **命令面运行时契约**（app 侧 `CommandSurfaceRuntimeTests.swift`）：用真实 `SessionCommandRouter`（`:memory:` 库 + 迁移 + `makeDefault`）逐条派发冻结清单，断言"被识别"（非 `notImplemented`）并带伪造命令对照组；82 同步 + 36 异步由机械扫描得出（不相交、并集 118）。结果 **118/118 被识别，0 超时 / 0 崩溃 / 0 非 BridgeError**（68 业务错误 + 36 异步 ok:false + 14 只读 no-op），对照组灵敏。
   该测试还抓出 2 处"文案当错误码"（`filter.*` 的 `Filter criteria is invalid`、`album.delete requires confirmation`）——这类裸英文串会让 UI 显示"发生未知错误，请稍后重试"，用户**完全看不到真实原因**；已改为新增结构化码 `FILTER_CRITERIA_INVALID` / `ALBUM_DELETE_CONFIRM_REQUIRED`（含中英双语文案与桥接 `BridgeError.coded`）。
-- 各域新增的 44 条用例覆盖了：JobService 权重预算/取消幂等/跨进程取消/停止终态/进度节流/租约恢复；Culling 分页边界不重复、写回关键词去重；Indexer 预热 id、canonical 折叠、禁根祖先；导航与 TTL 边界；写回 mergePatch 的 synced/conflict/legacy 迁移、claim 重试、按侧车去重、GPS 符号与曝光边界、缓存新鲜度判据、损坏侧车守卫；导出 `status != 'removed'` 过滤与 `.all` 策略；质量指纹缓存失效、平局保序；相似度外部取消不落库、全解码失败抛 `SIM_NO_HASH_DATA`。
+- 各域新增的 44 条用例覆盖了：JobService 权重预算/取消幂等/跨进程取消/停止终态/进度节流/租约恢复；Culling 分页边界不重复、写回关键词去重；Indexer 预热 id、canonical 折叠、禁根祖先；导航与 TTL 边界；写回 mergePatch 的 synced/conflict/legacy 迁移、claim 重试、按 sidecar 去重、GPS 符号与曝光边界、缓存新鲜度判据、损坏 sidecar 守卫；导出 `status != 'removed'` 过滤与 `.all` 策略；质量指纹缓存失效、平局保序；相似度外部取消不落库、全解码失败抛 `SIM_NO_HASH_DATA`。
 
 ### 8.5 确定性修复
 

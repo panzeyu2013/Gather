@@ -77,17 +77,17 @@ public struct MetadataWritebackFailure: Error, Equatable, Sendable, CustomString
     }
 }
 
-/// 交付路径的唯一口径：photo 路径 → 侧车路径。
+/// 交付路径的唯一口径：photo 路径 → sidecar 路径。
 ///
 /// 从已删除的 MetadataOutboxRepo 迁出（S5c-2b-3b-2b-3）：交付键必须与旧落库键
 /// 完全一致（normalize + xmpSidecarPath），否则已有 deliveries 行会读不到。
 public enum DeliveryPath {
-    /// TSPath.xmpSidecarPath + ScanPath.canonical。对已经是侧车路径的输入幂等。
+    /// TSPath.xmpSidecarPath + ScanPath.canonical。对已经是 sidecar 路径的输入幂等。
     public static func sidecar(_ photoPath: String) -> String {
         TSPath.xmpSidecarPath(ScanPath.canonical(photoPath))
     }
 
-    /// 归一化任意路径为侧车键（入参可能是照片或侧车路径）。
+    /// 归一化任意路径为 sidecar 键（入参可能是照片或 sidecar 路径）。
     public static func normalize(_ path: String) -> String {
         sidecar(path)
     }
@@ -99,9 +99,9 @@ public enum DeliveryError: Error, Equatable, CustomStringConvertible, LocalizedE
     case confirmIncomplete // XMP_CONFIRM_INCOMPLETE
     /// Capture One 尚未确认重载元数据（reload_acked_at 门禁）。
     case confirmRequiresSync // XMP_CONFIRM_REQUIRES_SYNC
-    /// 同一侧车被多个会话共享，且（除当前会话外的）关联会话尚未确认。
+    /// 同一 sidecar 被多个会话共享，且（除当前会话外的）关联会话尚未确认。
     case otherSessionNotConfirmed(sessionId: String) // XMP_CONFIRM_OTHER_SESSION_PENDING
-    /// XMP 侧车在写回/清理期间被外部修改。
+    /// XMP sidecar 在写回/清理期间被外部修改。
     case externallyModified // XMP_EXTERNALLY_MODIFIED
 
     public var description: String {

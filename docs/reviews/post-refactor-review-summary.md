@@ -20,7 +20,7 @@
 
 但“可交付/可发布”结论**不成立**，原因不是架构方向，而是 2 个 P0 + 一组 P1：
 
-1. **数据完整性 P0**：Delivery cleanup/replay 的文件阶段在 DB revision/CAS 之前执行，旧备份可覆盖新写入的 XMP，且无备份时会直接删除新侧车。
+1. **数据完整性 P0**：Delivery cleanup/replay 的文件阶段在 DB revision/CAS 之前执行，旧备份可覆盖新写入的 XMP，且无备份时会直接删除新 sidecar。
 2. **交付门禁 P0**：CI 的 app 测试未加 `--no-parallel`，本机默认并行 6/6 次失败；串行也观察到 Gallery shutdown 断言间歇失败。CI 的 bundle 步骤根本不会执行。
 3. P1 集中在：跨会话确认绕过、writing 租约不恢复、手动队列非原子、旧 V1 库缺列不重置、Indexer 删除撞 RESTRICT；`session.create` 目录分支缺 job/回滚、15 个 API 方法无 Live 行为测试、`index.scan` 语义被复制到 UI；Workspace 全量扇出导致隐藏页轮询、`endSession` 零调用导致幽灵会话、Gallery 构造即取页；3 条真实照片测试永久 skip 却被计入 1092；英文复数/设置页动态中文/Notice parity 漏扫；无 entitlements 的 C1 签名、mlpackage 名未断言；git 155 staged/392 unstaged/386 untracked 的混合态。
 
@@ -28,7 +28,7 @@
 
 ### P0-1 Delivery 文件阶段无 revision/指纹守卫，旧备份可覆盖新内容
 
-- 证据：`DeliveryCoordinator.swift:566-658`（cleanup 先 await 文件阶段 636，653 才 DB CAS）；`1012-1051`（replay prepared 直接重做文件）；`1106-1123`（restore 覆盖、无备份删除侧车）；`309-348`（intent payload 无 base_fingerprint）；`DeliveryRepo.swift:925-965`（revision 守卫只在 DB 段）。
+- 证据：`DeliveryCoordinator.swift:566-658`（cleanup 先 await 文件阶段 636，653 才 DB CAS）；`1012-1051`（replay prepared 直接重做文件）；`1106-1123`（restore 覆盖、无备份删除 sidecar）；`309-348`（intent payload 无 base_fingerprint）；`DeliveryRepo.swift:925-965`（revision 守卫只在 DB 段）。
 - 触发：cleanup/replay 文件阶段期间新输入 `mergeInput` revision+1/status=pending；restore 仍用旧备份覆盖；DB 随后 revisionChanged 只标错误，文件已旧；intent 可能 applied 后被清。**第二入口**：`LiveMetadataAPI` orphan restore（209-228）也是先 restore 后 revision 守卫（R2 补充）。
 - 影响：用户新写入的 XMP 被旧备份回滚或删除，且无提示；属于数据丢失。
 - 修复：intent 增加 base_fingerprint/base_values；文件阶段前重读 delivery 并复核 revision/status/fingerprint；不一致则 conflict/skip，不碰文件；无备份删除同样复核；补“文件阶段注入新输入”的确定性测试。

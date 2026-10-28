@@ -2,7 +2,7 @@
 // P1 / IPTC：按 XMPFieldDescriptor 表收集描述性元数据（与写入同一张表，避免读写漂移）。
 //
 // 独立于既有 SidecarXMLDelegate（那个只管 rating/label/keywords/urgency/EXIF 六项）。
-// 单文件二次解析的代价可忽略（侧车通常 < 20KB），换来的是不用改动已验证的旧解析路径。
+// 单文件二次解析的代价可忽略（sidecar 通常 < 20KB），换来的是不用改动已验证的旧解析路径。
 import Foundation
 import GatherProtocol
 

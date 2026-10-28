@@ -507,7 +507,7 @@ extension AssetRepo {
           """).run([.text(newXmp), .text(timestamp), .text(oldXmp)])
     }
 
-    /// 共享侧车场景：复制出来的 _rejects/x.xmp 需要自己的 binding，
+    /// 共享 sidecar 场景：复制出来的 _rejects/x.xmp 需要自己的 binding，
     /// 但旧 binding（原 x.xmp）必须继续服务留下的兄弟。
     ///
     /// 语义：

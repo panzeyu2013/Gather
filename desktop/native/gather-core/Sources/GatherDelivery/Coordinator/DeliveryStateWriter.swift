@@ -338,7 +338,7 @@ public struct DeliveryStateWriter: Sendable {
     ///    直接翻成 synced（P1-10）。reset 只在 writing 态执行——writing 不是
     ///    可确认态，清空后到 written 之间不会有人重新确认；
     /// 3. markWritten：盘上内容成为新基线（baseFingerprint/baseValues），
-    ///    backup_path 原样保留，cleanup 仍能恢复原侧车。
+    ///    backup_path 原样保留，cleanup 仍能恢复原 sidecar。
     ///
     /// 失败语义：claimWriting / markWritten 的 CAS 失配抛 writeNotPersisted；
     /// 租约冲突抛 leaseHeld；中间 reset 失败直接向上传播（此时停在 writing）。

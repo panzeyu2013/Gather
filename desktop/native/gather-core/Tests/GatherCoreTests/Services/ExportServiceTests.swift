@@ -1,9 +1,9 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Services/ExportServiceTests.swift
-// ExportService 交付契约：复制/边车、断点续传、指纹、变体与取消隔离。
+// ExportService 交付契约：复制/sidecar、断点续传、指纹、变体与取消隔离。
 //
 // 职责：
-// 1. original 导出复制原图与 XMP 边车，preview 与 execute 一致，resume 跳过已完成；
-// 2. deliveryFingerprint 纳入 photoId 与边车版本，区分同内容不同照片、新交付与续传；
+// 1. original 导出复制原图与 XMP sidecar，preview 与 execute 一致，resume 跳过已完成；
+// 2. deliveryFingerprint 纳入 photoId 与 sidecar 版本，区分同内容不同照片、新交付与续传；
 // 3. 拒绝导出到源目录内；JPEG 转换走 ImageIO；时间占位符固定 24 小时制；
 // 4. 变体策略（preferred/all）与导入顺序稳定；丢弃/筛选只导出保留项；
 // 5. 同一会话两次取消互不影响。
@@ -117,7 +117,7 @@ struct ExportServiceTests {
     }
 
 
-    // MARK: 第三轮审查：边车版本与照片身份
+    // MARK: 第三轮审查：sidecar 版本与照片身份
 
     @Test func deliveryFingerprintIncludesPhotoIdAndSidecarVersion() throws {
         let db = try makeExportDatabase()
@@ -319,7 +319,7 @@ struct ExportServiceTests {
         #expect(preview.files.first?.outputName == "sample_new.jpg")
         #expect(preview.files.first?.filename == "sample.jpg", "源名仍保留供对照")
         #expect(preview.files.first?.format == "original")
-        // XMP 边车：源侧存在 → 计入物理文件数（照片 1 + 边车 1）。
+        // XMP sidecar：源侧存在 → 计入物理文件数（照片 1 + sidecar 1）。
         #expect(preview.files.first?.includesXmp == true)
         #expect(preview.photoCount == 1)
         #expect(preview.sidecarCount == 1)
@@ -771,7 +771,7 @@ struct ExportServiceTests {
         let outputXmp = destination.appendingPathComponent("sample.xmp")
         let mtimeAfterFirst = try FileManager.default
             .attributesOfItem(atPath: outputXmp.path)[.modificationDate] as? Date
-        // 记录交付时的边车版本（与路由 checkpoint 的写法一致），再续跑。
+        // 记录交付时的 sidecar 版本（与路由 checkpoint 的写法一致），再续跑。
         let version = "test-version"
         let second = try service.execute(
             sessionId: session.id,

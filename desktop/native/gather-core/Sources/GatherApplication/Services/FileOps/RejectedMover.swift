@@ -7,7 +7,7 @@
 // - 移动成功后立刻改写 photos.filepath 并写 archived_at（同一事务由 relocate 闭包负责）。
 //
 // P0 / A1（2026-10-28）：
-// - 同一侧车被多个变体共享（RAW+JPEG 同 stem）：只要还有兄弟留在工作区，侧车与
+// - 同一 sidecar 被多个变体共享（RAW+JPEG 同 stem）：只要还有兄弟留在工作区，sidecar 与
 //   <xmp>.gather-backup-* 必须**复制**过去，绝不能整份搬走——否则留下的文件失去
 //   同名 .xmp。全部移出时才移动一次。
 // - 回滚要区分 copy / move：复制出来的目标删掉即可，移动过的搬回原路径。
@@ -146,8 +146,8 @@ public final class RejectedMover: @unchecked Sendable {
                 let ext = (name as NSString).pathExtension
                 let sidecar = TSPath.xmpSidecarPath(item.filepath)
                 let hasSidecar = fileManager.fileExists(atPath: sidecar)
-                // 同名冲突：加序号；照片与侧车必须同时可用，绝不覆盖也绝不让
-                // 侧车撞名导致照片已移走、元数据留在原地。
+                // 同名冲突：加序号；照片与 sidecar 必须同时可用，绝不覆盖也绝不让
+                // sidecar 撞名导致照片已移走、元数据留在原地。
                 var target = (destinationRoot as NSString).appendingPathComponent(name)
                 var index = 2
                 while fileManager.fileExists(atPath: target)
@@ -160,8 +160,8 @@ public final class RejectedMover: @unchecked Sendable {
                 try fileManager.moveItem(atPath: item.filepath, toPath: target)
                 actions.append(FileAction(source: item.filepath, target: target, isCopy: false))
 
-                // 侧车必须跟着走：只移照片会把 XMP 留在原目录，元数据与照片失联。
-                // 共享侧车（兄弟仍在工作区）必须复制：搬走会让留下的 RAW 失去 .xmp，
+                // sidecar 必须跟着走：只移照片会把 XMP 留在原目录，元数据与照片失联。
+                // 共享 sidecar（兄弟仍在工作区）必须复制：搬走会让留下的 RAW 失去 .xmp，
                 // Capture One 读到的是"无元数据"。
                 if hasSidecar {
                     let destSidecar = (target as NSString).deletingPathExtension + ".xmp"
@@ -189,7 +189,7 @@ public final class RejectedMover: @unchecked Sendable {
                 moved.append(item.photoId)
                 newPaths.append(target)
             } catch {
-                // 任一步失败（含侧车/登记）→ 把已产生的副作用全部撤销。
+                // 任一步失败（含 sidecar/登记）→ 把已产生的副作用全部撤销。
                 // 回滚本身失败时不能静默：文件会留在 _rejects、DB 仍指旧路径，
                 // 必须把"需人工恢复"的具体路径写进失败原因。
                 var rollbackErrors: [String] = []

@@ -61,14 +61,14 @@ extension CullingView {
         case .writeback(let target):
             switch target {
             case .rating:
-                return l10n.format("将把 %lld 张已决策照片的当前星级写入 XMP 侧车（会创建备份，可在同步完成后清理）。", viewModel.decidedPhotoCount)
+                return l10n.format("将把 %lld 张已决策照片的当前星级写入 XMP 附属文件（会创建备份，可在同步完成后清理）。", viewModel.decidedPhotoCount)
             case .colorLabel:
-                return l10n.format("将把 %lld 张已决策照片的当前颜色标签写入 XMP 侧车（会创建备份）。", viewModel.decidedPhotoCount)
+                return l10n.format("将把 %lld 张已决策照片的当前颜色标签写入 XMP 附属文件（会创建备份）。", viewModel.decidedPhotoCount)
             case .keyword:
                 return l10n.format("将把 %lld 张已决策照片的 culling:keep / culling:reject 关键词合并进 XMP（不覆盖其它关键词）。", viewModel.decidedPhotoCount)
             }
         case .retryFailedWriteback:
-            return l10n.format("将重试 %lld 个失败写回项并覆盖对应 XMP 侧车。", viewModel.failedSyncItems.count)
+            return l10n.format("将重试 %lld 个失败写回项并覆盖对应 XMP 附属文件。", viewModel.failedSyncItems.count)
         case .finalizeSync:
             return l10n.format("将确认同步并删除 %lld 项备份，之后无法再从备份恢复原 XMP。", viewModel.syncStatus?.synced ?? 0)
         case .resolveConflict(let conflict, let choices):

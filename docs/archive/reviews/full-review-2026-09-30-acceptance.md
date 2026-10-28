@@ -28,11 +28,11 @@
 | 9 | 缺一个文件、空文件、完整包各自明确结果；旧模型完整保留 | `incompletePackageIsRejected`（缺 `w600k_r50.onnx` → `.missingFile`，既有模型字节不变）+ `emptyFileIsRejected`（`.emptyFile`）+ `completePackageInstalls`（按映射改名落盘） | ✅ 通过 |
 | 11 | 改 Swift / 改 plist / 切 TARGET_ARCH 都重新产生插件 | `make -n` 四情形 | ✅ 通过 |
 | 2 | 同会话两目录并行，只取消 A；B 完整输出 | 探针 + `cancellingOneRunDoesNotAffectAnotherForSameSession` | ✅ 通过 |
-| 1 | 只改 XMP / 新增删除 XMP 都不得静默复用旧完成记录 | 探针（改 XMP）+ `deliveryFingerprintIncludesPhotoIdAndSidecarVersion`（删 XMP）+ 跳过规则改为「目标边车三态 + 交付版本」 | ✅ 通过 |
+| 1 | 只改 XMP / 新增删除 XMP 都不得静默复用旧完成记录 | 探针（改 XMP）+ `deliveryFingerprintIncludesPhotoIdAndSidecarVersion`（删 XMP）+ 跳过规则改为「目标 sidecar 三态 + 交付版本」 | ✅ 通过 |
 
 ## 三、验收过程中**新发现并修复**的缺陷（4 处）
 
-1. **XMP 冲突被静默当成功跳过**（问题 1 的深层原因）：目标边车与源不同时 `plan.includesXmp=false`，旧跳过条件把冲突当「无需写边车」→ 报成功但目标仍是旧 XMP。改为「目标边车缺失/冲突一律重交付」，并让新交付**覆盖**目标照片与边车（`installFile` 用临时文件 + 原子替换，失败保留旧文件）。
+1. **XMP 冲突被静默当成功跳过**（问题 1 的深层原因）：目标 sidecar 与源不同时 `plan.includesXmp=false`，旧跳过条件把冲突当「无需写 sidecar」→ 报成功但目标仍是旧 XMP。改为「目标 sidecar 缺失/冲突一律重交付」，并让新交付**覆盖**目标照片与 sidecar（`installFile` 用临时文件 + 原子替换，失败保留旧文件）。
 2. **重交付时目标文件已存在会失败**：`copyItem` 对已存在目标抛 `file exists` → 新交付无法覆盖。改为统一走 `installFile`（原子替换）。
 3. **迁移恢复失败未重开连接**：`copyItem` 抛错在 try/catch 之外 → 连接保持关闭（验收测试报「数据库已关闭」）。已把整个恢复过程纳入 do/catch，任何失败都重开原库并清理临时文件。
 4. **无参数语句绕过关闭检查**：关闭校验原先只在 `bind(index:)` 内，`get([])`/`run([])` 这类无参调用会跳过。已把校验提到 `query/run/get` 入口。

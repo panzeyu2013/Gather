@@ -213,7 +213,7 @@ struct SidecarXMPProviderTests {
         #expect(try await provider.readAttributes(photoPath: photo).label == "Blue")
     }
 
-    @Test("大写 .XMP 侧车：读写落在实际存在的文件上，不另建小写侧车")
+    @Test("大写 .XMP sidecar：读写落在实际存在的文件上，不另建小写 sidecar")
     func uppercaseSidecarIsReadAndWrittenInPlace() async throws {
         let dir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -259,7 +259,7 @@ struct SidecarXMPProviderTests {
         }
     }
 
-    @Test("损坏侧车：写入抛类型化 documentCorrupt，读取按空属性处理")
+    @Test("损坏 sidecar：写入抛类型化 documentCorrupt，读取按空属性处理")
     func corruptSidecarRejectsWrite() async throws {
         let dir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -280,7 +280,7 @@ struct SidecarXMPProviderTests {
         #expect(attributes.label == nil)
     }
 
-    @Test("空写入：不创建侧车、不改写已有内容")
+    @Test("空写入：不创建 sidecar、不改写已有内容")
     func emptyAttributesDoNotTouchDisk() async throws {
         let dir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -312,7 +312,7 @@ struct SidecarXMPProviderTests {
         #expect(attributes.label == "None")
     }
 
-    @Test("备份与恢复：保留原内容；无侧车时备份路径为空")
+    @Test("备份与恢复：保留原内容；无 sidecar 时备份路径为空")
     func backupAndRestoreRoundTrip() async throws {
         let dir = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(atPath: dir) }

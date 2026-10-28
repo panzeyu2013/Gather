@@ -446,7 +446,7 @@ struct DeliveryCoordinatorTests {
         let harness = try CoordinatorHarness()
         defer { harness.db.close() }
         try harness.insertPhoto("p1", sessionId: "s1")
-        // 共享侧车的每个会话都必须有「本会话照片 × 模块」的 item，
+        // 共享 sidecar 的每个会话都必须有「本会话照片 × 模块」的 item，
         // 否则 module scope 的 confirm 不会把该交付算进另一会话的确认范围。
         try harness.insertPhoto("p2", sessionId: "s2")
 
@@ -471,7 +471,7 @@ struct DeliveryCoordinatorTests {
         let second = try harness.coordinator.confirm(sessionId: "s2", module: .culling)
         #expect(second.confirmedLinks == 1)
         #expect(second.deliveriesSynced == 1)
-        // 一个侧车文件没有模块/会话边界：confirm 把该交付下所有 written item 一起推进。
+        // 一个 sidecar 文件没有模块/会话边界：confirm 把该交付下所有 written item 一起推进。
         #expect(second.itemsSynced == 2)
         #expect(second.unconfirmedSessionIds.isEmpty)
         #expect(try harness.deliveryRepo.get(xmp)?.typedStatus == .synced)
@@ -513,7 +513,7 @@ struct DeliveryCoordinatorTests {
         let harness = try CoordinatorHarness()
         defer { harness.db.close() }
         harness.files.setContents(xmp, "gather-written")
-        // backupPath 为空 = 写入前没有原始侧车：cleanup 删除本次写入的文件。
+        // backupPath 为空 = 写入前没有原始 sidecar：cleanup 删除本次写入的文件。
         try makeSyncedDelivery(harness)
 
         let result = try await harness.coordinator.cleanup(
@@ -531,7 +531,7 @@ struct DeliveryCoordinatorTests {
         harness.files.setContents(backup, "original")
         harness.files.setContents(xmp, "gather-written")
         try makeSyncedDelivery(harness, backupPath: backup)
-        // 同一个侧车文件上另一个模块还有未写盘的输入（P1-8 的真实形态）。
+        // 同一个 sidecar 文件上另一个模块还有未写盘的输入（P1-8 的真实形态）。
         _ = try harness.deliveryRepo.upsertItem(
             xmpPath: xmp, photoId: "p1", module: .metadata,
             attributes: ["rating": .number(5)], status: .pending)
@@ -1237,14 +1237,14 @@ struct DeliveryCoordinatorTests {
             $0.contains("XMP_CLEANUP_ABANDONED") && $0.contains("revision-changed")
         })
         #expect(harness.files.restoreCallCount == 0, "revision 已变：绝不 restore 旧备份")
-        #expect(harness.files.contents(xmp) == "gather-written", "新写入的侧车必须保留")
+        #expect(harness.files.contents(xmp) == "gather-written", "新写入的 sidecar 必须保留")
         let row = try #require(try harness.deliveryRepo.get(xmp))
         #expect(row.revision == 2)
         #expect(row.typedStatus == .pending)
         #expect(try harness.intentRepo.pending().isEmpty, "守卫拒绝后 intent 必须标终态")
     }
 
-    /// 无备份场景（cleanup 删侧车）同样要守卫：新输入到达时绝不 unlink 新文件。
+    /// 无备份场景（cleanup 删 sidecar）同样要守卫：新输入到达时绝不 unlink 新文件。
     @Test func cleanupAbortsSidecarDeleteWhenNewInputArrivesDuringFilePhase() async throws {
         let injector = NewInputInjector()
         let harness = try CoordinatorHarness(fingerprint: injector.fingerprint)
@@ -1265,7 +1265,7 @@ struct DeliveryCoordinatorTests {
         #expect(result.deletedCount == 0)
         #expect(result.skippedCount == 1)
         #expect(result.errors.contains { $0.contains("XMP_CLEANUP_ABANDONED") })
-        #expect(harness.files.removedPathsSnapshot.isEmpty, "新输入到达后绝不删侧车")
+        #expect(harness.files.removedPathsSnapshot.isEmpty, "新输入到达后绝不删 sidecar")
         #expect(harness.files.contents(xmp) == "gather-written")
         #expect(try harness.deliveryRepo.get(xmp)?.revision == 2)
         #expect(try harness.intentRepo.pending().isEmpty)

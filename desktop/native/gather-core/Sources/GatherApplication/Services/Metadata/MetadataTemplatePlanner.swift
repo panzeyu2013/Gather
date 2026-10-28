@@ -80,7 +80,7 @@ public enum MetadataTemplatePlanner {
             let diskValue = disk?.value(for: field)
 
             // 外部改过：读过盘（disk != nil）且盘上与缓存投影不一致。
-            // - disk == nil：没侧车/读不到，未知，不得当冲突（交给 overwrite/后续扫描）；
+            // - disk == nil：没 sidecar/读不到，未知，不得当冲突（交给 overwrite/后续扫描）；
             // - current == nil 且 diskValue != nil：缓存没扫到该字段，但盘上确有值。
             //   keepExternal 语义下"未知"必须算冲突：否则模板会静默覆盖未扫描照片的
             //   caption/版权（P0 / A3）。overwrite 仍然照写。

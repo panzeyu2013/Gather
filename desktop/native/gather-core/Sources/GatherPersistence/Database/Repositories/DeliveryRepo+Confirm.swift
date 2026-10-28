@@ -19,7 +19,7 @@ extension DeliveryRepo {
     ///    `deliveries.status IN ('written','synced')` 的行**，避免门禁读之后被
     ///    mergeInput 重开为 pending/writing/failed/conflict 的交付仍落确认；
     /// 4. 仅当「该 delivery 的所有关联会话都已确认」时，written → synced；
-    /// 5. 这些 delivery 下所有 written items → synced（一个侧车文件是一次原子写入，
+    /// 5. 这些 delivery 下所有 written items → synced（一个 sidecar 文件是一次原子写入，
     ///    文件内容没有模块边界；scope=.module 只收窄「确认哪些 delivery 的链接」，
     ///    不把同一文件里其它模块的已写 items 留在 written）；
     /// 6. 读回 summary（本次计数 + 仍未确认的会话）。

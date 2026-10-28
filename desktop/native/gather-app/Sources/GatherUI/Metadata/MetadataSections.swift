@@ -32,7 +32,7 @@ struct MetadataSections: View {
                 VStack(alignment: .leading, spacing: 4) {
                     row(l10n("文件名"), detail.filename)
                     row(l10n("路径"), detail.filepath)
-                    row(l10n("侧车"), detail.hasXMP ? detail.xmpPath : l10n("无（尚未写入 XMP）"))
+                    row(l10n("附属文件"), detail.hasXMP ? detail.xmpPath : l10n("无（尚未写入 XMP）"))
                     if selectionCount > 1 {
                         Text(l10n("已选多张，仅显示主文件"))
                             .font(.caption)

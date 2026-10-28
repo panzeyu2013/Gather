@@ -151,7 +151,7 @@
 ### 3.6 跨会话 / 跨模块门禁小结
 
 - **跨会话**：confirm 的 `NOT EXISTS unconfirmed`、cleanup/finalize 的候选与 `deleteSyncedDeliveryBody` 的 `unconfirmedLinks==0` 形成双层；`mergeInput` 与 `resetConfirmations` 在所有确认失效时清空全部 link（`DeliveryRepo.swift:565-568, 585-596`）。**一致。**
-- **跨模块**：cleanup 有 item gate；confirm 有意让「一个侧车文件是一次原子写」把同交付的所有 written item 一起翻 synced（`DeliveryRepo.swift:1328-1335` 注释 1255-1261）；finalize 缺门禁（P2-2）；`resolveConflict` 的 `acceptExternalState` 只到 `written` 并清确认（`LiveMetadataAPI.swift:374-405`）。**唯一实质缺口是 finalize。**
+- **跨模块**：cleanup 有 item gate；confirm 有意让「一个 sidecar 文件是一次原子写」把同交付的所有 written item 一起翻 synced（`DeliveryRepo.swift:1328-1335` 注释 1255-1261）；finalize 缺门禁（P2-2）；`resolveConflict` 的 `acceptExternalState` 只到 `written` 并清确认（`LiveMetadataAPI.swift:374-405`）。**唯一实质缺口是 finalize。**
 
 ---
 
@@ -170,7 +170,7 @@
   - `DeliveryFilePhase.verify` / `verifyAfterMutation` 在锁内 `deliveryRepo.get`（`DeliveryFilePhase.swift:121, 134, 168`）；
   - `WritebackService.writeGroupItems` 在锁内 `persistItemFailure` → `DeliveryRepo.markItem`（DB 事务）（`WritebackService.swift:902, 973`）。
 - 反向路径（持 DB 事务/连接锁再取 XMP 锁）静态未找到：DB 事务的 body 是同步闭包，无法调用 async `fileLock.run`；`Database` 的 `stateLock`/`connectionLock` 也不会在持有时进入 XMP 锁。因此当前是单向 `XMP → DB`，**未发现死锁**。
-- 风险：XMP 锁内等待单连接 DB 的全局锁；一个长 DB 事务（或另一路径的慢写）会让该侧车的文件锁持有时间变长，阻塞同路径的 cleanup/finalize/replay。建议把 `deliveryRepo.get` 的快照读移到取锁前（锁内只做一次最终复核）或明确接受；至少在文件锁内不做写 DB（`persistItemFailure` 改为出锁后批量落库）。
+- 风险：XMP 锁内等待单连接 DB 的全局锁；一个长 DB 事务（或另一路径的慢写）会让该 sidecar 的文件锁持有时间变长，阻塞同路径的 cleanup/finalize/replay。建议把 `deliveryRepo.get` 的快照读移到取锁前（锁内只做一次最终复核）或明确接受；至少在文件锁内不做写 DB（`persistItemFailure` 改为出锁后批量落库）。
 
 ### 4.3 TOCTOU 残余与外部编辑器边界（P2-6 / P2-7）
 
@@ -236,7 +236,7 @@
 
 - 扫描侧：`ScanPath.isDirectory` 用 `lstat`，符号链接目录不递归（`ScanPath.swift:94-98`）；但符号链接**文件**会按扩展名进入 `channel.push(.file)` 并在 `stat` 后导入（`IndexerService.swift:928-935, 604-610`），即可以导入指向根外的文件（读取其内容/EXIF/缩略图）。这是「扫描根边界」的旁路，不是写盘权限提升。
 - 写盘侧：`writeAtomic` 用 temp + `replaceItemAt`（`SidecarXMPProvider.swift:758-780`），目标是 symlink 时**疑似**替换链接本身而非链接目标（macOS `replaceItemAt` 语义，未用测试钉死），因此**未发现** symlink 写穿；`removeFile` 也只删链接。`backup` 的 `copyItem` 对 symlink 的行为同样未在测试中钉死（`SidecarXMPProvider.swift:177-187`）。
-- 建议：明确「扫描不跟随 symlink 文件」或记录为已知边界；补一条 symlink 侧车的写盘/恢复测试。
+- 建议：明确「扫描不跟随 symlink 文件」或记录为已知边界；补一条 symlink sidecar 的写盘/恢复测试。
 
 ### 6.3 备份恢复 / 删除顺序 / FK（P2-14）
 

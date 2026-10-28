@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Schema/SchemaCurrent+DDLCore.swift
-// SchemaCurrent DDL 片段 1/3：文件头 + 表 1–24（会话/资产/照片/分析任务/侧车/人脸/相似度快照）。
+// SchemaCurrent DDL 片段 1/3：文件头 + 表 1–24（会话/资产/照片/分析任务/sidecar/人脸/相似度快照）。
 //
 // final-cleanup 纯拆分：本片段与拆分前 SchemaCurrent.ddl 的对应区间逐字节相同；三段按
 // ddlCore → ddlDomain → ddlIndexes 拼接（见 SchemaCurrent.swift），不得重排或改字。
@@ -155,7 +155,7 @@ extension SchemaCurrent {
       PRIMARY KEY (session_id, asset_id)
     );
 
-    -- 9. 侧车绑定
+    -- 9. sidecar 绑定
     CREATE TABLE sidecar_bindings (
       id TEXT PRIMARY KEY,
       xmp_path TEXT NOT NULL,
@@ -166,7 +166,7 @@ extension SchemaCurrent {
       updated_at TEXT NOT NULL
     );
 
-    -- 10. 侧车↔文件
+    -- 10. sidecar↔文件
     CREATE TABLE sidecar_binding_files (
       sidecar_binding_id TEXT NOT NULL REFERENCES sidecar_bindings(id) ON DELETE CASCADE,
       file_id TEXT NOT NULL REFERENCES asset_files(id) ON DELETE CASCADE,
@@ -174,7 +174,7 @@ extension SchemaCurrent {
       PRIMARY KEY (sidecar_binding_id, file_id)
     );
 
-    -- 11. 侧车元数据现值
+    -- 11. sidecar 元数据现值
     CREATE TABLE sidecar_metadata_state (
       sidecar_binding_id TEXT PRIMARY KEY REFERENCES sidecar_bindings(id) ON DELETE CASCADE,
       rating INTEGER CHECK (rating IS NULL OR rating BETWEEN 0 AND 5),

@@ -150,12 +150,12 @@ extension SettingsViewModel {
         SettingGroup(id: "metadata", titleZh: "元数据", fields: [
             SettingField(
                 key: "metadata_write_mode", type: .select([
-                    SelectOption(value: "auto", labelZh: "自动（RAW侧边栏，成品格式内嵌）"),
+                    SelectOption(value: "auto", labelZh: "自动（RAW 附属文件，成品格式内嵌）"),
                     SelectOption(value: "sidecar", labelZh: "XMP Sidecar"),
                     SelectOption(value: "embedded", labelZh: "Embedded"),
                 ]),
                 zhLabel: "写入方式",
-                zhDesc: "auto=自动（RAW侧边栏，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded"
+                zhDesc: "auto=自动（RAW 附属文件，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded"
             ),
         ]),
         SettingGroup(id: "culling", titleZh: "挑片网格", fields: [

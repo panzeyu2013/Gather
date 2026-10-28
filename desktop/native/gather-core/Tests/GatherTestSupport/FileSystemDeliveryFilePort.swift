@@ -1,7 +1,7 @@
 // desktop/native/gather-core/Tests/GatherTestSupport/FileSystemDeliveryFilePort.swift
 // P2-6：仅文件系统的 DeliveryFilePort 从 GatherDelivery 生产面移入测试支持。
 //
-// 生产默认注入 XMPDeliveryFilePort（经 XMPProvider 原子替换 + 大小写侧车解析）；
+// 生产默认注入 XMPDeliveryFilePort（经 XMPProvider 原子替换 + 大小写 sidecar 解析）；
 // 该替身只被 DeliveryCoordinator 的测试接线与 CullingService 文件端口测试使用，
 // 因此不再作为 GatherDelivery 的 public API。
 //
@@ -28,7 +28,7 @@ public struct FileSystemDeliveryFilePort: DeliveryFilePort {
         guard FileManager.default.fileExists(atPath: validatedBackup) else {
             throw DeliveryCoordinatorError.backupMissing(xmpPath: backupPath)
         }
-        // 先拷到同目录临时文件，再替换目标：中途失败不会把原侧车删空
+        // 先拷到同目录临时文件，再替换目标：中途失败不会把原 sidecar 删空
         //（与 SidecarXMPProvider.install 的覆盖写语义一致）。
         let tempPath = target + ".restore-" + UUID().uuidString.lowercased()
         try FileManager.default.copyItem(atPath: validatedBackup, toPath: tempPath)

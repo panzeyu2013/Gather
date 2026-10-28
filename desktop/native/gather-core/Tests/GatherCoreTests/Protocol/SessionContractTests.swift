@@ -145,7 +145,7 @@ struct SessionContractTests {
 
     @Test func gatherErrorCodeCountIsPinned() {
         // TS 参考实现（packages/shared/src/errors.ts）已随原生迁移删除，156 项
-        // 是其历史清单。原生新增 7 个侧车文档故障码（XMP_DOCUMENT_CORRUPT /
+        // 是其历史清单。原生新增 7 个 sidecar 文档故障码（XMP_DOCUMENT_CORRUPT /
         // _UNSUPPORTED / _READ_FAILED、XMP_WRITE_FAILED / _VERIFICATION_FAILED、
         // XMP_BACKUP_FAILED、XMP_RESTORE_FAILED）后总数 163。
         // 审查修复轮再补 6 个结构化码：XMP_CONFIRM_OTHER_SESSION_PENDING、

@@ -101,14 +101,14 @@ F 报告的 `NSEvent.modifierFlags` 误路由 / `runModal` 阻塞 / `GatherEvent
 | **D12** | 人物库「在当前工作区复核」实际去关联照片第一项的工作区 | PersonDetailView 接收当前工作区：有该工作区的照片就用它，否则按钮文案改为「在「工作区名」复核人脸」（不再撒谎） | 结构保证（文案与目标同源） |
 
 | **D08** | 「查看照片」只等自然分页：目标在第 200 张之后只打开图库不定位；只带路径的入口不走清筛选分支 | GalleryViewModel.locatePendingPhoto(photoId:photoPath:) 主动向后取页直到命中（上限 50 页/1 万张，避免为一次跳转拉满大图库），失败给出可见反馈；入口任务把「清筛选」判断扩到 path-only，并新增入口筛选意图 | locateTargetBeyondFirstPage / locateTargetByPath / locateMissingTargetReportsFailure / locateStopsWhenPagingFails（4 条） |
-| **D09** | 导出「计划」是源文件清单，未描述真正输出；照片数/文件数/字节混为一谈 | ExportService.outputPlan 成为预览与执行的**同一份计划来源**：输出名（含重名改名）、格式、是否附 XMP 边车、逐项可执行性诊断（EXPORT_SOURCE_MISSING / _UNREADABLE）、体积按 original/转码区分是否为估算；预览新增 photoCount / sidecarCount / physicalFileCount / issueCount，确认文案改用物理文件数，清单改为展示输出名 + 边车 + 问题标记 | previewDescribesOutputsNotSourceList + 跨端键集合契约测试 |
+| **D09** | 导出「计划」是源文件清单，未描述真正输出；照片数/文件数/字节混为一谈 | ExportService.outputPlan 成为预览与执行的**同一份计划来源**：输出名（含重名改名）、格式、是否附 XMP sidecar、逐项可执行性诊断（EXPORT_SOURCE_MISSING / _UNREADABLE）、体积按 original/转码区分是否为估算；预览新增 photoCount / sidecarCount / physicalFileCount / issueCount，确认文案改用物理文件数，清单改为展示输出名 + sidecar + 问题标记 | previewDescribesOutputsNotSourceList + 跨端键集合契约测试 |
 | **D10** | 待办只传目标页（冲突、离线、分析过期三件） | 三个待办各自携带意图：reviewXmpConflicts（只看 XMP 冲突）/ reviewOfflinePhotos（图库新增「离线」筛选枚举 + 入口筛选意图）/ reviewStaleAnalysis（人脸页直达分析步骤）；全部按事件语义消费 | todoActionsCarryIntent / staleAnalysisNavigation / offlinePhotos 动作断言 |
 
 ### 0.4 审计后加固（D09 单源化 + 空范围口径 + 回归补齐）
 
 | 项 | 改动 | 理由 |
 | --- | --- | --- |
-| D09 单源化 | 抽出 ExportService.buildPlan(...)，**预览与执行调用同一份命名/重名/边车/诊断实现**；execute 改为消费该计划（此前 execute 内联一套命名循环、preview 另抄一份，两处规则可能漂移）；preview / outputPlan 新增 resumedNames / completedPhotoIds 参数 | 「统一输出计划」必须真的同源，否则只是两份实现看起来一样 |
+| D09 单源化 | 抽出 ExportService.buildPlan(...)，**预览与执行调用同一份命名/重名/sidecar/诊断实现**；execute 改为消费该计划（此前 execute 内联一套命名循环、preview 另抄一份，两处规则可能漂移）；preview / outputPlan 新增 resumedNames / completedPhotoIds 参数 | 「统一输出计划」必须真的同源，否则只是两份实现看起来一样 |
 | 续跑预览一致性 | 新增 AnalysisJobRepo.latestTerminalCheckpoint(dedupeKey:) + JobService.latestTerminalCheckpoint，路由的 export.preview 分支按同一交付指纹取终态 checkpoint，把 destinations/completedPhotoIds 作为续跑基线传给预览 | 断点续跑会复用旧名，预览若按「全新交付」算会显示 _2 后缀，与实际写出不符 |
 | 空范围口径 | 导出结果为 0 项时提示「当前范围没有可导出的照片，未写入任何文件」而不是「导出任务已完成」 | 零项交付说「已完成」等于谎报 |
 | 回归补齐 | previewMatchesResumedDeliveryNames（续跑预览与执行同名）、allFailedExportDoesNotMarkWorkspaceExported / successfulExportWithDeliveriesMarksWorkspaceExported / legacyExportWithoutDeliverySummaryKeepsOldSemantics（工作区「已导出」按交付摘要） | D02/D09 此前只有结构性保证，缺少直接断言 |

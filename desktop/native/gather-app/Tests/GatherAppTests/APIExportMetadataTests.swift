@@ -19,7 +19,7 @@
 // 本批只断言 API 边界的 job 形状与取消语义）。
 // S5c-2b-3b-2b-2：冲突/孤儿夹具直接种 deliveries/delivery_items（不再构造
 // MetadataSyncCoordinator，旧 metadata_outbox 表也不参与断言）。
-// XMP 端口用内存假件，不触碰磁盘侧车。
+// XMP 端口用内存假件，不触碰磁盘 sidecar。
 
 import Foundation
 import Testing
@@ -643,7 +643,7 @@ private struct MetadataAPIFixture {
         return photoPaths[index]
     }
 
-    /// 交付主键：与 DeliveryRepo 的落库口径一致（侧车路径 → TSPath.normalize）。
+    /// 交付主键：与 DeliveryRepo 的落库口径一致（sidecar 路径 → TSPath.normalize）。
     func deliveryPath(for photoId: String) throws -> String {
         TSPath.normalize(TSPath.xmpSidecarPath(try path(for: photoId)))
     }
@@ -768,7 +768,7 @@ struct APIMetadataTests {
         let photoId = try #require(fixture.photoIds.first)
         let xmpPath = try fixture.deliveryPath(for: photoId)
 
-        // 共享同一侧车的第二个会话 + 它自己的照片/item（module scope 的 confirm 需要）。
+        // 共享同一 sidecar 的第二个会话 + 它自己的照片/item（module scope 的 confirm 需要）。
         let sessionRepo = SessionRepo(connection: fixture.db)
         let s2 = try sessionRepo.create(name: "B6a metadata s2", source: "test")
         let p2URL = fixture.tempRoot.appendingPathComponent("META_S2.jpg")

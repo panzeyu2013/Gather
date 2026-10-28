@@ -62,7 +62,7 @@ final class PhaseOneCollector: @unchecked Sendable {
         if pathErrors[path] == nil { pathErrors[path] = message }
     }
 
-    /// 同一交付只备份一次（共享侧车的 RAW+JPEG 走同一 xmpPath）。
+    /// 同一交付只备份一次（共享 sidecar 的 RAW+JPEG 走同一 xmpPath）。
     func needsBackup(path: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -138,7 +138,7 @@ struct PreparedEntry: Sendable {
     let photoPath: String
     /// execute 时实际写盘的照片路径（资产 relink 后与快照不同）。
     let writePhotoPath: String
-    /// 实际写进侧车的完整属性（回读基线失败时的回退值，也供本地投影）。
+    /// 实际写进 sidecar 的完整属性（回读基线失败时的回退值，也供本地投影）。
     let writtenAttributes: MetadataWriteAttributes
     let keywordsBeforeWrite: [String]
 
@@ -148,7 +148,7 @@ struct PreparedEntry: Sendable {
 // writeback-planners.ts（writeback-planners.ts 全量）
 // ────────────────────────────────────────────────────────────
 
-/// TS: buildSimilarityKeywordPlan —— 相似度分组关键词 → 按侧车聚合 + 受影响路径集。
+/// TS: buildSimilarityKeywordPlan —— 相似度分组关键词 → 按 sidecar 聚合 + 受影响路径集。
 public func buildSimilarityKeywordPlan(
     groups: [SimilarityGroup],
     assignments: [(groupId: Int, keywords: [String])]
@@ -300,7 +300,7 @@ extension WritebackService {
         return byPhoto
     }
 
-    /// 侧车路径 → 照片路径（xmp 后缀大小写不敏感，与 execute 的回退同口径）。
+    /// sidecar 路径 → 照片路径（xmp 后缀大小写不敏感，与 execute 的回退同口径）。
     static func photoPathFromSidecar(_ xmpPath: String) -> String {
         xmpPath.lowercased().hasSuffix(".xmp") ? String(xmpPath.dropLast(4)) : xmpPath
     }

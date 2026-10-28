@@ -8,7 +8,7 @@ import GatherProtocol
 
 extension CullingService {
     /// TS: updateState —— 单张照片状态更新（pick/rating/colorLabel），受影响
-    /// 照片为 asset 变体（pick）或共享侧车（shared metadata）。
+    /// 照片为 asset 变体（pick）或共享 sidecar（shared metadata）。
     @discardableResult
     public func updateState(
         sessionId: String,
@@ -69,7 +69,7 @@ extension CullingService {
             try ensureUpdateExtras(entry: entry, sessionId: sessionId)
         }
         let photosByAssetId = contextPhotosByAssetId ?? entry.photosByAssetId
-        // 保序受影响集合：TS Map.set 保留首见位置（先资产变体，后共享侧车），
+        // 保序受影响集合：TS Map.set 保留首见位置（先资产变体，后共享 sidecar），
         // 结果状态数组的顺序依赖它。
         var affectedById: [(id: String, photo: CullingPhotoRow)] = []
         var affectedSeen = Set<String>()
@@ -234,7 +234,7 @@ extension CullingService {
         )
     }
     /// TS: batchUpdate —— 批量更新；pick 按逻辑资产合并、shared metadata 按
-    /// 共享侧车合并，整批单事务。
+    /// 共享 sidecar 合并，整批单事务。
     public func batchUpdate(
         sessionId: String,
         photoIds: [String],
@@ -261,7 +261,7 @@ extension CullingService {
         let photoById = entry.photoById
         let groupMap = entry.groupMap ?? [:]
         let linkedByXmp = entry.linkedByXmp ?? [:]
-        // pick 更新按逻辑资产合并（同一资产的变体只更新一次），否则按共享侧车
+        // pick 更新按逻辑资产合并（同一资产的变体只更新一次），否则按共享 sidecar
         // 合并（RAW+JPEG 对的 rating/label 一次入队）。
         var operationIds: [String] = []
         var operationKeys: Set<String> = []
@@ -281,13 +281,13 @@ extension CullingService {
         let historySink = CullingHistorySink()
         // 一次 IN 查询预读全部操作目标的决策行，替代事务内逐项 getDecision
         //（N+1 单行查询）。预读与事务在同一同步 tick 内，且每个照片每批最多写
-        // 一次（操作 id 按逻辑资产/侧车唯一），故预读的 revision 不会过期。
+        // 一次（操作 id 按逻辑资产/sidecar 唯一），故预读的 revision 不会过期。
         let currentRows = Dictionary(
             uniqueKeysWithValues: try cullingDecisionRepo
                 .getByPhotoIds(sessionId: sessionId, photoIds: operationIds)
                 .map { ($0.photoId, $0) }
         )
-        // 复审 B3：syncStatus 在批外层按 xmpPath 预读（同一侧车的照片只查一次）。
+        // 复审 B3：syncStatus 在批外层按 xmpPath 预读（同一 sidecar 的照片只查一次）。
         let syncFallback: MetadataSyncStatus = (patch.rating != nil || patch.colorLabel != nil)
             ? .pending : .clean
         var syncByXmp: [String: MetadataSyncStatus] = [:]

@@ -8,7 +8,7 @@
 // 3) persistAttributes/persistKeywords 更新 delivery_items 并被 execute 写进 XMP；
 // 4) 部分失败：逐项 written/failed，交付按「有成功即 written」收敛；
 // 5) retryFailed 从 delivery_items 读 failed 重放（不重新 preview）；
-// 6) 跨模块门禁 / 共享侧车去重 / 空 cleanup / confirmSync；
+// 6) 跨模块门禁 / 共享 sidecar 去重 / 空 cleanup / confirmSync；
 // 7) 旧同步栈（writeback_items / metadata_outbox / sessions.writeback_status）
 //    已删除：服务只写交付模型。
 // 8) P0-1 TOCTOU：慢 restore 的 cleanup 与 writeback 写盘共用 XMPFileLock，
@@ -27,7 +27,7 @@ import GatherTestSupport
 
 // MARK: - 夹具
 
-/// 真实文件系统 XMP 假件：侧车内容即属性 JSON，备份为真实文件拷贝。
+/// 真实文件系统 XMP 假件：sidecar 内容即属性 JSON，备份为真实文件拷贝。
 private final class WritebackFSXMPProvider: XMPProvider, @unchecked Sendable {
     private let lock = NSLock()
     private var backupCounter = 0
@@ -277,7 +277,7 @@ struct WritebackServiceTests {
         let xmp = WritebackFSXMPProvider()
         let service = makeService(fixture: fixture, xmp: xmp)
 
-        // 预置一份真实侧车：写前备份与写后指纹都必须落在磁盘上。
+        // 预置一份真实 sidecar：写前备份与写后指纹都必须落在磁盘上。
         let initial = MetadataWriteAttributes(keywords: ["before"])
         try JSONEncoder().encode(initial).write(
             to: URL(fileURLWithPath: fixture.sidecarPaths[0]))
@@ -440,7 +440,7 @@ struct WritebackServiceTests {
         }
     }
 
-    @Test("preview：共享同一侧车的 RAW+JPEG 只生成一条交付项")
+    @Test("preview：共享同一 sidecar 的 RAW+JPEG 只生成一条交付项")
     func previewDeduplicatesSharedSidecar() async throws {
         let fixture = try WritebackFixture(fileNames: ["photo.cr3", "photo.jpg"])
         defer { fixture.cleanup() }
@@ -448,7 +448,7 @@ struct WritebackServiceTests {
 
         let rawSidecar = TSPath.xmpSidecarPath(fixture.photoPaths[0])
         let jpegSidecar = TSPath.xmpSidecarPath(fixture.photoPaths[1])
-        #expect(rawSidecar == jpegSidecar, "前置条件：两者共享侧车")
+        #expect(rawSidecar == jpegSidecar, "前置条件：两者共享 sidecar")
 
         let preview = try await service.preview(
             sessionId: fixture.sessionId,
@@ -456,7 +456,7 @@ struct WritebackServiceTests {
             keywordAdditions: [fixture.photoIds[0]: ["a"], fixture.photoIds[1]: ["b"]]
         )
         #expect(preview.affectedPhotos == 2)
-        #expect(preview.totalCount == 1, "共享同一侧车的两张照片只能生成一条交付项")
+        #expect(preview.totalCount == 1, "共享同一 sidecar 的两张照片只能生成一条交付项")
         #expect(Set(preview.items.first?.keywords ?? []) == ["a", "b"])
         #expect(preview.items.first?.preview?.sharedPhotoCount == 2)
         #expect(try fixture.items().count == 1)
@@ -687,7 +687,7 @@ struct WritebackServiceTests {
         #expect(try fixture.delivery(sidecar) == nil)
         #expect(try service.getItems(sessionId: fixture.sessionId, module: "similarity").isEmpty)
         let restored = try await xmp.readAttributes(photoPath: fixture.photoPaths[0])
-        #expect(restored.keywords == ["before"], "cleanup 必须从真实备份恢复侧车")
+        #expect(restored.keywords == ["before"], "cleanup 必须从真实备份恢复 sidecar")
     }
 
     // MARK: - writing 租约（P1-2）

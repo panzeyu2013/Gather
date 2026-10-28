@@ -1,8 +1,8 @@
 // desktop/native/gather-core/Sources/GatherProtocol/Protocol/XMPBackupNaming.swift
-// P1 / P2-12：XMP 侧车备份命名的唯一实现（生成端 / 校验端 / 路径迁移共用）。
+// P1 / P2-12：XMP sidecar 备份命名的唯一实现（生成端 / 校验端 / 路径迁移共用）。
 //
 // 契约（与 DeliveryBackupPath 的历史实现一致）：
-// - 备份与侧车同目录；
+// - 备份与 sidecar 同目录；
 // - 名字 = "<xmp basename>.gather-backup-<非空后缀>"；
 // - 比较一律 precomposed + caseInsensitive：DB 里的 xmp_path 常是归一化小写
 //   （IMG_1.xmp），盘上备份由 XMPProvider.backup 按真实大小写生成
@@ -12,7 +12,7 @@ import Foundation
 public enum XMPBackupNaming {
     public static let marker = ".gather-backup-"
 
-    /// 备份名 = 侧车完整文件名 + marker + 后缀（生成端使用）。
+    /// 备份名 = sidecar 完整文件名 + marker + 后缀（生成端使用）。
     public static func make(xmpPath: String, suffix: String) -> String {
         xmpPath + marker + suffix
     }

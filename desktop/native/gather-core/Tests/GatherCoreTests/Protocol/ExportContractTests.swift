@@ -132,7 +132,7 @@ struct ExportContractTests {
         )
         let data = try JSONEncoder().encode(original)
         #expect(try JSONDecoder().decode(ExportPreview.self, from: data) == original)
-        // D09：预览多了"输出计划"字段（输出名/格式/边车/逐项诊断 + 物理文件数），
+        // D09：预览多了"输出计划"字段（输出名/格式/sidecar/逐项诊断 + 物理文件数），
         // 键集合必须同步，否则跨端契约会静默漂移。
         #expect(Set(try jsonKeys(of: data)) == [
             "totalFiles", "totalSizeBytes", "freeSpaceBytes", "files",
