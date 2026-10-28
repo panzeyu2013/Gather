@@ -312,12 +312,12 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - `L10n`（`Support/L10n.swift:120`）：**key 即中文文案**；渲染期显式携带
   `language`（`L10n.Language.zhCN/en`），经 `Bundle.module` 的 `.lproj` 查表——
   `zh-Hans.lproj` 只有 9 个占位键，未命中自动回退 key（即中文）；`en.lproj`
-  （1,649 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
+  （1,679 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
   (language, key) 缓存查表结果，避免每帧重走 Bundle 查找。
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`
   重建整棵页面树。
-- 错误码翻译：`L10n.errorText(_:)` 覆盖 **185 项** `GatherErrorCode`（P0 后含 Triage/Keyword/Face/Maintenance；B03 起旧
+- 错误码翻译：`L10n.errorText(_:)` 覆盖 **186 项** `GatherErrorCode`（P0 后含 Triage/Keyword/Face/Maintenance；B03 起旧
   `GatherLocalization` 翻译出口已删，`errorMessages` 码表仍由它持有）
   （`errorMessages` 表与枚举逐项对齐，缺失即测试红）；未知码回退通用文案。
 - 任务侧映射：`jobStatusText` / `jobTypeText` / `progressPhaseText` 分别覆盖

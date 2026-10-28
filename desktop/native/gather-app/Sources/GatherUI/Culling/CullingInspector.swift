@@ -163,7 +163,7 @@ struct CullingInspector: View {
                         .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity)
                         .disabled(isBusy || viewModel.currentAsset == nil)
-                        .help(l10n("直接编辑当前照片的 IPTC 字段；空值表示清空"))
+                        .help(l10n("直接编辑当前照片的 IPTC 字段；空值清空侧车字段，JPEG 内嵌字段需在 Bridge/Capture One 清空"))
                 }
 
                 // P1 / B2：模板批量套用入口（选中集或当前照片）。

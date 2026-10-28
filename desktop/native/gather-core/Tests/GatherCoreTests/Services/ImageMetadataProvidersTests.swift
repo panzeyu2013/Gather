@@ -135,6 +135,11 @@ struct ImageMetadataProvidersTests {
             "Country": .string("中国"),
             "Credit": .string("Self"),
             "Location": .string("外滩"),
+            "WebStatement": .string("https://example.com/license"),
+            "CreatorContactInfo": .object([
+                "CiAdrCity": .string("上海"),
+                "CiEmailWork": .string("a@b.c"),
+            ]),
         ])
         let iptc = JSONValue.object([
             "ObjectName": .string("IIM 标题（应被 dc 覆盖）"),
@@ -161,6 +166,11 @@ struct ImageMetadataProvidersTests {
         #expect(descriptive?.sublocation == "外滩")
         #expect(descriptive?.captionWriter == "李四")
         #expect(descriptive?.scene == ["011100"])
+        #expect(descriptive?.webStatement == "https://example.com/license",
+                "xmpRights:WebStatement 必须映射（否则 JPEG 清空会被判成功）")
+        #expect(descriptive?.contactInfo?.city == "上海",
+                "CreatorContactInfo 结构成员必须映射（否则 JPEG 清空会被判成功）")
+        #expect(descriptive?.contactInfo?.email == "a@b.c")
     }
 
     @Test("内嵌 IPTC：真实 JPEG 的 caption/版权/作者可读（Bridge 写入形态）")

@@ -806,6 +806,7 @@
 "无法读取 XMP 侧车文件。请检查文件是否存在、磁盘是否可访问，以及当前用户是否有读取权限，然后重试。" = "Could not read the XMP sidecar file. Check that the file exists, that the disk is accessible, and that the current user has read permission, then try again.";
 "写入 XMP 侧车文件失败。请检查磁盘剩余空间、文件写入权限，以及该文件是否被其他软件占用，然后重试。" = "Failed to write the XMP sidecar file. Check the free disk space, the file write permission, and whether another application has the file open, then try again.";
 "XMP 写入后校验未通过，内容可能未完整落盘。请检查磁盘空间与文件权限后重试；若反复失败，请先备份该 .xmp 文件再排查磁盘错误。" = "Post-write verification of the XMP failed; the contents may not have been fully written to disk. Check disk space and file permissions and try again; if it keeps failing, back up the .xmp file first and check for disk errors.";
+"JPEG 的内嵌元数据无法通过 .xmp 侧车清空（字段：{{field}}）。请先在 Bridge 或 Capture One 中清空这些内嵌字段，再回到 Gather 重试。" = "Metadata embedded in this JPEG cannot be cleared through the .xmp sidecar (fields: {{field}}). Clear those embedded fields in Bridge or Capture One first, then retry in Gather.";
 "创建 XMP 备份失败，已停止写入以保护原文件。请检查备份目录的磁盘空间与写入权限，然后重试。" = "Failed to create the XMP backup; the write stopped to protect the original file. Check the free disk space and write permission of the backup directory, then try again.";
 "从备份恢复 XMP 失败，原文件未被改动。请确认备份文件存在且可写、磁盘空间充足，然后重试恢复。" = "Failed to restore the XMP from the backup; the original file was left unchanged. Make sure the backup file exists and is writable and that there is enough disk space, then retry the restore.";
 "备份路径包含上级目录（..），Gather 已拒绝操作。请把备份移回照片所在目录并恢复受控命名后再试。" = "The backup path contains a parent-directory component (..), so Gather refused to touch it. Move the backup back into the photo's folder with its controlled name, then retry.";
@@ -1764,7 +1765,7 @@
 "没有可移出的淘汰照片" = "No rejected photos to move";
 "编辑元数据" = "Edit metadata";
 "编辑元数据…" = "Edit metadata…";
-"初值来自盘上（含 JPEG 内嵌 IPTC）；只提交改动过的字段，留空表示清空该字段。JPEG 的写入仍落在同名 .xmp 侧车。" = "Values start from what is on disk (including IPTC embedded in JPEGs); only changed fields are submitted, and an empty field clears it. JPEG writes still go to the matching .xmp sidecar.";
+"初值来自盘上（含 JPEG 内嵌 IPTC）；只提交改动过的字段。留空表示清空侧车字段；JPEG 的内嵌字段（Bridge/Capture One 写入）无法在此清空，需先在原软件中清空。" = "Values start from what is on disk (including IPTC embedded in JPEGs); only changed fields are submitted. An empty field clears the sidecar value; fields embedded in JPEGs (written by Bridge or Capture One) cannot be cleared here — clear them in that app first.";
 "无法读取盘上元数据，为避免覆盖外部改动，保存已禁用。请关闭后重试。" = "The on-disk metadata could not be read. Saving is disabled to avoid overwriting external changes; close and try again.";
 "未填写" = "Not set";
 "联系人" = "Contact";
@@ -1779,7 +1780,7 @@
 "应用" = "Apply";
 "没有改动" = "No changes";
 "无法读取元数据" = "Unable to read metadata";
-"直接编辑当前照片的 IPTC 字段；空值表示清空" = "Edit the current photo's IPTC fields directly; empty values clear them";
+"直接编辑当前照片的 IPTC 字段；空值清空侧车字段，JPEG 内嵌字段需在 Bridge/Capture One 清空" = "Edit the current photo's IPTC fields directly; empty values clear sidecar fields, while JPEG embedded fields must be cleared in Bridge or Capture One";
 "已写入 %lld 张" = "Wrote %lld photos";
 "已处理；%lld 张无需写入（已有星级或人工决策）" = "Done; %lld photos needed no write (existing rating or manual decision)";
 "已撤销；%lld 张的星级已被人工改动，保留现值" = "Undone; %lld ratings were changed manually and were kept";

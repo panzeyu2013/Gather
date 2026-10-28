@@ -35,7 +35,7 @@ struct MetadataEditorSheet: View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("编辑元数据"))
                 .font(GatherFont.cardTitle)
-            Text(l10n("初值来自盘上（含 JPEG 内嵌 IPTC）；只提交改动过的字段，留空表示清空该字段。JPEG 的写入仍落在同名 .xmp 侧车。"))
+            Text(l10n("初值来自盘上（含 JPEG 内嵌 IPTC）；只提交改动过的字段。留空表示清空侧车字段；JPEG 的内嵌字段（Bridge/Capture One 写入）无法在此清空，需先在原软件中清空。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -188,6 +188,14 @@ struct MetadataEditorSheet: View {
         do {
             let input = try MetadataInlineApplyInput(photoIds: [photoId], fields: edited)
             let outcome = try await api.applyDescriptive(Confirmed(input, source: .userDialog))
+            // P1：失败（尤其是 JPEG 内嵌字段无法清空）必须留在编辑器里可见；
+            // 同时重新读盘，让输入框回到盘上真实值，而不是用户刚敲的空值。
+            if let failure = outcome.failed.first {
+                errorText = CommandErrorText.resolve(
+                    CommandError(APIError.failed(failure.message)), with: l10n)
+                await load()
+                return
+            }
             onApplied(outcome)
             dismiss()
         } catch {

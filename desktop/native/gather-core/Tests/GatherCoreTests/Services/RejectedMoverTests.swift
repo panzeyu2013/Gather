@@ -327,6 +327,44 @@ struct RejectedMoverTests {
                 "IMG_9.xmp.gather-backup-abc")))
     }
 
+    @Test("三个变体共享侧车：逐张移出两个、留下一个，不能撞名失败")
+    func movesTwoSharedVariants() throws {
+        let db = try makeTestDB()
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try insertSession(db, "s-1")
+        let rawPath = (dir as NSString).appendingPathComponent("IMG_7.CR3")
+        let jpegPath = (dir as NSString).appendingPathComponent("IMG_7.JPG")
+        let tiffPath = (dir as NSString).appendingPathComponent("IMG_7.TIF")
+        for path in [rawPath, jpegPath, tiffPath] {
+            try Data("photo".utf8).write(to: URL(fileURLWithPath: path))
+        }
+        let sidecarPath = TSPath.xmpSidecarPath(rawPath)
+        try Data("<xmp>shared</xmp>".utf8).write(to: URL(fileURLWithPath: sidecarPath))
+        try insertPhoto(db, id: "p-raw", sessionId: "s-1", filepath: rawPath)
+        try insertPhoto(db, id: "p-jpg", sessionId: "s-1", filepath: jpegPath)
+        try insertPhoto(db, id: "p-tif", sessionId: "s-1", filepath: tiffPath)
+
+        let destination = (dir as NSString).appendingPathComponent("_rejects")
+        // 与 LiveCullingAPI 相同：逐张新建 mover（批次之间没有共享状态）。
+        let first = RejectedMover(photoRepo: PhotoRepo(connection: db)).move(
+            items: [RejectedMoveItem(photoId: "p-raw", filepath: rawPath, sharesSidecar: true)],
+            destinationRoot: destination)
+        let second = RejectedMover(photoRepo: PhotoRepo(connection: db)).move(
+            items: [RejectedMoveItem(photoId: "p-jpg", filepath: jpegPath, sharesSidecar: true)],
+            destinationRoot: destination)
+        #expect(first.failed.isEmpty)
+        #expect(second.failed.isEmpty, "共享侧车的第二个变体不得因撞名失败：\(second.failed)")
+        #expect(first.moved.count + second.moved.count == 2)
+        #expect(FileManager.default.fileExists(atPath: sidecarPath), "留下的变体仍必须有侧车")
+        // 每个被移出的变体都要有独立侧车；第二个因撞名改成 -2，侧车必须一起改名。
+        #expect(FileManager.default.fileExists(
+            atPath: (destination as NSString).appendingPathComponent("IMG_7.xmp")))
+        #expect(FileManager.default.fileExists(
+            atPath: (destination as NSString).appendingPathComponent("IMG_7-2.xmp")),
+            "第二个变体的侧车不得因 _rejects/IMG_7.xmp 已存在而写失败")
+    }
+
     @Test("移出写 archived_at；迁移闭包拿到 sharesSidecar")
     func moveArchivesPhoto() throws {
         let db = try makeTestDB()

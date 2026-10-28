@@ -197,7 +197,7 @@ extension FaceRepo {
             column == "member_count"
                 // 只数可见照片的成员（归档件不再贡献簇大小）。
                 // LEFT JOIN：照片行缺失的孤儿成员仍计入（清理入口）；只排除已归档照片。
-                ? "(SELECT COUNT(*) FROM face_cluster_members m LEFT JOIN photos p ON p.id = m.photo_id WHERE m.cluster_id = c.id AND p.archived_at IS NULL) AS member_count"
+                ? "(SELECT COUNT(*) FROM face_cluster_members m LEFT JOIN photos p ON p.id = m.photo_id WHERE m.cluster_id = c.id AND \(PhotoVisibility.visiblePredicate(alias: "p"))) AS member_count"
                 : "c." + column
         }.joined(separator: ", ")
         let clusters = try connection.prepare("""
@@ -207,7 +207,7 @@ extension FaceRepo {
               AND (
                 (SELECT COUNT(*) FROM face_cluster_members m
                    LEFT JOIN photos p ON p.id = m.photo_id
-                  WHERE m.cluster_id = c.id AND p.archived_at IS NULL) > 0
+                  WHERE m.cluster_id = c.id AND \(PhotoVisibility.visiblePredicate(alias: "p"))) > 0
                 OR EXISTS (SELECT 1 FROM role_bindings rb WHERE rb.cluster_id = c.id)
               )
             ORDER BY c.id
@@ -224,7 +224,7 @@ extension FaceRepo {
                 FROM face_cluster_members fm
                 LEFT JOIN photos p ON fm.photo_id = p.id
                 WHERE fm.cluster_id IN (\(placeholders))
-                  AND p.archived_at IS NULL
+                  AND \(PhotoVisibility.visiblePredicate(alias: "p"))
                 ORDER BY fm.id
               """).query(chunk.map { .int($0) })
             for row in rows {

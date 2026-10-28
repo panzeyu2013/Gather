@@ -271,7 +271,7 @@ public final class PhotoFilterQuery {
             let cameraRows = try connection.prepare("""
                 SELECT DISTINCT c.camera_make FROM photo_metadata_cache c
                 JOIN photos p ON p.id = c.photo_id
-                WHERE c.session_id = ? AND p.archived_at IS NULL
+                WHERE c.session_id = ? AND \(PhotoVisibility.visiblePredicate(alias: "p"))
                   AND c.camera_make LIKE ? ESCAPE '\\'
                 LIMIT 5
                 """).query([.text(sessionId), .text(pattern)])
@@ -284,7 +284,7 @@ public final class PhotoFilterQuery {
         let keywordRows = try connection.prepare("""
             SELECT c.keywords FROM photo_metadata_cache c
             JOIN photos p ON p.id = c.photo_id
-            WHERE c.session_id = ? AND p.archived_at IS NULL
+            WHERE c.session_id = ? AND \(PhotoVisibility.visiblePredicate(alias: "p"))
               AND c.keywords LIKE ? ESCAPE '\\'
             LIMIT 200
             """).query([.text(sessionId), .text("%\(escapeLike(trimmed))%")])

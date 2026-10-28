@@ -4,7 +4,7 @@
 
 ## 结论
 
-A1/A2/A3/B1/B2/C1/C2 全部落地；第三轮复核修复后 core **1364 / 200 suites**、app **728 / 84 suites** 全绿；12 个 `check-*.sh`（strict）+ test-catalog `--self-test` + `gather-schema verify`（44/385/72/65、user_version=5、0 违规）+ `check-docs --strict` 全过。合并后再补 5 条回归（可见性 3 + 联系人 P0 1 + 归档恢复 1）→ core **1369 / 200 suites**；清理 ratchet 的 `try?` 收敛到 248（新增路径以显式 do/catch / 失败分支为主），protocol 基线按实测重写（310 类型 / 1751 声明）。
+A1/A2/A3/B1/B2/C1/C2 全部落地。**最终基线：core 1373 / 201 suites、app 733 / 85 suites（`--no-parallel`）全绿**；12 个 `check-*.sh`（strict）+ test-catalog `--self-test` + `gather-schema verify`（44/385/72/65、user_version=5、0 违规）+ `check-docs --strict` 全过。本轮在合并基线（1369/200、728/84）上新增 9 条回归（JPEG 写后回读 3 + 归档计数 2 + 可见性门禁 1 + 错误文案插值 1 + 共享侧车移出 1 + 清空诊断分支 1）；清理 ratchet 的 `try?` 收敛到 248（新增路径以显式 do/catch / 失败分支为主），protocol 基线按实测重写（310 类型 / 1751 声明）。
 
 ## A1 淘汰移出语义
 
@@ -35,6 +35,21 @@ A1/A2/A3/B1/B2/C1/C2 全部落地；第三轮复核修复后 core **1364 / 200 s
 - 新公开入口 `MetadataService.diskAttributes(photoPath:)`：JPEG 内嵌 + 侧车；模板 apply/preview、triage apply/undo 全部改用它。
 - 测试：`mapsEmbeddedDescriptiveMetadata`、`readsRealJpegIPTCDescriptive`（真实 JPEG 写 IIM 再读）、`mergesDescriptivePerField`。
 
+### P1 hotfix（2026-10-28 复查）
+
+- `applyMetadataAttributes` 的写后回读从 `xmp.readAttributes`（仅侧车）改为
+  `diskAttributes`（JPEG 内嵌 + 侧车）；缓存投影按每张照片的盘上值刷新。
+- **兄弟缓存逐张读盘**：RAW+JPEG 共享侧车时，不再拿写回目标的侧车快照整列刷新
+  兄弟；JPEG 兄弟按自己的内嵌值 + 共享侧车合成（`IMG_102.CR3` 编辑后 JPEG 的
+  `title/copyrightNotice` 仍在缓存）。
+- **JPEG 清空 fail-closed**：侧车元素删除成功但盘上合成值仍有该字段（侧车已清空）
+  = 内嵌残留，新增错误码 `JPEG_EMBEDDED_CLEAR_UNSUPPORTED`，照片进
+  `failed + uncertain`（可撤销），缓存保留盘上真实值；编辑器/模板页显示失败原因，
+  文案明确"内嵌字段需在 Bridge/Capture One 清空"。
+- 测试：`JPEGMetadataWritebackTests`（真实 JPEG + 真实 SidecarXMPProvider +
+  真实交付执行器）3 条：只改 caption 保留内嵌 title/copyright、清空 caption
+  显式失败且缓存不丢 title、RAW 编辑时 JPEG 兄弟按自己的盘上值刷新。
+
 ## B2 单张编辑器
 
 - `MetadataTemplateService.applyFields`（模板 apply 改为转调）；`inline` 批次常量；`MetadataAPI.applyDescriptive` + Live 实现（`replaceContact: true`）。
@@ -61,8 +76,8 @@ A1/A2/A3/B1/B2/C1/C2 全部落地；第三轮复核修复后 core **1364 / 200 s
 
 | 项 | 结果 |
 |---|---|
-| core | 1364 tests / 200 suites，1.7s |
-| app | 728 tests / 84 suites，12.1s（--no-parallel） |
+| core | 1373 tests / 201 suites，11.1s（--no-parallel；并行约 1.8s） |
+| app | 733 tests / 85 suites，12.2s（--no-parallel） |
 | schema verify | tables=44 columns=385 indexes=72 fks=65 user_version=5 violations=0 |
 | check-*.sh ×12 | 全 EXIT=0（strict 可用者带 --strict；cleanup 默认即硬门禁） |
 | test-catalog --self-test | SELFTEST OK |
@@ -113,11 +128,11 @@ A1/A2/A3/B1/B2/C1/C2 全部落地；第三轮复核修复后 core **1364 / 200 s
 - 淘汰移出先筛出实际可移行再算 movingIds；资产内未淘汰兄弟不再被误判为“将移动”，
   共享侧车不会被搬走。
 - 重复组 `resolveGroup` 与组级 resolution 派生只使用可见成员，归档件不参与 keep_one 评分。
-- 新增 4 条测试（triage 探测失败/盘上基线、beforeSnapshot、重复组归档）；core 1364。
+- 新增 4 条测试（triage 探测失败/盘上基线、beforeSnapshot、重复组归档）；core 1364（当轮）。
 
 ## 未做 / 需人工验收
 
 1. **真机矩阵**：C1 存储卡 RAW+JPEG、Bridge 写内嵌 IPTC 的 JPEG、跨页 100 张移出、共享边车移出、500 张模板、undo 星级守卫；本机未跑（需要真实素材）。
 2. **关键词层级/facet、Gallery facet/规则、交付联系表、AI 决策门**：按计划留到 W2，本轮未动。
-3. **移出不可撤销**：仍为单向（`_rejects` 人工找回），与计划一致。
-4. `sessions.photo_count` 仍是物理登记数（不含"已移出"语义）；UI 未加"已移出 M"文案，属于后续 polish。
+3. **移出不可撤销**：仍为单向（`_rejects` 人工找回），无 unarchive API/UI；本轮未做（需要"原路径/重名策略"，不能只靠 `_rejects` 里已改名的文件倒推）。
+4. `sessions.photo_count` 已改为与 `PhotoVisibility` 同口径（移出后回落；新增读面由 `PhotoVisibilityGateTests` 挡住裸 SQL 谓词）；UI 未加"已移出 M"文案，属于后续 polish。

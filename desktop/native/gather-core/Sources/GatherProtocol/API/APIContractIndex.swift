@@ -33,7 +33,7 @@
 // PersonCreateResult、PersonPhotosResult、GlobalPhotoPage、JobHandle/JobEvent）。
 //
 // 待办 / 风险：
-// 1. D-010（P0）：GatherErrorCode.INVALID_PARAM（179 项）已在 Protocol/Core.swift；
+// 1. D-010（P0）：GatherErrorCode.INVALID_PARAM（当前 186 项）已在 Protocol/Core.swift；
 //    GatherError.invalidParameter 直接使用该码，params 携带 field/reason。
 //    路径授权失败由 PHOTO_NOT_FOUND 收敛（见 PhotoPathPolicy）。
 // 2. 输入 init(from:) 对缺字段/未知枚举抛 DecodingError；1B 在 API 边界统一映射为

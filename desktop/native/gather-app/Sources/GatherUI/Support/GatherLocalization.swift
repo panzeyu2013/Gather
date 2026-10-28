@@ -63,7 +63,7 @@ private final class LocalizationBundleCache: @unchecked Sendable {
 }
 
 public enum GatherLocalization {
-    // MARK: - 错误码 → 中文文案（error.* 键，156 项）
+    // MARK: - 错误码 → 中文文案（error.* 键，186 项）
     public static let errorMessages: [String: String] = [
     "C1_NOT_RUNNING": "无法连接 Capture One。请确认 Capture One 已运行并打开文档。",
     "C1_NO_DOCUMENT": "Capture One 未打开文档。请先在 Capture One 中打开目录（Document）。",
@@ -98,6 +98,9 @@ public enum GatherLocalization {
     "XMP_DOCUMENT_READ_FAILED": "无法读取 XMP 侧车文件。请检查文件是否存在、磁盘是否可访问，以及当前用户是否有读取权限，然后重试。",
     "XMP_WRITE_FAILED": "写入 XMP 侧车文件失败。请检查磁盘剩余空间、文件写入权限，以及该文件是否被其他软件占用，然后重试。",
     "XMP_WRITE_VERIFICATION_FAILED": "XMP 写入后校验未通过，内容可能未完整落盘。请检查磁盘空间与文件权限后重试；若反复失败，请先备份该 .xmp 文件再排查磁盘错误。",
+    // P1：JPEG 的内嵌 IPTC/XMP 不会被侧车写入删除。写侧车成功但盘上仍有旧值 =
+    // 明确失败（不能显示"已清空"）；提示用户去 Bridge/C1 清内嵌字段。
+    "JPEG_EMBEDDED_CLEAR_UNSUPPORTED": "JPEG 的内嵌元数据无法通过 .xmp 侧车清空（字段：{{field}}）。请先在 Bridge 或 Capture One 中清空这些内嵌字段，再回到 Gather 重试。",
     "XMP_BACKUP_FAILED": "创建 XMP 备份失败，已停止写入以保护原文件。请检查备份目录的磁盘空间与写入权限，然后重试。",
     "XMP_RESTORE_FAILED": "从备份恢复 XMP 失败，原文件未被改动。请确认备份文件存在且可写、磁盘空间充足，然后重试恢复。",
     "WRITEBACK_OTHER_MODULE_ACTIVE": "请先完成其他模块的 Capture One 同步和清理，再开始新的写回",

@@ -383,7 +383,7 @@ extension ExportService {
         let scoped: [PhotoProjectionRow]
         // P0 / A1：已移出工作区的照片不属于任何导出范围（它们在 _rejects，
         // 用户明确淘汰过；继续导出会让"移出=排除"的承诺失效）。
-        let inWorkspace = photos.filter { $0.archivedAt == nil }
+        let inWorkspace = photos.filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }
         switch options.scope {
         case .session:
             scoped = inWorkspace.filter { $0.status != "removed" }

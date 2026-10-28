@@ -195,7 +195,9 @@ public final class SessionService {
 
         let result = try photoRepo.addPhotos(sessionId: sessionId, filepaths: entries, source)
         _ = try assetRepo?.backfillSession(sessionId)
-        let totalCount = try photoRepo.countBySession(sessionId: sessionId)
+        // P2：photo_count 是"工作区照片数"（UI/侧栏展示），必须与可见性同口径。
+        // 物理行数会把已移出到 _rejects 的照片也算进来，侧栏数字永远不回落。
+        let totalCount = try photoRepo.countVisibleBySession(sessionId: sessionId)
         try transactions.transaction {
             try sessionRepo.updatePhotoCount(id: sessionId, count: totalCount)
             // 新照片使先前任何分析失效：同一事务内 bump index_seq，

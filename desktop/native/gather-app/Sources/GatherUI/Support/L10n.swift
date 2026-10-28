@@ -2,7 +2,7 @@
 // Cut 4 / 4a-0：按"值"而不是进程全局解析文案。
 //
 // 与 GatherLocalization 的关系：
-// - 错误码表仍是 GatherLocalization.errorMessages（179 码唯一来源，不复制）；
+// - 错误码表仍是 GatherLocalization.errorMessages（186 码唯一来源，不复制）；
 // - Delivery P2 的 11 个码不在协议枚举内，单独在 DeliveryErrorPresentation；
 //   resolvedTemplate 同时查这两张表（查询顺序：errorMessages → delivery → 冒号尾参）；
 // - 双形态解析（CODE::p1::p2 / CODE: 散文）与"插值在本地化之后"的语义与
