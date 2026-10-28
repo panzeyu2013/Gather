@@ -92,7 +92,7 @@
 | 写回可靠性 | `DeliveryCoordinator` + `DeliveryRepo` + 纯函数 `aggregateSessionState` | `deliveries/delivery_sessions/delivery_items/delivery_intents` 单事务确认；冲突检测/备份/重试/清理（ADR-015 历史；`MetadataSyncCoordinator`、`CaptureOneSyncState` 已删，见 ADR-028） |
 | 工作区状态 | `WorkspaceStatusService` | 只读聚合、固定优先级推荐、离线 TTL（ADR-012/013） |
 | 一跳化导入 | `SessionService` / `IndexerService` | 路径不跨 IPC、`truncated_import` 标记、去重键 |
-| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 184 项错误码 + 任务/相位文案；en 1,646 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
+| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 185 项错误码 + 任务/相位文案；en 1,649 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
 | 主题与无障碍 | `GatherTheme` / RootView | 品牌令牌 + 语义字体/按钮层级/accessibilityHidden 门控 |
 | 深链/菜单/导入 | `GatherAppDelegate` | gather:// 深链、文件打开、拖拽、菜单、importCompleted 通知 |
 

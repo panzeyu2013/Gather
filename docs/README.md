@@ -37,10 +37,10 @@ Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRoute
 `NativeCommandClient`；历史命令映射见 [api-migration-map.md](archive/cuts/api-migration-map.md)。
 
 > 当前基线（2026-10-28 pre-merge 修复后采样）：8 个功能 target、Schema **44 表 / 384 列 / 72 索引 / 65 外键（user_version=4）**、
-> core **1,327 tests / 199 suites**、app **713 tests / 82 suites**、en 1,646 键 / zh 9 占位键；无 Router、无字符串命令。
+> core **1,335 tests / 199 suites**、app **715 tests / 82 suites**、en 1,649 键 / zh 9 占位键；无 Router、无字符串命令。
 > 只有当前 schema 可打开；旧迁移链已删除，旧版本/未知形态默认 fail-closed，仅显式重置策略才归档重建。
 > **12 个** `check-*.sh` 门禁全绿（strict 可用者带 `--strict`，另有 test-catalog `--self-test` 负例）；
-> ratchet **58/256/0/0/0**（较 54/228：新增摄取/模板/IPTC 代码带来的 +4/+28，
+> ratchet **58/250/0/0/0**（较 54/228：新增摄取/模板/IPTC 代码带来的 +4/+22，
 > 其中 2 处 `@unchecked Sendable` 已收敛为编译器校验的 `Sendable`；口径见
 > [design/p1/iptc-progress.md](design/p1/iptc-progress.md)）。
 

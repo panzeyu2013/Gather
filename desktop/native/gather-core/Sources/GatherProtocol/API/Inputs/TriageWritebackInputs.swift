@@ -52,7 +52,7 @@ public struct TriageWritebackInput: Decodable, Sendable, Equatable {
     public let items: [TriageWritebackItem]
 
     public init(policy: TriageWritebackPolicy, items: [TriageWritebackItem]) throws {
-        // 上限对齐"大库全会话写回"（UI 分页 100×200，项目目标含 100k 级会话）：
+        // 上限对齐"大库全会话写回"（UI 分页 500×200 = 100k，项目目标含 100k 级会话）：
         // 太小会让合法的整会话写回直接被拒绝。真正非法的是空/重复/超大数组。
         let values = try APIValidation.nonEmpty(items, field: "items", maxCount: 100_000)
         guard Set(values.map(\.photoId)).count == values.count else {

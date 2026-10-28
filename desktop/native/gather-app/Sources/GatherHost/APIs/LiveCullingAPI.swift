@@ -47,6 +47,9 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     private let photoRepo: (any PhotoRepository)?
     /// P1：移出后的跨表路径迁移（photos/deliveries/intents/origins/bindings/assets）。
     private let relocateAfterMove: ((String, String, String) throws -> Void)?
+    /// P0-1：与写回/清理共用的按 xmpPath 文件锁。搬侧车也在锁内，否则与
+    /// 写回的 temp→rename 交错会把刚写回的内容覆盖回旧值。nil = 测试/未接线。
+    private let fileLock: XMPFileLock?
 
     /// @unchecked Sendable 依据：两个依赖都是构造后不再变更的 let；CullingService
     /// 的可变状态（会话级更新上下文缓存、Repo 缓存）由 DBConnection 的递归锁与
@@ -56,13 +59,15 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         triageService: TriageService,
         sessionRepo: SessionRepo? = nil,
         photoRepo: (any PhotoRepository)? = nil,
-        relocateAfterMove: ((String, String, String) throws -> Void)? = nil
+        relocateAfterMove: ((String, String, String) throws -> Void)? = nil,
+        fileLock: XMPFileLock? = nil
     ) {
         self.cullingService = cullingService
         self.triageService = triageService
         self.sessionRepo = sessionRepo
         self.photoRepo = photoRepo
         self.relocateAfterMove = relocateAfterMove
+        self.fileLock = fileLock
     }
 
     // MARK: - P1 / D：淘汰移动
@@ -76,7 +81,9 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             )
         }
         let payload = input.value
-        return try map {
+        // 同步部分（校验 + 目标目录）沿用 map 的错误归一；文件搬移必须按单张进
+        // XMPFileLock（与写回/清理同一把锁），所以拆成「校验 → 逐张加锁搬移」。
+        let (lookups, destination) = try map { () -> ([PhotoLookupRow], String) in
             let lookups = try photoRepo.getLookupByIds(payload.photoIds)
             guard lookups.count == Set(payload.photoIds).count,
                   lookups.allSatisfy({ $0.sessionId == payload.sessionId }) else {
@@ -110,19 +117,47 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             } else {
                 root = lookups.first.map { ($0.filepath as NSString).deletingLastPathComponent } ?? ""
             }
-            let destination = (root as NSString).appendingPathComponent(RejectedMover.folderName)
-            let result = RejectedMover(
-                photoRepo: photoRepo, relocate: relocateAfterMove
-            ).move(
-                photos: lookups.map { ($0.id, $0.filepath) },
-                destinationRoot: destination
-            )
-            return CullingMoveRejectedResult(
-                moved: result.moved,
-                newPaths: result.newPaths,
-                failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message) }
-            )
+            return (lookups, (root as NSString).appendingPathComponent(RejectedMover.folderName))
         }
+
+        var moved: [String] = []
+        var newPaths: [String] = []
+        var failures: [MetadataApplyFailureDTO] = []
+        for lookup in lookups {
+            let one: RejectedMoveResult
+            do {
+                one = try await withFileLock(path: TSPath.xmpSidecarPath(lookup.filepath)) {
+                    // 只捕获 self（@unchecked Sendable 的不可变依赖）；直接捕获局部
+                    // photoRepo 会触发 Swift 6 的 non-Sendable 捕获错误。
+                    guard let repo = self.photoRepo else {
+                        throw GatherError(
+                            code: .INVALID_PARAM,
+                            params: ["field": "photoRepo", "reason": "move_rejected 未接线"])
+                    }
+                    return RejectedMover(photoRepo: repo, relocate: self.relocateAfterMove)
+                        .move(photos: [(lookup.id, lookup.filepath)], destinationRoot: destination)
+                }
+            } catch {
+                failures.append(MetadataApplyFailureDTO(
+                    photoId: lookup.id, message: String(describing: error)))
+                continue
+            }
+            moved.append(contentsOf: one.moved)
+            newPaths.append(contentsOf: one.newPaths)
+            failures.append(contentsOf: one.failed.map {
+                MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message)
+            })
+        }
+        return CullingMoveRejectedResult(moved: moved, newPaths: newPaths, failed: failures)
+    }
+
+    /// 文件搬移与写回/清理共用同一把按 xmpPath 的锁（未接线时退化为不加锁）。
+    private func withFileLock<T: Sendable>(
+        path: String,
+        _ body: @Sendable () throws -> T
+    ) async throws -> T {
+        guard let fileLock else { return try body() }
+        return try await fileLock.run(path: path) { try body() }
     }
 
     // MARK: - 读

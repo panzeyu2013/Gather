@@ -150,6 +150,78 @@ struct TriageWritebackServiceTests {
         #expect(try batches.get(id: "b1")?.undone == true)
     }
 
+    @Test("部分失败：批次快照只保留写成的照片，undo 不回带没写过的照片")
+    func partialFailureTrimsBatchSnapshots() async throws {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: dir) } catch {}
+        }
+        let sessionId = "s-1"
+        let p1 = "p-1", p2 = "p-2"
+        try insertSession(db, sessionId)
+        let path1 = (dir as NSString).appendingPathComponent("a.CR3")
+        let path2 = (dir as NSString).appendingPathComponent("b.CR3")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: path1))
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: path2))
+        try insertPhoto(db, id: p1, sessionId: sessionId, filepath: path1)
+        try insertPhoto(db, id: p2, sessionId: sessionId, filepath: path2)
+        let cache = MetadataCacheRepo(connection: db)
+        try cache.upsert(photoId: p1, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
+        try cache.upsert(photoId: p2, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
+
+        let xmp = TriageXMP()
+        xmp.seed(path1, MetadataWriteAttributes())
+        xmp.seed(path2, MetadataWriteAttributes())
+        let mutations = TriageMutations()
+        let paths = [p1: path1, p2: path2]
+        let metadata = MetadataService(
+            metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
+            transactions: db, mutations: mutations,
+            flushPending: { _ in
+                var written = 0
+                var failedItems: [WritebackItem] = []
+                for entry in mutations.drain() {
+                    if entry.photoId == p2 {
+                        failedItems.append(WritebackItem(
+                            photoId: p2, photoPath: path2, sessionId: sessionId,
+                            module: "metadata", keywords: [], xmpPath: path2,
+                            backupPath: "", xmpStatus: "failed",
+                            errorMessage: "injected failure", attemptCount: 1,
+                            lastAttemptAt: "2026-10-27T00:00:00Z"))
+                        continue
+                    }
+                    let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    try await xmp.writeAttributes(
+                        photoPath: paths[entry.photoId] ?? path1, attributes: attributes)
+                    written += 1
+                }
+                return WritebackResult(
+                    totalAffected: written, written: written, failed: failedItems.count,
+                    skipped: 0, errors: [], failedItems: failedItems, report: "")
+            })
+        let settings = SettingsService(repo: SettingsRepo(connection: db))
+        let batches = MetadataApplyBatchStore(settings: settings)
+        let service = TriageWritebackService(xmp: xmp, metadata: metadata, batches: batches)
+
+        let applied = await service.apply(
+            [
+                TriageWritebackDecision(photoId: p1, rating: 3, keyword: nil, namespaceValue: "keep"),
+                TriageWritebackDecision(photoId: p2, rating: 3, keyword: nil, namespaceValue: "keep"),
+            ],
+            batchId: "b1", now: "2026-10-27T00:00:00Z")
+        #expect(applied.written == [p1])
+        #expect(applied.failed.map(\.photoId) == [p2])
+        let batch = try #require(batches.get(id: "b1"))
+        #expect(batch.snapshots.map(\.photoId) == [p1],
+                "没写成的照片不能留在快照里，否则 undo 会回带它们")
+
+        _ = try await service.undo(batchId: "b1")
+        #expect(xmp.attributes(path2).rating == nil, "没写过的照片不得被 undo 触碰")
+    }
+
     @Test("undo 只删本批新增的关键词：写回前就有的同名关键词必须保留")
     func undoKeepsPreexistingKeyword() async throws {
         let db = try makeTestDB()

@@ -193,8 +193,9 @@ struct IngestServiceTests {
         // RAW/JPEG 的配对键（stem）也会一起失配。
         #expect(Set(plan.items.map { TSPath.stem($0.destPath) }).count == 1,
                 "RAW+JPEG 兄弟必须落在同一目标 stem 上")
-        #expect(Set(plan.items.map { TSPath.xmpSidecarPath($0.destPath) }).count == 1,
-                "同源侧车的目标路径必须一致")
+        // （xmpSidecarPath 由 stem 推导，与上一条同源；这里改断言磁盘事实。）
+        let xmpsAfterPlan = try recursiveFiles(dest).filter { $0.hasSuffix(".xmp") }
+        #expect(xmpsAfterPlan.isEmpty, "计划阶段不落盘")
         let result = service.execute(plan, options: options)
         #expect(result.failed.isEmpty)
         let xmps = try FileManager.default.contentsOfDirectory(atPath: dest)
@@ -246,6 +247,8 @@ struct IngestServiceTests {
         let plan = try service.plan(sourcePaths: [source], options: options)
         let result = service.execute(plan, options: options)
         #expect(result.failed.count == 1)
+        #expect(result.failed.first?.message.contains("目标已存在") == true,
+                "失败原因必须说明是目标已存在的冲突")
         #expect(result.copied.isEmpty)
         #expect(try String(contentsOfFile: existingSidecar, encoding: .utf8) == "<xmp>old</xmp>",
                 "既有侧车不得被覆盖")
@@ -294,6 +297,84 @@ struct IngestServiceTests {
         #expect(FileManager.default.fileExists(atPath: first.copied[0]),
                 "回滚只允许删本张自己产出的文件")
         #expect(try String(contentsOfFile: first.copied[0], encoding: .utf8) == "payload")
+    }
+
+    @Test("回滚清理（copy）：第二目的地冲突时照片与侧车都不得留在目的地")
+    func rollbackRemovesPhotoAndSidecarInCopyMode() throws {
+        let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
+        try Data("<xmp/>".utf8).write(
+            to: URL(fileURLWithPath: (source as NSString).appendingPathComponent("a.xmp")))
+        let dest = try makeDestination()
+        let second = try makeDestination()
+        defer {
+            [source, dest, second].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        try Data("other".utf8).write(
+            to: URL(fileURLWithPath: (second as NSString).appendingPathComponent("a.CR3")))
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(
+            destinationRoot: dest, renameTemplate: "{orig}.{ext}", secondDestinationRoot: second)
+        let plan = try service.plan(sourcePaths: [source], options: options)
+        let result = service.execute(plan, options: options)
+        #expect(result.failed.count == 1)
+        #expect(!FileManager.default.fileExists(
+            atPath: (dest as NSString).appendingPathComponent("a.CR3")), "已落地的照片必须回滚")
+        #expect(!FileManager.default.fileExists(
+            atPath: (dest as NSString).appendingPathComponent("a.xmp")), "已复制的侧车必须回滚")
+        #expect(FileManager.default.fileExists(
+            atPath: (source as NSString).appendingPathComponent("a.CR3")), "copy 模式保留源")
+        #expect(FileManager.default.fileExists(
+            atPath: (source as NSString).appendingPathComponent("a.xmp")))
+    }
+
+    @Test("回滚清理（move）：照片与侧车都必须回到源目录，源不得丢")
+    func rollbackRestoresSourceInMoveMode() throws {
+        let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
+        try Data("<xmp/>".utf8).write(
+            to: URL(fileURLWithPath: (source as NSString).appendingPathComponent("a.xmp")))
+        let dest = try makeDestination()
+        let second = try makeDestination()
+        defer {
+            [source, dest, second].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        try Data("other".utf8).write(
+            to: URL(fileURLWithPath: (second as NSString).appendingPathComponent("a.CR3")))
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(
+            destinationRoot: dest, renameTemplate: "{orig}.{ext}",
+            secondDestinationRoot: second, moveInsteadOfCopy: true)
+        let plan = try service.plan(sourcePaths: [source], options: options)
+        let result = service.execute(plan, options: options)
+        #expect(result.failed.count == 1)
+        #expect(FileManager.default.fileExists(
+            atPath: (source as NSString).appendingPathComponent("a.CR3")), "move 模式失败必须把源移回")
+        #expect(FileManager.default.fileExists(
+            atPath: (source as NSString).appendingPathComponent("a.xmp")))
+        #expect(!FileManager.default.fileExists(
+            atPath: (dest as NSString).appendingPathComponent("a.CR3")))
+        #expect(!FileManager.default.fileExists(
+            atPath: (dest as NSString).appendingPathComponent("a.xmp")))
+    }
+
+    @Test("同 stem 兄弟：既有异内容文件 → 整组冲突，谁都不得落地")
+    func siblingConflictPropagates() throws {
+        let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
+        let dest = try makeDestination()
+        defer {
+            [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let existing = (dest as NSString).appendingPathComponent("a.CR3")
+        try Data("different".utf8).write(to: URL(fileURLWithPath: existing))
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
+        let plan = try service.plan(sourcePaths: [source], options: options)
+        #expect(plan.items.count == 2)
+        let allConflict = plan.items.allSatisfy { $0.conflict }
+        #expect(allConflict, "兄弟必须一起判冲突，不能只判后来者")
+        let result = service.execute(plan, options: options)
+        #expect(result.copied.isEmpty)
+        #expect(result.skipped.count == 2)
+        #expect(try String(contentsOfFile: existing, encoding: .utf8) == "different")
     }
 
     @Test("目录与其内文件同时传入：同一文件只计划一次")

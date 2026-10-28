@@ -196,9 +196,17 @@ struct CullingInspector: View {
                                 titleVisibility: .visible
                             ) {
                                 Button(l10n("撤销"), role: .destructive) {
-                                    guard let batchId = viewModel.lastTriageWritebackBatchId,
-                                          let input = try? MetadataTemplateUndoInput(batchId: batchId)
-                                    else { return }
+                                    guard let batchId = viewModel.lastTriageWritebackBatchId else {
+                                        return
+                                    }
+                                    let input: MetadataTemplateUndoInput
+                                    do {
+                                        input = try MetadataTemplateUndoInput(batchId: batchId)
+                                    } catch {
+                                        // 校验失败不能静默（否则撤销按钮像"没反应"）。
+                                        viewModel.triageError = CommandError(error)
+                                        return
+                                    }
                                     Task {
                                         await viewModel.undoTriageWriteback(
                                             Confirmed(input, source: .userDialog))

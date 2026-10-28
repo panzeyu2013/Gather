@@ -136,6 +136,46 @@ struct SidecarXMPProviderIPTCTests {
         #expect(try await provider.readAttributes(photoPath: photo).triageSignal == nil)
     }
 
+    @Test("前缀归一化只改标签内部，不碰文本")
+    func normalizesAliasPrefixesInsideTags() throws {
+        let xml = """
+        <rdf:Description xmlns:ps="http://ns.adobe.com/photoshop/1.0/" ps:City="A">
+          <ps:City>B</ps:City>
+          text ps: stays
+        </rdf:Description>
+        """
+        let out = String(
+            decoding: SidecarXMPProvider.normalizeKnownPrefixes(Data(xml.utf8)), as: UTF8.self)
+        #expect(out.contains("photoshop:City=\"A\""), "属性形式必须归一")
+        #expect(out.contains("<photoshop:City>B</photoshop:City>"), "元素形式必须归一")
+        #expect(out.contains("text ps: stays"), "文本内容不得改写")
+    }
+
+    @Test("非规范前缀（同一命名空间换前缀）的元素与属性形式都能读回")
+    func readsAliasedPrefixes() async throws {
+        let dir = try makeTempDir()
+        let photo = try makePhoto(dir, name: "IMG_0014.CR3")
+        let sidecarPath = (dir as NSString).appendingPathComponent("IMG_0014.xmp")
+        let document = """
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about=""
+                xmlns:ps="http://ns.adobe.com/photoshop/1.0/"
+                xmlns:iptc="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+                ps:Headline="别名属性">
+              <ps:City>广州</ps:City>
+              <iptc:Location>天河</iptc:Location>
+            </rdf:Description>
+          </rdf:RDF>
+        </x:xmpmeta>
+        """
+        try document.write(toFile: sidecarPath, atomically: true, encoding: .utf8)
+        let read = try await SidecarXMPProvider().readAttributes(photoPath: photo)
+        #expect(read.descriptive?.city == "广州", "元素形式的别名前缀必须按命名空间归一")
+        #expect(read.descriptive?.location == "天河")
+        #expect(read.descriptive?.headline == "别名属性", "属性形式的别名前缀同样要归一")
+    }
+
     @Test("多语言 alt：写 x-default 保留其它语言，读回取 x-default")
     func preservesAlternateLanguages() async throws {
         let dir = try makeTempDir()

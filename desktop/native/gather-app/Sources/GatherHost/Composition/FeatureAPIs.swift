@@ -110,7 +110,8 @@ struct FeatureAPIs {
                 try composition.assetRepo.relocatePhotoPathsAfterMove(
                     photoId: photoId, oldPhotoPath: oldPath, newPhotoPath: newPath,
                     timestamp: nowISOString())
-            }
+            },
+            fileLock: composition.xmpFileLock
         )
     }
 

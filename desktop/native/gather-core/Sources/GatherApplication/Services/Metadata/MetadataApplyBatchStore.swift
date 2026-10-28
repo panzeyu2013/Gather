@@ -22,7 +22,9 @@ public struct MetadataApplySnapshot: Codable, Equatable, Sendable {
     public var beforeKeywords: [String]?
     /// P1：本次实际追加的关键词；撤销只删这一个，保留之后新增的词。
     public var appliedKeyword: String?
-
+    /// P1 / E：写回前的私有命名空间信号（nil = 本来没有）。撤销要恢复它，
+    /// 而不是一律清空——否则前一批写的 keep/reject 会被这次 undo 抹掉。
+    public var beforeTriageSignal: String?
 
     public init(
         photoId: String,
@@ -31,7 +33,8 @@ public struct MetadataApplySnapshot: Codable, Equatable, Sendable {
         touchedFields: [DescriptiveField]? = nil,
         beforeRating: Int? = nil,
         beforeKeywords: [String]? = nil,
-        appliedKeyword: String? = nil
+        appliedKeyword: String? = nil,
+        beforeTriageSignal: String? = nil
     ) {
         self.photoId = photoId
         self.filepath = filepath
@@ -40,6 +43,7 @@ public struct MetadataApplySnapshot: Codable, Equatable, Sendable {
         self.beforeRating = beforeRating
         self.beforeKeywords = beforeKeywords
         self.appliedKeyword = appliedKeyword
+        self.beforeTriageSignal = beforeTriageSignal
     }
 }
 
@@ -119,9 +123,30 @@ public final class MetadataApplyBatchStore: @unchecked Sendable {
         guard !raw.isEmpty else { return [] }
         do {
             let value = try JSONValue.parse(raw)
-            return try value.decode([MetadataApplyBatch].self)
+            guard let elements = value.arrayElements else {
+                preserveCorruptPayloadLocked(raw)
+                return []
+            }
+            // 逐元素解码：某一条含未知字段（未来版本/改名）或损坏时，只丢那一条，
+            // 其余撤销历史必须保留——整体解码失败会把 20 条历史一起清零。
+            var batches: [MetadataApplyBatch] = []
+            var dropped = 0
+            for element in elements {
+                do {
+                    batches.append(try element.decode(MetadataApplyBatch.self))
+                } catch {
+                    dropped += 1
+                }
+            }
+            if dropped > 0 {
+                preserveCorruptPayloadLocked(raw)
+                GatherLogger.log(
+                    "metadata.applyBatches: 丢弃 \(dropped)/\(elements.count) 条损坏批次",
+                    level: .warn)
+            }
+            return batches
         } catch {
-            // 历史损坏不能静默消失：把原文转存到 corrupt 键留证，再按"无历史"继续。
+            // 整体 JSON 损坏不能静默消失：把原文转存到 corrupt 键留证，再按"无历史"继续。
             // 否则下一次 record 会用新批次整体覆盖，损坏原因再也查不到。
             preserveCorruptPayloadLocked(raw)
             return []

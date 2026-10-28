@@ -180,7 +180,8 @@ public final class SidecarXMPProvider: XMPProvider {
     public func backup(photoPath: String) async throws -> String {
         let xmpPath = Self.resolveSidecarPath(photoPath)
         guard FileManager.default.fileExists(atPath: xmpPath) else { return "" }
-        let backupPath = xmpPath + ".gather-backup-" + UUID().uuidString.lowercased()
+        let backupPath = XMPBackupNaming.make(
+            xmpPath: xmpPath, suffix: UUID().uuidString.lowercased())
         do {
             try FileManager.default.copyItem(atPath: xmpPath, toPath: backupPath)
         } catch {
@@ -281,7 +282,8 @@ public final class SidecarXMPProvider: XMPProvider {
         }
         var result = delegate.result
         // P1 / IPTC：同一份数据再跑一次描述性字段收集（表驱动，与写入共用 descriptor 表）。
-        let iptcParser = XMLParser(data: data)
+        // 先把"已知命名空间绑到非规范前缀"的别名改写成规范前缀（只动标签内部）。
+        let iptcParser = XMLParser(data: Self.normalizeKnownPrefixes(data))
         let iptcDelegate = IPTCXMLDelegate()
         iptcParser.delegate = iptcDelegate
         if iptcParser.parse() {

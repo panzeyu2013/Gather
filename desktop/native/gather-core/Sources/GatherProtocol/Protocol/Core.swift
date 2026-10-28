@@ -268,6 +268,8 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case ASSET_RELINK_XMP_BUSY
     case ASSET_RELINK_OUTBOX_CONFLICT
     case ASSET_RELINK_XMP_CONFLICT
+    /// 淘汰/手动移动的目标路径已被其它 asset_files 行登记（不能覆盖/合并，整次移出回滚）。
+    case ASSET_RELINK_TARGET_EXISTS
     /// 重链接根目录校验（缺陷⑥）：同根 / 两向嵌套 / 根下无登记文件 / 无候选
     /// 通过身份校验 —— 一律显式失败，绝不用 0 冒充成功。
     case ASSET_RELINK_SAME_ROOT

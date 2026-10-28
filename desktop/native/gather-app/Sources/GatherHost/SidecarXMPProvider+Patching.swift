@@ -108,9 +108,13 @@ extension SidecarXMPProvider {
         attributes: MetadataWriteAttributes,
         xmpPath: String
     ) throws -> String {
-        var parts = try splitDescription(xml, xmpPath: xmpPath)
+        // 前缀归一化：外部工具把已知命名空间绑到别名前缀时，下面的"按 qname 查找/替换"
+        // 会找不到既有元素并插入第二个同属性元素（XMP 重复属性）。先统一成规范前缀；
+        // 归一化会引入原文档没有声明的规范前缀，一并交给 injectNamespaces 补上。
+        let normalized = Self.normalizeKnownPrefixes(xml)
+        var parts = try splitDescription(normalized.text, xmpPath: xmpPath)
         var insertions: [String] = []
-        var prefixes: [(String, String)] = []
+        var prefixes: [(String, String)] = normalized.introduced
 
         if let keywords = attributes.keywords {
             prefixes.append(("dc", dcNamespace))
