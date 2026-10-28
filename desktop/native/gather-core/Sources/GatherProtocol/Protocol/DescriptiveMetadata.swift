@@ -165,7 +165,7 @@ public extension XMPFieldDescriptor {
     )
 
     /// 按字段查描述符（值形状判断不属于 UI/服务层的知识）。
-    public static func descriptor(for field: DescriptiveField) -> XMPFieldDescriptor? {
+    static func descriptor(for field: DescriptiveField) -> XMPFieldDescriptor? {
         byField[field]
     }
 }

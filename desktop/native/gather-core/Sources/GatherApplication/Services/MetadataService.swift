@@ -926,24 +926,50 @@ public final class MetadataService: @unchecked Sendable {
                     ?? siblingIDsByXmp[dbKey]
                     ?? [input.photoId]
                 for sibling in targets {
-                    try? metadataCacheRepo.updateDescriptive(
-                        photoId: sibling,
-                        descriptive: actual.descriptive ?? DescriptiveMetadata())
+                    refreshProjection("descriptive", photoId: sibling) {
+                        try metadataCacheRepo.updateDescriptive(
+                            photoId: sibling,
+                            descriptive: actual.descriptive ?? DescriptiveMetadata())
+                    }
                 }
             }
             if let rating = actual.rating {
-                try? metadataCacheRepo.updateRating(photoId: input.photoId, rating: Int64(rating))
+                refreshProjection("rating", photoId: input.photoId) {
+                    try metadataCacheRepo.updateRating(
+                        photoId: input.photoId, rating: Int64(rating))
+                }
             }
             if let label = actual.label {
-                try? metadataCacheRepo.updateLabel(photoId: input.photoId, label: label)
+                refreshProjection("label", photoId: input.photoId) {
+                    try metadataCacheRepo.updateLabel(photoId: input.photoId, label: label)
+                }
             }
             if let keywords = actual.keywords {
-                try? metadataCacheRepo.updateKeywords(photoId: input.photoId, keywords: keywords)
+                refreshProjection("keywords", photoId: input.photoId) {
+                    try metadataCacheRepo.updateKeywords(
+                        photoId: input.photoId, keywords: keywords)
+                }
             }
             written.append(input.photoId)
         }
         return MetadataAttributesApplyOutcome(
             written: written, attempted: attempted, skipped: skipped, failed: failed)
+    }
+
+    /// 投影刷新（cache 回填）：盘上已写成功，刷新失败不回滚、不改 written 语义，
+    /// 但必须留下可诊断日志——静默失败会让面板继续显示旧值且无人知道。
+    private func refreshProjection(
+        _ field: String,
+        photoId: String,
+        _ body: () throws -> Void
+    ) {
+        do {
+            try body()
+        } catch {
+            GatherLogger.log(
+                "metadata cache projection refresh failed (field=\(field) photo=\(photoId)): \(error)",
+                level: .warn)
+        }
     }
 
     /// 写后回读判定：描述性元数据逐字段（空值等价于不存在），其余字段精确比较。

@@ -66,9 +66,9 @@ struct PhotoFilterQueryBoundaryTests {
             try queryInsertPhoto(db, id: id, sessionId: sessionId)
             try queryInsertCache(db, photoId: id, sessionId: sessionId)
         }
-        try db.prepare("UPDATE photo_metadata_cache SET date_taken = ? WHERE photo_id = 'p1'")
+        _ = try db.prepare("UPDATE photo_metadata_cache SET date_taken = ? WHERE photo_id = 'p1'")
             .run([.text("2024:05:01 10:00:00")])
-        try db.prepare("UPDATE photo_metadata_cache SET date_taken = ? WHERE photo_id = 'p2'")
+        _ = try db.prepare("UPDATE photo_metadata_cache SET date_taken = ? WHERE photo_id = 'p2'")
             .run([.text("2023-12-31T23:00:00")])
         let query = PhotoFilterQuery(connection: db)
         let between = [JSONValue.string("2024-01-01"), .string("2024-12-31")]
@@ -93,9 +93,9 @@ struct PhotoFilterQueryBoundaryTests {
             try queryInsertPhoto(db, id: id, sessionId: sessionId)
             try queryInsertCache(db, photoId: id, sessionId: sessionId)
         }
-        try db.prepare("UPDATE photo_metadata_cache SET label = NULL, keywords = ? WHERE photo_id = 'p1'")
+        _ = try db.prepare("UPDATE photo_metadata_cache SET label = NULL, keywords = ? WHERE photo_id = 'p1'")
             .run([.text(#"["日落 海边"]"#)])
-        try db.prepare("UPDATE photo_metadata_cache SET label = 'Red', keywords = ? WHERE photo_id = 'p2'")
+        _ = try db.prepare("UPDATE photo_metadata_cache SET label = 'Red', keywords = ? WHERE photo_id = 'p2'")
             .run([.text(#"["城市"]"#)])
 
         let query = PhotoFilterQuery(connection: db)
@@ -117,9 +117,9 @@ struct PhotoFilterQueryBoundaryTests {
         try queryInsertCache(db, photoId: "p2", sessionId: sessionId)
         let p1 = #"{"title":"落日","creator":["张三","李四"],"city":"上海","country":"中国"}"#
         let p2 = #"{"title":"城市夜景","creator":["王五"],"city":"北京","country":"中国"}"#
-        try db.prepare("UPDATE photo_metadata_cache SET iptc_json = ? WHERE photo_id = 'p1'")
+        _ = try db.prepare("UPDATE photo_metadata_cache SET iptc_json = ? WHERE photo_id = 'p1'")
             .run([.text(p1)])
-        try db.prepare("UPDATE photo_metadata_cache SET iptc_json = ? WHERE photo_id = 'p2'")
+        _ = try db.prepare("UPDATE photo_metadata_cache SET iptc_json = ? WHERE photo_id = 'p2'")
             .run([.text(p2)])
 
         let query = PhotoFilterQuery(connection: db)

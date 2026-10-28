@@ -1,9 +1,13 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/MetadataAPI.swift
 // Cut 1 / 阶段 1A：元数据域协议（18 个方法）。
 //
-// 职责：冲突与孤儿列表、冲突/孤儿处置、关键词预览/应用/重试。
-// 对应命令（7 条）：metadata.conflicts / orphans / resolve_conflict /
-// resolve_orphan，以及 K0 的 preview / apply_keywords / retry_keyword_writeback。
+// 职责：冲突与孤儿列表、冲突/孤儿处置、关键词预览/应用/重试；P1 起追加
+// 只读元数据详情（metadata）、元数据模板（templates/saveTemplate/templateFields/
+// deleteTemplate/previewTemplate/applyTemplate/undoTemplate/recentBatches）与
+// triage 写回（applyTriageWriteback/undoTriageWriteback）。
+// 对应命令（7 条历史命令面）：metadata.conflicts / orphans / resolve_conflict /
+// resolve_orphan，以及 K0 的 preview / apply_keywords / retry_keyword_writeback；
+// 模板与 triage 写回是 P1 新增的类型化入口，没有对应的历史命令。
 // 校验归属：
 // - resolveConflict/resolveOrphan/applyKeywords/retryKeywordWriteback 使用 Confirmed<T>；
 // - tags 的类型在解码期失败，不再把非对象当空对象（G6）；

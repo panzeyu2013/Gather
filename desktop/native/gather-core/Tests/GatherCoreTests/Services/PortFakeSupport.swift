@@ -864,7 +864,7 @@ func portFakeDecisionRow(
     decision: String,
     revision: Int64 = 0
 ) throws -> CullingDecisionRow {
-    try CullingDecisionRow(row: [
+    CullingDecisionRow(row: [
         .int(id), .text(sessionId), .text(photoId), .text("ungrouped"),
         .text(decision), .int(0), .text("None"), .text("manual"),
         .int(revision), .text("2026-01-01T00:00:00.000Z"),

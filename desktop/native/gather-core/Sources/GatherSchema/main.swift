@@ -6,7 +6,7 @@
 // 本 target 依赖 GatherPersistence 而**不导出库**，也不复制任何 DDL 文本。
 //
 // 用法：
-//   swift run gather-schema dump      # 打印当前 schema（V2）建库 DDL
+//   swift run gather-schema dump      # 打印当前 schema（V4）建库 DDL
 //   swift run gather-schema verify    # 在内存库上重建 schema 并校验不变量
 //   swift run gather-schema --help    # 打印帮助
 //

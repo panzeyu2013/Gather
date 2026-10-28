@@ -141,7 +141,7 @@ struct MetadataTemplateServiceIOTests {
                 for entry in mutations.drain() {
                     guard let path = paths[entry.photoId] else { continue }
                     do {
-                        let attributes = try MetadataWriteAttributes(
+                        let attributes = MetadataWriteAttributes(
                             jsonValue: .object(entry.values))
                         try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                     } catch {

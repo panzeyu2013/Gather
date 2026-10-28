@@ -82,7 +82,14 @@ final class SessionDirectoryMonitor {
                 }
             }
         }
-        watcher.start(sinceEventID: lastEventIDs[sessionId] ?? 0)
+        guard watcher.start(sinceEventID: lastEventIDs[sessionId] ?? 0) else {
+            // 起不来（FSEventStream 创建失败/路径失效）必须可见：否则上层以为在监听，
+            // 外部改动永远不会触发增量扫描。
+            GatherLogger.log(
+                "directory watcher failed to start for \(sessionId) at \(path)",
+                level: .warn)
+            return
+        }
         watchers[sessionId] = watcher
     }
 

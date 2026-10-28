@@ -70,4 +70,32 @@ struct TriageWritebackPlanTests {
         )
         #expect(batch.map(\.photoId) == ["p1", "p3"])
     }
+
+    @Test("API 输入层：非法 verdict / 重复 photoId / 超量 items 一律显式失败")
+    func inputValidation() throws {
+        // 大小写不敏感 + trim，归一到小写（planner 只认 keep/reject）。
+        let item = try TriageWritebackItem(photoId: "p1", verdict: " Keep ")
+        #expect(item.verdict == "keep")
+
+        #expect(throws: GatherError.self) {
+            _ = try TriageWritebackItem(photoId: "p1", verdict: "maybe")
+        }
+        #expect(throws: GatherError.self) {
+            _ = try TriageWritebackItem(photoId: "  ", verdict: "keep")
+        }
+        #expect(throws: GatherError.self) {
+            _ = try TriageWritebackInput(policy: .ratingOnlyWhenEmpty, items: [])
+        }
+        let duplicate = try TriageWritebackItem(photoId: "p1", verdict: "keep")
+        #expect(throws: GatherError.self) {
+            _ = try TriageWritebackInput(policy: .ratingOnlyWhenEmpty,
+                                         items: [duplicate, duplicate])
+        }
+        let overflow = try (0..<10_001).map {
+            try TriageWritebackItem(photoId: "p\($0)", verdict: "keep")
+        }
+        #expect(throws: GatherError.self) {
+            _ = try TriageWritebackInput(policy: .ratingOnlyWhenEmpty, items: overflow)
+        }
+    }
 }

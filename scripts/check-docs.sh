@@ -134,12 +134,19 @@ if [ -f "$SCHEMA_FILE" ]; then
   schema_ver=$(grep -oE '(currentSchemaVersion|CURRENT_SCHEMA_VERSION|schemaVersion)[[:space:]]*=[[:space:]]*[0-9]+' "$SCHEMA_FILE" 2>/dev/null | head -n 1 | grep -oE '[0-9]+' | tail -n 1 || true)
   if [ -n "$schema_ver" ]; then schema_src="$SCHEMA_FILE"; fi
 fi
-# 比较 ADR 里**所有**“当前 schema”声明。只取首条会漏掉旧快照段落里遗留的过期断言
+# 比较 ADR 里**所有**版本声明。只取首条会漏掉旧快照段落里遗留的过期断言
 # （schema 3→4 时 ADR 后文仍写“当前 schema 为 3”，门禁却判绿）。先把全文压成一行，
-# 避免“当前 schema 为\n 3”这种折行漏检；数字窗口限 16 字节，排除
-# “当前 schema 以 `SchemaCurrent`（44 表…）为准”这类没有版本号的句子。
+# 避免“当前 schema 为\n 3”这种折行漏检。
+#
+# 两种形态都要扫：
+#   1) `当前 schema：N`（冒号形式）；
+#   2) `user_version = N` / `user_version=N`。后者能覆盖
+#      “当前 schema 以 `SchemaCurrent`（44 表 / user_version=4）为准”这类句子——
+#      它与“当前 schema”隔着 20 多个字节，固定窗口只能退化成把 44 当版本号。
 adr_flat=$(tr '\n' ' ' < "$ADR" 2>/dev/null | tr -s ' ')
-doc_versions=$(printf '%s' "$adr_flat" | grep -oE '当前 schema[^0-9]{0,16}[0-9]+' 2>/dev/null | grep -oE '[0-9]+$' | sort -n | uniq | tr '\n' ' ' || true)
+colon_versions=$(printf '%s' "$adr_flat" | grep -oE '当前 schema[：:][[:space:]]*[0-9]+' 2>/dev/null | grep -oE '[0-9]+' || true)
+user_version_versions=$(printf '%s' "$adr_flat" | grep -oE 'user_version[^0-9]{0,4}[0-9]+' 2>/dev/null | grep -oE '[0-9]+$' || true)
+doc_versions=$(printf '%s\n%s\n' "$colon_versions" "$user_version_versions" | grep -E '^[0-9]+$' | sort -n | uniq | tr '\n' ' ' || true)
 if [ -n "$doc_versions" ]; then
   schema_scope="当前 schema 声明（全部）"
 else

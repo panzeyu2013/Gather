@@ -13,6 +13,8 @@ struct MetadataBatchSheet: View {
     @State private var batches: [MetadataBatchSummary] = []
     @State private var errorText: String?
     @State private var isBusy = false
+    /// 待确认撤销的批次：Confirmed 只能在真实确认弹窗的分支里构造（D-011）。
+    @State private var pendingUndo: MetadataBatchSummary?
 
     var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
@@ -46,10 +48,8 @@ struct MetadataBatchSheet: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 } else {
-                                    Button(l10n("撤销")) {
-                                        Task { await undo(batch) }
-                                    }
-                                    .disabled(isBusy)
+                                    Button(l10n("撤销")) { pendingUndo = batch }
+                                        .disabled(isBusy)
                                 }
                             }
                             Divider()
@@ -71,6 +71,22 @@ struct MetadataBatchSheet: View {
         .padding(GatherMetrics.Space.l)
         .frame(width: 560)
         .task { await reload() }
+        .confirmationDialog(
+            l10n("撤销这次写回？"),
+            isPresented: Binding(
+                get: { pendingUndo != nil },
+                set: { if !$0 { pendingUndo = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(l10n("撤销"), role: .destructive) {
+                if let batch = pendingUndo { Task { await undo(batch) } }
+                pendingUndo = nil
+            }
+            Button(l10n("取消"), role: .cancel) { pendingUndo = nil }
+        } message: {
+            Text(l10n("还原 rating/关键词，并清除私有命名空间信号。"))
+        }
     }
 
     private func reload() async {

@@ -115,7 +115,7 @@ public final class MetadataApplyBatchStore: @unchecked Sendable {
     }
 
     private func loadLocked() -> [MetadataApplyBatch] {
-        let raw = settings.get(Self.settingsKey, defaultValue: "") ?? ""
+        let raw = settings.get(Self.settingsKey, defaultValue: "")
         guard !raw.isEmpty else { return [] }
         do {
             let value = try JSONValue.parse(raw)
@@ -130,7 +130,7 @@ public final class MetadataApplyBatchStore: @unchecked Sendable {
 
     /// 解析失败的原文只保留最近一份（避免单键无限增长）。
     private func preserveCorruptPayloadLocked(_ raw: String) {
-        guard (settings.get(Self.corruptKey, defaultValue: "") ?? "") != raw else { return }
+        guard settings.get(Self.corruptKey, defaultValue: "") != raw else { return }
         _ = try? settings.set(Self.corruptKey, value: raw)
     }
 

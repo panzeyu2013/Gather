@@ -16,14 +16,22 @@ public enum TriageWritebackPolicy: String, Codable, CaseIterable, Sendable {
 
 public struct TriageWritebackItem: Decodable, Sendable, Equatable {
     public let photoId: String
-    /// "keep" / "reject"（大小写不敏感；其它值服务端忽略）。
+    /// "keep" / "reject"（大小写不敏感，统一归一到小写；其它值显式失败）。
+    ///
+    /// 不静默忽略：非法 verdict 若被服务端跳过，这张照片既不在 written 也不在
+    /// skipped/failed，调用方无从发现漏写（Cut 1 的显式校验约定）。
     public let verdict: String
     /// 人工已决策（UI 从 culling 决策行得到；true 时绝不写 rating）。
     public let manuallyDecided: Bool
 
     public init(photoId: String, verdict: String, manuallyDecided: Bool = false) throws {
         self.photoId = try APIValidation.nonBlank(photoId, field: "photoId", maxLength: 128)
-        self.verdict = verdict
+        let normalized = verdict.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalized == "keep" || normalized == "reject" else {
+            throw GatherError.invalidParameter(
+                field: "items.verdict", reason: "must be keep or reject")
+        }
+        self.verdict = normalized
         self.manuallyDecided = manuallyDecided
     }
 
@@ -44,11 +52,12 @@ public struct TriageWritebackInput: Decodable, Sendable, Equatable {
     public let items: [TriageWritebackItem]
 
     public init(policy: TriageWritebackPolicy, items: [TriageWritebackItem]) throws {
-        guard !items.isEmpty else {
-            throw GatherError.invalidParameter(field: "items", reason: "must not be empty")
+        let values = try APIValidation.nonEmpty(items, field: "items", maxCount: 10_000)
+        guard Set(values.map(\.photoId)).count == values.count else {
+            throw GatherError.invalidParameter(field: "items", reason: "photoId must be unique")
         }
         self.policy = policy
-        self.items = items
+        self.items = values
     }
 
     public init(from decoder: Decoder) throws {

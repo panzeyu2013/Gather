@@ -91,12 +91,24 @@ public final class RejectedMover: @unchecked Sendable {
                 newPaths.append(target)
             } catch {
                 // 任一步失败（含侧车/登记）→ 把已移动的文件全部放回。
+                // 回滚本身失败时不能静默：文件会留在 _rejects、DB 仍指旧路径，
+                // 必须把"需人工恢复"的具体路径写进失败原因。
+                var rollbackErrors: [String] = []
                 for entry in movedFiles.reversed() {
-                    if fileManager.fileExists(atPath: entry.target) {
-                        do { try fileManager.moveItem(atPath: entry.target, toPath: entry.source) } catch {}
+                    guard fileManager.fileExists(atPath: entry.target) else { continue }
+                    do {
+                        try fileManager.moveItem(atPath: entry.target, toPath: entry.source)
+                    } catch {
+                        rollbackErrors.append(
+                            "\(entry.target) -> \(entry.source): \(error)")
                     }
                 }
-                failed.append(RejectedMoveFailure(photoId: photo.photoId, message: String(describing: error)))
+                var message = String(describing: error)
+                if !rollbackErrors.isEmpty {
+                    message += "；回滚失败（文件可能留在 (Self.folderName)，需人工恢复）："
+                        + rollbackErrors.joined(separator: " | ")
+                }
+                failed.append(RejectedMoveFailure(photoId: photo.photoId, message: message))
             }
         }
         return RejectedMoveResult(moved: moved, newPaths: newPaths, failed: failed)
