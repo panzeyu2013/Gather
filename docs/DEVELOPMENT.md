@@ -256,11 +256,11 @@ App Sandbox**：当前签名与运行模型没有沙盒容器，授权路径访�
 
 ```text
 SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
-  ↓ AppServices（16 个域 API / 126 个类型化方法，同进程直连）
+  ↓ AppServices（16 个域 API / 129 个类型化方法，同进程直连）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication 服务（交付编排在 GatherDelivery）
-  ├── GatherPersistence：SQLite WAL + SchemaCurrent（44 表 / 384 列 / user_version=4）
+  ├── GatherPersistence：SQLite WAL + SchemaCurrent（44 表 / 385 列 / user_version=5）
   ├── GatherAnalysis：图片读取、Vision 人脸、RAW/ImageIO 解码
   ├── JobService（可恢复任务，executor + checkpoint + dedupeKey）
   └── DeliveryCoordinator：deliveries 写回（重试 / 冲突 / 重启恢复）
@@ -284,8 +284,8 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 ### 数据与任务
 
 - SQLite 使用 WAL；唯一建库入口是 `Database.open(at:)`：新库按
-  `SchemaCurrent.createSQL` 单事务建库并写 `PRAGMA user_version = 4`
-  （44 表 / 384 列 / 72 索引 / 65 外键）。只有空库与当前版本可直接使用；
+  `SchemaCurrent.createSQL` 单事务建库并写 `PRAGMA user_version = 5`
+  （44 表 / 385 列 / 72 索引 / 65 外键）。只有空库与当前版本可直接使用；
   旧版本（V1/V2 迁移链已删除）、版本更高、版本 0 有表、形态不符、非 SQLite 文件
   默认 fail closed；开发重置策略才把 db/-wal/-shm 改名为 `<db>.incompatible-<ts>`
   后重建（ADR-005/006）。

@@ -17,7 +17,7 @@ extension PersonRepo {
     public func listWithCounts() throws -> [PersonWithCountsRow] {
         // persons：8 列 + thumbnail_path/photo_count/session_count（PersonWithCountsRow 0-10）
         let rows = try connection.prepare(
-            "SELECT \(TableColumns.sql(TableColumns.persons, prefix: "p")), (SELECT ph.filepath FROM person_photos pp JOIN photos ph ON ph.id = pp.photo_id WHERE pp.person_id = p.id ORDER BY pp.created_at DESC, pp.id DESC LIMIT 1) as thumbnail_path, COALESCE(pp.photo_count, 0) as photo_count, COALESCE(pp.session_count, 0) as session_count FROM persons p LEFT JOIN (SELECT person_id, COUNT(*) as photo_count, COUNT(DISTINCT session_id) as session_count FROM person_photos GROUP BY person_id) pp ON p.id = pp.person_id ORDER BY p.name"
+            "SELECT \(TableColumns.sql(TableColumns.persons, prefix: "p")), (SELECT ph.filepath FROM person_photos pp JOIN photos ph ON ph.id = pp.photo_id AND ph.archived_at IS NULL WHERE pp.person_id = p.id ORDER BY pp.created_at DESC, pp.id DESC LIMIT 1) as thumbnail_path, COALESCE(pp.photo_count, 0) as photo_count, COALESCE(pp.session_count, 0) as session_count FROM persons p LEFT JOIN (SELECT pph.person_id, COUNT(*) as photo_count, COUNT(DISTINCT pph.session_id) as session_count FROM person_photos pph JOIN photos pv ON pv.id = pph.photo_id AND pv.archived_at IS NULL GROUP BY pph.person_id) pp ON p.id = pp.person_id ORDER BY p.name"
         ).query()
         return try rows.map { try PersonWithCountsRow(row: $0) }
     }
@@ -46,7 +46,7 @@ extension PersonRepo {
     public func get(id: String) throws -> PersonRow? {
         // persons：8 列 + thumbnail_path（PersonRow 9 列）
         guard let row = try connection.prepare(
-            "SELECT \(TableColumns.sql(TableColumns.persons)), (SELECT ph.filepath FROM person_photos pp JOIN photos ph ON ph.id = pp.photo_id WHERE pp.person_id = persons.id ORDER BY pp.created_at DESC, pp.id DESC LIMIT 1) as thumbnail_path FROM persons WHERE id = ?"
+            "SELECT \(TableColumns.sql(TableColumns.persons)), (SELECT ph.filepath FROM person_photos pp JOIN photos ph ON ph.id = pp.photo_id AND ph.archived_at IS NULL WHERE pp.person_id = persons.id ORDER BY pp.created_at DESC, pp.id DESC LIMIT 1) as thumbnail_path FROM persons WHERE id = ?"
         ).get([.text(id)]) else {
             return nil
         }
@@ -54,14 +54,23 @@ extension PersonRepo {
     }
 
     public func countPhotos(personId: String) throws -> Int {
-        let row = try connection.prepare("SELECT COUNT(*) as count FROM person_photos WHERE person_id = ?")
-            .get([.text(personId)])
+        // P1：归档（已移出工作区）的照片不再计入人物照片数。
+        let row = try connection.prepare("""
+            SELECT COUNT(*) as count
+            FROM person_photos pp
+            JOIN photos p ON p.id = pp.photo_id
+            WHERE pp.person_id = ? AND p.archived_at IS NULL
+          """).get([.text(personId)])
         return Int(row?[0].intValue ?? 0)
     }
 
     public func getSessionCount(personId: String) throws -> Int {
-        let row = try connection.prepare("SELECT COUNT(DISTINCT session_id) as count FROM person_photos WHERE person_id = ?")
-            .get([.text(personId)])
+        let row = try connection.prepare("""
+            SELECT COUNT(DISTINCT pp.session_id) as count
+            FROM person_photos pp
+            JOIN photos p ON p.id = pp.photo_id
+            WHERE pp.person_id = ? AND p.archived_at IS NULL
+          """).get([.text(personId)])
         return Int(row?[0].intValue ?? 0)
     }
 
@@ -73,8 +82,12 @@ extension PersonRepo {
             params.append(contentsOf: sessionIds.map { .text($0) })
         }
 
-        let countRow = try connection.prepare("SELECT COUNT(*) as count FROM person_photos pp WHERE \(whereClause)")
-            .get(params)
+        let countRow = try connection.prepare("""
+            SELECT COUNT(*) as count
+            FROM person_photos pp
+            JOIN photos p ON p.id = pp.photo_id
+            WHERE \(whereClause) AND p.archived_at IS NULL
+          """).get(params)
         let total = Int(countRow?[0].intValue ?? 0)
 
         // person_photos：7 列 + session_name/filename/filepath（PersonPhotoDetail 0-9）
@@ -83,7 +96,7 @@ extension PersonRepo {
         FROM person_photos pp
         JOIN sessions s ON pp.session_id = s.id
         JOIN photos p ON pp.photo_id = p.id
-        WHERE \(whereClause)
+        WHERE \(whereClause) AND p.archived_at IS NULL
         ORDER BY pp.created_at DESC
         """
         var queryParams = params

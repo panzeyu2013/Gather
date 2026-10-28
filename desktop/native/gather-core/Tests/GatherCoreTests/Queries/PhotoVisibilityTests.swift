@@ -149,4 +149,63 @@ struct PhotoVisibilityTests {
             sessionId: "s1", criteria: criteria, dimension: .label)
         #expect(labels.isEmpty, "归档照片不得贡献 facet 桶")
     }
+
+    @Test("图库分页/计数与导航胶片条排除已归档")
+    func galleryAndNavigationExcludeArchived() throws {
+        let db = try makeDB()
+        defer { db.close() }
+        let repo = PhotoRepo(connection: db)
+        let page = try repo.getAssetPage(sessionId: "s1", limit: 50)
+        #expect(page.rows.map(\.id) == ["p-visible"])
+        #expect(try repo.countAssetsBySession(sessionId: "s1") == 1)
+
+        let captures = try NavigationRepo(connection: db).captureRows(sessionId: "s1")
+        #expect(captures.map(\.id) == ["p-visible"], "归档件不得出现在导航/胶片条")
+    }
+
+    @Test("人物照片列表/计数排除已归档")
+    func personQueriesExcludeArchived() throws {
+        let db = try makeDB()
+        defer { db.close() }
+        _ = try db.prepare("""
+            INSERT INTO persons (id, name, created_at, updated_at)
+            VALUES ('pe1', 'Alice', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+          """).run([])
+        for photoId in ["p-visible", "p-archived"] {
+            _ = try db.prepare("""
+                INSERT INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at)
+                VALUES ('pe1', ?, 's1', '[]', 1.0, '2026-01-01T00:00:00.000Z')
+              """).run([.text(photoId)])
+        }
+        let repo = PersonRepo(connection: db)
+        #expect(try repo.countPhotos(personId: "pe1") == 1)
+        #expect(try repo.getSessionCount(personId: "pe1") == 1)
+        let (photos, total) = try repo.getPhotosWithDetails(personId: "pe1")
+        #expect(total == 1)
+        #expect(photos.map(\.photo.photoId) == ["p-visible"])
+        let listed = try repo.listWithCounts()
+        #expect(listed.first?.photoCount == 1)
+        #expect(listed.first?.sessionCount == 1)
+        // 缩略图也必须来自可见照片（否则面板会显示 _rejects 里的文件）。
+        #expect(try repo.get(id: "pe1")?.thumbnailPath == "/shoot/visible.CR3")
+    }
+
+    @Test("triage 摘要计数排除已归档建议")
+    func triageSummaryExcludesArchived() throws {
+        let db = try makeDB()
+        defer { db.close() }
+        for (photoId, verdict) in [("p-visible", "keep"), ("p-archived", "reject")] {
+            _ = try db.prepare("""
+                INSERT INTO triage_suggestions
+                  (photo_id, session_id, verdict, score, confidence, reasons_json,
+                   group_id, policy_version, input_fingerprint, computed_at)
+                VALUES (?, 's1', ?, 1.0, 1.0, '[]', NULL, 'p1', 'fp1', '2026-01-01T00:00:00.000Z')
+              """).run([.text(photoId), .text(verdict)])
+        }
+        let summary = try TriageRepo(connection: db).summary(
+            sessionId: "s1", policyVersion: "p1", fingerprint: "fp1")
+        #expect(summary.counts.total == 1, "归档件建议不得计入 total")
+        #expect(summary.counts.keep == 1)
+        #expect(summary.counts.reject == 0, "归档件的 reject 建议不得计入")
+    }
 }

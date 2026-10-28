@@ -185,7 +185,13 @@ enum ExecutorRegistry {
                 ))
                 _ = try await metadataService.getMetadata(photoIds: photoIds)
                 _ = try assetRepo.reconcileRawJpegLinks(job.scopeId)
-                context.updateCheckpoint(["result": try JSONValue(from: result)])
+                // 合并而不是整块替换：checkpoint 里的 requestedPaths 是
+                // SessionDirectoryMonitor 判定"窄 job 是否覆盖本次目录"的唯一依据；
+                // 写 result 时丢掉它会让运行中的窄 job 被误判为全树扫描，
+                // watcher 提前 ack + 持久化 eventID → 永久漏扫（P1）。
+                var checkpoint = job.checkpoint
+                checkpoint["result"] = try JSONValue(from: result)
+                context.updateCheckpoint(checkpoint)
                 context.updateProgress(JobProgressUpdate(
                     current: photoIds.count, total: photoIds.count, phase: "index.metadata-done"
                 ))

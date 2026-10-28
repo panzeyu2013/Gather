@@ -293,8 +293,9 @@ public final class SimilarityService {
                 let images = group.images.filter {
                     !archivedPaths.contains(TSPath.normalize($0.path))
                 }
-                // 只为"归档导致成员不足"而隐藏；minGroupSize=1 的合法单成员组保留。
-                guard images.count >= 2 || originalCount < 2 else { return nil }
+                // 只为"归档导致成员不足"而隐藏；minGroupSize=1 的合法单成员组保留
+                // （唯一成员也被归档时组已空，不能留下空卡片）。
+                guard images.count >= 2 || (originalCount < 2 && !images.isEmpty) else { return nil }
                 var filtered = group
                 filtered.images = images.enumerated().map { index, image in
                     var copy = image
@@ -341,7 +342,7 @@ public final class SimilarityService {
         // 归档让组成员不足的组隐藏（决策要求 ≥2 张）；原本就只有 1 张的合法组保留。
         groups = groups.filter { group in
             let original = originalCounts[group.id - 1] ?? group.images.count
-            return group.images.count >= 2 || original < 2
+            return group.images.count >= 2 || (original < 2 && !group.images.isEmpty)
         }
 
         // Ungrouped = 成员表之外的逻辑资产，镜像 analyze 写入 groups_json 的

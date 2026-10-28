@@ -264,6 +264,7 @@ public final class TriageRepo: TriageRepository {
             FROM triage_suggestions t
             JOIN photos p ON p.id = t.photo_id
             WHERE t.session_id = ? AND \(manualExclusion)
+              AND \(PhotoVisibility.visiblePredicate())
             """).get([.text(policyVersion), .text(fingerprint), .text(sessionId)])
         let total = Int(stats?[0].intValue ?? 0)
         let generatedAt = stats?[1].textValue ?? ""
@@ -276,6 +277,7 @@ public final class TriageRepo: TriageRepository {
             FROM triage_suggestions t
             JOIN photos p ON p.id = t.photo_id
             WHERE t.session_id = ? AND \(manualExclusion)
+              AND \(PhotoVisibility.visiblePredicate())
             GROUP BY t.verdict
             """).query([.text(sessionId)])
         for row in verdictRows {

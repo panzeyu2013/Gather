@@ -98,12 +98,12 @@ and re-reads the signed entitlements. Assembly also asserts the bundled
 
 ```text
 SwiftUI (GatherUI)
-  ↓ AppServices：16 个域协议 / 126 个类型化方法（同进程直连）
+  ↓ AppServices：16 个域协议 / 129 个类型化方法（同进程直连）
 GatherHost（AppComposition 组合根 / AppRuntime / Live*API）
   ↓
 GatherApplication（服务编排、JobService）
   ├─ GatherDelivery：DeliveryCoordinator（XMP 写回：重试 / 冲突 / 重启恢复）
-  ├─ GatherPersistence：SQLite WAL + SchemaCurrent（44 表 / 384 列 / user_version=4）
+  ├─ GatherPersistence：SQLite WAL + SchemaCurrent（44 表 / 385 列 / user_version=5）
   └─ GatherAnalysis：dHash/LSH 聚类、Vision 人脸、RAW/ImageIO 解码
 ```
 
@@ -112,7 +112,7 @@ The eight targets are `GatherProtocol` (values, API, error codes),
 (delivery engine), `GatherAnalysis`, `GatherApplication` (services),
 `GatherUI`, `GatherHost`, and `GatherApp`. `AppComposition` is
 the single composition root; `AppRuntime` owns job lifecycle. There is no
-118-command router; `Database.open(at:)` opens the current schema (V4);
+118-command router; `Database.open(at:)` opens the current schema (V5);
 incompatible databases fail closed (no migration chain).
 
 Destructive operations use the compile-time `Confirmed<T>` marker plus real UI

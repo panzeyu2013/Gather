@@ -75,7 +75,10 @@ final class SessionDirectoryMonitor {
             startingSessions.remove(sessionId)
             // 本轮结束后若又收到过 start 请求（且没有在重试队列里），立刻重跑一次。
             if restartRequested.remove(sessionId) != nil,
-               retryTasks[sessionId] == nil {
+               retryTasks[sessionId] == nil,
+               // stop 可能发生在 start 的 await 期间：此时不能再按"最新意图"重启，
+               // 否则关闭的会话会留下永久 watcher（P2）。
+               !cancelledStarts.contains(sessionId) {
                 Task { @MainActor in
                     await self.start(
                         sessionId: sessionId, root: root, jobs: jobs, settings: settings)
@@ -165,7 +168,9 @@ final class SessionDirectoryMonitor {
         var state = pendingScans[sessionId] ?? PendingScan()
         state.note(directories, eventID: eventID)
         pendingScans[sessionId] = state
-        lastEventIDs[sessionId] = max(eventID, lastEventIDs[sessionId] ?? 0)
+        // eventID 只在覆盖成功后提升（见 runScanLoop / runFullScanFallback）：
+        // 收到事件就推进会让 stop→start 用推进后的 sinceEventID 重启，pending 目录
+        // 被清掉后再也不会被扫到（P1 永久漏扫）。
         guard scanTasks[sessionId] == nil else { return }
         scanTasks[sessionId] = Task { @MainActor [weak self] in
             await self?.runScanLoop(
@@ -197,6 +202,10 @@ final class SessionDirectoryMonitor {
             guard let snapshot = pendingScans[sessionId], !snapshot.isEmpty else {
                 await persistEventID(
                     sessionId: sessionId, settings: settings, keyName: keyName)
+                // await 期间新事件可能重新写回 pending（scanTasks 非 nil 不会起新循环）：
+                // 这时必须继续扫，不能把 pending 一起清掉（P1 永久漏扫）。
+                if Task.isCancelled { return }
+                if pendingScans[sessionId]?.isEmpty == false { continue }
                 pendingScans[sessionId] = nil
                 return
             }
@@ -233,8 +242,14 @@ final class SessionDirectoryMonitor {
                 pendingScans[sessionId]?.acknowledge(dirs)
                 attempt = 1
                 if pendingScans[sessionId]?.isEmpty == true {
+                    // 只有这一批目录全被覆盖，才把 eventID 提升到"这批事件"的
+                    // 最大值；快照之后新到的目录/事件仍留在 pending。
+                    lastEventIDs[sessionId] = max(
+                        lastEventIDs[sessionId] ?? 0, snapshot.eventID)
                     await persistEventID(
                         sessionId: sessionId, settings: settings, keyName: keyName)
+                    if Task.isCancelled { return }
+                    if pendingScans[sessionId]?.isEmpty == false { continue }
                     pendingScans[sessionId] = nil
                     return
                 }
@@ -268,7 +283,8 @@ final class SessionDirectoryMonitor {
         settings: any SettingsAPI,
         keyName: String
     ) async -> Bool {
-        let covered = Array(pendingScans[sessionId]?.directories ?? [])
+        let snapshot = pendingScans[sessionId]
+        let covered = Array(snapshot?.directories ?? [])
         var request = JobCreateParams.metadataScan(
             sessionId: sessionId, requestedPaths: nil)
         request.dedupeKey += ":watch"
@@ -287,7 +303,12 @@ final class SessionDirectoryMonitor {
             }
             pendingScans[sessionId]?.acknowledge(covered)
             if pendingScans[sessionId]?.isEmpty != false {
+                // 只把 eventID 提升到本次保底覆盖的事件快照；await 期间新到的
+                // 目录仍保留在 pending（不能一起清掉，P1 永久漏扫）。
+                lastEventIDs[sessionId] = max(lastEventIDs[sessionId] ?? 0, snapshot?.eventID ?? 0)
                 await persistEventID(sessionId: sessionId, settings: settings, keyName: keyName)
+                if Task.isCancelled { return true }
+                if pendingScans[sessionId]?.isEmpty == false { return true }
                 pendingScans[sessionId] = nil
             }
             return true
@@ -371,6 +392,9 @@ final class SessionDirectoryMonitor {
     }
 
     func stop(sessionId: String) {
+        // stop 是"最新意图"：清掉 start 期间的 restart 请求，否则 defer 会把它
+        // 当成新的 start 重新拉起 watcher（P2）。
+        restartRequested.remove(sessionId)
         if startingSessions.contains(sessionId) { cancelledStarts.insert(sessionId) }
         retryTasks.removeValue(forKey: sessionId)?.cancel()
         scanTasks.removeValue(forKey: sessionId)?.cancel()

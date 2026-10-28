@@ -160,8 +160,10 @@ public final class MetadataTemplateService: Sendable {
             do {
                 let detail = try self.metadata.photoDetail(photoId: photoId)
                 // P0 / B1：盘上值必须含 JPEG 内嵌 IPTC（只读侧车会漏掉 Bridge 写入的值）。
-                let disk = (try? await self.metadata.diskAttributes(
-                    photoPath: detail.filepath))?.descriptive
+                // P1：读盘失败不得降级成"未知"后照写——keepExternal 语义下未知必须
+                // 视为冲突；这里让错误走 catch，把整张标 failed 而不是静默覆盖。
+                let disk = try await self.metadata.diskAttributes(
+                    photoPath: detail.filepath).descriptive
                 let plan = MetadataTemplatePlanner.plan(
                     template: fields,
                     photoId: photoId,

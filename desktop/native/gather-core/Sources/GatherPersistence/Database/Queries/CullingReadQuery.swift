@@ -134,7 +134,7 @@ public final class CullingReadQuery {
                    t.group_id, t.policy_version, t.input_fingerprint, t.computed_at
             FROM triage_suggestions t
             JOIN photos p ON p.id = t.photo_id
-            WHERE t.session_id = ?
+            WHERE t.session_id = ? AND \(PhotoVisibility.visiblePredicate())
           """).query([.text(sessionId)]).map {
             CullingTriageRow(
                 gid: $0[0].textValue ?? "",

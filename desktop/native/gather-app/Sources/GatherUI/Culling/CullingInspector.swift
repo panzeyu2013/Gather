@@ -150,6 +150,8 @@ struct CullingInspector: View {
                                 onApplied: { outcome in
                                     viewModel.notice = CullingNotice(
                                         "已写入 %lld 张", params: ["\(outcome.written.count)"])
+                                    // 面板要立刻显示新值，否则要切图才刷新（P2）。
+                                    viewModel.loadMetadataDetail()
                                 })
                         }
                     }

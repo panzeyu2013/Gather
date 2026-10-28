@@ -4,7 +4,7 @@
 
 ## 结论
 
-A1/A2/A3/B1/B2/C1/C2 全部落地；第三轮复核修复后 core **1364 / 200 suites**、app **728 / 84 suites** 全绿；12 个 `check-*.sh`（strict）+ test-catalog `--self-test` + `gather-schema verify`（44/385/72/65、user_version=5、0 违规）+ `check-docs --strict` 全过。清理 ratchet 的 `try?` 保持 250（新增路径全部改成显式 do/catch），protocol 基线按实测重写（310 类型 / 1751 声明）。
+A1/A2/A3/B1/B2/C1/C2 全部落地；第三轮复核修复后 core **1364 / 200 suites**、app **728 / 84 suites** 全绿；12 个 `check-*.sh`（strict）+ test-catalog `--self-test` + `gather-schema verify`（44/385/72/65、user_version=5、0 违规）+ `check-docs --strict` 全过。合并后再补 5 条回归（可见性 3 + 联系人 P0 1 + 归档恢复 1）→ core **1369 / 200 suites**；清理 ratchet 的 `try?` 收敛到 248（新增路径以显式 do/catch / 失败分支为主），protocol 基线按实测重写（310 类型 / 1751 声明）。
 
 ## A1 淘汰移出语义
 
@@ -54,7 +54,7 @@ A1/A2/A3/B1/B2/C1/C2 全部落地；第三轮复核修复后 core **1364 / 200 s
 - **多 rdf:Description**：合并为单块后打补丁；子元素同名取第一块、开标签属性补缺；`rdf:about` 不同仍拒绝。测试：合并写入保留两块字段、不同 subject 拒绝；旧"显式拒绝"测试改为合并语义。
 - **模板存储**：逐元素解码 + `metadata.templates.corrupt` 留证（Settings 默认表 53→54）；`dropsOnlyCorruptEntries`。
 - **模板 apply/preview 上限** 2000（显式 INVALID_PARAM）。
-- **README** 中英文工作流表补 Ingest / Metadata & IPTC / Triage / Reject move 四行；API 方法数 126→128。
+- **README** 中英文工作流表补 Ingest / Metadata & IPTC / Triage / Reject move 四行；API 方法数 126→129。
 - **ADR** schema 4→5、384→385、指纹说明同步；`check-docs --strict` 绿。
 
 ## 门禁实测

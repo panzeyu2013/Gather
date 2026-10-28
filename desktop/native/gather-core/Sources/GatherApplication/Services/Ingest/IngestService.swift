@@ -288,17 +288,18 @@ public final class IngestService: @unchecked Sendable {
                 let attrs = try? fileManager.attributesOfItem(atPath: file)
                 let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
                 let name = (file as NSString).lastPathComponent
-                // P0 / C1：命名模板的日期/相机来自 EXIF，不是导入时间。
-                // P2：模板没用到日期/相机时不读 EXIF（大卡导入少一轮 IO）。
-                let capture = IngestRenameTemplate.usesCaptureMetadata(options.renameTemplate)
-                    ? await captureMetadata(for: file, attributes: attrs)
-                    : IngestCaptureMetadata()
                 // 已有照片校验和命中 → 已导入过，跳过（不重复占盘）。
+                // 先去重再读 EXIF：重导同一张卡时，被跳过的文件不必做 ImageIO 解析。
                 if !existingChecksums.isEmpty, let sum = try? checksum(file),
                    existingChecksums[sum] != nil {
                     skipped.append(file)
                     continue
                 }
+                // P0 / C1：命名模板的日期/相机来自 EXIF，不是导入时间。
+                // P2：模板没用到日期/相机时不读 EXIF（大卡导入少一轮 IO）。
+                let capture = IngestRenameTemplate.usesCaptureMetadata(options.renameTemplate)
+                    ? await captureMetadata(for: file, attributes: attrs)
+                    : IngestCaptureMetadata()
                 let sidecarCandidate = TSPath.xmpSidecarPath(file)
                 let sidecarPath: String? = fileManager.fileExists(atPath: sidecarCandidate)
                     ? sidecarCandidate : nil

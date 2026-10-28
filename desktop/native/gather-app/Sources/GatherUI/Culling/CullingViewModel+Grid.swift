@@ -53,6 +53,11 @@ extension CullingViewModel {
     ///
     /// 失败时退回"已加载页"并提示：宁可少选，也不能假装全选。
     public func selectAllInScope() async {
+        // 进入时快照 scope 与加载代数：await 期间切筛选/scope 会清空选择并重新加载，
+        // 旧 scope 的结果绝不能回填（P1：否则随后的移出会把当前视图看不到的
+        // 旧选择整份提交给服务端，单向不可撤销）。
+        let generation = loadGeneration
+        let scope = currentAPIScope
         do {
             let query = try CullingSelectionQuery(
                 sessionId: sessionId,
@@ -63,6 +68,7 @@ extension CullingViewModel {
                     ? selectedSimilarityGroupId : nil
             )
             let result = try await cullingAPI.selection(query)
+            guard generation == loadGeneration, scope == currentAPIScope else { return }
             selectedPhotoIds = Set(result.ids)
             if result.truncated {
                 notice = CullingNotice(
@@ -70,6 +76,9 @@ extension CullingViewModel {
                     params: ["\(result.ids.count)"])
             }
         } catch {
+            // 旧 scope 的失败也不能回退成"已加载页"选择（那会把旧视图的
+            // 选择集写进新 scope）。
+            guard generation == loadGeneration, scope == currentAPIScope else { return }
             selectAllLoaded()
             errorMessage = CommandError(error)
         }

@@ -109,6 +109,13 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                     .map(\.photoId))
 
             // 资产展开：保持"请求顺序 → 资产内导入序"的确定性。
+            // 先建 assetId → 行 的索引：逐请求扫全会话行在 20k 上限下是 O(n×m)，
+            // 千张级移出会明显卡顿（P2）。
+            var rowsByAsset: [String: [PhotoProjectionRow]] = [:]
+            for row in rows {
+                guard let assetId = row.assetId, !assetId.isEmpty else { continue }
+                rowsByAsset[assetId, default: []].append(row)
+            }
             var targetIds = Set<String>()
             var orderedIds: [String] = []
             func addTarget(_ photoId: String) {
@@ -116,7 +123,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             }
             for row in requested {
                 if let assetId = row.assetId, !assetId.isEmpty {
-                    for variant in rows where variant.assetId == assetId { addTarget(variant.id) }
+                    for variant in rowsByAsset[assetId] ?? [] { addTarget(variant.id) }
                 } else {
                     addTarget(row.id)
                 }

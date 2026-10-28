@@ -10,6 +10,8 @@
 #      外链/纯锚点；归档正文是快照，不参与（见 docs/archive/README.md）。
 #   3. docs/reviews 下历史 *.md 数量（>20 且未建 docs/archive 时 warning）。
 #   4. schema 版本数字：Schema.swift 的版本常量与 ADR 中“当前 schema <n>”声明比较；
+#   5. schema 形状数字：SchemaCurrent.expected* 与 README/DEVELOPMENT/docs/README/ADR
+#      里的“44 表 / N 列”“user_version=N”声明比较（防止只改版本号假绿）；
 #      若没有该声明，回退为全文所有 “schema <n>”（兼容旧写法，但历史 ADR 版本号
 #      会造成假阳性）。Migrations.swift 已随 Cut 3 删除，不再作为回退源。
 #
@@ -180,6 +182,42 @@ else
   if [ -z "$schema_notes" ]; then schema_notes="一致"; fi
 fi
 
+# 5) schema 形状数字：只比版本号会漏掉“384→385 已同步”这类假绿。以
+#    SchemaCurrent.expected* 常量为唯一真相源，校验四份现行文档里的
+#    “44 表 / N 列”与 user_version 声明；ADR 允许只有版本声明。
+SHAPE_FILE="desktop/native/gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift"
+shape_note="未检查（缺 SchemaCurrent.swift）"
+shape_mismatch=0
+if [ -f "$SHAPE_FILE" ]; then
+  code_tables=$(grep -oE 'expectedTableCount: Int = [0-9]+' "$SHAPE_FILE" | grep -oE '[0-9]+$' | tail -n 1 || true)
+  code_columns=$(grep -oE 'expectedColumnCount: Int = [0-9]+' "$SHAPE_FILE" | grep -oE '[0-9]+$' | tail -n 1 || true)
+  code_indexes=$(grep -oE 'expectedExplicitIndexCount: Int = [0-9]+' "$SHAPE_FILE" | grep -oE '[0-9]+$' | tail -n 1 || true)
+  code_fks=$(grep -oE 'expectedForeignKeyCount: Int = [0-9]+' "$SHAPE_FILE" | grep -oE '[0-9]+$' | tail -n 1 || true)
+  if [ -z "$code_tables" ] || [ -z "$code_columns" ] || [ -z "$code_indexes" ] || [ -z "$code_fks" ]; then
+    shape_note="无法定位 SchemaCurrent.expected* 常量"
+    shape_mismatch=1
+  else
+    shape_note="一致（${code_tables}/${code_columns}/${code_indexes}/${code_fks}）"
+    for f in README.md docs/DEVELOPMENT.md docs/README.md "$ADR"; do
+      [ -f "$f" ] || continue
+      while IFS= read -r claim; do
+        [ -n "$claim" ] || continue
+        if [ "$claim" != "$code_columns" ]; then
+          shape_note="${shape_note}；${f}: ${claim} 列 != code ${code_columns}"
+          shape_mismatch=1
+        fi
+      done <<< "$(grep -oE "${code_tables} 表[[:space:]]*/[[:space:]]*[0-9]+ 列" "$f" | grep -oE '[0-9]+ 列' | grep -oE '^[0-9]+' | sort -u || true)"
+      while IFS= read -r claim; do
+        [ -n "$claim" ] || continue
+        if [ "$claim" != "$schema_ver" ]; then
+          shape_note="${shape_note}；${f}: user_version=${claim} != code ${schema_ver}"
+          shape_mismatch=1
+        fi
+      done <<< "$(grep -oE 'user_version[[:space:]]*[=:]?[[:space:]]*[0-9]+' "$f" | grep -oE '[0-9]+$' | sort -u || true)"
+    done
+  fi
+fi
+
 echo "check-docs:"
 echo "  ADR 反引号路径      ${path_total}（缺失 ${missing}）"
 echo "  当前文档 md 链接    ${link_total}（缺失 ${link_missing}；docs 非 archive + 根 README）"
@@ -190,6 +228,7 @@ else
   echo "  schema 版本         代码 ${schema_ver}（源：${schema_src}）"
 fi
 echo "  ADR schema 数字     ${doc_versions}（${schema_scope}）"
+echo "  schema 形状         ${shape_note}"
 
 fail=0
 
@@ -212,6 +251,11 @@ fi
 
 if [ "$schema_mismatch" -ne 0 ]; then
   echo "WARN schema 版本不一致：$schema_notes"
+  fail=1
+fi
+
+if [ "$shape_mismatch" -ne 0 ]; then
+  echo "WARN schema 形状数字与当前文档不一致：$shape_note"
   fail=1
 fi
 

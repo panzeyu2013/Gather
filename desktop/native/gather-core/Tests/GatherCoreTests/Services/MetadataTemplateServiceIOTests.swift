@@ -43,9 +43,10 @@ private final class TemplateIOXMP: XMPProvider, @unchecked Sendable {
         var current = storage[photoPath] ?? MetadataWriteAttributes()
         if let descriptive = attributes.descriptive {
             var merged = (current.descriptive ?? DescriptiveMetadata()).applying(descriptive)
-            if attributes.replaceContact == true {
-                merged.set(.contact(descriptive.contactInfo ?? DescriptiveContact()),
-                           for: .contactInfo)
+            // 与 WritebackService+Execute 一致：只有补丁真的带 contact 才整块替换，
+            // 否则"replace_contact=true + 无 contact 字段"会清空整块联系人（P0）。
+            if attributes.replaceContact == true, let contact = descriptive.contactInfo {
+                merged.set(.contact(contact), for: .contactInfo)
             }
             // 真实补丁器把"空值"落成"元素不存在"，读回为 nil；替身必须同语义。
             for field in descriptive.explicitlySetFields
@@ -243,6 +244,35 @@ struct MetadataTemplateServiceIOTests {
         #expect(restored?.caption == "旧说明")
         #expect(restored?.contactInfo?.city == "上海")
         #expect(restored?.contactInfo?.telephone == "123", "撤销必须把整块联系人还原")
+    }
+
+    @Test("replace_contact 但补丁不含 contact：不得清空已有联系人（P0 回归）")
+    func replaceContactWithoutContactPreservesExisting() async throws {
+        let fx = try makeFixture()
+        defer { fx.cleanup() }
+        let cache = MetadataCacheRepo(connection: fx.db)
+        let original = DescriptiveMetadata(
+            caption: "旧说明",
+            contactInfo: DescriptiveContact(city: "上海", email: "a@b.c", telephone: "123"))
+        try cache.upsert(photoId: fx.photoId, sessionId: fx.sessionId, data: MetadataCacheInput(
+            descriptive: original))
+        fx.xmp.seed(fx.photoPath, MetadataWriteAttributes(descriptive: original))
+
+        // 内联编辑器只改 caption：draft 不会带上 contactInfo，但历史实现无条件
+        // 传 replaceContact=true → 执行器用空结构把 CreatorContactInfo 整块删掉。
+        let applied = try await fx.service.applyFields(
+            fields: DescriptiveMetadata(caption: "新说明"),
+            templateId: MetadataTemplateService.inlineBatchTemplateID,
+            templateName: MetadataTemplateService.inlineBatchName,
+            photoIds: [fx.photoId],
+            replaceContact: true,
+            now: "2026-10-28T00:00:00Z")
+        #expect(applied.written == [fx.photoId])
+        let after = fx.xmp.attributes(fx.photoPath).descriptive
+        #expect(after?.caption == "新说明")
+        #expect(after?.contactInfo?.city == "上海", "未触碰的联系人字段必须原样保留")
+        #expect(after?.contactInfo?.telephone == "123")
+        #expect(after?.contactInfo?.email == "a@b.c")
     }
 
     @Test("模板只填 contact 部分成员：成员级合并且写后校验通过（不整块删）")

@@ -249,6 +249,16 @@ extension AssetRepo {
                 .text(match.id),
             ])
             try retargetPhotosPath(assetFileId: match.id, path: resolvedPath, timestamp: timestamp)
+            // P1：归档件被人工从 _rejects 搬回工作区后，重扫走 relink 恢复路径。
+            // archived_at 必须同步清掉，否则文件已经回来、照片却仍对所有读面不可见。
+            // 只有新路径不在 _rejects 下才解除（防止在 _rejects 内改名/移动被误解归档）。
+            let newIsRejects = resolvedPath.split(separator: "/").contains("_rejects")
+            if !newIsRejects {
+                _ = try connection.prepare("""
+                    UPDATE photos SET archived_at = NULL, updated_at = ?
+                    WHERE asset_file_id = ? AND archived_at IS NOT NULL
+                  """).run([.text(timestamp), .text(match.id)])
+            }
             try relocateSidecarBinding(
                 oldPhotoPath: match.normalizedPath,
                 newPhotoPath: resolvedPath,

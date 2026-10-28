@@ -266,9 +266,13 @@ public final class PhotoFilterQuery {
 
         if trimmed.count >= 2 {
             let pattern = "%\(escapeLike(trimmed))%"
+            // 建议只来自仍在工作区的照片：否则会给出"只存在于 _rejects"的机型，
+            // 选中后网格 0 结果（P2）。
             let cameraRows = try connection.prepare("""
-                SELECT DISTINCT camera_make FROM photo_metadata_cache
-                WHERE session_id = ? AND camera_make LIKE ? ESCAPE '\\'
+                SELECT DISTINCT c.camera_make FROM photo_metadata_cache c
+                JOIN photos p ON p.id = c.photo_id
+                WHERE c.session_id = ? AND p.archived_at IS NULL
+                  AND c.camera_make LIKE ? ESCAPE '\\'
                 LIMIT 5
                 """).query([.text(sessionId), .text(pattern)])
             let cameras = cameraRows.compactMap { $0[0].textValue }
@@ -278,8 +282,10 @@ public final class PhotoFilterQuery {
         }
 
         let keywordRows = try connection.prepare("""
-            SELECT keywords FROM photo_metadata_cache
-            WHERE session_id = ? AND keywords LIKE ? ESCAPE '\\'
+            SELECT c.keywords FROM photo_metadata_cache c
+            JOIN photos p ON p.id = c.photo_id
+            WHERE c.session_id = ? AND p.archived_at IS NULL
+              AND c.keywords LIKE ? ESCAPE '\\'
             LIMIT 200
             """).query([.text(sessionId), .text("%\(escapeLike(trimmed))%")])
         let needle = KeywordNormalizer.fold(trimmed)

@@ -446,11 +446,19 @@ extension WritebackService {
                         .applying(descriptive)
                     // 撤销模板时结构字段必须整块还原（含删除模板新增的 contact 成员）；
                     // 普通套用仍走成员级合并，绝不覆盖外部填写的其它成员。
-                    if entry.item.attributes["replace_contact"]?.boolValue == true {
-                        merged.set(.contact(descriptive.contactInfo ?? DescriptiveContact()),
-                                   for: .contactInfo)
+                    // P0：标志为真但补丁没带 contact 时，绝不能拿空结构整块替换——
+                    // 那会把侧车里的 CreatorContactInfo 静默删光。
+                    if entry.item.attributes["replace_contact"]?.boolValue == true,
+                       let contact = descriptive.contactInfo {
+                        merged.set(.contact(contact), for: .contactInfo)
                     }
                     attributesToWrite.descriptive = merged
+                    // P2：把"整块替换"标志带到 Converge，否则崩溃重放/撤销时缓存投影
+                    // 只做成员级合并，模板删掉的 contact 成员会留在 iptc_json。
+                    if entry.item.attributes["replace_contact"]?.boolValue == true,
+                       descriptive.contactInfo != nil {
+                        attributesToWrite.replaceContact = true
+                    }
                 }
                 // P1 / E：triage 私有命名空间信号随交付落盘。
                 if let signal = entry.item.attributes["triageSignal"]?.stringValue {

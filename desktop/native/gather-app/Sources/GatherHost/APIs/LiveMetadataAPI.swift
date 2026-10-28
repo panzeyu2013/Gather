@@ -299,8 +299,10 @@ public final class LiveMetadataAPI: MetadataAPI {
             templateName: MetadataTemplateService.inlineBatchName,
             photoIds: payload.photoIds,
             policy: payload.policy,
-            // 内联编辑器展示 contact 的全部成员 → 提交的是完整状态，可以整块替换。
-            replaceContact: true,
+            // 只有补丁本身带了 contact 才整块替换：编辑器只改文字字段时 draft 不提交
+            // contactInfo，若仍置 true，executor 会用空结构清掉整块 CreatorContactInfo
+            // （P0：静默删除侧车联系人）。
+            replaceContact: payload.fields.contactInfo != nil,
             now: nowISOString()
         )
         return MetadataTemplateApplyOutcome(

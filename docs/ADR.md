@@ -18,7 +18,7 @@
 
 | ADR | Electron 时代路径（已删除） | 原生实现（迁移后） |
 |---|---|---|
-| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`（唯一 DDL；旧迁移链已删除）；fresh/形态校验 `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift`（44 表 / 384 列） |
+| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`（唯一 DDL；旧迁移链已删除）；fresh/形态校验 `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift`（44 表 / 385 列） |
 | 007 | `services/image/disk-cache.ts` | `gather-core/Sources/GatherPersistence/Database/SHA256.swift`（**ImageCache 类已删除**，见 ADR-028；文件已由 ImageCache.swift 更名为 SHA256.swift，仅保留生产在用的哈希工具） |
 | 012/013 | `services/workspace/workspace-status.service.ts` | `gather-core/Sources/GatherApplication/Services/WorkspaceStatusService.swift` |
 | 014 | `ipc/session.ipc.ts`、`services/session/session.service.ts` | `gather-core/Sources/GatherApplication/Services/SessionService.swift` |
@@ -778,8 +778,8 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
 - `face_cluster_constraints`：set-vs-set（`member_keys_json` + `peer_keys_json`），
   用于拆分在重聚类后保持；1 个索引。
 
-计数：44 表 / 384 列 / 72 显式索引 / 65 外键；列形指纹
-`4e47485e25a30f20c64a37c84650f41a2875dc513238de1bede3e39f41c4506e`。建库在单事务内执行 DDL + 版本号；fresh 建库与旧库校验共用同一份 DDL
+计数：44 表 / 385 列 / 72 显式索引 / 65 外键；列形指纹
+`38bd1540b3872b4d2e635f376f5f073881ebfa0310074ed046f275b5f3875dd2`。建库在单事务内执行 DDL + 版本号；fresh 建库与旧库校验共用同一份 DDL
 （`IF NOT EXISTS`），索引 SQL 文本进入指纹，禁止两份 DDL。
 
 ## ADR-034：T0 技术质量初筛（保守、只写决策）

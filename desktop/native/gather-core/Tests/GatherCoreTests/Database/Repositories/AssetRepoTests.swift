@@ -526,6 +526,40 @@ struct AssetRepoTests {
         #expect(photo?[1].textValue == "pending")
     }
 
+    @Test func relinkMovedFileClearsArchivedWhenRestoredFromRejects() throws {
+        let (db, repo) = try makeRepo()
+        let dir = try makeTempDir()
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: dir)
+        }
+        // 淘汰移出：photos/asset_files 都指向 _rejects，photos.archived_at 非空。
+        let rejectsPath = dir + "/_rejects/gone.jpg"
+        let restoredPath = try writeTempFile(in: dir, name: "restored.jpg")
+        try insertAssetFile(db, id: "f1", normalizedPath: rejectsPath, checksum: "restore-checksum", volumeId: "dev:0")
+        _ = try db.prepare("UPDATE asset_files SET file_size = ?, file_mtime_ms = ? WHERE id = 'f1'")
+            .run([.int(19), .real(0)])
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: rejectsPath)
+        _ = try db.prepare("INSERT INTO assets (id, status, created_at, updated_at) VALUES ('a1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')").run()
+        _ = try db.prepare("""
+            UPDATE photos SET asset_id = 'a1', asset_file_id = 'f1', archived_at = '2026-01-01T00:00:00.000Z'
+            WHERE id = 'p1'
+          """).run()
+
+        // 人工把文件搬回工作区（同 inode/同 checksum，旧 _rejects 路径已不存在）。
+        let info = try db.prepare("SELECT file_size FROM asset_files WHERE id = 'f1'").get()
+        let result = try repo.relinkMovedFile(
+            newPath: restoredPath,
+            checksum: "restore-checksum",
+            fileSize: info?[0].intValue ?? 19,
+            fileMtimeMs: 0
+        )
+        #expect(result?.photoIds == ["p1"])
+        let photo = try db.prepare("SELECT filepath, archived_at FROM photos WHERE id = 'p1'").get()
+        #expect(photo?[0].textValue == restoredPath)
+        #expect(photo?[1].textValue == nil, "文件搬回后必须清掉 archived_at，否则照片永久不可见")
+    }
+
     @Test func relinkMovedFileNoMatchReturnsNil() throws {
         let (db, repo) = try makeRepo()
         let dir = try makeTempDir()

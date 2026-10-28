@@ -2,8 +2,10 @@
 // P0 / B2：单张照片的直接元数据编辑（32 字段 + 联系人 8 成员）。
 //
 // 语义：
-// - 初值来自缓存投影（只读面板同源）；不触发磁盘解析；
+// - 初值来自**盘上**（metadata.diskDescriptive：侧车 + JPEG 内嵌 IPTC），
+//   读不到时 fail-closed 禁用保存（缓存可能落后，不能拿它当编辑基线）；
 // - 只提交"用户改过的字段"，空白 = 显式清空（不是"不触碰"）；
+// - 补丁不含 contactInfo 时不得置 replace_contact（否则会清空整块联系人）；
 // - 提交走 metadata.applyDescriptive（批次 templateId="inline"），撤销复用批次历史；
 // - JPEG 的写入仍是 .xmp 侧车：面板明确提示 Bridge 可能读内嵌 IPTC。
 import SwiftUI
