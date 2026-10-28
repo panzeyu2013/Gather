@@ -21,4 +21,14 @@ public enum PhotoVisibility {
     public static func archivedPredicate(alias: String = "p") -> String {
         alias.isEmpty ? "archived_at IS NOT NULL" : "\(alias).archived_at IS NOT NULL"
     }
+
+    /// Swift 侧可见性判定：与 SQL 谓词同一真相源，供不得下推 SQL 的读面使用。
+    public static func isVisible(archivedAt: String?) -> Bool {
+        archivedAt == nil
+    }
+
+    /// Swift 侧"已移出"判定（找回/审计路径用）。
+    public static func isArchived(archivedAt: String?) -> Bool {
+        archivedAt != nil
+    }
 }

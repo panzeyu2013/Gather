@@ -127,6 +127,31 @@ struct SessionServiceAddPhotosTests {
         #expect(Int(lastOkRun?[0].intValue ?? -1) < (try harness.sessionRepo.getIndexSeq(id: session.id)))
     }
 
+    @Test("photo_count 只统计工作区可见照片：归档件不计入侧栏数字")
+    func photoCountExcludesArchived() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let photoA = try writeTempFile(in: dir, name: "a.jpg")
+        let photoB = try writeTempFile(in: dir, name: "b.jpg")
+        let photoC = try writeTempFile(in: dir, name: "c.jpg")
+
+        let harness = try makeHarness()
+        let session = try harness.sessionRepo.create(name: "Count", source: "folder", sourcePath: dir)
+        _ = try harness.service.addPhotos(
+            sessionId: session.id, filepaths: [photoA, photoB], source: "manual")
+        // 模拟淘汰移出：photos.filepath 已在事务里迁到 _rejects 并写 archived_at。
+        _ = try harness.db.prepare(
+            "UPDATE photos SET archived_at = ? WHERE filepath = ?"
+        ).run([.text("2026-10-28T00:00:00.000Z"), .text(photoB)])
+
+        let result = try harness.service.addPhotos(
+            sessionId: session.id, filepaths: [photoC], source: "manual")
+        #expect(result.added == 1)
+        #expect(result.total == 2, "归档的 b 不得计入 total（物理行仍存在）")
+        #expect(try harness.sessionRepo.get(id: session.id)?.photoCount == 2,
+                "sessions.photo_count 必须与可见性同口径")
+    }
+
     @Test("does NOT bump index_seq when no photos were actually added")
     func noBumpOnEmptyAdd() throws {
         let dir = try makeTempDir()

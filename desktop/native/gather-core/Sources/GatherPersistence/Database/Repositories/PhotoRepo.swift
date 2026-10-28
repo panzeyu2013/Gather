@@ -246,12 +246,12 @@ public final class PhotoRepo {
             SELECT gid, MIN(first_rowid) AS first_rowid FROM (
               SELECT asset_id AS gid, MIN(rowid) AS first_rowid
                 FROM photos WHERE session_id = ? AND asset_id IS NOT NULL
-                  AND archived_at IS NULL
+                  AND \(PhotoVisibility.visiblePredicate(alias: ""))
                 GROUP BY asset_id
               UNION ALL
               SELECT id AS gid, rowid AS first_rowid
                 FROM photos WHERE session_id = ? AND asset_id IS NULL
-                  AND archived_at IS NULL
+                  AND \(PhotoVisibility.visiblePredicate(alias: ""))
             )
             GROUP BY gid
             HAVING MIN(first_rowid) > ?
@@ -268,7 +268,7 @@ public final class PhotoRepo {
             let chunk = gids[chunkStart..<min(chunkStart + 800, gids.count)].map { $0.gid }
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             let chunkRows = try connection.prepare(
-                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ? AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders)) AND p.archived_at IS NULL ORDER BY p.rowid"
+                "SELECT \(Self.photoPageColumns) FROM photos p WHERE p.session_id = ? AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders)) AND \(PhotoVisibility.visiblePredicate(alias: "p")) ORDER BY p.rowid"
             ).query([.text(sessionId)] + chunk.map { .text($0) })
             rows.append(contentsOf: try chunkRows.map { try PhotoPageRow(row: $0) })
         }
@@ -277,14 +277,14 @@ public final class PhotoRepo {
 
     public func countVisibleBySession(sessionId: String) throws -> Int {
         let row = try connection.prepare(
-            "SELECT COUNT(*) AS count FROM photos WHERE session_id = ? AND archived_at IS NULL"
+            "SELECT COUNT(*) AS count FROM photos WHERE session_id = ? AND \(PhotoVisibility.visiblePredicate(alias: ""))"
         ).get([.text(sessionId)])
         return Int(row?[0].intValue ?? 0)
     }
 
     public func countAssetsBySession(sessionId: String) throws -> Int {
         let row = try connection.prepare(
-            "SELECT COUNT(*) AS count FROM (SELECT COALESCE(NULLIF(asset_id, ''), id) AS gid FROM photos WHERE session_id = ? AND archived_at IS NULL GROUP BY gid)"
+            "SELECT COUNT(*) AS count FROM (SELECT COALESCE(NULLIF(asset_id, ''), id) AS gid FROM photos WHERE session_id = ? AND \(PhotoVisibility.visiblePredicate(alias: "")) GROUP BY gid)"
         ).get([.text(sessionId)])
         return Int(row?[0].intValue ?? 0)
     }

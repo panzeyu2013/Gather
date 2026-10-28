@@ -18,7 +18,7 @@ extension CullingService {
     ) throws -> [CullingAsset] {
         // P1：只列仍在工作区的照片（归档件从所有列表/代表行消失）。
         let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
-            .filter { $0.archivedAt == nil }
+            .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }
             .map { CullingPhotoRow(row: $0) }
         let lookup = try buildRichLookup(photos: photos, sessionId: sessionId, mode: .session)
         return filterVisible(
@@ -36,7 +36,7 @@ extension CullingService {
         }
         // 轻投影：只取 id/filepath/filename，重 JSON 列跳过；归档变体不参与组结构。
         let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
-            .filter { $0.archivedAt == nil }
+            .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }
             .map { CullingPhotoRow(row: $0) }
         let photoById = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
         let membership = try similarityResultRepo.getPhotoGroupMap(sessionId: sessionId, resultId: resultRow.id)

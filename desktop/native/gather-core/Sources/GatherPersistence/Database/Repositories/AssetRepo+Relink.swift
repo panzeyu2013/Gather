@@ -256,7 +256,7 @@ extension AssetRepo {
             if !newIsRejects {
                 _ = try connection.prepare("""
                     UPDATE photos SET archived_at = NULL, updated_at = ?
-                    WHERE asset_file_id = ? AND archived_at IS NOT NULL
+                    WHERE asset_file_id = ? AND \(PhotoVisibility.archivedPredicate(alias: ""))
                   """).run([.text(timestamp), .text(match.id)])
             }
             try relocateSidecarBinding(

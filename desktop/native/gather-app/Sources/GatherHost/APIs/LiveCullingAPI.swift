@@ -129,7 +129,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                 }
             }
             var visibleByXmp: [String: [String]] = [:]
-            for row in rows where row.archivedAt == nil {
+            for row in rows where PhotoVisibility.isVisible(archivedAt: row.archivedAt) {
                 let key = TSPath.normalize(TSPath.xmpSidecarPath(row.filepath))
                 visibleByXmp[key, default: []].append(row.id)
             }
@@ -139,7 +139,9 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             var movingRows: [(photoId: String, row: PhotoProjectionRow)] = []
             for photoId in orderedIds {
                 guard let row = byId[photoId] else { continue }
-                if row.archivedAt != nil { skip(photoId, "already_archived"); continue }
+                if PhotoVisibility.isArchived(archivedAt: row.archivedAt) {
+                    skip(photoId, "already_archived"); continue
+                }
                 guard rejected.contains(photoId) else { skip(photoId, "not_rejected"); continue }
                 movingRows.append((photoId, row))
             }
@@ -200,6 +202,18 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             failures.append(contentsOf: one.failed.map {
                 MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message)
             })
+        }
+        // P2：归档后 sessions.photo_count 必须跟着可见性回落（侧栏/控制中心
+        // 直接显示该数字）。有照片移出成功才重算；失败项不改变可见集合。
+        if !moved.isEmpty, let sessionRepo {
+            do {
+                let visible = try photoRepo.countVisibleBySession(
+                    sessionId: payload.sessionId)
+                try sessionRepo.updatePhotoCount(id: payload.sessionId, count: visible)
+            } catch {
+                GatherLogger.log(
+                    "move_rejected: refresh session photo_count failed: \(error)", level: .warn)
+            }
         }
         return CullingMoveRejectedResult(
             moved: moved, newPaths: newPaths, skipped: skipped, failed: failures)

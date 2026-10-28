@@ -51,7 +51,7 @@ public final class DuplicateGroupQuery {
                    dgm.is_kept, dgm.file_size, dgm.file_mtime, dgm.resolution
             FROM duplicate_group_members dgm
             JOIN photos p ON p.id = dgm.photo_id
-            WHERE dgm.group_id = ? AND p.archived_at IS NULL
+            WHERE dgm.group_id = ? AND \(PhotoVisibility.visiblePredicate(alias: "p"))
             """).query([.int(Int64(groupId))]).map { DuplicateMemberRow(row: $0) }
     }
 
@@ -93,7 +93,7 @@ public final class DuplicateGroupQuery {
             SELECT dgm.is_kept, dgm.resolution
             FROM duplicate_group_members dgm
             JOIN photos p ON p.id = dgm.photo_id
-            WHERE dgm.group_id = ? AND p.archived_at IS NULL
+            WHERE dgm.group_id = ? AND \(PhotoVisibility.visiblePredicate(alias: "p"))
             ORDER BY dgm.id
             """).query([.int(Int64(groupId))]).map { row in
             DuplicateMemberState(

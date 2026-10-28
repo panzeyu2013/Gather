@@ -285,7 +285,7 @@ public final class SimilarityService {
             // 保持可见（不能当成归档件丢掉）。归档导致成员不足的组隐藏。
             let archivedPaths = Set(
                 try photoRepo.getBySessionProjection(sessionId: sessionId)
-                    .filter { $0.archivedAt != nil }
+                    .filter { PhotoVisibility.isArchived(archivedAt: $0.archivedAt) }
                     .map { TSPath.normalize($0.filepath) }
             )
             let groups = stored.groups.compactMap { group -> SimilarityGroup? in
@@ -351,7 +351,7 @@ public final class SimilarityService {
         let memberPhotoIds = Set(members!.map(\.photoId))
         let ungrouped: [SimilarityImage] = PhotoAssets.collapse(
             try photoRepo.getBySessionProjection(sessionId: sessionId)
-                .filter { $0.archivedAt == nil }
+                .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }
         )
         .filter { !memberPhotoIds.contains($0.id) }
         .map { SimilarityImage(path: $0.filepath) }

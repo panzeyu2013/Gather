@@ -507,7 +507,8 @@ extension IndexerService {
                 || !missing.isEmpty
             var finalCount = 0
             try self.transactions.transaction {
-                finalCount = try self.photoRepo.countBySession(sessionId: sessionId)
+                // P2：侧栏照片数与工作区可见性同口径（归档件不计入）。
+                finalCount = try self.photoRepo.countVisibleBySession(sessionId: sessionId)
                 try self.sessionRepo.updatePhotoCount(id: sessionId, count: finalCount)
                 if committedChanges {
                     _ = try self.sessionRepo.bumpIndexSeq(id: sessionId)

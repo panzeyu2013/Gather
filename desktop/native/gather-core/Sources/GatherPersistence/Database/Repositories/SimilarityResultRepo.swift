@@ -203,7 +203,7 @@ public final class SimilarityResultRepo {
               JOIN photos p ON p.id = m.photo_id
               WHERE m.result_id = ? AND m.session_id = ?
               GROUP BY m.group_index
-              HAVING SUM(CASE WHEN p.archived_at IS NULL THEN 1 ELSE 0 END) = 0
+              HAVING SUM(CASE WHEN \(PhotoVisibility.visiblePredicate(alias: "p")) THEN 1 ELSE 0 END) = 0
             )
           """).get([.int(resultId), .text(sessionId)])
         return Int(row?[0].intValue ?? 0)
@@ -220,7 +220,7 @@ public final class SimilarityResultRepo {
           """).get([.int(resultId), .text(sessionId)])?[0].intValue ?? 0
         guard total > 0 else { return nil }
         let rows = try connection.prepare(
-            "SELECT m.group_index, m.photo_id, p.filepath FROM similarity_result_members m JOIN photos p ON p.id = m.photo_id WHERE m.result_id = ? AND m.session_id = ? AND p.archived_at IS NULL ORDER BY m.rowid"
+            "SELECT m.group_index, m.photo_id, p.filepath FROM similarity_result_members m JOIN photos p ON p.id = m.photo_id WHERE m.result_id = ? AND m.session_id = ? AND \(PhotoVisibility.visiblePredicate(alias: "p")) ORDER BY m.rowid"
         ).query([.int(resultId), .text(sessionId)])
         if rows.isEmpty { return [] }
         return rows.map { row in
