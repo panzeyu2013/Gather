@@ -67,10 +67,22 @@ package final class AppBootstrap {
         package let cancelPendingRestore: () async -> Bool
     }
 
+    /// 旧库归档现场（`Database.open` 的 `.reset` outcome）：启动后用一次性提示告知
+    /// 用户备份在哪、原版本是多少，避免「数据凭空消失」的误解。
+    package struct ArchivedDatabase: Sendable, Equatable {
+        package let backup: String
+        package let previousVersion: Int?
+    }
+
     /// 场景状态；nil = 未就绪（初始化中或失败）。
     package private(set) var scene: SceneState?
+    /// 关闭一次性提示（目前只有「旧库已归档」）。
+    package func dismissNotice() { noticeMessage = nil }
+
     /// 失败态文案（经 APIErrorPresentation 统一转换）；nil = 未失败。
     package private(set) var errorMessage: String?
+    /// 一次性提示（非错误）：目前只有「旧库已归档并重建」。可关闭，不阻断使用。
+    package private(set) var noticeMessage: String?
 
     /// 启动重入保护（不参与场景刷新）。
     @ObservationIgnored private var isStarting = false
@@ -93,9 +105,10 @@ package final class AppBootstrap {
         guard scene == nil, !isStarting else { return }
         isStarting = true
         errorMessage = nil
+        noticeMessage = nil
         defer { isStarting = false }
         do {
-            let (state, runtime, maintenance) = try await Self.makeScene(
+            let (state, runtime, maintenance, archived) = try await Self.makeScene(
                 delegate: delegate,
                 applicationSupportDirectory: applicationSupportDirectory,
                 // 4a-3a：语言唯一写入口由装配层持有，冷启动在这里播种。
@@ -105,6 +118,12 @@ package final class AppBootstrap {
             self.runtime = runtime
             self.maintenanceService = maintenance
             self.scene = state
+            if let archived {
+                noticeMessage = languageStore.l10n.format(
+                    "旧数据库已归档到 %@（原版本 %@），已重建空库。备份可随时移回。",
+                    archived.backup,
+                    archived.previousVersion.map(String.init) ?? "?")
+            }
             // B0：按 backup_auto 启停调度器（off 时 startScheduler 自身 no-op）。
             await maintenance.startScheduler()
             // ADR-023 + B0：退出前优雅停机 —— 停自动备份调度器、等备份收尾、排空写回、关库。
@@ -122,7 +141,12 @@ package final class AppBootstrap {
                 self.errorMessage = languageStore.l10n.errorText(
                     GatherErrorCode.RESTORE_FAILED.rawValue
                 ) + "：" + unrecoverable.failure.message
-            } else if let dbError = error as? DatabaseError, case .corrupt = dbError {
+            } else if let dbError = error as? DatabaseError,
+                      case .corrupt = dbError {
+                self.errorMessage = languageStore.l10n(
+                    "数据库版本不受支持或已损坏。请将 ~/Library/Application Support/Gather/gather.sqlite 及 -wal/-shm 移走备份后重试。")
+            } else if let dbError = error as? DatabaseError,
+                      case .versionUnsupported = dbError {
                 self.errorMessage = languageStore.l10n(
                     "数据库版本不受支持或已损坏。请将 ~/Library/Application Support/Gather/gather.sqlite 及 -wal/-shm 移走备份后重试。")
             } else {
@@ -152,7 +176,7 @@ package final class AppBootstrap {
         applicationSupportDirectory: URL?,
         languageStore: LanguageStore,
         commandCenter: AppCommandCenter
-    ) async throws -> (SceneState, AppRuntime, MaintenanceService) {
+    ) async throws -> (SceneState, AppRuntime, MaintenanceService, ArchivedDatabase?) {
         let applicationSupport: URL
         if let applicationSupportDirectory {
             applicationSupport = applicationSupportDirectory
@@ -213,7 +237,11 @@ package final class AppBootstrap {
         // Database/DBConnection 均为 @unchecked Sendable（句柄访问由 connectionLock 串行）。
         let openDatabase: @Sendable () async throws -> Database = {
             try await Task.detached(priority: .userInitiated) {
-                try Database.open(at: dbURL.path)
+                var openOptions = Database.Options.default
+                // schema v1：旧库（v5 及更早）显式归档为 .incompatible-* 后重建，
+                // 与 ADR-036「放弃兼容、单版本一次成型」一致；未来版本的库仍 fail closed。
+                openOptions.resetPolicy = .renameOlderOnly
+                return try Database.open(at: dbURL.path, options: openOptions)
             }.value
         }
         let database: Database
@@ -243,6 +271,12 @@ package final class AppBootstrap {
             }
         } else {
             database = try await openDatabase()
+        }
+        // 旧库被归档重建时记下现场，启动完成后给一次性提示；
+        // 否则用户升级首启动只会看到「会话/照片/评分全空」而以为数据丢了。
+        var archivedDatabase: ArchivedDatabase?
+        if case .reset(_, let previousVersion, let backup) = database.outcome {
+            archivedDatabase = ArchivedDatabase(backup: backup, previousVersion: previousVersion)
         }
         let db = database.connection
         // 审计 P2-安全：库内含照片路径 + 人脸特征，库文件只给当前用户读写。
@@ -394,7 +428,8 @@ package final class AppBootstrap {
                 }
             ),
             runtime,
-            composition.maintenanceService
+            composition.maintenanceService,
+            archivedDatabase
         )
     }
 

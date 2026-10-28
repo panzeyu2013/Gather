@@ -144,7 +144,7 @@ extension SessionControlView {
         case "similarity.analyze": l10n("相似度分析")
         case "fkw.analyze", "face.analyze": l10n("人脸分析")
         case "dup.scan", "duplicate.scan": l10n("重复扫描")
-        case "export.execute": l10n("导出")
+        case "output.run": l10n("导出")
         case "quality.analyze", "quality.score": l10n("技术分析")
         case "navigation.analyze": l10n("导航分析")
         case "culling.writeback": l10n("挑片写回")

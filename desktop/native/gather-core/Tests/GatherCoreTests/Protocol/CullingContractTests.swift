@@ -426,13 +426,14 @@ struct CullingContractTests {
     @Test("T0 冻结枚举 rawValue：verdict / reason / review flag")
     func triageRawValuesAreFrozen() {
         #expect(TriageVerdict.allCases.map(\.rawValue) == ["keep", "reject", "review"])
-        #expect(TriageReasonCode.allCases.count == 17)
+        #expect(TriageReasonCode.allCases.count == 20)
         #expect(Set(TriageReasonCode.allCases.map(\.rawValue)) == [
             "group_best", "weaker_than_group_best", "motion_blur", "exposure_low",
             "closed_eye_suspect", "close_call", "tie_with_group", "single_shot",
             "no_alternative", "low_technical", "quality_missing", "analysis_failed",
             "duplicate_exact", "duplicate_visual", "multi_face_low_confidence",
-            "small_face", "manual_override",
+            "small_face", "manual_override", "eyes_closed", "face_out_of_focus",
+            "utility_image",
         ])
         #expect(Set(FaceReviewFlag.allCases.map(\.rawValue)) == [
             "suspect", "low_quality", "small_face",

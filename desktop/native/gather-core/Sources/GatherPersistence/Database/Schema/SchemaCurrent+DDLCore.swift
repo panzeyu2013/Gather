@@ -7,7 +7,7 @@
 extension SchemaCurrent {
     /// DDL 片段 1/3（internal：仅供 SchemaCurrent.ddl 拼接，不是公开 API）。
     static let ddlCore: String = """
-    -- SchemaCurrent · Gather 本地库最终形态（44 表 / 385 列 / 72 索引 / 65 外键）
+    -- SchemaCurrent · Gather 本地库最终形态（44 表 / 386 列 / 72 索引 / 65 外键）
     -- 约定：时间戳为 ISO-8601 TEXT（与 nowISOString 同格式）；布尔为 INTEGER 0/1；mtime 为 REAL 毫秒。
     -- 约束分层：CHECK 只兜「非法值」，状态转移合法性由 Swift 状态机负责。
 
@@ -203,7 +203,7 @@ extension SchemaCurrent {
       id TEXT PRIMARY KEY,
       type TEXT NOT NULL CHECK (type IN (
         'metadata.scan','thumbnail.build','similarity.analyze','duplicate.scan',
-        'face.analyze','quality.score','export.execute','checksum.backfill')),
+        'face.analyze','quality.score','output.run','checksum.backfill')),
       scope_type TEXT NOT NULL CHECK (length(scope_type) > 0),
       scope_id TEXT NOT NULL,
       dedupe_key TEXT NOT NULL,

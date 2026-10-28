@@ -28,7 +28,7 @@ SwiftPM target**：`GatherProtocol`（值类型/协议/错误码）、`GatherPer
 （SchemaCurrent/Database/仓储）、`GatherDelivery`（交付引擎）、`GatherAnalysis`
 （聚类/人脸/图像）、`GatherApplication`（服务与任务）、`GatherUI`（页面/状态层）、
 `GatherHost`（组合根/Live API）、`GatherApp`（入口）。SQLite（WAL，SchemaCurrent 44 表 /
-385 列 / user_version=5）为唯一持久层，
+386 列 / user_version=1）为唯一持久层，
 Vision/ImageIO/RAW 解码负责图像，`JobService` 承载可恢复后台任务，
 `DeliveryCoordinator` 负责可靠写回。无 Node.js、无 Electron、无浏览器渲染层、
 无本地 HTTP 服务。
@@ -36,11 +36,12 @@ Vision/ImageIO/RAW 解码负责图像，`JobService` 承载可恢复后台任务
 Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRouter` /
 `NativeCommandClient`；历史命令映射见 [api-migration-map.md](archive/cuts/api-migration-map.md)。
 
-> 当前基线（2026-10-28 合并 feature 后采样）：8 个功能 target、Schema **44 表 / 385 列 / 72 索引 / 65 外键（user_version=5）**、
-> core **1,364 tests / 200 suites**、app **728 tests / 84 suites**、en 1,678 键 / zh 9 占位键；无 Router、无字符串命令。
+> 当前基线（2026-10-28 P2 交付闭环 + 六视角审查修复后采样）：8 个功能 target、Schema **44 表 / 386 列 / 72 索引 / 65 外键（user_version=1）**、
+> core **1,416 tests / 211 suites**、app **754 tests / 88 suites**（app 全量请用 `--no-parallel`，并行模式有既有 SIGSEGV，见决策 §18）、
+> en 1,746 键 / zh 9 占位键；无 Router、无字符串命令。
 > 只有当前 schema 可打开；旧迁移链已删除，旧版本/未知形态默认 fail-closed，仅显式重置策略才归档重建。
 > **12 个** `check-*.sh` 门禁全绿（strict 可用者带 `--strict`，另有 test-catalog `--self-test` 负例）；
-> ratchet **58/248/0/0/0**（较 54/228：新增摄取/模板/IPTC 代码带来的 +4/+20，
+> ratchet **60/255/0/0/0**（较 54/228：新增摄取/模板/IPTC/交付代码带来的 +6/+27，
 > 其中 2 处 `@unchecked Sendable` 已收敛为编译器校验的 `Sendable`；口径见
 > [design/p1/iptc-progress.md](design/p1/iptc-progress.md)）。
 

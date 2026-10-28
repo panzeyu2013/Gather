@@ -136,6 +136,42 @@ struct DeliveryRepoTests {
         #expect(try repo.get("/v/missing.xmp") == nil)
     }
 
+    // MARK: target_kind（deliveries 第 15 列）
+
+    @Test func targetKindDefaultsToSidecarAndRoundTrips() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        _ = try repo.createOrGet(xmpPath: self.xmp, photoPath: self.photo)
+        let created = try #require(try repo.get(self.xmp))
+        #expect(created.targetKind == .sidecar, "DDL 默认必须是 sidecar")
+
+        try repo.setTargetKind(xmpPath: self.xmp, kind: .embedded)
+        let updated = try #require(try repo.get(self.xmp))
+        #expect(updated.targetKind == .embedded)
+        // 只改目标列：revision / status / 基线 / updated_at 都不动（CAS 语义不能被它破坏）。
+        #expect(updated.revision == created.revision)
+        #expect(updated.status == created.status)
+        #expect(updated.baseFingerprint == created.baseFingerprint)
+        #expect(updated.updatedAt == created.updatedAt)
+    }
+
+    @Test func targetKindCheckRejectsUnknownValue() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        _ = try repo.createOrGet(xmpPath: self.xmp, photoPath: self.photo)
+        var rejected = false
+        do {
+            _ = try db.prepare("UPDATE deliveries SET target_kind = 'bogus' WHERE xmp_path = ?")
+                .run([.text(self.xmp)])
+        } catch {
+            rejected = true
+        }
+        #expect(rejected, "CHECK 必须拒绝 sidecar/embedded 之外的取值")
+        #expect(try repo.get(self.xmp)?.targetKind == .sidecar)
+    }
+
     @Test func createOrGetRejectsNegativeRevision() throws {
         let (db, repo) = try makeRepo()
         defer { db.close() }
@@ -877,7 +913,7 @@ struct DeliveryRepoTests {
 
         // 列序刻意打乱：与 DDL 物理列序、与仓储 SELECT 列序都不同。
         let deliveryColumns = [
-            "updated_at", "status", "id", "revision", "xmp_path", "photo_path",
+            "updated_at", "status", "id", "revision", "target_kind", "xmp_path", "photo_path",
             "base_fingerprint", "base_values_json", "backup_path", "error_message",
             "attempt_count", "lease_owner", "heartbeat_at", "created_at",
         ]
@@ -892,6 +928,7 @@ struct DeliveryRepoTests {
         #expect(mappedDelivery.baseFingerprint == "fp-7")
         #expect(mappedDelivery.baseValues == .object(["rating": .number(4)]))
         #expect(mappedDelivery.leaseOwner == "w")
+        #expect(mappedDelivery.targetKind == .sidecar, "DDL 默认必须是 sidecar")
         #expect(mappedDelivery.attemptCount == 1)
         #expect(mappedDelivery.createdAt != "")
         #expect(mappedDelivery.updatedAt != "")

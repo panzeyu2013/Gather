@@ -224,6 +224,12 @@ struct DeliveryFilePhase: Sendable {
         try DeliveryXMPPath.requireSafeSidecar(
             xmpPath: xmpPath, photoPath: payload.photoPath)
         if payload.backupPath.isEmpty {
+            // 只允许删除**侧车**：内嵌模式下 xmpPath 就是照片本身，无备份时删它
+            // 等于删用户的原片。没有备份的内嵌交付只能"什么也不做"。
+            guard xmpPath.lowercased().hasSuffix(".xmp") else {
+                throw DeliveryCoordinatorError.filePhaseInvalidated(
+                    xmpPath: xmpPath, reason: "no backup for non-sidecar target")
+            }
             if files.fileExists(xmpPath) {
                 try await files.removeFile(xmpPath)
             }

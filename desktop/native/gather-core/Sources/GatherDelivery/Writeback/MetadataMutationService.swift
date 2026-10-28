@@ -116,15 +116,19 @@ public final class MetadataMutationService: MetadataMutationPort {
     private let assetResolver: PhotoAssetResolver
     private let chain = PathSerialChain()
 
+    private let target: MetadataTargetResolver
+
     public init(
         deliveryRepo: DeliveryRepo,
         xmp: any XMPProvider,
-        assetResolver: PhotoAssetResolver
+        assetResolver: PhotoAssetResolver,
+        target: MetadataTargetResolver = .sidecar
     ) {
         self.deliveryRepo = deliveryRepo
         self.stateWriter = DeliveryStateWriter(repo: deliveryRepo)
         self.xmp = xmp
         self.assetResolver = assetResolver
+        self.target = target
     }
 
     /// TS: queuePhotoValues —— 值直写合并进交付项并等待执行器刷盘。
@@ -175,7 +179,8 @@ public final class MetadataMutationService: MetadataMutationPort {
         if dirtyFields.isEmpty {
             throw MetadataMutationError.empty
         }
-        let xmpPath = TSPath.normalize(resolved.xmpPath)
+        // 写目标是解析后的物理文件：侧车 = <photo>.xmp；内嵌 = 照片自身。
+        let xmpPath = TSPath.normalize(target.path(resolved.filepath))
         var attributes: [String: JSONValue] = [:]
         if let rating = values["rating"] { attributes["rating"] = rating }
         if let label = values["label"] { attributes["label"] = label }
@@ -227,6 +232,14 @@ public final class MetadataMutationService: MetadataMutationPort {
             keywords: keywords,
             baseFingerprint: base
         )
+        // 落一条可审计的写目标类型；内嵌模式下 xmp_path 就是照片路径。
+        if target.kind(resolved.filepath) == .embedded {
+            do {
+                try deliveryRepo.setTargetKind(xmpPath: xmpPath, kind: .embedded)
+            } catch {
+                GatherLogger.log("delivery target_kind update failed: \(error)", level: .warn)
+            }
+        }
         return MetadataMutationResult(
             photoId: photoId,
             xmpPath: delivery.xmpPath,
@@ -246,7 +259,8 @@ public final class MetadataMutationService: MetadataMutationPort {
         existingKeywords: [String]? = nil
     ) async throws -> MetadataMutationResult? {
         let resolved = try assetResolver.resolve(sessionId: sessionId, photoId: photoId)
-        let xmpPath = TSPath.normalize(resolved.xmpPath)
+        // 写目标是解析后的物理文件：侧车 = <photo>.xmp；内嵌 = 照片自身。
+        let xmpPath = TSPath.normalize(target.path(resolved.filepath))
         return try await chain.run(path: xmpPath) {
             let diskKeywords: [String]
             if let existingKeywords {

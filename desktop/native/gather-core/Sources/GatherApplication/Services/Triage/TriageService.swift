@@ -112,7 +112,8 @@ public final class TriageService {
         let fingerprint = try repository.fingerprint(
             sessionId: sessionId,
             policyVersion: policy.version,
-            thresholdsDigest: thresholdsDigest(for: policy)
+            thresholdsDigest: thresholdsDigest(for: policy),
+            includeModelReview: policy.usesModelSignals
         )
         return TriageSuggestionGate(fingerprint: fingerprint, policyVersion: policy.version)
     }
@@ -187,7 +188,8 @@ public final class TriageService {
             }
         }
 
-        let load = try repository.loadCandidates(sessionId: sessionId)
+        let load = try repository.loadCandidates(
+            sessionId: sessionId, includeModelReview: policy.usesModelSignals)
         let candidates = load.candidates.map(mapCandidate)
         let evaluations = evaluateTriage(candidates: candidates, policy: policy)
         let computedAt = now()
@@ -321,8 +323,10 @@ public final class TriageService {
                 }
                 // 人工优先：任一变体有人工决策（含显式“待定”）即整条资产跳过；
                 // 人工清空意图不能被 AI 覆盖（data-contracts §5.3）。
+                // 客户校样回传（imported）同样是人的决定，必须一起保护。
                 if target.variants.contains(where: {
-                    $0.decisionSource == CullingDecisionSource.manual.rawValue
+                    CullingDecisionSource(rawValue: $0.decisionSource ?? "")?
+                        .isHumanDecision == true
                 }) {
                     skippedManual += 1
                     continue
@@ -434,6 +438,7 @@ public final class TriageService {
         return TriageCandidate(
             photoId: record.photoId,
             quality: record.quality,
+            modelReview: record.modelReview,
             faceCount: record.faceCount,
             maxFaceAreaRatio: record.maxFaceAreaRatio,
             groups: groups,
@@ -505,6 +510,8 @@ public final class TriageService {
             String(format: "%.4f", policy.blurSharpnessMax),
             String(format: "%.4f", policy.exposureMin),
             String(format: "%.4f", policy.closedEyeSuspectMin),
+            String(format: "%.4f", policy.eyeOpenMin),
+            String(format: "%.4f", policy.faceFocusMin),
             String(format: "%.4f", policy.facePrimaryAreaMin),
             String(format: "%.4f", policy.faceSmallAreaMax),
             "\(policy.multiFaceCount)",
@@ -512,6 +519,8 @@ public final class TriageService {
             String(format: "%.4f", policy.rejectConfidenceMin),
             String(format: "%.4f", policy.minExecutableConfidence),
             "\(policy.maxReasons)",
+            // 开关本身就是判据的一部分：关掉模型信号必须让旧建议变 stale。
+            policy.usesModelSignals ? "model:1" : "model:0",
         ].joined(separator: ",")
     }
 

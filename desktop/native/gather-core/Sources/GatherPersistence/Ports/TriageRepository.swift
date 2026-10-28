@@ -25,6 +25,8 @@ public struct TriageGroupRecord: Equatable, Sendable {
 public struct TriageCandidateRecord: Equatable, Sendable {
     public let photoId: String
     public let quality: QualityResult?
+    /// 模型级信号（可能为 nil：未跑模型 / 旧库）。
+    public let modelReview: ModelReviewResult?
     public let faceCount: Int
     public let maxFaceAreaRatio: Double
     public let groups: [TriageGroupRecord]
@@ -39,6 +41,7 @@ public struct TriageCandidateRecord: Equatable, Sendable {
     public init(
         photoId: String,
         quality: QualityResult?,
+        modelReview: ModelReviewResult? = nil,
         faceCount: Int,
         maxFaceAreaRatio: Double,
         groups: [TriageGroupRecord],
@@ -51,6 +54,7 @@ public struct TriageCandidateRecord: Equatable, Sendable {
     ) {
         self.photoId = photoId
         self.quality = quality
+        self.modelReview = modelReview
         self.faceCount = faceCount
         self.maxFaceAreaRatio = maxFaceAreaRatio
         self.groups = groups
@@ -117,11 +121,23 @@ public protocol TriageRepository {
     /// 每个逻辑资产代表行一条；质量/人脸/组/人工决策按代表行口径装配。
     func loadCandidates(sessionId: String) throws -> TriageCandidateLoad
 
+    /// 同上，但由调用方声明「本次判定是否使用模型信号」：关闭时不必读 model_review。
+    /// 有默认实现（退回 1 参版本），只有真实仓储按开关跳过解码。
+    func loadCandidates(sessionId: String, includeModelReview: Bool) throws -> TriageCandidateLoad
+
     /// quality/similarity/duplicate/navigation/policy/thresholds 的 SHA-256。
     func fingerprint(
         sessionId: String,
         policyVersion: String,
         thresholdsDigest: String
+    ) throws -> String
+
+    /// 同上，由调用方声明模型信号是否参与：不参与时模型行变化不得让建议 stale。
+    func fingerprint(
+        sessionId: String,
+        policyVersion: String,
+        thresholdsDigest: String,
+        includeModelReview: Bool
     ) throws -> String
 
     func loadSuggestions(sessionId: String) throws -> [TriageSuggestion]
@@ -149,4 +165,22 @@ public protocol TriageRepository {
         sessionId: String,
         representativePhotoIds: [String]
     ) throws -> [TriageApplyTargetRecord]
+}
+
+public extension TriageRepository {
+    /// 默认实现：不认识开关的仓储（测试假件）按 1 参版本工作。
+    func loadCandidates(sessionId: String, includeModelReview: Bool) throws -> TriageCandidateLoad {
+        try loadCandidates(sessionId: sessionId)
+    }
+
+    func fingerprint(
+        sessionId: String,
+        policyVersion: String,
+        thresholdsDigest: String,
+        includeModelReview: Bool
+    ) throws -> String {
+        try fingerprint(
+            sessionId: sessionId, policyVersion: policyVersion,
+            thresholdsDigest: thresholdsDigest)
+    }
 }

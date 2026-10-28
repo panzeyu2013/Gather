@@ -76,6 +76,8 @@ public final class WritebackService: @unchecked Sendable {
     /// 本服务实例的写租约 owner（P1-2）：进程内稳定，跨 execute 复用同一身份，
     /// 崩溃后新进程会拿到新 owner，只能等旧 heartbeat 过期后抢占。
     let leaseOwner: String
+    /// 写目标解析（侧车或照片自身）；冲突指纹与恢复校验都按它取路径。
+    let target: MetadataTargetResolver
 
     public init(
         deliveryRepo: DeliveryRepo,
@@ -87,6 +89,7 @@ public final class WritebackService: @unchecked Sendable {
         assetResolver: PhotoAssetResolver? = nil,
         delivery: DeliveryCoordinator? = nil,
         fileLock: XMPFileLock,
+        target: MetadataTargetResolver = .sidecar,
         eventSink: (@Sendable (String) -> Void)? = nil
     ) {
         self.deliveryRepo = deliveryRepo
@@ -100,8 +103,10 @@ public final class WritebackService: @unchecked Sendable {
         self.eventSink = eventSink
         self.fileLock = fileLock
         self.leaseOwner = "writeback-" + newUUIDString()
+        self.target = target
         self.delivery = delivery ?? DeliveryCoordinator(
-            connection: connection, xmp: xmp, fileLock: fileLock, eventSink: eventSink)
+            connection: connection, xmp: xmp, fileLock: fileLock, target: target,
+            eventSink: eventSink)
         self.summaryQuery = DeliverySummaryQuery(connection: connection)
     }
 

@@ -191,6 +191,22 @@ extension SettingsViewModel {
                 zhDesc: "开启后会话检查器显示技术质量建议；变更在下次启动/新会话生效"
             ),
             SettingField(
+                key: "triage_model_review", type: .select([
+                    SelectOption(value: "1", labelZh: "开启（默认）"),
+                    SelectOption(value: "0", labelZh: "关闭"),
+                ]),
+                zhLabel: "模型级信号",
+                zhDesc: "质量分析完成后运行人脸几何/合焦/审美信号（眼睛睁开、人脸失焦、截图识别）。关闭后只跑技术质量。"
+            ),
+            SettingField(
+                key: "triage_auto_apply", type: .select([
+                    SelectOption(value: "0", labelZh: "关闭（默认）"),
+                    SelectOption(value: "1", labelZh: "开启"),
+                ]),
+                zhLabel: "自动应用高置信建议",
+                zhDesc: "生成后自动应用超过门槛的 keep/reject（仍跳过人工决策与低置信项）；默认关闭，建议先干跑。"
+            ),
+            SettingField(
                 key: "triage_auto_generate", type: .select([
                     SelectOption(value: "0", labelZh: "关闭（默认）"),
                     SelectOption(value: "1", labelZh: "开启"),
@@ -200,6 +216,7 @@ extension SettingsViewModel {
             ),
             SettingField(
                 key: "triage_policy", type: .select([
+                    SelectOption(value: "triage-v2", labelZh: "triage-v2"),
                     SelectOption(value: "triage-v1", labelZh: "triage-v1"),
                 ]),
                 zhLabel: "策略版本",

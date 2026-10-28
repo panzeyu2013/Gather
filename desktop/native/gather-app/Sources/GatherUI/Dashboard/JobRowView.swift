@@ -121,7 +121,7 @@ struct JobRowView: View {
         case .faceAnalyze: return l10n("人脸分析")
         case .duplicateScan: return l10n("重复照片扫描")
         case .qualityScore: return l10n("技术质量分析")
-        case .exportExecute: return l10n("照片导出")
+        case .outputRun: return l10n("照片导出")
         case .thumbnailBuild: return l10n("缩略图生成")
         }
     }

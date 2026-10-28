@@ -62,7 +62,7 @@ public protocol JobRepository {
     func latestScanJob(sessionId: String) throws -> ScanJobRecord?
     /// WorkspaceStatus：scope=session 的失败 job（updated_at 倒序，limit）。
     func failedJobs(sessionId: String, limit: Int) throws -> [FailedJobRecord]
-    /// WorkspaceStatus：成功 export.execute 的 checkpoint_json（最多 limit 条）。
+    /// WorkspaceStatus：成功 output.run 的 checkpoint_json（最多 limit 条）。
     func successfulExportCheckpoints(sessionId: String, limit: Int) throws -> [String]
     /// SessionService：删除会话时清理无 FK 的 analysis_jobs 僵尸行。
     func deleteSessionJobs(sessionId: String) throws

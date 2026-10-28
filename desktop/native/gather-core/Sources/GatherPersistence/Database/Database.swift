@@ -2,12 +2,12 @@
 // Database facade（docs/refactor-decisions.md D-035）。
 //
 // 定位：**唯一**的库入口。职责只有三件事：
-//   1. 打开即保证 schema 就绪：user_version == SchemaCurrent.userVersion（5）**且**
-//      列形与指纹一致（44 表 / 385 列 / 72 显式索引 / 65 外键）；
+//   1. 打开即保证 schema 就绪：user_version == SchemaCurrent.userVersion（1）**且**
+//      列形与指纹一致（44 表 / 386 列 / 72 显式索引 / 65 外键）；
 //      0 且无表 → 建当前 schema；当前版本 → 直接打开；旧版本 / 更高版本 / 版本 0 有表 /
 //      形态不符 / 非 SQLite 文件 → **默认 fail closed**（只抛错，不改名、不删文件）；
-//      只有 Options.resetPolicy == .renameToIncompatible（开发重置）才把 db/-wal/-shm
-//      改名 .incompatible-* 后重建；
+//      只有显式 Options.resetPolicy（生产 .renameOlderOnly / 开发 .renameToIncompatible）
+//      才把 db/-wal/-shm 改名 .incompatible-* 后重建；
 //   2. 提供 read / write / async 三个作用域，让 Service 不再自己管连接与事务边界；
 //   3. 把底层 `DBError.message` 收敛成类型化 `DatabaseError`（见 DatabaseError.swift）。
 //
@@ -64,10 +64,24 @@ public final class Database: @unchecked Sendable {
     public enum ResetPolicy: Sendable, Equatable {
         /// 默认：只抛错，绝不改名/删除用户库（fail closed）。
         case failClosed
-        /// 仅开发/测试显式开启：改名 .incompatible-* 后重建（沿用旧行为）。
+        /// 仅开发/测试显式开启：任何不兼容库都改名 .incompatible-* 后重建（旧行为）。
         case renameToIncompatible
+        /// 生产：只归档「比当前构建旧」的库；未来版本仍 fail closed（不覆盖新数据）。
+        case renameOlderOnly
 
-        var allowsReset: Bool { self == .renameToIncompatible }
+        var allowsReset: Bool { self != .failClosed }
+
+        func permits(_ reason: ResetReason) -> Bool {
+            switch self {
+            case .failClosed:
+                return false
+            case .renameToIncompatible:
+                return true
+            case .renameOlderOnly:
+                if case .newerVersion = reason { return false }
+                return true
+            }
+        }
     }
 
     /// open 选项。默认值与 D-035 / draft §6.4 一致（busy_timeout 5s、synchronous normal、64MB）。
@@ -219,7 +233,7 @@ public final class Database: @unchecked Sendable {
 
                 case .incompatible(let reason):
                     connection.close()
-                    guard options.resetPolicy.allowsReset, !didReset else {
+                    guard options.resetPolicy.permits(reason.resetReason), !didReset else {
                         throw incompatibleError(reason, path: path)
                     }
                     let backup = try SchemaReset.reset(

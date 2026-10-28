@@ -286,6 +286,14 @@ public struct L10n: Equatable, Sendable {
 
     /// 进度相位码 → 当前语言文案；nil/未知相位回退「正在处理…」。
     public func progressPhaseText(_ phase: String?) -> String {
+        // 整套交付的相位是带参数的：output.<recipeIndex>/<recipeCount>。
+        // 旧实现只查静态码表，`output.2/3` 不在表里 → 任务行恒显示「正在处理…」。
+        if let phase, phase.hasPrefix("output.") {
+            let numbers = phase.dropFirst("output.".count).split(separator: "/")
+            if numbers.count == 2, let index = Int(numbers[0]), let count = Int(numbers[1]) {
+                return format("正在交付：第 %lld/%lld 个配方", index, count)
+            }
+        }
         guard let phase, let key = GatherLocalization.progressPhaseKeys[phase] else {
             return self(Self.unknownPhaseKey)
         }

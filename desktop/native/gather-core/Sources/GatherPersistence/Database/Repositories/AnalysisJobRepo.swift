@@ -412,7 +412,7 @@ public final class AnalysisJobRepo {
     }
 
     /// 显式清理：只删除调用方点名的终态集合（默认由调用方传 [.succeeded]），
-    /// excludeTypes 用于保护 workspace 阶段证据（metadata.scan / export.execute）。
+    /// excludeTypes 用于保护 workspace 阶段证据（metadata.scan / output.run）。
     /// 失败/中断/取消行及其错误原因不会被隐式删除。
     public func clearTerminal(statuses: [AnalysisJobStatus], excludeTypes: [AnalysisJobType] = []) throws -> Int {
         for status in statuses where !terminalAnalysisJobStatuses.contains(status) {
@@ -466,12 +466,12 @@ public final class AnalysisJobRepo {
         }
     }
 
-    /// WP3b-1（WorkspaceStatus 下沉）：成功 export.execute 的 checkpoint_json。
+    /// WP3b-1（WorkspaceStatus 下沉）：成功 output.run 的 checkpoint_json。
     /// 「是否实际交付了文件」的判定仍留在 Application（解析 exported 键）。
     public func successfulExportCheckpoints(sessionId: String, limit: Int) throws -> [String] {
         let rows = try connection.prepare("""
             SELECT checkpoint_json FROM analysis_jobs
-            WHERE type = 'export.execute' AND scope_id = ? AND status = 'succeeded'
+            WHERE type = 'output.run' AND scope_id = ? AND status = 'succeeded'
             ORDER BY updated_at DESC
             LIMIT ?
           """).query([.text(sessionId), .int(Int64(limit))])

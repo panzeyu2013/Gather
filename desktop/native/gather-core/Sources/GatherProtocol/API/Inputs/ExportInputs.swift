@@ -3,7 +3,7 @@
 //
 // 对应命令：export.preview / execute / cancel / report。
 // 校验归属：
-// - export.execute 为破坏性入口，使用 Confirmed<ExportInput>；preview 复用同一输入；
+// - output.run 为破坏性入口，使用 Confirmed<ExportInput>；preview 复用同一输入；
 // - options 为 nil 时由 1B 实现按旧行为构造空对象默认值（旧 export.ipc 的 {} 分支）；
 //   解码失败由 1B 收敛为 EXPORT_PARAMS_INVALID；
 // - reportType 目前是自由字符串（G8 待补枚举），这里只做长度/非空白；
@@ -11,7 +11,7 @@
 
 import Foundation
 
-/// export.preview / export.execute 的统一输入。
+/// export.preview / output.run 的统一输入。
 public struct ExportInput: Decodable, Sendable, Equatable {
     public let sessionId: String
     /// nil = 旧命令的“空对象”语义，由 API 实现补默认值。

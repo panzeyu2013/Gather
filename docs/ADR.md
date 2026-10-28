@@ -10,7 +10,7 @@
 > 已随迁移失效，语义与不变量不变，**原生对应实现位置见下表**（未列条目以
 > `desktop/native/gather-core` / `gather-app` 代码为准）。
 >
-> 当前 schema：5（唯一版本；`SchemaCurrent`，44 表 / 385 列 / 72 索引 / 65 外键）。
+> 当前 schema：1（唯一版本；`SchemaCurrent`，44 表 / 386 列 / 72 索引 / 65 外键）。
 > V1/V2 迁移链已删除：旧版本库默认 fail closed，只有显式 reset 才归档
 > db/-wal/-shm 后重建。下文历史 ADR 中的 schema 33/34/35 是当时版本，不是当前代码版本。
 
@@ -18,7 +18,7 @@
 
 | ADR | Electron 时代路径（已删除） | 原生实现（迁移后） |
 |---|---|---|
-| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`（唯一 DDL；旧迁移链已删除）；fresh/形态校验 `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift`（44 表 / 385 列） |
+| 005/006 | `desktop/src/main/db/migrations.ts`、`tests/unit/...` | `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`（唯一 DDL；旧迁移链已删除）；fresh/形态校验 `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift`（44 表 / 386 列） |
 | 007 | `services/image/disk-cache.ts` | `gather-core/Sources/GatherPersistence/Database/SHA256.swift`（**ImageCache 类已删除**，见 ADR-028；文件已由 ImageCache.swift 更名为 SHA256.swift，仅保留生产在用的哈希工具） |
 | 012/013 | `services/workspace/workspace-status.service.ts` | `gather-core/Sources/GatherApplication/Services/WorkspaceStatusService.swift` |
 | 014 | `ipc/session.ipc.ts`、`services/session/session.service.ts` | `gather-core/Sources/GatherApplication/Services/SessionService.swift` |
@@ -64,7 +64,7 @@
 ## ADR-005 数据库建库不变量与不兼容库重置（2026-10-26 收敛）
 
 - 唯一建库入口是 `Database.open(at:)`：新库在单事务内执行
-  `SchemaCurrent.createSQL` 并写 `PRAGMA user_version = 5`；打开后自检版本、`foreign_keys`
+  `SchemaCurrent.createSQL` 并写 `PRAGMA user_version = 1`；打开后自检版本、`foreign_keys`
   与 `foreign_key_check`。
 - 只有两种状态可继续：空库（建库）与当前版本（打开）。旧版本（V1/V2）、更高版本、
   版本 0 有表、形态不符、非 SQLite 文件一律不兼容，默认 **fail closed**（只抛错、
@@ -76,13 +76,13 @@
 ## ADR-006 Schema 唯一真相源
 
 - 唯一 DDL 真相源是 `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`
-  （44 表 / 385 列 / 72 索引 / 65 外键，一次成型；含 triage_suggestions 与
+  （44 表 / 386 列 / 72 索引 / 65 外键，一次成型；含 triage_suggestions 与
   face_cluster_constraints）。索引 SQL 文本参与列形指纹，逐字保留。
 - `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift` 校验 fresh 库（直接 exec
-  `SchemaCurrent.createSQL` 与经 `Database.open` 两种路径）同形：版本 5、44 表、
+  `SchemaCurrent.createSQL` 与经 `Database.open` 两种路径）同形：版本 1、44 表、
   无悬空外键、逐表列数与 CHECK 约束不漂移。Schema 变更只改这一份 DDL 并同步计数/指纹。
 - `docs/archive/schema.snapshot-v35.json` 是旧迁移链时代（schema 35）的**历史快照**，
-  只作归档，不参与门禁；当前 schema 以 `SchemaCurrent`（44 表 / user_version=5）为准。
+  只作归档，不参与门禁；当前 schema 以 `SchemaCurrent`（44 表 / user_version=1）为准。
 
 ---
 
@@ -625,7 +625,7 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
    `docs/archive/schema.snapshot-v35.json` 记为 34/35（43 表不变）；该轮对应的 schema
    为 3（44 表），旧迁移链已删除，见 ADR-005/006。
 
-   **schema 5（当前唯一版本，44 表 / 385 列）**：schema 4 给 `photo_metadata_cache`
+   **schema 5（历史版本号；当时 44 表、385 列）**：schema 4 给 `photo_metadata_cache`
    追加 `iptc_json`（描述性元数据 32 字段的只读投影，字段表见
    `desktop/native/gather-core/Sources/GatherProtocol/Protocol/DescriptiveMetadata.swift`）；
    schema 5 给 `photos` 追加 `archived_at`（淘汰移出的可见性真相源，见 PhotoVisibility）。
@@ -778,7 +778,7 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
 - `face_cluster_constraints`：set-vs-set（`member_keys_json` + `peer_keys_json`），
   用于拆分在重聚类后保持；1 个索引。
 
-计数：44 表 / 385 列 / 72 显式索引 / 65 外键；列形指纹
+计数（历史）：44 表、385 列、72 显式索引、65 外键；列形指纹
 `38bd1540b3872b4d2e635f376f5f073881ebfa0310074ed046f275b5f3875dd2`。建库在单事务内执行 DDL + 版本号；fresh 建库与旧库校验共用同一份 DDL
 （`IF NOT EXISTS`），索引 SQL 文本进入指纹，禁止两份 DDL。
 
@@ -808,3 +808,27 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
   覆盖较新 XMP。
 - 诊断：文件日志 sink（5MB×5 轮转），20MB 上限、默认不含绝对路径、不含 DB/照片/XMP；
   仅托管 `Backups/` 内的备份可恢复，不接受任意外部 SQLite。
+
+
+## ADR-036：Schema 基线收敛为 v1（2026-10-28）
+
+状态：已实现。决策：**放弃兼容**，`SchemaCurrent.userVersion = 1`，单版本一次成型，
+无迁移链；`deliveries.target_kind`（sidecar/embedded）与 `output.run` job 类型直接进基线。
+计数 44 表 / 386 列 / 72 索引 / 65 外键，指纹见 `SchemaCurrent.expectedShapeFingerprint`。
+
+- 旧库（user_version != 1）仍按 fail-closed 处理：默认只抛错，显式 reset 才改名 `.incompatible-*` 重建。
+- 同步点：`Schema.swift` 镜像、`gather-schema` 说明、README/docs/ADR 的版本与列数声明、逐表列数测试。
+- 理由与代价见 `docs/decisions/2026-10-28-p2-review-delivery.md`（D1）。
+
+## ADR-037：内嵌元数据写目标与交付管线（2026-10-28）
+
+状态：已实现。
+
+- **写目标单一化**：`MetadataTargetPolicy`（非 JPEG→侧车；已有 `.xmp`→侧车；独立 JPEG 按 `metadata_write_mode`）。
+  `MetadataWriteRouter` 实现完整 XMPProvider；内嵌写走 `JPEGMetadataWriter`（APP1 XMP + APP13 IRB 0x0404、
+  scan 字节不变、头部备份、写后双读校验）。交付层新增 `MetadataTargetResolver`，`deliveries.xmp_path` 即写目标路径。
+- **清空三段式**：IIM 删 dataset（前提）→ XMP 删元素（补充）→ `MetadataParseSegments.xmpPresentKeys` 阻断回退（兜底）。
+- **模型级初审**：`analysis_type='model_review'` 存 Vision 几何/合焦/审美信号，并入 `quality.score` 第二段；
+  `triage-v2` 阈值（`eyeOpenMin`/`faceFocusMin`）与三个新理由码。
+- **交付管线**：`OutputRecipe` 多配方 + `output.run` 编排 + `manifest.json` + 联系表 PDF + 静态画廊/校样 +
+  WebDAV（Keychain 凭据）。设计见 `docs/design/p2-review-delivery/plan-2026-10-28.md`。

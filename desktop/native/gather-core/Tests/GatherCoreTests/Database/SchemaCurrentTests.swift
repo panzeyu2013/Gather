@@ -3,7 +3,7 @@
 //
 // 为什么需要这组测试：V1 一次成型、没有迁移链兜底，任何「少一列 / 少一索引 /
 // 少一外键」都只会在运行期以静默错列（SELECT * 按位置取值）的形式暴露（draft §8 R1）。
-// 因此这里把 44 / 385 / 72 / 65 / user_version=5 五个数字、44 张表的逐表列数、
+// 因此这里把 44 / 386 / 72 / 65 / user_version=1 五个数字、44 张表的逐表列数、
 // CHECK 与 FK 的拒绝路径、CASCADE / SET NULL / RESTRICT 的删除语义全部钉成回归。
 //
 // 用户数据 FK（D-025）：role_bindings.cluster_id、person_photos.photo_id / session_id 是
@@ -33,8 +33,9 @@ struct SchemaCurrentCheckCase: Sendable, CustomTestStringConvertible {
     var testDescription: String { name }
 }
 
-/// 43 张表的逐表列数（draft §9.1，已用 §7.1 DDL 实测复算，合计 373；
-/// Cut 5 / 5b-2b 给 similarity_cluster_meta +3：algorithm_version / input_signature / state_digest）。
+/// 44 张表的逐表列数（draft §9.1，已用 §7.1 DDL 实测复算，合计 386；
+/// Cut 5 / 5b-2b 给 similarity_cluster_meta +3：algorithm_version / input_signature / state_digest；
+/// W3 给 deliveries +1：target_kind）。
 private let schemaCurrentColumnCounts: [SchemaCurrentTableSpec] = [
     SchemaCurrentTableSpec(table: "analysis_jobs", columns: 24),
     SchemaCurrentTableSpec(table: "analysis_runs", columns: 10),
@@ -47,7 +48,7 @@ private let schemaCurrentColumnCounts: [SchemaCurrentTableSpec] = [
     SchemaCurrentTableSpec(table: "assets", columns: 4),
     SchemaCurrentTableSpec(table: "culling_decisions", columns: 11),
     SchemaCurrentTableSpec(table: "culling_history", columns: 5),
-    SchemaCurrentTableSpec(table: "deliveries", columns: 14),
+    SchemaCurrentTableSpec(table: "deliveries", columns: 15),
     SchemaCurrentTableSpec(table: "delivery_intents", columns: 8),
     SchemaCurrentTableSpec(table: "delivery_items", columns: 11),
     SchemaCurrentTableSpec(table: "delivery_sessions", columns: 4),
@@ -382,7 +383,7 @@ struct SchemaCurrentTests {
 
     // MARK: 建库与总量
 
-    @Test("exec(SchemaCurrent.createSQL) 成功：44 张表 / 385 列")
+    @Test("exec(SchemaCurrent.createSQL) 成功：44 张表 / 386 列")
     func appliesSchema() throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }
@@ -396,7 +397,7 @@ struct SchemaCurrentTests {
         for table in tables {
             columns += try db.prepare("PRAGMA table_info(\(table))").query([]).count
         }
-        #expect(columns == 385, "列数漂移：期望 385，实际 \(columns)")
+        #expect(columns == 386, "列数漂移：期望 386，实际 \(columns)")
     }
 
     @Test("索引 72 个（含 8 个 UNIQUE）")
@@ -442,18 +443,18 @@ struct SchemaCurrentTests {
         #expect(dirty == 0, "空库的 foreign_key_check 必须干净（否则 FK 的父键不是 PK/UNIQUE）")
     }
 
-    @Test("当前 schema user_version = 5；内存库由 Database.open 建到同一版本")
+    @Test("当前 schema user_version = 1；内存库由 Database.open 建到同一版本")
     func userVersion() throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }
-        #expect(SchemaCurrent.userVersion == 5)
+        #expect(SchemaCurrent.userVersion == 1)
         #expect(try scalarInt(db, "PRAGMA user_version") == SchemaCurrent.userVersion)
 
         let current = try Database.openInMemory()
         defer { current.close() }
-        #expect(try scalarInt(current.connection, "PRAGMA user_version") == 5)
+        #expect(try scalarInt(current.connection, "PRAGMA user_version") == 1)
         // 版本有两个镜像：SchemaSQL.currentSchemaVersion 是 check-docs.sh 的代码源，
-        // 忘了同步会让文档门禁对着旧版本判绿（V5 时最容易漏）。
+        // 忘了同步会让文档门禁对着旧版本判绿（升版时最容易漏）。
         #expect(SchemaSQL.currentSchemaVersion == SchemaCurrent.userVersion)
     }
 

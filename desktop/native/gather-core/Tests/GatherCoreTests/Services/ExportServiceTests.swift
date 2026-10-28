@@ -492,6 +492,67 @@ struct ExportServiceTests {
         #expect(FileManager.default.fileExists(atPath: output.path))
         #expect(try Data(contentsOf: output).count > 0)
     }
+
+    @Test func convertPreservesExifAndIPTC() throws {
+        let db = try makeExportDatabase()
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-export-meta-" + UUID().uuidString, isDirectory: true)
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-export-meta-out-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        let input = source.appendingPathComponent("photo.jpg")
+        let context = try #require(CGContext(
+            data: nil, width: 32, height: 24, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(red: 0.4, green: 0.6, blue: 0.2, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 32, height: 24))
+        let image = try #require(context.makeImage())
+        let data = NSMutableData()
+        let imageDestination = try #require(CGImageDestinationCreateWithData(
+            data, "public.jpeg" as CFString, 1, nil))
+        let properties: [CFString: Any] = [
+            kCGImagePropertyExifDictionary: [
+                kCGImagePropertyExifDateTimeOriginal: "2024:05:01 10:20:30",
+                kCGImagePropertyExifLensModel: "RF 50mm F1.2",
+            ],
+            kCGImagePropertyIPTCDictionary: ["Caption/Abstract": "交付保真测试"],
+        ]
+        CGImageDestinationAddImage(imageDestination, image, properties as CFDictionary)
+        #expect(CGImageDestinationFinalize(imageDestination))
+        try (data as Data).write(to: input)
+
+        let session = try SessionRepo(connection: db).create(
+            name: "Meta", source: "local", sourcePath: source.path)
+        try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
+        let service = ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            connection: db)
+        var options = ExportOptions(
+            scope: .session, format: .jpeg, quality: 90,
+            naming: ExportNaming(pattern: "{original}"), includeXmp: false,
+            destination: destination.path)
+        options.maxDimension = 32
+        let result = try service.execute(sessionId: session.id, options: options)
+        #expect(result.exported == 1)
+
+        let output = destination.appendingPathComponent("photo.jpg")
+        let sourceRef = try #require(CGImageSourceCreateWithURL(
+            output as CFURL, nil))
+        let read = try #require(CGImageSourceCopyPropertiesAtIndex(sourceRef, 0, nil) as? [CFString: Any])
+        let exif = try #require(read[kCGImagePropertyExifDictionary] as? [CFString: Any])
+        #expect(exif[kCGImagePropertyExifDateTimeOriginal] as? String == "2024:05:01 10:20:30")
+        #expect(exif[kCGImagePropertyExifLensModel] as? String == "RF 50mm F1.2")
+        let iptc = try #require(read[kCGImagePropertyIPTCDictionary] as? [CFString: Any])
+        let caption = (iptc["Caption/Abstract" as CFString] as? String)
+            ?? (iptc[kCGImagePropertyIPTCCaptionAbstract] as? String)
+        #expect(caption == "交付保真测试")
+    }
 #endif
 
     /// 第四轮审计 #5（MED）：{time} 占位符 12h/24h 不一致。
@@ -869,4 +930,61 @@ private func seedExportAssetPhoto(
         .text(photoId), .text(sessionId), .text("/shoot/" + filename),
         .text(filename), .text(assetId),
     ])
+}
+
+
+@Suite("转码方向归一")
+struct ExportOrientationTests {
+    @Test("源 orientation=6 转码后输出必须 upright（1 或缺省）")
+    func convertBakesOrientation() throws {
+        let db = try makeTestDB()
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-orient-src-" + UUID().uuidString, isDirectory: true)
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-orient-dst-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: source.path)
+            try? FileManager.default.removeItem(atPath: destination.path)
+        }
+        let input = source.appendingPathComponent("photo.jpg")
+        var pixels = [UInt8](repeating: 128, count: 24 * 16 * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try #require(CGContext(
+            data: &pixels, width: 24, height: 16, bitsPerComponent: 8, bytesPerRow: 24 * 4,
+            space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try #require(context.makeImage())
+        let data = NSMutableData()
+        let imageDestination = try #require(CGImageDestinationCreateWithData(
+            data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(imageDestination, image, [
+            kCGImagePropertyOrientation: 6,
+        ] as CFDictionary)
+        #expect(CGImageDestinationFinalize(imageDestination))
+        try (data as Data).write(to: input)
+
+        let session = try SessionRepo(connection: db).create(
+            name: "Orientation", source: "local", sourcePath: source.path)
+        try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
+        let service = ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            connection: db)
+        let options = ExportOptions(
+            scope: .session, format: .jpeg, quality: 90, maxDimension: nil,
+            naming: ExportNaming(pattern: "{original}"), includeXmp: false,
+            destination: destination.path)
+        #expect(try service.execute(sessionId: session.id, options: options).exported == 1)
+
+        let output = destination.appendingPathComponent("photo.jpg")
+        let imageSource = try #require(CGImageSourceCreateWithURL(output as CFURL, nil))
+        let properties = try #require(
+            CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any])
+        let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
+        #expect(orientation == 1, "像素已摆正，输出不能带 6/8 等旋转标记")
+        // 方向必须烘焙进像素：24×16 + orientation=6 → 输出 16×24。
+        #expect(properties[kCGImagePropertyPixelWidth] as? Int == 16)
+        #expect(properties[kCGImagePropertyPixelHeight] as? Int == 24)
+    }
 }

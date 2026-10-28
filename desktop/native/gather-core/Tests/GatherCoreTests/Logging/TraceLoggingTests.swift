@@ -570,7 +570,7 @@ struct TraceLoggingTests {
         let repo = AnalysisJobRepo(connection: db)
         let service = JobService(repo: repo, heartbeatIntervalMs: 60_000, weightBudget: 2)
         let gate = TraceGate()
-        service.registerExecutor(type: .exportExecute, weight: 1) { _, _ in
+        service.registerExecutor(type: .outputRun, weight: 1) { _, _ in
             await gate.wait()
             return "late"
         }
@@ -578,7 +578,7 @@ struct TraceLoggingTests {
         defer { Task { await service.stop() } }
 
         let job = try service.create(JobCreateParams(
-            type: .exportExecute,
+            type: .outputRun,
             scopeType: "session",
             scopeId: "wp7b-trace-lease",
             dedupeKey: "wp7b-trace-lease"))

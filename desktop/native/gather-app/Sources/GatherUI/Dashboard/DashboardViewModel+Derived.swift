@@ -55,7 +55,7 @@ extension DashboardViewModel {
     var hasClearableJobs: Bool {
         jobs.contains { job in
             job.status == .succeeded
-                && job.type != .metadataScan && job.type != .exportExecute
+                && job.type != .metadataScan && job.type != .outputRun
         }
     }
 

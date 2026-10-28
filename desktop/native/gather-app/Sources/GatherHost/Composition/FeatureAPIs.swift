@@ -9,6 +9,7 @@
 import Foundation
 import GatherProtocol
 import GatherPersistence
+import GatherApplication
 
 /// 16 个 Live API 的工厂集合；`init(composition:)` 保持原装配顺序。
 struct FeatureAPIs {
@@ -112,7 +113,8 @@ struct FeatureAPIs {
                     sharesSidecar: sharesSidecar, archivedAt: nowISOString(),
                     timestamp: nowISOString())
             },
-            fileLock: composition.xmpFileLock
+            fileLock: composition.xmpFileLock,
+            modelReviewRepo: ModelReviewRepo(connection: composition.db)
         )
     }
 
@@ -149,7 +151,15 @@ struct FeatureAPIs {
     private static func makeExport(_ composition: AppComposition) -> any ExportAPI {
         LiveExportAPI(
             exportService: composition.exportService,
-            jobService: composition.jobService
+            jobService: composition.jobService,
+            webDAVPublisher: WebDAVPublisher(transport: URLSessionWebDAVTransport()),
+            webDAVCredentialSaver: { url, username, password in
+                try WebDAVCredentialStore.save(server: url, username: username, password: password)
+                return true
+            },
+            webDAVCredentialLookup: { url, username in
+                WebDAVCredentialStore.password(server: url, username: username)
+            }
         )
     }
 

@@ -256,7 +256,7 @@ public final class JobService: @unchecked Sendable {
     public static let nonAutoResumableTypes: Set<AnalysisJobType> = [.thumbnailBuild]
     /// 终态行同时是 workspace 阶段证据（latestScanJob / hasSuccessfulExport），
     /// 清理默认排除它们。
-    public static let stageEvidenceTypes: [AnalysisJobType] = [.metadataScan, .exportExecute]
+    public static let stageEvidenceTypes: [AnalysisJobType] = [.metadataScan, .outputRun]
     /// 准入预算：进程级 weight 预算（替代旧 JobScheduler 的共享预算与旧 maxConcurrentJobs=2）。
     public static let defaultWeightBudget: Int = max(2, min(6, ProcessInfo.processInfo.processorCount - 1))
 
@@ -265,7 +265,7 @@ public final class JobService: @unchecked Sendable {
         switch type {
         case .faceAnalyze, .similarityAnalyze, .duplicateScan:
             return 2
-        case .metadataScan, .qualityScore, .exportExecute, .thumbnailBuild, .checksumBackfill:
+        case .metadataScan, .qualityScore, .outputRun, .thumbnailBuild, .checksumBackfill:
             return 1
         }
     }

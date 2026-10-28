@@ -56,11 +56,13 @@ private func candidate(
     order: Int = 0,
     width: Int = 0,
     height: Int = 0,
-    fileSize: Int64 = 0
+    fileSize: Int64 = 0,
+    model: ModelReviewResult? = nil
 ) -> TriageCandidate {
     TriageCandidate(
         photoId: id,
         quality: quality,
+        modelReview: model,
         faceCount: faces,
         maxFaceAreaRatio: area,
         groups: groups,
@@ -547,6 +549,77 @@ struct TriageEvaluatorTests {
         #expect(second.verdict != .reject)
     }
 
+    // MARK: - v2：模型信号
+
+    private func model(
+        _ id: String,
+        eyesOpen: Double? = nil,
+        smile: Double? = nil,
+        faceFocus: Double? = nil,
+        captureQuality: Double? = nil,
+        utility: Bool? = nil
+    ) -> ModelReviewResult {
+        var primary = FaceReviewSignal(
+            index: 0, x: 0.4, y: 0.3, width: 0.2, height: 0.25, areaRatio: 0.05,
+            captureQuality: captureQuality, eyeOpenScore: eyesOpen, smileScore: smile,
+            focusScore: faceFocus, isPrimary: true)
+        primary.captureQuality = captureQuality
+        return ModelReviewResult(
+            photoId: id, status: .succeeded,
+            eyesOpenScore: eyesOpen, smileScore: smile, faceFocusScore: faceFocus,
+            isUtilityImage: utility, faces: [primary],
+            modelId: "model-review", modelVersion: "1",
+            inputFingerprint: "fp", updatedAt: "2026-10-28T00:00:00.000Z")
+    }
+
+    @Test("v2：组内最佳闭眼（模型分）→ review + eyes_closed，不得 reject")
+    func modelEyesClosedForcesReview() {
+        let g = group(.similarity, "sim:1", ["a", "b"])
+        let candidates = [
+            candidate("a", quality("a", 0.90, focus: 0.90), faces: 1, area: 0.10,
+                      groups: [g], order: 0,
+                      model: model("a", eyesOpen: 0.10)),
+            candidate("b", quality("b", 0.60, focus: 0.60), faces: 1, area: 0.10,
+                      groups: [g], order: 1,
+                      model: model("b", eyesOpen: 0.90)),
+        ]
+        let results = evaluateTriage(candidates: candidates, policy: .v2)
+        let first = result(results, "a")
+        #expect(first?.verdict == .review)
+        #expect(codes(first).contains(.eyesClosed))
+    }
+
+    @Test("v2：人脸失焦（模型合焦分低）与合格替代同组 → reject + face_out_of_focus")
+    func modelFaceFocusDrivesReject() {
+        let g = group(.similarity, "sim:2", ["a", "b"])
+        let candidates = [
+            candidate("a", quality("a", 0.60, focus: 0.60), faces: 1, area: 0.10,
+                      groups: [g], order: 0,
+                      model: model("a", eyesOpen: 0.95, faceFocus: 0.08)),
+            candidate("b", quality("b", 0.85, focus: 0.85), faces: 1, area: 0.10,
+                      groups: [g], order: 1,
+                      model: model("b", eyesOpen: 0.95, faceFocus: 0.80)),
+        ]
+        let results = evaluateTriage(candidates: candidates, policy: .v2)
+        let weaker = result(results, "a")
+        #expect(weaker?.verdict == .reject)
+        #expect(codes(weaker).contains(.faceOutOfFocus))
+        #expect(result(results, "b")?.verdict == .keep)
+    }
+
+    @Test("v2：工具图（截图/文档）单张也直接 reject + utility_image")
+    func modelUtilityImageRejectsSingleShot() {
+        let candidates = [
+            candidate("shot", quality("shot", 0.70, focus: 0.70), faces: 0, order: 0,
+                      model: model("shot", utility: true)),
+        ]
+        let results = evaluateTriage(candidates: candidates, policy: .v2)
+        let verdict = result(results, "shot")
+        #expect(verdict?.verdict == .reject)
+        #expect(codes(verdict).contains(.utilityImage))
+        #expect((verdict?.confidence ?? 0) >= 0.85)
+    }
+
     @Test("visual duplicate 输出 duplicate_visual 理由")
     func visualDuplicateReason() {
         let g = group(.visualDuplicate, "dup:1", ["a", "b"])
@@ -554,8 +627,51 @@ struct TriageEvaluatorTests {
             candidate("a", quality("a", 0.90, focus: 0.90), groups: [g], order: 0),
             candidate("b", quality("b", 0.60, focus: 0.90), groups: [g], order: 1),
         ]
-        let results = evaluateTriage(candidates: candidates)
+        let results = evaluateTriage(candidates: candidates, policy: .v2)
         #expect(codes(result(results, "a")).contains(.duplicateVisual))
         #expect(codes(result(results, "b")).contains(.duplicateVisual))
+    }
+}
+
+
+@Suite("策略版本隔离")
+struct TriagePolicyGateTests {
+    private func model(eyesOpen: Double) -> ModelReviewResult {
+        ModelReviewResult(
+            photoId: "a", assetFileId: nil, status: .succeeded,
+            eyesOpenScore: eyesOpen, smileScore: 0.9, faceFocusScore: 0.05,
+            aestheticScore: 0.5, isUtilityImage: true,
+            faces: [FaceReviewSignal(
+                index: 0, x: 0.1, y: 0.1, width: 0.2, height: 0.2, areaRatio: 0.1,
+                captureQuality: 0.9, eyeOpenScore: eyesOpen, smileScore: 0.9,
+                focusScore: 0.05, isPrimary: true)],
+            warnings: [], modelId: "m", modelVersion: "1",
+            inputFingerprint: "fp", updatedAt: "2026-10-28T00:00:00.000Z")
+    }
+
+    @Test("v1：模型信号（闭眼/工具图/失焦）完全不参与判定")
+    func v1IgnoresModelSignals() {
+        let candidate = TriageCandidate(
+            photoId: "a", quality: QualityResult(
+                photoId: "a", status: .succeeded,
+                qualityScore: 0.9, sharpness: 0.9, exposure: 0.9,
+                subjectSharpness: 0.9, closedEyeRisk: 0.1,
+                warnings: [], modelId: "q", modelVersion: "1",
+                inputFingerprint: "fp", updatedAt: "2026-10-28T00:00:00.000Z"),
+            modelReview: model(eyesOpen: 0.05),
+            faceCount: 1, maxFaceAreaRatio: 0.2)
+        let v1 = evaluateTriage(candidates: [candidate], policy: .v1)
+        let withoutModel = evaluateTriage(
+            candidates: [TriageCandidate(
+                photoId: "a", quality: candidate.quality,
+                faceCount: 1, maxFaceAreaRatio: 0.2)], policy: .v1)
+        #expect(v1.count == 1)
+        #expect(withoutModel.count == 1)
+        if case .suggestion(let a) = v1[0], case .suggestion(let b) = withoutModel[0] {
+            #expect(a.verdict == b.verdict, "v1 不得因模型信号改判")
+            #expect(a.reasons == b.reasons)
+        } else {
+            #expect(Bool(false), "应为建议")
+        }
     }
 }

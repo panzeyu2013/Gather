@@ -18,7 +18,7 @@ struct JobsContractTests {
             (.duplicateScan, "duplicate.scan"),
             (.faceAnalyze, "face.analyze"),
             (.qualityScore, "quality.score"),
-            (.exportExecute, "export.execute"),
+            (.outputRun, "output.run"),
             (.checksumBackfill, "checksum.backfill"),
         ]
         for (type, raw) in cases {

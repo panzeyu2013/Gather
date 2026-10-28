@@ -64,6 +64,9 @@ struct CullingTriageCard: View {
                 if let triage = viewModel.currentAsset?.triage {
                     currentSuggestion(triage)
                 }
+                if viewModel.triageUsesModelSignals, let review = viewModel.currentModelReview {
+                    signals(review)
+                }
 
                 actions(summary: summary)
             } else {
@@ -74,6 +77,9 @@ struct CullingTriageCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: viewModel.currentAsset?.photo.id) {
+            await viewModel.loadModelReview()
+        }
         .sheet(isPresented: $showApplyConfirmation) {
             applyConfirmation
         }
@@ -105,6 +111,45 @@ struct CullingTriageCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    // MARK: - 模型信号
+
+    /// W1：把"为什么"从标签升级为可读数值（眼睛/合焦/表情/审美/工具图）。
+    private func signals(_ review: ModelReviewResult) -> some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+            Text(l10n("模型信号"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(.secondary)
+            HStack(spacing: GatherMetrics.Space.s) {
+                if let eyes = review.eyesOpenScore {
+                    chip(eyes >= 0.6 ? l10n("眼睛睁开")
+                         : (eyes <= 0.35 ? l10n("主体闭眼") : l10n("眼睛半闭")))
+                }
+                if let focus = review.faceFocusScore {
+                    chip(l10n.format("人脸合焦 %.2f", focus))
+                }
+                if let smile = review.smileScore, smile >= 0.5 {
+                    chip(l10n("面带微笑"))
+                }
+                if review.isUtilityImage == true {
+                    chip(l10n("截图或文档，不是照片"))
+                }
+                if let aesthetic = review.aestheticScore {
+                    chip(l10n.format("审美 %.2f", aesthetic))
+                } else if review.warnings.contains("aesthetic_unavailable") {
+                    chip(l10n("本机不支持审美分"))
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func chip(_ text: String) -> some View {
+        Text(text)
+            .font(GatherFont.secondary)
+            .padding(GatherMetrics.Space.xs)
+            .background(Capsule().fill(GatherTheme.surfaceMuted))
     }
 
     // MARK: - 动作

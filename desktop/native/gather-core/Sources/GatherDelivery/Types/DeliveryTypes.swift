@@ -18,12 +18,34 @@ public protocol DeliveryFilePort: Sendable {
     func removeFile(_ path: String) async throws
 }
 
+/// 写目标解析：照片路径 → 实际被改写的文件（侧车或照片自身）。
+///
+/// 交付层把目标当成"可指纹/可备份/可恢复的文件"，本端口只回答"是哪个文件"。
+/// 默认实现是侧车（旧行为）；宿主在内嵌模式下注入 MetadataWriteRouter 的解析。
+public struct MetadataTargetResolver: Sendable {
+    public let path: @Sendable (String) -> String
+    /// 目标类型（侧车/内嵌）；只用于落库标记，不参与写盘决策。
+    public let kind: @Sendable (String) -> MetadataTargetKind
+
+    public init(
+        path: @escaping @Sendable (String) -> String,
+        kind: @escaping @Sendable (String) -> MetadataTargetKind = { _ in .sidecar }
+    ) {
+        self.path = path
+        self.kind = kind
+    }
+
+    public static let sidecar = MetadataTargetResolver { TSPath.xmpSidecarPath($0) }
+}
+
 /// XMPProvider → DeliveryFilePort 的适配器（宿主接线用）。
 public struct XMPDeliveryFilePort: DeliveryFilePort {
     private let provider: any XMPProvider
+    private let target: MetadataTargetResolver
 
-    public init(_ provider: any XMPProvider) {
+    public init(_ provider: any XMPProvider, target: MetadataTargetResolver = .sidecar) {
         self.provider = provider
+        self.target = target
     }
 
     public func fileExists(_ path: String) -> Bool {
@@ -32,14 +54,23 @@ public struct XMPDeliveryFilePort: DeliveryFilePort {
 
     public func restore(photoPath: String, backupPath: String) async throws {
         // P2-12：宿主 restore 也必须过同一校验（LiveMetadataAPI.resolveOrphan
-        // 直接走这里）。目标侧车由 photoPath 推导，备份必须与它同目录。
-        let target = TSPath.xmpSidecarPath(photoPath)
+        // 直接走这里）。目标由解析器给出（侧车或照片自身），备份必须与它同目录。
         let validated = try DeliveryBackupPath.validate(
-            xmpPath: target, backupPath: backupPath)
+            xmpPath: target.path(photoPath), backupPath: backupPath)
         try await provider.restore(photoPath: photoPath, backupPath: validated)
     }
 
     public func removeFile(_ path: String) async throws {
+        // 纵深防御：只允许删元数据载体或受控备份，绝不删照片原片。
+        // 备份名形如 <file>.gather-backup-<uuid> / <photo>.gather-header-<uuid>，
+        // 因此不能只认 .xmp 后缀（否则 finalize 永远删不掉备份、intent 永久 pending）。
+        let lowered = path.lowercased()
+        let isSidecar = lowered.hasSuffix(".xmp")
+        let isControlledBackup = lowered.contains(".gather-backup-")
+            || lowered.contains(".gather-header-")
+        guard isSidecar || isControlledBackup else {
+            throw DeliveryBackupPathError.unsafeXMPPath(path)
+        }
         try await provider.removeFile(path)
     }
 }

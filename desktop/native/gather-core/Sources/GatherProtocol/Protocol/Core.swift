@@ -234,6 +234,21 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     /// 逐项可执行性诊断（审查 D09）：源文件存在但不可读（权限/卷离线）。
     case EXPORT_SOURCE_UNREADABLE
     case EXPORT_RAW_CONVERT_UNSUPPORTED
+    // W3 整套交付（output.run）／WebDAV 发布
+    /// 没有任何可执行的配方。
+    case OUTPUT_NO_RECIPES
+    /// 交付根目录非法（空串/相对路径）。
+    case OUTPUT_ROOT_INVALID
+    /// 配方目标目录非法（相对路径/占位符展开后仍非法）。
+    case OUTPUT_DESTINATION_INVALID
+    /// 两条配方会写到同一目录（同一批成片互相覆盖）。
+    case OUTPUT_RECIPE_CONFLICT
+    /// manifest 写入失败：成片已写出，但审计/续跑记录缺失。
+    case OUTPUT_MANIFEST_FAILED
+    case WEBDAV_URL_INVALID
+    case WEBDAV_LOCAL_MISSING
+    case WEBDAV_NO_MATCHING_FILES
+    case WEBDAV_KEYCHAIN_FAILED
     // Navigation
     case NAV_BURST_GAP_INVALID
     case NAV_SCENE_GAP_INVALID

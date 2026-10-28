@@ -103,7 +103,7 @@ GatherHost（AppComposition 组合根 / AppRuntime / Live*API）
   ↓
 GatherApplication（服务编排、JobService）
   ├─ GatherDelivery：DeliveryCoordinator（XMP 写回：重试 / 冲突 / 重启恢复）
-  ├─ GatherPersistence：SQLite WAL + SchemaCurrent（44 表 / 385 列 / user_version=5）
+  ├─ GatherPersistence：SQLite WAL + SchemaCurrent（44 表 / 386 列 / user_version=1）
   └─ GatherAnalysis：dHash/LSH 聚类、Vision 人脸、RAW/ImageIO 解码
 ```
 

@@ -1,13 +1,15 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift
-// 当前 schema 的唯一 DDL 与结构基线（44 表 / 385 列 / 72 索引 / 65 外键，user_version=5）。
+// 当前 schema 的唯一 DDL 与结构基线（44 表 / 386 列 / 72 索引 / 65 外键，user_version=1）。
 //
 // 唯一真相源：DDL 字面量按表组拆在 Schema/SchemaCurrent+DDL*.swift，本文件按
 // ddlCore → ddlDomain → ddlIndexes → addendumDDL 顺序拼接。addendumDDL 含
 // triage_suggestions 与 face_cluster_constraints，文本逐字保留（索引 SQL 参与指纹）。
 //
-// 版本策略：只有当前版本可打开；V1/V2 迁移链已删除。旧版本库默认 fail closed，
-// 只有显式 Options.resetPolicy=.renameToIncompatible 才把 db/-wal/-shm 一起改名为
-// <db>.incompatible-<ts>（最多 3 套）后重建。移动失败显式抛错，绝不吞错。
+// 版本策略：只有当前版本可打开；V1/V2 迁移链已删除。旧版本库默认 fail closed；
+// 显式 Options.resetPolicy 才把 db/-wal/-shm 一起改名为 <db>.incompatible-<ts>
+// （最多 3 套）后重建：生产用 .renameOlderOnly（只归档比当前构建旧的库，未来版本
+// 仍 fail closed），开发/测试用 .renameToIncompatible（任何不兼容库都归档）。
+// 移动失败显式抛错，绝不吞错。
 //
 // 任何真实 schema 变更只改这一份 DDL，并同步 expected* 计数与 expectedShapeFingerprint；
 // 不再新增 SchemaVn 快照、迁移器或历史形态补列。
@@ -25,14 +27,25 @@
 // 必须含 'auto_raw_jpeg'；photos.status 不收 WorkspaceStage 的 'indexed'。
 public enum SchemaCurrent {
     /// 当前（唯一）库版本号（PRAGMA user_version）。
-    public static let userVersion: Int = 5
+    public static let userVersion: Int = 1
+
+    /// 重置版 schema（v1）之前发布过的历史 user_version：2…5。
+    ///
+    /// 版本号在「放弃兼容」时被重置回 1，而历史旧库写的是 2…5 —— 数值上比 1 大，
+    /// 纯按数值比较会把真实旧库误判成「未来版本」而 fail closed（升级即打不开）。
+    /// 这里显式列出旧构建写过的版本，让 SchemaInspector 按 oldVersion 归类，
+    /// 从而被 .renameOlderOnly 归档重建。
+    ///
+    /// 维护约定：以后每次 bump userVersion，都要把「上一版真正发布给用户的版本号」
+    /// 加进来；未列入且 > userVersion 的库仍然 fail closed（绝不覆盖更新构建的数据）。
+    public static let legacyVersions: Set<Int> = [2, 3, 4, 5]
 
     /// 期望的表/列/索引/外键总数（与 createSQL 同源；任何 DDL 变更必须同步改）。
     ///
     /// user_version 只证明曾按该版本建库，不能证明列形完整；Database.open 同时校验
     /// 计数、关键列与指纹，形态不符按不兼容库处理。
     public static let expectedTableCount: Int = 44
-    public static let expectedColumnCount: Int = 385
+    public static let expectedColumnCount: Int = 386
     public static let expectedExplicitIndexCount: Int = 72
     public static let expectedForeignKeyCount: Int = 65
 
@@ -45,7 +58,9 @@ public enum SchemaCurrent {
         ],
         "person_photos": ["person_id", "photo_id", "session_id"],
         "role_bindings": ["cluster_id", "session_id", "role_name"],
-        "deliveries": ["id", "xmp_path", "status", "revision", "base_fingerprint", "lease_owner"],
+        "deliveries": [
+            "id", "xmp_path", "target_kind", "status", "revision", "base_fingerprint", "lease_owner",
+        ],
         "delivery_items": ["delivery_id", "photo_id", "module", "status"],
         "similarity_cluster_meta": [
             "session_id", "param_threshold", "param_min_group_size", "grouping_mode",
@@ -65,9 +80,9 @@ public enum SchemaCurrent {
     ///
     /// 口径见 Database.readSchemaShape：canonical 文本排序后取 SHA-256。更新 DDL 后必须
     /// 同步更新本值（先让正确库的 open 报出实际指纹，再粘贴；不要用 DDL 自动计算，
-    /// 否则旧库也能自证「当前」）。当前值对应 44 表 / 385 列 / 72 索引 / 65 外键。
+    /// 否则旧库也能自证「当前」）。当前值对应 44 表 / 386 列 / 72 索引 / 65 外键。
     public static let expectedShapeFingerprint: String =
-        "38bd1540b3872b4d2e635f376f5f073881ebfa0310074ed046f275b5f3875dd2"
+        "a364328e93562c633c7e43ce5cee46c9b29e60171f25d4f270823f2cc4669132"
 
     /// 列形期望的类型化视图：Database.open / BackupVerifier 共用同一份计数、关键列与指纹。
     /// 与上面四个 expected* 常量同源，禁止另写第二份。
@@ -82,7 +97,7 @@ public enum SchemaCurrent {
 
     /// 建库 DDL 主体（单次 exec 执行；含 PRAGMA foreign_keys，不含 user_version）。
     ///
-    /// createSQL = ddl + PRAGMA user_version = 5；唯一版本，没有迁移链/快照层，
+    /// createSQL = ddl + PRAGMA user_version = 1；唯一版本，没有迁移链/快照层，
     /// 拆分只为把 DDL 字面量按表组分开维护。
     ///
     /// final-cleanup 纯拆分：DDL 字面量按表组存放在 Schema/SchemaCurrent+DDL*.swift，
@@ -126,6 +141,6 @@ public enum SchemaCurrent {
     public static let ddl: String =
         ddlCore + "\n" + ddlDomain + "\n" + ddlIndexes + "\n" + addendumDDL
 
-    /// 唯一建库 SQL：当前 DDL + user_version = 5。
-    public static let createSQL: String = ddl + "\nPRAGMA user_version = 5;\n"
+    /// 唯一建库 SQL：当前 DDL + user_version = 1。
+    public static let createSQL: String = ddl + "\nPRAGMA user_version = 1;\n"
 }

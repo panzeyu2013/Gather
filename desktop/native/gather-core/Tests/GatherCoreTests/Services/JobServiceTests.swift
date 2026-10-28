@@ -627,7 +627,7 @@ struct JobServiceTests {
     @Test func clearCompletedOnlyRemovesSucceededByDefault() throws {
         let env = try Env()
         let scan = try env.service.create(env.makeParams(type: .metadataScan, scopeId: "scan"))
-        let export = try env.service.create(env.makeParams(type: .exportExecute, scopeId: "export"))
+        let export = try env.service.create(env.makeParams(type: .outputRun, scopeId: "export"))
         let dup = try env.service.create(env.makeParams(type: .duplicateScan, scopeId: "dup"))
         let failed = try env.service.create(env.makeParams(type: .qualityScore, scopeId: "failed"))
         _ = try env.connection.prepare(

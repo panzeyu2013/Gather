@@ -105,12 +105,17 @@ public enum DeliveryBackupPath {
             throw DeliveryBackupPathError.notSibling(normalizedBackup)
         }
 
-        let expectedPrefix = ((normalizedXMP as NSString).lastPathComponent + ".gather-backup-")
-            .precomposedStringWithCanonicalMapping
+        // 两种受控备份名：侧车 <xmp>.gather-backup-<uuid>；
+        // 内嵌 JPEG <photo>.gather-header-<uuid>（此时 xmp_path 就是照片路径）。
+        let baseName = (normalizedXMP as NSString).lastPathComponent
         let backupName = (normalizedBackup as NSString).lastPathComponent
             .precomposedStringWithCanonicalMapping
-        guard backupName.range(of: expectedPrefix, options: [.caseInsensitive, .anchored]) != nil,
-              backupName.count > expectedPrefix.count else {
+        let matchesControlledName = [".gather-backup-", ".gather-header-"].contains { marker in
+            let prefix = (baseName + marker).precomposedStringWithCanonicalMapping
+            return backupName.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil
+                && backupName.count > prefix.count
+        }
+        guard matchesControlledName else {
             throw DeliveryBackupPathError.unexpectedName(normalizedBackup)
         }
 

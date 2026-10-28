@@ -387,17 +387,17 @@ struct AnalysisJobRepoTests {
         defer { db.close() }
 
         let scan = try repo.create(createParams(type: .metadataScan, dedupeKey: "scan"))
-        let export = try repo.create(createParams(type: .exportExecute, dedupeKey: "export"))
+        let export = try repo.create(createParams(type: .outputRun, dedupeKey: "export"))
         let dup = try repo.create(createParams(type: .duplicateScan, dedupeKey: "dup"))
         _ = try db.prepare("UPDATE analysis_jobs SET status = 'succeeded'").run()
 
         let cleared = try repo.clearTerminal(
             statuses: [.succeeded],
-            excludeTypes: [.metadataScan, .exportExecute]
+            excludeTypes: [.metadataScan, .outputRun]
         )
         #expect(cleared == 1)
         #expect(try repo.get(scan.id) != nil, "metadata.scan 阶段证据应保留")
-        #expect(try repo.get(export.id) != nil, "export.execute 阶段证据应保留")
+        #expect(try repo.get(export.id) != nil, "output.run 阶段证据应保留")
         #expect(try repo.get(dup.id) == nil)
     }
 }

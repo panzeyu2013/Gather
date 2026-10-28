@@ -335,7 +335,7 @@ struct DashboardViewModelTests {
         try insertSession(db, "s1")
         try insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
         try insertJob(db, id: "j2", type: "metadata.scan", scopeId: "s1", status: "running", updatedAt: "2026-01-01T00:00:01.000Z")
-        try insertJob(db, id: "j3", type: "export.execute", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:02.000Z")
+        try insertJob(db, id: "j3", type: "output.run", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:02.000Z")
 
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()

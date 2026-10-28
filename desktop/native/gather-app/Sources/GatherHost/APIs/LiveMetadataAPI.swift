@@ -516,6 +516,10 @@ public final class LiveMetadataAPI: MetadataAPI {
             try await xmp.restore(photoPath: row.photoPath, backupPath: row.backupPath)
             try requireUnchangedOrphan(row)
         } else if xmp.fileExists(row.xmpPath) {
+            // 内嵌交付的 xmpPath 就是照片自身：没有备份时绝不能删原片。
+            guard row.xmpPath.lowercased().hasSuffix(".xmp") else {
+                throw GatherError(code: .XMP_BACKUP_MISSING, underlying: row.xmpPath)
+            }
             try requireUnchangedOrphan(row)
             try await xmp.removeFile(row.xmpPath)
             try requireUnchangedOrphan(row)

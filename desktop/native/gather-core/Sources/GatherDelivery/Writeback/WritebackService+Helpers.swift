@@ -276,14 +276,14 @@ extension WritebackService {
         photos: [(id: String, filepath: String)]
     ) throws -> [String: (filepath: String, xmpPath: String)] {
         func fallback(_ photo: (id: String, filepath: String)) -> (filepath: String, xmpPath: String) {
-            (photo.filepath, TSPath.xmpSidecarPath(photo.filepath))
+            (photo.filepath, target.path(photo.filepath))
         }
         var byPhoto: [String: (filepath: String, xmpPath: String)] = [:]
         if let assetResolver {
             let resolved = try assetResolver.resolveMany(sessionId: sessionId, photoIds: photos.map(\.id))
             for photo in photos {
                 if let asset = resolved[photo.id] {
-                    byPhoto[photo.id] = (asset.filepath, asset.xmpPath)
+                    byPhoto[photo.id] = (asset.filepath, target.path(asset.filepath))
                 } else {
                     byPhoto[photo.id] = fallback(photo)
                 }
@@ -292,7 +292,7 @@ extension WritebackService {
         }
         for photo in photos {
             if let assetResolver, let asset = try? assetResolver.resolve(sessionId: sessionId, photoId: photo.id) {
-                byPhoto[photo.id] = (asset.filepath, asset.xmpPath)
+                byPhoto[photo.id] = (asset.filepath, target.path(asset.filepath))
             } else {
                 byPhoto[photo.id] = fallback(photo)
             }

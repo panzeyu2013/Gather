@@ -6,7 +6,7 @@
 //   coordinator，summary 来自统一交付模型（DeliverySummaryQuery 投影），
 //   "folds failed xmp rows into pending" 用例改为种子 deliveries 断言同一投影。
 // - clear_completed 两用例：TS 走 JobService.clearCompleted()（排除
-//   metadata.scan / export.execute 证据行），Swift 等价于
+//   metadata.scan / output.run 证据行），Swift 等价于
 //   AnalysisJobRepo.clearTerminal(statuses:excludeTypes:)（状态集合必填；
 //   只清点名的终态，失败原因不会被顺手删除）。
 
@@ -422,7 +422,7 @@ struct WorkspaceStatusServiceTests {
          #expect(try #require(afterCulling).recommendedNext == WorkspaceRecommendedNext(action: "export", target: "export"))
 
         try addJob(harness.db, harness.sessionId, options: JobSeed(
-            id: "export-1", type: "export.execute", status: "succeeded",
+            id: "export-1", type: "output.run", status: "succeeded",
             updatedAt: "2026-08-08T00:03:00.000Z"
         ))
         let afterExport = try harness.service.getStatus(sessionId: harness.sessionId)
@@ -461,7 +461,7 @@ struct WorkspaceStatusServiceTests {
         let harness = try makeHarness()
         try addPhoto(harness.db, harness.sessionId, "photo-1")
         try addJob(harness.db, harness.sessionId, options: JobSeed(
-            id: "export-1", type: "export.execute", status: "succeeded",
+            id: "export-1", type: "output.run", status: "succeeded",
             updatedAt: "2026-08-08T00:03:00.000Z"
         ))
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
@@ -485,7 +485,7 @@ struct WorkspaceStatusServiceTests {
         let harness = try makeHarness()
         try addPhoto(harness.db, harness.sessionId, "photo-1")
         try addJob(harness.db, harness.sessionId, options: JobSeed(
-            id: "job-1", type: "export.execute", status: "failed",
+            id: "job-1", type: "output.run", status: "failed",
             updatedAt: "2026-08-08T00:03:00.000Z", errorMessage: "disk full", errorCode: "worker_error"
         ))
         try addJob(harness.db, harness.sessionId, options: JobSeed(
@@ -495,7 +495,7 @@ struct WorkspaceStatusServiceTests {
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
          #expect(try #require(status).failedJobs == [
             WorkspaceFailedJob(id: "job-2", type: "thumbnail.build", code: "worker_error", message: ""),
-            WorkspaceFailedJob(id: "job-1", type: "export.execute", code: "worker_error", message: "disk full"),
+            WorkspaceFailedJob(id: "job-1", type: "output.run", code: "worker_error", message: "disk full"),
         ])
     }
 
@@ -509,7 +509,7 @@ struct WorkspaceStatusServiceTests {
             id: "scan-1", status: "succeeded", updatedAt: "2026-08-08T00:00:00.000Z"
         ))
         try addJob(harness.db, harness.sessionId, options: JobSeed(
-            id: "export-1", type: "export.execute", status: "succeeded",
+            id: "export-1", type: "output.run", status: "succeeded",
             updatedAt: "2026-08-08T00:03:00.000Z"
         ))
         // 一个已完成的非证据 job 被正常清理。
@@ -518,7 +518,7 @@ struct WorkspaceStatusServiceTests {
             updatedAt: "2026-08-08T00:04:00.000Z"
         ))
 
-        let cleared = try jobs.clearTerminal(statuses: [.succeeded], excludeTypes: [.metadataScan, .exportExecute])
+        let cleared = try jobs.clearTerminal(statuses: [.succeeded], excludeTypes: [.metadataScan, .outputRun])
         #expect(cleared == 1)
 
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
@@ -543,7 +543,7 @@ struct WorkspaceStatusServiceTests {
         ))
 
         // 显式点名清理失败终态：quality 行被清，failed metadata.scan 作为证据保留。
-        _ = try jobs.clearTerminal(statuses: [.failed], excludeTypes: [.metadataScan, .exportExecute])
+        _ = try jobs.clearTerminal(statuses: [.failed], excludeTypes: [.metadataScan, .outputRun])
 
         let status = try harness.service.getStatus(sessionId: harness.sessionId)
         let unwrapped = try #require(status)
@@ -580,7 +580,7 @@ struct WorkspaceStatusServiceTests {
         let harness = try makeHarness()
         try addJob(harness.db, harness.sessionId, options: JobSeed(
             id: "export-all-failed",
-            type: "export.execute",
+            type: "output.run",
             status: "succeeded",
             updatedAt: nowISOString(),
             checkpointJSON: "{\"exported\":0,\"failed\":3,\"skipped\":0,\"totalFiles\":3}"
@@ -593,7 +593,7 @@ struct WorkspaceStatusServiceTests {
         let harness = try makeHarness()
         try addJob(harness.db, harness.sessionId, options: JobSeed(
             id: "export-partial",
-            type: "export.execute",
+            type: "output.run",
             status: "succeeded",
             updatedAt: nowISOString(),
             checkpointJSON: "{\"exported\":2,\"failed\":1,\"skipped\":0,\"totalFiles\":3}"
@@ -608,7 +608,7 @@ struct WorkspaceStatusServiceTests {
         let harness = try makeHarness()
         try addJob(harness.db, harness.sessionId, options: JobSeed(
             id: "export-legacy",
-            type: "export.execute",
+            type: "output.run",
             status: "succeeded",
             updatedAt: nowISOString(),
             checkpointJSON: "{}"

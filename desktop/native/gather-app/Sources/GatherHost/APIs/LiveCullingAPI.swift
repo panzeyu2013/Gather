@@ -50,6 +50,8 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     /// P0-1：与写回/清理共用的按 xmpPath 文件锁。搬侧车也在锁内，否则与
     /// 写回的 temp→rename 交错会把刚写回的内容覆盖回旧值。nil = 测试/未接线。
     private let fileLock: XMPFileLock?
+    /// W1：模型级初审信号（检查器卡片按需读取；nil = 未接线，返回 nil）。
+    private let modelReviewRepo: ModelReviewRepo?
 
     /// @unchecked Sendable 依据：两个依赖都是构造后不再变更的 let；CullingService
     /// 的可变状态（会话级更新上下文缓存、Repo 缓存）由 DBConnection 的递归锁与
@@ -60,7 +62,8 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         sessionRepo: SessionRepo? = nil,
         photoRepo: (any PhotoRepository)? = nil,
         relocateAfterMove: ((String, String, String, Bool) throws -> Void)? = nil,
-        fileLock: XMPFileLock? = nil
+        fileLock: XMPFileLock? = nil,
+        modelReviewRepo: ModelReviewRepo? = nil
     ) {
         self.cullingService = cullingService
         self.triageService = triageService
@@ -68,6 +71,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         self.photoRepo = photoRepo
         self.relocateAfterMove = relocateAfterMove
         self.fileLock = fileLock
+        self.modelReviewRepo = modelReviewRepo
     }
 
     // MARK: - P1 / D：淘汰移动
@@ -258,6 +262,47 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                 try self.triageService.generate(sessionId: id, force: input.force)
             }
         }.value
+    }
+
+    public func modelReview(_ photoId: String) async throws -> ModelReviewResult? {
+        let trimmed = photoId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GatherError(code: .INVALID_PARAM, params: ["field": "photoId", "reason": "must not be empty"])
+        }
+        guard let repo = modelReviewRepo else { return nil }
+        return try map {
+            guard let row = try repo.latest(photoIds: [trimmed])[trimmed] else { return nil }
+            do {
+                return try JSONDecoder().decode(ModelReviewResult.self, from: Data(row.json.utf8))
+            } catch {
+                return nil
+            }
+        }
+    }
+
+    public func importClientSelection(
+        _ input: Confirmed<ClientSelectionImportInput>
+    ) async throws -> ClientSelectionImportResult {
+        let payload = input.value
+        let sessionId = try LiveAPIInput.requireSessionId(payload.sessionId)
+        let ids = try map {
+            try ClientSelectionParser.pickedPhotoIds(from: Data(payload.json.utf8))
+        }
+        let outcome = try await Task.detached(priority: .userInitiated) {
+            try self.map {
+                try self.cullingService.applyImportedPicks(
+                    sessionId: sessionId, photoIds: ids)
+            }
+        }.value
+        try await mapAsync {
+            try await self.cullingService.flushQueuedMetadata(sessionId: sessionId)
+        }
+        let applied = outcome.results.count
+        return ClientSelectionImportResult(
+            picked: ids.count,
+            applied: applied,
+            skipped: max(0, ids.count - applied - outcome.failed),
+            failed: outcome.failed)
     }
 
     public func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult {

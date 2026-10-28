@@ -32,7 +32,19 @@ public enum CullingDecisionSource: String, Codable, CaseIterable, Equatable, Sen
     case manual
     case ai
     case template
+    /// 客户校样回传（selection.json 勾选）：属于**人的决定**，不是 AI 建议。
     case imported
+}
+
+public extension CullingDecisionSource {
+    /// 人工意图：manual（用户自己选）与 imported（客户勾选）都不能被 AI 建议覆盖。
+    ///
+    /// 漏掉 imported 的后果：客户选中的 keep 会被「应用建议」翻成 reject，且客户回传
+    /// 在界面上不可见 —— 这是对外承诺级别的错误，不能按「来源不是 manual 就是 AI」推断。
+    var isHumanDecision: Bool { self == .manual || self == .imported }
+
+    /// SQL 侧同一口径（单一来源：TriageRepo 的三处人工排除都用它，避免各写各的）。
+    static var humanDecisionSQLList: String { "('manual','imported')" }
 }
 
 // TS: CaptureOneColorLabel
@@ -391,6 +403,33 @@ public struct CullingHistoryOperation: Codable, Equatable, Sendable {
 }
 
 // TS: CullingHistoryApplyEntry
+/// 客户校样回传：selection.json 原文 + 目标会话。
+public struct ClientSelectionImportInput: Codable, Equatable, Sendable {
+    public var sessionId: String
+    public var json: String
+
+    public init(sessionId: String, json: String) {
+        self.sessionId = sessionId
+        self.json = json
+    }
+}
+
+public struct ClientSelectionImportResult: Codable, Equatable, Sendable {
+    public var picked: Int
+    public var applied: Int
+    /// 因人工决策保护 / 未找到照片而跳过的张数。
+    public var skipped: Int
+    /// 服务层单张失败（并发修订冲突/非法状态）：单独计数，不再让整批结果丢失。
+    public var failed: Int
+
+    public init(picked: Int, applied: Int, skipped: Int, failed: Int = 0) {
+        self.picked = picked
+        self.applied = applied
+        self.skipped = skipped
+        self.failed = failed
+    }
+}
+
 public struct CullingHistoryApplyEntry: Codable, Equatable, Sendable {
     public var photoId: String
     public var expectedRevision: Int

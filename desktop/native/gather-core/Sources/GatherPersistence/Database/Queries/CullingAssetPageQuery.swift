@@ -418,7 +418,7 @@ public final class CullingAssetPageQuery {
                       SELECT 1 FROM culling_decisions d
                       JOIN photos p2 ON p2.id = d.photo_id
                       WHERE d.session_id = t2.session_id
-                        AND d.decision_source = 'manual'
+                        AND d.decision_source IN \(CullingDecisionSource.humanDecisionSQLList)
                         AND d.decision <> 'pending'
                         AND COALESCE(NULLIF(p2.asset_id, ''), p2.id)
                             = COALESCE(NULLIF(p.asset_id, ''), p.id)
