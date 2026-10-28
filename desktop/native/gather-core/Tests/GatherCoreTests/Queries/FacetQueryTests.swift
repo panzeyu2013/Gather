@@ -12,7 +12,7 @@ struct FacetQueryTests {
     private func makeDB() throws -> (DBConnection, String) {
         let db = try makeTestDB()
         let sessionId = "s-1"
-        try db.prepare("""
+        _ = try db.prepare("""
             INSERT INTO sessions (id, name, status, created_at, updated_at)
             VALUES (?, '', 'photos_loaded', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
             """).run([.text(sessionId)])
@@ -22,7 +22,7 @@ struct FacetQueryTests {
             ("p3", "B", 400, "XF23"),
         ]
         for (id, camera, iso, lens) in photos {
-            try db.prepare("""
+            _ = try db.prepare("""
                 INSERT INTO photos (id, session_id, filepath, filename, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, 'ready', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
                 """).run([.text(id), .text(sessionId), .text("/tmp/\(id).CR3"), .text("\(id).CR3")])
@@ -75,19 +75,19 @@ struct FacetQueryTests {
     func countsLogicalAssetsOnce() throws {
         let (db, sessionId) = try makeDB()
         // p1 与 p4 共享 asset_id：网格只显示一张，facet 也必须是 1。
-        try db.prepare("""
+        _ = try db.prepare("""
             INSERT INTO photos (id, session_id, filepath, filename, status, created_at, updated_at)
             VALUES ('p4', ?, '/tmp/p1.jpg', 'p1.jpg', 'ready', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
             """).run([.text(sessionId)])
         for asset in ["asset-1", "asset-2", "asset-3"] {
-            try db.prepare("""
+            _ = try db.prepare("""
                 INSERT INTO assets (id, status, created_at, updated_at)
                 VALUES (?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
                 """).run([.text(asset)])
         }
-        try db.prepare("UPDATE photos SET asset_id = 'asset-1' WHERE id IN ('p1','p4')").run([])
-        try db.prepare("UPDATE photos SET asset_id = 'asset-2' WHERE id = 'p2'").run([])
-        try db.prepare("UPDATE photos SET asset_id = 'asset-3' WHERE id = 'p3'").run([])
+        _ = try db.prepare("UPDATE photos SET asset_id = 'asset-1' WHERE id IN ('p1','p4')").run([])
+        _ = try db.prepare("UPDATE photos SET asset_id = 'asset-2' WHERE id = 'p2'").run([])
+        _ = try db.prepare("UPDATE photos SET asset_id = 'asset-3' WHERE id = 'p3'").run([])
         try MetadataCacheRepo(connection: db).upsert(
             photoId: "p4", sessionId: sessionId,
             data: MetadataCacheInput(cameraModel: "A", lensModel: "XF23", iso: 200))
@@ -108,5 +108,28 @@ struct FacetQueryTests {
         let top = try query.buckets(sessionId: sessionId, criteria: empty, dimension: .camera, limit: 1)
         #expect(top.count == 1)
         #expect(top[0].count == 2)
+    }
+
+    @Test("输入契约：Protocol 白名单与 FacetDimension 一一对应；未知维/越界 limit 显式失败")
+    func inputContract() throws {
+        // Protocol 不能依赖 Persistence，白名单是手抄的字符串；这里把它钉在枚举上。
+        #expect(PhotoFacetInput.allowedDimensions.sorted()
+                == FacetDimension.allCases.map(\.rawValue).sorted())
+
+        let empty = FilterGroup(logic: .and, conditions: [])
+        let input = try PhotoFacetInput(
+            sessionId: "s-1", criteria: empty,
+            dimensions: ["camera", " camera ", "LENS"], limit: 10)
+        #expect(input.dimensions == ["camera", "lens"], "去重并归一大小写/空白")
+
+        #expect(throws: GatherError.self) {
+            _ = try PhotoFacetInput(sessionId: "s-1", criteria: empty, dimensions: ["nope"])
+        }
+        #expect(throws: GatherError.self) {
+            _ = try PhotoFacetInput(sessionId: "s-1", criteria: empty, limit: 0)
+        }
+        #expect(throws: GatherError.self) {
+            _ = try PhotoFacetInput(sessionId: "s-1", criteria: empty, limit: 201)
+        }
     }
 }

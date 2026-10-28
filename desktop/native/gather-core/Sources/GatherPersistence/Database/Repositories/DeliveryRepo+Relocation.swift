@@ -21,6 +21,12 @@ extension DeliveryRepo {
         guard let status = try connection.prepare(
             "SELECT status FROM deliveries WHERE xmp_path = ?"
         ).get([.text(oldXmp)])?[0].textValue else {
+            // 没有 deliveries 行时也要迁 intents：delivery_intents.xmp_path 刻意无 FK
+            // （父行删除后仍需存活以便回放），cleanup 删行后遗留的 intent 不能被
+            // 淘汰移出落在旧路径上。
+            try relocateIntents(
+                oldXmp: oldXmp, newXmp: newXmp,
+                oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)
             return false
         }
         if status == "writing" { throw PersistenceError(code: .ASSET_RELINK_XMP_BUSY) }
@@ -37,6 +43,20 @@ extension DeliveryRepo {
             .text(newXmp), .text(newPhotoPath), .text(timestamp), .text(oldXmp),
         ])
 
+        try relocateIntents(
+            oldXmp: oldXmp, newXmp: newXmp,
+            oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)
+        return true
+    }
+
+    /// delivery_intents 的路径迁移（与交付行是否存在无关；无 FK 兜底回放）。
+    private func relocateIntents(
+        oldXmp: String,
+        newXmp: String,
+        oldPhotoPath: String,
+        newPhotoPath: String,
+        timestamp: String
+    ) throws {
         let intents = try connection.prepare(
             "SELECT id, payload_json FROM delivery_intents WHERE xmp_path = ?"
         ).query([.text(oldXmp)])
@@ -54,7 +74,6 @@ extension DeliveryRepo {
                 .text(newXmp), .text(rewritten), .text(timestamp), .int(id),
             ])
         }
-        return true
     }
 
     /// 只替换 JSON 中与旧路径完全相等的字符串；解析失败时保留原 payload，

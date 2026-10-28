@@ -86,7 +86,7 @@ jobs:
         # 跨套件并行会丢日志行，历史 CI 上出现过假红。
         run: swift test --package-path desktop/native/gather-core --no-parallel --explicit-target-dependency-import-check error
       # WP7：schema 工具是 DDL 真相源的独立消费方；在 core job 内验证 44 表/
-      # user_version=3（当前 Schema V3）/外键 0 违规，避免只靠测试间接覆盖。
+      # user_version=4（当前唯一 Schema）/外键 0 违规，避免只靠测试间接覆盖。
       - name: Schema verification
         run: swift run --package-path desktop/native/gather-core gather-schema verify
 

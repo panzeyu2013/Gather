@@ -2,9 +2,10 @@
 // Cut 2 / B-1：Database facade 的行为门禁（D-035）。
 //
 // 覆盖四件事（WP6b）：
-//   1. `:memory:` 打开即当前 SchemaV3（45 表 / user_version = 3；V3 = V2 + 两张增量表）；
+//   1. `:memory:` 打开即当前 SchemaV4（44 表 / user_version = 4；唯一版本，一次成型）；
 //   2. 文件库新建 → 关闭 → 重开数据保留（V4 幂等）；
-//   3. 形态正确的 V1 与 370 列旧 V1 → 备份 + 迁移为 V3（不 reset、数据保留）；user_version=99 的
+//   3. 旧版本（V1/V2/V3）默认 fail-closed（不改名、不动文件，显式 reset 才归档重建）；
+//      user_version=99 的
 //      新库在显式 resetPolicy=.renameToIncompatible 下被整体改名 `.incompatible-*`，
 //      新库回到 V4；非 SQLite 文件/坏 header 默认 .failClosed 抛 .corrupt、字节不变、
 //      不改名，只有显式 reset 才改名重建；
@@ -309,7 +310,7 @@ struct DatabaseFacadeTests {
         #expect(try Data(contentsOf: renamed) == bytes, "改名的副本必须是原文件字节")
     }
 
-    // MARK: 3b. user_version=1 的两种形态：370 列已知旧形（迁移）/ 未知列形（reset）
+    // MARK: 3b. 旧版本（user_version=1）的两种形态：已知旧形 / 未知列形（都 fail-closed）
 
     @Test("旧版本 V1：默认 fail closed，不改名、不动文件")
     func oldVersionFailsClosedByDefault() throws {
@@ -360,7 +361,7 @@ struct DatabaseFacadeTests {
 
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == 4)
         #expect(try database.read { try userTables($0).count } == expectedCurrentTableCount)
-        #expect(try database.read { try userColumnCount($0) } == 384, "重置后必须是当前 383 列")
+        #expect(try database.read { try userColumnCount($0) } == 384, "重置后必须是当前 384 列")
         let columns = try database.read { try columnNames($0, table: "similarity_cluster_meta") }
         #expect(columns.isSuperset(of: ["algorithm_version", "input_signature", "state_digest"]),
                 "重置后必须带 Cut 5 三列，实际 \(columns.sorted())")

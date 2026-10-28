@@ -97,7 +97,7 @@ public final class MetadataTemplateStore: @unchecked Sendable {
     }
 
     private func loadLocked() -> [MetadataTemplate] {
-        let raw = settings.get(Self.settingsKey, defaultValue: "") ?? ""
+        let raw = settings.get(Self.settingsKey, defaultValue: "")
         guard !raw.isEmpty,
               let value = try? JSONValue.parse(raw),
               let templates = try? value.decode([MetadataTemplate].self) else {

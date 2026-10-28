@@ -110,13 +110,32 @@ public final class TriageWritebackService: Sendable {
             }
         }
 
+        // 先落批次快照再写盘：写盘成功而记录失败会让"可撤销"永久落空（旧实现用
+        // try? 吞掉，结果照样报 written）。反过来的最坏情况只是留下一个"撤销时
+        // 没有实际改动"的空批次——撤销本身是幂等无操作，代价远小于不可撤销。
+        if let batches, !inputs.isEmpty {
+            do {
+                try batches.record(MetadataApplyBatch(
+                    id: batchId, templateId: Self.batchTemplateID,
+                    templateName: Self.batchTemplateID,
+                    appliedAt: now,
+                    snapshots: inputs.compactMap { snapshots[$0.photoId] }))
+            } catch {
+                return TriageWritebackOutcome(
+                    written: [],
+                    skipped: skipped,
+                    failed: inputs.map {
+                        TriageWritebackFailure(
+                            photoId: $0.photoId,
+                            message: "批次记录失败，未写盘：\(error)")
+                    })
+            }
+        }
         var written: [String] = []
-        var attempted: [String] = []
         if !inputs.isEmpty {
             do {
                 let outcome = try await metadata.applyMetadataAttributes(inputs, source: .manual)
                 written = outcome.written
-                attempted = outcome.attempted
                 skipped.append(contentsOf: outcome.skipped)
                 failed.append(contentsOf: outcome.failed.map {
                     TriageWritebackFailure(photoId: $0.photoId, message: $0.message)
@@ -125,15 +144,6 @@ public final class TriageWritebackService: Sendable {
                 failed.append(contentsOf: inputs.map {
                     TriageWritebackFailure(photoId: $0.photoId, message: String(describing: error))
                 })
-            }
-        }
-        if let batches {
-            let writtenSnapshots = attempted.compactMap { snapshots[$0] }
-            if !writtenSnapshots.isEmpty {
-                try? batches.record(MetadataApplyBatch(
-                    id: batchId, templateId: Self.batchTemplateID,
-                    templateName: Self.batchTemplateID,
-                    appliedAt: now, snapshots: writtenSnapshots))
             }
         }
         return TriageWritebackOutcome(written: written, skipped: skipped, failed: failed)
@@ -153,9 +163,15 @@ public final class TriageWritebackService: Sendable {
         var inputs: [(photoId: String, attributes: MetadataWriteAttributes)] = []
         var failed: [TriageWritebackFailure] = []
         var blocked = Set<String>()
-        // 新批次只删"本次追加的那个关键词"：写回后用户/C1 新增的词必须保留。
+        // 新批次只删"本次追加的那个关键词"：写回后用户/C1 新增的词必须保留；
+        // 写回前就存在的同名关键词（上一批写回或手工添加）也不是本批的 delta，
+        // 一律不删——否则撤销会把别人的词一起带走。
         for snapshot in batch.snapshots {
             guard let keyword = snapshot.appliedKeyword else { continue }
+            let existedBefore = (snapshot.beforeKeywords ?? []).contains {
+                KeywordNormalizer.fold($0) == KeywordNormalizer.fold(keyword)
+            }
+            guard !existedBefore else { continue }
             do {
                 let removal = try await metadata.applyKeywordDelta(
                     photoIds: [snapshot.photoId], added: [], removed: [keyword])

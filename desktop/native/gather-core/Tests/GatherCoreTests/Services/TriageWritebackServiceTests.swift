@@ -116,7 +116,7 @@ struct TriageWritebackServiceTests {
             transactions: db, mutations: mutations,
             flushPending: { _ in
                 for entry in mutations.drain() {
-                    let attributes = try MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                 }
                 return WritebackResult(
@@ -148,6 +148,61 @@ struct TriageWritebackServiceTests {
         #expect(restored.keywords == ["old"])
         #expect(restored.triageSignal == nil, "撤销必须清空私有信号")
         #expect(try batches.get(id: "b1")?.undone == true)
+    }
+
+    @Test("undo 只删本批新增的关键词：写回前就有的同名关键词必须保留")
+    func undoKeepsPreexistingKeyword() async throws {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: dir) } catch {}
+        }
+        let sessionId = "s-1", photoId = "p-1"
+        try insertSession(db, sessionId)
+        let path = (dir as NSString).appendingPathComponent("a.CR3")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
+        try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
+        let cache = MetadataCacheRepo(connection: db)
+        try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
+
+        let xmp = TriageXMP()
+        // 该词在写回前就存在（上一批写回或用户手工添加）——不是本批的 delta。
+        xmp.seed(path, MetadataWriteAttributes(keywords: ["old", "Gather|AI|Keep"]))
+        let mutations = TriageMutations()
+        mutations.onKeywordDelta = { _, removed in
+            xmp.removeKeywords(path, removed)
+        }
+        let metadata = MetadataService(
+            metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
+            transactions: db, mutations: mutations,
+            flushPending: { _ in
+                for entry in mutations.drain() {
+                    let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    try await xmp.writeAttributes(photoPath: path, attributes: attributes)
+                }
+                return WritebackResult(
+                    totalAffected: 1, written: 1, failed: 0, skipped: 0,
+                    errors: [], failedItems: [], report: "")
+            })
+        let settings = SettingsService(repo: SettingsRepo(connection: db))
+        let service = TriageWritebackService(
+            xmp: xmp, metadata: metadata,
+            batches: MetadataApplyBatchStore(settings: settings))
+
+        let applied = await service.apply(
+            [TriageWritebackDecision(
+                photoId: photoId, rating: 3, keyword: "Gather|AI|Keep", namespaceValue: "keep")],
+            batchId: "b1", now: "2026-10-27T00:00:00Z")
+        #expect(applied.written == [photoId])
+
+        _ = try await service.undo(batchId: "b1")
+        let restored = xmp.attributes(path)
+        #expect(restored.keywords?.contains("Gather|AI|Keep") == true,
+                "写回前已存在的同名关键词不是本批 delta，撤销不得删除")
+        #expect(restored.rating == 0)
+        #expect(restored.triageSignal == nil)
     }
 
     @Test("undo：关键词删除失败不得被后续成功覆盖（批次保持未撤销）")
@@ -185,7 +240,7 @@ struct TriageWritebackServiceTests {
             transactions: db, mutations: mutations,
             flushPending: { _ in
                 for entry in mutations.drain() {
-                    let attributes = try MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(
                         photoPath: paths[entry.photoId] ?? path1, attributes: attributes)
                 }

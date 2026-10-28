@@ -1,8 +1,10 @@
 // desktop/native/gather-app/Sources/GatherHost/APIs/LiveMetadataAPI.swift
-// MetadataAPI 的 Live 实现（7 个方法）。
+// MetadataAPI 的 Live 实现（18 个方法：7 个历史命令面 + 只读详情 + 模板 8 个
+// + triage 写回 2 个）。
 //
-// 对应命令（7 条）：metadata.conflicts / orphans / resolve_conflict /
-// resolve_orphan，以及 K0 的 preview / apply_keywords / retry_keyword_writeback。
+// 对应命令（7 条历史）：metadata.conflicts / orphans / resolve_conflict /
+// resolve_orphan，以及 K0 的 preview / apply_keywords / retry_keyword_writeback；
+// P1 的 metadata/templates/triage 入口是类型化新增，没有历史命令。
 //
 // 依赖（2b-2 起不再持有 MetadataSyncCoordinator；P1-2 起写路径收口）：
 // - metadataService：关键词预览/应用/重试（缓存指纹、可写字段白名单、侧车分组串行）；

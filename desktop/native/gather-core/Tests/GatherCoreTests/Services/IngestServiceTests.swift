@@ -3,6 +3,7 @@
 
 import Foundation
 import Testing
+import GatherProtocol
 @testable import GatherApplication
 
 @Suite("摄取执行")
@@ -160,7 +161,7 @@ struct IngestServiceTests {
             atPath: (dest as NSString).appendingPathComponent("a.xmp")))
     }
 
-    @Test("{seq} 模板下 RAW+JPEG 共享侧车仍只复制一份，目标侧车复用第一张")
+    @Test("{seq} 模板下 RAW+JPEG 共享侧车：兄弟共用同一目标 stem，只复制一份侧车")
     func sharedSidecarWithSequenceTemplate() throws {
         let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
         let sidecar = (source as NSString).appendingPathComponent("a.xmp")
@@ -173,12 +174,83 @@ struct IngestServiceTests {
         let options = IngestOptions(destinationRoot: dest, renameTemplate: "{seq}.{ext}")
         let plan = try service.plan(sourcePaths: [source], options: options)
         #expect(plan.items.count == 2)
-        #expect(Set(plan.items.compactMap(\.destSidecarOverride)).count == 1)
+        // 兄弟必须同 stem：侧车按 stem 推导，stem 不同会让第二张解析到不存在的 .xmp，
+        // RAW/JPEG 的配对键（stem）也会一起失配。
+        #expect(Set(plan.items.map { TSPath.stem($0.destPath) }).count == 1,
+                "RAW+JPEG 兄弟必须落在同一目标 stem 上")
+        #expect(Set(plan.items.map { TSPath.xmpSidecarPath($0.destPath) }).count == 1,
+                "同源侧车的目标路径必须一致")
         let result = service.execute(plan, options: options)
         #expect(result.failed.isEmpty)
         let xmps = try FileManager.default.contentsOfDirectory(atPath: dest)
             .filter { $0.hasSuffix(".xmp") }
         #expect(xmps.count == 1, "共享侧车不能在目标端分裂成两份")
+        #expect(result.copied.count == 2)
+    }
+
+    @Test("第二目的地撞名：整张回滚，源文件保留且不会同时进 copied 与 failed")
+    func secondDestinationConflictRollsBack() throws {
+        let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
+        let dest = try makeDestination()
+        let second = try makeDestination()
+        defer {
+            [source, dest, second].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        // 第二目的地已有同名文件 → 执行阶段失败（计划阶段还没写主副本）。
+        let existingSecond = (second as NSString).appendingPathComponent("a.CR3")
+        try Data("other".utf8).write(to: URL(fileURLWithPath: existingSecond))
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(
+            destinationRoot: dest, renameTemplate: "{orig}.{ext}", secondDestinationRoot: second)
+        let plan = try service.plan(sourcePaths: [source], options: options)
+        let result = service.execute(plan, options: options)
+        #expect(result.failed.count == 1)
+        #expect(result.copied.isEmpty, "失败项不得同时进 copied（否则会被登记成幽灵）")
+        #expect(result.secondCopied.isEmpty)
+        #expect(FileManager.default.fileExists(
+            atPath: (source as NSString).appendingPathComponent("a.CR3")), "复制模式失败也要保留源")
+        #expect(!FileManager.default.fileExists(
+            atPath: (dest as NSString).appendingPathComponent("a.CR3")), "主副本必须回滚")
+        #expect(try String(contentsOfFile: existingSecond, encoding: .utf8) == "other",
+                "既有第二目的地文件不得被覆盖")
+    }
+
+    @Test("侧车目标已存在且内容不同：整张失败并回滚，不覆盖既有侧车")
+    func sidecarContentConflictRollsBack() throws {
+        let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
+        try Data("<xmp>new</xmp>".utf8).write(
+            to: URL(fileURLWithPath: (source as NSString).appendingPathComponent("a.xmp")))
+        let dest = try makeDestination()
+        defer {
+            [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let existingSidecar = (dest as NSString).appendingPathComponent("a.xmp")
+        try Data("<xmp>old</xmp>".utf8).write(to: URL(fileURLWithPath: existingSidecar))
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
+        let plan = try service.plan(sourcePaths: [source], options: options)
+        let result = service.execute(plan, options: options)
+        #expect(result.failed.count == 1)
+        #expect(result.copied.isEmpty)
+        #expect(try String(contentsOfFile: existingSidecar, encoding: .utf8) == "<xmp>old</xmp>",
+                "既有侧车不得被覆盖")
+        #expect(try String(contentsOfFile: (source as NSString).appendingPathComponent("a.CR3"),
+                           encoding: .utf8) == "payload", "失败后源文件必须仍在")
+    }
+
+    @Test("目录与其内文件同时传入：同一文件只计划一次")
+    func dedupesNestedSources() throws {
+        let source = try makeSource(["a.CR3", "b.CR3"], contents: [:])
+        let dest = try makeDestination()
+        defer {
+            [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let plan = try service.plan(
+            sourcePaths: [source, (source as NSString).appendingPathComponent("a.CR3")],
+            options: IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
+        )
+        #expect(plan.items.count == 2, "枚举结果与显式参数重复时必须去重")
     }
 
     @Test("目标已有不同内容 → 冲突，执行时跳过且绝不覆盖")

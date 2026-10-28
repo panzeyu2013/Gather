@@ -206,7 +206,15 @@ public final class MetadataMutationService: MetadataMutationPort {
         let knownBase = try deliveryRepo.get(xmpPath)?.baseFingerprint ?? ""
         var base = knownBase
         if base.isEmpty {
-            do { base = try MetadataFingerprint.contentFingerprintSync(xmpPath) } catch {}
+            do {
+                base = try MetadataFingerprint.contentFingerprintSync(xmpPath)
+            } catch {
+                // 空基线与"尚无侧车"不可区分，执行器会整段跳过外部改动检测；
+                // 至少要留下可诊断日志（读取失败常见于权限/坏链接）。
+                GatherLogger.log(
+                    "metadata base fingerprint unavailable (xmp=\(xmpPath)): \(error)",
+                    level: .warn)
+            }
         }
         let delivery = try stateWriter.enqueueMetadataMutation(
             xmpPath: xmpPath,

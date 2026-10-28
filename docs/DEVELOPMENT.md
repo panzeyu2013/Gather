@@ -256,7 +256,7 @@ App Sandbox**：当前签名与运行模型没有沙盒容器，授权路径访�
 
 ```text
 SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
-  ↓ AppServices（16 个域 API / 124 个类型化方法，同进程直连）
+  ↓ AppServices（16 个域 API / 126 个类型化方法，同进程直连）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication 服务（交付编排在 GatherDelivery）
@@ -312,7 +312,7 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - `L10n`（`Support/L10n.swift:120`）：**key 即中文文案**；渲染期显式携带
   `language`（`L10n.Language.zhCN/en`），经 `Bundle.module` 的 `.lproj` 查表——
   `zh-Hans.lproj` 只有 9 个占位键，未命中自动回退 key（即中文）；`en.lproj`
-  （1,494 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
+  （1,646 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
   (language, key) 缓存查表结果，避免每帧重走 Bundle 查找。
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`
@@ -483,6 +483,7 @@ Cut 1 后字符串命令面已删除；当前机器判据（CI 的 boundary job 
 ./scripts/check-preview-surface.sh --strict  # 18 个 #Preview / 13 个文件
 ./scripts/check-coded-errors.sh          # 错误码类型化：Persistence 无裸码字符串；Host 反解须标 allow: string-code
 ./scripts/check-backlog-evidence.sh      # cleanup-backlog 的 pending/deferred 段必须有证据标记
+./scripts/check-design-system.sh         # 设计系统 ratchet（scripts/design-system-baseline.json）
 ```
 
 门禁与扫描一律以当前工作树为准；未暂存的删除仍会被 `git ls-files` 列出，不能据此

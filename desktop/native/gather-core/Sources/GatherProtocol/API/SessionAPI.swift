@@ -34,9 +34,9 @@ public protocol SessionAPI: Sendable {
     /// session.add_photos（向已存在会话追加）
     func addPhotos(_ input: SessionAddPhotosInput) async throws -> AddPhotoResult
 
-    /// workspace.status
     /// P1 / D：摄取（复制/重命名/校验 → 登记）。破坏性在于写文件系统，用 Confirmed 收口。
     func ingest(_ input: Confirmed<SessionIngestInput>) async throws -> SessionIngestResult
 
+    /// workspace.status
     func status(_ sessionId: String) async throws -> WorkspaceStatus
 }

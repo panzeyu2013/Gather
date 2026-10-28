@@ -43,14 +43,17 @@ public final class DirectoryWatcher: @unchecked Sendable {
     }
 
     /// 启动；sinceEventID 为 0 表示"只看启动之后的变化"。
-    public func start(sinceEventID: UInt64 = 0) {
+    /// 返回 false = 没起起来（空路径或 FSEventStream 创建失败）——调用方必须
+    /// 显式处理，不能以为"已经在监听"。
+    @discardableResult
+    public func start(sinceEventID: UInt64 = 0) -> Bool {
         stop()
-        guard !paths.isEmpty else { return }
+        guard !paths.isEmpty else { return false }
         let callback: FSEventStreamCallback = { _, info, count, eventPaths, eventFlags, eventIds in
             guard let info else { return }
             let watcher = Unmanaged<DirectoryWatcher>.fromOpaque(info).takeUnretainedValue()
-            // 未置 UseCFTypes 时 eventPaths 是 C 字符串数组。
-            let paths = unsafeBitCast(eventPaths, to: UnsafePointer<UnsafePointer<CChar>>.self)
+            // 未置 UseCFTypes 时 eventPaths 是 C 字符串数组（char **）。
+            let paths = eventPaths.assumingMemoryBound(to: UnsafePointer<CChar>.self)
             var changed: [String] = []
             var lastID: UInt64 = 0
             var forceRoots = false
@@ -90,12 +93,16 @@ public final class DirectoryWatcher: @unchecked Sendable {
             FSEventStreamEventId(since),
             latency,
             flags
-        ) else { return }
+        ) else { return false }
         FSEventStreamSetDispatchQueue(stream, queue)
         FSEventStreamStart(stream)
         lock.lock()
+        let previous = self.stream
         self.stream = stream
         lock.unlock()
+        // 并发 start：后到的胜出，先到的流必须停掉，否则会留下第二条仍在回调的流。
+        if let previous { teardown(previous) }
+        return true
     }
 
     public func stop() {
@@ -103,16 +110,20 @@ public final class DirectoryWatcher: @unchecked Sendable {
         let current = stream
         stream = nil
         lock.unlock()
-        guard let current else { return }
-        FSEventStreamStop(current)
-        FSEventStreamInvalidate(current)
+        if let current { teardown(current) }
+    }
+
+    /// 停掉一条流（幂等；可在 start 内对"被后来者顶掉"的旧流复用）。
+    private func teardown(_ target: FSEventStreamRef) {
+        FSEventStreamStop(target)
+        FSEventStreamInvalidate(target)
         // 回调通过 passUnretained(self) 取回 watcher：先解绑 dispatch queue，再把在途
         // 回调排空，最后才 release，否则"stop 后析构 + 迟到的回调"就是 use-after-free。
-        FSEventStreamSetDispatchQueue(current, nil)
+        FSEventStreamSetDispatchQueue(target, nil)
         if DispatchQueue.getSpecific(key: Self.queueKey) == nil {
             queue.sync {}
         }
-        FSEventStreamRelease(current)
+        FSEventStreamRelease(target)
     }
 
     /// 标记"当前是否运行在本 watcher 的队列上"（在队列内 sync 会自锁）。

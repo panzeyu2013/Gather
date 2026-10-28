@@ -79,8 +79,8 @@ public enum SchemaCurrent {
 
     /// 建库 DDL 主体（单次 exec 执行；含 PRAGMA foreign_keys，不含 user_version）。
     ///
-    /// createSQL = ddl + PRAGMA user_version = 1；SchemaSnapshot 依赖这个拆分，
-    /// 让 V1/V2 共享同一份 DDL 而版本号由快照决定。
+    /// createSQL = ddl + PRAGMA user_version = 4；唯一版本，没有迁移链/快照层，
+    /// 拆分只为把 DDL 字面量按表组分开维护。
     ///
     /// final-cleanup 纯拆分：DDL 字面量按表组存放在 Schema/SchemaCurrent+DDL*.swift，
     /// 本常量按 ddlCore → ddlDomain → ddlIndexes 的顺序拼接；片段之间的分隔换行

@@ -406,15 +406,30 @@ extension AssetRepo {
                 oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)
             let oldNormalized = TSPath.normalize(oldPhotoPath)
             let newNormalized = TSPath.normalize(newPhotoPath)
-            let targetExists = try connection.prepare(
-                "SELECT 1 FROM asset_files WHERE normalized_path = ? LIMIT 1"
-            ).get([.text(newNormalized)]) != nil
-            if !targetExists {
+            let targetId = try connection.prepare(
+                "SELECT id FROM asset_files WHERE normalized_path = ? LIMIT 1"
+            ).get([.text(newNormalized)])?.first?.textValue
+            if let targetId {
+                // 目标路径已登记（上次移出后又被扫描回来）：不覆盖目标行，也不假装迁移成功。
+                // 下一轮扫描会按校验和/identity 把 photos.asset_file_id 重连到目标行；
+                // 这里只留一条可追踪的 warn，避免"两表各不相同却完全静默"。
+                GatherLogger.log(
+                    "relocatePhotoPathsAfterMove: 目标 asset_files 已存在，保留原行待重连 "
+                        + "(old=\(oldNormalized) new=\(newNormalized) target=\(targetId))",
+                    level: .warn)
+            } else {
+                // filename/extension 必须一起改：RAW/JPEG 配对键是 stem(filename)
+                // （AssetRepo+Scan 按 TSPath.stem(file.filename) 分组），只改路径会让
+                // 撞名改名（-2）后的行停在旧名，配对漏/错。
                 _ = try connection.prepare("""
-                    UPDATE asset_files SET normalized_path = ?, updated_at = ?
+                    UPDATE asset_files
+                    SET normalized_path = ?, filename = ?, extension = ?,
+                        online_status = 'online', last_seen_at = ?, updated_at = ?
                     WHERE normalized_path = ?
                   """).run([
-                    .text(newNormalized), .text(timestamp), .text(oldNormalized),
+                    .text(newNormalized), .text(TSPath.basename(newPhotoPath)),
+                    .text(TSPath.extname(newPhotoPath).lowercased()),
+                    .text(timestamp), .text(timestamp), .text(oldNormalized),
                   ])
             }
         }
