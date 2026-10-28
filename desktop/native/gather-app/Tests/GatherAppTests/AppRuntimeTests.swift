@@ -80,6 +80,13 @@ private struct AppRuntimeFixture {
                 connection: db
             ),
             qualityService: QualityService(photoRepo: photoRepo, connection: db),
+            // 运行时不跑模型段（provider 注入假值，避免测试触达 Vision）。
+            modelReviewService: ModelReviewService(
+                photoRepo: photoRepo,
+                modelReviewRepo: ModelReviewRepo(connection: db),
+                faceBoxes: { _, _ in [] },
+                previewProvider: { _, _ in throw RuntimeNoopError.unsupported }),
+            modelReviewEnabled: { false },
             indexerService: IndexerService(
                 connection: db,
                 sessionRepo: sessionRepo,
@@ -96,7 +103,8 @@ private struct AppRuntimeFixture {
             photoRepo: photoRepo,
             assetRepo: assetRepo,
             imagePreloadService: ImagePreloadService(),
-            exportService: ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)
+            exportService: ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db),
+            outputService: OutputService(exportService: ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db))
         )
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))
         self.db = db
@@ -144,6 +152,11 @@ private func waitForTerminal(
         try await Task.sleep(for: .milliseconds(10))
     }
     return nil
+}
+
+/// 运行时测试里模型段不触达 Vision 的诊断错误。
+enum RuntimeNoopError: Error, Equatable {
+    case unsupported
 }
 
 // MARK: - 用例

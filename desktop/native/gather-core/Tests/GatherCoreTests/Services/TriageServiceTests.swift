@@ -179,13 +179,15 @@ private func insertNavigation(_ db: DBConnection, members: [String], lead: Strin
         """).run([.text(json), lead.map(DBValue.text) ?? .null])
 }
 
-private func insertManualDecision(_ db: DBConnection, photoId: String, decision: String) throws {
+private func insertManualDecision(
+    _ db: DBConnection, photoId: String, decision: String, source: String = "manual"
+) throws {
     _ = try db.prepare("""
         INSERT INTO culling_decisions
           (session_id, photo_id, group_id, decision, rating, color_label,
            decision_source, revision, created_at, updated_at)
-        VALUES ('s1', ?, 'ungrouped', ?, 0, 'None', 'manual', 1, 't', 't')
-        """).run([.text(photoId), .text(decision)])
+        VALUES ('s1', ?, 'ungrouped', ?, 0, 'None', ?, 1, 't', 't')
+        """).run([.text(photoId), .text(decision), .text(source)])
 }
 
 private func seedBasic(_ h: Harness) throws {
@@ -394,6 +396,32 @@ struct TriageServiceTests {
         _ = try h.service.generate(sessionId: "s1")
         let suggestions = try h.repo.loadSuggestions(sessionId: "s1")
         #expect(!suggestions.contains { $0.photoId == "p1" })
+    }
+
+    @Test("客户校样勾选（imported）同样受人工保护：应用建议不得翻转")
+    func applySkipsImportedPicks() throws {
+        let h = try Harness(); defer { h.close() }
+        try seedBasic(h)
+        try insertSimilarity(h.db, members: ["p1", "p2"])
+        let summary = try h.service.generate(sessionId: "s1")
+        // 客户在 selection.json 里勾了 p2：source=imported，仍属人的决定。
+        try insertManualDecision(h.db, photoId: "p2", decision: "keep", source: "imported")
+
+        let result = try h.service.apply(Confirmed(TriageApplyInput(
+            sessionId: "s1", verdicts: [.keep, .reject],
+            fingerprint: summary.inputFingerprint
+        )))
+        #expect(result.skippedManual == 1, "imported 必须与 manual 一起被跳过")
+        let row = try h.db.prepare("""
+            SELECT decision, decision_source FROM culling_decisions WHERE photo_id = 'p2'
+            """).get([])
+        #expect(row?[0].textValue == "keep", "客户勾选不得被 AI 翻成 reject")
+        #expect(row?[1].textValue == "imported")
+
+        // 生成也不得为「客户已选」的资产建行（计数与 apply 同口径）。
+        let fresh = try h.service.generate(sessionId: "s1")
+        #expect(!fresh.stale)
+        #expect(try h.repo.loadSuggestions(sessionId: "s1").contains { $0.photoId == "p2" } == false)
     }
 
     @Test("空会话 summary 不是 stale")

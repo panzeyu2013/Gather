@@ -19,6 +19,7 @@ private struct Options {
     var dbPath = ""
     var sessionId = ""
     var labelsPath = ""
+    var exportSignals: String?
     var strict = false
 }
 
@@ -50,17 +51,26 @@ private func parseArgs(_ args: [String]) throws -> Options {
             index += 1
             guard index < args.count else { throw CLIError.usage("--labels needs a path") }
             options.labelsPath = args[index]
+        case "--export-signals":
+            index += 1
+            guard index < args.count else { throw CLIError.usage("--export-signals needs a path") }
+            options.exportSignals = args[index]
         case "--strict":
             options.strict = true
         case "--help", "-h":
-            throw CLIError.usage("gather-triage-eval --db <db> --session <id> --labels <csv|tsv> [--strict]")
+            throw CLIError.usage(
+                "gather-triage-eval --db <db> --session <id> [--labels <csv|tsv>] "
+                    + "[--export-signals <out.csv>] [--strict]")
         default:
             throw CLIError.usage("unknown argument \(args[index])")
         }
         index += 1
     }
-    guard !options.dbPath.isEmpty, !options.sessionId.isEmpty, !options.labelsPath.isEmpty else {
-        throw CLIError.usage("--db, --session and --labels are required")
+    guard !options.dbPath.isEmpty, !options.sessionId.isEmpty else {
+        throw CLIError.usage("--db and --session are required")
+    }
+    guard !options.labelsPath.isEmpty || options.exportSignals != nil else {
+        throw CLIError.usage("either --labels or --export-signals is required")
     }
     return options
 }
@@ -103,6 +113,7 @@ private func mapCandidate(_ record: TriageCandidateRecord) -> TriageCandidate {
     TriageCandidate(
         photoId: record.photoId,
         quality: record.quality,
+        modelReview: record.modelReview,
         faceCount: record.faceCount,
         maxFaceAreaRatio: record.maxFaceAreaRatio,
         groups: record.groups.compactMap { group in
@@ -112,7 +123,10 @@ private func mapCandidate(_ record: TriageCandidateRecord) -> TriageCandidate {
         },
         manualDecision: record.manualDecision.flatMap(CullingDecisionValue.init(rawValue:)),
         decisionSource: record.decisionSource.flatMap(CullingDecisionSource.init(rawValue:)),
-        importOrder: record.importOrder
+        importOrder: record.importOrder,
+        width: record.width,
+        height: record.height,
+        fileSize: record.fileSize
     )
 }
 
@@ -126,16 +140,72 @@ private func metric(_ value: Double?) -> String {
     return String(format: "%.4f", value)
 }
 
+/// 逐张导出模型/技术信号，供离线拟合与分层评估（不写库、不生成建议）。
+private func exportSignalCSV(
+    path: String,
+    candidates: [TriageCandidate],
+    evaluations: [TriageEvaluation],
+    policyVersion: String
+) throws {
+    var byId: [String: TriageResult] = [:]
+    for evaluation in evaluations {
+        if case .suggestion(let result) = evaluation { byId[result.photoId] = result }
+    }
+    func number(_ value: Double?) -> String {
+        value.map { String(format: "%.4f", $0) } ?? ""
+    }
+    var lines = [
+        "photoId,policyVersion,verdict,confidence,score,qualityScore,"
+            + "eyesOpen,faceFocus,smile,aesthetic,utility,reasons",
+    ]
+    for candidate in candidates {
+        let result = byId[candidate.photoId]
+        let model = candidate.modelReview
+        let reasons = result?.reasons.map(\.code.rawValue).joined(separator: "|") ?? ""
+        let verdict = result?.verdict.rawValue ?? "excluded"
+        lines.append([
+            candidate.photoId,
+            policyVersion,
+            verdict,
+            number(result?.confidence),
+            number(result?.score),
+            number(candidate.quality?.qualityScore),
+            number(model?.eyesOpenScore),
+            number(model?.faceFocusScore),
+            number(model?.smileScore),
+            number(model?.aestheticScore),
+            model?.isUtilityImage.map { $0 ? "1" : "0" } ?? "",
+            reasons,
+        ].joined(separator: ","))
+    }
+    do {
+        try lines.joined(separator: "\n").write(
+            toFile: path, atomically: true, encoding: .utf8)
+    } catch {
+        throw CLIError.io("cannot write signals: \(error)")
+    }
+    FileHandle.standardOutput.write(Data(("wrote \(candidates.count) rows -> \(path)\n").utf8))
+}
+
 private func run(_ options: Options) throws -> Int32 {
     let database = try Database.open(at: options.dbPath)
     defer { database.close() }
     let repo = TriageRepo(connection: database.connection)
     let load = try repo.loadCandidates(sessionId: options.sessionId)
     let candidates = load.candidates.map(mapCandidate)
-    let evaluations = evaluateTriage(candidates: candidates, policy: .v1)
+    // 评估默认对齐线上（v2 才读模型信号）；CSV 记录真实策略版本。
+    let policy = TriagePolicy.v2
+    let evaluations = evaluateTriage(candidates: candidates, policy: policy)
     var verdicts: [String: TriageVerdict] = [:]
     for evaluation in evaluations {
         if case .suggestion(let result) = evaluation { verdicts[result.photoId] = result.verdict }
+    }
+
+    if let output = options.exportSignals {
+        try exportSignalCSV(
+            path: output, candidates: candidates, evaluations: evaluations,
+            policyVersion: policy.version)
+        if options.labelsPath.isEmpty { return 0 }
     }
 
     // photo id -> asset group / filepath
@@ -213,12 +283,13 @@ private func run(_ options: Options) throws -> Int32 {
     let cv = b.coverage
     let frOK = (fr ?? 1) < 0.01
     let rpOK = (rp ?? 0) >= 0.99
-    let rrOK = (rr ?? 1) <= 0.35
-    let cvOK = (cv ?? 0) >= 0.65
+    // v2 收益门限（设计 §2.1.6）：复核率 ≤20%、覆盖率 ≥75%；缺指标不能算 PASS。
+    let rrOK = (rr ?? 1) <= 0.20
+    let cvOK = (cv ?? 0) >= 0.75
     print("| 误杀率 (false reject) | \(percent(fr)) | < 1% | \(status(frOK)) |")
     print("| reject precision | \(percent(rp)) | >= 99% | \(status(rpOK)) |")
-    print("| 复核率 | \(percent(rr)) | <= 35% | \(status(rrOK)) |")
-    print("| 覆盖率 | \(percent(cv)) | >= 65% | \(status(cvOK)) |")
+    print("| 复核率 | \(percent(rr)) | <= 20% | \(status(rrOK)) |")
+    print("| 覆盖率 | \(percent(cv)) | >= 75% | \(status(cvOK)) |")
     print("")
     if !report.byCategory.isEmpty {
         print("## 分类")

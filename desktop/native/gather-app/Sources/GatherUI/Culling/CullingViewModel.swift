@@ -203,8 +203,12 @@ public final class CullingViewModel: PageVisibility {
     public internal(set) var triageEnabled = true
     /// 质量分析成功后是否自动生成建议；默认关闭（设置 triage_auto_generate）。
     public internal(set) var triageAutoGenerate = false
+    /// W1：当前照片的模型级初审信号（nil = 尚未分析 / 未接线）。
+    public internal(set) var currentModelReview: ModelReviewResult?
     /// 已打开会话内设置变更后重读；nil 时保持构造时状态。
     public var triageEnabledProvider: (@MainActor () async -> Bool)?
+    /// triage_auto_apply=1：生成成功后按策略门槛自动应用 keep/reject（默认关）。
+    public var triageAutoApplyProvider: (@MainActor () async -> Bool)?
     public var triageAutoGenerateProvider: (@MainActor () async -> Bool)?
     /// 本次生成结果已经应用过；避免重复 apply 产生无意义 upsert/history。
     public internal(set) var triageApplied = false

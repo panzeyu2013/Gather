@@ -91,6 +91,20 @@ final class B6bExportAPIStub: ExportAPI, @unchecked Sendable {
         return result
     }
 
+    func saveWebDAVCredential(_ input: WebDAVCredentialInput) async throws -> Bool { true }
+
+    func publish(
+        _ input: Confirmed<WebDAVPublishInput>,
+        onProgress: (@Sendable (Int, Int) -> Void)?
+    ) async throws -> WebDAVPublishSummary {
+        WebDAVPublishSummary(uploaded: 0, failed: [], remoteRoot: "", abortedOnAuth: false)
+    }
+
+    func runRecipes(_ input: Confirmed<OutputRunInput>) async throws -> OutputRunSummary {
+        OutputRunSummary(runId: "stub", sessionId: input.value.sessionId,
+                         manifestPath: "", createdAt: "", recipes: [])
+    }
+
     func execute(_ input: Confirmed<ExportInput>) async throws -> ExportResult {
         let (error, result): ((any Error)?, ExportResult) = box.lock.withLock {
             box.executeInputs.append(input)

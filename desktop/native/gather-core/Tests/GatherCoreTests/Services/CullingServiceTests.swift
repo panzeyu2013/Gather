@@ -2769,3 +2769,73 @@ private extension CullingService {
             cursor: effectiveCursor, limit: limit))
     }
 }
+
+
+@Suite("客户校样回传（imported 决策）")
+struct ClientSelectionApplyTests {
+    @Test("勾选照片写 keep + source=imported；未知 id 跳过不报错")
+    func appliesImportedPicks() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1")
+        try addPhoto(harness.db, id: "p2")
+        let outcome = try harness.service.applyImportedPicks(
+            sessionId: "session", photoIds: ["p1", "ghost"])
+        #expect(outcome.results.count == 1, "未知 id 必须跳过")
+        #expect(outcome.failed == 0)
+        let applied = try requireDecision(harness, "p1")
+        #expect(applied.decision == "keep")
+        #expect(applied.decisionSource == "imported")
+        #expect(try harness.decision("p2") == nil, "未勾选的照片不得被改动")
+    }
+
+    @Test("整批勾选合并为一条历史操作（撤销一次即回退整批）")
+    func importedPicksShareOneHistoryOperation() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1")
+        try addPhoto(harness.db, id: "p2")
+        _ = try harness.service.applyImportedPicks(
+            sessionId: "session", photoIds: ["p1", "p2"])
+        let rows = try harness.db.prepare("""
+            SELECT operation_json FROM culling_history WHERE session_id = 'session'
+            """).query([])
+        #expect(rows.count == 1, "整批勾选必须只有一条历史操作，实际 \(rows.count) 条")
+        let entries = try JSONDecoder().decode(
+            [CullingHistoryEntry].self,
+            from: Data((rows.first?[0].textValue ?? "[]").utf8))
+        #expect(entries.count == 2)
+    }
+
+    @Test("重复导入保持 keep/imported（修订递增，不覆盖来源）")
+    func repeatedApplyIsIdempotent() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1")
+        _ = try harness.service.applyImportedPicks(sessionId: "session", photoIds: ["p1"])
+        let first = try requireDecision(harness, "p1")
+        _ = try harness.service.applyImportedPicks(sessionId: "session", photoIds: ["p1"])
+        let second = try requireDecision(harness, "p1")
+        #expect(second.revision >= first.revision)
+        #expect(second.decision == "keep")
+        #expect(second.decisionSource == "imported")
+    }
+}
+
+
+
+@Suite("客户校样不覆盖人工")
+struct ClientSelectionManualTests {
+    @Test("人工 reject 的照片不会被客户勾选翻成 keep")
+    func manualRejectIsPreserved() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1")
+        // 先落一条人工 reject。
+        _ = try harness.service.updateState(
+            sessionId: "session", photoId: "p1", expectedRevision: 0,
+            patch: CullingUpdatePatch(pickState: .rejected))
+        let before = try requireDecision(harness, "p1")
+        #expect(before.decisionSource == "manual")
+        _ = try harness.service.applyImportedPicks(sessionId: "session", photoIds: ["p1"])
+        let after = try requireDecision(harness, "p1")
+        #expect(after.decision == before.decision, "人工决策必须优先")
+        #expect(after.decisionSource == "manual")
+    }
+}

@@ -1,8 +1,8 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Migration/OpenState.swift
 // Database.open 的库状态判定（当前 schema 唯一）。
 //
-// 三态：empty / current / incompatible。旧版本（V1/V2）不再迁移，默认 fail closed；
-// 只有显式 resetPolicy 才归档重建。
+// 三态：empty / current / incompatible。旧版本（含重置前发布过的 user_version 2…5）
+// 不再迁移，默认 fail closed；只有显式 resetPolicy 才归档重建，未来版本永远 fail closed。
 import Foundation
 import GatherProtocol
 
@@ -88,7 +88,10 @@ enum SchemaInspector {
                     ? .empty
                     : .incompatible(.legacyPreV1)
             }
-            if version < SchemaCurrent.userVersion {
+            // 重置版 v1 之前的历史版本（2…5）数值上更高，必须显式按「旧库」处理，
+            // 否则会被当成未来版本 fail closed —— 升级即打不开（见 SchemaCurrent.legacyVersions）。
+            if version < SchemaCurrent.userVersion
+                || SchemaCurrent.legacyVersions.contains(version) {
                 return .incompatible(.oldVersion(version))
             }
             return .incompatible(.newerVersion(version))

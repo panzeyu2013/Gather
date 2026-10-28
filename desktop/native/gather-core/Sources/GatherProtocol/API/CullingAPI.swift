@@ -29,6 +29,10 @@ public protocol CullingAPI: Sendable {
     func generateTriage(_ input: TriageGenerateInput) async throws -> TriageSummary
     /// P0 / T0：应用建议（只写 culling 决策，source=ai；绝不自动写 XMP）。
     func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult
+    /// W1：单张照片的模型级初审信号（未分析 = nil，不是全 0）。
+    func modelReview(_ photoId: String) async throws -> ModelReviewResult?
+    /// W3：导入客户校样（selection.json）→ 勾选项标记为 keep（source=imported）。
+    func importClientSelection(_ input: Confirmed<ClientSelectionImportInput>) async throws -> ClientSelectionImportResult
     /// P1 / D：把已淘汰的照片移到 <sessionRoot>/_rejects（只移动、不删除）。
     /// P0 / A1：混合批次按张过滤（返回 skipped），并按逻辑资产展开到全部变体。
     func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult

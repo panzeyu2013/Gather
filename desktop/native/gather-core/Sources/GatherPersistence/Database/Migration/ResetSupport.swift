@@ -1,11 +1,13 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Migration/ResetSupport.swift
-// WP6a：开发重置的文件操作（从 Database.swift 抽出，行为逐字保留）。
+// WP6a：不兼容库的归档改名（从 Database.swift 抽出）。生产（.renameOlderOnly）与
+// 开发（.renameToIncompatible）共用，唯一区别是调用方放不放行。
 //
-// 只在 Options.resetPolicy == .renameToIncompatible 时调用；默认 .failClosed 下
-// open 只抛错，绝不改名/删除用户库。顺序仍是 -shm → -wal → 主库：
-//   * 先移 sidecar：避免「新库 + 旧 WAL」被 SQLite 按同名前缀恢复出旧页；
-//   * 最后移主库：中途失败时用户数据仍在原路径，可人工恢复。
-// 任一步移动失败抛 .io（不吞），并提示手动备份后重试。
+// 只在 Options.resetPolicy 允许时调用（生产 .renameOlderOnly / 开发 .renameToIncompatible）；
+// 默认 .failClosed 下 open 只抛错，绝不改名/删除用户库。
+// 顺序：主库 → 同目录临时名 → -shm/-wal → 主库临时名改成 .incompatible-<ts>。
+//   * 旧 WAL 必须跟着主库一起走，否则「新库 + 旧 WAL」会被 SQLite 按同名前缀恢复出旧页；
+//   * 主库先离开原路径，任何一步失败都能按逆序回滚，用户数据不会与 sidecar 分家。
+// 任一步移动失败回滚后抛 .io（不吞），并提示手动备份后重试。
 import Foundation
 import GatherProtocol
 
@@ -19,30 +21,48 @@ enum SchemaReset {
     ) throws -> String {
         let fileManager = FileManager.default
         let target = uniqueIncompatiblePath(for: path)
-
-        for suffix in ["-shm", "-wal"] where fileManager.fileExists(atPath: path + suffix) {
+        // 先把主库改到同目录临时名：此刻原路径上没有库文件，新库还不会被创建；
+        // 随后搬 sidecar，最后把临时名改成 .incompatible-<ts>。
+        // 任何一步失败都按逆序回滚 —— 主库与它的 -wal/-shm 绝不会分家
+        // （WAL 里可能有未 checkpoint 的已提交事务）。
+        let staging = path + ".gather-reset-" + UUID().uuidString.lowercased()
+        let hadMain = fileManager.fileExists(atPath: path)
+        var movedSuffixes: [String] = []
+        if hadMain {
             do {
-                try fileManager.moveItem(atPath: path + suffix, toPath: target + suffix)
-            } catch {
-                throw DatabaseError.io(
-                    "移走 \(path + suffix) 失败：\(error.localizedDescription)。请手动备份 \(path) 后重试"
-                )
-            }
-        }
-        if fileManager.fileExists(atPath: path) {
-            do {
-                try fileManager.moveItem(atPath: path, toPath: target)
+                try fileManager.moveItem(atPath: path, toPath: staging)
             } catch {
                 throw DatabaseError.io(
                     "移走 \(path) 失败：\(error.localizedDescription)。请手动备份 \(path) 后重试"
                 )
             }
         }
+        do {
+            for suffix in ["-shm", "-wal"] where fileManager.fileExists(atPath: path + suffix) {
+                try fileManager.moveItem(atPath: path + suffix, toPath: target + suffix)
+                movedSuffixes.append(suffix)
+            }
+            if hadMain {
+                try fileManager.moveItem(atPath: staging, toPath: target)
+            }
+        } catch {
+            // 逆序回滚：sidecar 先回原位，再把主库挪回来，库仍保持可打开的原状。
+            for suffix in movedSuffixes.reversed() {
+                try? fileManager.moveItem(atPath: target + suffix, toPath: path + suffix)
+            }
+            if hadMain {
+                try? fileManager.moveItem(atPath: staging, toPath: path)
+            }
+            throw DatabaseError.io(
+                "归档 \(path) 失败：\(error.localizedDescription)。已尝试回滚，库保持原样；"
+                    + "请手动备份后重试"
+            )
+        }
 
         pruneIncompatibleCopies(for: path, retaining: options.retainIncompatibleCopies)
         let detected = previousVersion.map(String.init) ?? "unreadable"
         GatherLogger.log(
-            "schema_reset_dev user_version=\(detected) expected=\(SchemaCurrent.userVersion) "
+            "schema_reset user_version=\(detected) expected=\(SchemaCurrent.userVersion) "
                 + "path=\(path) backup=\(target) reason=\(reason)",
             level: .warn
         )

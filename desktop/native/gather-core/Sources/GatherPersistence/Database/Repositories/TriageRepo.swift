@@ -19,6 +19,14 @@ public final class TriageRepo: TriageRepository {
     // MARK: - 候选装配
 
     public func loadCandidates(sessionId: String) throws -> TriageCandidateLoad {
+        try loadCandidates(sessionId: sessionId, includeModelReview: true)
+    }
+
+    /// - Parameter includeModelReview: 关掉模型信号时不读 model_review（v1 与设置关闭都走这条），
+    ///   避免 20k 会话每次 generate 解 2 万条无关 JSON。
+    public func loadCandidates(
+        sessionId: String, includeModelReview: Bool
+    ) throws -> TriageCandidateLoad {
         let photos = try loadPhotos(sessionId: sessionId)
         guard !photos.isEmpty else {
             return TriageCandidateLoad(candidates: [], coverage: 0)
@@ -27,6 +35,9 @@ public final class TriageRepo: TriageRepository {
         let repByPhoto = reps.repByPhoto
 
         let qualityByFile = try loadQuality(assetFileIds: Array(Set(photos.compactMap(\.assetFileId))))
+        let modelByFile = includeModelReview
+            ? try loadModelReviews(assetFileIds: Array(Set(photos.compactMap(\.assetFileId))))
+            : [:]
         let dimensions = Dictionary(
             uniqueKeysWithValues: photos.map { ($0.id, (width: $0.width, height: $0.height)) })
         let faceByRep = try loadFaces(
@@ -50,12 +61,14 @@ public final class TriageRepo: TriageRepository {
         for rep in reps.repRows.sorted(by: { $0.rowId < $1.rowId }) {
             let quality = rep.assetFileId.flatMap { qualityByFile[$0] }
             if quality?.status == .succeeded { analyzedCount += 1 }
+            let modelReview = rep.assetFileId.flatMap { modelByFile[$0] }
             let faces = faceByRep[rep.id] ?? (count: 0, maxArea: 0)
             let decision = decisions[rep.id]
             let repGroups = groupsByMember[rep.id] ?? []
             records.append(TriageCandidateRecord(
                 photoId: rep.id,
                 quality: quality,
+                modelReview: modelReview,
                 faceCount: faces.count,
                 maxFaceAreaRatio: faces.maxArea,
                 groups: repGroups,
@@ -78,9 +91,24 @@ public final class TriageRepo: TriageRepository {
         policyVersion: String,
         thresholdsDigest: String
     ) throws -> String {
+        try fingerprint(
+            sessionId: sessionId, policyVersion: policyVersion,
+            thresholdsDigest: thresholdsDigest, includeModelReview: true)
+    }
+
+    public func fingerprint(
+        sessionId: String,
+        policyVersion: String,
+        thresholdsDigest: String,
+        includeModelReview: Bool
+    ) throws -> String {
         let quality = try qualityFingerprint(sessionId: sessionId)
         let photos = try photoFingerprint(sessionId: sessionId)
         let faces = try faceFingerprint(sessionId: sessionId)
+        // 判定不使用的信号不该让建议过期：v1 与「关掉模型信号」同此口径。
+        let modelReview = includeModelReview
+            ? try modelReviewFingerprint(sessionId: sessionId)
+            : (count: 0, maxUpdatedAt: "")
         let similarity = try latestSimilarityId(sessionId: sessionId)
         let duplicate = try duplicateFingerprint(sessionId: sessionId)
         let navigation = try navigationFingerprint(sessionId: sessionId)
@@ -99,11 +127,26 @@ public final class TriageRepo: TriageRepository {
             // 人工改选把整批建议判 stale，SKIPPED_MANUAL 主流程不可达。
             // 人脸重跑可能改变 multiFace/闭眼保护。
             "\(faces.count)", "\(faces.maxId)",
+            // 模型信号参与 verdict（闭眼/人脸失焦/工具图）；重跑模型必须让旧建议过期。
+            "\(modelReview.count)", "\(modelReview.maxUpdatedAt)",
             "\(similarity)",
             "\(duplicate.count)", duplicate.maxCreatedAt,
             "\(navigation.count)", navigation.maxUpdatedAt,
         ].joined(separator: "|")
         return SHA256.hash(Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// model_review 行数 + 最后更新时间（重跑模型 → 建议 stale）。
+    private func modelReviewFingerprint(
+        sessionId: String
+    ) throws -> (count: Int, maxUpdatedAt: String) {
+        let row = try connection.prepare("""
+            SELECT COUNT(*), COALESCE(MAX(aa.updated_at), '')
+            FROM asset_analysis aa
+            JOIN photos p ON p.asset_file_id = aa.asset_file_id
+            WHERE aa.analysis_type = 'model_review' AND p.session_id = ?
+            """).query([.text(sessionId)]).first
+        return (Int(row?[0].intValue ?? 0), row?[1].textValue ?? "")
     }
 
     private func photoFingerprint(
@@ -147,7 +190,7 @@ public final class TriageRepo: TriageRepository {
                     FROM culling_decisions d
                     JOIN photos p2 ON p2.id = d.photo_id
                     WHERE d.session_id = ?
-                      AND d.decision_source = 'manual'
+                      AND d.decision_source IN \(CullingDecisionSource.humanDecisionSQLList)
                       AND d.decision <> 'pending'
                   )
               )
@@ -161,7 +204,7 @@ public final class TriageRepo: TriageRepository {
               FROM culling_decisions d
               JOIN photos p ON p.id = d.photo_id AND p.session_id = d.session_id
               WHERE d.session_id = ?
-                AND d.decision_source = 'manual'
+                AND d.decision_source IN \(CullingDecisionSource.humanDecisionSQLList)
                 AND d.decision <> 'pending'
             ),
             rep AS (
@@ -251,7 +294,7 @@ public final class TriageRepo: TriageRepository {
               SELECT 1 FROM culling_decisions d
               JOIN photos p2 ON p2.id = d.photo_id
               WHERE d.session_id = t.session_id
-                AND d.decision_source = 'manual'
+                AND d.decision_source IN \(CullingDecisionSource.humanDecisionSQLList)
                 AND d.decision <> 'pending'
                 AND COALESCE(NULLIF(p2.asset_id, ''), p2.id)
                     = COALESCE(NULLIF(p.asset_id, ''), p.id)
@@ -438,6 +481,37 @@ public final class TriageRepo: TriageRepository {
 
     // MARK: - 内部：质量/人脸/决策
 
+    /// model_review 结果（与 quality 同一 JOIN 口径：按资产文件取最新一条）。
+    private func loadModelReviews(assetFileIds: [String]) throws -> [String: ModelReviewResult] {
+        guard !assetFileIds.isEmpty else { return [:] }
+        var result: [String: ModelReviewResult] = [:]
+        for chunk in chunks(assetFileIds) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let rows = try connection.prepare("""
+                SELECT asset_file_id, result_json
+                FROM asset_analysis
+                WHERE analysis_type = 'model_review'
+                  AND asset_file_id IN (\(placeholders))
+                ORDER BY updated_at DESC, id DESC
+                """).query(chunk.map { .text($0) })
+            for row in rows {
+                let fileId = row[0].textValue ?? ""
+                if result[fileId] != nil { continue }
+                guard let json = row[1].textValue else { continue }
+                do {
+                    let decoded = try JSONDecoder().decode(
+                        ModelReviewResult.self, from: Data(json.utf8))
+                    // failed 行没有信号；不能拿它顶掉更早的成功行。
+                    guard decoded.status == .succeeded else { continue }
+                    result[fileId] = decoded
+                } catch {
+                    continue
+                }
+            }
+        }
+        return result
+    }
+
     private func loadQuality(assetFileIds: [String]) throws -> [String: QualityResult] {
         guard !assetFileIds.isEmpty else { return [:] }
         var result: [String: QualityResult] = [:]
@@ -536,7 +610,9 @@ public final class TriageRepo: TriageRepository {
             )
             // 任一变体的人工决策都必须保护整个逻辑资产；否则 RAW 代表行没有
             // 决策时仍会生成可执行建议，UI 计数也会误导。
-            let isManual = snapshot.source == "manual" && snapshot.decision != "pending"
+            // 客户校样回传（imported）与用户手选（manual）同属人工意图，必须一起保护。
+            let isManual = CullingDecisionSource(rawValue: snapshot.source ?? "")?
+                .isHumanDecision == true && snapshot.decision != "pending"
             if isManual || result[rep] == nil {
                 result[rep] = snapshot
             }

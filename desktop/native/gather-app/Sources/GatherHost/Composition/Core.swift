@@ -44,6 +44,8 @@ struct CompositionCore {
     let faceKwService: FaceKwService
     let personRepo: PersonRepo
     let qualityService: QualityService
+    /// 模型级初审信号（人脸几何/采集质量/合焦/审美），quality.score 第二段执行。
+    let modelReviewService: ModelReviewService
     let indexerService: IndexerService
     let metadataService: MetadataService
     /// 交付仓储（LiveMetadataAPI 的 conflicts/orphans 读入口，同库同键）。
@@ -58,6 +60,8 @@ struct CompositionCore {
     /// P0 / B0：备份/恢复/诊断。
     let maintenanceService: MaintenanceService
     let exportService: ExportService
+    /// W3：整套交付（多配方 + 联系表 + manifest）。
+    let outputService: OutputService
     let imagePreloadService: ImagePreloadService
     /// XMP 宿主实现（LiveMetadataAPI 冲突 remote 读 / 孤儿 restore 用）。
     let xmpProvider: any XMPProvider
@@ -86,7 +90,22 @@ struct CompositionCore {
         // finalize/replay）。旧 outbox 仓储与协调器已删除，手动队列直接落
         // delivery_items（module=.metadata）。
         _ = metadataWriteDebounceMs
-        let xmp = xmpProvider ?? SidecarXMPProvider()
+        // 写目标路由：默认 auto —— 独立 JPEG 直接写内嵌 XMP+IPTC；
+        // 有 .xmp / RAW / 有 RAW 兄弟的照片走侧车（一份真相）。
+        // metadata_write_mode=sidecar 可强制回到全侧车（旧行为）。
+        let xmp: any XMPProvider = xmpProvider ?? MetadataWriteRouter(
+            modeProvider: {
+                settingsService.get("metadata_write_mode", defaultValue: "auto")
+            })
+        // 交付层只知道"目标是个文件"：由路由器回答是侧车还是照片自身。
+        let targetResolver = MetadataTargetResolver(
+            path: { photoPath in
+                (xmp as? MetadataWriteRouter)?.target(for: photoPath).writePath
+                    ?? SidecarXMPProvider.resolveSidecarPath(photoPath)
+            },
+            kind: { photoPath in
+                (xmp as? MetadataWriteRouter)?.target(for: photoPath).kind ?? .sidecar
+            })
         let metadataCacheRepo = MetadataCacheRepo(connection: db)
         let assetResolver = PhotoAssetResolver(connection: db, getSetting: { key, defaultValue in
             settingsService.get(key, defaultValue: defaultValue)
@@ -103,15 +122,17 @@ struct CompositionCore {
         // orphan restore 共用同一把按 xmpPath 的文件锁（组合根唯一实例）。
         let xmpFileLock = XMPFileLock()
         let deliveryCoordinator = DeliveryCoordinator(
-            connection: db, xmp: xmp, fileLock: xmpFileLock, eventSink: deliveryEventSink)
+            connection: db, xmp: xmp, fileLock: xmpFileLock, target: targetResolver,
+            eventSink: deliveryEventSink)
         let metadataMutationService = MetadataMutationService(
-            deliveryRepo: deliveryRepo, xmp: xmp, assetResolver: assetResolver)
+            deliveryRepo: deliveryRepo, xmp: xmp, assetResolver: assetResolver,
+            target: targetResolver)
         let writebackService = WritebackService(
             deliveryRepo: deliveryRepo, xmp: xmp, photoRepo: photoRepo,
             metadataCacheRepo: metadataCacheRepo, connection: db,
             keywordOrigins: MetadataKeywordOriginRepo(connection: db),
             assetResolver: assetResolver, delivery: deliveryCoordinator,
-            fileLock: xmpFileLock, eventSink: deliveryEventSink)
+            fileLock: xmpFileLock, target: targetResolver, eventSink: deliveryEventSink)
         // P1-9：构造顺序 MetadataMutationService → WritebackService →
         // MetadataService（无环）；关键词 apply/retry 成功后经闭包立即写盘。
         let metadataService = MetadataService(
@@ -127,7 +148,13 @@ struct CompositionCore {
             },
             assetResolver: assetResolver, exif: ImageIOExifProvider(),
             dimensions: ImageIODimensionsProvider(),
-            origins: MetadataKeywordOriginRepo(connection: db))
+            origins: MetadataKeywordOriginRepo(connection: db),
+            writeTarget: { photoPath in
+                MetadataTarget(
+                    photoPath: photoPath,
+                    kind: targetResolver.kind(photoPath),
+                    writePath: targetResolver.path(photoPath))
+            })
         let similarityService = SimilarityService(
             photoRepo: photoRepo, sessionRepo: sessionRepo,
             similarityResultRepo: similarityResultRepo,
@@ -150,6 +177,7 @@ struct CompositionCore {
         let exportService = ExportService(
             photoRepo: photoRepo, sessionRepo: sessionRepo,
             reports: ExportReportRepo(connection: db))
+        let outputService = OutputService(exportService: exportService)
         let imagePreloadService = ImagePreloadService()
         let resolvedFaceKwService = faceKwService ?? FaceKwService(
             photoRepo: photoRepo, sessionRepo: sessionRepo,
@@ -239,6 +267,17 @@ struct CompositionCore {
             photoRepo: photoRepo, qualityRepo: QualityRepo(connection: db),
             imageProvider: QualityService.defaultImageProvider,
             statProvider: QualityService.defaultStat)
+        let faceRepo = FaceRepo(connection: db)
+        let modelReviewService = ModelReviewService(
+            photoRepo: photoRepo,
+            modelReviewRepo: ModelReviewRepo(connection: db),
+            faceBoxes: { sessionId, photoIds in
+                try faceRepo.faceBoxes(sessionId: sessionId, photoIds: photoIds).map {
+                    ModelReviewFaceBox(
+                        photoId: $0.photoId, x: $0.x, y: $0.y,
+                        width: $0.width, height: $0.height, quality: $0.quality)
+                }
+            })
         let indexerService = IndexerService(
             // WP3b-2：扫描写路径/派生失效 SQL 在 IndexerRepo，事务经 TransactionRunner。
             indexer: IndexerRepo(connection: db), transactions: db,
@@ -280,13 +319,14 @@ struct CompositionCore {
             similarityService: similarityService, duplicateService: duplicateService,
             assetRepo: assetRepo, faceKwService: resolvedFaceKwService,
             personRepo: personRepo,
-            qualityService: qualityService, indexerService: indexerService,
+            qualityService: qualityService, modelReviewService: modelReviewService,
+            indexerService: indexerService,
             metadataService: metadataService, deliveryRepo: deliveryRepo,
             metadataMutationService: metadataMutationService,
             writebackService: writebackService, smartAlbumRepo: smartAlbumRepo,
             cullingService: cullingService, triageService: triageService,
             maintenanceService: maintenanceService,
-            exportService: exportService,
+            exportService: exportService, outputService: outputService,
             imagePreloadService: imagePreloadService, xmpProvider: xmp,
             deliveryCoordinator: deliveryCoordinator, xmpFileLock: xmpFileLock)
     }

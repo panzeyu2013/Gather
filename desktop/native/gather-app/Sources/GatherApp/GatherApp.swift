@@ -42,17 +42,28 @@ struct GatherApp: App {
         Window("Gather", id: GatherWindowID.main) {
             Group {
                 if let scene = bootstrap.scene {
-                    // Cut 4 / 4a-2a-2：外壳只吃 SceneState 装配好的依赖包 +
-                    // SessionStore；页面 VM 一律经 workspace 取，宿主不再传
-                    // AppServices/provider 进 RootView。
-                    RootView(
-                        deps: scene.rootDeps,
-                        sessionStore: scene.sessionStore,
-                        // 4a-3a：语言唯一写入口；外壳文案由它的 l10n 驱动。
-                        languageStore: scene.languageStore,
-                        // Phase 4：菜单/快捷键命令中心。
-                        commandCenter: scene.commandCenter
-                    )
+                    VStack(spacing: 0) {
+                        // 一次性提示（当前只有「旧库已归档并重建」）：可关闭、不阻断。
+                        if let notice = bootstrap.noticeMessage {
+                            NativeBanner(
+                                text: notice,
+                                color: GatherTheme.warning,
+                                onDismiss: { bootstrap.dismissNotice() })
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                        }
+                        // Cut 4 / 4a-2a-2：外壳只吃 SceneState 装配好的依赖包 +
+                        // SessionStore；页面 VM 一律经 workspace 取，宿主不再传
+                        // AppServices/provider 进 RootView。
+                        RootView(
+                            deps: scene.rootDeps,
+                            sessionStore: scene.sessionStore,
+                            // 4a-3a：语言唯一写入口；外壳文案由它的 l10n 驱动。
+                            languageStore: scene.languageStore,
+                            // Phase 4：菜单/快捷键命令中心。
+                            commandCenter: scene.commandCenter
+                        )
+                    }
                 } else if let message = bootstrap.errorMessage {
                     GatherEmptyState(
                         icon: "exclamationmark.triangle",

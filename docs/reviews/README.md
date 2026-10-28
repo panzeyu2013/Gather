@@ -1,4 +1,4 @@
-# 当前有效评审（53 篇）
+# 当前有效评审（54 篇）
 
 `docs/reviews/` 保留当前计划/验收/收尾报告（含本文、4 篇核心计划/验收、final-acceptance 5 篇、final-sweep 4 篇及其余执行报告）；18 篇历史评审已于 2026-10-22 归档到
 [../archive/reviews/](../archive/reviews/)，索引见 [../archive/README.md](../archive/README.md)。
@@ -12,6 +12,7 @@
 | [architecture-review-2026-10-25.md](architecture-review-2026-10-25.md) | 第二轮全量复核：6 P1 / 18 P2 / 1 驳回，含逐条状态与证据 |
 | [merge-2026-10-28.md](merge-2026-10-28.md) | feature 合并 + 五路全量验收：1 P0 / 8 P1 修复、残余清单与复跑命令 |
 | [fix-merge-2026-10-28.md](fix-merge-2026-10-28.md) | fix 合并 + 五路核验与残余清零：协议/服务/UI/门禁四处收口、基线变更与复跑命令 |
+| [feat-merge-2026-10-28.md](feat-merge-2026-10-28.md) | feat（P2 模型初审/内嵌元数据/交付闭环）合并：5 处冲突解决、合并后口径修正、基线重采样与冷构建复跑 |
 | [face-clustering-benchmark.md](face-clustering-benchmark.md) | 人脸识别/聚类对标基线 |
 | [functional-design-review.md](functional-design-review.md) | 功能设计评审与工程债指针 |
 | [visual-style-review-2026-10-23.md](visual-style-review-2026-10-23.md) | 样式/视觉设计评审与优化方案 |

@@ -107,15 +107,19 @@ struct SettingsServiceTests {
     // 之后随 P0/P1 迭代增补至 52；2026-10-27 增加 metadata.applyBatches.corrupt
     // （仅作批次 JSON 解析失败的留证，无 UI 消费者）→ 53；2026-10-28 增加
     // metadata.templates.corrupt（模板 JSON 损坏留证）→ 54。
+    // P2 交付闭环再补 output.recipes / triage_* / metadata_write_mode 等 → 57；
+    // 本轮补 output.deliveryRoot（交付目录记忆，避免每次手打绝对路径）→ 58。
     // set 的键校验直接由此表派生，少一个键就意味着对应设置永远写不进去。
     @Test func defaultsMatchTS() {
         let defaults = SettingsService.getDefaults()
-        #expect(defaults.count == 54)
+        #expect(defaults.count == 58)
+        #expect(defaults["output.deliveryRoot"] == "")
         #expect(defaults["grid_default_sort"] == "import")
         #expect(defaults["grid_density"] == "m")
         #expect(defaults["triage_enabled"] == "0")
         #expect(defaults["triage_auto_generate"] == "0")
-        #expect(defaults["triage_policy"] == "triage-v1")
+        // 2026-10-28 起默认 triage-v2（模型级初审）；v1 仍可在设置里选回。
+        #expect(defaults["triage_policy"] == "triage-v2")
         #expect(defaults["triage_reject_confidence_min"] == "0.75")
         #expect(defaults["triage_min_executable_confidence"] == "0.55")
         #expect(defaults["face_core_quality"] == "0.35")
@@ -128,7 +132,7 @@ struct SettingsServiceTests {
         #expect(defaults["face_embedding_model_version"] == "")
         #expect(defaults["lazy_checksum"] == "true")
         #expect(defaults["db_synchronous"] == "normal")
-        #expect(defaults["metadata_write_mode"] == "sidecar")
+        #expect(defaults["metadata_write_mode"] == "auto")
         #expect(defaults["ui_language"] == "")
     }
 
@@ -158,3 +162,22 @@ struct SettingsServiceTests {
 //   getFallsBackToDefaultOrEmpty / getNumberNaN / getAllMergesCacheOverDefaults /
 //   resetRestoresDefaults / defaultsMatchTS / thumbnailConcurrencyClamp /
 //   knownKeysDeriveFromDefaults / cacheIsReadOnlyAfterLoad
+
+@Suite("策略默认值")
+struct TriagePolicyDefaultTests {
+    @Test("空库 fromSettings 默认 triage-v2（与设置页一致）")
+    func defaultsToV2() throws {
+        let db = try makeTestDB()
+        let service = SettingsService(repo: SettingsRepo(connection: db))
+        let policy = TriagePolicy.fromSettings(service)
+        #expect(policy.version == "triage-v2")
+    }
+
+    @Test("显式 v1 仍可切回")
+    func explicitV1() throws {
+        let db = try makeTestDB()
+        let service = SettingsService(repo: SettingsRepo(connection: db))
+        try service.set("triage_policy", value: "triage-v1")
+        #expect(TriagePolicy.fromSettings(service).version == "triage-v1")
+    }
+}

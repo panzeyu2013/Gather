@@ -148,6 +148,8 @@ private struct B8CullingState {
     var triageGenerateInputs: [TriageGenerateInput] = []
     var applyTriageResult = TriageApplyResult()
     var applyTriageError: (any Error)?
+    var modelReviewResult: ModelReviewResult?
+    var clientSelectionResult = ClientSelectionImportResult(picked: 0, applied: 0, skipped: 0)
     var applyTriageInputs: [Confirmed<TriageApplyInput>] = []
 
     var pageError: (any Error)?
@@ -369,6 +371,16 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
 
     var triageGenerateInputs: [TriageGenerateInput] {
         box.lock.withLock { box.triageGenerateInputs }
+    }
+
+    var modelReviewResult: ModelReviewResult? {
+        get { box.lock.withLock { box.modelReviewResult } }
+        set { box.lock.withLock { box.modelReviewResult = newValue } }
+    }
+
+    var clientSelectionResult: ClientSelectionImportResult {
+        get { box.lock.withLock { box.clientSelectionResult } }
+        set { box.lock.withLock { box.clientSelectionResult = newValue } }
     }
 
     var applyTriageResult: TriageApplyResult {
@@ -667,6 +679,18 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
             inputFingerprint: "",
             generatedAt: ""
         )
+    }
+
+    func modelReview(_ photoId: String) async throws -> ModelReviewResult? {
+        try await delayIfNeeded()
+        return box.lock.withLock { box.modelReviewResult }
+    }
+
+    func importClientSelection(
+        _ input: Confirmed<ClientSelectionImportInput>
+    ) async throws -> ClientSelectionImportResult {
+        try await delayIfNeeded()
+        return box.lock.withLock { box.clientSelectionResult }
     }
 
     func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult {

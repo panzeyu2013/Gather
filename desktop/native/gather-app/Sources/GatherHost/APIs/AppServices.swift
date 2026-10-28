@@ -50,7 +50,7 @@ public struct AppServices: Sendable {
     /// quality 调用点，暂不传给页面。
     public let quality: any QualityAPI
     /// B6a：导出域（4 个方法 / 4 条命令）。B6b 才迁移 ExportView 的调用点，
-    /// 暂不传给页面；执行走组合根注册的 exportExecute 执行器。
+    /// 暂不传给页面；执行走组合根注册的 outputRun 执行器。
     public let export: any ExportAPI
     /// B6a：元数据域（7 个方法 / 7 条命令）。B6b 才迁移 LibraryViewModel
     /// （orphans）与 CullingView（conflicts）的调用点，暂不传给页面。
@@ -143,9 +143,15 @@ enum LiveAPIErrorMapping {
             return GatherError(code: coded.code, underlying: String(describing: coded))
         case let job as JobServiceError:
             // allow: string-code（任务失败原因以文本落库 job.error 列，非类型化错误，R1 例外）
-            if case .jobFailed(_, let message) = job,
-               let code = GatherErrorCode(rawValue: message) {
-                return GatherError(code: code, underlying: message)
+            // 执行器写的是 "CODE: 散文"（如 OUTPUT_RECIPE_CONFLICT: Web 2048），只做全串
+            // 等值匹配会让所有带参数的失败退化成「发生未知错误」。
+            if case .jobFailed(_, let message) = job {
+                let head = message.split(separator: ":", maxSplits: 1)
+                    .first.map(String.init) ?? message
+                // allow: string-code（同上：只认执行器写进 job.error 的 "CODE: 散文" 首段）
+                if let code = GatherErrorCode(rawValue: head) {
+                    return GatherError(code: code, underlying: message)
+                }
             }
             return nil
         default:

@@ -366,7 +366,7 @@ extension WritebackService {
                 if (entry.item.typedModule == .metadata
                         || entry.item.typedModule == .template),
                    !entry.delivery.baseFingerprint.isEmpty {
-                    let targetXmp = TSPath.xmpSidecarPath(writePhotoPath)
+                    let targetXmp = target.path(writePhotoPath)
                     do {
                         let current = try await MetadataFingerprint.contentFingerprint(targetXmp)
                         if current != entry.delivery.baseFingerprint {

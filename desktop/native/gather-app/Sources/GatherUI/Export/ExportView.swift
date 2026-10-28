@@ -91,6 +91,8 @@ public struct ExportView: View {
                 )
                 ExportPreviewSection(viewModel: viewModel)
                 ExportResultSection(viewModel: viewModel)
+                ExportDeliverySection(viewModel: viewModel)
+
             }
             .formStyle(.grouped)
         }

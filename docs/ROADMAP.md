@@ -92,7 +92,7 @@
 | 写回可靠性 | `DeliveryCoordinator` + `DeliveryRepo` + 纯函数 `aggregateSessionState` | `deliveries/delivery_sessions/delivery_items/delivery_intents` 单事务确认；冲突检测/备份/重试/清理（ADR-015 历史；`MetadataSyncCoordinator`、`CaptureOneSyncState` 已删，见 ADR-028） |
 | 工作区状态 | `WorkspaceStatusService` | 只读聚合、固定优先级推荐、离线 TTL（ADR-012/013） |
 | 一跳化导入 | `SessionService` / `IndexerService` | 路径不跨 IPC、`truncated_import` 标记、去重键 |
-| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 186 项错误码 + 任务/相位文案；en 1,680 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
+| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 195 项错误码 + 任务/相位文案；en 1,748 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
 | 主题与无障碍 | `GatherTheme` / RootView | 品牌令牌 + 语义字体/按钮层级/accessibilityHidden 门控 |
 | 深链/菜单/导入 | `GatherAppDelegate` | gather:// 深链、文件打开、拖拽、菜单、importCompleted 通知 |
 
@@ -109,7 +109,7 @@
 | 算法基准（`gather-core-benchmarks`） | 2 万/5 万两档全过（dHash、embedding、LSH）；Cut 5 增 10k 合成人脸显式档 `--face-10k`（聚类 + 批量匹配） |
 | 聚类对账 | 25k 合成 8 簇 eps=0.6：ARI=1.0000 / NMI=1.0000 / 加速 3.1x（unit 级） |
 | （历史）HNSW 质量门禁 | recall@1 ≥ 0.9，查询 ≈0.3ms/次，增量插入召回波动 −0.008（HNSW 已删除，该指标不再维护） |
-| SchemaCurrent / 历史快照 | `SchemaCurrent.swift`（唯一 DDL）：当前 **44 表 / 385 列 / 72 索引 / 65 外键 / `user_version=5`**；空库由 `Database.open(at:)` 一次建齐；V1/V2 迁移链已删除，旧版本默认 fail-closed（显式 reset 才归档重建）；旧 35 版快照归档为 [schema.snapshot-v35.json](archive/schema.snapshot-v35.json)（历史，不参与门禁） |
+| SchemaCurrent / 历史快照 | `SchemaCurrent.swift`（唯一 DDL）：当前 **44 表 / 386 列 / 72 索引 / 65 外键 / `user_version=1`**；空库由 `Database.open(at:)` 一次建齐；V1/V2 迁移链已删除，旧版本默认 fail-closed（显式 reset 才归档重建）；旧 35 版快照归档为 [schema.snapshot-v35.json](archive/schema.snapshot-v35.json)（历史，不参与门禁） |
 | 人脸算法基线（**合成标注集**，单 seed） | 门槛 0→0.5：低质量但方向正确的样本 F1 0.7273→0.6977（25% 进噪声、**跨身份误聚 0**）、低质量桥接点使同人分裂（R 1.0→0.5238）；ARI 用两种等价实现互证 |
 | margin 生产路径曲线（49 查询 / 6 人库） | 0 → 错绑 3；**0.01（出货默认）→ 错绑 2 + 歧义 2**；0.04 → 错绑 0（覆盖 0.857）；同覆盖率精度 0.9655→1.0000 |
 

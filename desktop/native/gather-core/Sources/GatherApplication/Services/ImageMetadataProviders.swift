@@ -66,6 +66,7 @@ public struct ImageIOExifProvider: ExifProvider {
 
         var xmpSegment: [String: JSONValue] = [:]
         var dcSegment: [String: JSONValue] = [:]
+        var xmpPresentKeys = Set<String>()
         if isJpeg {
             if let metadata = CGImageSourceCopyMetadataAtIndex(source, 0, nil),
                let tags = CGImageMetadataCopyTags(metadata) as? [CGImageMetadataTag] {
@@ -77,6 +78,8 @@ public struct ImageIOExifProvider: ExifProvider {
                     guard let name = CGImageMetadataTagCopyName(tag) as String? else { continue }
                     let prefix = (CGImageMetadataTagCopyPrefix(tag) as String?) ?? ""
                     let value = CGImageMetadataTagCopyValue(tag)
+                    // 存在即记录（值可能为空）：读侧据此区分"没有该字段"与"显式清空"。
+                    xmpPresentKeys.insert(name)
                     if prefix == "dc" {
                         if name == "subject" {
                             dcSegment["subject"] = .array(Self.stringList(value).map { .string($0) })
@@ -96,7 +99,8 @@ public struct ImageIOExifProvider: ExifProvider {
             gps: gpsSegment.isEmpty ? nil : .object(gpsSegment),
             xmp: xmpSegment.isEmpty ? nil : .object(xmpSegment),
             dc: dcSegment.isEmpty ? nil : .object(dcSegment),
-            iptc: iptc.isEmpty ? nil : .object(iptc.mapValues { Self.json($0) })
+            iptc: iptc.isEmpty ? nil : .object(iptc.mapValues { Self.json($0) }),
+            xmpPresentKeys: xmpPresentKeys
         )
     }
 

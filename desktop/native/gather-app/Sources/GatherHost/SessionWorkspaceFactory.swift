@@ -44,6 +44,13 @@ package struct SessionWorkspaceFactory {
         // SettingsAPI 是 async；先构造 VM（默认开），再异步读取 Beta 开关。
         // 已打开会话内设置变更由 settingsChanged 通知触发重读。
         let settings = deps.settings
+        cullingViewModel.triageAutoApplyProvider = {
+            do {
+                return try await settings.get(SettingsKey("triage_auto_apply")) == "1"
+            } catch {
+                return false
+            }
+        }
         cullingViewModel.triageEnabledProvider = {
             do {
                 let key = try SettingsKey("triage_enabled")
@@ -103,7 +110,9 @@ package struct SessionWorkspaceFactory {
             export: ExportViewModel(
                 sessionId: sessionId,
                 export: deps.export,
-                session: deps.session
+                session: deps.session,
+                culling: deps.culling,
+                settings: deps.settings
             ),
             face: FaceKeywordingViewModel(
                 sessionId: sessionId,

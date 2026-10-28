@@ -134,6 +134,16 @@ public enum GatherLocalization {
     "EXPORT_SOURCE_MISSING": "源文件不存在",
     "EXPORT_SOURCE_UNREADABLE": "源文件不可读（权限或所在卷离线）",
     "EXPORT_RAW_CONVERT_UNSUPPORTED": "暂不支持将此文件类型转换为全分辨率文件，请选择“保持原格式”。",
+    // W3 整套交付 / WebDAV 发布（原先只有裸字符串，UI 退化成「发生未知错误」）
+    "OUTPUT_NO_RECIPES": "没有可执行的交付配方，请先添加至少一条配方。",
+    "OUTPUT_ROOT_INVALID": "交付目录无效（{{detail}}）。请填写绝对路径的目录。",
+    "OUTPUT_DESTINATION_INVALID": "配方目标目录无效（{{detail}}）。请改用绝对路径。",
+    "OUTPUT_RECIPE_CONFLICT": "有两条配方会写到同一目录（{{detail}}）。请改名或修改目标目录后重试。",
+    "OUTPUT_MANIFEST_FAILED": "交付清单写入失败（{{detail}}）。成片已写出，但无法用于审计与续跑。",
+    "WEBDAV_URL_INVALID": "WebDAV 地址无效（{{detail}}）。请填写以 http:// 或 https:// 开头的完整地址。",
+    "WEBDAV_LOCAL_MISSING": "要发布的本地目录不存在（{{detail}}）。",
+    "WEBDAV_NO_MATCHING_FILES": "本次交付没有可发布的文件（白名单为空或产物缺失）。",
+    "WEBDAV_KEYCHAIN_FAILED": "保存 WebDAV 凭据失败（{{detail}}）。请允许访问系统钥匙串后重试。",
     "NAV_BURST_GAP_INVALID": "连拍间隔必须在 0.1 到 300 秒之间",
     "NAV_SCENE_GAP_INVALID": "场景间隔必须不小于连拍间隔，且不超过 24 小时",
     "CULLING_EMPTY_SELECTION": "请至少选择一张照片",
@@ -291,7 +301,7 @@ public enum GatherLocalization {
         "face.analyze": "人脸分析",
         "duplicate.scan": "重复照片扫描",
         "quality.score": "技术质量分析",
-        "export.execute": "照片导出",
+        "output.run": "照片导出",
         "thumbnail.build": "缩略图生成",
     ]
 

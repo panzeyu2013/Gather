@@ -78,7 +78,7 @@ public final class SettingsService: @unchecked Sendable {
             // settings.get('db_synchronous', 'normal')）。
             "db_synchronous": "normal",
 
-            "metadata_write_mode": "sidecar",
+            "metadata_write_mode": "auto",
 
             "ui_language": "",
             "lazy_checksum": "true",
@@ -89,8 +89,12 @@ public final class SettingsService: @unchecked Sendable {
 
             // P0 / T0：技术质量建议（Beta）
             "triage_enabled": "0",
+            "output.recipes": "",
+            "output.deliveryRoot": "",
+            "triage_model_review": "1",
+            "triage_auto_apply": "0",
             "triage_auto_generate": "0",
-            "triage_policy": "triage-v1",
+            "triage_policy": "triage-v2",
             "triage_keep_confidence_min": "0.60",
             "triage_reject_confidence_min": "0.75",
             "triage_min_executable_confidence": "0.55",

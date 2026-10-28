@@ -130,6 +130,16 @@ struct PreviewCullingAPI: CullingAPI {
         throw PreviewAPIError.unavailable("culling.apply_triage")
     }
 
+    func modelReview(_ photoId: String) async throws -> ModelReviewResult? {
+        nil
+    }
+
+    func importClientSelection(
+        _ input: Confirmed<ClientSelectionImportInput>
+    ) async throws -> ClientSelectionImportResult {
+        throw PreviewAPIError.unavailable("culling.import_client_selection")
+    }
+
     // P1 / D：淘汰移动（stub：直接回成功，不碰文件系统）。
     func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult {
         CullingMoveRejectedResult(moved: input.value.photoIds, newPaths: [], failed: [])
@@ -416,8 +426,23 @@ struct PreviewDuplicateAPI: DuplicateAPI {
 struct PreviewExportAPI: ExportAPI {
     func preview(_ input: ExportInput) async throws -> ExportPreview { PreviewData.exportPreview }
 
+    func runRecipes(_ input: Confirmed<OutputRunInput>) async throws -> OutputRunSummary {
+        throw PreviewAPIError.unavailable("export.run_recipes")
+    }
+
+    func saveWebDAVCredential(_ input: WebDAVCredentialInput) async throws -> Bool {
+        throw PreviewAPIError.unavailable("export.save_webdav_credential")
+    }
+
+    func publish(
+        _ input: Confirmed<WebDAVPublishInput>,
+        onProgress: (@Sendable (Int, Int) -> Void)?
+    ) async throws -> WebDAVPublishSummary {
+        throw PreviewAPIError.unavailable("export.publish")
+    }
+
     func execute(_ input: Confirmed<ExportInput>) async throws -> ExportResult {
-        throw PreviewAPIError.unavailable("export.execute")
+        throw PreviewAPIError.unavailable("output.run")
     }
 
     func cancel(_ sessionId: String) async throws -> Bool {

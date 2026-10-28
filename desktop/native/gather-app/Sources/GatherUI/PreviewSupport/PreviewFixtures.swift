@@ -110,7 +110,7 @@ enum PreviewData {
         failedJobs: [
             WorkspaceFailedJob(
                 id: "preview-job-export",
-                type: AnalysisJobType.exportExecute.rawValue,
+                type: AnalysisJobType.outputRun.rawValue,
                 code: "EXPORT_SOURCE_MISSING",
                 message: "预览样例：有 1 个源文件缺失"
             ),
@@ -166,10 +166,10 @@ enum PreviewData {
         ),
         AnalysisJobData(
             id: "preview-job-export",
-            type: .exportExecute,
+            type: .outputRun,
             scopeType: "session",
             scopeId: sessionOneId,
-            dedupeKey: "export.execute:\(sessionOneId)",
+            dedupeKey: "output.run:\(sessionOneId)",
             status: .failed,
             priority: 0,
             progressCurrent: 0,

@@ -75,7 +75,7 @@ struct InboxItemsTests {
             conflict: 3,
             stale: [.similarity],
             offlinePhotos: 4,
-            failedJobs: [failedJob("j1"), failedJob("j2", type: "export.execute")],
+            failedJobs: [failedJob("j1"), failedJob("j2", type: "output.run")],
             culled: true
         )
         let kinds = items(s).map(\.kind)

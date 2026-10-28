@@ -34,12 +34,47 @@ extension CullingViewModel {
         !isTriageBusy && !isTriageStale && !triageApplied && triageApplicableCount > 0
     }
 
+    /// 当前策略是否真的使用模型信号（v1 下卡片不展示芯片，避免误导）。
+    public var triageUsesModelSignals: Bool {
+        triageSummary?.policyVersion == "triage-v2"
+    }
+
+    /// W1：读取当前照片的模型级信号（检查器卡片用）。失败/未接线 = nil，不弹错。
+    public func loadModelReview() async {
+        guard triageEnabled, let photoId = currentAsset?.photo.id else {
+            currentModelReview = nil
+            return
+        }
+        // 换照片时先清掉上一张的信号：`await` 期间界面已经按新 asset 渲染，
+        // 旧值会被当成新照片的「主体闭眼/微笑/审美」，快速翻图时张冠李戴。
+        if currentModelReview?.photoId != photoId { currentModelReview = nil }
+        do {
+            let review = try await cullingAPI.modelReview(photoId)
+            // 快速翻图：晚到的旧照片结果不能盖到新照片上。
+            guard currentAsset?.photo.id == photoId else { return }
+            currentModelReview = review
+        } catch {
+            guard currentAsset?.photo.id == photoId else { return }
+            currentModelReview = nil
+        }
+    }
+
     /// 生成/重新生成建议。成功后刷新 summary 与当前页角标。
     public func generateTriage(force: Bool = false) async {
         guard canGenerateTriage else { return }
         isTriageBusy = true
         triageError = nil
-        defer { isTriageBusy = false }
+        var autoApplyRequested = false
+        defer {
+            isTriageBusy = false
+            // 自动应用必须在 busy 复位之后：applyTriage 的 canApplyTriage
+            // 要求 !isTriageBusy，直接在本函数里调会静默 no-op。
+            if autoApplyRequested {
+                Task { @MainActor [weak self] in
+                    _ = await self?.applyTriage()
+                }
+            }
+        }
         do {
             let result = try await cullingAPI.generateTriage(
                 TriageGenerateInput(sessionId: sessionId, force: force)
@@ -50,6 +85,10 @@ extension CullingViewModel {
             await loadPage(reset: true)
             // 生成结果是本次请求的权威值；summary 查询可能落后一帧，回填防抖动。
             mergeTriageSummary(result)
+            // 自动应用（默认关）：门槛由服务端策略的 executionFloor 决定。
+            if let provider = triageAutoApplyProvider, await provider() {
+                autoApplyRequested = true
+            }
         } catch {
             triageError = CommandError(error)
         }

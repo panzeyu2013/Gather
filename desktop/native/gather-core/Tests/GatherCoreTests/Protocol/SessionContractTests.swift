@@ -161,10 +161,12 @@ struct SessionContractTests {
         // P0 T0 再补 4 个初筛码（TRIAGE_NOT_READY / _STALE / _APPLY_INVALID /
         // _POLICY_INVALID）→ 185；P0 补 19 → 204；清理 Template/死码后 → 184；
         // 淘汰移出目标路径冲突再补 1（ASSET_RELINK_TARGET_EXISTS）→ 185；
-        // P1 JPEG 内嵌清空失败再补 1（JPEG_EMBEDDED_CLEAR_UNSUPPORTED）→ 186。
+        // P1 JPEG 内嵌清空失败再补 1（JPEG_EMBEDDED_CLEAR_UNSUPPORTED）→ 186；
+        // W3 整套交付/WebDAV 发布再补 9 个（OUTPUT_* ×5 + WEBDAV_* ×4：此前只有裸字符串，
+        // UI 一律退化成「发生未知错误」）→ 195。
         // 增删错误码时必须同步此断言、ErrorCodeContractTests 的清单与
-        // GatherLocalization.errorMessages。
-        #expect(GatherErrorCode.allCases.count == 186)
+        // GatherLocalization.errorMessages（缺一即被交叉契约测试挡下）。
+        #expect(GatherErrorCode.allCases.count == 195)
     }
 
     @Test func gatherErrorCodeRawValueMatchesCaseName() {

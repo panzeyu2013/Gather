@@ -29,6 +29,10 @@ public enum ExportRangeIntent: Equatable, Sendable {
 public final class ExportViewModel: PageVisibility {
     // Cut 1 / B6b：导出域走类型化 API（preview/execute/cancel/report）。
     let exportAPI: any ExportAPI
+    /// W3：客户校样回传（可选；nil = 未接线，导入按钮隐藏）。
+    let cullingAPI: (any CullingAPI)?
+    /// W3：交付配方持久化（settings output.recipes）；nil = 不持久化（预览/测试）。
+    let settingsAPI: (any SettingsAPI)?
     /// Cut 1 / B8.2a：会话名（命名预览的 {session} 占位）走 SessionAPI.get。
     private let sessionAPI: any SessionAPI
     public let sessionId: String
@@ -42,6 +46,25 @@ public final class ExportViewModel: PageVisibility {
     public internal(set) var notice: LocalizedText?
     // 实时导出进度（events.job-progress 驱动）。
     public internal(set) var exportProgress: (current: Int, total: Int)?
+    // W3：整套交付（多配方 + 联系表）的状态。
+    public var deliveryRoot = ""
+    public var deliveryRecipes: [OutputRecipe] = []
+    public var deliveryIncludeContactSheet = true
+    public var deliveryIncludeGallery = true
+    /// 配方是否已从 settings 载入（区分“从未保存”与“保存了空数组”）。
+    public internal(set) var hasLoadedDeliveryRecipes = false
+    /// 配方编辑的防抖持久化任务。
+    var persistTask: Task<Void, Never>?
+    /// 配方落盘的串行链尾：保证「删了配方」不会被更早的快照覆盖回来。
+    var persistWriteTask: Task<Void, Never>?
+    public internal(set) var clientSelectionImport: ClientSelectionImportResult?
+    public internal(set) var isImportingSelection = false
+    public internal(set) var webDAVPublish: WebDAVPublishSummary?
+    public internal(set) var isPublishing = false
+    /// 发布进度（已完成 / 总数）：长任务必须有可见进度，否则按钮只停在「正在发布…」。
+    public internal(set) var publishProgress: (done: Int, total: Int)?
+    public internal(set) var deliverySummary: OutputRunSummary?
+    public internal(set) var isDelivering = false
     // 当前导出文件名（从事件 checkpoint 的 destinations/completedPhotoIds 推导，
     // 路由只透传 current/total/message/checkpoint，未直接带 fileName）。
     public internal(set) var currentFileName: String?
@@ -81,10 +104,18 @@ public final class ExportViewModel: PageVisibility {
     public var watermarkFontSize = "24"
     public var destination = ""
 
-    public init(sessionId: String, export: any ExportAPI, session: any SessionAPI) {
+    public init(
+        sessionId: String,
+        export: any ExportAPI,
+        session: any SessionAPI,
+        culling: (any CullingAPI)? = nil,
+        settings: (any SettingsAPI)? = nil
+    ) {
         self.sessionId = sessionId
         self.exportAPI = export
         self.sessionAPI = session
+        self.cullingAPI = culling
+        self.settingsAPI = settings
     }
 
     // MARK: - 可见性 / 关闭（Cut 4 / 4a-2c）
@@ -185,12 +216,15 @@ public final class ExportViewModel: PageVisibility {
     /// 确认流程是否在进行中（D03：确认计算期间禁止重复发起）。
     public internal(set) var isConfirming = false
 
-    /// events.job-progress 消费：仅当前工作区 export.execute 任务的进度帧。
-    /// export.execute 的 checkpoint 携带 destinations（photoId → 导出文件名）
+    /// events.job-progress 消费：仅当前工作区 output.run 任务的进度帧。
+    /// output.run 的 checkpoint 携带 destinations（photoId → 导出文件名）
     /// 与按完成顺序追加的 completedPhotoIds；最近完成的 photoId 即当前文件。
     public func applyJobEvent(_ event: GatherJobEvent) {
-        guard event.job.type == .exportExecute,
+        guard event.job.type == .outputRun,
               event.job.scopeId == sessionId else { return }
+        // 整套交付与单张导出共用 job 类型：批量 job 的终态帧会把本页改成
+        // “当前范围没有可导出的照片”，这里按 checkpoint 标记过滤。
+        if event.job.checkpoint["outputRun"]?.boolValue == true { return }
         if let current = event.update.current, let total = event.update.total {
             exportProgress = (current, total)
             currentFileName = Self.fileName(from: event.update.checkpoint)

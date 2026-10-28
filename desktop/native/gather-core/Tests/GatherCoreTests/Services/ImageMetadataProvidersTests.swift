@@ -286,4 +286,25 @@ struct ImageMetadataProvidersTests {
         CGImageDestinationAddImage(destination, image, properties as CFDictionary)
         #expect(CGImageDestinationFinalize(destination), "测试图片必须真的写成 JPEG")
     }
+
+    // MARK: - 内嵌 XMP 的"存在但为空"
+
+    @Test("XMP 键存在但为空 = 显式清空：不得回退到 IIM 旧值")
+    func explicitEmptyXMPBlocksIIMFallback() throws {
+        let segments = MetadataParseSegments(
+            dc: .object(["description": .array([])]),
+            iptc: .object(["Caption/Abstract": .string("旧标题")]),
+            xmpPresentKeys: ["description"])
+        let attributes = MetadataService.embeddedAttributesFromParse(segments)
+        #expect(attributes?.descriptive?.caption == nil)
+    }
+
+    @Test("XMP 没有该键时仍按 IIM 回退（Bridge 只写 IIM 的旧 JPEG）")
+    func missingXMPFallsBackToIIM() throws {
+        let segments = MetadataParseSegments(
+            iptc: .object(["Caption/Abstract": .string("旧标题")]),
+            xmpPresentKeys: [])
+        let attributes = MetadataService.embeddedAttributesFromParse(segments)
+        #expect(attributes?.descriptive?.caption == "旧标题")
+    }
 }

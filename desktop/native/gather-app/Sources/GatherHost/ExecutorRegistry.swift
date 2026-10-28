@@ -4,7 +4,7 @@
 // 本文件从旧路由的 registerExecutors（原 423-698 行，已删除）逐字搬出
 // 以下 8 个执行器，闭包体/注释/checkpoint 语义保持不变：
 //   similarity.analyze / duplicate.scan / face.analyze / quality.score /
-//   metadata.scan / checksum.backfill / thumbnail.build / export.execute
+//   metadata.scan / checksum.backfill / thumbnail.build / output.run
 //
 // 依赖全部经 Dependencies 显式传入（禁止引用命令路由类型）；路由宿主
 // 在 B8.3b 之前只做委托，避免出现两份实现。executor 的注册顺序、weight 与
@@ -25,12 +25,16 @@ struct ExecutorRegistryDependencies {
     let duplicateService: DuplicateService
     let faceKwService: FaceKwService
     let qualityService: QualityService
+    let modelReviewService: ModelReviewService
+    /// triage_model_review 设置（false 时 quality job 只跑技术质量）。
+    let modelReviewEnabled: @Sendable () -> Bool
     let indexerService: IndexerService
     let metadataService: MetadataService
     let photoRepo: PhotoRepo
     let assetRepo: AssetRepo
     let imagePreloadService: ImagePreloadService
     let exportService: ExportService
+    let outputService: OutputService
 }
 
 /// JobService 执行器注册表：装配期一次性注册 8 个 type。
@@ -56,7 +60,7 @@ enum ExecutorRegistry {
     /// 8 个 executor 的唯一构造点（register 与测试共用，防止两份清单漂移）。
     ///
     /// 每个闭包的执行体与原注册方法完全一致；
-    /// 唯一的机械改动是 export.execute 里的 `self.decodeJSON` 改为本类型私有
+    /// 唯一的机械改动是 output.run 里的 `self.decodeJSON` 改为本类型私有
     /// 静态函数（路由实例方法不能跨类型引用）。
     static func makeExecutors(
         jobService: JobService,
@@ -66,12 +70,15 @@ enum ExecutorRegistry {
         let duplicateService = deps.duplicateService
         let faceKwService = deps.faceKwService
         let qualityService = deps.qualityService
+        let modelReviewService = deps.modelReviewService
+        let modelReviewEnabled = deps.modelReviewEnabled
         let indexerService = deps.indexerService
         let metadataService = deps.metadataService
         let photoRepo = deps.photoRepo
         let assetRepo = deps.assetRepo
         let imagePreloadService = deps.imagePreloadService
         let exportService = deps.exportService
+        let outputService = deps.outputService
 
         return [
             (.similarityAnalyze, { job, context in
@@ -150,13 +157,37 @@ enum ExecutorRegistry {
 
             // TS 源: quality.ipc.ts:7-12 —— quality.score executor（photoIds 从
             // checkpoint 还原，TS 非数组过滤语义）。
+            // quality.score = 技术质量 + 模型信号两段。第二段失败不改变第一段已提交的
+            // 结果：模型失败只记 failed 行，job 仍成功（技术质量是主产物）。
             (.qualityScore, { job, context in
                 let photoIds = job.checkpoint["photoIds"]?.arrayElements?.compactMap(\.stringValue)
-                return try await qualityService.analyze(
+                let results = try await qualityService.analyze(
                     sessionId: job.scopeId,
                     photoIds: photoIds,
                     context: context
                 )
+                try context.throwIfCancelled()
+                // 只有设置开关决定是否跑模型段：checkpoint["modelReview"] 从来没有生产者，
+                // 之前那条 `?? true` 只是死代码（读的人会以为存在按任务关闭的入口）。
+                let runModel = modelReviewEnabled()
+                if runModel {
+                    do {
+                        _ = try await modelReviewService.analyze(
+                            sessionId: job.scopeId,
+                            photoIds: photoIds,
+                            isCancelled: { context.signal.aborted },
+                            onProgress: { current, total in
+                                context.updateProgress(JobProgressUpdate(
+                                    current: current, total: total, phase: "model.review"))
+                            })
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        // 模型段失败不拖垮技术质量：结果行已按 failed 落库，job 继续。
+                        GatherLogger.log("model.review stage failed: \(error)", level: .warn)
+                    }
+                }
+                return results
             }),
 
             // TS 源: indexer.ipc.ts:26-67 —— metadata.scan executor：扫描 →
@@ -240,7 +271,70 @@ enum ExecutorRegistry {
 
             // TS export.ipc.ts：断点状态以 checkpoint 为唯一持久化来源，
             // 避免导出中途退出后重新生成同名文件。
-            (.exportExecute, { job, context in
+            (.outputRun, { job, context in
+                // 整套交付：checkpoint 带 outputRun=true + input（配方/根目录/联系表）。
+                if job.checkpoint["outputRun"]?.boolValue == true {
+                    let input: OutputRunInput = try decodeJSON(
+                        OutputRunInput.self, from: job.checkpoint["input"] ?? .object([:]))
+                    // 取消：把 job 的取消信号同时接到「当前配方导出」与编排层，
+                    // 否则 UI 显示已取消、磁盘还在写剩余配方/画廊/联系表。
+                    context.signal.addHandler { exportService.cancel(runId: job.id) }
+                    var storedResume: [String: OutputRecipeResume] = [:]
+                    var latestCheckpoint = job.checkpoint
+                    if let resumeValue = job.checkpoint["resume"] {
+                        do {
+                            storedResume = try decodeJSON(
+                                [String: OutputRecipeResume].self, from: resumeValue)
+                        } catch {
+                            storedResume = [:]
+                        }
+                    }
+                    let summary = try outputService.run(
+                        input: input,
+                        runId: job.id,
+                        isCancelled: { context.signal.aborted },
+                        resume: storedResume,
+                        onRecipeResume: { recipeId, state in
+                            storedResume[recipeId] = state
+                            var merged = latestCheckpoint
+                            merged["outputRun"] = .bool(true)
+                            do {
+                                merged["resume"] = try JSONValue(from: storedResume)
+                            } catch {
+                                return
+                            }
+                            latestCheckpoint = merged
+                            context.updateCheckpoint(merged)
+                        }
+                    ) { progress in
+                        context.updateProgress(JobProgressUpdate(
+                            current: progress.current, total: max(1, progress.total),
+                            message: "output.\(progress.recipeIndex + 1)/\(progress.recipeCount)"))
+                    }
+                    // 与单导出同一约定：checkpoint 是工作区「已导出/已交付」判定的
+                    // 唯一来源；0 成功 + 有失败必须抛错，不能落 succeeded。
+                    let totalExported = summary.recipes.reduce(0) { $0 + $1.exported }
+                    let totalFailed = summary.recipes.reduce(0) { $0 + $1.failed }
+                    let totalFiles = summary.recipes.reduce(0) { $0 + $1.exported + $1.failed + $1.skipped }
+                    let errors = summary.recipes.flatMap(\.errors)
+                    // 合并而不是整块替换：retry 复用同一行 checkpoint，
+                    // 抹掉 outputRun/input 会让重试落到单导出分支并解码失败。
+                    // 必须基于运行中最新的 checkpoint（含 onRecipeResume 写入的 resume），
+                    // 否则成功收尾会丢掉续跑状态，下一次运行会整目录重导成 _2。
+                    var finalCheckpoint = latestCheckpoint
+                    finalCheckpoint["exported"] = .number(Double(totalExported))
+                    finalCheckpoint["failed"] = .number(Double(totalFailed))
+                    finalCheckpoint["skipped"] = .number(Double(summary.recipes.reduce(0) { $0 + $1.skipped }))
+                    finalCheckpoint["totalFiles"] = .number(Double(totalFiles))
+                    finalCheckpoint["errors"] = .array(errors.prefix(10).map(JSONValue.string))
+                    finalCheckpoint["manifestPath"] = .string(summary.manifestPath)
+                    finalCheckpoint["outputRun"] = .bool(true)
+                    context.updateCheckpoint(finalCheckpoint)
+                    if totalExported == 0, totalFailed > 0 {
+                        throw ExportServiceError.allFilesFailed(totalFailed)
+                    }
+                    return summary
+                }
                 let options: ExportOptions = try decodeJSON(
                     ExportOptions.self,
                     from: job.checkpoint["options"] ?? .object([:])
@@ -252,7 +346,7 @@ enum ExecutorRegistry {
                 var completedSnapshot = Array(completedIds)
                 // 问题 1：完成记录必须带上当时的边车版本（键缺失 → 视为不可信，重新交付）。
                 var completedSidecarVersions = job.checkpoint["sidecarVersions"]?.objectValue?.compactMapValues { $0.stringValue } ?? [:]
-                // D01 交付身份：指纹已在 dedupeKey 里（export.execute:<session>:<指纹>），
+                // D01 交付身份：指纹已在 dedupeKey 里（output.run:<session>:<指纹>），
                 // 任务仓库只会把**同一次交付**的完成清单继承过来；不同参数/照片集合拿到的是
                 // 不同键，天然不会继承。G-4（审计 5）指出：既然键已含指纹，执行器里再比一次
                 // stored != current 永远不成立（死代码）——已改为只兜「键内指纹缺失」：

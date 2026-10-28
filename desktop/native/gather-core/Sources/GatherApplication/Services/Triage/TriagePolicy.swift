@@ -18,6 +18,10 @@ public struct TriagePolicy: Equatable, Sendable {
     public var blurSharpnessMax: Double
     public var exposureMin: Double
     public var closedEyeSuspectMin: Double
+    /// v2：主体脸眼睛睁开分低于该值 = 闭眼（几何分，不是概率）。
+    public var eyeOpenMin: Double
+    /// v2：主体脸合焦分低于该值 = 人脸失焦（仅在脸够大时由服务给出）。
+    public var faceFocusMin: Double
 
     public var facePrimaryAreaMin: Double
     public var faceSmallAreaMax: Double
@@ -27,6 +31,10 @@ public struct TriagePolicy: Equatable, Sendable {
     public var rejectConfidenceMin: Double
     public var minExecutableConfidence: Double
     public var maxReasons: Int
+    /// `triage_model_review` 设置：关掉后即使策略是 v2 也不使用模型信号。
+    /// 只控「是否用模型判据」，不控 job 是否跑模型段；两者必须一致，否则同一批建议
+    /// 会出现「有芯片理由是闭眼、新导入照片却没有模型行」的混合判据。
+    public var modelSignalsEnabled: Bool
 
     public init(
         version: String = "triage-v1",
@@ -37,13 +45,16 @@ public struct TriagePolicy: Equatable, Sendable {
         blurSharpnessMax: Double = 0.12,
         exposureMin: Double = 0.30,
         closedEyeSuspectMin: Double = 0.72,
+        eyeOpenMin: Double = 0.35,
+        faceFocusMin: Double = 0.25,
         facePrimaryAreaMin: Double = 0.03,
         faceSmallAreaMax: Double = 0.01,
         multiFaceCount: Int = 3,
         keepConfidenceMin: Double = 0.60,
         rejectConfidenceMin: Double = 0.75,
         minExecutableConfidence: Double = 0.55,
-        maxReasons: Int = 3
+        maxReasons: Int = 3,
+        modelSignalsEnabled: Bool = true
     ) {
         self.version = version
         self.keepScoreMin = keepScoreMin
@@ -53,6 +64,8 @@ public struct TriagePolicy: Equatable, Sendable {
         self.blurSharpnessMax = blurSharpnessMax
         self.exposureMin = exposureMin
         self.closedEyeSuspectMin = closedEyeSuspectMin
+        self.eyeOpenMin = eyeOpenMin
+        self.faceFocusMin = faceFocusMin
         self.facePrimaryAreaMin = facePrimaryAreaMin
         self.faceSmallAreaMax = faceSmallAreaMax
         self.multiFaceCount = multiFaceCount
@@ -60,9 +73,12 @@ public struct TriagePolicy: Equatable, Sendable {
         self.rejectConfidenceMin = rejectConfidenceMin
         self.minExecutableConfidence = minExecutableConfidence
         self.maxReasons = maxReasons
+        self.modelSignalsEnabled = modelSignalsEnabled
     }
 
     public static let v1 = TriagePolicy()
+    /// v2：信号换成 model_review（眼睛几何/人脸合焦/工具图），规则骨架与 v1 相同。
+    public static let v2 = TriagePolicy(version: "triage-v2")
 
     /// 可执行门限（T0 唯一判据）：方向下限与全局可执行下限取大者。
     ///
@@ -80,10 +96,17 @@ public struct TriagePolicy: Equatable, Sendable {
         }
     }
 
+    /// 模型信号是否真的参与判定（v2 且设置开关打开）。
+    /// 读路径（加载 model_review）、指纹、评估器、UI 芯片共用这一个判据。
+    public var usesModelSignals: Bool { version == Self.v2.version && modelSignalsEnabled }
+
     /// 设置页只暴露 policy version + 三个可执行置信度；其余阈值仍由版本常量控制。
     /// 设置变更即时生效：composition 用 provider 每次重建 policy（见 `Core.swift`）。
     public static func fromSettings(_ settings: SettingsService) -> TriagePolicy {
-        var policy = TriagePolicy.v1
+        // 默认必须与 SettingsService.getDefaults 一致（triage-v2）：
+        // settings 缓存为空时 get 返回这里的 defaultValue，用 v1 会让
+        // “默认 v2”在真实引擎里静默退化成 v1（UI 显示 v2、判定按 v1 跑）。
+        var policy = TriagePolicy.v2
         let version = settings.get("triage_policy", defaultValue: policy.version)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !version.isEmpty { policy.version = version }
@@ -93,6 +116,8 @@ public struct TriagePolicy: Equatable, Sendable {
             settings.getNumber("triage_reject_confidence_min", defaultValue: policy.rejectConfidenceMin))
         policy.minExecutableConfidence = clamp(
             settings.getNumber("triage_min_executable_confidence", defaultValue: policy.minExecutableConfidence))
+        policy.modelSignalsEnabled = settings.get("triage_model_review", defaultValue: "1")
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "1"
         return policy
     }
 

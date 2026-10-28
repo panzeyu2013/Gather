@@ -430,7 +430,11 @@ struct CullingWorkbenchViewer: View {
         case .none: break
         }
         if asset.quality?.status == .succeeded { return l10n("AI 技术分析") }
-        if asset.state.source == .imported { return l10n("导入元数据") }
+        // source=.imported 同时是「没有决策行」的哨兵值：只有真正落过决策（revision>0）
+        // 的 imported 才是客户校样回传，否则仍是「人工调整」。
+        if asset.state.source == .imported {
+            return asset.state.revision > 0 ? l10n("客户选择") : l10n("导入元数据")
+        }
         return l10n("人工调整")
     }
 

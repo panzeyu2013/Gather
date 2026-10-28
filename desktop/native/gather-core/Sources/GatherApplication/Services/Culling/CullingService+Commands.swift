@@ -19,7 +19,8 @@ extension CullingService {
         preloadedDecision: CullingDecisionRow? = nil,
         preloadedSyncStatus: MetadataSyncStatus? = nil,
         preloadedDecisionRows: [String: CullingDecisionRow]? = nil,
-        preloadedCacheRows: [String: MetadataCacheRow]? = nil
+        preloadedCacheRows: [String: MetadataCacheRow]? = nil,
+        source: CullingDecisionSource = .manual
     ) throws -> CullingUpdateResult {
         try validatePatch(patch)
         let entry = try getSessionUpdateContext(sessionId: sessionId)
@@ -156,7 +157,8 @@ extension CullingService {
                         decision: pickStateToDecision(nextPickState).rawValue,
                         rating: Int64(nextRating),
                         colorLabel: nextColorLabel.rawValue,
-                        revision: Int64(nextRevision)
+                        revision: Int64(nextRevision),
+                        source: source.rawValue
                     )
                 )
                 if patch.rating != nil {
@@ -170,7 +172,7 @@ extension CullingService {
                     pickState: nextPickState,
                     rating: nextRating,
                     colorLabel: nextColorLabel,
-                    source: .manual,
+                    source: source,
                     revision: nextRevision,
                     updatedAt: nowISOString()
                 ))
@@ -375,6 +377,77 @@ extension CullingService {
         }
         return results
     }
+    /// 客户校样回传：把勾选的照片标记为 keep（source=imported）。
+    ///
+    /// 逐张独立：单张失败（照片不存在/并发修订冲突）只跳过该张，不中断整批；
+    /// 复用 updateState 的历史与 metadata 入队路径，撤销与写回语义与人工操作一致。
+    /// - Returns: 成功项与「单张失败数」（并发冲突/非法状态）。失败项不影响其余勾选，
+    ///   已应用项也不会因为后面某一项失败而丢掉计数（历史已落库）。
+    @discardableResult
+    public func applyImportedPicks(
+        sessionId: String,
+        photoIds: [String]
+    ) throws -> (results: [CullingUpdateResult], failed: Int) {
+        guard !photoIds.isEmpty else { return ([], 0) }
+        let baseContext = try getUpdateContext(sessionId: sessionId)
+        // 整批共用一个历史缓冲区：几百张勾选合并成一条操作（撤销一次回退整批），
+        // 与 batchUpdate 同一套 sink 语义。
+        let historySink = CullingHistorySink()
+        let context = CullingUpdateContext(
+            photos: baseContext.photos,
+            photoById: baseContext.photoById,
+            photosByAssetId: baseContext.photosByAssetId,
+            groupMap: baseContext.groupMap,
+            linkedByXmp: baseContext.linkedByXmp,
+            historySink: historySink)
+        var results: [CullingUpdateResult] = []
+        var failed = 0
+        for photoId in photoIds {
+            guard let photo = context.photoById[photoId] else { continue }
+            let existing = try cullingDecisionRepo.getDecision(
+                sessionId: sessionId, photoId: photoId)
+            // 人工决策优先（变体级）：updateState 会把同资产的全部变体一起改写，
+            // 所以只要任一 RAW/JPEG 变体被人工决策过，就不能被客户勾选覆盖。
+            if let assetId = photo.assetId {
+                var manuallyDecided = existing?.decisionSource == CullingDecisionSource.manual.rawValue
+                if !manuallyDecided {
+                    for variant in context.photosByAssetId[assetId] ?? [] where variant.id != photoId {
+                        if let decision = try cullingDecisionRepo.getDecision(
+                            sessionId: sessionId, photoId: variant.id),
+                           decision.decisionSource == CullingDecisionSource.manual.rawValue {
+                            manuallyDecided = true
+                            break
+                        }
+                    }
+                }
+                if manuallyDecided { continue }
+            } else if existing?.decisionSource == CullingDecisionSource.manual.rawValue {
+                continue
+            }
+            let revision = existing?.revision ?? 0
+            do {
+                results.append(try updateState(
+                    sessionId: sessionId,
+                    photoId: photoId,
+                    expectedRevision: Int(revision),
+                    patch: CullingUpdatePatch(pickState: .picked),
+                    context: context,
+                    preloadedDecision: existing,
+                    source: .imported))
+            } catch is CullingServiceError {
+                // 并发冲突/非法状态属于「这一张没成」：计入失败并继续，不吞 DB 错误
+                //（持久化失败仍会以 DatabaseError 上抛，此时已应用项已有历史可审计）。
+                failed += 1
+                continue
+            }
+        }
+        if !historySink.entries.isEmpty, let cullingHistoryRepo {
+            _ = try cullingHistoryRepo.append(
+                sessionId: sessionId, entries: historySink.entries)
+        }
+        return (results, failed)
+    }
+
     /// P1-9：把本次 update/batchUpdate/applyHistory 入队的 metadata 意图立即写盘。
     /// service 方法保持同步（与旧契约一致），由 async 的 API 层在返回前调用。
     public func flushQueuedMetadata(sessionId: String) async throws {

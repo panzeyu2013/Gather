@@ -108,7 +108,10 @@ extension ExportService {
         options: ExportOptions,
         runId: String? = nil,
         onProgress: ((NativeExportProgress) -> Void)? = nil,
-        resume: NativeExportResumeState? = nil
+        resume: NativeExportResumeState? = nil,
+        /// 每张「本次交付可用」的产物（含续跑跳过但文件仍在的）回调：
+        /// 调用方（整套交付）据此生成联系表/画廊/manifest，避免另建一份计划。
+        onWritten: ((_ photoId: String, _ url: URL) -> Void)? = nil
     ) throws -> ExportResult {
         try validate(options)
         try assertDestinationOutsideSource(sessionId: sessionId, destination: options.destination)
@@ -163,6 +166,7 @@ extension ExportService {
                shouldSkipCompleted(plan: plan, options: options, state: state) {
                 exported += 1
                 completed += 1
+                onWritten?(plan.photo.id, plan.url)
                 onProgress?(NativeExportProgress(
                     sessionId: sessionId, current: completed, total: plans.count,
                     fileName: plan.name, bytesWritten: 0, status: "done"))
@@ -195,6 +199,7 @@ extension ExportService {
                 installToken?.commit()
                 exported += 1
                 completed += 1
+                onWritten?(plan.photo.id, plan.url)
                 state.completedPhotoIds.insert(plan.photo.id)
                 state.onCompleted?(plan.photo.id, sidecarVersion(forSource: plan.photo.filepath))
                 onProgress?(NativeExportProgress(
@@ -276,7 +281,29 @@ extension ExportService {
         guard let destinationRef = CGImageDestinationCreateWithURL(destination as CFURL, type, 1, nil) else {
             throw ExportServiceError.formatUnsupported
         }
-        CGImageDestinationAddImage(destinationRef, outputImage, properties as CFDictionary)
+        // 交付保真：转码输出必须带上原片的 EXIF/GPS/TIFF/IPTC 与 XMP，
+        // 否则客户拿到的成片没有版权、拍摄信息与关键词（旧实现全丢）。
+        let metadata = sourceMetadata(for: source)
+        // TIFF 段必须**嵌套合并**：顶层 merging 会把刚搬过来的 Make/Model/Artist
+        // 整个压成只剩 Compression。
+        var transferable = transferableProperties(from: source)
+        var extra = properties
+        if let newTIFF = extra[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+            let oldTIFF = transferable[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
+            transferable[kCGImagePropertyTIFFDictionary] = oldTIFF.merging(newTIFF) { _, new in new }
+            extra.removeValue(forKey: kCGImagePropertyTIFFDictionary)
+        }
+        var mergedProperties = transferable.merging(extra, uniquingKeysWith: { _, new in new })
+        // 像素已按 EXIF 方向摆正（kCGImageSourceCreateThumbnailWithTransform），
+        // 输出必须声明 upright；否则整份 XMP 拷贝会把源 Orientation 带过去，
+        // 成片在 PS/LR/C1 里被二次旋转。
+        mergedProperties[kCGImagePropertyOrientation] = 1
+        if let metadata {
+            CGImageDestinationAddImageAndMetadata(
+                destinationRef, outputImage, metadata, mergedProperties as CFDictionary)
+        } else {
+            CGImageDestinationAddImage(destinationRef, outputImage, mergedProperties as CFDictionary)
+        }
         guard CGImageDestinationFinalize(destinationRef) else { throw ExportServiceError.formatUnsupported }
 #else
         _ = source
@@ -287,6 +314,73 @@ extension ExportService {
     }
 
 #if canImport(ImageIO)
+    /// 可搬运的 EXIF/TIFF/GPS/IPTC 子集：**不含** 像素尺寸、Orientation、缩略图与压缩参数
+    /// （输出已按方向归一化、尺寸可能被 maxDimension 改过，照搬会双重旋转/尺寸失真）。
+    private func transferableProperties(from path: String) -> [CFString: Any] {
+        #if canImport(ImageIO)
+        guard let source = CGImageSourceCreateWithURL(
+                URL(fileURLWithPath: path) as CFURL, nil),
+              let original = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        else { return [:] }
+        var result: [CFString: Any] = [:]
+        let exifKeys: [CFString] = [
+            kCGImagePropertyExifDateTimeOriginal, kCGImagePropertyExifDateTimeDigitized,
+            kCGImagePropertyExifLensModel, kCGImagePropertyExifLensMake,
+            kCGImagePropertyExifFNumber, kCGImagePropertyExifExposureTime,
+            kCGImagePropertyExifISOSpeedRatings, kCGImagePropertyExifFocalLength,
+            kCGImagePropertyExifFocalLenIn35mmFilm,
+        ]
+        if let exif = original[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+            var kept: [CFString: Any] = [:]
+            for key in exifKeys where exif[key] != nil { kept[key] = exif[key] }
+            if !kept.isEmpty { result[kCGImagePropertyExifDictionary] = kept }
+        }
+        let tiffKeys: [CFString] = [
+            kCGImagePropertyTIFFMake, kCGImagePropertyTIFFModel,
+            kCGImagePropertyTIFFArtist, kCGImagePropertyTIFFCopyright,
+            kCGImagePropertyTIFFImageDescription,
+        ]
+        if let tiff = original[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+            var kept: [CFString: Any] = [:]
+            for key in tiffKeys where tiff[key] != nil { kept[key] = tiff[key] }
+            if !kept.isEmpty { result[kCGImagePropertyTIFFDictionary] = kept }
+        }
+        if let gps = original[kCGImagePropertyGPSDictionary] {
+            result[kCGImagePropertyGPSDictionary] = gps
+        }
+        if let iptc = original[kCGImagePropertyIPTCDictionary] {
+            result[kCGImagePropertyIPTCDictionary] = iptc
+        }
+        return result
+        #else
+        return [:]
+        #endif
+    }
+
+    /// 读取原片的元数据（只取可跨格式搬运的段；缩略图/私有段不复制）。
+    private func sourceMetadata(for path: String) -> CGImageMetadata? {
+        #if canImport(ImageIO)
+        guard let source = CGImageSourceCreateWithURL(
+                URL(fileURLWithPath: path) as CFURL, nil),
+              let metadata = CGImageSourceCopyMetadataAtIndex(source, 0, nil) else {
+            return nil
+        }
+        guard let mutable = CGImageMetadataCreateMutableCopy(metadata) else { return nil }
+        // 方向与像素尺寸属于"已被像素侧处理过"的字段：拷贝过去会造成双重旋转
+        // 或尺寸与实际输出不符。
+        for path in [
+            "tiff:Orientation", "exif:Orientation",
+            "tiff:ImageWidth", "tiff:ImageLength",
+            "exif:PixelXDimension", "exif:PixelYDimension",
+        ] {
+            CGImageMetadataRemoveTagWithPath(mutable, nil, path as CFString)
+        }
+        return mutable
+        #else
+        return nil
+        #endif
+    }
+
     private func applyingWatermark(_ image: CGImage, watermark: ExportWatermark?) throws -> CGImage {
         guard let watermark else { return image }
         let width = image.width
@@ -332,6 +426,9 @@ extension ExportService {
         let runId = preferredRunId ?? UUID().uuidString
         cancelLock.lock()
         sessionRuns[sessionId, default: []].insert(runId)
+        // 清掉上一轮的取消位：重试同一 job 时执行器用同一个 runId，
+        // 残留标记会让整批「跳过但成功」。
+        cancelledRuns.remove(runId)
         cancelLock.unlock()
         return runId
     }

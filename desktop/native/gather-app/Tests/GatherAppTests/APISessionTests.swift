@@ -391,7 +391,7 @@ struct APISessionTests {
         let cleared = try await fixture.jobAPI.clearCompleted(Confirmed(ClearCompletedInput()))
         #expect(cleared == 1)
         #expect(try fixture.jobRepo.get(done.id) == nil)
-        // metadata.scan / export.execute 是阶段证据：清理必须保留。
+        // metadata.scan / output.run 是阶段证据：清理必须保留。
         let evidence = try fixture.jobService.create(JobCreateParams(
             type: .metadataScan,
             scopeType: "session",

@@ -15,7 +15,7 @@
 //   组合根注入的同一个 XMPFileLock，与 writeback 并发时旧备份不覆盖新内容且不嵌套自锁。
 //
 // 夹具用内存 SQLite + 真实 ExportService / MetadataService / DeliveryRepo /
-// JobService；exportExecute 执行器用 stub 替换（真实导出需要文件复制与转码，
+// JobService；outputRun 执行器用 stub 替换（真实导出需要文件复制与转码，
 // 本批只断言 API 边界的 job 形状与取消语义）。
 // S5c-2b-3b-2b-2：冲突/孤儿夹具直接种 deliveries/delivery_items（不再构造
 // MetadataSyncCoordinator，旧 metadata_outbox 表也不参与断言）。
@@ -135,7 +135,7 @@ private struct ExportAPIFixture {
             skipped: 0,
             errors: []
         )
-        jobService.registerExecutor(type: .exportExecute) { _, _ in
+        jobService.registerExecutor(type: .outputRun) { _, _ in
             if let jobGate { await jobGate.wait() }
             return stubResult
         }
@@ -209,7 +209,7 @@ struct APIExportTests {
         #expect(error?.code == .EXPORT_DIR_ABSOLUTE_REQUIRED)
     }
 
-    @Test("execute：建 exportExecute job，dedupeKey/checkpoint 与旧命令面 一致")
+    @Test("execute：建 outputRun job，dedupeKey/checkpoint 与旧命令面 一致")
     func executeCreatesJobWithFingerprint() async throws {
         let fixture = try ExportAPIFixture()
         defer { fixture.cleanup() }
@@ -227,10 +227,10 @@ struct APIExportTests {
 
         #expect(result.exported == 2)
         let job = try #require(
-            try fixture.jobService.list().first { $0.type == .exportExecute }
+            try fixture.jobService.list().first { $0.type == .outputRun }
         )
         #expect(job.scopeId == fixture.sessionId)
-        #expect(job.dedupeKey == "export.execute:\(fixture.sessionId):\(fingerprint)")
+        #expect(job.dedupeKey == "output.run:\(fixture.sessionId):\(fingerprint)")
         #expect(job.checkpoint["deliveryFingerprint"]?.stringValue == fingerprint)
         #expect(job.checkpoint["options"] == (try JSONValue(from: fixture.options)))
         #expect(job.status == .succeeded)
@@ -248,7 +248,7 @@ struct APIExportTests {
         let api = fixture.api
 
         let first = Task { try await api.execute(Confirmed(input, source: .test)) }
-        try await waitForJob(fixture.jobService, type: .exportExecute)
+        try await waitForJob(fixture.jobService, type: .outputRun)
         let second = Task { try await api.execute(Confirmed(input, source: .test)) }
         // 给第二个 Task 进入 jobService.create（拿到同一活跃 job）并阻塞在
         // waitForResult 的机会；门未放行前第一个 job 不会终态。
@@ -258,7 +258,7 @@ struct APIExportTests {
         let firstResult = try await first.value
         let secondResult = try await second.value
         #expect(firstResult == secondResult)
-        #expect(try fixture.jobService.list().filter { $0.type == .exportExecute }.count == 1)
+        #expect(try fixture.jobService.list().filter { $0.type == .outputRun }.count == 1)
     }
 
     @Test("execute：交付参数变化 → 新指纹 → 新建 job")
@@ -291,7 +291,7 @@ struct APIExportTests {
             )
         )
 
-        let jobs = try fixture.jobService.list().filter { $0.type == .exportExecute }
+        let jobs = try fixture.jobService.list().filter { $0.type == .outputRun }
         #expect(jobs.count == 2)
         #expect(Set(jobs.map(\.dedupeKey)).count == 2)
     }
@@ -310,7 +310,7 @@ struct APIExportTests {
         #expect(try fixture.jobService.list().isEmpty)
     }
 
-    @Test("cancel：取消同会话 exportExecute job 与 ExportService 会话位")
+    @Test("cancel：取消同会话 outputRun job 与 ExportService 会话位")
     func cancelsActiveExportJob() async throws {
         let gate = AsyncGate()
         let fixture = try ExportAPIFixture(jobGate: gate)
@@ -321,13 +321,13 @@ struct APIExportTests {
         let input = try ExportInput(sessionId: fixture.sessionId, options: fixture.options)
         let api = fixture.api
         let running = Task { try await api.execute(Confirmed(input, source: .test)) }
-        try await waitForJob(fixture.jobService, type: .exportExecute)
+        try await waitForJob(fixture.jobService, type: .outputRun)
 
         let cancelled = try await api.cancel(fixture.sessionId)
 
         #expect(cancelled)
         let job = try #require(
-            try fixture.jobService.list().first { $0.type == .exportExecute }
+            try fixture.jobService.list().first { $0.type == .outputRun }
         )
         #expect(job.status == .cancelling || job.status == .cancelled)
         gate.release()

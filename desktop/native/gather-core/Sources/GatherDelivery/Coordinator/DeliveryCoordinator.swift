@@ -295,6 +295,7 @@ public struct DeliveryCoordinator: Sendable {
         connection: DBConnection,
         xmp: any XMPProvider,
         fileLock: XMPFileLock,
+        target: MetadataTargetResolver = .sidecar,
         fingerprint: @escaping DeliveryFingerprintProvider = {
             try await MetadataFingerprint.contentFingerprint($0)
         },
@@ -306,7 +307,7 @@ public struct DeliveryCoordinator: Sendable {
     ) {
         self.init(
             connection: connection,
-            files: XMPDeliveryFilePort(xmp),
+            files: XMPDeliveryFilePort(xmp, target: target),
             fileLock: fileLock,
             fingerprint: fingerprint,
             resolvePhotoPath: resolvePhotoPath,

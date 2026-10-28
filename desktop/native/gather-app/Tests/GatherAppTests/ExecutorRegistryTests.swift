@@ -5,9 +5,9 @@
 // 1. register 返回并实际注册全部 8 个 AnalysisJobType；JobService 能把每种
 //    type 的 job 交给对应 executor（未注册会永远停在 queued）；
 // 2. 成功路径：quality.score / checksum.backfill / thumbnail.build /
-//    duplicate.scan 在空会话上成功；export.execute 空会话成功并落 checkpoint；
+//    duplicate.scan 在空会话上成功；output.run 空会话成功并落 checkpoint；
 // 3. 失败路径：similarity.analyze（SIM_NO_PHOTOS）、face.analyze（SESSION_NOT_FOUND）、
-//    metadata.scan（SESSION_NOT_FOUND）、export.execute（EXPORT_ALL_FAILED）。
+//    metadata.scan（SESSION_NOT_FOUND）、output.run（EXPORT_ALL_FAILED）。
 //
 // 夹具使用真实 GatherCore 服务 + 内存 SQLite，只把文件系统内容降到空会话/
 // 缺失源文件；不引用已删除的命令面，验证注册入口与开工路径共用同一套闭包。
@@ -67,6 +67,9 @@ private struct ExecutorRegistryFixture {
         let faceRepo = FaceRepo(connection: db)
         let personRepo = PersonRepo(connection: db)
         let session = try sessionRepo.create(name: "B8.3a", source: "test")
+        // 唯一实例：ExportService 持有 runId/cancelledRuns 账本，OutputService 必须共用它。
+        let exportService = ExportService(
+            photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)
 
         let deps = ExecutorRegistry.Dependencies(
             similarityService: SimilarityService(
@@ -85,6 +88,12 @@ private struct ExecutorRegistryFixture {
                 connection: db
             ),
             qualityService: QualityService(photoRepo: photoRepo, connection: db),
+            modelReviewService: ModelReviewService(
+                photoRepo: photoRepo,
+                modelReviewRepo: ModelReviewRepo(connection: db),
+                faceBoxes: { _, _ in [] },
+                previewProvider: { _, _ in throw RuntimeNoopError.unsupported }),
+            modelReviewEnabled: { false },
             indexerService: IndexerService(
                 connection: db,
                 sessionRepo: sessionRepo,
@@ -101,7 +110,10 @@ private struct ExecutorRegistryFixture {
             photoRepo: photoRepo,
             assetRepo: assetRepo,
             imagePreloadService: ImagePreloadService(),
-            exportService: ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)
+            exportService: exportService,
+            // 必须与 deps.exportService 同一实例：否则取消/runId 账本被拆成两份，
+            // 测试永远暴露不了「取消没传到编排层」这类错配。
+            outputService: OutputService(exportService: exportService)
         )
 
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))
@@ -206,7 +218,7 @@ struct ExecutorRegistryTests {
                 .metadataScan: .failed, // SESSION_NOT_FOUND
                 .checksumBackfill: .succeeded, // 0 条待回填
                 .thumbnailBuild: .succeeded, // 空 paths
-                .exportExecute: .failed, // checkpoint 缺 options → 解码失败
+                .outputRun: .failed, // checkpoint 缺 options → 解码失败
             ]
 
             for type in AnalysisJobType.allCases {
@@ -222,8 +234,8 @@ struct ExecutorRegistryTests {
         }
     }
 
-    @Test("export.execute：空会话成功并落交付摘要")
-    func exportExecuteSucceedsOnEmptySession() async throws {
+    @Test("output.run：空会话成功并落交付摘要")
+    func outputRunSucceedsOnEmptySession() async throws {
         try await withRegistryFixture { fixture in
             let options = ExportOptions(
                 scope: .session,
@@ -234,7 +246,7 @@ struct ExecutorRegistryTests {
             )
             let job = try createJob(
                 fixture.jobService,
-                type: .exportExecute,
+                type: .outputRun,
                 sessionId: fixture.sessionId,
                 checkpoint: ["options": try JSONValue(from: options)]
             )
@@ -247,8 +259,8 @@ struct ExecutorRegistryTests {
         }
     }
 
-    @Test("export.execute：源文件全缺失 → job failed（EXPORT_ALL_FAILED）")
-    func exportExecuteFailsWhenEveryFileFails() async throws {
+    @Test("output.run：源文件全缺失 → job failed（EXPORT_ALL_FAILED）")
+    func outputRunFailsWhenEveryFileFails() async throws {
         try await withRegistryFixture { fixture in
             try seedMissingSourcePhoto(fixture, photoId: "missing-1")
 
@@ -261,7 +273,7 @@ struct ExecutorRegistryTests {
             )
             let job = try createJob(
                 fixture.jobService,
-                type: .exportExecute,
+                type: .outputRun,
                 sessionId: fixture.sessionId,
                 checkpoint: ["options": try JSONValue(from: options)]
             )

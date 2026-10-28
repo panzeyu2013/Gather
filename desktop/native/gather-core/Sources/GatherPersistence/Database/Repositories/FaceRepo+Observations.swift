@@ -166,6 +166,38 @@ extension FaceRepo {
         return try rows.map { try FaceObservationRow(row: $0) }
     }
 
+    /// 轻量人脸框（不含 embedding blob），供模型级初审按框取 ROI。
+    /// 20k 会话直接复用 getObservations 会把 512 维向量全部搬进内存，故单列此查询。
+    public func faceBoxes(
+        sessionId: String,
+        photoIds: [String]
+    ) throws -> [(photoId: String, x: Double, y: Double, width: Double, height: Double, quality: Double)] {
+        guard !photoIds.isEmpty else { return [] }
+        var result: [(photoId: String, x: Double, y: Double, width: Double, height: Double, quality: Double)] = []
+        for chunk in stride(from: 0, to: photoIds.count, by: 400).map({
+            Array(photoIds[$0..<min($0 + 400, photoIds.count)])
+        }) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+            let rows = try connection.prepare("""
+                SELECT photo_id, bbox_x, bbox_y, bbox_w, bbox_h, quality
+                FROM face_observations
+                WHERE session_id = ? AND photo_id IN (\(placeholders))
+                ORDER BY bbox_w * bbox_h DESC
+            """).query([.text(sessionId)] + chunk.map(DBValue.text))
+            for row in rows {
+                guard let photoId = row[0].textValue else { continue }
+                result.append((
+                    photoId: photoId,
+                    x: row[1].doubleValue ?? 0,
+                    y: row[2].doubleValue ?? 0,
+                    width: row[3].doubleValue ?? 0,
+                    height: row[4].doubleValue ?? 0,
+                    quality: row[5].doubleValue ?? 0))
+            }
+        }
+        return result
+    }
+
     /// 批量照片的人脸观测计数（photo.id → 数量；无观测的照片不出现在结果中）。
     /// 供 photo 列表分页附带 faceCount（TS photo.ipc.ts assemblePhotos 的两次
     /// 小查询之一，原在宿主路由内联 SQL，下沉回 Repo）。

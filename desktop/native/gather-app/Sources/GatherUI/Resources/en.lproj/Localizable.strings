@@ -1786,3 +1786,81 @@
 "已处理；%lld 张无需写入（已有星级或人工决策）" = "Done; %lld photos needed no write (existing rating or manual decision)";
 "已撤销；%lld 张的星级已被人工改动，保留现值" = "Undone; %lld ratings were changed manually and were kept";
 "清空" = "Clear";
+"主体闭眼" = "Subject's eyes are closed";
+"人脸失焦" = "Face is out of focus";
+"截图或文档，不是照片" = "Screenshot or document, not a photo";
+"模型信号" = "Model signals";
+"眼睛睁开" = "Eyes open";
+"眼睛半闭" = "Eyes half-closed";
+"面带微笑" = "Smiling";
+"本机不支持审美分" = "Aesthetics unavailable on this Mac";
+"人脸合焦 %.2f" = "Face focus %.2f";
+"审美 %.2f" = "Aesthetics %.2f";
+"模型级信号" = "Model-level signals";
+"质量分析完成后运行人脸几何/合焦/审美信号（眼睛睁开、人脸失焦、截图识别）。关闭后只跑技术质量。" = "Run face geometry/focus/aesthetics signals after quality analysis (eyes open, face out of focus, screenshot detection). When off, only technical quality runs.";
+"自动应用高置信建议" = "Auto-apply high-confidence suggestions";
+"生成后自动应用超过门槛的 keep/reject（仍跳过人工决策与低置信项）；默认关闭，建议先干跑。" = "Automatically apply keep/reject suggestions above the threshold after generation (manual decisions and low-confidence items are still skipped); off by default.";
+"开启（默认）" = "On (default)";
+"整套交付" = "Full delivery";
+"添加配方" = "Add recipe";
+"包含联系表" = "Include contact sheet";
+"正在交付…" = "Delivering…";
+"开始整套交付" = "Start full delivery";
+"配方名" = "Recipe name";
+"含联系表" = "With contact sheet";
+"删除配方" = "Delete recipe";
+"长边 %lld" = "Long edge %lld";
+"交付完成：成功 %lld，失败 %lld" = "Delivery done: %lld succeeded, %lld failed";
+"打印联系表" = "Print contact sheet";
+"请先选择交付目录" = "Choose a delivery folder first";
+"交付目录" = "Delivery folder";
+"包含 Web 画廊与客户校样" = "Include web gallery and client proofing";
+"打开画廊" = "Open gallery";
+"导入客户选择…" = "Import client selection…";
+"正在导入…" = "Importing…";
+"已导入 %lld 张（跳过 %lld）" = "Imported %lld photos (%lld skipped)";
+"发布到 WebDAV…" = "Publish to WebDAV…";
+"发布到 WebDAV" = "Publish to WebDAV";
+"已发布 %lld 个文件" = "Published %lld files";
+"发布完成：成功 %lld，失败 %lld" = "Publish done: %lld succeeded, %lld failed";
+"凭据保存在钥匙串；上传的是本机交付目录。" = "Credentials are stored in the Keychain; the local delivery folder is uploaded.";
+"服务器地址（https://…）" = "Server URL (https://…)";
+"用户名" = "Username";
+"密码" = "Password";
+"远端目录" = "Remote folder";
+"正在发布…" = "Publishing…";
+"发布" = "Publish";
+"triage-v2" = "triage-v2";
+"没有可用的交付配方，请先添加" = "No delivery recipe available. Add one first.";
+"交付清单写入失败，但成片已写出。" = "Manifest write failed, but photos were exported.";
+
+/* 启动：旧库归档提示（AppBootstrap.noticeMessage） */
+"旧数据库已归档到 %@（原版本 %@），已重建空库。备份可随时移回。" = "The previous database was archived to %@ (version %@). A new empty library was created; the backup can be moved back at any time.";
+
+/* W3 整套交付 / WebDAV 发布 */
+"没有可执行的交付配方，请先添加至少一条配方。" = "No runnable delivery recipe. Add at least one recipe first.";
+"交付目录无效（{{detail}}）。请填写绝对路径的目录。" = "Invalid delivery folder ({{detail}}). Use an absolute path.";
+"配方目标目录无效（{{detail}}）。请改用绝对路径。" = "Invalid recipe destination ({{detail}}). Use an absolute path.";
+"有两条配方会写到同一目录（{{detail}}）。请改名或修改目标目录后重试。" = "Two recipes write to the same folder ({{detail}}). Rename one or change its destination.";
+"交付清单写入失败（{{detail}}）。成片已写出，但无法用于审计与续跑。" = "Manifest write failed ({{detail}}). Photos were exported, but auditing and resume are unavailable.";
+"WebDAV 地址无效（{{detail}}）。请填写以 http:// 或 https:// 开头的完整地址。" = "Invalid WebDAV address ({{detail}}). Enter a full URL starting with http:// or https://.";
+"要发布的本地目录不存在（{{detail}}）。" = "The local folder to publish does not exist ({{detail}}).";
+"本次交付没有可发布的文件（白名单为空或产物缺失）。" = "Nothing to publish for this delivery (empty whitelist or missing outputs).";
+"保存 WebDAV 凭据失败（{{detail}}）。请允许访问系统钥匙串后重试。" = "Saving the WebDAV credential failed ({{detail}}). Allow Keychain access and retry.";
+
+/* WebDAV 发布面板（进度/取消/行内错误） */
+"地址必须以 http:// 或 https:// 开头" = "The address must start with http:// or https://";
+"停止发布" = "Stop publishing";
+"已上传 %lld / %lld" = "Uploaded %lld / %lld";
+"发布已取消" = "Publishing cancelled";
+"交付已取消；已写出的成片仍在交付目录中" = "Delivery cancelled; exported files remain in the delivery folder";
+
+/* 交付进度 / 打印失败 */
+"正在交付：第 %lld/%lld 个配方" = "Delivering recipe %lld of %lld";
+"无法打开联系表 PDF" = "Unable to open the contact sheet PDF";
+"写入目标" = "Write target";
+
+/* 客户校样 / 交付取消 */
+"客户选择" = "Client selection";
+"取消交付" = "Cancel delivery";
+"已导入 %lld 张（跳过 %lld，失败 %lld）" = "Imported %lld photos (skipped %lld, failed %lld)";

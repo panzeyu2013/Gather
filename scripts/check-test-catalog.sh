@@ -333,10 +333,12 @@ if [ "$skip_expired_n" -gt 0 ]; then
 fi
 
 # 6) 用例/套件 ratchet：删一条 @Test 或 @Suite 不会让任何用例变红，是历史空白。
-#    下限按 2026-10-28 实测值钉死；新增用例只会让数字变大，删用例必须显式改这里
-#    并在台账记账（与 cleanup/protocol ratchet 同一套"只许收紧"的约定）。
-BASELINE_TEST_DECL=2115
-BASELINE_SUITE_DECL=225
+#    下限按实测值钉死；新增用例只会让数字变大，删用例必须显式改这里并在台账记账
+#    （与 cleanup/protocol ratchet 同一套"只许收紧"的约定）。
+#    2026-10-28 feat 合并后收紧：2115/225 → 2188/240（合入 P2 交付/模型初审/WebDAV
+#    共 +73 @Test / +15 @Suite；见 docs/reviews/feat-merge-2026-10-28.md §5）。
+BASELINE_TEST_DECL=2188
+BASELINE_SUITE_DECL=240
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')

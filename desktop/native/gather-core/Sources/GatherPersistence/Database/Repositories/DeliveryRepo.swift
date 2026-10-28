@@ -131,13 +131,16 @@ private enum DeliveryColumnMap {
     }
 }
 
-/// deliveries 表行（14 列，与 SchemaCurrent §5.2 一致）。
+/// deliveries 表行（15 列，与 SchemaCurrent §5.2 一致；含 target_kind）。
 ///
 /// 注意：columnNames 是仓储 SELECT 的显式列清单，也是行映射器的键；
 /// 二者始终同源，且与表的物理列序无关（测试用乱序列清单验证）。
 public struct DeliveryRow: Sendable, Equatable {
     public let id: Int64
     public let xmpPath: String
+    /// 写目标类型（sidecar / embedded）。DDL 默认 sidecar；未知值按 sidecar 解释，
+    /// 读取路径不能因为将来新增枚举值而整条查询失败。
+    public let targetKind: MetadataTargetKind
     public let photoPath: String
     public let status: String
     public let revision: Int64
@@ -153,7 +156,7 @@ public struct DeliveryRow: Sendable, Equatable {
 
     /// 显式列清单（唯一来源；SQL 与映射器都由它派生）。
     public static let columnNames: [String] = [
-        "id", "xmp_path", "photo_path", "status", "revision", "base_fingerprint",
+        "id", "xmp_path", "target_kind", "photo_path", "status", "revision", "base_fingerprint",
         "base_values_json", "backup_path", "error_message", "attempt_count",
         "lease_owner", "heartbeat_at", "created_at", "updated_at",
     ]
@@ -164,6 +167,8 @@ public struct DeliveryRow: Sendable, Equatable {
         let map = try DeliveryColumnMap.index(columns: columns, row: row, required: Self.columnNames)
         id = DeliveryColumnMap.int(map, "id")
         xmpPath = DeliveryColumnMap.text(map, "xmp_path")
+        targetKind = MetadataTargetKind(
+            rawValue: DeliveryColumnMap.text(map, "target_kind")) ?? .sidecar
         photoPath = DeliveryColumnMap.text(map, "photo_path")
         status = DeliveryColumnMap.text(map, "status")
         revision = DeliveryColumnMap.int(map, "revision")
@@ -262,6 +267,14 @@ public final class DeliveryRepo: Sendable {
     }
 
     // MARK: - 创建 / 读取
+
+    /// 标记写目标类型（内嵌 vs 侧车）。只改这一列，不触碰 revision/基线/状态。
+    public func setTargetKind(xmpPath: String, kind: MetadataTargetKind) throws {
+        let path = try normalizedPath(xmpPath)
+        _ = try connection.prepare("""
+            UPDATE deliveries SET target_kind = ? WHERE xmp_path = ?
+            """).run([.text(kind.rawValue), .text(path)])
+    }
 
     /// 幂等入队：xmp_path 已存在时**原样返回**（不覆盖 photo_path/base 基线/revision）。
     ///

@@ -14,17 +14,26 @@ import GatherApplication
 enum CompositionRuntime {
     static func make(core: CompositionCore) -> AppRuntime {
         // executorDeps 与 runtime 的唯一构造点；参数顺序与拆分前逐字一致。
+        let settingsService = core.settingsService
         let executorDeps = ExecutorRegistry.Dependencies(
             similarityService: core.similarityService,
             duplicateService: core.duplicateService,
             faceKwService: core.faceKwService,
             qualityService: core.qualityService,
+            modelReviewService: core.modelReviewService,
+            modelReviewEnabled: {
+                // 只有 v2 策略真的使用模型信号；v1 用户跑模型段纯属浪费
+                // （每张一次 1280 解码 + Vision），还会让建议因模型行更新而 stale。
+                settingsService.get("triage_model_review", defaultValue: "1") == "1"
+                    && settingsService.get("triage_policy", defaultValue: "triage-v2") == "triage-v2"
+            },
             indexerService: core.indexerService,
             metadataService: core.metadataService,
             photoRepo: core.photoRepo,
             assetRepo: core.assetRepo,
             imagePreloadService: core.imagePreloadService,
-            exportService: core.exportService
+            exportService: core.exportService,
+            outputService: core.outputService
         )
         return AppRuntime(
             db: core.db,

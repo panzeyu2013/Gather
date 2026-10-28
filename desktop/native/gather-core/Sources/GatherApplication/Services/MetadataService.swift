@@ -155,6 +155,8 @@ public final class MetadataService: @unchecked Sendable {
     private let embeddedReader: (any EmbeddedXMPReader)?
     /// K0：生成词来源（face/similarity/culling/template），用于阻止删除。
     private let origins: MetadataKeywordOriginRepo?
+    /// 写目标解析（侧车 / 内嵌）：信息面板必须显示**真实写入位置**，不能恒说侧车。
+    private let writeTarget: (@Sendable (String) -> MetadataTarget)?
 
     public init(
         metadataCacheRepo: any MetadataRepository,
@@ -168,7 +170,8 @@ public final class MetadataService: @unchecked Sendable {
         exif: (any ExifProvider)? = nil,
         dimensions: (any ImageDimensionsProvider)? = nil,
         embeddedReader: (any EmbeddedXMPReader)? = nil,
-        origins: MetadataKeywordOriginRepo? = nil
+        origins: MetadataKeywordOriginRepo? = nil,
+        writeTarget: (@Sendable (String) -> MetadataTarget)? = nil
     ) {
         self.metadataCacheRepo = metadataCacheRepo
         self.xmp = xmp
@@ -182,6 +185,7 @@ public final class MetadataService: @unchecked Sendable {
         self.dimensions = dimensions
         self.embeddedReader = embeddedReader
         self.origins = origins
+        self.writeTarget = writeTarget
     }
 
     // MARK: - TS 顶层函数
@@ -402,13 +406,19 @@ public final class MetadataService: @unchecked Sendable {
         } else {
             rating = nil
         }
-        let keywords = MetadataService.normalizeKeywordList(dc?["subject"])
+        // 关键词同样要做 presence 阻断：外部只清空 XMP 的 dc:subject 时，
+        // ImageIO 会把 IIM 旧关键词合成回 dc:subject（实测），不判 presence 会复活旧值。
+        let keywords: [String]? = if parsed.xmpPresentKeys.contains("subject") {
+            MetadataService.normalizeKeywordList(dc?["subject"])
+        } else {
+            MetadataService.normalizeKeywordList(dc?["subject"] ?? iptc?["Keywords"])
+        }
         let descriptive = descriptiveFromParse(parsed)
         if keywords == nil, rating == nil, xmp?["Label"] == nil, descriptive.isEmpty {
             return nil
         }
         return MetadataWriteAttributes(
-            keywords: keywords ?? MetadataService.normalizeKeywordList(iptc?["Keywords"]),
+            keywords: keywords,
             rating: rating,
             label: xmp?["Label"]?.stringValue,
             descriptive: descriptive.isEmpty ? nil : descriptive
@@ -442,7 +452,9 @@ public final class MetadataService: @unchecked Sendable {
         .init(field: .captionWriter, xmpKeys: ["CaptionWriter"], iimKeys: ["Writer/Editor"]),
         .init(field: .jobIdentifier, xmpKeys: ["TransmissionReference"],
               iimKeys: ["OriginalTransmissionReference"]),
-        .init(field: .usageTerms, xmpKeys: ["UsageTerms"], iimKeys: ["UsageTerms"]),
+        // 实测：ImageIO 把 UsageTerms 写在 XMP，IIM 无对应 dataset（2:130 读作 ImageType），
+        // 因此不做 IIM 回退——否则清空 XMP 后旧 IIM 会把字段复活。
+        .init(field: .usageTerms, xmpKeys: ["UsageTerms"]),
         // IPTC Core 的 WebStatement 只在 XMP 命名空间（xmpRights），没有 IIM 对应。
         .init(field: .webStatement, xmpKeys: ["WebStatement"]),
         .init(field: .city, xmpKeys: ["City"], iimKeys: ["City"]),
@@ -458,6 +470,7 @@ public final class MetadataService: @unchecked Sendable {
         .init(field: .subjectCode, xmpKeys: ["SubjectCode"], iimKeys: ["SubjectReference"],
               isList: true),
         .init(field: .dateCreated, xmpKeys: ["DateCreated"], iimKeys: ["DateCreated"]),
+        // IIM 2:202（实测 ImageIO 读回键名 Scene）：写侧已映射，清空时删 dataset。
         .init(field: .scene, xmpKeys: ["Scene"], iimKeys: ["Scene"], isList: true),
         .init(field: .event, xmpKeys: ["Event"]),
         .init(field: .personInImage, xmpKeys: ["PersonInImage"], isList: true),
@@ -473,15 +486,23 @@ public final class MetadataService: @unchecked Sendable {
     static func descriptiveFromParse(_ parsed: MetadataParseSegments) -> DescriptiveMetadata {
         var result = DescriptiveMetadata()
         for spec in embeddedDescriptiveFields {
+            // 内嵌 XMP 里存在该键（哪怕值是空）= 用户显式清空过：不得再回退到 IIM，
+            // 否则旧 IIM 会把已清空的字段"复活"（写侧已删 dataset，这里兜住外部残留）。
+            let blockedByExplicitEmpty = (spec.dcKeys + spec.xmpKeys)
+                .contains { parsed.xmpPresentKeys.contains($0) }
             if spec.isList {
                 let list = firstList(parsed, keys: spec.dcKeys, isDC: true)
                     ?? firstList(parsed, keys: spec.xmpKeys, isDC: false)
-                    ?? firstList(parsed, keys: spec.iimKeys, isIIM: true)
+                    ?? (blockedByExplicitEmpty
+                        ? nil
+                        : firstList(parsed, keys: spec.iimKeys, isIIM: true))
                 if let list { result.set(.list(list), for: spec.field) }
             } else {
                 let text = firstText(parsed, keys: spec.dcKeys, isDC: true)
                     ?? firstText(parsed, keys: spec.xmpKeys, isDC: false)
-                    ?? firstText(parsed, keys: spec.iimKeys, isIIM: true)
+                    ?? (blockedByExplicitEmpty
+                        ? nil
+                        : firstText(parsed, keys: spec.iimKeys, isIIM: true))
                 if let text { result.set(.text(text), for: spec.field) }
             }
         }
@@ -585,7 +606,10 @@ public final class MetadataService: @unchecked Sendable {
         let resolved = try? assetResolver?.resolve(sessionId: lookup.sessionId, photoId: photoId)
         let filepath = resolved?.filepath ?? lookup.filepath
         let filename = (filepath as NSString).lastPathComponent
-        let xmpPath = resolved?.xmpPath ?? TSPath.xmpSidecarPath(filepath)
+        // 写目标优先用注入的解析器：内嵌模式下「写目标」就是照片本身，
+        // 面板若仍显示侧车路径，用户会误判写回失败（EMBEDDED 模式下恒显示「尚未写入 XMP」）。
+        let target = writeTarget?(filepath)
+        let xmpPath = target?.writePath ?? resolved?.xmpPath ?? TSPath.xmpSidecarPath(filepath)
         let exif = PhotoExifSnapshot(
             dateTaken: row?.dateTaken,
             cameraMake: row?.cameraMake,

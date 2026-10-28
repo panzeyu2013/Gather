@@ -40,6 +40,9 @@ public struct TriageGroupRef: Equatable, Sendable {
 public struct TriageCandidate: Equatable, Sendable {
     public var photoId: String
     public var quality: QualityResult?
+    /// 模型级信号（analysis_type = model_review）；nil = 该照片还没跑模型或旧数据。
+    /// 为 nil 时评估器完全退回 v1 的像素代理信号（行为不变）。
+    public var modelReview: ModelReviewResult?
     public var faceCount: Int
     public var maxFaceAreaRatio: Double
     public var groups: [TriageGroupRef]
@@ -55,6 +58,7 @@ public struct TriageCandidate: Equatable, Sendable {
     public init(
         photoId: String,
         quality: QualityResult?,
+        modelReview: ModelReviewResult? = nil,
         faceCount: Int = 0,
         maxFaceAreaRatio: Double = 0,
         groups: [TriageGroupRef] = [],
@@ -67,6 +71,7 @@ public struct TriageCandidate: Equatable, Sendable {
     ) {
         self.photoId = photoId
         self.quality = quality
+        self.modelReview = modelReview
         self.faceCount = faceCount
         self.maxFaceAreaRatio = maxFaceAreaRatio
         self.groups = groups
@@ -202,7 +207,9 @@ private func buildContexts(
         guard !members.isEmpty else { continue }
         // 人工淘汰的成员不能再占“组内最佳/合格替代”的位置：否则人工淘汰最佳后，
         // 其余成员会以那张已淘汰照片为锚点被判 reject（整组误杀）。
-        let eligible = members.filter { !isManualReject($0) }
+        // 工具图（截图/扫描/文字）不参与组内比较：否则它凭超高锐度占住「最佳」，
+        // 随后自己早退 reject，真实照片却因此被判非最佳 → 整组误杀。
+        let eligible = members.filter { !isManualReject($0) && !isUtilityImage($0, policy: policy) }
 
         let ref = TriageGroupRef(
             kind: seed.kind,
@@ -243,6 +250,11 @@ private func buildContexts(
                 let ls = lhs.quality?.qualityScore ?? 0
                 let rs = rhs.quality?.qualityScore ?? 0
                 if ls != rs { return ls > rs }
+                // v2：同分时先比模型信号（采集质量 → 微笑），再比 lead/导入序。
+                let lk = tieBreakKey(lhs, policy: policy)
+                let rk = tieBreakKey(rhs, policy: policy)
+                if lk.0 != rk.0 { return lk.0 > rk.0 }
+                if lk.1 != rk.1 { return lk.1 > rk.1 }
                 let lhsLead = lhs.photoId == seed.leadPhotoId
                 let rhsLead = rhs.photoId == seed.leadPhotoId
                 if lhsLead != rhsLead { return lhsLead }
@@ -256,7 +268,7 @@ private func buildContexts(
         }
         // P1：只有“技术合格”的成员才能当组内最佳。否则一张高总分但明显糊/欠曝
         // 的照片会占住 best 位、把其余合格照片按“有合格替代”判成 reject。
-        let qualified = analyzed.filter { isTechnicallyQualified($0.quality, policy: policy) }
+        let qualified = analyzed.filter { isTechnicallyQualified($0, policy: policy) }
         contexts[groupId] = GroupContext(
             ref: ref,
             members: members,
@@ -297,11 +309,23 @@ private func evaluate(
     contexts: [String: GroupContext],
     policy: TriagePolicy
 ) -> TriageEvaluation {
-    // P0：人工已决策（pending 不算已决策，仍可给建议）。
-    if candidate.decisionSource == .manual,
+    // P0：人工已决策（pending 不算已决策，仍可给建议）。客户校样回传同样是人的决定。
+    if candidate.decisionSource?.isHumanDecision == true,
        let decision = candidate.manualDecision,
        decision != .pending {
         return .excluded(.manualOverride)
+    }
+
+    // P0.5：工具图（截图/文档）。婚礼/活动现场混进这类素材是纯噪声，
+    // 即使单张也允许直接淘汰；置信度 0.90，低于门槛时仍落 review。
+    if isUtilityImage(candidate, policy: policy) {
+        let confidence = 0.90
+        if confidence >= policy.executionFloor(for: .reject) {
+            return suggestion(candidate, .reject, candidate.quality?.qualityScore ?? 0,
+                              confidence, [.utilityImage], nil, policy: policy)
+        }
+        return suggestion(candidate, .review, candidate.quality?.qualityScore ?? 0,
+                          confidence, [.utilityImage, .closeCall], nil, policy: policy)
     }
 
     // P1：未分析 / 分析失败。
@@ -352,21 +376,21 @@ private func evaluate(
     // 只有一个技术合格成员时，它就是明确的组内最佳（margin 取上界）。
     let margin = context.secondScore.map { max(0, context.bestScore - $0) } ?? 1.0
     let gap = max(0, context.bestScore - quality.qualityScore)
-    let hard = hasHardWarning(quality, policy: policy)
-    let closed = isClosedEye(candidate, quality, policy: policy)
+    let hard = hasHardWarning(candidate, policy: policy)
+    let closed = isClosedEye(candidate, policy: policy)
     let multiFace = isMultiFace(candidate, policy: policy)
     let smallFace = isSmallFace(candidate, policy: policy)
     let factor = faceFactor(candidate, policy: policy)
     let qualifiedAlternative = hasQualifiedAlternative(candidate, in: context, policy: policy)
 
-    let keepAgree = keepAgreement(candidate, quality: quality, isBest: isBest, policy: policy)
+    let keepAgree = keepAgreement(candidate, isBest: isBest, policy: policy)
     let cKeep = isBest
         ? groupKeepConfidence(margin: margin, agree: keepAgree, faceFactor: factor)
         : 0
 
     let cReject: Double
     if !isBest && qualifiedAlternative {
-        let rejectAgree = rejectAgreement(quality: quality, gap: gap, policy: policy)
+        let rejectAgree = rejectAgreement(candidate, gap: gap, policy: policy)
         cReject = groupRejectConfidence(
             gap: gap,
             agree: rejectAgree,
@@ -381,13 +405,13 @@ private func evaluate(
         if closed {
             return suggestion(
                 candidate, .review, quality.qualityScore, cKeep,
-                reasonList([.groupBest, .closedEyeSuspect], policy: policy),
+                reasonList([.groupBest, closedEyeCode(candidate, policy: policy)], policy: policy),
                 context.ref.groupId
             )
         }
         if hard {
             var items: [(TriageReasonCode, Double?)] = []
-            if focusScore(quality) < policy.blurSharpnessMax { items.append((.motionBlur, nil)) }
+            if hasFocusProblem(candidate, policy: policy) { items.append((focusReasonCode(candidate, policy: policy), nil)) }
             if quality.exposure < policy.exposureMin { items.append((.exposureLow, nil)) }
             return suggestion(
                 candidate, .review, quality.qualityScore, cKeep,
@@ -433,12 +457,12 @@ private func evaluate(
         if closed {
             return suggestion(
                 candidate, .review, quality.qualityScore, cReject,
-                reasonList([(.weakerThanGroupBest, gap), (.closedEyeSuspect, nil)], policy: policy),
+                reasonList([(.weakerThanGroupBest, gap), (closedEyeCode(candidate, policy: policy), nil)], policy: policy),
                 context.ref.groupId
             )
         }
         var items: [(TriageReasonCode, Double?)] = [(.weakerThanGroupBest, gap)]
-        if focusScore(quality) < policy.blurSharpnessMax { items.append((.motionBlur, nil)) }
+        if hasFocusProblem(candidate, policy: policy) { items.append((focusReasonCode(candidate, policy: policy), nil)) }
         if quality.exposure < policy.exposureMin { items.append((.exposureLow, nil)) }
         // 硬技术失败也要过 reject 门槛；不足则复核。
         if cReject < policy.executionFloor(for: .reject) {
@@ -458,7 +482,7 @@ private func evaluate(
 
     if gap < policy.tieEpsilon {
         var items: [(TriageReasonCode, Double?)] = [(.tieWithGroup, nil)]
-        if closed { items.append((.closedEyeSuspect, nil)) }
+        if closed { items.append((closedEyeCode(candidate, policy: policy), nil)) }
         if smallFace { items.append((.smallFace, nil)) }
         if multiFace { items.append((.multiFaceLowConfidence, nil)) }
         return suggestion(
@@ -472,7 +496,7 @@ private func evaluate(
         if closed {
             return suggestion(
                 candidate, .review, quality.qualityScore, cReject,
-                reasonList([(.weakerThanGroupBest, gap), (.closedEyeSuspect, nil)], policy: policy),
+                reasonList([(.weakerThanGroupBest, gap), (closedEyeCode(candidate, policy: policy), nil)], policy: policy),
                 context.ref.groupId
             )
         }
@@ -516,7 +540,7 @@ private func evaluate(
     if closed {
         return suggestion(
             candidate, .review, quality.qualityScore, cReject,
-            reasonList([(.closeCall, nil), (.weakerThanGroupBest, gap), (.closedEyeSuspect, nil)], policy: policy),
+            reasonList([(.closeCall, nil), (.weakerThanGroupBest, gap), (closedEyeCode(candidate, policy: policy), nil)], policy: policy),
             context.ref.groupId
         )
     }
@@ -547,11 +571,11 @@ private func evaluateSingle(
     groupId: String?,
     policy: TriagePolicy
 ) -> TriageEvaluation {
-    let hard = hasHardWarning(quality, policy: policy)
-    let closed = isClosedEye(candidate, quality, policy: policy)
+    let hard = hasHardWarning(candidate, policy: policy)
+    let closed = isClosedEye(candidate, policy: policy)
     let smallFace = isSmallFace(candidate, policy: policy)
     let good = quality.qualityScore >= policy.keepScoreMin && !hard
-    let agree = keepAgreement(candidate, quality: quality, isBest: true, policy: policy)
+    let agree = keepAgreement(candidate, isBest: true, policy: policy)
     let confidence = singleKeepConfidence(quality: quality, agree: agree, policy: policy)
 
     var items: [(TriageReasonCode, Double?)] = []
@@ -562,10 +586,10 @@ private func evaluateSingle(
     }
     if !good && !hard { items.append((.lowTechnical, nil)) }
     if hard {
-        if focusScore(quality) < policy.blurSharpnessMax { items.append((.motionBlur, nil)) }
+        if hasFocusProblem(candidate, policy: policy) { items.append((focusReasonCode(candidate, policy: policy), nil)) }
         if quality.exposure < policy.exposureMin { items.append((.exposureLow, nil)) }
     }
-    if closed { items.append((.closedEyeSuspect, nil)) }
+    if closed { items.append((closedEyeCode(candidate, policy: policy), nil)) }
     if smallFace { items.append((.smallFace, nil)) }
 
     let confidentEnough = confidence >= policy.executionFloor(for: .keep)
@@ -590,13 +614,29 @@ private func rounded(_ value: Double) -> Double {
     (value * 1000).rounded() / 1000
 }
 
-private func focusScore(_ quality: QualityResult) -> Double {
-    quality.subjectSharpness ?? quality.sharpness
+/// 合焦分：**保持 v1 的 512px 代理量纲**，用于既有阈值（0.12/0.40）。
+/// 模型的人脸合焦分是另一套量纲（拉普拉斯方差归一），只作为**额外的失焦证据**，
+/// 不能直接顶替 focusScore——否则 0.12 阈值对它是失效的（大面积漏判模糊）。
+private func focusScore(_ candidate: TriageCandidate) -> Double {
+    guard let quality = candidate.quality else { return 0 }
+    return quality.subjectSharpness ?? quality.sharpness
 }
 
-/// 人工淘汰 = 用户已明确不要这张；它不能再作为组内锚点或“合格替代”。
+/// 模型判定主体脸失焦（独立阈值 faceFocusMin，量纲与 v1 不同）。
+private func isFaceOutOfFocus(_ candidate: TriageCandidate, policy: TriagePolicy) -> Bool {
+    guard modelSignalsEnabled(policy),
+          let faceFocus = candidate.modelReview?.faceFocusScore else { return false }
+    return faceFocus < policy.faceFocusMin
+}
+
+/// 任一来源判定失焦：v1 代理或模型信号。
+private func hasFocusProblem(_ candidate: TriageCandidate, policy: TriagePolicy) -> Bool {
+    focusScore(candidate) < policy.blurSharpnessMax || isFaceOutOfFocus(candidate, policy: policy)
+}
+
+/// 人工淘汰 = 用户（或客户校样）已明确不要这张；它不能再作为组内锚点或「合格替代」。
 private func isManualReject(_ candidate: TriageCandidate) -> Bool {
-    candidate.decisionSource == .manual && candidate.manualDecision == .reject
+    candidate.decisionSource?.isHumanDecision == true && candidate.manualDecision == .reject
 }
 
 private func hasQualifiedAlternative(
@@ -605,29 +645,64 @@ private func hasQualifiedAlternative(
     policy: TriagePolicy
 ) -> Bool {
     context.analyzed.contains {
-        $0.photoId != candidate.photoId && isTechnicallyQualified($0.quality, policy: policy)
+        $0.photoId != candidate.photoId && isTechnicallyQualified($0, policy: policy)
     }
 }
 
-private func isTechnicallyQualified(_ quality: QualityResult?, policy: TriagePolicy) -> Bool {
-    guard let quality else { return false }
-    return focusScore(quality) >= policy.blurSharpnessMax
+private func isTechnicallyQualified(_ candidate: TriageCandidate, policy: TriagePolicy) -> Bool {
+    guard let quality = candidate.quality else { return false }
+    guard !isUtilityImage(candidate, policy: policy) else { return false }
+    return !hasFocusProblem(candidate, policy: policy)
         && quality.exposure >= policy.exposureMin
 }
 
-private func hasHardWarning(_ quality: QualityResult, policy: TriagePolicy) -> Bool {
-    focusScore(quality) < policy.blurSharpnessMax
+private func hasHardWarning(_ candidate: TriageCandidate, policy: TriagePolicy) -> Bool {
+    guard let quality = candidate.quality else { return true }
+    return hasFocusProblem(candidate, policy: policy)
         || quality.exposure < policy.exposureMin
+}
+
+/// 模型信号只在 triage-v2 且设置开关打开时生效：v1 必须保持既有语义（否则版本号形同虚设）。
+private func modelSignalsEnabled(_ policy: TriagePolicy) -> Bool {
+    policy.usesModelSignals
 }
 
 private func isClosedEye(
     _ candidate: TriageCandidate,
-    _ quality: QualityResult,
     policy: TriagePolicy
 ) -> Bool {
-    guard candidate.faceCount > 0,
+    // 模型信号优先：眼睛几何分是"真闭眼"，旧梯度比只是代理。
+    if modelSignalsEnabled(policy), let eyesOpen = candidate.modelReview?.eyesOpenScore {
+        return eyesOpen <= policy.eyeOpenMin
+    }
+    guard let quality = candidate.quality,
+          candidate.faceCount > 0,
           candidate.maxFaceAreaRatio >= policy.facePrimaryAreaMin else { return false }
     return (quality.closedEyeRisk ?? 0) >= policy.closedEyeSuspectMin
+}
+
+/// 闭眼理由码：模型信号存在时用 eyes_closed，否则保留旧的代理码。
+private func closedEyeCode(_ candidate: TriageCandidate, policy: TriagePolicy) -> TriageReasonCode {
+    modelSignalsEnabled(policy) && candidate.modelReview?.eyesOpenScore != nil
+        ? .eyesClosed : .closedEyeSuspect
+}
+
+/// 失焦理由码：模型判定失焦时用 face_out_of_focus，否则保留 v1 的 motion_blur。
+private func focusReasonCode(_ candidate: TriageCandidate, policy: TriagePolicy) -> TriageReasonCode {
+    isFaceOutOfFocus(candidate, policy: policy) ? .faceOutOfFocus : .motionBlur
+}
+
+private func isUtilityImage(_ candidate: TriageCandidate, policy: TriagePolicy) -> Bool {
+    modelSignalsEnabled(policy) && candidate.modelReview?.isUtilityImage == true
+}
+
+/// 组内并列时的模型 tie-break（采集质量 → 微笑）；无模型信号时为 -1，不改变排序。
+private func tieBreakKey(
+    _ candidate: TriageCandidate, policy: TriagePolicy
+) -> (Double, Double) {
+    guard modelSignalsEnabled(policy) else { return (-1, -1) }
+    let primary = candidate.modelReview?.faces.first(where: \.isPrimary)
+    return (primary?.captureQuality ?? -1, primary?.smileScore ?? -1)
 }
 
 private func isMultiFace(_ candidate: TriageCandidate, policy: TriagePolicy) -> Bool {
@@ -650,27 +725,27 @@ private func faceFactor(_ candidate: TriageCandidate, policy: TriagePolicy) -> D
 
 private func keepAgreement(
     _ candidate: TriageCandidate,
-    quality: QualityResult,
     isBest: Bool,
     policy: TriagePolicy
 ) -> Double {
+    let quality = candidate.quality
     var signals: [Bool] = []
-    signals.append(!hasHardWarning(quality, policy: policy))
+    signals.append(!hasHardWarning(candidate, policy: policy))
     signals.append(isBest)
-    signals.append(quality.qualityScore >= policy.keepScoreMin)
-    signals.append(quality.exposure >= 0.40)
-    signals.append(focusScore(quality) >= 0.40)
+    signals.append((quality?.qualityScore ?? 0) >= policy.keepScoreMin)
+    signals.append((quality?.exposure ?? 0) >= 0.40)
+    signals.append(focusScore(candidate) >= 0.40)
     let trueCount = signals.filter { $0 }.count
     return Double(trueCount + 1) / Double(signals.count + 1)
 }
 
 private func rejectAgreement(
-    quality: QualityResult,
+    _ candidate: TriageCandidate,
     gap: Double,
     policy: TriagePolicy
 ) -> Double {
     var signals: [Bool] = []
-    signals.append(hasHardWarning(quality, policy: policy))
+    signals.append(hasHardWarning(candidate, policy: policy))
     signals.append(true) // 调用方保证非最佳
     signals.append(gap >= policy.groupRejectMargin)
     signals.append(false) // exact 重复在独立分支处理
@@ -766,6 +841,9 @@ private func reasonOrder(_ code: TriageReasonCode) -> Int {
     case .motionBlur: return 2
     case .exposureLow: return 3
     case .closedEyeSuspect: return 4
+    case .eyesClosed: return 4
+    case .faceOutOfFocus: return 2
+    case .utilityImage: return 1
     case .closeCall: return 5
     case .tieWithGroup: return 6
     case .singleShot: return 7

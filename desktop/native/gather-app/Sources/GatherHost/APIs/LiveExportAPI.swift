@@ -16,12 +16,12 @@
 //   job checkpoint 中，只有 checkpoint.deliveryFingerprint 与本次一致时才把
 //   destinations/completedPhotoIds 传给 ExportService.preview，保证预览显示的
 //   是续跑真正会写的名字；预览不创建 job（B6a 测试断言）；
-// - execute：JobService.start() → deliveryFingerprint → create(.exportExecute)
-//   → waitForResult；dedupeKey 为 "export.execute:<sessionId>:<指纹>"，
+// - execute：JobService.start() → deliveryFingerprint → create(.outputRun)
+//   → waitForResult；dedupeKey 为 "output.run:<sessionId>:<指纹>"，
 //   checkpoint 写 options + deliveryFingerprint（与旧命令面 完全一致）；
-//   空结果按旧命令面 抛 JobServiceError.jobFailed(jobId, "empty export.execute
+//   空结果按旧命令面 抛 JobServiceError.jobFailed(jobId, "empty output.run
 //   result")；
-// - cancel：先取消同会话的 exportExecute job（jobService.cancelScope），再
+// - cancel：先取消同会话的 outputRun job（jobService.cancelScope），再
 //   取消 ExportService 侧按会话登记的 run，成功返回 true；
 // - report：generateReport 的 reportType 仍为自由字符串（G8 待补枚举），
 //   ReportFormat 枚举在输入层保证 md/csv，映射回旧命令面 的字符串入口。
@@ -41,16 +41,74 @@ import GatherApplication
 public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
     private let exportService: ExportService
     private let jobService: JobService
+    /// W3b：WebDAV 传输与凭据（nil = 未接线，相关命令显式失败）。
+    private let webDAVPublisher: WebDAVPublisher?
+    private let webDAVCredentialSaver: (@Sendable (URL, String, String) throws -> Bool)?
+    private let webDAVCredentialLookup: (@Sendable (URL, String) -> String?)?
 
     /// @unchecked Sendable 依据：两个依赖都是构造后不再变更的 let；
     /// ExportService 的取消位由内部 NSLock 串行化，JobService 的任务表同样由
     /// 内部锁保护（与组合根同一约定）。
-    public init(exportService: ExportService, jobService: JobService) {
+    public init(
+        exportService: ExportService,
+        jobService: JobService,
+        webDAVPublisher: WebDAVPublisher? = nil,
+        webDAVCredentialSaver: (@Sendable (URL, String, String) throws -> Bool)? = nil,
+        webDAVCredentialLookup: (@Sendable (URL, String) -> String?)? = nil
+    ) {
         self.exportService = exportService
         self.jobService = jobService
+        self.webDAVPublisher = webDAVPublisher
+        self.webDAVCredentialSaver = webDAVCredentialSaver
+        self.webDAVCredentialLookup = webDAVCredentialLookup
     }
 
     // MARK: - 预览
+
+    // MARK: - WebDAV 发布
+
+    public func saveWebDAVCredential(_ input: WebDAVCredentialInput) async throws -> Bool {
+        guard let saveCredential = webDAVCredentialSaver else {
+            throw GatherError(code: .INVALID_PARAM, params: [
+                "field": "webdav", "reason": "credential store not wired",
+            ])
+        }
+        guard let url = URL(string: input.baseURL), url.scheme?.hasPrefix("http") == true else {
+            throw GatherError(code: .INVALID_PARAM, params: [
+                "field": "baseURL", "reason": "must be http(s)",
+            ])
+        }
+        return try saveCredential(url, input.username, input.password)
+    }
+
+    public func publish(
+        _ input: Confirmed<WebDAVPublishInput>,
+        onProgress: (@Sendable (Int, Int) -> Void)?
+    ) async throws -> WebDAVPublishSummary {
+        guard let publisher = webDAVPublisher else {
+            throw GatherError(code: .INVALID_PARAM, params: [
+                "field": "webdav", "reason": "publisher not wired",
+            ])
+        }
+        let payload = input.value
+        guard let url = URL(string: payload.baseURL), url.scheme?.hasPrefix("http") == true else {
+            throw GatherError(code: .INVALID_PARAM, params: [
+                "field": "baseURL", "reason": "must be http(s)",
+            ])
+        }
+        let password = webDAVCredentialLookup?(url, payload.username) ?? ""
+        let configuration = WebDAVConfiguration(
+            baseURL: url, username: payload.username,
+            password: password, remoteFolder: payload.remoteFolder)
+        let result = try await publisher.publish(
+            localPath: payload.localPath, configuration: configuration,
+            includePrefixes: payload.includePrefixes, onProgress: onProgress)
+        return WebDAVPublishSummary(
+            uploaded: result.uploaded,
+            failed: result.failed.map { WebDAVPublishFailureInfo(path: $0.path, reason: $0.reason) },
+            remoteRoot: result.remoteRoot,
+            abortedOnAuth: result.abortedOnAuth)
+    }
 
     public func preview(_ input: ExportInput) async throws -> ExportPreview {
         let options = try Self.requireOptions(input.options)
@@ -67,7 +125,7 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
             var completedPhotoIds: Set<String> = []
             if let fingerprint = deliveryFingerprint,
                let checkpoint = try? jobService.latestTerminalCheckpoint(
-                   dedupeKey: "export.execute:\(sessionId):\(fingerprint)"
+                   dedupeKey: "output.run:\(sessionId):\(fingerprint)"
                ),
                checkpoint["deliveryFingerprint"]?.stringValue == fingerprint {
                 resumedNames = checkpoint["destinations"]?.objectValue?.reduce(into: [String: String]()) { result, item in
@@ -86,6 +144,72 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         }
     }
 
+    // MARK: - 整套交付
+
+    /// 交付任务的稳定身份（排序键 + JSON 编码），用于 job dedupe。
+    ///
+    /// 只取「会影响成片」的部分：配方去掉 artifacts，联系表/画廊选项一律不计。
+    /// 它们只影响派生产物，算进身份会让勾选一个开关就换 job —— 继承不到 checkpoint 的
+    /// resume，整批成片被重导成 _2 副本（交付可恢复性被 UI 开关破坏）。
+    static func outputRunFingerprint(_ input: OutputRunInput) -> String {
+        struct Identity: Encodable {
+            var sessionId: String
+            var scope: ExportScope
+            var destinationRoot: String
+            var recipes: [OutputRecipe]
+        }
+        let identity = Identity(
+            sessionId: input.sessionId,
+            scope: input.scope,
+            destinationRoot: input.destinationRoot,
+            recipes: input.recipes.map(\.withoutArtifacts))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data: Data
+        do {
+            data = try encoder.encode(identity)
+        } catch {
+            return UUID().uuidString.lowercased()
+        }
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in data {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return String(hash, radix: 16)
+    }
+
+    /// 一个 job 跑完所有配方：checkpoint 带 recipes + root，执行器分派到 OutputService。
+    public func runRecipes(_ input: Confirmed<OutputRunInput>) async throws -> OutputRunSummary {
+        let payload = input.value
+        let sessionId = try LiveAPIInput.requireSessionId(payload.sessionId)
+        guard !payload.recipes.isEmpty else {
+            throw GatherError(code: .EXPORT_PARAMS_INVALID, params: [
+                "field": "recipes", "reason": "must not be empty",
+            ])
+        }
+        jobService.start()
+        let encoded = try map { try JSONValue(from: payload) }
+        // 去重键必须包含**配方内容**而不只是 id：id 在持久化后不变，改了长边/格式
+        // 仍会命中旧的 succeeded job，waitForResult 会返回上一次的旧结果。
+        let contentFingerprint = Self.outputRunFingerprint(payload)
+        return try await mapAsync {
+            let dedupe = "output.run:batch:\(sessionId):\(payload.destinationRoot):"
+                + contentFingerprint
+            let job = try self.jobService.create(JobCreateParams(
+                type: .outputRun,
+                scopeType: "session",
+                scopeId: sessionId,
+                dedupeKey: dedupe,
+                checkpoint: ["outputRun": .bool(true), "input": encoded]))
+            let result: OutputRunSummary? = try await self.jobService.waitForResult(jobId: job.id)
+            guard let result else {
+                throw JobServiceError.jobFailed(job.id, "empty output.run result")
+            }
+            return result
+        }
+    }
+
     // MARK: - 执行
 
     public func execute(_ input: Confirmed<ExportInput>) async throws -> ExportResult {
@@ -93,7 +217,7 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         let options = try Self.requireOptions(payload.options)
         let sessionId = payload.sessionId
         // makeDefault 的 router 可被 CLI/测试直接调用；start 是幂等的，
-        // 这里确保 export.execute 不会因宿主忘记启动 job service 而永久 queued。
+        // 这里确保 output.run 不会因宿主忘记启动 job service 而永久 queued。
         jobService.start()
         // D01：交付身份 = 完整输出参数 + 参与导出的照片集合指纹。只有完全相同的
         // 请求才复用同一任务身份（=真续跑，允许继承完成记录）。
@@ -102,10 +226,10 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         }
         let job = try map {
             try jobService.create(JobCreateParams(
-                type: .exportExecute,
+                type: .outputRun,
                 scopeType: "session",
                 scopeId: sessionId,
-                dedupeKey: "export.execute:\(sessionId):\(deliveryFingerprint)",
+                dedupeKey: "output.run:\(sessionId):\(deliveryFingerprint)",
                 checkpoint: [
                     "options": try JSONValue(from: options),
                     "deliveryFingerprint": .string(deliveryFingerprint),
@@ -116,7 +240,7 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
             try await jobService.waitForResult(jobId: job.id)
         }
         guard let result else {
-            throw JobServiceError.jobFailed(job.id, "empty export.execute result")
+            throw JobServiceError.jobFailed(job.id, "empty output.run result")
         }
         return result
     }
@@ -126,7 +250,7 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
     public func cancel(_ sessionId: String) async throws -> Bool {
         let id = try LiveAPIInput.requireSessionId(sessionId)
         return try map {
-            _ = try jobService.cancelScope(type: .exportExecute, scopeId: id)
+            _ = try jobService.cancelScope(type: .outputRun, scopeId: id)
             exportService.cancel(sessionId: id)
             return true
         }

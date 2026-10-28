@@ -13,7 +13,7 @@ public enum AnalysisJobType: String, Codable, CaseIterable, Equatable, Sendable 
     case duplicateScan = "duplicate.scan"
     case faceAnalyze = "face.analyze"
     case qualityScore = "quality.score"
-    case exportExecute = "export.execute"
+    case outputRun = "output.run"
     case checksumBackfill = "checksum.backfill"
 }
 

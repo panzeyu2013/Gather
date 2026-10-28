@@ -19,6 +19,12 @@ public enum TriageReasonCode: String, Codable, CaseIterable, Equatable, Sendable
     case motionBlur = "motion_blur"
     case exposureLow = "exposure_low"
     case closedEyeSuspect = "closed_eye_suspect"
+    /// 模型级信号（model_review）：真实眼睛几何分判闭眼，替代旧的"眼部梯度代理"。
+    case eyesClosed = "eyes_closed"
+    /// 主体脸合焦不足（人脸区域的拉普拉斯方差），比全局锐度更贴近"人脸糊了"。
+    case faceOutOfFocus = "face_out_of_focus"
+    /// 截图/文档（审美分模型的 isUtility）：婚礼/活动现场混进的非照片素材。
+    case utilityImage = "utility_image"
     case closeCall = "close_call"
     case tieWithGroup = "tie_with_group"
     case singleShot = "single_shot"

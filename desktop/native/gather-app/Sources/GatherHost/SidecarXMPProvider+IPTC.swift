@@ -93,6 +93,9 @@ extension SidecarXMPProvider {
     /// 合并 rdf:Alt：保留其它语言，只替换/删除 x-default。
     /// - defaultText == nil 且没有其它语言 → 返回空串（删除整个元素，清空语义）；
     /// - 有其它语言时即使清空 x-default 也保留容器（不替用户删翻译）。
+    /// 注意：清空后「旧 IIM 复活」的防线在写侧（删对应 dataset，见 IPTCIIMMapping）
+    /// 与读侧（XMP 独有字段不回退 IIM），不能靠保留空元素——那会改变 XMP 语义并
+    /// 让外部工具看到「字段存在但为空」。
     static func mergedAltElement(_ existing: String, qname: String, defaultText: String?) -> String {
         let text = existing as NSString
         let pattern = #"<rdf:li\b([^>]*)>(.*?)</rdf:li>"#
@@ -112,7 +115,7 @@ extension SidecarXMPProvider {
             lines.append("    <rdf:li xml:lang=\"x-default\">" + xmlEscape(defaultText) + "</rdf:li>")
         } else {
             // 清空默认语言但保留其它语言：显式留一个空 x-default，
-            // 读侧据此判定"字段已清空"而不再回退到 en/de（翻译不丢）。
+            // 读侧据此判定「字段已清空」而不再回退到 en/de（翻译不丢）。
             lines.append("    <rdf:li xml:lang=\"x-default\"></rdf:li>")
         }
         lines.append(contentsOf: kept.map { "    " + $0 })
