@@ -48,6 +48,58 @@ public final class RejectedMover: @unchecked Sendable {
     }
 
     /// photos: (photoId, 原路径)，调用方保证这批照片已确认淘汰。
+    /// 备份文件搬迁失败（目标已存在等）：整张移出按失败回滚，绝不覆盖既有备份。
+    public enum MoveError: Error, Equatable, CustomStringConvertible {
+        case backupConflict(String)
+        public var description: String {
+            switch self {
+            case .backupConflict(let path):
+                return "备份目标已存在，拒绝覆盖：\(path)"
+            }
+        }
+    }
+
+    /// 把旧 xmp 的 <xmp>.gather-backup-* 搬到新 xmp 旁边并改成新名前缀。
+    /// 返回 (source, target)，由调用方的 movedFiles 统一回滚。
+    private func moveSidecarBackups(
+        oldPhotoPath: String,
+        newPhotoPath: String
+    ) throws -> [(source: String, target: String)] {
+        let oldXmp = TSPath.xmpSidecarPath(oldPhotoPath)
+        let newXmp = TSPath.xmpSidecarPath(newPhotoPath)
+        let oldDir = (oldXmp as NSString).deletingLastPathComponent
+        let newDir = (newXmp as NSString).deletingLastPathComponent
+        let newBase = (newXmp as NSString).lastPathComponent
+        let entries: [String]
+        do {
+            entries = try fileManager.contentsOfDirectory(atPath: oldDir)
+        } catch {
+            // 目录存在却读不到 = 无法确认备份是否已搬：fail-closed（否则 DB 会指向
+            // 一个根本没搬走的备份路径）。目录本身不存在时上游搬照片就会先失败。
+            if fileManager.fileExists(atPath: oldDir) { throw error }
+            return []
+        }
+        var moved: [(source: String, target: String)] = []
+        for entry in entries.sorted() {
+            // 大小写/Unicode 不敏感（盘上可能是 IMG_1.XMP.gather-backup-*）。
+            guard let suffix = XMPBackupNaming.suffix(ofBackupFile: entry, forXMPPath: oldXmp)
+            else { continue }
+            let source = (oldDir as NSString).appendingPathComponent(entry)
+            let target = (newDir as NSString).appendingPathComponent(
+                XMPBackupNaming.make(xmpPath: newBase, suffix: suffix))
+            // 同目录同名的"搬到自己"：跳过，否则 moveItem 会误判冲突让整张失败。
+            if (source as NSString).standardizingPath == (target as NSString).standardizingPath {
+                continue
+            }
+            guard !fileManager.fileExists(atPath: target) else {
+                throw MoveError.backupConflict(target)
+            }
+            try fileManager.moveItem(atPath: source, toPath: target)
+            moved.append((source, target))
+        }
+        return moved
+    }
+
     public func move(photos: [(photoId: String, filepath: String)], destinationRoot: String) -> RejectedMoveResult {
         var moved: [String] = []
         var newPaths: [String] = []
@@ -80,6 +132,14 @@ public final class RejectedMover: @unchecked Sendable {
                     let destSidecar = (target as NSString).deletingPathExtension + ".xmp"
                     try fileManager.moveItem(atPath: sidecar, toPath: destSidecar)
                     movedFiles.append((sidecar, destSidecar))
+                }
+
+                // 交付备份（<xmp>.gather-backup-*）也要跟着走并改成新名前缀：
+                // cleanup/finalize 回放要求备份是新 xmp 的同目录兄弟，留在旧目录会被
+                // DeliveryBackupPath 判 invalidBackup 并终态丢弃，备份也永久滞留。
+                for backup in try moveSidecarBackups(
+                    oldPhotoPath: photo.filepath, newPhotoPath: target) {
+                    movedFiles.append(backup)
                 }
 
                 if let relocate {

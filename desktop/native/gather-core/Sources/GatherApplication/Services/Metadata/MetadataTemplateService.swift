@@ -168,16 +168,48 @@ public final class MetadataTemplateService: Sendable {
         }
 
         if !inputs.isEmpty {
+            // 与 triage 同口径：先记快照再写盘。record 失败就不写盘，否则"文件已改、
+            // 没有任何批次可撤销"且调用方只看到一条失败。
+            do {
+                try batches.record(MetadataApplyBatch(
+                    id: batchId, templateId: template.id, templateName: template.name,
+                    appliedAt: now, snapshots: inputs.compactMap { snapshots[$0.photoId] }
+                ))
+            } catch {
+                failed.append(contentsOf: inputs.map {
+                    MetadataApplyFailure(
+                        photoId: $0.photoId, message: "批次记录失败，未写盘：\(error)")
+                })
+                return MetadataApplyResult(
+                    batchId: batchId, written: [], skipped: skipped,
+                    conflicts: conflicts, failed: failed
+                )
+            }
             let outcome = try await metadata.applyMetadataAttributes(inputs, source: .template)
             skipped.append(contentsOf: outcome.skipped)
             failed.append(contentsOf: outcome.failed)
-            // 回读校验失败也可能已写盘：按 attempted 记快照，保证可撤销。
-            let writtenSnapshots = outcome.attempted.compactMap { snapshots[$0] }
-            if !writtenSnapshots.isEmpty {
-                try batches.record(MetadataApplyBatch(
-                    id: batchId, templateId: template.id, templateName: template.name,
-                    appliedAt: now, snapshots: writtenSnapshots
-                ))
+            // 回读校验失败也可能已写盘：按 attempted 裁剪快照；一张都没 attempted 时
+            // 批次没有实际效果，标记已撤销，避免 UI 给出"可撤销"的假入口。
+            let attemptedSnapshots = outcome.attempted.compactMap { snapshots[$0] }
+            if attemptedSnapshots.isEmpty {
+                do {
+                    try batches.markUndone(id: batchId)
+                } catch {
+                    GatherLogger.log(
+                        "template batch markUndone after empty write failed (batch=\(batchId)): \(error)",
+                        level: .warn)
+                }
+            } else if attemptedSnapshots.count < inputs.count {
+                do {
+                    try batches.record(MetadataApplyBatch(
+                        id: batchId, templateId: template.id, templateName: template.name,
+                        appliedAt: now, snapshots: attemptedSnapshots
+                    ))
+                } catch {
+                    GatherLogger.log(
+                        "template batch trim after partial write failed (batch=\(batchId)): \(error)",
+                        level: .warn)
+                }
             }
             return MetadataApplyResult(
                 batchId: batchId, written: outcome.written, skipped: skipped,

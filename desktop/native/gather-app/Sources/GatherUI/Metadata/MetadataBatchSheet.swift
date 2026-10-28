@@ -87,7 +87,7 @@ struct MetadataBatchSheet: View {
         } message: {
             Text(pendingUndo?.kind == "triage"
                  ? l10n("还原 rating/关键词，并清除私有命名空间信号。")
-                 : l10n("还原这批照片的描述性字段与 rating。"))
+                 : l10n("还原这批照片的描述性字段。"))
         }
     }
 
@@ -125,10 +125,12 @@ struct MetadataBatchSheet: View {
                 failedCount = try await viewModel.metadataAPI
                     .undoTemplate(confirmed).failed.count
             }
+            // reload() 成功会把 errorText 清空：失败提示必须在它之后写，
+            // 否则"部分撤销失败"的唯一反馈会在一个 await 内被抹掉。
+            await reload()
             if failedCount > 0 {
                 errorText = l10n.format("撤销有 %lld 张失败，可重试", failedCount)
             }
-            await reload()
             await viewModel.loadPage(reset: true)
             viewModel.loadMetadataDetail()
         } catch {

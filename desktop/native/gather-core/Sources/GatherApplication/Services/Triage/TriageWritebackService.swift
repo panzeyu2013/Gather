@@ -93,7 +93,8 @@ public final class TriageWritebackService: Sendable {
                     beforeRating: decision.rating == nil
                         ? nil : Int(current.rating ?? Double(detail.exif.rating)),
                     beforeKeywords: decision.keyword == nil ? nil : (current.keywords ?? []),
-                    appliedKeyword: decision.keyword
+                    appliedKeyword: decision.keyword,
+                    beforeTriageSignal: current.triageSignal
                 )
                 return .input(decision.photoId, attributes, snapshot)
             } catch {
@@ -153,15 +154,32 @@ public final class TriageWritebackService: Sendable {
                 })
             }
         }
-        if written.isEmpty, !failed.isEmpty, let batches {
-            // 整批一张都没写成：批次快照没有对应落盘，留着只会给 UI 一个"可撤销的
-            // 假入口"（撤销会写回/清信号，反而制造改动）。标记已撤销。
-            do {
-                try batches.markUndone(id: batchId)
-            } catch {
-                GatherLogger.log(
-                    "triage batch markUndone after empty write failed (batch=\(batchId)): \(error)",
-                    level: .warn)
+        if let batches {
+            if written.isEmpty {
+                // 整批一张都没写成：批次快照没有对应落盘，留着只会给 UI 一个"可撤销的
+                // 假入口"（撤销会写回/清信号，反而制造改动）。标记已撤销。
+                do {
+                    try batches.markUndone(id: batchId)
+                } catch {
+                    GatherLogger.log(
+                        "triage batch markUndone after empty write failed (batch=\(batchId)): \(error)",
+                        level: .warn)
+                }
+            } else if written.count < inputs.count {
+                // 部分失败：把快照裁剪成"真正写成的照片"。否则 undo 会回带没写过的照片
+                // 的 before 值（窗口内用户/外部软件的新值会被悄悄冲掉）。
+                let writtenIDs = Set(written)
+                do {
+                    try batches.record(MetadataApplyBatch(
+                        id: batchId, templateId: Self.batchTemplateID,
+                        templateName: Self.batchTemplateID, appliedAt: now,
+                        snapshots: inputs.compactMap { snapshots[$0.photoId] }
+                            .filter { writtenIDs.contains($0.photoId) }))
+                } catch {
+                    GatherLogger.log(
+                        "triage batch trim after partial write failed (batch=\(batchId)): \(error)",
+                        level: .warn)
+                }
             }
         }
         return TriageWritebackOutcome(written: written, skipped: skipped, failed: failed)
@@ -212,7 +230,8 @@ public final class TriageWritebackService: Sendable {
             if snapshot.appliedKeyword == nil, let beforeKeywords = snapshot.beforeKeywords {
                 attributes.keywords = beforeKeywords
             }
-            attributes.triageSignal = ""
+            // 恢复写回前的信号（含"之前没有"→ 空串清除），不是无条件清空。
+            attributes.triageSignal = snapshot.beforeTriageSignal ?? ""
             inputs.append((snapshot.photoId, attributes))
         }
         var written: [String] = []

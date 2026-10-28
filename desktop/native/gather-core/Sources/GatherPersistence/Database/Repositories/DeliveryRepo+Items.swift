@@ -270,12 +270,15 @@ extension DeliveryRepo {
                     from: typed.rawValue,
                     to: DeliveryStatus.pending.rawValue)
             }
+            // 已有行的基线为空（preview 建行 / 旧数据）时采用调用方本次算出的基线：
+            // 空基线会让执行器整段跳过"外部改动检测"，等于把 fail-closed 保护关掉。
             if let merged = try mergeInput(
                 xmpPath: current.xmpPath,
                 photoPath: current.photoPath.isEmpty ? photoPath : current.photoPath,
                 expectedRevision: current.revision,
                 newRevision: current.revision + 1,
-                baseFingerprint: current.baseFingerprint,
+                baseFingerprint: current.baseFingerprint.isEmpty
+                    ? baseFingerprint : current.baseFingerprint,
                 baseValues: current.baseValues
             ) {
                 return merged

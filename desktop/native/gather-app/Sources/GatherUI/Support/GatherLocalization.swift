@@ -168,6 +168,7 @@ public enum GatherLocalization {
     "ASSET_RELINK_XMP_BUSY": "XMP 正在写入，暂时不能重连照片；请稍后重新扫描",
     "ASSET_RELINK_OUTBOX_CONFLICT": "新旧路径都存在未完成的 XMP 操作，请先在恢复中心处理",
     "ASSET_RELINK_XMP_CONFLICT": "目标路径已有不同的 XMP 元数据状态，请先人工确认后再重连",
+    "ASSET_RELINK_TARGET_EXISTS": "目标路径已被其它资产登记，请先重连或清理该登记后再移出",
     "ASSET_RELINK_SAME_ROOT": "新资源根目录与当前根目录相同，无需重连",
     "ASSET_RELINK_NESTED_ROOT": "新旧资源根目录存在嵌套关系，不能互相重连",
     "ASSET_RELINK_NO_FILES_REGISTERED": "该资源根目录下没有已登记的资产文件，无法重连",

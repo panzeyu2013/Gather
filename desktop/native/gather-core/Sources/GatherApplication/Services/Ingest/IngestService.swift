@@ -181,13 +181,14 @@ public final class IngestService: @unchecked Sendable {
         var unreadable: [String] = []
         var sequence = 1
         var usedDestinations = Set<String>()
+        var usedDestinationsFolded = Set<String>()
         var seenSources = Set<String>()
         /// (源目录, 源 stem) → 第一张的目标 stem（相对目的地根、不含扩展名）。
         /// 兄弟必须复用同一 stem：侧车按 stem 推导，stem 不同会让第二张解析到不存在的
         /// .xmp，RAW/JPEG 的配对键（stem）也会一起失配。
         var sharedStems: [String: String] = [:]
-        /// 已有同组冲突的 stem：整组都按冲突处理，避免与既有文件混成一对。
-        var conflictedStems = Set<String>()
+        /// 每项所属的 stem 组（与 items 平行）；冲突传播在收集结束后统一做。
+        var stemKeys: [String] = []
 
         for source in sourcePaths {
             // 同一目录与其子项一起传入时只处理一次，避免同文件两份拷贝。
@@ -255,11 +256,15 @@ public final class IngestService: @unchecked Sendable {
                     continue
                 }
 
-                if usedDestinations.contains(dest) {
+                // 大小写不敏感卷上 "IMG_1.CR3" 与 "img_1.cr3" 是同一个目标：
+                // 只按原串去重会让第二张到执行期才撞 destinationExists 并回滚。
+                let destKey = dest.precomposedStringWithCanonicalMapping.lowercased()
+                if usedDestinations.contains(dest) || usedDestinationsFolded.contains(destKey) {
                     skipped.append(file)   // 模板里没有 {seq}/{orig} 时的自撞
                     continue
                 }
                 usedDestinations.insert(dest)
+                usedDestinationsFolded.insert(destKey)
 
                 var conflict = false
                 if fileManager.fileExists(atPath: dest) {
@@ -272,19 +277,27 @@ public final class IngestService: @unchecked Sendable {
                     }
                     conflict = true
                 }
-                // 同组里任一张与既有文件冲突 → 整组都按冲突处理：否则兄弟会被
-                // 放进一个内容不同的既有文件旁边，形成错误的配对候选。
-                if conflictedStems.contains(stemKey) { conflict = true }
-                if conflict { conflictedStems.insert(stemKey) }
                 // 冲突项也占序号：同名模板（{seq}）下不占位会与后续照片撞名。
-                let isFirstOfStem = sharedStems[stemKey] == nil
-                if isFirstOfStem {
+                if sharedStems[stemKey] == nil {
                     sequence += 1
                     sharedStems[stemKey] = (relative as NSString).deletingPathExtension
                 }
+                stemKeys.append(stemKey)
                 items.append(IngestItem(
                     sourcePath: file, destPath: dest, conflict: conflict, size: size,
                     sidecarPath: sidecarPath))
+            }
+        }
+        // 冲突传播（整组）：同 stem 兄弟只要有一张与既有文件内容不同，整组都不能落地，
+        // 否则会出现"RAW 落地 + 既有异内容 JPEG 同 stem"的假配对候选。这里做后处理，
+        // 因为先出现的项当时还不知道后面的兄弟会冲突。
+        var conflicted = Set<String>()
+        for (index, key) in stemKeys.enumerated() where items[index].conflict {
+            conflicted.insert(key)
+        }
+        if !conflicted.isEmpty {
+            for index in items.indices where conflicted.contains(stemKeys[index]) {
+                items[index].conflict = true
             }
         }
         return IngestPlan(items: items, skipped: skipped, unreadable: unreadable)
@@ -311,8 +324,6 @@ public final class IngestService: @unchecked Sendable {
             var sidecarCreated: String?
             var secondPath: String?
             var secondCopyStarted = false
-            var secondSidecarPath: String?
-            var secondSidecarStarted = false
             do {
                 // 防御性复核：计划之后路径仍不得逃逸目的地根目录。
                 guard Self.isWithin(item.destPath, root: options.destinationRoot) else {
@@ -360,9 +371,12 @@ public final class IngestService: @unchecked Sendable {
                     guard !fileManager.fileExists(atPath: target) else {
                         throw IngestError.destinationExists(target)
                     }
+                    // 用 transfer（<dest>.gather-part → rename）而不是裸 copyItem：
+                    // 半成品只可能落在我们自己的临时文件名上，目标路径出现即代表成功，
+                    // 回滚标记只在成功后置位（不会删掉并发写者刚建好的文件）。
+                    try transfer(item.destPath, to: target, move: false, verify: false)
                     secondPath = target
                     secondCopyStarted = true
-                    try fileManager.copyItem(atPath: item.destPath, toPath: target)
                     if item.sidecarPath != nil {
                         let destSidecar = item.destSidecarPath
                         if fileManager.fileExists(atPath: destSidecar) {
@@ -374,9 +388,10 @@ public final class IngestService: @unchecked Sendable {
                                     throw IngestError.destinationExists(secondSidecar)
                                 }
                             } else {
-                                secondSidecarPath = secondSidecar
-                                secondSidecarStarted = true
-                                try fileManager.copyItem(atPath: destSidecar, toPath: secondSidecar)
+                                // 这是第二目的地里最后一个可失败步骤：transfer 失败时
+                                // 半成品只落在 .gather-part 且由 transfer 清理，无需回滚。
+                                try transfer(
+                                    destSidecar, to: secondSidecar, move: false, verify: false)
                             }
                         }
                     }
@@ -384,16 +399,11 @@ public final class IngestService: @unchecked Sendable {
                 }
                 copied.append(item.destPath)
             } catch {
-                // 回滚本张产物（与落地顺序相反）：第二侧车 → 第二副本 → 侧车 → 照片。
+                // 回滚本张产物（与落地顺序相反）：第二副本 → 侧车 → 照片。
                 // 回滚本身失败不能静默：把需人工确认的路径写进失败原因。
                 var rollbackErrors: [String] = []
                 func note(_ action: () throws -> Void, _ label: String) {
                     do { try action() } catch { rollbackErrors.append("\(label): \(error)") }
-                }
-                if secondSidecarStarted, let secondSidecarPath,
-                   fileManager.fileExists(atPath: secondSidecarPath) {
-                    note({ try fileManager.removeItem(atPath: secondSidecarPath) },
-                         secondSidecarPath)
                 }
                 if secondCopyStarted, let secondPath,
                    fileManager.fileExists(atPath: secondPath) {
@@ -456,7 +466,16 @@ public final class IngestService: @unchecked Sendable {
                 }
                 throw error
             }
-            try fileManager.moveItem(atPath: temp, toPath: dest)
+            do {
+                try fileManager.moveItem(atPath: temp, toPath: dest)
+            } catch {
+                // 源已搬到 temp：rename 失败时必须先移回源，否则唯一副本留在
+                // .gather-part（下一次同目标摄取会把它当残留删掉）。
+                if !fileManager.fileExists(atPath: source) {
+                    do { try fileManager.moveItem(atPath: temp, toPath: source) } catch {}
+                }
+                throw error
+            }
         } else {
             try fileManager.copyItem(atPath: source, toPath: temp)
             if verify {
@@ -471,7 +490,8 @@ public final class IngestService: @unchecked Sendable {
         }
     }
 
-    /// 目标是否在根目录内（词法归一化；仅用于计划/执行的路径边界，不解析 symlink）。
+    /// 目标是否在根目录内：**解析 symlink 后**再做前缀比较（计划与 execute 前各查一次，
+    /// 防止计划后有人在目的地里建 symlink 把写入带出根目录）。
     static func isWithin(_ path: String, root: String) -> Bool {
         // 目的地可能有 symlink 子目录：解析后再做前缀比较，避免写到根外。
         let target = URL(fileURLWithPath: path).resolvingSymlinksInPath().path

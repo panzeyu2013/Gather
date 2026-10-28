@@ -147,18 +147,25 @@ fi
 #      隔着 20 多个字节，前缀窗口会把 44 误当版本号。
 adr_flat=$(tr '\n' ' ' < "$ADR" 2>/dev/null | tr -s ' ')
 colon_versions=$(printf '%s' "$adr_flat" \
-  | grep -oE '当前 schema[[:space:]]*(为|是)?[[:space:]]*[：:]?[[:space:]]*[0-9]+' 2>/dev/null \
+  | grep -oE '当前 schema[[:space:]]*(版本)?[[:space:]]*(为|是|=|：|:)?[[:space:]]*[0-9]+' 2>/dev/null \
   | grep -oE '[0-9]+$' || true)
 user_version_versions=$(printf '%s' "$adr_flat" | grep -oE 'user_version[^0-9]{0,4}[0-9]+' 2>/dev/null | grep -oE '[0-9]+$' || true)
 doc_versions=$(printf '%s\n%s\n' "$colon_versions" "$user_version_versions" | grep -E '^[0-9]+$' | sort -n | uniq | tr '\n' ' ' || true)
 if [ -n "$doc_versions" ]; then
   schema_scope="当前 schema 声明（全部）"
 else
-  doc_versions=$(grep -oE 'schema[[:space:]]+[0-9]+' "$ADR" 2>/dev/null | grep -oE '[0-9]+' | sort -n | uniq | tr '\n' ' ')
+  # set -euo pipefail 下 grep 无命中会让整条管道非 0：必须兜住，否则 ADR 缺声明时
+  # 脚本直接中止、没有任何摘要（warning 模式也一样）。
+  doc_versions=$(grep -oE 'schema[[:space:]]+[0-9]+' "$ADR" 2>/dev/null | grep -oE '[0-9]+' | sort -n | uniq | tr '\n' ' ' || true)
   schema_scope="全文 schema 数字（未找到“当前 schema”声明）"
 fi
 schema_mismatch=0
 schema_notes=""
+if [ -z "$doc_versions" ]; then
+  # 一条版本声明都找不到 = 门禁失去比对对象，按失败处理（不能静默判绿）。
+  schema_notes="ADR 未找到任何 schema 版本声明; "
+  schema_mismatch=1
+fi
 
 if [ -z "$schema_ver" ]; then
   schema_notes="无法在 Schema.swift 定位版本常量"

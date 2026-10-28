@@ -67,6 +67,31 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
                 throw GatherError.invalidParameter(
                     field: "destinationRoot", reason: "must be inside the session source path")
             }
+            // 第二目的地与主目的地同等边界：绝对路径、非根、不与主目的地相交，
+            // 也不得落在会话源树内（否则副本会被下一轮 scan 扫成重复资产）。
+            if let second = payload.secondDestinationRoot {
+                let secondPath = URL(fileURLWithPath: second)
+                    .resolvingSymlinksInPath().path
+                let destinationPath = URL(fileURLWithPath: payload.destinationRoot)
+                    .resolvingSymlinksInPath().path
+                guard secondPath.hasPrefix("/"), secondPath != "/" else {
+                    throw GatherError.invalidParameter(
+                        field: "secondDestinationRoot",
+                        reason: "must be an absolute directory other than /")
+                }
+                guard secondPath != destinationPath,
+                      !secondPath.hasPrefix(destinationPath + "/"),
+                      !destinationPath.hasPrefix(secondPath + "/") else {
+                    throw GatherError.invalidParameter(
+                        field: "secondDestinationRoot",
+                        reason: "must not overlap destinationRoot")
+                }
+                guard secondPath != base, !secondPath.hasPrefix(base + "/") else {
+                    throw GatherError.invalidParameter(
+                        field: "secondDestinationRoot",
+                        reason: "must be outside the session source path")
+                }
+            }
             var existing: [String: String] = [:]
             do {
                 existing = try sessionService.photoChecksums(sessionId: payload.sessionId)

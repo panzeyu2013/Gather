@@ -137,7 +137,7 @@ extension CullingViewModel {
                 }
                 cursor = result.nextCursor
                 pages += 1
-            } while cursor != nil && pages < 100
+            } while cursor != nil && pages < 500   // 500×200 = 100k，与输入上限一致
         } catch {
             triageError = CommandError(error)
             return nil
@@ -158,8 +158,9 @@ extension CullingViewModel {
             if let failure = result.failed.first {
                 triageError = CommandError(APIError.failed(failure.message))
             }
-            lastTriageWritebackBatchId = (result.written.isEmpty && result.failed.isEmpty)
-                ? nil : result.batchId
+            // 一张都没写成时服务已把批次标记 undone：再挂 batchId 只会得到一个必然
+            // 抛 batchAlreadyUndone 的死入口。
+            lastTriageWritebackBatchId = result.written.isEmpty ? nil : result.batchId
             await loadPage(reset: true)
         } catch {
             triageError = CommandError(error)

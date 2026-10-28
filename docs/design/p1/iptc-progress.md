@@ -2,7 +2,7 @@
 
 ## 结论
 
-剩余项按推荐方案收尾完成：core **1327/199**、app **713/82** 全绿；12 个 check-*.sh（strict 可用者带 `--strict`，另跑 test-catalog `--self-test` 负例）、schema verify（44/384/72/65、user_version=4、0 违规）、docs/l10n 全过。
+剩余项按推荐方案收尾完成：core **1335/199**、app **715/82** 全绿；12 个 check-*.sh（strict 可用者带 `--strict`，另跑 test-catalog `--self-test` 负例）、schema verify（44/384/72/65、user_version=4、0 违规）、docs/l10n 全过。
 
 ## 本轮收尾
 
@@ -27,13 +27,13 @@
 | 基线 | 旧 | 新 | 来源 |
 |---|---|---|---|
 | cleanup `unchecked_sendable` | 54 | 58 | 新增 4 个需 NSLock/端口持有的类型；TriageWritebackService、MetadataTemplateService 已改为编译器校验的 `Sendable` |
-| cleanup `try_optional` | 228 | 256 | 新增代码的 best-effort 路径（临时文件清理、回滚、缓存投影、批次留证）；pre-merge 修复把 4 处"投影刷新"的静默 `try?` 改成带日志的 do/catch，回滚路径新增 5 处 Best-effort，净值为 0 |
+| cleanup `try_optional` | 228 | 250 | 新增代码的 best-effort 路径（临时文件清理、回滚、缓存投影、批次留证）；复评后把投影刷新/批次写入改成 do/catch，实测收紧到 250 |
 | design system `font.callout` | 88 | 89 | 新增 Sheet 的标题/说明行 |
 | design system `literalPadding` | 170 | 175 | 新增 6 个 Sheet/面板 |
 | design system `literalSpacing` | 243 | 257 | 同上 |
 | design system `theme.legacyAlias` / `radius.legacyAlias` | 18 / 20 | 17 / 15 | 下降（改善），随新面板 token 化 |
-| protocol `public_types` | 272 | 304 | IPTC/模板/摄取/分面 DTO |
-| protocol `public_declarations` | 1469 | 1713 | 同上（pre-merge 去掉 1 处冗余 `public`、新增 1 处白名单常量，净值不变） |
+| protocol `public_types` | 272 | 305 | IPTC/模板/摄取/分面 DTO + `XMPBackupNaming` |
+| protocol `public_declarations` | 1469 | 1719 | 同上（复评去掉 1 处冗余 `public`，新增 `XMPBackupNaming` 5 个静态成员与白名单常量） |
 
 protocol `zero_reference_types` 1 → 0（改善）。基线与当前实测相等（零余量），
 后续任何新增都会被门禁拦下。
@@ -72,8 +72,8 @@ FSEventStreamRef、两个 `*Store` 的缓存 + NSLock），在 macOS 14 目标�
   回滚增加 `mainCreated` 标志，目标已存在（并发/重复执行）时不再删除既有的他人文件；
   兄弟归组改按 (源目录, 源 stem)，无 .xmp 的 RAW+JPEG 也能配对；冲突传播整组；
   回滚失败写进失败原因；删掉已无赋值点的 `destSidecarOverride`。
-- 门禁：`check-docs` 恢复「当前 schema 为/是 N」「当前 schema N」形态（只认冒号会让
-  这类断言从判红变判绿），仍用 `user_version` 兜住 44 表那句。
+- 门禁：`check-docs` 恢复「当前 schema 为/是/=/版本为 N」形态（只认冒号会让这类断言
+  从判红变判绿），仍用 `user_version` 兜住 44 表那句；缺声明直接判红。
 - triage：输入上限 10k→100k（覆盖大库全会话写回），UI 不再用 `try?` 吞校验错误；
   批次记录失败保留已累积的失败；关键词按 fold 去重（与 undo 判定同口径）；
   整批零写入时把批次标记已撤销，避免"可撤销的假入口"。

@@ -145,6 +145,28 @@ private struct MutationFixture {
 
 @Suite("S5c-2b-3b-2b-2 手动元数据队列")
 struct MetadataMutationServiceTests {
+    @Test("侧车存在但读不到指纹：入队 fail-closed，不落交付行")
+    func fingerprintReadFailureFailsClosed() throws {
+        let fixture = try MutationFixture()
+        defer { fixture.cleanup() }
+        // 让侧车路径变成一个目录：stat 成功、内容读取抛错（模拟坏链接/权限/IO 错误）。
+        let sidecar = TSPath.xmpSidecarPath(fixture.photoPath)
+        try FileManager.default.createDirectory(
+            atPath: sidecar, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: sidecar) }
+
+        #expect(throws: GatherError.self) {
+            _ = try fixture.mutations.queuePhotoValues(
+                sessionId: fixture.sessionId,
+                photoId: fixture.photoId,
+                values: ["rating": .number(3)],
+                source: .manual
+            )
+        }
+        #expect(try fixture.deliveryRepo.get(fixture.xmpPath) == nil,
+                "指纹读不到时不能留下空基线交付行（否则执行器会跳过外部改动检测）")
+    }
+
     @Test("queuePhotoValues：落 deliveries(pending, revision+1) + metadata item + 会话链接")
     func queuePhotoValuesWritesDeliveryModel() throws {
         let fixture = try MutationFixture()

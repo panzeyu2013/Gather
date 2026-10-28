@@ -6,6 +6,75 @@
 import Foundation
 import GatherProtocol
 
+extension SidecarXMPProvider {
+    /// 已知命名空间 → 规范前缀（与 XMPFieldDescriptor 表、写入侧共用）。
+    static let canonicalPrefixes: [(uri: String, prefix: String)] = {
+        var pairs = XMPFieldDescriptor.all.map { (uri: $0.namespace, prefix: $0.prefix) }
+        pairs.append((XMPNamespaces.rdf, "rdf"))
+        pairs.append((XMPNamespaces.gatherTriage, "gather"))
+        return pairs
+    }()
+
+    /// 把「绑定到已知命名空间、但用了非规范前缀」的标签/属性改写成规范前缀。
+    ///
+    /// 为什么需要：IPTC 收集器按 descriptor 表的规范前缀查表；外部工具若把同一命名
+    /// 空间绑到 `ipTC:`/`ps:` 之类的前缀，整字段会读不到。只改 XML 标签内部
+    /// （`<...>`），不碰文本/CDATA；无法解码或规范前缀被绑到别的 URI 时原样返回。
+    struct PrefixNormalization {
+        var text: String
+        /// 归一化后新出现的规范前缀（原文档没有声明，需要调用方补 xmlns）。
+        var introduced: [(prefix: String, uri: String)]
+    }
+
+    static func normalizeKnownPrefixes(_ data: Data) -> Data {
+        guard let text = String(data: data, encoding: .utf8) else { return data }
+        return Data(normalizeKnownPrefixes(text).text.utf8)
+    }
+
+    static func normalizeKnownPrefixes(_ text: String) -> PrefixNormalization {
+        let nsText = text as NSString
+        let fullRange = NSRange(location: 0, length: nsText.length)
+        guard let declRegex = try? NSRegularExpression(
+            pattern: #"xmlns:([A-Za-z_][-\w.]*)\s*=\s*["']([^"']*)["']"#)
+        else { return PrefixNormalization(text: text, introduced: []) }
+        var declared: [String: String] = [:]
+        for match in declRegex.matches(in: text, range: fullRange) {
+            declared[nsText.substring(with: match.range(at: 1))] =
+                nsText.substring(with: match.range(at: 2))
+        }
+        var replacements: [(from: String, to: String)] = []
+        var introduced: [(prefix: String, uri: String)] = []
+        var introducedSet = Set<String>()
+        for (uri, canonical) in canonicalPrefixes {
+            // 规范前缀已被绑到别的 URI：改写会制造歧义，跳过该命名空间。
+            if let bound = declared[canonical], bound != uri { continue }
+            for (prefix, boundURI) in declared where boundURI == uri && prefix != canonical {
+                replacements.append((prefix + ":", canonical + ":"))
+                if declared[canonical] == nil, introducedSet.insert(canonical).inserted {
+                    introduced.append((canonical, uri))
+                }
+            }
+        }
+        guard !replacements.isEmpty,
+              let tagRegex = try? NSRegularExpression(pattern: #"<[^>]*>"#)
+        else { return PrefixNormalization(text: text, introduced: []) }
+        var result = text
+        // 逆序替换：前面的 range 不受后面编辑影响。
+        for match in tagRegex.matches(in: text, range: fullRange).reversed() {
+            guard let range = Range(match.range, in: result) else { continue }
+            var segment = String(result[range])
+            for (from, to) in replacements {
+                let escaped = NSRegularExpression.escapedPattern(for: from)
+                // 前缀前的字符：空白/属性分隔、开标签的 <、闭标签的 /。
+                segment = segment.replacingOccurrences(
+                    of: "([\\s</])" + escaped, with: "$1" + to, options: .regularExpression)
+            }
+            result.replaceSubrange(range, with: segment)
+        }
+        return PrefixNormalization(text: result, introduced: introduced)
+    }
+}
+
 /// 描述性元数据的 SAX 收集器。
 final class IPTCXMLDelegate: NSObject, XMLParserDelegate {
     private struct Capture {
