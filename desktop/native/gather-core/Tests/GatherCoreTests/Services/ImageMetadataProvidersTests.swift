@@ -120,6 +120,84 @@ struct ImageMetadataProvidersTests {
         #expect(MetadataService.embeddedAttributesFromParse(iptcSegments)?.keywords == ["iptc-a", "iptc-b"])
     }
 
+    @Test("内嵌 IPTC：dc 优先、IIM 回退、Alt 数组解包（P0 / B1）")
+    func mapsEmbeddedDescriptiveMetadata() {
+        let dc = JSONValue.object([
+            "title": .array([.string("上海夜色")]),
+            "description": .string("dc 里的说明"),
+            "creator": .array([.string("张三")]),
+            "rights": .string("© 2026 张三"),
+        ])
+        let xmp = JSONValue.object([
+            "Headline": .string("夜色"),
+            "City": .string("上海"),
+            "State": .string("上海市"),
+            "Country": .string("中国"),
+            "Credit": .string("Self"),
+            "Location": .string("外滩"),
+        ])
+        let iptc = JSONValue.object([
+            "ObjectName": .string("IIM 标题（应被 dc 覆盖）"),
+            "Caption/Abstract": .string("IIM 说明（应被 dc 覆盖）"),
+            "CopyrightNotice": .string("IIM 版权（应被 dc 覆盖）"),
+            "Country/PrimaryLocationCode": .string("CN"),
+            "SubLocation": .string("外滩"),
+            "Writer/Editor": .string("李四"),
+            "Scene": .array([.string("011100")]),
+        ])
+        let attributes = MetadataService.embeddedAttributesFromParse(
+            MetadataParseSegments(xmp: xmp, dc: dc, iptc: iptc))
+        let descriptive = attributes?.descriptive
+        #expect(descriptive?.title == "上海夜色", "dc:title 必须优先于 IIM ObjectName")
+        #expect(descriptive?.caption == "dc 里的说明")
+        #expect(descriptive?.creator == ["张三"])
+        #expect(descriptive?.copyrightNotice == "© 2026 张三")
+        #expect(descriptive?.headline == "夜色")
+        #expect(descriptive?.city == "上海")
+        #expect(descriptive?.location == "外滩", "计划 B1 验收字段：location 必须映射")
+        #expect(descriptive?.state == "上海市")
+        #expect(descriptive?.country == "中国")
+        #expect(descriptive?.countryCode == "CN", "IIM 回退字段必须能读")
+        #expect(descriptive?.sublocation == "外滩")
+        #expect(descriptive?.captionWriter == "李四")
+        #expect(descriptive?.scene == ["011100"])
+    }
+
+    @Test("内嵌 IPTC：真实 JPEG 的 caption/版权/作者可读（Bridge 写入形态）")
+    func readsRealJpegIPTCDescriptive() async throws {
+        let dir = NSTemporaryDirectory() + "gather-iptc-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/bridge.jpg"
+        try writeJPEG(at: path, iptc: [
+            kCGImagePropertyIPTCCaptionAbstract: "桥上的说明",
+            kCGImagePropertyIPTCCopyrightNotice: "© 2024 摄影师",
+            kCGImagePropertyIPTCByline: "王五",
+            kCGImagePropertyIPTCObjectName: "外滩日落",
+            kCGImagePropertyIPTCCity: "上海",
+            kCGImagePropertyIPTCContentLocationName: "外滩",
+        ], xmpSubject: nil)
+        let segments = try #require(await ImageIOExifProvider().parse(filePath: path, isJpeg: true))
+        let descriptive = try #require(
+            MetadataService.embeddedAttributesFromParse(segments)?.descriptive)
+        #expect(descriptive.caption == "桥上的说明")
+        #expect(descriptive.copyrightNotice == "© 2024 摄影师")
+        #expect(descriptive.creator == ["王五"])
+        #expect(descriptive.title == "外滩日落")
+        #expect(descriptive.city == "上海")
+        #expect(descriptive.location == "外滩", "IIM ContentLocationName 必须回退可读")
+    }
+
+    @Test("侧车覆盖内嵌：逐字段合并，不整块丢弃内嵌 IPTC（P0 / B1）")
+    func mergesDescriptivePerField() {
+        let embedded = DescriptiveMetadata(caption: "内嵌说明", copyrightNotice: "内嵌版权", city: "上海")
+        let sidecar = DescriptiveMetadata(title: "侧车标题", caption: "侧车说明")
+        let merged = MetadataService.mergeDescriptive(embedded, sidecar)
+        #expect(merged?.caption == "侧车说明")
+        #expect(merged?.copyrightNotice == "内嵌版权", "侧车没写的字段必须保留内嵌值")
+        #expect(merged?.city == "上海")
+        #expect(merged?.title == "侧车标题")
+    }
+
     /// 写一张带 IPTC 或内嵌 XMP dc:subject 的真实 JPEG。
     private func writeJPEG(at path: String, iptc: [CFString: Any]?, xmpSubject: [String]?) throws {
         let url = URL(fileURLWithPath: path)

@@ -166,4 +166,28 @@ struct SimilarityResultRepoTests {
         let emptyResultId = try repo.replace(sessionId: "s1", groupsJson: "{}", statsJson: "{}", threshold: 20, minGroupSize: 2, memberships: [])
         #expect(try repo.getGroupMembers(sessionId: "s1", resultId: emptyResultId) == nil)
     }
+
+    @Test func archivedMembersAreHiddenButResultIsNotEmpty() throws {
+        let db = try makeDB()
+        try insertSession(db, id: "s1")
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: "/a.jpg")
+        try insertPhoto(db, id: "p2", sessionId: "s1", filepath: "/b.jpg")
+        try insertPhoto(db, id: "p3", sessionId: "s1", filepath: "/c.jpg")
+        try insertPhoto(db, id: "p4", sessionId: "s1", filepath: "/d.jpg")
+        let repo = SimilarityResultRepo(connection: db)
+        let resultId = try repo.replace(
+            sessionId: "s1", groupsJson: "{}", statsJson: "{}", threshold: 12, minGroupSize: 2,
+            memberships: [
+                (photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0),
+                (photoId: "p3", groupIndex: 1), (photoId: "p4", groupIndex: 1),
+            ])
+        _ = try db.prepare("UPDATE photos SET archived_at = ? WHERE id IN ('p3', 'p4')")
+            .run([.text("2026-10-28T00:00:00.000Z")])
+
+        // 有成员行但整组归档：返回 []（不能返回 nil，否则上层会回退 groups_json）。
+        let members = try #require(try repo.getGroupMembers(sessionId: "s1", resultId: resultId))
+        #expect(members.map(\.photoId) == ["p1", "p2"])
+        // 原始组大小仍可读（供上层区分"归档导致不足"与"本来就小"）。
+        #expect(try repo.groupMemberCounts(sessionId: "s1", resultId: resultId) == [0: 2, 1: 2])
+    }
 }

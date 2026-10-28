@@ -281,15 +281,42 @@ public final class SimilarityService {
                 throw SimilarityServiceError.noResults
             }
             let stored = try JSONDecoder().decode(StoredGroupsJSON.self, from: data)
-            let ungrouped = stored.ungrouped ?? []
-            // 统计实时化（§4.2 P2）：旧行没有成员表，无法重算“未分析的新导入”，
-            // 但计数至少必须与本响应实际返回的 payload 一致（不读快照计数）。
+            // P1：旧行没有成员表，只能按"哪些路径已归档"过滤；没有照片行的历史路径
+            // 保持可见（不能当成归档件丢掉）。归档导致成员不足的组隐藏。
+            let archivedPaths = Set(
+                try photoRepo.getBySessionProjection(sessionId: sessionId)
+                    .filter { $0.archivedAt != nil }
+                    .map { TSPath.normalize($0.filepath) }
+            )
+            let groups = stored.groups.compactMap { group -> SimilarityGroup? in
+                let originalCount = group.images.count
+                let images = group.images.filter {
+                    !archivedPaths.contains(TSPath.normalize($0.path))
+                }
+                // 只为"归档导致成员不足"而隐藏；minGroupSize=1 的合法单成员组保留。
+                guard images.count >= 2 || originalCount < 2 else { return nil }
+                var filtered = group
+                filtered.images = images.enumerated().map { index, image in
+                    var copy = image
+                    copy.representative = index == 0
+                    return copy
+                }
+                filtered.count = filtered.images.count
+                return filtered
+            }
+            let ungrouped = (stored.ungrouped ?? []).filter {
+                !archivedPaths.contains(TSPath.normalize($0.path))
+            }
+            // 统计实时化（§4.2 P2）：旧行没有成员表，但计数必须与实际返回的
+            // payload 一致（不读快照计数）。
             var liveStats = stats
-            liveStats.totalGroups = stored.groups.count
+            liveStats.totalGroups = groups.count
             liveStats.totalUngrouped = ungrouped.count
-            return SimilarityResult(groups: stored.groups, ungrouped: ungrouped, stats: liveStats)
+            return SimilarityResult(groups: groups, ungrouped: ungrouped, stats: liveStats)
         }
 
+        let originalCounts = try similarityResultRepo.groupMemberCounts(
+            sessionId: sessionId, resultId: row.id)
         var groupsByIndex: [Int: Int] = [:]
         var groups: [SimilarityGroup] = []
         for member in members! {
@@ -311,11 +338,19 @@ public final class SimilarityService {
             }
         }
 
+        // 归档让组成员不足的组隐藏（决策要求 ≥2 张）；原本就只有 1 张的合法组保留。
+        groups = groups.filter { group in
+            let original = originalCounts[group.id - 1] ?? group.images.count
+            return group.images.count >= 2 || original < 2
+        }
+
         // Ungrouped = 成员表之外的逻辑资产，镜像 analyze 写入 groups_json 的
         // 内容（折叠资产减已分组成员）；顺序跟随投影导入序。
+        // P1：归档照片不参与 ungrouped（否则相似度页会把 _rejects 里的照片列出来）。
         let memberPhotoIds = Set(members!.map(\.photoId))
         let ungrouped: [SimilarityImage] = PhotoAssets.collapse(
             try photoRepo.getBySessionProjection(sessionId: sessionId)
+                .filter { $0.archivedAt == nil }
         )
         .filter { !memberPhotoIds.contains($0.id) }
         .map { SimilarityImage(path: $0.filepath) }

@@ -27,8 +27,8 @@ extension CullingViewModel {
         let clamped = min(1_000, max(50, limit))
         guard pageLimit != clamped else { return }
         pageLimit = clamped
-        // 不再无条件清空：宽化保留选择；缩页由 loadPage 的 formIntersection(newIds)
-        // 自动丢掉已不在页内的项，避免“切布局即丢选择”。
+        // 不再无条件清空：跨页选择保留在 selectedPhotoIds（提交时再按可见性收窄），
+        // 避免“切布局/翻页即丢选择”。
         await loadPage(reset: true)
     }
 
@@ -47,6 +47,32 @@ extension CullingViewModel {
     public func selectAllLoaded() {
         guard !loadedPhotoIds.isEmpty else { return }
         selectedPhotoIds = loadedPhotoIds
+    }
+
+    /// P0 / A1：⌘A 选中**当前 scope/filters 的全部照片**（不只已加载页）。
+    ///
+    /// 失败时退回"已加载页"并提示：宁可少选，也不能假装全选。
+    public func selectAllInScope() async {
+        do {
+            let query = try CullingSelectionQuery(
+                sessionId: sessionId,
+                scope: currentAPIScope,
+                filters: currentAPIScope == .filtered ? filtersForCurrentState() : nil,
+                // 相似度模式未选组时与 loadPage 同语义：nil = latest，不是空字符串。
+                groupId: currentAPIScope == .similarityGroup && !selectedSimilarityGroupId.isEmpty
+                    ? selectedSimilarityGroupId : nil
+            )
+            let result = try await cullingAPI.selection(query)
+            selectedPhotoIds = Set(result.ids)
+            if result.truncated {
+                notice = CullingNotice(
+                    "已选中前 %lld 张（超出单次上限，其余请先缩小筛选范围）",
+                    params: ["\(result.ids.count)"])
+            }
+        } catch {
+            selectAllLoaded()
+            errorMessage = CommandError(error)
+        }
     }
 
     /// ⇧ 范围选择：当前照片到目标照片（按当前页顺序）。

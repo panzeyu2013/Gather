@@ -495,9 +495,11 @@ public final class DuplicateService: @unchecked Sendable {
         let groupRows = try groupQuery.getGroups(sessionId: sessionId)
         if groupRows.isEmpty { return [] }
         let memberMap = makeMembers(try groupQuery.getMembers(groupIds: groupRows.map(\.id)))
+        // P1：归档成员不参与重复组；只剩 0–1 个可见成员的组没有可决策内容，隐藏。
         return groupRows.map { row in
             makeGroup(row: row, memberMap: memberMap)
         }
+        .filter { $0.members.count >= 2 }
     }
 
     /// TS: resolveGroup —— keep_one 按分数（size*1000 + mtimeMs）取最优保留，
@@ -621,6 +623,7 @@ public final class DuplicateService: @unchecked Sendable {
         return groupRows.map { row in
             makeGroup(row: row, memberMap: memberMap)
         }
+        .filter { $0.members.count >= 2 }
     }
 
     /// 读模型 → 协议成员（列序解码在 Persistence，这里只做字段映射）。
@@ -650,7 +653,8 @@ public final class DuplicateService: @unchecked Sendable {
             groupType: row.groupType == "exact" ? .exact : .visual,
             checksum: row.checksum,
             hashHex: row.hashHex,
-            memberCount: row.memberCount,
+            // 成员数用可见成员实时值（归档后与 row.memberCount 不一致）。
+            memberCount: memberMap[row.id]?.count ?? row.memberCount,
             members: memberMap[row.id] ?? [],
             resolution: row.resolution,
             createdAt: row.createdAt

@@ -34,6 +34,9 @@ public protocol PhotoRepository {
     func getBySessionPage(sessionId: String, afterRowId: Int64?, limit: Int) throws -> [PhotoPageRow]
     func pendingChecksumCount(sessionId: String) throws -> Int
     func countBySession(sessionId: String) throws -> Int
+    /// 仍在工作区的照片数（archived_at IS NULL）；WorkspaceStatus 用它，
+    /// 避免"移出 100 张后工作区总数不变"。
+    func countVisibleBySession(sessionId: String) throws -> Int
     func countAssetsBySession(sessionId: String) throws -> Int
     func getAssetPage(
         sessionId: String,

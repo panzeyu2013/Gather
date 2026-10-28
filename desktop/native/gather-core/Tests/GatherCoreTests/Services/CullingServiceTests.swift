@@ -1108,6 +1108,51 @@ struct CullingSummaryResetTests {
         #expect(try harness.service.getSummary(sessionId: "session").totalGroups == 0)
     }
 
+    @Test("getGroups：归档成员隐藏，归档导致成员不足的组隐藏（P1）")
+    func groupsFilterArchivedMembers() throws {
+        let harness = try makeHarness()
+        for id in ["p1", "p2", "p3", "p4"] { try addPhoto(harness.db, id: id) }
+        try addSimilarityResult(harness, memberships: [
+            (photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0),
+            (photoId: "p3", groupIndex: 1), (photoId: "p4", groupIndex: 1),
+        ], totalGroups: 2)
+
+        #expect(try harness.service.getGroups(sessionId: "session").count == 2)
+
+        // 归档组 1 的一个成员：可见只剩 1 张 → 该组隐藏。
+        _ = try harness.db.prepare("UPDATE photos SET archived_at = ? WHERE id = 'p3'")
+            .run([.text("2026-10-28T00:00:00.000Z")])
+        let groups = try harness.service.getGroups(sessionId: "session")
+        #expect(groups.map(\.groupIndex) == [0])
+        #expect(groups[0].images.map(\.photoId).sorted() == ["p1", "p2"])
+
+        // 归档组 0 的一个成员：组 0 也隐藏。
+        _ = try harness.db.prepare("UPDATE photos SET archived_at = ? WHERE id = 'p2'")
+            .run([.text("2026-10-28T00:00:00.000Z")])
+        #expect(try harness.service.getGroups(sessionId: "session").isEmpty)
+    }
+
+    @Test("totalGroups 扣掉成员全部归档的组；部分归档不改快照口径")
+    func totalGroupsExcludesFullyArchivedGroups() throws {
+        let harness = try makeHarness()
+        for id in ["p1", "p2", "p3", "p4"] { try addPhoto(harness.db, id: id) }
+        try addSimilarityResult(harness, memberships: [
+            (photoId: "p1", groupIndex: 0), (photoId: "p2", groupIndex: 0),
+            (photoId: "p3", groupIndex: 1), (photoId: "p4", groupIndex: 1),
+        ], totalGroups: 2)
+        #expect(try harness.service.getSummary(sessionId: "session").totalGroups == 2)
+
+        _ = try harness.db.prepare("UPDATE photos SET archived_at = ? WHERE id IN ('p1','p2')")
+            .run([.text("2026-10-28T00:00:00.000Z")])
+        #expect(try harness.service.getSummary(sessionId: "session").totalGroups == 1,
+                "整组移出后不得继续显示旧组数")
+
+        _ = try harness.db.prepare("UPDATE photos SET archived_at = ? WHERE id = 'p3'")
+            .run([.text("2026-10-28T00:00:00.000Z")])
+        #expect(try harness.service.getSummary(sessionId: "session").totalGroups == 1,
+                "部分归档不改 stats 口径")
+    }
+
     @Test("reset 清空整个会话；reset(组) 只清该组（含 confirmed 命令面）")
     func resetScopes() throws {
         let harness = try makeHarness()

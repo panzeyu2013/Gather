@@ -19,6 +19,14 @@ public protocol CullingPageReading {
     ) throws -> (rows: [PhotoPageRow], cursor: CullingPageCursor?)
     func countFiltered(sessionId: String, filter: CullingPageFilter) throws -> Int
     func countSimilarity(sessionId: String, similarity: CullingSimilarityScope) throws -> Int
+    /// P0 / A1：当前 scope/filters 下的代表行 id（跨页全选/移出）。
+    func representativeIds(
+        sessionId: String,
+        scope: CullingScope,
+        filter: CullingPageFilter,
+        similarity: CullingSimilarityScope?,
+        limit: Int
+    ) throws -> (ids: [String], truncated: Bool)
 }
 
 public protocol CullingRichReading {

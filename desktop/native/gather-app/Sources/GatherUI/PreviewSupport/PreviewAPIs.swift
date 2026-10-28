@@ -135,6 +135,10 @@ struct PreviewCullingAPI: CullingAPI {
         CullingMoveRejectedResult(moved: input.value.photoIds, newPaths: [], failed: [])
     }
 
+    func selection(_ query: CullingSelectionQuery) async throws -> CullingSelectionIds {
+        CullingSelectionIds(ids: PreviewData.cullingPage.assets.map(\.photo.id))
+    }
+
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus {
         PreviewData.cullingSyncStatus
     }
@@ -240,6 +244,16 @@ struct PreviewMetadataAPI: MetadataAPI {
 
     func applyTemplate(_ input: Confirmed<MetadataTemplateApplyInput>) async throws -> MetadataTemplateApplyOutcome {
         throw PreviewAPIError.unavailable("metadata.apply_template")
+    }
+
+    func applyDescriptive(
+        _ input: Confirmed<MetadataInlineApplyInput>
+    ) async throws -> MetadataTemplateApplyOutcome {
+        throw PreviewAPIError.unavailable("metadata.apply_descriptive")
+    }
+
+    func diskDescriptive(_ photoId: String) async throws -> DescriptiveMetadata {
+        throw PreviewAPIError.unavailable("metadata.disk_descriptive")
     }
 
     func undoTemplate(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> MetadataTemplateApplyOutcome {

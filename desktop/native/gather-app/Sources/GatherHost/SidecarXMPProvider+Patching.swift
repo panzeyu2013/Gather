@@ -230,13 +230,76 @@ extension SidecarXMPProvider {
     }
 
     static func splitDescription(_ xml: String, xmpPath: String) throws -> DescriptionParts {
-        // 多 rdf:Description 的合法 XMP：只改第一块会重复属性/旧值胜出。宁可
-        // 显式拒绝写入，也不产出损坏文件。注意 contact 结构内部也有嵌套
-        // rdf:Description，必须只数 rdf:RDF 直系的第一层块。
-        guard !hasSecondTopLevelDescription(xml) else {
-            throw SidecarXMPError.documentUnsupported(
-                xmpPath: xmpPath, reason: "multiple rdf:Description")
+        // 多 rdf:Description 的合法 XMP（Bridge/第三方工具常见）：先合并成单块再打补丁。
+        // 旧实现直接拒绝写入，导致"部分第三方 XMP 永远不可写"（P2）。
+        // 注意 contact 结构内部也有嵌套 rdf:Description，必须只数顶层块。
+        if hasSecondTopLevelDescription(xml) {
+            return try mergeTopLevelDescriptions(xml, xmpPath: xmpPath)
         }
+        return try firstDescriptionParts(xml, xmpPath: xmpPath)
+    }
+
+    /// 合并多个顶层 rdf:Description 后返回单块结构（后续补丁只针对这一块）。
+    ///
+    /// 规则：
+    /// - 所有块的 rdf:about 必须一致（缺省视为空）；不同 subject 直接拒绝——它们
+    ///   描述的是不同资源，合并会改变语义；
+    /// - 子元素按块顺序追加（同名元素保留第一个，避免旧值/新值二义）；
+    /// - 开标签属性补缺（第一个块已有的属性不被后续块覆盖）。
+    private static func mergeTopLevelDescriptions(
+        _ xml: String, xmpPath: String
+    ) throws -> DescriptionParts {
+        var parts = try firstDescriptionParts(xml, xmpPath: xmpPath)
+        let firstAbout = attributeValue(in: parts.openTag, name: "rdf:about") ?? ""
+        var inner = parts.inner
+        var openTag = parts.openTag
+        var suffix = parts.suffix
+        var guardCount = 0
+        while let openRange = findOpenTag(suffix, name: "rdf:Description") {
+            guardCount += 1
+            guard guardCount <= 64 else {
+                throw SidecarXMPError.documentUnsupported(
+                    xmpPath: xmpPath, reason: "too many rdf:Description blocks")
+            }
+            guard let tagEnd = findTagEnd(suffix, from: openRange.lowerBound) else {
+                throw SidecarXMPError.documentCorrupt(xmpPath: xmpPath)
+            }
+            let blockOpen = String(suffix[openRange.lowerBound..<tagEnd])
+            let about = attributeValue(in: blockOpen, name: "rdf:about") ?? ""
+            guard about == firstAbout else {
+                throw SidecarXMPError.documentUnsupported(
+                    xmpPath: xmpPath, reason: "multiple rdf:Description subjects")
+            }
+            let blockEnd: String.Index
+            var blockInner = ""
+            if blockOpen.hasSuffix("/>") {
+                blockEnd = tagEnd
+            } else {
+                guard let end = matchingDescriptionEnd(suffix, from: openRange.lowerBound) else {
+                    throw SidecarXMPError.documentCorrupt(xmpPath: xmpPath)
+                }
+                blockEnd = end
+                let closing = "</rdf:Description>"
+                let closeStart = suffix.index(end, offsetBy: -closing.count)
+                blockInner = String(suffix[tagEnd..<closeStart])
+            }
+            // 同名顶层元素取第一块（避免"旧值/新值"二义）；其余元素原样保留。
+            var known = Set(topLevelElements(inner).map(\.name))
+            for element in topLevelElements(blockInner) where !known.contains(element.name) {
+                inner += newline + element.block
+                known.insert(element.name)
+            }
+            openTag = mergeMissingAttributes(from: blockOpen, into: openTag)
+            suffix.removeSubrange(openRange.lowerBound..<blockEnd)
+        }
+        return DescriptionParts(
+            before: parts.before, openTag: openTag, inner: inner, suffix: suffix)
+    }
+
+    /// 单块路径（原 splitDescription 主体）：定位第一块并切分 before/openTag/inner/suffix。
+    private static func firstDescriptionParts(
+        _ xml: String, xmpPath: String
+    ) throws -> DescriptionParts {
         guard let openRange = findOpenTag(xml, name: "rdf:Description") else {
             throw SidecarXMPError.documentUnsupported(xmpPath: xmpPath, reason: "missing rdf:Description")
         }
@@ -330,6 +393,147 @@ extension SidecarXMPProvider {
             i = text.index(after: i)
         }
         return nil
+    }
+
+    /// 读开标签上的属性值（单/双引号或无引号）。
+    private static func attributeValue(in openTag: String, name: String) -> String? {
+        var searchStart = openTag.startIndex
+        while let range = openTag.range(of: name, range: searchStart..<openTag.endIndex) {
+            let beforeOK = range.lowerBound == openTag.startIndex
+                || openTag[openTag.index(before: range.lowerBound)].isWhitespace
+            var index = range.upperBound
+            while index < openTag.endIndex, openTag[index].isWhitespace {
+                index = openTag.index(after: index)
+            }
+            if beforeOK, index < openTag.endIndex, openTag[index] == "=" {
+                index = openTag.index(after: index)
+                while index < openTag.endIndex, openTag[index].isWhitespace {
+                    index = openTag.index(after: index)
+                }
+                if index < openTag.endIndex, openTag[index] == "\"" || openTag[index] == "'" {
+                    let quote = openTag[index]
+                    index = openTag.index(after: index)
+                    let start = index
+                    while index < openTag.endIndex, openTag[index] != quote {
+                        index = openTag.index(after: index)
+                    }
+                    return String(openTag[start..<index])
+                }
+                let start = index
+                while index < openTag.endIndex,
+                      !openTag[index].isWhitespace, openTag[index] != ">" {
+                    index = openTag.index(after: index)
+                }
+                return String(openTag[start..<index])
+            }
+            searchStart = range.upperBound
+        }
+        return nil
+    }
+
+    /// 开标签上的原始属性片段（name + 原样 "name="value""，保留引号风格）。
+    private static func rawAttributes(in openTag: String) -> [(name: String, raw: String)] {
+        var result: [(String, String)] = []
+        guard let nameEnd = openTag.firstIndex(where: {
+            $0.isWhitespace || $0 == ">" || $0 == "/"
+        }) else { return result }
+        var index = nameEnd
+        while index < openTag.endIndex {
+            while index < openTag.endIndex, openTag[index].isWhitespace {
+                index = openTag.index(after: index)
+            }
+            guard index < openTag.endIndex, openTag[index] != ">", openTag[index] != "/" else {
+                break
+            }
+            let start = index
+            while index < openTag.endIndex,
+                  !openTag[index].isWhitespace, openTag[index] != "=", openTag[index] != ">" {
+                index = openTag.index(after: index)
+            }
+            let name = String(openTag[start..<index])
+            while index < openTag.endIndex, openTag[index].isWhitespace {
+                index = openTag.index(after: index)
+            }
+            guard index < openTag.endIndex, openTag[index] == "=" else { continue }
+            index = openTag.index(after: index)
+            while index < openTag.endIndex, openTag[index].isWhitespace {
+                index = openTag.index(after: index)
+            }
+            if index < openTag.endIndex, openTag[index] == "\"" || openTag[index] == "'" {
+                let quote = openTag[index]
+                index = openTag.index(after: index)
+                while index < openTag.endIndex, openTag[index] != quote {
+                    index = openTag.index(after: index)
+                }
+                if index < openTag.endIndex { index = openTag.index(after: index) }
+            } else {
+                while index < openTag.endIndex,
+                      !openTag[index].isWhitespace, openTag[index] != ">" {
+                    index = openTag.index(after: index)
+                }
+            }
+            result.append((name, String(openTag[start..<index])))
+        }
+        return result
+    }
+
+    /// XML 标签名（去 <、</、属性与收尾符号）。
+    private static func tagName(_ tag: String) -> String {
+        var text = tag
+        if text.hasPrefix("</") { text = String(text.dropFirst(2)) }
+        else if text.hasPrefix("<") { text = String(text.dropFirst()) }
+        if text.hasSuffix("/>") { text = String(text.dropLast(2)) }
+        else if text.hasSuffix(">") { text = String(text.dropLast()) }
+        let name = text.prefix { !$0.isWhitespace && $0 != "/" }
+        return String(name)
+    }
+
+    /// 直接子元素列表（name + 原文块）。用于合并多块时做"同名取第一份"。
+    private static func topLevelElements(_ text: String) -> [(name: String, block: String)] {
+        var result: [(String, String)] = []
+        var stack: [String] = []
+        var start: String.Index?
+        var index = text.startIndex
+        while let open = text[index...].firstIndex(of: "<"),
+              let end = findTagEnd(text, from: open) {
+            let tag = String(text[open..<end])
+            if tag.hasPrefix("<?") || tag.hasPrefix("<!") {
+                index = end
+                continue
+            }
+            let isClosing = tag.hasPrefix("</")
+            let selfClosing = tag.hasSuffix("/>")
+            let name = tagName(tag)
+            if isClosing {
+                if stack.last == name { stack.removeLast() }
+                if stack.isEmpty, let elementStart = start {
+                    result.append((name, String(text[elementStart..<end])))
+                    start = nil
+                }
+            } else if selfClosing {
+                if stack.isEmpty { result.append((name, String(text[open..<end]))) }
+            } else {
+                if stack.isEmpty { start = open }
+                stack.append(name)
+            }
+            index = end
+        }
+        return result
+    }
+
+    /// 把后续块的属性补进第一块（同名属性保留第一块的值）。
+    private static func mergeMissingAttributes(from blockOpen: String, into openTag: String) -> String {
+        var additions = ""
+        for attribute in rawAttributes(in: blockOpen)
+        where attributeValue(in: openTag, name: attribute.name) == nil {
+            additions += " " + attribute.raw
+        }
+        guard !additions.isEmpty, let close = openTag.lastIndex(of: ">") else { return openTag }
+        var head = String(openTag[openTag.startIndex..<close])
+        let selfClosing = head.hasSuffix("/")
+        if selfClosing { head.removeLast() }
+        while head.hasSuffix(" ") || head.hasSuffix("\n") { head.removeLast() }
+        return head + additions + ">"
     }
 
     /// 是否存在第二个顶层 rdf:Description（嵌套结构块不算）。

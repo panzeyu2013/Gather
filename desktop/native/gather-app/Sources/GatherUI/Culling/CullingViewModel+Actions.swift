@@ -132,17 +132,16 @@ extension CullingViewModel {
     /// 把已淘汰的照片移出工作目录；确认由调用点构造 Confirmed。
     /// 范围：显式传入 > 选中项 > 当前照片。
     ///
-    /// 服务端只接受已淘汰的照片，且校验失败会**整批**拒绝（LiveCullingAPI.moveRejected），
-    /// 所以这里必须先按当前判定过滤：选中集里混进一张保留件，就一张都移不动。
+    /// P0 / A1：不再在客户端按当前页/当前判定过滤——
+    /// - 跨页选择必须整份交给服务端（否则第 2 页的选择被静默丢掉）；
+    /// - 混进保留件/已移出件时服务端按张返回 skipped，而不是整批失败；
+    /// - 服务端还会把选择展开成逻辑资产的全部变体（RAW+JPEG 不会只搬一半）。
     public func moveRejectedOut(photoIds explicitIds: [String]? = nil) async {
-        let rejected = Set((page?.assets ?? [])
-            .filter { $0.state.pickState == .rejected }
-            .map(\.photo.id))
         let targets: [String]
         if let explicitIds {
-            targets = explicitIds.filter { rejected.contains($0) }
+            targets = Array(Set(explicitIds)).sorted()
         } else if !selectedPhotoIds.isEmpty {
-            targets = selectedPhotoIds.filter { rejected.contains($0) }
+            targets = selectedPhotoIds.sorted()
         } else if let current = currentAsset, current.state.pickState == .rejected {
             targets = [current.photo.id]
         } else {
@@ -155,8 +154,25 @@ extension CullingViewModel {
         do {
             let input = try CullingMoveRejectedInput(sessionId: sessionId, photoIds: targets)
             let result = try await cullingAPI.moveRejected(Confirmed(input, source: .userDialog))
+            selectedPhotoIds.subtract(result.moved)
             if let first = result.failed.first {
                 errorMessage = CommandError(APIError.failed(first.message))
+            }
+            let skipped = result.skipped
+            if !skipped.isEmpty {
+                let notRejected = skipped.filter { $0.reason == "not_rejected" }.count
+                let archived = skipped.filter { $0.reason == "already_archived" }.count
+                let unknown = skipped.count - notRejected - archived
+                notice = CullingNotice(
+                    "已移出 %lld 张；跳过 %lld 张（非淘汰 %lld / 已移出 %lld / 不在会话 %lld）",
+                    params: [
+                        "\(result.moved.count)", "\(skipped.count)",
+                        "\(notRejected)", "\(archived)", "\(unknown)",
+                    ])
+            } else if result.moved.isEmpty {
+                errorMessage = CommandError.localized("没有可移出的淘汰照片")
+            } else {
+                notice = CullingNotice("已移出 %lld 张", params: ["\(result.moved.count)"])
             }
             // 路径已变：重新拉页，避免网格继续用旧路径取缩略图。
             await loadPage(reset: true)

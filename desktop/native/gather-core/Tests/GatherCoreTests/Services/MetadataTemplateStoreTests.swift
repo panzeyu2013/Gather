@@ -53,7 +53,7 @@ struct MetadataTemplateStoreTests {
         #expect(throws: MetadataTemplateStoreError.self) { try store.delete(id: "t1") }
     }
 
-    @Test("跨实例可见（settings 是唯一真相源），损坏 JSON 视为空表")
+    @Test("跨实例可见（settings 是唯一真相源），损坏 JSON 视为空表并留证")
     func persistenceAndCorruption() throws {
         let (store, settings, _) = try store()
         _ = try store.save(template("t1", "婚礼"), now: "now")
@@ -62,5 +62,21 @@ struct MetadataTemplateStoreTests {
 
         try settings.set(MetadataTemplateStore.settingsKey, value: "{not json")
         #expect(MetadataTemplateStore(settings: settings).list().isEmpty)
+        // P2：损坏原文必须留证，否则下一次 save 覆盖后无从排查"模板消失"。
+        #expect(settings.get(MetadataTemplateStore.corruptKey, defaultValue: "") == "{not json")
+    }
+
+    @Test("数组里单条模板损坏：只丢那一条，其余保留（P2）")
+    func dropsOnlyCorruptEntries() throws {
+        let (store, settings, _) = try store()
+        _ = try store.save(template("t1", "婚礼"), now: "now")
+        let valid = settings.get(MetadataTemplateStore.settingsKey, defaultValue: "")
+        let mixed = "[" + String(valid.dropFirst().dropLast()) + ",{\"id\":2}]"
+        try settings.set(MetadataTemplateStore.settingsKey, value: mixed)
+
+        let reopened = MetadataTemplateStore(settings: settings)
+        #expect(reopened.list().map(\.id) == ["t1"], "坏一条不得清空整表")
+        #expect(settings.get(MetadataTemplateStore.corruptKey, defaultValue: "")
+            == mixed, "整表原文留证")
     }
 }

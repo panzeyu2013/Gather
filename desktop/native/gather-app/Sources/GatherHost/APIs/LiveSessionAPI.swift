@@ -53,8 +53,8 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
             secondDestinationRoot: payload.secondDestinationRoot,
             verifyChecksum: payload.verifyChecksum
         )
-        let service = IngestService()
-        return try map {
+        let service = IngestService(exif: ImageIOExifProvider())
+        return try await mapAsync {
             // 目标必须落在会话源目录内：摄取写文件系统，不能接受任意磁盘路径。
             guard let session = try sessionService.getSession(payload.sessionId) else {
                 throw GatherError(code: .SESSION_NOT_FOUND)
@@ -98,7 +98,7 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
             } catch {
                 GatherLogger.log("ingest checksum lookup failed: \(error)", level: .warn)
             }
-            let plan = try service.plan(
+            let plan = try await service.plan(
                 sourcePaths: payload.sourcePaths, options: options,
                 existingChecksums: existing)
             let result = service.execute(plan, options: options)
@@ -305,6 +305,16 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
     private func map<T>(_ body: () throws -> T) throws -> T {
         do {
             return try body()
+        } catch let error as GatherError {
+            throw error
+        } catch let error as SessionServiceError {
+            throw GatherError(code: error.gatherCode)
+        }
+    }
+
+    private func mapAsync<T>(_ body: () async throws -> T) async throws -> T {
+        do {
+            return try await body()
         } catch let error as GatherError {
             throw error
         } catch let error as SessionServiceError {

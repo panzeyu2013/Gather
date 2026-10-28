@@ -381,12 +381,15 @@ extension ExportService {
     func filteredPhotos(sessionId: String, options: ExportOptions) throws -> [PhotoProjectionRow] {
         let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
         let scoped: [PhotoProjectionRow]
+        // P0 / A1：已移出工作区的照片不属于任何导出范围（它们在 _rejects，
+        // 用户明确淘汰过；继续导出会让"移出=排除"的承诺失效）。
+        let inWorkspace = photos.filter { $0.archivedAt == nil }
         switch options.scope {
         case .session:
-            scoped = photos.filter { $0.status != "removed" }
+            scoped = inWorkspace.filter { $0.status != "removed" }
         case .filtered:
             let keptPhotoIds = try reports.keptPhotoIds(sessionId: sessionId)
-            scoped = photos.filter { $0.status != "removed" && keptPhotoIds.contains($0.id) }
+            scoped = inWorkspace.filter { $0.status != "removed" && keptPhotoIds.contains($0.id) }
         case .selected:
             throw ExportServiceError.scopeUnsupported
         }

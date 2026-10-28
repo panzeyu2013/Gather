@@ -82,8 +82,8 @@ extension CullingViewModel {
         if let page = snapshot.page {
             let ids = Set(page.assets.map(\.photo.id))
             loadedPhotoIds = ids
-            // 只保留仍被加载的选择：刷新后不可见的照片不能再参与批量决策。
-            selectedPhotoIds.formIntersection(ids)
+            // P0 / A1：不再按"当前页"裁剪选择集——跨页选择必须保留到提交时。
+            // 批量决策仍与已加载页求交（宁可漏杀）；移出用完整选择集，由服务端逐张校验。
             // 内容版本：网格布局缓存/在途 conflicts 守卫都据此判断“页已变”。
             pageVersion += 1
             self.page = page
@@ -172,7 +172,7 @@ extension CullingViewModel {
         }
         return snapshot
     }
-    private var currentAPIScope: CullingScope {
+    var currentAPIScope: CullingScope {
         switch scopeMode {
         case .all: return .all
         case .filtered: return .filtered
@@ -211,10 +211,9 @@ extension CullingViewModel {
             let newIds = Set(nextPage.assets.map { $0.photo.id })
             pageVersion += 1
             if reset || page == nil {
-                // 对齐 TS：update/batchUpdate/undo/redo 后整页刷新不清空选择，
-                // 仅在选择已失效（不在本次会话已加载的照片全集）时清空对应条目。
+                // P0 / A1：整页刷新不再丢弃"不在当前页"的选择。筛选/scope/排序变化
+                // 都有显式 removeAll；这里保留跨页选择，提交时再按可见性收窄。
                 loadedPhotoIds = newIds
-                selectedPhotoIds.formIntersection(newIds)
                 page = nextPage
                 if let current = currentPhotoId, !newIds.contains(current) {
                     currentPhotoId = nextPage.assets.first?.photo.id
@@ -305,7 +304,7 @@ extension CullingViewModel {
             errorMessage = CommandError(error)
         }
     }
-    private func filtersForCurrentState() -> CullingFilters? {
+    func filtersForCurrentState() -> CullingFilters? {
         var filters = CullingFilters()
         var active = false
         if filterState.unreviewedOnly { filters.unreviewedOnly = true; active = true }

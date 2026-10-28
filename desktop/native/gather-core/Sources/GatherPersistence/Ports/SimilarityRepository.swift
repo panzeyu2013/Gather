@@ -23,6 +23,11 @@ public protocol SimilarityRepository {
     ) throws -> Int64
     func getPhotoGroupMap(sessionId: String, resultId: Int64) throws -> [String: String]
     func getGroupMembers(sessionId: String, resultId: Int64) throws -> [SimilarityGroupMember]?
+    /// 每个组的原始成员数（未过滤归档）；用于区分"组本来就只有 1 张"与
+    /// "归档后只剩 1 张"。
+    func groupMemberCounts(sessionId: String, resultId: Int64) throws -> [Int: Int]
+    /// 成员全部归档的组数（摘要 totalGroups 用它从 stats 快照里扣掉）。
+    func countFullyArchivedGroups(sessionId: String, resultId: Int64) throws -> Int
 }
 
 public protocol SimilarityClusterStateRepository {

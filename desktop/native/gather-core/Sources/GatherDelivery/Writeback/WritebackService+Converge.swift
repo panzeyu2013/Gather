@@ -65,8 +65,11 @@ extension WritebackService {
         if let descriptiveValue = attrs["descriptive"],
            let descriptive = try? descriptiveValue.decode(DescriptiveMetadata.self) {
             do {
-                try metadataCacheRepo.updateDescriptive(
-                    photoId: entry.itemPhotoId, descriptive: descriptive)
+                // P0 / A3：payload 只含本次触碰的字段 → 字段合并（撤销时整块替换 contact）。
+                try metadataCacheRepo.mergeDescriptive(
+                    photoId: entry.itemPhotoId,
+                    patch: descriptive,
+                    replaceContact: attrs["replace_contact"]?.boolValue == true)
             } catch {
                 record("cache.updateDescriptive", error)
             }

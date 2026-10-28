@@ -78,13 +78,20 @@ struct MetadataTemplatePlannerTests {
         #expect(plan.fields.first { $0.field == .copyrightNotice }?.action == .conflict)
     }
 
-    @Test("缓存无该字段但盘上有值：不误判外部改动（未扫描不是冲突）")
-    func unknownCacheIsNotConflict() {
+    @Test("缓存无该字段但盘上有值：keepExternal 视为冲突（未知不得覆盖）")
+    func unknownCacheIsConflictUnderKeepExternal() {
         let disk = DescriptiveMetadata(title: "盘上标题")
         let plan = MetadataTemplatePlanner.plan(
             template: template(), photoId: "p1", current: DescriptiveMetadata(), disk: disk)
-        #expect(plan.fields.first { $0.field == .title }?.action == .write)
-        #expect(plan.conflictCount == 0)
+        #expect(plan.fields.first { $0.field == .title }?.action == .conflict)
+        #expect(plan.conflictCount == 1)
+
+        // overwrite 是显式覆盖：同一份输入必须判 write。
+        let overwrite = MetadataTemplatePlanner.plan(
+            template: template(), photoId: "p1", current: DescriptiveMetadata(), disk: disk,
+            policy: .overwrite)
+        #expect(overwrite.fields.first { $0.field == .title }?.action == .write)
+        #expect(overwrite.conflictCount == 0)
     }
 
     @Test("批量汇总：N 张里只统计会改动的张数")

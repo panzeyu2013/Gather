@@ -163,7 +163,7 @@ struct MetadataTemplateServiceIOTests {
         let templates = MetadataTemplateStore(settings: settings)
         let batches = MetadataApplyBatchStore(settings: settings)
         let service = MetadataTemplateService(
-            templates: templates, batches: batches, metadata: metadata, xmp: xmp)
+            templates: templates, batches: batches, metadata: metadata)
         return Fixture(
             db: db, dir: dir, photoId: photoId, sessionId: sessionId, photoPath: photoPath,
             xmp: xmp, mutations: mutations, templates: templates, batches: batches, service: service)
@@ -204,6 +204,45 @@ struct MetadataTemplateServiceIOTests {
         #expect(restored?.caption == "旧说明")
         #expect(restored?.copyrightNotice == nil, "原本不存在的字段必须清空（完整回滚）")
         #expect(try fx.batches.get(id: applied.batchId)?.undone == true)
+    }
+
+    @Test("applyFields：内联批次可撤销；replaceContact 整块替换联系人（P0 / B2）")
+    func inlineFieldsAndContactReplacement() async throws {
+        let fx = try makeFixture()
+        defer { fx.cleanup() }
+        let cache = MetadataCacheRepo(connection: fx.db)
+        let original = DescriptiveMetadata(
+            caption: "旧说明",
+            contactInfo: DescriptiveContact(city: "上海", telephone: "123"))
+        try cache.upsert(photoId: fx.photoId, sessionId: fx.sessionId, data: MetadataCacheInput(
+            descriptive: original))
+        fx.xmp.seed(fx.photoPath, MetadataWriteAttributes(descriptive: original))
+
+        let applied = try await fx.service.applyFields(
+            fields: DescriptiveMetadata(
+                caption: "手动说明",
+                contactInfo: DescriptiveContact(city: "北京")),
+            templateId: MetadataTemplateService.inlineBatchTemplateID,
+            templateName: MetadataTemplateService.inlineBatchName,
+            photoIds: [fx.photoId],
+            replaceContact: true,
+            now: "2026-10-28T00:00:00Z")
+        #expect(applied.written == [fx.photoId])
+        #expect(applied.failed.isEmpty)
+        let after = fx.xmp.attributes(fx.photoPath).descriptive
+        #expect(after?.caption == "手动说明")
+        #expect(after?.contactInfo?.city == "北京")
+        #expect(after?.contactInfo?.telephone == nil, "replaceContact 必须删掉编辑器里已清空的成员")
+
+        let batch = try #require(fx.batches.get(id: applied.batchId))
+        #expect(batch.templateId == "inline")
+        #expect(batch.templateName == "手动编辑")
+
+        _ = try await fx.service.undo(batchId: applied.batchId)
+        let restored = fx.xmp.attributes(fx.photoPath).descriptive
+        #expect(restored?.caption == "旧说明")
+        #expect(restored?.contactInfo?.city == "上海")
+        #expect(restored?.contactInfo?.telephone == "123", "撤销必须把整块联系人还原")
     }
 
     @Test("模板只填 contact 部分成员：成员级合并且写后校验通过（不整块删）")

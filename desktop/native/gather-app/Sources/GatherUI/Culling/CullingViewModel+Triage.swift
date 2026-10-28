@@ -100,7 +100,8 @@ extension CullingViewModel {
     /// 准备写回输入（只分页读取，不写盘）。确认弹窗由 View 持有：
     /// VM 不得自行构造 Confirmed（D-011：破坏性入口的类型层确认）。
     public func prepareTriageWriteback(
-        policy: TriageWritebackPolicy = .ratingOnlyWhenEmpty
+        policy: TriageWritebackPolicy = .ratingOnlyWhenEmpty,
+        ratingMode: TriageRatingMode? = nil
     ) async -> TriageWritebackInput? {
         var items: [TriageWritebackItem] = []
         var seen = Set<String>()
@@ -144,7 +145,8 @@ extension CullingViewModel {
         }
         guard !items.isEmpty else { return nil }
         do {
-            return try TriageWritebackInput(policy: policy, items: items)
+            return try TriageWritebackInput(
+                policy: policy, ratingMode: ratingMode ?? triageRatingMode, items: items)
         } catch {
             triageError = CommandError(error)
             return nil
@@ -158,9 +160,14 @@ extension CullingViewModel {
             if let failure = result.failed.first {
                 triageError = CommandError(APIError.failed(failure.message))
             }
-            // 一张都没写成时服务已把批次标记 undone：再挂 batchId 只会得到一个必然
-            // 抛 batchAlreadyUndone 的死入口。
-            lastTriageWritebackBatchId = result.written.isEmpty ? nil : result.batchId
+            // P1：用 undoAvailable 而不是 written.isEmpty —— 回读失败（uncertain）
+            // 的照片可能已写盘，批次仍在，界面必须保留撤销入口。
+            lastTriageWritebackBatchId = result.undoAvailable ? result.batchId : nil
+            if !result.skipped.isEmpty {
+                notice = CullingNotice(
+                    "已处理；%lld 张无需写入（已有星级或人工决策）",
+                    params: ["\(result.skipped.count)"])
+            }
             await loadPage(reset: true)
         } catch {
             triageError = CommandError(error)
@@ -176,6 +183,12 @@ extension CullingViewModel {
             }
             if let failure = result.failed.first {
                 triageError = CommandError(APIError.failed(failure.message))
+            }
+            // P1：星级因"盘上已被人工改动"跳过时必须可见，否则用户以为已还原。
+            if !result.skipped.isEmpty {
+                notice = CullingNotice(
+                    "已撤销；%lld 张的星级已被人工改动，保留现值",
+                    params: ["\(result.skipped.count)"])
             }
             await loadPage(reset: true)
         } catch {

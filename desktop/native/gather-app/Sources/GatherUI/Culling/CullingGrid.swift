@@ -374,7 +374,7 @@ struct CullingGridView: View {
         case .next:
             viewModel.advanceCurrent()
         case .selectAll:
-            viewModel.selectAllLoaded()
+            Task { await viewModel.selectAllInScope() }
         case .clearSelection:
             viewModel.clearSelection()
         case .openSingle:

@@ -163,8 +163,12 @@ private struct B6bMetadataState {
 final class B6bMetadataAPIStub: MetadataAPI, @unchecked Sendable {
     private let box = LockedBox(B6bMetadataState())
 
+    var triageApplyResult: TriageWritebackResult?
+
     func applyTriageWriteback(_ input: Confirmed<TriageWritebackInput>) async throws -> TriageWritebackResult {
-        TriageWritebackResult(batchId: "triage-stub", written: input.value.items.map(\.photoId), skipped: [], failed: [])
+        triageApplyResult ?? TriageWritebackResult(
+            batchId: "triage-stub", written: input.value.items.map(\.photoId),
+            skipped: [], failed: [], undoAvailable: !input.value.items.isEmpty)
     }
 
     func undoTriageWriteback(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> TriageWritebackResult {
@@ -204,6 +208,18 @@ final class B6bMetadataAPIStub: MetadataAPI, @unchecked Sendable {
         MetadataTemplateApplyOutcome(
             batchId: lastAppliedBatchId, written: input.value.photoIds, skipped: [], conflicts: [], failed: []
         )
+    }
+
+    func diskDescriptive(_ photoId: String) async throws -> DescriptiveMetadata {
+        detail?.descriptive ?? DescriptiveMetadata()
+    }
+
+    func applyDescriptive(
+        _ input: Confirmed<MetadataInlineApplyInput>
+    ) async throws -> MetadataTemplateApplyOutcome {
+        MetadataTemplateApplyOutcome(
+            batchId: lastAppliedBatchId, written: input.value.photoIds,
+            skipped: [], conflicts: [], failed: [])
     }
 
     func undoTemplate(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> MetadataTemplateApplyOutcome {

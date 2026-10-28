@@ -23,7 +23,16 @@ private final class TriageXMP: XMPProvider, @unchecked Sendable {
         return storage[path] ?? MetadataWriteAttributes()
     }
     func readKeywords(photoPath: String) async throws -> [String] { attributes(photoPath).keywords ?? [] }
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes { attributes(photoPath) }
+    /// 写后回读故障注入：只在信号已落盘（即写入之后）返回错误星级，
+    /// 用来覆盖"写盘成功但回读校验失败 → uncertain"。
+    var corruptReadBack = false
+    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
+        var value = attributes(photoPath)
+        if corruptReadBack, value.triageSignal != nil {
+            value.rating = 99
+        }
+        return value
+    }
     func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {
         write(photoPath: photoPath, attributes: attributes)
     }
@@ -394,5 +403,226 @@ struct TriageWritebackServiceTests {
         let undone = try await service.undo(batchId: "b1")
         #expect(undone.failed.map(\.photoId) == [p1])
         #expect(try batches.get(id: "b1")?.undone == false, "有失败时不得标记已撤销")
+    }
+
+    @Test("undo 星级守卫：写回后人工改成 5★，undo 跳过而不清回 0（P0 / A2）")
+    func undoSkipsRatingChangedByUser() async throws {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: dir) } catch {}
+        }
+        let sessionId = "s-1", photoId = "p-1"
+        try insertSession(db, sessionId)
+        let path = (dir as NSString).appendingPathComponent("a.CR3")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
+        try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
+        let cache = MetadataCacheRepo(connection: db)
+        try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
+
+        let xmp = TriageXMP()
+        xmp.seed(path, MetadataWriteAttributes())
+        let mutations = TriageMutations()
+        let metadata = MetadataService(
+            metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
+            transactions: db, mutations: mutations,
+            flushPending: { _ in
+                for entry in mutations.drain() {
+                    let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    try await xmp.writeAttributes(photoPath: path, attributes: attributes)
+                }
+                return WritebackResult(
+                    totalAffected: 1, written: 1, failed: 0, skipped: 0,
+                    errors: [], failedItems: [], report: "")
+            })
+        let settings = SettingsService(repo: SettingsRepo(connection: db))
+        let batches = MetadataApplyBatchStore(settings: settings)
+        let service = TriageWritebackService(xmp: xmp, metadata: metadata, batches: batches)
+
+        _ = await service.apply(
+            [TriageWritebackDecision(
+                photoId: photoId, rating: 3, keyword: nil, namespaceValue: "keep")],
+            batchId: "b1", now: "2026-10-27T00:00:00Z")
+        let batch = try #require(batches.get(id: "b1"))
+        #expect(batch.snapshots.first?.appliedRating == 3, "批次必须记录本批写入值")
+
+        // 用户写回后手工改成 5★（模拟 C1 / 人工）。
+        xmp.seed(path, MetadataWriteAttributes(rating: 5))
+
+        let undone = try await service.undo(batchId: "b1")
+        #expect(undone.skipped == [photoId], "星级已被改动 → 跳过")
+        #expect(xmp.attributes(path).rating == 5, "人工 5★ 不得被 undo 清回 0")
+        #expect(try batches.get(id: "b1")?.undone == true, "跳过不是失败：批次应标记已撤销")
+    }
+
+    @Test("undo 星级守卫：盘上仍是本批写入值时正常还原（P0 / A2）")
+    func undoRestoresRatingWhenUnchanged() async throws {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: dir) } catch {}
+        }
+        let sessionId = "s-1", photoId = "p-1"
+        try insertSession(db, sessionId)
+        let path = (dir as NSString).appendingPathComponent("a.CR3")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
+        try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
+        let cache = MetadataCacheRepo(connection: db)
+        try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 2))
+
+        let xmp = TriageXMP()
+        xmp.seed(path, MetadataWriteAttributes(rating: 2))
+        let mutations = TriageMutations()
+        let metadata = MetadataService(
+            metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
+            transactions: db, mutations: mutations,
+            flushPending: { _ in
+                for entry in mutations.drain() {
+                    let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    try await xmp.writeAttributes(photoPath: path, attributes: attributes)
+                }
+                return WritebackResult(
+                    totalAffected: 1, written: 1, failed: 0, skipped: 0,
+                    errors: [], failedItems: [], report: "")
+            })
+        let settings = SettingsService(repo: SettingsRepo(connection: db))
+        let batches = MetadataApplyBatchStore(settings: settings)
+        let service = TriageWritebackService(xmp: xmp, metadata: metadata, batches: batches)
+
+        // rating 2 → 手动决策不写；“空值才写”在这里被绕过，直接构造 decision 覆盖。
+        _ = await service.apply(
+            [TriageWritebackDecision(
+                photoId: photoId, rating: 3, keyword: nil, namespaceValue: "keep")],
+            batchId: "b1", now: "2026-10-27T00:00:00Z")
+        #expect(xmp.attributes(path).rating == 3)
+
+        let undone = try await service.undo(batchId: "b1")
+        #expect(undone.skipped.isEmpty)
+        #expect(xmp.attributes(path).rating == 2)
+    }
+
+    @Test("移出后 undo：按 photoId 解析新路径，星级仍能还原（P1）")
+    func undoResolvesCurrentPathAfterMove() async throws {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: dir) } catch {}
+        }
+        let sessionId = "s-1", photoId = "p-1"
+        try insertSession(db, sessionId)
+        let oldPath = (dir as NSString).appendingPathComponent("a.CR3")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: oldPath))
+        try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: oldPath)
+        let cache = MetadataCacheRepo(connection: db)
+        try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
+
+        let xmp = TriageXMP()
+        xmp.seed(oldPath, MetadataWriteAttributes())
+        let mutations = TriageMutations()
+        let metadata = MetadataService(
+            metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
+            transactions: db, mutations: mutations,
+            flushPending: { _ in
+                for entry in mutations.drain() {
+                    let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    let path = (try? PhotoRepo(connection: db).getLookupByIds(
+                        [entry.photoId]).first?.filepath) ?? oldPath
+                    try await xmp.writeAttributes(photoPath: path, attributes: attributes)
+                }
+                return WritebackResult(
+                    totalAffected: 1, written: 1, failed: 0, skipped: 0,
+                    errors: [], failedItems: [], report: "")
+            })
+        let settings = SettingsService(repo: SettingsRepo(connection: db))
+        let batches = MetadataApplyBatchStore(settings: settings)
+        let service = TriageWritebackService(xmp: xmp, metadata: metadata, batches: batches)
+
+        _ = await service.apply(
+            [TriageWritebackDecision(
+                photoId: photoId, rating: 3, keyword: nil, namespaceValue: "keep")],
+            batchId: "b1", now: "2026-10-27T00:00:00Z")
+        #expect(xmp.attributes(oldPath).rating == 3)
+
+        // 模拟淘汰移出：DB 路径改到 _rejects，xmp 内容随照片复制过去。
+        let newPath = (dir as NSString).appendingPathComponent("_rejects/a.CR3")
+        try FileManager.default.createDirectory(
+            atPath: (newPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true)
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: newPath))
+        _ = try db.prepare("UPDATE photos SET filepath = ? WHERE id = ?")
+            .run([.text(newPath), .text(photoId)])
+        xmp.seed(newPath, MetadataWriteAttributes(
+            rating: 3, triageSignal: "keep"))
+
+        let undone = try await service.undo(batchId: "b1")
+        #expect(undone.skipped.isEmpty, "路径变了不算人工改星级")
+        #expect(xmp.attributes(newPath).rating == 0, "必须还原的是新路径上的星级")
+    }
+
+    @Test("批次裁剪口径：written ∪ uncertain（回读失败也可能已写盘，P0 / A2）")
+    func outcomeUndoableIncludesUncertain() {
+        let outcome = MetadataAttributesApplyOutcome(
+            written: ["a"], skipped: [], failed: [], uncertain: ["b", "a"])
+        #expect(outcome.undoable == ["a", "b"], "uncertain 必须进批次，且去重保序")
+    }
+
+    @Test("回读校验失败：批次仍保留快照可撤销（uncertain 不丢批次）")
+    func readBackFailureKeepsBatchUndoable() async throws {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: dir) } catch {}
+        }
+        let sessionId = "s-1", photoId = "p-1"
+        try insertSession(db, sessionId)
+        let path = (dir as NSString).appendingPathComponent("a.CR3")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
+        try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
+        let cache = MetadataCacheRepo(connection: db)
+        try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
+
+        let xmp = TriageXMP()
+        xmp.seed(path, MetadataWriteAttributes())
+        xmp.corruptReadBack = true
+        let mutations = TriageMutations()
+        let metadata = MetadataService(
+            metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
+            transactions: db, mutations: mutations,
+            flushPending: { _ in
+                for entry in mutations.drain() {
+                    let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    try await xmp.writeAttributes(photoPath: path, attributes: attributes)
+                }
+                return WritebackResult(
+                    totalAffected: 1, written: 1, failed: 0, skipped: 0,
+                    errors: [], failedItems: [], report: "")
+            })
+        let settings = SettingsService(repo: SettingsRepo(connection: db))
+        let batches = MetadataApplyBatchStore(settings: settings)
+        let service = TriageWritebackService(xmp: xmp, metadata: metadata, batches: batches)
+
+        let applied = await service.apply(
+            [TriageWritebackDecision(
+                photoId: photoId, rating: 3, keyword: nil, namespaceValue: "keep")],
+            batchId: "b1", now: "2026-10-27T00:00:00Z")
+        #expect(applied.written.isEmpty, "回读不符 → 不算 written")
+        #expect(applied.failed.isEmpty == false, "必须报告校验失败")
+        let batch = try #require(batches.get(id: "b1"))
+        #expect(batch.undone == false, "uncertain 的照片必须留在可撤销批次里")
+        #expect(batch.snapshots.map(\.photoId) == [photoId])
+        #expect(applied.undoable == [photoId], "UI 的撤销入口由 undoable 驱动")
+        // 盘上确实已写（信号在），撤销应能把它清掉。
+        xmp.corruptReadBack = false
+        #expect(xmp.attributes(path).triageSignal == "keep")
+        _ = try await service.undo(batchId: "b1")
+        #expect(xmp.attributes(path).triageSignal == nil)
     }
 }

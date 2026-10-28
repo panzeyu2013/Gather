@@ -117,6 +117,8 @@ public final class PhotoFilterQuery {
             "FROM photos p",
             "LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id",
             "WHERE \(sessionFilter) AND (\(clause.sql.isEmpty ? "1=1" : clause.sql))",
+            // P0 / A1：已移出工作区的照片不进入图库/检索结果。
+            "AND \(PhotoVisibility.visiblePredicate())",
         ].joined(separator: " ")
 
         var allParams: [DBValue] = sessionId == "__global__" ? clause.params : [.text(sessionId)] + clause.params
@@ -155,6 +157,7 @@ public final class PhotoFilterQuery {
             "SELECT p.rowid AS photo_rowid, COALESCE(NULLIF(p.asset_id, ''), p.id) AS asset_key",
             "FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id",
             "WHERE (\(clause.sql.isEmpty ? "1=1" : clause.sql)) \(membershipFilter)",
+            "AND \(PhotoVisibility.visiblePredicate())",
             "), ranked AS (",
             "SELECT matching.asset_key, matching.photo_rowid,",
             "ROW_NUMBER() OVER (PARTITION BY matching.asset_key",
@@ -169,6 +172,8 @@ public final class PhotoFilterQuery {
             "GROUP_CONCAT(DISTINCT member_session.name) AS session_names",
             "FROM photos member",
             "JOIN sessions member_session ON member_session.id = member.session_id",
+            // 跨会话汇总同样只统计仍在工作区的成员（否则归档件会把会话数+名字带出来）。
+            "WHERE \(PhotoVisibility.visiblePredicate(alias: "member"))",
             "GROUP BY asset_key",
             ")",
             "SELECT p.id AS photo_id, COALESCE(NULLIF(p.asset_id, ''), p.id) AS asset_id,",
@@ -230,6 +235,7 @@ public final class PhotoFilterQuery {
             SELECT COUNT(DISTINCT COALESCE(NULLIF(p.asset_id, ''), p.id)) AS count
             FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id
             WHERE (\(clause.sql.isEmpty ? "1=1" : clause.sql)) \(membershipFilter)
+              AND \(PhotoVisibility.visiblePredicate())
         """).get(params) else { return 0 }
         return Int(row[0].intValue ?? 0)
     }
@@ -246,6 +252,7 @@ public final class PhotoFilterQuery {
             SELECT \(countExpression) AS count
             FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id
             WHERE \(sessionFilter) AND (\(clause.sql.isEmpty ? "1=1" : clause.sql))
+              AND \(PhotoVisibility.visiblePredicate())
         """).get(allParams) else { return 0 }
         return Int(row[0].intValue ?? 0)
     }

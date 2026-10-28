@@ -179,9 +179,10 @@ public final class CullingViewModel: PageVisibility {
         return page?.assets.first { $0.photo.id == currentPhotoId } ?? page?.assets.first
     }
     public internal(set) var selectedPhotoIds: Set<String> = []
-    /// 本次会话已加载的全部 photoIds（loadMore 累加、整页刷新重置），
-    /// 用于刷新时与选择集取交，避免跨页选择被静默清除。
+    /// 本次会话已加载的全部 photoIds（loadMore 累加、整页刷新重置）。
     var loadedPhotoIds: Set<String> = []
+    /// P0 / A2：triage 星级策略（产品未拍板前显式暴露；默认保持 3/1 不改现状）。
+    public var triageRatingMode: TriageRatingMode = .keep3Reject1
     public internal(set) var navigationGroups: [NavigationGroup] = []
     public internal(set) var isNavigationBusy = false
     public internal(set) var selectedNavigationGroupId = ""

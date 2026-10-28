@@ -155,4 +155,41 @@ struct MetadataCacheRepoTests {
         #expect(try repo.get("p1")?.keywords == ["a", "b"])
         #expect(try repo.get("p1")?.label == "Red")
     }
+
+    @Test func updateDescriptiveReplacesWholeSnapshot() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        try repo.updateDescriptive(
+            photoId: "p1",
+            descriptive: DescriptiveMetadata(caption: "旧说明", copyrightNotice: "旧版权", city: "上海"))
+        // 完整快照语义：读回校验只带 caption 时，其它字段必须消失（盘上确实被删了）。
+        try repo.updateDescriptive(
+            photoId: "p1", descriptive: DescriptiveMetadata(caption: "新说明"))
+        let row = try #require(try repo.get("p1")?.descriptive)
+        #expect(row.caption == "新说明")
+        #expect(row.copyrightNotice == nil)
+        #expect(row.city == nil)
+    }
+
+    @Test func mergeDescriptiveKeepsUntouchedFields() throws {
+        let (db, repo) = try makeRepo()
+        defer { db.close() }
+
+        try repo.updateDescriptive(
+            photoId: "p1",
+            descriptive: DescriptiveMetadata(caption: "旧说明", copyrightNotice: "旧版权", city: "上海"))
+        // P0 / A3：交付补丁只带 caption → 其余字段必须保留（崩溃重放不丢缓存）。
+        try repo.mergeDescriptive(
+            photoId: "p1", patch: DescriptiveMetadata(caption: "补丁说明"), replaceContact: false)
+        let row = try #require(try repo.get("p1")?.descriptive)
+        #expect(row.caption == "补丁说明")
+        #expect(row.copyrightNotice == "旧版权")
+        #expect(row.city == "上海")
+
+        // 显式清空（空串）仍然是"清空该字段"，不是忽略。
+        try repo.mergeDescriptive(
+            photoId: "p1", patch: DescriptiveMetadata(city: ""), replaceContact: false)
+        #expect(try repo.get("p1")?.descriptive.city == "", "空串 = 显式清空")
+    }
 }

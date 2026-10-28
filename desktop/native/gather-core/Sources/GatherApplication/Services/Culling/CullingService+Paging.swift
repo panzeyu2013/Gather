@@ -51,6 +51,33 @@ extension CullingService {
         }
         return CullingPage(assets: assets, total: total, nextCursor: page.cursor)
     }
+    /// P0 / A1：当前 scope/filters 下的完整选中集（代表行 id）。
+    ///
+    /// 与 listPage 同源：triage 门控/过滤校验、scope→similarity 解析、filters 投影
+    /// 全部复用，避免"全选"和网格看到的不是同一批照片。
+    public func selectableIds(_ query: CullingSelectionQuery) throws -> CullingSelectionIds {
+        let gate = try triageGate(sessionId: query.sessionId)
+        if let verdicts = query.filters?.triageVerdicts, !verdicts.isEmpty, gate == nil {
+            throw GatherError(
+                code: .CULLING_FILTER_INVALID,
+                params: ["reason": "triage filter requires enabled triage"])
+        }
+        let similarity: CullingSimilarityScope? = query.scope == .similarityGroup
+            ? Self.similarityScope(query.groupId) : nil
+        if query.scope == .similarityGroup, similarity == nil {
+            // 组 id 无法解析：没有可比对的成员集合，返回空集而不是回退到全部照片。
+            return CullingSelectionIds(ids: [], truncated: false)
+        }
+        let result = try pageQuery.representativeIds(
+            sessionId: query.sessionId,
+            scope: query.scope,
+            filter: Self.pageFilter(query.filters, gate: gate),
+            similarity: similarity,
+            limit: query.limit ?? CullingSelectionQuery.maxIds
+        )
+        return CullingSelectionIds(ids: result.ids, truncated: result.truncated)
+    }
+
     // MARK: - 分页（TS pagePhotosQuery / loadAssetRows / preferredRowPredicate /
     // buildFilteredWhere / buildSimilarityClause / countForScope）
 

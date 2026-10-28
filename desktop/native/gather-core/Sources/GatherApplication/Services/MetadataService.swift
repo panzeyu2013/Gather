@@ -46,16 +46,33 @@ public typealias MetadataQueueFlush = @Sendable (String) async throws -> Writeba
 /// 逐张属性写入的结果（模板 / triage 共用）。
 public struct MetadataAttributesApplyOutcome: Equatable, Sendable {
     public var written: [String]
-    /// 已提交给执行器且未被明确报错的照片（含回读校验失败者）：
-    /// 撤销批次要按它记录快照，避免"盘上已改但不可撤销"。
+    /// 已提交给执行器且未被明确报错的照片（含回读校验失败者）。
+    /// P0 / A2 起只作为诊断口径；批次裁剪统一用 written ∪ uncertain。
     public var attempted: [String]
     public var skipped: [String]
     public var failed: [MetadataApplyFailure]
-    public init(written: [String], attempted: [String] = [], skipped: [String], failed: [MetadataApplyFailure]) {
+    /// P0 / A2：写入已执行但回读失败/校验不符——**可能已写盘**。
+    /// 撤销批次必须包含它们（与 written 并集），否则会出现"盘上已改、批次里没有"。
+    /// 与 failed 有交集（failed 保留可读错误信息），调用方不得用 failed 反推"没写"。
+    public var uncertain: [String]
+    public init(
+        written: [String],
+        attempted: [String] = [],
+        skipped: [String],
+        failed: [MetadataApplyFailure],
+        uncertain: [String] = []
+    ) {
         self.written = written
         self.attempted = attempted
         self.skipped = skipped
         self.failed = failed
+        self.uncertain = uncertain
+    }
+
+    /// 可能已落盘、需要进撤销批次的照片（去重保序）。
+    public var undoable: [String] {
+        var seen = Set<String>()
+        return (written + uncertain).filter { seen.insert($0).inserted }
     }
 }
 
@@ -251,6 +268,38 @@ public final class MetadataService: @unchecked Sendable {
         return try await xmp.readAttributes(photoPath: photoPath)
     }
 
+    /// P0 / B1：**盘上现状**的统一读取入口（模板预览/写回、triage undo 用）。
+    ///
+    /// 与 readEffectiveAttributesOnce 的差别：
+    /// - 面向"任意路径"（不是 session 内照片），不做缓存投影；
+    /// - JPEG 走内嵌解析（XMP + IPTC）再叠加侧车；RAW 只读侧车；
+    /// - 解析失败不抛错，退化为侧车读（模板 preview 的 disk=nil 语义由调用方处理）。
+    ///
+    /// 为什么必须读内嵌：Bridge/Lightroom 把 caption/版权写在 JPEG 的 IPTC-IIM 里，
+    /// 只读 .xmp 会让 preview 把"盘上已有值"当成未知（keepExternal 失效），
+    /// 也会让 triage undo 拿到错误的"当前星级"。
+    public func diskAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
+        let isJpeg = photoPath.lowercased().hasSuffix(".jpg")
+            || photoPath.lowercased().hasSuffix(".jpeg")
+        if isJpeg, let exif {
+            do {
+                if let parsed = try await exif.parse(filePath: photoPath, isJpeg: true) {
+                    let sidecar = try await xmp.readAttributes(photoPath: photoPath)
+                    if let embedded = MetadataService.embeddedAttributesFromParse(parsed) {
+                        return mergeAttributes(embedded, sidecar)
+                    }
+                    return sidecar
+                }
+            } catch {
+                // 内嵌解析失败 = 没有内嵌信息：退化为只读侧车，不阻断元数据面板。
+                GatherLogger.log(
+                    "diskAttributes embedded parse failed (path token=\(TSPath.basename(photoPath))): "
+                        + "\(error)", level: .debug)
+            }
+        }
+        return try await xmp.readAttributes(photoPath: photoPath)
+    }
+
     /// TS: readEffectiveAttributesOnce —— 单次读取路径：
     /// - RAW / sidecar-mode（TS: selected === sidecar）：一次侧车读。
     /// - JPEG 且内嵌派生可用（IPTC-only 关键词之外）：从已解析段派生 + 一次侧车读。
@@ -282,16 +331,35 @@ public final class MetadataService: @unchecked Sendable {
             dateTaken: overlay.dateTaken ?? base.dateTaken,
             latitude: overlay.latitude ?? base.latitude,
             longitude: overlay.longitude ?? base.longitude,
-            // P1 / IPTC：描述性元数据整块按"后写覆盖"合并（侧车覆盖内嵌），
-            // 与其它字段的 overlay 语义一致；nil 表示该来源没有可投影的 IPTC。
-            descriptive: overlay.descriptive ?? base.descriptive
+            // P0 / B1：描述性元数据**逐字段**合并（侧车覆盖内嵌，内嵌补侧车空缺）。
+            // 旧实现整块 overlay：侧车只要有一个字段，JPEG 里的其它 IPTC 就全丢。
+            descriptive: Self.mergeDescriptive(base.descriptive, overlay.descriptive)
         )
     }
 
-    /// TS: embeddedAttributesFromParse —— 从已解析 exifr 段派生内嵌
-    /// rating/label/keywords，规则与 EmbeddedWriter.readExifrAttributes 完全一致：
-    /// XMP dc:subject 优先于 IPTC，xmp:Rating ?? IFD0 rating 强转为数字，xmp:Label。
-    /// IPTC-only 关键词（exifr 字符集不可靠）时返回 nil（走 exiftool 池）。
+    /// 逐字段合并：overlay 的非 nil 字段覆盖 base（nil = 该来源没有该字段）。
+    static func mergeDescriptive(
+        _ base: DescriptiveMetadata?,
+        _ overlay: DescriptiveMetadata?
+    ) -> DescriptiveMetadata? {
+        switch (base, overlay) {
+        case (nil, nil): return nil
+        case (let base?, nil): return base
+        case (nil, let overlay?): return overlay
+        case (let base?, let overlay?): return base.applying(overlay)
+        }
+    }
+
+    /// TS: embeddedAttributesFromParse —— 从已解析段派生内嵌可写属性：
+    /// - keywords：XMP dc:subject 优先于 IPTC Keywords；
+    /// - rating：xmp:Rating ?? IFD0 Rating（数字或数字字符串）；
+    /// - label：xmp:Label；
+    /// - descriptive：dc / xmp / IPTC-IIM 的字段映射（P0 / B1）。
+    ///
+    /// 旧实现在"只有 IPTC 关键词"时返回 nil（TS 的 exifr 字符集不可靠）。
+    /// ImageIO 实现下不成立：CGImageProperties 会把 IIM 合成为 dc:subject，
+    /// 且字符串是原生 Swift String；保留该分支只会把可读文件推给未接线的
+    /// EmbeddedXMPReader（等价于丢失描述性元数据）。
     public static func embeddedAttributesFromParse(_ parsed: MetadataParseSegments) -> MetadataWriteAttributes? {
         let xmp = parsed.xmp
         let dc = parsed.dc
@@ -307,14 +375,134 @@ public final class MetadataService: @unchecked Sendable {
             rating = nil
         }
         let keywords = MetadataService.normalizeKeywordList(dc?["subject"])
-        if keywords == nil, iptc?["Keywords"] != nil {
+        let descriptive = descriptiveFromParse(parsed)
+        if keywords == nil, rating == nil, xmp?["Label"] == nil, descriptive.isEmpty {
             return nil
         }
         return MetadataWriteAttributes(
             keywords: keywords ?? MetadataService.normalizeKeywordList(iptc?["Keywords"]),
             rating: rating,
-            label: xmp?["Label"]?.stringValue
+            label: xmp?["Label"]?.stringValue,
+            descriptive: descriptive.isEmpty ? nil : descriptive
         )
+    }
+
+    /// 内嵌描述性元数据映射（键表与 ImageIO 的 IPTC 常量逐字一致）。
+    ///
+    /// 取值优先级：dc（XMP 原生）→ xmp（其它命名空间的本地名）→ IPTC-IIM
+    /// （Bridge/Lightroom 常写的形态）。每个字段独立取第一个非空值。
+    ///
+    /// P1：改为表驱动——旧实现逐行手写，漏了计划验收明确要求的 `location`；
+    /// 新增字段只需加一行表项，并由一组真实 JPEG 映射测试兜住。
+    private struct EmbeddedDescriptiveField {
+        let field: DescriptiveField
+        var dcKeys: [String] = []
+        var xmpKeys: [String] = []
+        var iimKeys: [String] = []
+        var isList = false
+    }
+
+    private static let embeddedDescriptiveFields: [EmbeddedDescriptiveField] = [
+        .init(field: .title, dcKeys: ["title"], iimKeys: ["ObjectName"]),
+        .init(field: .caption, dcKeys: ["description"], iimKeys: ["Caption/Abstract"]),
+        .init(field: .creator, dcKeys: ["creator"], iimKeys: ["Byline"], isList: true),
+        .init(field: .copyrightNotice, dcKeys: ["rights"], iimKeys: ["CopyrightNotice"]),
+        .init(field: .creatorJobTitle, xmpKeys: ["AuthorsPosition"], iimKeys: ["BylineTitle"]),
+        .init(field: .credit, xmpKeys: ["Credit"], iimKeys: ["Credit"]),
+        .init(field: .source, xmpKeys: ["Source"], iimKeys: ["Source"]),
+        .init(field: .headline, xmpKeys: ["Headline"], iimKeys: ["Headline"]),
+        .init(field: .captionWriter, xmpKeys: ["CaptionWriter"], iimKeys: ["Writer/Editor"]),
+        .init(field: .jobIdentifier, xmpKeys: ["TransmissionReference"],
+              iimKeys: ["OriginalTransmissionReference"]),
+        .init(field: .usageTerms, xmpKeys: ["UsageTerms"], iimKeys: ["UsageTerms"]),
+        .init(field: .city, xmpKeys: ["City"], iimKeys: ["City"]),
+        .init(field: .state, xmpKeys: ["State"], iimKeys: ["Province/State"]),
+        .init(field: .country, xmpKeys: ["Country"], iimKeys: ["Country/PrimaryLocationName"]),
+        .init(field: .countryCode, xmpKeys: ["CountryCode"],
+              iimKeys: ["Country/PrimaryLocationCode"]),
+        .init(field: .sublocation, xmpKeys: ["Sublocation"], iimKeys: ["SubLocation"]),
+        // 计划 B1 验收字段：旧实现漏了这一行。
+        .init(field: .location, xmpKeys: ["Location"], iimKeys: ["ContentLocationName"]),
+        .init(field: .intellectualGenre, xmpKeys: ["IntellectualGenre"],
+              iimKeys: ["ObjectAttributeReference"]),
+        .init(field: .subjectCode, xmpKeys: ["SubjectCode"], iimKeys: ["SubjectReference"],
+              isList: true),
+        .init(field: .dateCreated, xmpKeys: ["DateCreated"], iimKeys: ["DateCreated"]),
+        .init(field: .scene, xmpKeys: ["Scene"], iimKeys: ["Scene"], isList: true),
+        .init(field: .event, xmpKeys: ["Event"]),
+        .init(field: .personInImage, xmpKeys: ["PersonInImage"], isList: true),
+        .init(field: .organisationInImage, xmpKeys: ["OrganisationInImageName"], isList: true),
+        .init(field: .worldRegion, xmpKeys: ["WorldRegion"]),
+        .init(field: .provinceState, xmpKeys: ["ProvinceState"]),
+        .init(field: .modelReleaseStatus, xmpKeys: ["ModelReleaseStatus"]),
+        .init(field: .propertyReleaseStatus, xmpKeys: ["PropertyReleaseStatus"]),
+        .init(field: .digitalSourceType, xmpKeys: ["DigitalSourceType"]),
+        .init(field: .additionalModelInfo, xmpKeys: ["AddlModelInfo"]),
+    ]
+
+    static func descriptiveFromParse(_ parsed: MetadataParseSegments) -> DescriptiveMetadata {
+        var result = DescriptiveMetadata()
+        for spec in embeddedDescriptiveFields {
+            if spec.isList {
+                let list = firstList(parsed, keys: spec.dcKeys, isDC: true)
+                    ?? firstList(parsed, keys: spec.xmpKeys, isDC: false)
+                    ?? firstList(parsed, keys: spec.iimKeys, isIIM: true)
+                if let list { result.set(.list(list), for: spec.field) }
+            } else {
+                let text = firstText(parsed, keys: spec.dcKeys, isDC: true)
+                    ?? firstText(parsed, keys: spec.xmpKeys, isDC: false)
+                    ?? firstText(parsed, keys: spec.iimKeys, isIIM: true)
+                if let text { result.set(.text(text), for: spec.field) }
+            }
+        }
+        return result
+    }
+
+    private static func firstText(
+        _ parsed: MetadataParseSegments, keys: [String], isDC: Bool = false, isIIM: Bool = false
+    ) -> String? {
+        let segment = isIIM ? parsed.iptc : (isDC ? parsed.dc : parsed.xmp)
+        for key in keys {
+            if let text = textValue(segment?[key]), !text.isEmpty { return text }
+        }
+        return nil
+    }
+
+    private static func firstList(
+        _ parsed: MetadataParseSegments, keys: [String], isDC: Bool = false, isIIM: Bool = false
+    ) -> [String]? {
+        let segment = isIIM ? parsed.iptc : (isDC ? parsed.dc : parsed.xmp)
+        for key in keys {
+            if let list = listValue(segment?[key]), !list.isEmpty { return list }
+        }
+        return nil
+    }
+
+    /// ImageIO 的 rdf:Alt 值是「带 qualifier 的 tag 数组」（如 dc:title 返回 [tag]）：
+    /// 标量原样取，数组取首个字符串元素，数字转字符串。
+    static func textValue(_ value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        if let text = value.stringValue { return text }
+        if let number = value.numberValue {
+            return number.rounded() == number ? String(Int(number)) : String(number)
+        }
+        if let items = value.arrayElements {
+            for item in items {
+                if let text = textValue(item), !text.isEmpty { return text }
+            }
+        }
+        return nil
+    }
+
+    /// 列表型字段：数组取全部字符串；标量视为单元素列表（逗号不拆，关键词里可能有逗号）。
+    static func listValue(_ value: JSONValue?) -> [String]? {
+        guard let value else { return nil }
+        if let items = value.arrayElements {
+            let strings = items.compactMap { textValue($0) }.filter { !$0.isEmpty }
+            return strings.isEmpty ? nil : strings
+        }
+        if let text = textValue(value), !text.isEmpty { return [text] }
+        return nil
     }
 
     /// TS: getPhotosByIds —— 800/块 IN 查询（镜像缓存仓库的分块，低于 SQLite
@@ -876,6 +1064,9 @@ public final class MetadataService: @unchecked Sendable {
 
         var written: [String] = []
         var failed: [MetadataApplyFailure] = []
+        // P0 / A2：回读失败/校验不符 = 不确定（可能已写盘）。它既留在 failed 里给
+        // 用户看原因，也进 uncertain 让撤销批次包含它。
+        var uncertain: [String] = []
         // 投影刷新失败只降级、不改变 written 语义；但失败次数要聚合上报——逐张逐字段
         // 打日志在万张批次下会刷数万行，反而淹没真正的信号。
         var projectionFailures = 0
@@ -907,11 +1098,13 @@ public final class MetadataService: @unchecked Sendable {
             do {
                 actual = try await xmp.readAttributes(photoPath: readPath)
             } catch {
+                uncertain.append(input.photoId)
                 failed.append(MetadataApplyFailure(
                     photoId: input.photoId, message: "read-back failed: \(error)"))
                 continue
             }
             guard Self.attributesMatch(input.attributes, actual) else {
+                uncertain.append(input.photoId)
                 failed.append(MetadataApplyFailure(
                     photoId: input.photoId, message: "write-back verification failed"))
                 continue
@@ -974,7 +1167,8 @@ public final class MetadataService: @unchecked Sendable {
                 level: .warn)
         }
         return MetadataAttributesApplyOutcome(
-            written: written, attempted: attempted, skipped: skipped, failed: failed)
+            written: written, attempted: attempted, skipped: skipped,
+            failed: failed, uncertain: uncertain)
     }
 
     /// 写后回读判定：描述性元数据逐字段（空值等价于不存在），其余字段精确比较。

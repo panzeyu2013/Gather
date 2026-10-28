@@ -267,7 +267,14 @@ public final class MetadataCacheRepo {
     }
 
     /// P1 / IPTC：描述性元数据写盘后的本地投影刷新（读回值 → 缓存）。
-    /// 显式覆盖：空 DescriptiveMetadata 表示盘上已无这些字段。
+    ///
+    /// P0 / A3：**按字段合并**，不再整列覆盖。
+    /// 写回 payload 只带本次触碰的字段；整列替换会让"未触碰的 IPTC"从缓存消失
+    /// （崩溃重放 Converge 时最明显：重放一次只剩补丁里的字段）。
+    ///
+    /// - descriptive 的 nil 字段 = 不触碰；空值 = 显式清空（applying 语义）。
+    /// - replaceContact = true 时整块替换 contact（撤销要删除模板新增的成员）。
+    /// - 读-改-写在同一个事务里，避免并发写者交错。
     public func updateDescriptive(photoId: String, descriptive: DescriptiveMetadata) throws {
         let now = nowISOString()
         let json = try Self.encodeDescriptive(descriptive)
@@ -281,6 +288,38 @@ public final class MetadataCacheRepo {
               iptc_json = excluded.iptc_json,
               cached_at = excluded.cached_at
           """).run([.text(json), .text(now), .text(photoId)])
+    }
+
+    /// P0 / A3：**只合并本次触碰的字段**（写回 payload 语义）。
+    ///
+    /// 与 updateDescriptive 的分工：
+    /// - updateDescriptive = 完整盘上快照（读回校验/扫描）→ 整列替换，删掉的字段要消失；
+    /// - mergeDescriptive = 增量补丁（交付 outbox 的 descriptive）→ 未触碰字段必须保留。
+    /// 读-改-写在同一个事务里，避免并发写者交错。
+    public func mergeDescriptive(
+        photoId: String,
+        patch: DescriptiveMetadata,
+        replaceContact: Bool = false
+    ) throws {
+        let now = nowISOString()
+        try connection.transaction {
+            let existing = try self.get(photoId)?.descriptive ?? DescriptiveMetadata()
+            var merged = existing.applying(patch)
+            if replaceContact, let contact = patch.contactInfo {
+                merged.contactInfo = contact
+            }
+            let json = try Self.encodeDescriptive(merged)
+            _ = try connection.prepare("""
+                INSERT INTO photo_metadata_cache
+                  (photo_id, session_id, rating, keywords, iptc_json, cached_at)
+                SELECT id, session_id, 0, '[]', ?, ?
+                FROM photos
+                WHERE id = ?
+                ON CONFLICT(photo_id) DO UPDATE SET
+                  iptc_json = excluded.iptc_json,
+                  cached_at = excluded.cached_at
+                """).run([.text(json), .text(now), .text(photoId)])
+        }
     }
 
     public func updateKeywords(photoId: String, keywords: [String]) throws {

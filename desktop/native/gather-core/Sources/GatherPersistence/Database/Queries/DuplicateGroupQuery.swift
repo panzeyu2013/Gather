@@ -52,6 +52,7 @@ public final class DuplicateGroupQuery {
             FROM duplicate_group_members dgm
             JOIN photos p ON p.id = dgm.photo_id
             WHERE dgm.group_id IN (\(placeholders))
+              AND \(PhotoVisibility.visiblePredicate())
             ORDER BY dgm.id
             """).query(groupIds.map { .int(Int64($0)) })
         var memberMap: [Int: [DuplicateGroupMemberDetail]] = [:]

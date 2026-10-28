@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/CullingAPI.swift
-// Cut 1 / 阶段 1A：挑片域协议（20 个方法）。
+// Cut 1 / 阶段 1A：挑片域协议（21 个方法；P0 / A1 追加 selection）。
 //
 // 职责：挑片分页/历史栈/单张与批量决策/分组/摘要/同步状态/写回与清理。
 // 对应命令（19 条）：culling.list_page / history / apply_history / update /
@@ -30,7 +30,12 @@ public protocol CullingAPI: Sendable {
     /// P0 / T0：应用建议（只写 culling 决策，source=ai；绝不自动写 XMP）。
     func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult
     /// P1 / D：把已淘汰的照片移到 <sessionRoot>/_rejects（只移动、不删除）。
+    /// P0 / A1：混合批次按张过滤（返回 skipped），并按逻辑资产展开到全部变体。
     func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult
+
+    /// P0 / A1：当前 scope/filters 下的完整选中集（代表行）。跨页"全选"与移出用。
+    /// 命中 CullingSelectionQuery.maxIds 时截断，truncated = true。
+    func selection(_ query: CullingSelectionQuery) async throws -> CullingSelectionIds
 
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus
     func reset(_ input: Confirmed<CullingResetInput>) async throws -> Bool

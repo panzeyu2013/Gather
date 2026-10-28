@@ -42,6 +42,8 @@ public enum MetadataTemplateStoreError: Error, Equatable, CustomStringConvertibl
 public final class MetadataTemplateStore: @unchecked Sendable {
     /// settings 键：唯一真相源。
     public static let settingsKey = "metadata.templates"
+    /// 解析失败时的原文留证键（只保留最近一份，与 MetadataApplyBatchStore 同模式）。
+    public static let corruptKey = "metadata.templates.corrupt"
     private let settings: SettingsService
     private let lock = NSLock()
 
@@ -96,14 +98,53 @@ public final class MetadataTemplateStore: @unchecked Sendable {
         try persistLocked(templates)
     }
 
+    /// 读取模板表。
+    ///
+    /// P2：损坏不能静默——旧实现整体 try? 返回空表，UI 上表现为"模板全部消失"，
+    /// 且下一次 save 会用新表覆盖原文，再也查不到原因。这里与批次存储同模式：
+    /// 逐元素解码（坏一条只丢一条），并把原文转存到 corrupt 键留证。
     private func loadLocked() -> [MetadataTemplate] {
         let raw = settings.get(Self.settingsKey, defaultValue: "")
-        guard !raw.isEmpty,
-              let value = try? JSONValue.parse(raw),
-              let templates = try? value.decode([MetadataTemplate].self) else {
+        guard !raw.isEmpty else { return [] }
+        do {
+            let value = try JSONValue.parse(raw)
+            guard let elements = value.arrayElements else {
+                preserveCorruptPayloadLocked(raw, reason: "not an array")
+                return []
+            }
+            var templates: [MetadataTemplate] = []
+            var dropped = 0
+            for element in elements {
+                do {
+                    templates.append(try element.decode(MetadataTemplate.self))
+                } catch {
+                    dropped += 1
+                }
+            }
+            if dropped > 0 {
+                preserveCorruptPayloadLocked(
+                    raw, reason: "dropped \(dropped) of \(elements.count)")
+                GatherLogger.log(
+                    "metadata.templates: 丢弃 \(dropped)/\(elements.count) 条损坏模板",
+                    level: .warn)
+            }
+            return templates
+        } catch {
+            preserveCorruptPayloadLocked(raw, reason: "unparseable JSON")
             return []
         }
-        return templates
+    }
+
+    private func preserveCorruptPayloadLocked(_ raw: String, reason: String) {
+        guard settings.get(Self.corruptKey, defaultValue: "") != raw else { return }
+        do {
+            try settings.set(Self.corruptKey, value: raw)
+            GatherLogger.log("metadata.templates: 损坏数据已留证（\(reason)）", level: .warn)
+        } catch {
+            // 留证失败也不能阻断读取：坏数据本身已经被丢弃并记 warn。
+            GatherLogger.log(
+                "metadata.templates: 损坏数据留证失败（\(reason)）：\(error)", level: .warn)
+        }
     }
 
     private func persistLocked(_ templates: [MetadataTemplate]) throws {

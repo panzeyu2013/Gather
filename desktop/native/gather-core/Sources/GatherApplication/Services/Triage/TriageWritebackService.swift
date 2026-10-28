@@ -24,10 +24,19 @@ public struct TriageWritebackOutcome: Equatable, Sendable {
     public var written: [String]
     public var skipped: [String]
     public var failed: [TriageWritebackFailure]
-    public init(written: [String], skipped: [String], failed: [TriageWritebackFailure]) {
+    /// P1：可能已写盘的照片（written ∪ uncertain）。UI 用它决定"撤销入口"是否存在 ——
+    /// 只看 written 会让"回读失败但已写盘"的批次在界面上不可撤销。
+    public var undoable: [String]
+    public init(
+        written: [String],
+        skipped: [String],
+        failed: [TriageWritebackFailure],
+        undoable: [String] = []
+    ) {
         self.written = written
         self.skipped = skipped
         self.failed = failed
+        self.undoable = undoable
     }
 }
 
@@ -92,6 +101,8 @@ public final class TriageWritebackService: Sendable {
                     // 撤销基线取盘上现值（缓存可能落后）。
                     beforeRating: decision.rating == nil
                         ? nil : Int(current.rating ?? Double(detail.exif.rating)),
+                    // P0 / A2：记录本批实际写入值；undo 只在盘上仍等于它时回滚。
+                    appliedRating: decision.rating,
                     beforeKeywords: decision.keyword == nil ? nil : (current.keywords ?? []),
                     appliedKeyword: decision.keyword,
                     beforeTriageSignal: current.triageSignal
@@ -140,10 +151,13 @@ public final class TriageWritebackService: Sendable {
             }
         }
         var written: [String] = []
+        // written ∪ uncertain：可能已落盘的照片（批次裁剪的唯一口径）。
+        var undoable = Set<String>()
         if !inputs.isEmpty {
             do {
                 let outcome = try await metadata.applyMetadataAttributes(inputs, source: .manual)
                 written = outcome.written
+                undoable = Set(outcome.undoable)
                 skipped.append(contentsOf: outcome.skipped)
                 failed.append(contentsOf: outcome.failed.map {
                     TriageWritebackFailure(photoId: $0.photoId, message: $0.message)
@@ -155,7 +169,8 @@ public final class TriageWritebackService: Sendable {
             }
         }
         if let batches {
-            if written.isEmpty {
+            // P0 / A2：裁剪口径 = written ∪ uncertain（回读失败也可能已写盘）。
+            if undoable.isEmpty {
                 // 整批一张都没写成：批次快照没有对应落盘，留着只会给 UI 一个"可撤销的
                 // 假入口"（撤销会写回/清信号，反而制造改动）。标记已撤销。
                 do {
@@ -165,16 +180,15 @@ public final class TriageWritebackService: Sendable {
                         "triage batch markUndone after empty write failed (batch=\(batchId)): \(error)",
                         level: .warn)
                 }
-            } else if written.count < inputs.count {
-                // 部分失败：把快照裁剪成"真正写成的照片"。否则 undo 会回带没写过的照片
+            } else if undoable.count < inputs.count {
+                // 部分失败：把快照裁剪成"可能已落盘的照片"。否则 undo 会回带没写过的照片
                 // 的 before 值（窗口内用户/外部软件的新值会被悄悄冲掉）。
-                let writtenIDs = Set(written)
                 do {
                     try batches.record(MetadataApplyBatch(
                         id: batchId, templateId: Self.batchTemplateID,
                         templateName: Self.batchTemplateID, appliedAt: now,
                         snapshots: inputs.compactMap { snapshots[$0.photoId] }
-                            .filter { writtenIDs.contains($0.photoId) }))
+                            .filter { undoable.contains($0.photoId) }))
                 } catch {
                     GatherLogger.log(
                         "triage batch trim after partial write failed (batch=\(batchId)): \(error)",
@@ -182,7 +196,9 @@ public final class TriageWritebackService: Sendable {
                 }
             }
         }
-        return TriageWritebackOutcome(written: written, skipped: skipped, failed: failed)
+        return TriageWritebackOutcome(
+            written: written, skipped: skipped, failed: failed,
+            undoable: Array(undoable).sorted())
     }
 
     /// 撤销：rating/关键词还原为改动前；私有命名空间清空。
@@ -223,18 +239,74 @@ public final class TriageWritebackService: Sendable {
                     photoId: snapshot.photoId, message: String(describing: error)))
             }
         }
+        // P0 / A2：回滚星级前先读盘上现值，只有"仍是本批写入值"才还原。
+        // 写回后人工改 5★ 的照片，undo 不得把它清回 0。
+        var diskRatings: [String: Int] = [:]
+        let ratingTargets = batch.snapshots.filter {
+            $0.beforeRating != nil && $0.appliedRating != nil
+        }
+        if !ratingTargets.isEmpty {
+            do {
+                let pairs = try await batchAsync(ratingTargets, concurrency: 8) { snapshot
+                    -> (String, Int?) in
+                    // 快照里的 filepath 可能已过时（照片被移到 _rejects）：按 photoId
+                    // 解析当前路径，否则 undo 会把"路径变了"误判成"星级被人改过"。
+                    let currentPath: String
+                    do {
+                        currentPath = try self.metadata.photoDetail(
+                            photoId: snapshot.photoId).filepath
+                    } catch {
+                        currentPath = snapshot.filepath
+                    }
+                    guard let attributes = try? await self.metadata.diskAttributes(
+                        photoPath: currentPath) else { return (snapshot.photoId, nil) }
+                    return (snapshot.photoId, attributes.rating.map { Int($0.rounded()) })
+                }
+                for (photoId, rating) in pairs {
+                    if let rating { diskRatings[photoId] = rating }
+                }
+            } catch {
+                // 读盘并发调度失败：全部按"读不到"处理（fail-closed，不回写星级）。
+                GatherLogger.log(
+                    "triage undo: rating probe failed, restore skipped: \(error)", level: .warn)
+            }
+        }
+        var skipped: [String] = []
         for snapshot in batch.snapshots where !blocked.contains(snapshot.photoId) {
             var attributes = MetadataWriteAttributes()
-            if let beforeRating = snapshot.beforeRating { attributes.rating = Double(beforeRating) }
+            if let beforeRating = snapshot.beforeRating {
+                if let applied = snapshot.appliedRating {
+                    if let current = diskRatings[snapshot.photoId] {
+                        if current == applied {
+                            attributes.rating = Double(beforeRating)
+                        } else {
+                            // 盘上被改过（人工/外部软件）：保留新值，只报告跳过。
+                            skipped.append(snapshot.photoId)
+                        }
+                    } else {
+                        // 读不到盘上星级：fail-closed，绝不盲目回写。
+                        skipped.append(snapshot.photoId)
+                    }
+                } else {
+                    // 旧批次没有 appliedRating：无法证明是本批写的，不回滚。
+                    skipped.append(snapshot.photoId)
+                }
+            }
             // 旧批次没有 appliedKeyword：退回 beforeKeywords 整表恢复（历史行为）。
             if snapshot.appliedKeyword == nil, let beforeKeywords = snapshot.beforeKeywords {
                 attributes.keywords = beforeKeywords
             }
             // 恢复写回前的信号（含"之前没有"→ 空串清除），不是无条件清空。
             attributes.triageSignal = snapshot.beforeTriageSignal ?? ""
-            inputs.append((snapshot.photoId, attributes))
+            if !attributes.isEmpty { inputs.append((snapshot.photoId, attributes)) }
         }
         var written: [String] = []
+        if inputs.isEmpty, failed.isEmpty {
+            // 全部快照都因"已被人为改动"跳过：撤销视为完成（没有可回滚的内容）。
+            try batches.markUndone(id: batchId)
+            return TriageWritebackOutcome(
+                written: [], skipped: Array(Set(skipped)).sorted(), failed: [])
+        }
         if !inputs.isEmpty {
             do {
                 let outcome = try await metadata.applyMetadataAttributes(inputs, source: .manual)
@@ -252,6 +324,10 @@ public final class TriageWritebackService: Sendable {
             }
         }
         if failed.isEmpty { try batches.markUndone(id: batchId) }
-        return TriageWritebackOutcome(written: written, skipped: [], failed: failed)
+        return TriageWritebackOutcome(
+            written: written,
+            skipped: Array(Set(skipped)).sorted(),
+            failed: failed,
+            undoable: Array(Set(batch.snapshots.map(\.photoId))).sorted())
     }
 }

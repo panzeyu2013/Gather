@@ -108,6 +108,9 @@ final class PortFakePhotoRepo: PhotoRepository {
     }
 
     func countBySession(sessionId: String) throws -> Int { projectionRows.count }
+    func countVisibleBySession(sessionId: String) throws -> Int {
+        projectionRows.filter { $0.archivedAt == nil }.count
+    }
     func countAssetsBySession(sessionId: String) throws -> Int { 0 }
 
     func getAssetPage(
@@ -189,6 +192,12 @@ final class PortFakeMetadataRepo: MetadataRepository {
     private(set) var descriptiveUpdates: [String: DescriptiveMetadata] = [:]
     func updateDescriptive(photoId: String, descriptive: DescriptiveMetadata) throws {
         descriptiveUpdates[photoId] = descriptive
+    }
+    private(set) var descriptiveMerges: [(photoId: String, patch: DescriptiveMetadata)] = []
+    func mergeDescriptive(
+        photoId: String, patch: DescriptiveMetadata, replaceContact: Bool
+    ) throws {
+        descriptiveMerges.append((photoId, patch))
     }
 }
 
@@ -348,6 +357,14 @@ final class PortFakeCullingPageReading: CullingPageReading {
 
     func countFiltered(sessionId: String, filter: CullingPageFilter) throws -> Int { 0 }
     func countSimilarity(sessionId: String, similarity: CullingSimilarityScope) throws -> Int { 0 }
+
+    func representativeIds(
+        sessionId: String,
+        scope: CullingScope,
+        filter: CullingPageFilter,
+        similarity: CullingSimilarityScope?,
+        limit: Int
+    ) throws -> (ids: [String], truncated: Bool) { ([], false) }
 }
 
 final class PortFakeCullingRichReading: CullingRichReading {
@@ -474,6 +491,9 @@ final class PortFakeSimilarityRepo: SimilarityRepository {
         memberCalls += 1
         return groupMembers
     }
+
+    func groupMemberCounts(sessionId: String, resultId: Int64) throws -> [Int: Int] { [:] }
+    func countFullyArchivedGroups(sessionId: String, resultId: Int64) throws -> Int { 0 }
 }
 
 final class PortFakeClusterStateRepo: SimilarityClusterStateRepository {
@@ -837,7 +857,7 @@ func portFakeProjectionRow(
         .int(0), .real(0), .text("pending"),
         assetId.map { .text($0) } ?? .null, .null,
         .int(100), .int(80), .text("2026-01-01T00:00:00.000Z"),
-        .text("2026-01-01T00:00:00.000Z"),
+        .text("2026-01-01T00:00:00.000Z"), .null,
     ])
 }
 

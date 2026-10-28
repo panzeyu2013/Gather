@@ -121,6 +121,8 @@ private actor StubCullingAPI: CullingAPI {
     var finalizeSummary = vmSyncSummary(synced: 1)
     var resetResult = true
     var confirmSyncResult = true
+    var selectionResult = CullingSelectionIds(ids: [])
+    var moveRejectedResultOverride: CullingMoveRejectedResult?
     var pageError: GatherError?
     var updateError: GatherError?
 
@@ -138,6 +140,8 @@ private actor StubCullingAPI: CullingAPI {
     private(set) var flushCalls: [String] = []
     private(set) var retrySyncCalls: [String] = []
     private(set) var confirmSyncCalls: [String] = []
+    private(set) var selectionQueries: [CullingSelectionQuery] = []
+    private(set) var moveRejectedInputs: [Confirmed<CullingMoveRejectedInput>] = []
     private(set) var triageGenerateCalls = 0
 
     func setPage(_ value: CullingPage) { pageResult = value }
@@ -150,6 +154,10 @@ private actor StubCullingAPI: CullingAPI {
     func setWritebackResult(_ value: WritebackResult) { writebackResult = value }
     func setCleanupResult(_ value: CleanupResult) { cleanupResult = value }
     func setPageError(_ value: GatherError?) { pageError = value }
+    func setSelection(_ value: CullingSelectionIds) { selectionResult = value }
+    func setMoveRejectedResult(_ value: CullingMoveRejectedResult) {
+        moveRejectedResultOverride = value
+    }
 
     func page(_ query: CullingPageQuery) async throws -> CullingPage {
         pageQueries.append(query)
@@ -202,7 +210,14 @@ private actor StubCullingAPI: CullingAPI {
 
     // P1 / D：淘汰移动（stub：直接回成功，不碰文件系统）。
     func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult {
-        CullingMoveRejectedResult(moved: input.value.photoIds, newPaths: [], failed: [])
+        moveRejectedInputs.append(input)
+        return moveRejectedResultOverride
+            ?? CullingMoveRejectedResult(moved: input.value.photoIds, newPaths: [], failed: [])
+    }
+
+    func selection(_ query: CullingSelectionQuery) async throws -> CullingSelectionIds {
+        selectionQueries.append(query)
+        return selectionResult
     }
 
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus {
@@ -814,5 +829,83 @@ struct CullingViewModelAPITests {
             == "评分：成功 3，失败 0，跳过 1；请让 Capture One 重新加载元数据后确认同步")
         #expect(notice.resolve(with: L10n(language: .en))
             == "Rating: 3 succeeded, 0 failed, 1 skipped; load metadata in Capture One again, then confirm the sync")
+    }
+
+    // MARK: - P0 / A1：跨页选择与移出
+
+    @Test("移出：不在当前页的选择也整份提交（不再按 page.assets 过滤）")
+    func moveRejectedSubmitsCrossPageSelection() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p2", pickState: .rejected)]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        // p1 不在当前页（模拟第 1 页已翻走），但仍是用户选择集的一部分。
+        vm.selectedPhotoIds = ["p1", "p2"]
+
+        await vm.moveRejectedOut()
+
+        let inputs = await api.moveRejectedInputs
+        #expect(inputs.count == 1)
+        #expect(inputs.first?.value.photoIds == ["p1", "p2"])
+    }
+
+    @Test("移出：skipped 只提示，不把未移出的照片从选择集删掉")
+    func moveRejectedKeepsSkippedSelection() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1", pickState: .rejected)]))
+        await api.setMoveRejectedResult(CullingMoveRejectedResult(
+            moved: ["p1"], newPaths: ["/shoot/_rejects/p1.jpg"],
+            skipped: [CullingMoveRejectedSkip(photoId: "p2", reason: "not_rejected")],
+            failed: []))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        vm.selectedPhotoIds = ["p1", "p2"]
+
+        await vm.moveRejectedOut()
+
+        #expect(vm.selectedPhotoIds == ["p2"], "只有真正移出的照片离开选择集")
+    }
+
+    @Test("全选：走 selection API 取当前 scope 的完整集合")
+    func selectAllUsesSelectionAPI() async throws {
+        let api = StubCullingAPI()
+        await api.setSelection(CullingSelectionIds(ids: ["p1", "p2", "p3"]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        await vm.selectAllInScope()
+
+        #expect(vm.selectedPhotoIds == ["p1", "p2", "p3"])
+        let queries = await api.selectionQueries
+        #expect(queries.first?.sessionId == "s1")
+        #expect(queries.first?.scope == .all)
+    }
+
+    @Test("triage undo 入口：以 undoAvailable 为准，不因 written 为空而丢弃批次")
+    func triageUndoEntryUsesUndoAvailable() async throws {
+        let metadata = B6bMetadataAPIStub()
+        metadata.triageApplyResult = TriageWritebackResult(
+            batchId: "b-uncertain", written: [], skipped: [],
+            failed: [MetadataApplyFailureDTO(photoId: "p1", message: "read-back failed")],
+            undoAvailable: true)
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: StubCullingAPI(), navigation: StubNavigationAPI(),
+            metadata: metadata, jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        let input = try TriageWritebackInput(
+            policy: .ratingOnlyWhenEmpty,
+            items: [try TriageWritebackItem(photoId: "p1", verdict: "keep")])
+        await vm.applyTriageWriteback(Confirmed(input, source: .userDialog))
+
+        #expect(vm.lastTriageWritebackBatchId == "b-uncertain",
+                "回读失败但可能已写盘的批次必须可撤销")
     }
 }

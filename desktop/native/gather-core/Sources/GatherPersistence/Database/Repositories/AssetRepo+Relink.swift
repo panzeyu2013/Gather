@@ -388,22 +388,41 @@ extension AssetRepo {
         )
     }
 
-    /// 淘汰/手动移动后的路径迁移：photos.filepath + deliveries/intents +
+    /// 淘汰/手动移动后的路径迁移：photos.filepath + archived_at + deliveries/intents +
     /// keyword origins + sidecar bindings + asset_files 必须在**同一事务**里完成。
     /// 调用方负责移动文件；本方法失败时文件由调用方回滚。
+    ///
+    /// - sharesSidecar: 同 stem 还有兄弟留在工作区。此时原 .xmp 的元数据状态、
+    ///   交付队列、关键词来源都仍属留下的文件，**不得搬走**；只为复制出来的
+    ///   _rejects/x.xmp 建一份新的 binding（复制 metadata state，挂上被移文件），
+    ///   并把该文件从旧 binding 解绑。
+    /// - archivedAt: 非 nil 时在同一事务里写 photos.archived_at（可见性真相源）。
     public func relocatePhotoPathsAfterMove(
         photoId: String,
         oldPhotoPath: String,
         newPhotoPath: String,
+        sharesSidecar: Bool = false,
+        archivedAt: String? = nil,
         timestamp: String
     ) throws {
         try connection.transaction {
             _ = try PhotoRepo(connection: connection).updateFilepath(
                 photoId: photoId, filepath: newPhotoPath)
-            _ = try relocateMetadataState(
-                oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)
-            try relocateSidecarBinding(
-                oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)
+            if let archivedAt {
+                _ = try connection.prepare(
+                    "UPDATE photos SET archived_at = ?, updated_at = ? WHERE id = ?"
+                ).run([.text(archivedAt), .text(timestamp), .text(photoId)])
+            }
+            if sharesSidecar {
+                try copySidecarBindingForVariant(
+                    photoId: photoId, oldPhotoPath: oldPhotoPath,
+                    newPhotoPath: newPhotoPath, timestamp: timestamp)
+            } else {
+                _ = try relocateMetadataState(
+                    oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)
+                try relocateSidecarBinding(
+                    oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)
+            }
             let oldNormalized = TSPath.normalize(oldPhotoPath)
             let newNormalized = TSPath.normalize(newPhotoPath)
             let targetId = try connection.prepare(
@@ -476,6 +495,70 @@ extension AssetRepo {
               active = MAX(active, excluded.active),
               updated_at = excluded.updated_at
           """).run([.text(newXmp), .text(timestamp), .text(oldXmp)])
+    }
+
+    /// 共享侧车场景：复制出来的 _rejects/x.xmp 需要自己的 binding，
+    /// 但旧 binding（原 x.xmp）必须继续服务留下的兄弟。
+    ///
+    /// 语义：
+    /// 1. 新 xmp 没有 binding → 新建（binding_rule 沿用旧行）；
+    /// 2. 复制 sidecar_metadata_state（目标已有则保留目标值，不覆盖）；
+    /// 3. 把被移文件的 asset_file_id 挂到新 binding，并从旧 binding 解绑。
+    /// 任一步失败让外层事务整体回滚（文件由调用方回滚）。
+    private func copySidecarBindingForVariant(
+        photoId: String,
+        oldPhotoPath: String,
+        newPhotoPath: String,
+        timestamp: String
+    ) throws {
+        let oldXmp = TSPath.xmpSidecarPath(oldPhotoPath)
+        let newXmp = TSPath.xmpSidecarPath(newPhotoPath)
+        let normalizedOld = TSPath.normalize(oldXmp)
+        let normalizedNew = TSPath.normalize(newXmp)
+        if normalizedOld == normalizedNew { return }
+        guard let oldBinding = try connection.prepare(
+            "SELECT id, binding_rule FROM sidecar_bindings WHERE normalized_xmp_path = ?"
+        ).get([.text(normalizedOld)]) else { return }
+        let oldBindingId = oldBinding[0].textValue ?? ""
+        let bindingRule = oldBinding[1].textValue ?? "same_basename"
+        let fileId = try connection.prepare(
+            "SELECT asset_file_id FROM photos WHERE id = ?"
+        ).get([.text(photoId)])?[0].textValue ?? ""
+        guard !fileId.isEmpty else { return }
+
+        let bindingId = newUUIDString()
+        _ = try connection.prepare("""
+            INSERT INTO sidecar_bindings (
+              id, xmp_path, normalized_xmp_path, binding_rule, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(normalized_xmp_path) DO UPDATE SET updated_at = excluded.updated_at
+          """).run([
+            .text(bindingId), .text(newXmp), .text(normalizedNew), .text(bindingRule),
+            .text(timestamp), .text(timestamp),
+          ])
+        let targetBindingId = try connection.prepare(
+            "SELECT id FROM sidecar_bindings WHERE normalized_xmp_path = ?"
+        ).get([.text(normalizedNew)])?[0].textValue ?? ""
+        guard !targetBindingId.isEmpty else {
+            throw PersistenceError(code: .ASSET_RELINK_XMP_CONFLICT, detail: "new binding missing")
+        }
+
+        _ = try connection.prepare("""
+            INSERT INTO sidecar_metadata_state (
+              sidecar_binding_id, rating, label, keywords, fingerprint, updated_at
+            )
+            SELECT ?, rating, label, keywords, fingerprint, ?
+            FROM sidecar_metadata_state WHERE sidecar_binding_id = ?
+            ON CONFLICT(sidecar_binding_id) DO NOTHING
+          """).run([.text(targetBindingId), .text(timestamp), .text(oldBindingId)])
+        _ = try connection.prepare("""
+            INSERT OR IGNORE INTO sidecar_binding_files (sidecar_binding_id, file_id, created_at)
+            VALUES (?, ?, ?)
+          """).run([.text(targetBindingId), .text(fileId), .text(timestamp)])
+        _ = try connection.prepare("""
+            DELETE FROM sidecar_binding_files
+            WHERE sidecar_binding_id = ? AND file_id = ?
+          """).run([.text(oldBindingId), .text(fileId)])
     }
 
     private func relocateSidecarBinding(oldPhotoPath: String, newPhotoPath: String, timestamp: String) throws {

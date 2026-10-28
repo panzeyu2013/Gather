@@ -291,21 +291,24 @@ public final class CullingReadQuery {
             .text(sessionId), .text(sessionId),
         ]
         params.append(contentsOf: labels.map { .text($0) })
+        // P0 / A1：摘要与网格同口径——已移出（archived_at 非空）的照片不计入任何数字。
+        let visible = PhotoVisibility.visiblePredicate()
         let row = try connection.prepare("""
             SELECT
-              (SELECT COUNT(*) FROM photos WHERE session_id = ?),
+              (SELECT COUNT(*) FROM photos
+                WHERE session_id = ? AND \(PhotoVisibility.visiblePredicate(alias: ""))),
               (SELECT COUNT(*) FROM culling_decisions d
                  JOIN photos p ON p.id = d.photo_id
-                WHERE p.session_id = ? AND d.decision = 'keep'),
+                WHERE p.session_id = ? AND d.decision = 'keep' AND \(visible)),
               (SELECT COUNT(*) FROM culling_decisions d
                  JOIN photos p ON p.id = d.photo_id
-                WHERE p.session_id = ? AND d.decision = 'reject'),
+                WHERE p.session_id = ? AND d.decision = 'reject' AND \(visible)),
               (SELECT COUNT(*) FROM photo_metadata_cache c
                  JOIN photos p ON p.id = c.photo_id
-                WHERE p.session_id = ? AND c.rating > 0),
+                WHERE p.session_id = ? AND c.rating > 0 AND \(visible)),
               (SELECT COUNT(*) FROM photo_metadata_cache c
                  JOIN photos p ON p.id = c.photo_id
-                WHERE p.session_id = ? AND c.label IN (\(placeholders)))
+                WHERE p.session_id = ? AND c.label IN (\(placeholders)) AND \(visible))
             """).get(params)
         guard let row else {
             throw DatabaseError.schema("summaryCounts 查询无结果")

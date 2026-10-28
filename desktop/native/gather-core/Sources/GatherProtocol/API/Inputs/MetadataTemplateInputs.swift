@@ -49,12 +49,13 @@ public struct MetadataTemplatePreviewInput: Decodable, Sendable, Equatable {
     public let templateId: String
     public let photoIds: [String]
     public let policy: MetadataConflictPolicy
+    /// P2：单批上限（与 apply 同值）。超过就显式失败，不让 UI 以为"已套用全部"。
+    public static let maxPhotoIds = 2_000
+
     public init(templateId: String, photoIds: [String], policy: MetadataConflictPolicy = .keepExternal) throws {
         self.templateId = try APIValidation.nonBlank(templateId, field: "templateId", maxLength: 128)
-        guard !photoIds.isEmpty else {
-            throw GatherError.invalidParameter(field: "photoIds", reason: "must not be empty")
-        }
-        self.photoIds = photoIds
+        self.photoIds = try APIValidation.nonEmpty(
+            photoIds, field: "photoIds", maxCount: Self.maxPhotoIds)
         self.policy = policy
     }
 
@@ -74,12 +75,14 @@ public struct MetadataTemplateApplyInput: Decodable, Sendable, Equatable {
     public let templateId: String
     public let photoIds: [String]
     public let policy: MetadataConflictPolicy
+    /// P2：单批上限。批次快照要整体写进 settings（保留最近 20 批），
+    /// 无上限时一次 2 万张会把单键写成几十 MB。
+    public static let maxPhotoIds = 2_000
+
     public init(templateId: String, photoIds: [String], policy: MetadataConflictPolicy = .keepExternal) throws {
         self.templateId = try APIValidation.nonBlank(templateId, field: "templateId", maxLength: 128)
-        guard !photoIds.isEmpty else {
-            throw GatherError.invalidParameter(field: "photoIds", reason: "must not be empty")
-        }
-        self.photoIds = photoIds
+        self.photoIds = try APIValidation.nonEmpty(
+            photoIds, field: "photoIds", maxCount: Self.maxPhotoIds)
         self.policy = policy
     }
 
