@@ -121,17 +121,24 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                     addTarget(row.id)
                 }
             }
-            let movingIds = Set(orderedIds)
             var visibleByXmp: [String: [String]] = [:]
             for row in rows where row.archivedAt == nil {
                 let key = TSPath.normalize(TSPath.xmpSidecarPath(row.filepath))
                 visibleByXmp[key, default: []].append(row.id)
             }
-            var items: [RejectedMoveItem] = []
+            // 先把“实际会移动”的行筛出来，再算 movingIds。资产展开会包含未淘汰的
+            // 兄弟；若把这些兄弟也算作 moving，sharesSidecar 会被误判为 false，
+            // 移出已淘汰变体时就会把共享 .xmp 从留下的兄弟身边搬走。
+            var movingRows: [(photoId: String, row: PhotoProjectionRow)] = []
             for photoId in orderedIds {
                 guard let row = byId[photoId] else { continue }
                 if row.archivedAt != nil { skip(photoId, "already_archived"); continue }
                 guard rejected.contains(photoId) else { skip(photoId, "not_rejected"); continue }
+                movingRows.append((photoId, row))
+            }
+            let movingIds = Set(movingRows.map { $0.photoId })
+            var items: [RejectedMoveItem] = []
+            for (photoId, row) in movingRows {
                 let key = TSPath.normalize(TSPath.xmpSidecarPath(row.filepath))
                 let siblingsRemain = (visibleByXmp[key] ?? []).contains { !movingIds.contains($0) }
                 items.append(RejectedMoveItem(

@@ -4,7 +4,7 @@
 
 ## 结论
 
-A1/A2/A3/B1/B2/C1/C2 全部落地；第二轮收口后 core **1360 / 200 suites**、app **728 / 84 suites** 全绿；12 个 `check-*.sh`（strict）+ test-catalog `--self-test` + `gather-schema verify`（44/385/72/65、user_version=5、0 违规）+ `check-docs --strict` 全过。清理 ratchet 的 `try?` 保持 250（新增路径全部改成显式 do/catch），protocol 基线按实测重写（310 类型 / 1750 声明）。
+A1/A2/A3/B1/B2/C1/C2 全部落地；第三轮复核修复后 core **1364 / 200 suites**、app **728 / 84 suites** 全绿；12 个 `check-*.sh`（strict）+ test-catalog `--self-test` + `gather-schema verify`（44/385/72/65、user_version=5、0 违规）+ `check-docs --strict` 全过。清理 ratchet 的 `try?` 保持 250（新增路径全部改成显式 do/catch），protocol 基线按实测重写（310 类型 / 1751 声明）。
 
 ## A1 淘汰移出语义
 
@@ -61,7 +61,7 @@ A1/A2/A3/B1/B2/C1/C2 全部落地；第二轮收口后 core **1360 / 200 suites*
 
 | 项 | 结果 |
 |---|---|
-| core | 1360 tests / 200 suites，1.7s |
+| core | 1364 tests / 200 suites，1.7s |
 | app | 728 tests / 84 suites，12.1s（--no-parallel） |
 | schema verify | tables=44 columns=385 indexes=72 fks=65 user_version=5 violations=0 |
 | check-*.sh ×12 | 全 EXIT=0（strict 可用者带 --strict；cleanup 默认即硬门禁） |
@@ -97,6 +97,23 @@ A1/A2/A3/B1/B2/C1/C2 全部落地；第二轮收口后 core **1360 / 200 suites*
   `photos.requiredTableColumns` 加 archived_at。
 - `summary.totalGroups` 从 stats_json 扣掉"成员全部归档"的组；部分归档不改快照
   口径（避免破坏既有摘要契约）。
+
+## 第三轮复核修复（2026-10-28）
+
+针对第三轮只读复核的 7 个 P1：
+
+- triage undo 星级探测失败：区分“读不到”与“值为 nil”，写 failed 并保留批次可重试；
+  beforeRating 改用 `diskAttributes`（含 JPEG 内嵌），不再回落缓存 exif.rating。
+- 模板 `applyFields` 记录批次后若 `applyMetadataAttributes` 抛错：先 markUndone 再抛，
+  不再留下“未写盘但可撤销”的批次。
+- `MetadataFieldImpact` 新增 `diskKnown`；盘上读过但字段不存在时 beforeSnapshot
+  保持 nil，undo 清空而不是复活缓存旧值。
+- watcher 全树保底校验返回 job 的 checkpoint；仍被更窄任务挡住时不 ack、保留 pending
+  并重新排队。
+- 淘汰移出先筛出实际可移行再算 movingIds；资产内未淘汰兄弟不再被误判为“将移动”，
+  共享侧车不会被搬走。
+- 重复组 `resolveGroup` 与组级 resolution 派生只使用可见成员，归档件不参与 keep_one 评分。
+- 新增 4 条测试（triage 探测失败/盘上基线、beforeSnapshot、重复组归档）；core 1364。
 
 ## 未做 / 需人工验收
 

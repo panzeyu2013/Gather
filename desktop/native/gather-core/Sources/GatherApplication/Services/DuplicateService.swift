@@ -510,7 +510,9 @@ public final class DuplicateService: @unchecked Sendable {
                 DuplicateGroupResolutionWrite(groupId: groupId, resolution: resolution.rawValue)
             ])
 
-            let members = try groupQuery.getMembers(groupId: groupId)
+            // 归档件不参与 keep_one 评分：否则归档成员可能被选中为“保留”，
+            // 可见成员全部被标为不保留。组成员状态也只对可见成员重算。
+            let members = try groupQuery.getVisibleMembers(groupId: groupId)
             if members.isEmpty {
                 throw DuplicateServiceError.groupNotFound(groupId)
             }
@@ -568,7 +570,7 @@ public final class DuplicateService: @unchecked Sendable {
     private func syncGroupResolutions(groupIds: [Int]) throws {
         var writes: [DuplicateGroupResolutionWrite] = []
         for groupId in groupIds {
-            let rows = try groupQuery.getMemberStates(groupId: groupId)
+            let rows = try groupQuery.getVisibleMemberStates(groupId: groupId)
             guard !rows.isEmpty else { continue }
             var allResolved = true
             var keptCount = 0

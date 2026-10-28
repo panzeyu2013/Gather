@@ -261,7 +261,7 @@ final class SessionDirectoryMonitor {
     /// 超过重试上限：退回一次全树扫描（宁可多扫，不能漏扫）。
     ///
     /// 只确认"发起全树扫描时"的目录快照；扫描期间新到的目录保留。
-    /// 返回 true = 已覆盖快照（新目录可继续下一轮）；false = 保底也失败，等下次事件。
+    /// 返回 true = 已覆盖或仍被更窄任务挡住（继续排队重试）；false = 保底入队失败。
     private func runFullScanFallback(
         sessionId: String,
         jobs: any JobAPI,
@@ -273,7 +273,18 @@ final class SessionDirectoryMonitor {
             sessionId: sessionId, requestedPaths: nil)
         request.dedupeKey += ":watch"
         do {
-            _ = try await jobs.start(request)
+            let handle = try await jobs.start(request)
+            // 保底也可能被 dedupe 到一个更窄的活跃任务：必须校验 checkpoint，
+            // 否则 ack + eventID 持久化后这批目录永久漏扫。
+            let job = try await jobs.list(JobListFilter(includeCheckpoint: true))
+                .first { $0.id == handle.id }
+            if let job, !Self.covers(job.checkpoint, directories: covered) {
+                GatherLogger.log(
+                    "directory watcher full-tree fallback deduped into a narrower job for \(sessionId)",
+                    level: .warn)
+                // pending 保留，返回 true 让 defer 重新排队（避免“等下一次事件”）。
+                return true
+            }
             pendingScans[sessionId]?.acknowledge(covered)
             if pendingScans[sessionId]?.isEmpty != false {
                 await persistEventID(sessionId: sessionId, settings: settings, keyName: keyName)

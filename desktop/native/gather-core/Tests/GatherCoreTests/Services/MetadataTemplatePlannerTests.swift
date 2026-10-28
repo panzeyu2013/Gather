@@ -69,6 +69,19 @@ struct MetadataTemplatePlannerTests {
         #expect(overwrite.fields.first { $0.field == .city }?.action == .write)
     }
 
+    @Test("盘上已读且字段不存在：beforeSnapshot 不得回退缓存")
+    func beforeSnapshotDoesNotFallBackToCache() {
+        let current = DescriptiveMetadata(title: "缓存旧值")
+        let disk = DescriptiveMetadata() // 读过盘，盘上没有 title
+        let plan = MetadataTemplatePlanner.plan(
+            template: DescriptiveMetadata(title: "新值"), photoId: "p1",
+            current: current, disk: disk, policy: .overwrite)
+        let impact = plan.fields.first { $0.field == .title }
+        #expect(impact?.action == .write)
+        #expect(impact?.diskKnown == true)
+        #expect(plan.beforeSnapshot.title == nil, "盘上无此字段 → undo 应清空，不应复活缓存旧值")
+    }
+
     @Test("keepExternal：模板清空同样判冲突，绝不删外部新值")
     func clearConflictsWithExternal() {
         let current = DescriptiveMetadata(copyrightNotice: "旧版权")

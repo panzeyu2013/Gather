@@ -26,13 +26,24 @@ public struct MetadataFieldImpact: Equatable, Sendable {
     public var current: XMPFieldValue?
     public var template: XMPFieldValue?
     public var disk: XMPFieldValue?
+    /// 是否成功读过盘。`disk == nil` 同时表示“盘上无此字段”和“没读盘”，
+    /// 撤销基线必须区分两者，否则会把缓存旧值当成盘上原值写回。
+    public var diskKnown: Bool
 
-    public init(field: DescriptiveField, action: MetadataFieldAction, current: XMPFieldValue?, template: XMPFieldValue?, disk: XMPFieldValue?) {
+    public init(
+        field: DescriptiveField,
+        action: MetadataFieldAction,
+        current: XMPFieldValue?,
+        template: XMPFieldValue?,
+        disk: XMPFieldValue?,
+        diskKnown: Bool = false
+    ) {
         self.field = field
         self.action = action
         self.current = current
         self.template = template
         self.disk = disk
+        self.diskKnown = diskKnown
     }
 }
 
@@ -93,7 +104,8 @@ public enum MetadataTemplatePlanner {
             }
             impacts.append(MetadataFieldImpact(
                 field: field, action: action,
-                current: currentValue, template: templateValue, disk: diskValue
+                current: currentValue, template: templateValue, disk: diskValue,
+                diskKnown: disk != nil
             ))
         }
         return MetadataPhotoImpact(photoId: photoId, fields: impacts)

@@ -80,8 +80,14 @@ public extension MetadataPhotoImpact {
     var beforeSnapshot: DescriptiveMetadata {
         var before = DescriptiveMetadata()
         for impact in fields where impact.action == .write || impact.action == .clear {
-            // 撤销基线取盘上值：overwrite 策略下外部改动不能被"撤销"成缓存旧值。
-            if let value = impact.disk ?? impact.current { before.set(value, for: impact.field) }
+            // 撤销基线取盘上值：overwrite 策略下外部改动不能被“撤销”成缓存旧值。
+            if impact.diskKnown {
+                // 盘上读过且字段确实不存在：before 保持 nil，undo 会 clear 该字段；
+                // 绝不能回退缓存，否则会复活外部已删除的值。
+                if let value = impact.disk { before.set(value, for: impact.field) }
+            } else if let value = impact.current {
+                before.set(value, for: impact.field)
+            }
         }
         return before
     }
@@ -210,7 +216,22 @@ public final class MetadataTemplateService: Sendable {
                     conflicts: conflicts, failed: failed
                 )
             }
-            let outcome = try await metadata.applyMetadataAttributes(inputs, source: .template)
+            // 批次已记录、写盘尚未发生；applyMetadataAttributes 在入队前抛错
+            // （例如照片在预览与提交之间被删除）时不能把批次留在 store：否则后续
+            // undo 会用"从未写过的 before 值"覆盖当前文件。
+            let outcome: MetadataAttributesApplyOutcome
+            do {
+                outcome = try await metadata.applyMetadataAttributes(inputs, source: .template)
+            } catch {
+                do {
+                    try batches.markUndone(id: batchId)
+                } catch {
+                    GatherLogger.log(
+                        "template batch markUndone after apply failure failed (batch=\(batchId)): \(error)",
+                        level: .warn)
+                }
+                throw error
+            }
             skipped.append(contentsOf: outcome.skipped)
             failed.append(contentsOf: outcome.failed)
             // P0 / A2：裁剪口径 = written ∪ uncertain（回读失败也可能已写盘）。

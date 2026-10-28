@@ -48,6 +48,12 @@ public final class TriageWritebackService: Sendable {
     /// nil = 不记批次（此时不提供撤销）。
     private let batches: MetadataApplyBatchStore?
 
+    /// 星级探测结果：nil 值与"读盘失败"必须区分，后者不能把批次标记为已撤销。
+    private enum RatingProbe: Sendable {
+        case rating(Int?)
+        case unreadable
+    }
+
     public init(xmp: any XMPProvider, metadata: MetadataService, batches: MetadataApplyBatchStore? = nil) {
         self.xmp = xmp
         self.metadata = metadata
@@ -75,8 +81,10 @@ public final class TriageWritebackService: Sendable {
             outcomes = try await batchAsync(decisions, concurrency: 8) { decision -> DecisionOutcome in
             do {
                 let detail = try self.metadata.photoDetail(photoId: decision.photoId)
-                let current = (try? await self.xmp.readAttributes(photoPath: detail.filepath))
-                    ?? MetadataWriteAttributes()
+                // 撤销基线必须取盘上真实值（含 JPEG 内嵌 IPTC）；侧车/缓存都可能
+                // 落后于外部软件。读不到就整张失败，不拿空值写盘。
+                let current = try await self.metadata.diskAttributes(
+                    photoPath: detail.filepath)
                 var attributes = MetadataWriteAttributes()
                 if let rating = decision.rating { attributes.rating = Double(rating) }
                 if let keyword = decision.keyword {
@@ -98,9 +106,9 @@ public final class TriageWritebackService: Sendable {
                     photoId: decision.photoId,
                     filepath: detail.filepath,
                     before: DescriptiveMetadata(),
-                    // 撤销基线取盘上现值（缓存可能落后）。
+                    // 撤销基线取盘上现值（含内嵌），不再回退缓存 exif.rating。
                     beforeRating: decision.rating == nil
-                        ? nil : Int(current.rating ?? Double(detail.exif.rating)),
+                        ? nil : Int(current.rating ?? 0),
                     // P0 / A2：记录本批实际写入值；undo 只在盘上仍等于它时回滚。
                     appliedRating: decision.rating,
                     beforeKeywords: decision.keyword == nil ? nil : (current.keywords ?? []),
@@ -242,13 +250,14 @@ public final class TriageWritebackService: Sendable {
         // P0 / A2：回滚星级前先读盘上现值，只有"仍是本批写入值"才还原。
         // 写回后人工改 5★ 的照片，undo 不得把它清回 0。
         var diskRatings: [String: Int] = [:]
+        var unreadableRatings = Set<String>()
         let ratingTargets = batch.snapshots.filter {
             $0.beforeRating != nil && $0.appliedRating != nil
         }
         if !ratingTargets.isEmpty {
             do {
                 let pairs = try await batchAsync(ratingTargets, concurrency: 8) { snapshot
-                    -> (String, Int?) in
+                    -> (String, RatingProbe) in
                     // 快照里的 filepath 可能已过时（照片被移到 _rejects）：按 photoId
                     // 解析当前路径，否则 undo 会把"路径变了"误判成"星级被人改过"。
                     let currentPath: String
@@ -259,16 +268,30 @@ public final class TriageWritebackService: Sendable {
                         currentPath = snapshot.filepath
                     }
                     guard let attributes = try? await self.metadata.diskAttributes(
-                        photoPath: currentPath) else { return (snapshot.photoId, nil) }
-                    return (snapshot.photoId, attributes.rating.map { Int($0.rounded()) })
+                        photoPath: currentPath) else {
+                        return (snapshot.photoId, .unreadable)
+                    }
+                    return (snapshot.photoId, .rating(attributes.rating.map { Int($0.rounded()) }))
                 }
-                for (photoId, rating) in pairs {
-                    if let rating { diskRatings[photoId] = rating }
+                for (photoId, probe) in pairs {
+                    switch probe {
+                    case .rating(let rating):
+                        if let rating { diskRatings[photoId] = rating }
+                    case .unreadable:
+                        unreadableRatings.insert(photoId)
+                    }
                 }
             } catch {
                 // 读盘并发调度失败：全部按"读不到"处理（fail-closed，不回写星级）。
+                unreadableRatings.formUnion(ratingTargets.map(\.photoId))
                 GatherLogger.log(
                     "triage undo: rating probe failed, restore skipped: \(error)", level: .warn)
+            }
+            // 读不到星级 ≠ 用户改过：必须留在 failed 里，让 UI 保留批次可重试；
+            // 只清 skipped 会让下面把批次 markUndone，星级永久停在本批写入值。
+            for photoId in unreadableRatings.sorted() {
+                failed.append(TriageWritebackFailure(
+                    photoId: photoId, message: "rating probe failed; batch kept for retry"))
             }
         }
         var skipped: [String] = []
