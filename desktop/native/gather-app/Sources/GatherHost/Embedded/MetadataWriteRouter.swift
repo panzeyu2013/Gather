@@ -11,6 +11,7 @@
 import Foundation
 import os
 import GatherApplication
+import GatherDelivery
 import GatherProtocol
 
 enum MetadataWriteRouterError: Error, Equatable, CustomStringConvertible {
@@ -199,7 +200,7 @@ final class MetadataWriteRouter: XMPProvider {
         let lowered = path.lowercased()
         let isSidecar = lowered.hasSuffix(".xmp")
         // 白名单唯一来源在 XMPBackupNaming（与 DeliveryTypes 共用，避免两处漂移）。
-        let isControlledBackup = XMPBackupNaming.isControlledName(path)
+        let isControlledBackup = DeliveryBackupPath.isControlledName(path)
         guard isSidecar || isControlledBackup else {
             throw MetadataWriteRouterError.embeddedWriteFailed(
                 "refusing to remove a non-metadata path")

@@ -75,6 +75,22 @@ enum DeliveryBackupPathError: Error, Equatable, CustomStringConvertible, Localiz
 /// backup_path 的唯一校验入口（DeliveryFilePhase / 文件端口共用）。
 public enum DeliveryBackupPath {
     /// 校验并返回**归一化后**的 backup_path；调用方必须用返回值做文件操作。
+    /// 受控备份 / 归档名标记：**删除守卫的唯一来源**（DeliveryTypes 与宿主 router 共用）。
+    ///
+    /// 放在 GatherDelivery 而不是 GatherProtocol：这是交付层的内部约定，不属于冻结的
+    /// IPC 公开面（protocol-surface 门禁只看 GatherProtocol）。
+    public static let controlledMarkers = [
+        ".gather-backup-", ".gather-header-", ".gather-archived-",
+    ]
+
+    /// 是否属于"受控备份 / 归档名"（大小写不敏感子串判断，与历史实现一致）。
+    ///
+    /// 这是**允许删除**的白名单，不是路径合法性校验——后者仍走 `validate`。
+    public static func isControlledName(_ path: String) -> Bool {
+        let lowered = path.lowercased()
+        return controlledMarkers.contains { lowered.contains($0) }
+    }
+
     public static func validate(xmpPath: String, backupPath: String) throws -> String {
         let normalizedXMP = TSPath.normalize(xmpPath)
         guard !normalizedXMP.isEmpty else { throw DeliveryBackupPathError.emptyXMPPath }

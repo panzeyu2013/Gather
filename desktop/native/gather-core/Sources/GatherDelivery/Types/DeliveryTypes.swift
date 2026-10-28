@@ -67,7 +67,7 @@ public struct XMPDeliveryFilePort: DeliveryFilePort {
         let lowered = path.lowercased()
         let isSidecar = lowered.hasSuffix(".xmp")
         // 白名单唯一来源在 XMPBackupNaming（以前这里与 MetadataWriteRouter 各抄一份）。
-        let isControlledBackup = XMPBackupNaming.isControlledName(path)
+        let isControlledBackup = DeliveryBackupPath.isControlledName(path)
         guard isSidecar || isControlledBackup else {
             throw DeliveryBackupPathError.unsafeXMPPath(path)
         }
