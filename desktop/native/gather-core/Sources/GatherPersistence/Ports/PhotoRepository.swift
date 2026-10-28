@@ -31,8 +31,12 @@ public struct PhotoReportRow: Equatable, Sendable {
 public protocol PhotoRepository {
     func getBySession(sessionId: String) throws -> [PhotoRow]
     func getBySessionProjection(sessionId: String) throws -> [PhotoProjectionRow]
+    /// 物理行分页（**含已移出/归档行**）：只给"按行做数据维护"的路径用
+    /// （当前唯一调用者是 checksum 回填，归档件也要补校验和）。
+    /// 面向用户的列表必须走 getAssetPage / getBySessionProjection + PhotoVisibility。
     func getBySessionPage(sessionId: String, afterRowId: Int64?, limit: Int) throws -> [PhotoPageRow]
     func pendingChecksumCount(sessionId: String) throws -> Int
+    /// 物理登记行数（**含归档行**）：不是"工作区照片数"，不能用于侧栏/控制中心展示。
     func countBySession(sessionId: String) throws -> Int
     /// 仍在工作区的照片数（PhotoVisibility.visiblePredicate）；WorkspaceStatus /
     /// sessions.photo_count 用它，避免"移出 100 张后工作区总数不变"。

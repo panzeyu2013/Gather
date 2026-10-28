@@ -149,7 +149,9 @@ struct MetadataEditorSheet: View {
             contact: contact, initialContact: initialContact)
     }
 
-    private func load() async {
+    /// reportError=false：失败分支已经给出更具体的文案（例如 JPEG 内嵌清空
+    /// 失败），这次重新读盘只是把输入框拉回盘上值，不能把原因覆盖成"读盘失败"。
+    private func load(reportError: Bool = true) async {
         defer { isLoading = false }
         do {
             // 展示用详情（文件名/EXIF）仍来自缓存投影；编辑初值必须读盘，
@@ -172,7 +174,9 @@ struct MetadataEditorSheet: View {
         } catch {
             // 读盘失败不等于"没有元数据"：不能拿缓存继续编辑（fail-closed）。
             diskReadFailed = true
-            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+            if reportError {
+                errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+            }
         }
     }
 
@@ -193,7 +197,7 @@ struct MetadataEditorSheet: View {
             if let failure = outcome.failed.first {
                 errorText = CommandErrorText.resolve(
                     CommandError(APIError.failed(failure.message)), with: l10n)
-                await load()
+                await load(reportError: false)
                 return
             }
             onApplied(outcome)

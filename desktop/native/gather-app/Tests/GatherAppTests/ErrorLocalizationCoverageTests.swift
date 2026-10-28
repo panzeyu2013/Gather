@@ -120,10 +120,22 @@ struct ErrorLocalizationCoverageTests {
                 return String(input[kind])
             }
         }
-        var mismatched: [String] = []
-        for (key, value) in table where specs(key) != specs(value) {
-            mismatched.append("\(key.prefix(30)) → \(specs(key)) vs \(specs(value))")
+        // 错误码模板用 {{name}} 插值（L10n.interpolate）：英文漏写占位符不会崩，
+        // 但会把「（字段：{{field}}）」这类信息整段丢掉，与 % 说明符同等对待。
+        let braceRegex = try? NSRegularExpression(pattern: #"\{\{[a-zA-Z]+\}\}"#)
+        func braces(_ input: String) -> [String] {
+            guard let braceRegex else { return [] }
+            let range = NSRange(input.startIndex..., in: input)
+            return braceRegex.matches(in: input, range: range).map { match in
+                Range(match.range, in: input).map { String(input[$0]) } ?? ""
+            }
         }
-        #expect(mismatched.isEmpty, "占位符序列不一致（会取错参数/崩溃）：\(mismatched.sorted().prefix(8))")
+        var mismatched: [String] = []
+        for (key, value) in table
+        where specs(key) != specs(value) || braces(key) != braces(value) {
+            mismatched.append(
+                "\(key.prefix(30)) → \(specs(key))/\(braces(key)) vs \(specs(value))/\(braces(value))")
+        }
+        #expect(mismatched.isEmpty, "占位符序列不一致（会取错参数/丢信息）：\(mismatched.sorted().prefix(8))")
     }
 }

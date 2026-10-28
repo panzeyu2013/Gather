@@ -109,7 +109,7 @@
 | 算法基准（`gather-core-benchmarks`） | 2 万/5 万两档全过（dHash、embedding、LSH）；Cut 5 增 10k 合成人脸显式档 `--face-10k`（聚类 + 批量匹配） |
 | 聚类对账 | 25k 合成 8 簇 eps=0.6：ARI=1.0000 / NMI=1.0000 / 加速 3.1x（unit 级） |
 | （历史）HNSW 质量门禁 | recall@1 ≥ 0.9，查询 ≈0.3ms/次，增量插入召回波动 −0.008（HNSW 已删除，该指标不再维护） |
-| SchemaCurrent / 历史快照 | `SchemaCurrent.swift`（唯一 DDL）：当前 **44 表 / 384 列 / 72 索引 / 65 外键 / `user_version=4`**；空库由 `Database.open(at:)` 一次建齐；V1/V2 迁移链已删除，旧版本默认 fail-closed（显式 reset 才归档重建）；旧 35 版快照归档为 [schema.snapshot-v35.json](archive/schema.snapshot-v35.json)（历史，不参与门禁） |
+| SchemaCurrent / 历史快照 | `SchemaCurrent.swift`（唯一 DDL）：当前 **44 表 / 385 列 / 72 索引 / 65 外键 / `user_version=5`**；空库由 `Database.open(at:)` 一次建齐；V1/V2 迁移链已删除，旧版本默认 fail-closed（显式 reset 才归档重建）；旧 35 版快照归档为 [schema.snapshot-v35.json](archive/schema.snapshot-v35.json)（历史，不参与门禁） |
 | 人脸算法基线（**合成标注集**，单 seed） | 门槛 0→0.5：低质量但方向正确的样本 F1 0.7273→0.6977（25% 进噪声、**跨身份误聚 0**）、低质量桥接点使同人分裂（R 1.0→0.5238）；ARI 用两种等价实现互证 |
 | margin 生产路径曲线（49 查询 / 6 人库） | 0 → 错绑 3；**0.01（出货默认）→ 错绑 2 + 歧义 2**；0.04 → 错绑 0（覆盖 0.857）；同覆盖率精度 0.9655→1.0000 |
 

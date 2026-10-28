@@ -205,11 +205,11 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         }
         // P2：归档后 sessions.photo_count 必须跟着可见性回落（侧栏/控制中心
         // 直接显示该数字）。有照片移出成功才重算；失败项不改变可见集合。
+        // 重算走单条 UPDATE … = (SELECT COUNT(*) …)：算与写原子完成，不会被并发
+        // 导入/扫描插在中间留下过期计数。
         if !moved.isEmpty, let sessionRepo {
             do {
-                let visible = try photoRepo.countVisibleBySession(
-                    sessionId: payload.sessionId)
-                try sessionRepo.updatePhotoCount(id: payload.sessionId, count: visible)
+                try sessionRepo.refreshPhotoCount(id: payload.sessionId)
             } catch {
                 GatherLogger.log(
                     "move_rejected: refresh session photo_count failed: \(error)", level: .warn)

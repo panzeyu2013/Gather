@@ -198,22 +198,39 @@ if [ -f "$SHAPE_FILE" ]; then
     shape_mismatch=1
   else
     shape_note="一致（${code_tables}/${code_columns}/${code_indexes}/${code_fks}）"
-    for f in README.md docs/DEVELOPMENT.md docs/README.md "$ADR"; do
+    for f in README.md docs/DEVELOPMENT.md docs/README.md docs/ROADMAP.md "$ADR"; do
       [ -f "$f" ] || continue
+      # 只认「<当前表数> 表 …」的行：ROADMAP/ADR 保留历史基线（45 表、旧 user_version），
+      # 那些行是历史记录，不能当成现行声明（否则门禁要么假红、要么漏掉陈旧数字）。
+      current_lines=$(grep -F "${code_tables} 表" "$f" || true)
       while IFS= read -r claim; do
         [ -n "$claim" ] || continue
         if [ "$claim" != "$code_columns" ]; then
           shape_note="${shape_note}；${f}: ${claim} 列 != code ${code_columns}"
           shape_mismatch=1
         fi
-      done <<< "$(grep -oE "${code_tables} 表[[:space:]]*/[[:space:]]*[0-9]+ 列" "$f" | grep -oE '[0-9]+ 列' | grep -oE '^[0-9]+' | sort -u || true)"
+      done <<< "$(printf '%s\n' "$current_lines" | grep -oE "[0-9]+ 列" | grep -oE '^[0-9]+' | sort -u || true)"
+      while IFS= read -r claim; do
+        [ -n "$claim" ] || continue
+        if [ "$claim" != "$code_indexes" ]; then
+          shape_note="${shape_note}；${f}: ${claim} 索引 != code ${code_indexes}"
+          shape_mismatch=1
+        fi
+      done <<< "$(printf '%s\n' "$current_lines" | grep -oE '[0-9]+ 索引' | grep -oE '^[0-9]+' | sort -u || true)"
+      while IFS= read -r claim; do
+        [ -n "$claim" ] || continue
+        if [ "$claim" != "$code_fks" ]; then
+          shape_note="${shape_note}；${f}: ${claim} 外键 != code ${code_fks}"
+          shape_mismatch=1
+        fi
+      done <<< "$(printf '%s\n' "$current_lines" | grep -oE '[0-9]+ 外键' | grep -oE '^[0-9]+' | sort -u || true)"
       while IFS= read -r claim; do
         [ -n "$claim" ] || continue
         if [ "$claim" != "$schema_ver" ]; then
           shape_note="${shape_note}；${f}: user_version=${claim} != code ${schema_ver}"
           shape_mismatch=1
         fi
-      done <<< "$(grep -oE 'user_version[[:space:]]*[=:]?[[:space:]]*[0-9]+' "$f" | grep -oE '[0-9]+$' | sort -u || true)"
+      done <<< "$(printf '%s\n' "$current_lines" | grep -oE 'user_version[[:space:]]*[=:]?[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' | sort -u || true)"
     done
   fi
 fi

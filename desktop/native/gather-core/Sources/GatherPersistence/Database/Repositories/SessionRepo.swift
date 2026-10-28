@@ -150,6 +150,23 @@ public final class SessionRepo {
             .run([.int(Int64(count)), .text(nowISOString()), .text(id)])
     }
 
+    /// 原子重算 photo_count（可见口径）：COUNT 与 UPDATE 在同一条语句里完成，
+    /// 避免「先 COUNT 再 UPDATE」两条语句之间被并发写入插进过期计数。
+    ///
+    /// 用于事务外触发的重算（淘汰移出后）；事务内的写入点仍直接用
+    /// updatePhotoCount 与扫描/导入共享同一事务。
+    @discardableResult
+    public func refreshPhotoCount(id: String) throws -> Bool {
+        let changes = try connection.prepare("""
+            UPDATE sessions SET photo_count = (
+              SELECT COUNT(*) FROM photos
+              WHERE photos.session_id = sessions.id
+                AND \(PhotoVisibility.visiblePredicate(alias: ""))
+            ), updated_at = ? WHERE id = ?
+            """).run([.text(nowISOString()), .text(id)])
+        return changes > 0
+    }
+
     @discardableResult
     public func setReloadAckedAt(sessionId: String, iso: String) throws -> Bool {
         let changes = try connection.prepare("UPDATE sessions SET reload_acked_at = ?, updated_at = ? WHERE id = ?")

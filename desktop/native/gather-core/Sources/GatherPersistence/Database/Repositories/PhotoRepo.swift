@@ -205,6 +205,8 @@ public final class PhotoRepo {
         return try rows.map { try PhotoProjectionRow(row: $0) }
     }
 
+    /// 物理行分页（**含已移出/归档行**）：checksum 回填专用；用户可见列表走
+    /// getAssetPage（已带 PhotoVisibility 谓词）。新增读面不要直接调用本方法。
     public func getBySessionPage(sessionId: String, afterRowId: Int64? = nil, limit: Int = 200) throws -> [PhotoPageRow] {
         let rows: [DBRow]
         if let afterRowId {
@@ -229,6 +231,7 @@ public final class PhotoRepo {
         return Int(row?[0].intValue ?? 0)
     }
 
+    /// 物理登记行数（**含归档行**）：诊断/测试用；展示口径用 countVisibleBySession。
     public func countBySession(sessionId: String) throws -> Int {
         let row = try connection.prepare("SELECT COUNT(*) as count FROM photos WHERE session_id = ?")
             .get([.text(sessionId)])

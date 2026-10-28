@@ -1183,9 +1183,11 @@ public final class MetadataService: @unchecked Sendable {
                 // 永不刷新（面板继续显示旧 IPTC），所以两个键都要试。
                 let readKey = TSPath.normalize(TSPath.xmpSidecarPath(readPath))
                 let dbKey = TSPath.normalize(TSPath.xmpSidecarPath(photo.filepath))
+                // 当前照片已在上面用 disk 值刷过，这里只处理兄弟；两个键都查不到
+                // 时没有兄弟可刷（fallback 曾被 where 子句过滤成空转）。
                 let targets = siblingPhotosByXmp[readKey]
                     ?? siblingPhotosByXmp[dbKey]
-                    ?? [(input.photoId, photo.filepath)]
+                    ?? []
                 for (siblingId, siblingFilepath) in targets where siblingId != input.photoId {
                     var siblingPath = siblingFilepath
                     if let assetResolver {
@@ -1298,7 +1300,8 @@ public final class MetadataService: @unchecked Sendable {
         }
         if let label = expected.label,
            label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let diskLabel = disk.label, !diskLabel.isEmpty,
+           let diskLabel = disk.label,
+           !diskLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            (sidecar.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             fields.append("label")
         }
@@ -1313,7 +1316,12 @@ public final class MetadataService: @unchecked Sendable {
         _ actual: MetadataWriteAttributes
     ) -> Bool {
         if expected.rating != nil, expected.rating != actual.rating { return false }
-        if expected.label != nil, expected.label != actual.label { return false }
+        if let expectedLabel = expected.label {
+            // 空串与 nil 等价于"没有 label"：清空后回读 nil 不能报成校验失败。
+            let wanted = expectedLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let got = (actual.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if wanted != got { return false }
+        }
         if let expectedKeywords = expected.keywords {
             let actualKeywords = Set(actual.keywords ?? [])
             if !Set(expectedKeywords).isSubset(of: actualKeywords) { return false }

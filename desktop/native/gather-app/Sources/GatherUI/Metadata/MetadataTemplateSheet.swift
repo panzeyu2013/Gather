@@ -174,6 +174,8 @@ struct MetadataTemplateSheet: View {
         .onChange(of: selectedId) {
             preview = nil
             outcome = nil
+            // 旧批次的失败红字不能常驻：换模板后它描述的是另一件事。
+            errorText = nil
         }
         .onChange(of: policy) {
             preview = nil
@@ -183,6 +185,7 @@ struct MetadataTemplateSheet: View {
             preview = nil
             outcome = nil
             appliedBatchId = nil
+            errorText = nil
         }
     }
 
@@ -307,6 +310,8 @@ struct MetadataTemplateSheet: View {
             // 部分失败时保留 batchId，表内可重试；批次仍是 undone=false。
             if result.failed.isEmpty {
                 appliedBatchId = nil
+                // 撤销成功 = 上一轮的失败原因已过期。
+                errorText = nil
             } else {
                 errorText = l10n.format("撤销有 %lld 张失败，可重试", result.failed.count)
             }
