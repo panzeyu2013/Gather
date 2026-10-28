@@ -149,7 +149,7 @@ struct RejectedMoverTests {
         let oldXmp = TSPath.xmpSidecarPath(oldPath)
         let newXmp = TSPath.xmpSidecarPath(newPath)
         // cleanup 删掉 deliveries 行后 intent 仍存活（刻意无 FK）：淘汰移出也必须迁它。
-        try db.prepare("""
+        _ = try db.prepare("""
             INSERT INTO delivery_intents (kind, xmp_path, phase, payload_json, error_message, created_at, updated_at)
             VALUES ('cleanup', ?, 'prepared', '{}', '', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
           """).run([.text(oldXmp)])

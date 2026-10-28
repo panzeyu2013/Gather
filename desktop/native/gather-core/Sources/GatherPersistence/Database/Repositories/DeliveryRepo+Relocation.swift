@@ -22,8 +22,9 @@ extension DeliveryRepo {
             "SELECT status FROM deliveries WHERE xmp_path = ?"
         ).get([.text(oldXmp)])?[0].textValue else {
             // 没有 deliveries 行时也要迁 intents：delivery_intents.xmp_path 刻意无 FK
-            // （父行删除后仍需存活以便回放），cleanup 删行后遗留的 intent 不能被
-            // 淘汰移出落在旧路径上。
+            // （父行删除后仍需存活以便回放），避免行内记的路径与文件真实位置分叉。
+            // 注意这不会让回放成功：回放先命中 alreadyGone 收尾；卡住回放的是
+            // payload 里的 backup_path（备份留在旧目录，不再与 xmp 同目录）。
             try relocateIntents(
                 oldXmp: oldXmp, newXmp: newXmp,
                 oldPhotoPath: oldPhotoPath, newPhotoPath: newPhotoPath, timestamp: timestamp)

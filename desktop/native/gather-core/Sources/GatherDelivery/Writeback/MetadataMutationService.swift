@@ -209,11 +209,13 @@ public final class MetadataMutationService: MetadataMutationPort {
             do {
                 base = try MetadataFingerprint.contentFingerprintSync(xmpPath)
             } catch {
-                // 空基线与"尚无侧车"不可区分，执行器会整段跳过外部改动检测；
-                // 至少要留下可诊断日志（读取失败常见于权限/坏链接）。
-                GatherLogger.log(
-                    "metadata base fingerprint unavailable (xmp=\(xmpPath)): \(error)",
-                    level: .warn)
+                // contentFingerprintSync 对 ENOENT 返回 ""（无侧车是正常情况），
+                // 走到这里说明侧车存在但读不到内容（权限/坏链接/IO 错误）。此时空基线
+                // 会让执行器整段跳过外部改动检测（fail-open，可能覆盖外部编辑），
+                // 所以宁可让这次写入显式失败。
+                throw GatherError(
+                    code: .XMP_DOCUMENT_READ_FAILED,
+                    params: ["path": xmpPath, "reason": String(describing: error)])
             }
         }
         let delivery = try stateWriter.enqueueMetadataMutation(

@@ -205,6 +205,61 @@ struct TriageWritebackServiceTests {
         #expect(restored.triageSignal == nil)
     }
 
+    @Test("大小写变体：不重复追加，undo 也不删已有变体")
+    func variantKeywordIsNotDuplicatedOrRemoved() async throws {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: dir) } catch {}
+        }
+        let sessionId = "s-1", photoId = "p-1"
+        try insertSession(db, sessionId)
+        let path = (dir as NSString).appendingPathComponent("a.CR3")
+        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
+        try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
+        let cache = MetadataCacheRepo(connection: db)
+        try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
+
+        let xmp = TriageXMP()
+        // 盘上已有大小写变体（外部工具写入），fold 之后与本批要写的规范词相同。
+        xmp.seed(path, MetadataWriteAttributes(keywords: ["gather|ai|keep"]))
+        let mutations = TriageMutations()
+        mutations.onKeywordDelta = { _, removed in
+            xmp.removeKeywords(path, removed)
+        }
+        let metadata = MetadataService(
+            metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
+            transactions: db, mutations: mutations,
+            flushPending: { _ in
+                for entry in mutations.drain() {
+                    let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
+                    try await xmp.writeAttributes(photoPath: path, attributes: attributes)
+                }
+                return WritebackResult(
+                    totalAffected: 1, written: 1, failed: 0, skipped: 0,
+                    errors: [], failedItems: [], report: "")
+            })
+        let settings = SettingsService(repo: SettingsRepo(connection: db))
+        let service = TriageWritebackService(
+            xmp: xmp, metadata: metadata,
+            batches: MetadataApplyBatchStore(settings: settings))
+
+        _ = await service.apply(
+            [TriageWritebackDecision(
+                photoId: photoId, rating: 3, keyword: "Gather|AI|Keep", namespaceValue: "keep")],
+            batchId: "b1", now: "2026-10-27T00:00:00Z")
+        let afterApply = xmp.attributes(path)
+        #expect(afterApply.keywords == ["gather|ai|keep"], "fold 相同的变体不得重复追加")
+
+        _ = try await service.undo(batchId: "b1")
+        let afterUndo = xmp.attributes(path)
+        #expect(afterUndo.keywords?.contains("gather|ai|keep") == true,
+                "写回前已存在（fold 相同）的词不是本批 delta，撤销不得删除")
+        #expect(afterUndo.rating == 0)
+    }
+
     @Test("undo：关键词删除失败不得被后续成功覆盖（批次保持未撤销）")
     func undoKeepsKeywordRemovalFailures() async throws {
         let db = try makeTestDB()

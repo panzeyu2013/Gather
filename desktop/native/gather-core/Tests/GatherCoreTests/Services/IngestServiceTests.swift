@@ -19,6 +19,21 @@ struct IngestServiceTests {
         return dir
     }
 
+    private func recursiveFiles(_ root: String) throws -> [String] {
+        var files: [String] = []
+        if let enumerator = FileManager.default.enumerator(atPath: root) {
+            for case let relative as String in enumerator {
+                let full = (root as NSString).appendingPathComponent(relative)
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: full, isDirectory: &isDir),
+                   !isDir.boolValue {
+                    files.append(full)
+                }
+            }
+        }
+        return files.sorted()
+    }
+
     private func makeDestination() throws -> String {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-dest-" + UUID().uuidString, isDirectory: true).path
@@ -236,6 +251,49 @@ struct IngestServiceTests {
                 "既有侧车不得被覆盖")
         #expect(try String(contentsOfFile: (source as NSString).appendingPathComponent("a.CR3"),
                            encoding: .utf8) == "payload", "失败后源文件必须仍在")
+    }
+
+    @Test("默认模板 + 第二目的地 + RAW/JPEG 成对：第二张不假失败，二目的地只有一份侧车")
+    func secondDestinationWithSharedSidecar() throws {
+        let source = try makeSource(["a.CR3", "a.JPG"], contents: ["a.CR3": "raw", "a.JPG": "jpg"])
+        try Data("<xmp/>".utf8).write(
+            to: URL(fileURLWithPath: (source as NSString).appendingPathComponent("a.xmp")))
+        let dest = try makeDestination()
+        let second = try makeDestination()
+        defer {
+            [source, dest, second].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        // 默认模板就含 {seq:4}，兄弟必然共用目标 stem。
+        let options = IngestOptions(destinationRoot: dest, secondDestinationRoot: second)
+        let plan = try service.plan(sourcePaths: [source], options: options)
+        #expect(plan.items.count == 2)
+        let result = service.execute(plan, options: options)
+        #expect(result.failed.isEmpty, "共享侧车 + 第二目的地不得让第二张假失败")
+        #expect(result.copied.count == 2)
+        #expect(result.secondCopied.count == 2)
+        let xmps = try recursiveFiles(second).filter { $0.hasSuffix(".xmp") }
+        #expect(xmps.count == 1, "第二目的地也只能有一份共享侧车")
+    }
+
+    @Test("同一 plan 重复执行：目标已存在时失败，但绝不删除既有文件")
+    func reexecuteDoesNotDeleteExistingFile() throws {
+        let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload"])
+        let dest = try makeDestination()
+        defer {
+            [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
+        let plan = try service.plan(sourcePaths: [source], options: options)
+        let first = service.execute(plan, options: options)
+        #expect(first.copied.count == 1)
+        let second = service.execute(plan, options: options)
+        #expect(second.failed.count == 1)
+        #expect(second.copied.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: first.copied[0]),
+                "回滚只允许删本张自己产出的文件")
+        #expect(try String(contentsOfFile: first.copied[0], encoding: .utf8) == "payload")
     }
 
     @Test("目录与其内文件同时传入：同一文件只计划一次")

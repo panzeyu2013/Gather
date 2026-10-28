@@ -876,6 +876,21 @@ public final class MetadataService: @unchecked Sendable {
 
         var written: [String] = []
         var failed: [MetadataApplyFailure] = []
+        // 投影刷新失败只降级、不改变 written 语义；但失败次数要聚合上报——逐张逐字段
+        // 打日志在万张批次下会刷数万行，反而淹没真正的信号。
+        var projectionFailures = 0
+        var lastProjectionError: (any Error)?
+        func refreshProjection(_ field: String, photoId: String, _ body: () throws -> Void) {
+            do {
+                try body()
+            } catch {
+                projectionFailures += 1
+                lastProjectionError = error
+                GatherLogger.log(
+                    "metadata cache projection refresh failed (field=\(field) photo=\(photoId)): \(error)",
+                    level: .debug)
+            }
+        }
         // RAW+JPEG 共享同一 .xmp：写后投影要刷新全部兄弟照片，否则兄弟面板/下次
         // plan 仍读旧值并误判冲突（关键词路径已有同样处理）。
         var siblingIDsByXmp: [String: [String]] = [:]
@@ -952,24 +967,14 @@ public final class MetadataService: @unchecked Sendable {
             }
             written.append(input.photoId)
         }
-        return MetadataAttributesApplyOutcome(
-            written: written, attempted: attempted, skipped: skipped, failed: failed)
-    }
-
-    /// 投影刷新（cache 回填）：盘上已写成功，刷新失败不回滚、不改 written 语义，
-    /// 但必须留下可诊断日志——静默失败会让面板继续显示旧值且无人知道。
-    private func refreshProjection(
-        _ field: String,
-        photoId: String,
-        _ body: () throws -> Void
-    ) {
-        do {
-            try body()
-        } catch {
+        if projectionFailures > 0 {
             GatherLogger.log(
-                "metadata cache projection refresh failed (field=\(field) photo=\(photoId)): \(error)",
+                "metadata cache projection refresh failed \(projectionFailures) time(s) "
+                    + "（最后错误：\(lastProjectionError.map { String(describing: $0) } ?? "-")）",
                 level: .warn)
         }
+        return MetadataAttributesApplyOutcome(
+            written: written, attempted: attempted, skipped: skipped, failed: failed)
     }
 
     /// 写后回读判定：描述性元数据逐字段（空值等价于不存在），其余字段精确比较。

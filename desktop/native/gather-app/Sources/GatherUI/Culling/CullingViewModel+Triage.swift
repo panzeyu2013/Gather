@@ -124,12 +124,15 @@ extension CullingViewModel {
                     // 人工已决策（manual 且非 unreviewed）→ 服务端绝不写 rating，但信号仍记录。
                     let manuallyDecided = asset.state.source == .manual
                         && asset.state.pickState != .unreviewed
-                    if let item = try? TriageWritebackItem(
-                        photoId: asset.photo.id,
-                        verdict: triage.verdict.rawValue,
-                        manuallyDecided: manuallyDecided
-                    ) {
-                        items.append(item)
+                    do {
+                        items.append(try TriageWritebackItem(
+                            photoId: asset.photo.id,
+                            verdict: triage.verdict.rawValue,
+                            manuallyDecided: manuallyDecided))
+                    } catch {
+                        // 显式校验失败不能被 try? 吞成"按钮没反应"。
+                        triageError = CommandError(error)
+                        return nil
                     }
                 }
                 cursor = result.nextCursor
@@ -140,7 +143,12 @@ extension CullingViewModel {
             return nil
         }
         guard !items.isEmpty else { return nil }
-        return try? TriageWritebackInput(policy: policy, items: items)
+        do {
+            return try TriageWritebackInput(policy: policy, items: items)
+        } catch {
+            triageError = CommandError(error)
+            return nil
+        }
     }
 
     /// 执行已确认的写回（Confirmed 只能由 View 的确认弹窗构造）。

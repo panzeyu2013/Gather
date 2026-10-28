@@ -95,7 +95,13 @@ public final class DirectoryWatcher: @unchecked Sendable {
             flags
         ) else { return false }
         FSEventStreamSetDispatchQueue(stream, queue)
-        FSEventStreamStart(stream)
+        guard FSEventStreamStart(stream) else {
+            // Start 失败（系统资源/路径失效）同样不能假装在监听。
+            FSEventStreamSetDispatchQueue(stream, nil)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            return false
+        }
         lock.lock()
         let previous = self.stream
         self.stream = stream
