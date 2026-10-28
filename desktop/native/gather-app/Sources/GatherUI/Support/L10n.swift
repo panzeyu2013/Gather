@@ -2,7 +2,7 @@
 // Cut 4 / 4a-0：按"值"而不是进程全局解析文案。
 //
 // 与 GatherLocalization 的关系：
-// - 错误码表仍是 GatherLocalization.errorMessages（186 码唯一来源，不复制）；
+// - 错误码表仍是 GatherLocalization.errorMessages（195 码唯一来源，不复制）；
 // - Delivery P2 的 11 个码不在协议枚举内，单独在 DeliveryErrorPresentation；
 //   resolvedTemplate 同时查这两张表（查询顺序：errorMessages → delivery → 冒号尾参）；
 // - 双形态解析（CODE::p1::p2 / CODE: 散文）与"插值在本地化之后"的语义与
@@ -71,7 +71,7 @@ final class L10nStringCache: Sendable {
     /// 是每次渲染都新建的值，缓存必须是共享的才有意义。
     static let shared = L10nStringCache()
 
-    /// 条目上限：≈3 倍 en 表条目（1,313）。正常界面不会触顶；动态 key 若把
+    /// 条目上限：≈2.3 倍当前 en 表条目（1,748）。正常界面不会触顶；动态 key 若把
     /// 用户文本当 key 使用，触顶时整体清空，保证内存有界（O(1) 淘汰）。
     private let limit: Int
     private let state: OSAllocatedUnfairLock<State>

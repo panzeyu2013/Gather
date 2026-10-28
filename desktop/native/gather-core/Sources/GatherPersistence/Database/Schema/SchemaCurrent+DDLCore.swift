@@ -3,7 +3,8 @@
 //
 // final-cleanup 纯拆分：本片段与拆分前 SchemaCurrent.ddl 的对应区间逐字节相同；三段按
 // ddlCore → ddlDomain → ddlIndexes 拼接（见 SchemaCurrent.swift），不得重排或改字。
-// 修改 DDL 必须同步 SchemaCurrent.expectedShapeFingerprint（38bd1540…）。
+// 修改 DDL 必须同步 SchemaCurrent.expectedShapeFingerprint（当前值见该常量；
+// schema v1 重写后是 a364328e…，勿抄历史 v5 的 38bd1540…）。
 extension SchemaCurrent {
     /// DDL 片段 1/3（internal：仅供 SchemaCurrent.ddl 拼接，不是公开 API）。
     static let ddlCore: String = """

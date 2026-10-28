@@ -569,6 +569,7 @@
 "取消导出" = "Cancel Export";
 "原图" = "Original";
 "正在导出照片…" = "Exporting photos…";
+"正在运行模型初审…" = "Running model review…";
 "正在准备导出…" = "Preparing export…";
 "导出选项" = "Export Options";
 "格式" = "Format";

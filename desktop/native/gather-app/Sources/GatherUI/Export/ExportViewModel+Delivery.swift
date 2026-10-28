@@ -153,7 +153,12 @@ extension ExportViewModel {
                     includePrefixes: includePrefixes)),
                 onProgress: { done, total in
                     Task { @MainActor [weak self] in
-                        self?.publishProgress = (done: done, total: total)
+                        // 守卫：只在"仍在发布中 + 结果尚未落地"时更新。取消/成功后
+                        // 迟到的进度帧会把已清空的进度条写回「已上传 n/N」。
+                        guard let self, self.isPublishing, self.webDAVPublish == nil else {
+                            return
+                        }
+                        self.publishProgress = (done: done, total: total)
                     }
                 })
         } catch {

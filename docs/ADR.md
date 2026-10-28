@@ -625,7 +625,7 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
    `docs/archive/schema.snapshot-v35.json` 记为 34/35（43 表不变）；该轮对应的 schema
    为 3（44 表），旧迁移链已删除，见 ADR-005/006。
 
-   **schema 5（历史版本号；当时 44 张表、385 列）**：schema 4 给 `photo_metadata_cache`
+   **schema 5（历史版本号；当时 44 表、385 列）**：schema 4 给 `photo_metadata_cache`
    追加 `iptc_json`（描述性元数据 32 字段的只读投影，字段表见
    `desktop/native/gather-core/Sources/GatherProtocol/Protocol/DescriptiveMetadata.swift`）；
    schema 5 给 `photos` 追加 `archived_at`（淘汰移出的可见性真相源，见 PhotoVisibility）。
@@ -778,7 +778,7 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
 - `face_cluster_constraints`：set-vs-set（`member_keys_json` + `peer_keys_json`），
   用于拆分在重聚类后保持；1 个索引。
 
-计数（历史）：44 张表、385 列、72 显式索引、65 外键；列形指纹
+计数（历史）：44 表、385 列、72 显式索引、65 外键；列形指纹
 `38bd1540b3872b4d2e635f376f5f073881ebfa0310074ed046f275b5f3875dd2`。建库在单事务内执行 DDL + 版本号；fresh 建库与旧库校验共用同一份 DDL
 （`IF NOT EXISTS`），索引 SQL 文本进入指纹，禁止两份 DDL。
 

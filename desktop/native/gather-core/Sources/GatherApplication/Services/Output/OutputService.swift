@@ -27,30 +27,32 @@ public struct OutputProgress: Equatable, Sendable {
     }
 }
 
-public enum OutputServiceError: Error, Equatable, CustomStringConvertible {
+public enum OutputServiceError: Error, Equatable, CustomStringConvertible, CodedError {
     case noRecipes
     case invalidRoot(String)
     case invalidDestination(String)
     case recipeConflict(String)
     case manifestFailed(String)
 
-    public var code: String {
+    /// P1：码必须来自 `GatherErrorCode`（CodedError 契约：只能返回已登记码）。
+    /// 旧实现写裸字面量，改错一个字符不会有任何门禁拦下，UI 直接退化成「未知错误」。
+    public var code: GatherErrorCode {
         switch self {
-        case .noRecipes: "OUTPUT_NO_RECIPES"
-        case .invalidRoot: "OUTPUT_ROOT_INVALID"
-        case .invalidDestination: "OUTPUT_DESTINATION_INVALID"
-        case .recipeConflict: "OUTPUT_RECIPE_CONFLICT"
-        case .manifestFailed: "OUTPUT_MANIFEST_FAILED"
+        case .noRecipes: .OUTPUT_NO_RECIPES
+        case .invalidRoot: .OUTPUT_ROOT_INVALID
+        case .invalidDestination: .OUTPUT_DESTINATION_INVALID
+        case .recipeConflict: .OUTPUT_RECIPE_CONFLICT
+        case .manifestFailed: .OUTPUT_MANIFEST_FAILED
         }
     }
 
     public var description: String {
         switch self {
-        case .noRecipes: "OUTPUT_NO_RECIPES"
-        case .invalidRoot(let reason): "OUTPUT_ROOT_INVALID: " + reason
-        case .invalidDestination(let reason): "OUTPUT_DESTINATION_INVALID: " + reason
-        case .recipeConflict(let name): "OUTPUT_RECIPE_CONFLICT: " + name
-        case .manifestFailed(let reason): "OUTPUT_MANIFEST_FAILED: " + reason
+        case .noRecipes: code.rawValue
+        case .invalidRoot(let reason): code.rawValue + ": " + reason
+        case .invalidDestination(let reason): code.rawValue + ": " + reason
+        case .recipeConflict(let name): code.rawValue + ": " + name
+        case .manifestFailed(let reason): code.rawValue + ": " + reason
         }
     }
 }

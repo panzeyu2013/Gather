@@ -36,9 +36,18 @@ public enum SchemaCurrent {
     /// 这里显式列出旧构建写过的版本，让 SchemaInspector 按 oldVersion 归类，
     /// 从而被 .renameOlderOnly 归档重建。
     ///
-    /// 维护约定：以后每次 bump userVersion，都要把「上一版真正发布给用户的版本号」
-    /// 加进来；未列入且 > userVersion 的库仍然 fail closed（绝不覆盖更新构建的数据）。
-    public static let legacyVersions: Set<Int> = [2, 3, 4, 5]
+    /// **一次性桥接**：只在 `userVersion == 1` 时生效。一旦把 userVersion bump 到 ≥2，
+    /// 「数值更大却是旧库」的判定就会和新版本号相撞 —— 新构建写的 v2 与被废弃的旧 v2
+    /// 无法用版本号区分，此时桥接必须失效：那些库改走 newerVersion → fail closed
+    /// （宁可打不开，也绝不把更新构建的数据归档重建）。
+    ///
+    /// 维护约定：bump 之后不要再往这里加版本号；旧编号（2…5）已废弃。
+    public static let legacyVersionsBridge: Set<Int> = [2, 3, 4, 5]
+
+    /// 当前生效的「旧库」版本集合（v1 之后为空，见上）。
+    public static var legacyVersions: Set<Int> {
+        userVersion == 1 ? legacyVersionsBridge : []
+    }
 
     /// 期望的表/列/索引/外键总数（与 createSQL 同源；任何 DDL 变更必须同步改）。
     ///

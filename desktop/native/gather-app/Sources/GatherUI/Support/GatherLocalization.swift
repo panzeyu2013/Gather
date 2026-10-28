@@ -63,7 +63,7 @@ private final class LocalizationBundleCache: @unchecked Sendable {
 }
 
 public enum GatherLocalization {
-    // MARK: - 错误码 → 中文文案（error.* 键，186 项）
+    // MARK: - 错误码 → 中文文案（error.* 键，195 项）
     public static let errorMessages: [String: String] = [
     "C1_NOT_RUNNING": "无法连接 Capture One。请确认 Capture One 已运行并打开文档。",
     "C1_NO_DOCUMENT": "Capture One 未打开文档。请先在 Capture One 中打开目录（Document）。",
@@ -309,6 +309,7 @@ public enum GatherLocalization {
     /// 内部可见（4b-1）：L10n.progressPhaseText 复用同一张表。
     static let progressPhaseKeys: [String: String] = [
         "export.processing": "正在导出照片…",
+        "model.review": "正在运行模型初审…",
         "index.scanning": "正在增量扫描文件",
         "index.checksum": "正在后台补齐文件校验和",
         "index.done": "索引完成",

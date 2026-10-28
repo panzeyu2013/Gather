@@ -70,7 +70,7 @@ public final class WorkspaceStatusService {
         // 索引 job 成功结束且此后无待处理变更" 即等价于该行 status 为
         // 'succeeded'（活跃行 updated_at 必然更新，若存在活跃工作则 latest 就是它）。
         // 该行是阶段证据（stage 'indexed'），job.service 的 clear_completed 排除了
-        // metadata.scan / export.execute 两类证据行（见 job.service.ts 注释），
+        // metadata.scan / output.run 两类证据行（见 job.service.ts 注释），
         // 所以这里不需要用 index_seq>0 兜底——index_seq 只在扫描提交真实变更时
         // 自增，无变更的成功扫描（如文件数组导入后的补齐扫描）不会 bump，
         // 依赖它推导 indexed 会在 clear_completed 后误判为 imported。

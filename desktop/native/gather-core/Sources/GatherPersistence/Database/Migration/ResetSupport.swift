@@ -46,15 +46,23 @@ enum SchemaReset {
                 try fileManager.moveItem(atPath: staging, toPath: target)
             }
         } catch {
-            // 逆序回滚：sidecar 先回原位，再把主库挪回来，库仍保持可打开的原状。
+            // 逆序回滚：sidecar 先回原位，再把主库挪回来。
+            // P2：回滚本身也可能失败（磁盘满/权限变化），不能无条件宣称"库保持原样"——
+            // 主库可能还留在 staging，用户需要知道去哪儿找。
+            var rollbackFailed = false
             for suffix in movedSuffixes.reversed() {
-                try? fileManager.moveItem(atPath: target + suffix, toPath: path + suffix)
+                do { try fileManager.moveItem(atPath: target + suffix, toPath: path + suffix) }
+                catch { rollbackFailed = true }
             }
             if hadMain {
-                try? fileManager.moveItem(atPath: staging, toPath: path)
+                do { try fileManager.moveItem(atPath: staging, toPath: path) }
+                catch { rollbackFailed = true }
             }
+            let rollbackNote = rollbackFailed
+                ? "回滚未完全成功：主库可能留在 \(staging)，请手动恢复"
+                : "已回滚，库保持原样"
             throw DatabaseError.io(
-                "归档 \(path) 失败：\(error.localizedDescription)。已尝试回滚，库保持原样；"
+                "归档 \(path) 失败：\(error.localizedDescription)。\(rollbackNote)；"
                     + "请手动备份后重试"
             )
         }

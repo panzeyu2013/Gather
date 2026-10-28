@@ -193,6 +193,17 @@ final class MetadataWriteRouter: XMPProvider {
     }
 
     func removeFile(_ path: String) async throws {
+        // 纵深防御：只允许删元数据载体（.xmp）或受控备份名。内嵌模式下 xmpPath 就是
+        // 原片，上层守卫（DeliveryTypes / LiveMetadataAPI）一旦漏了就再也拦不住；
+        // 这里是最靠近 removeItem 的一道关，宁可多拦。
+        let lowered = path.lowercased()
+        let isSidecar = lowered.hasSuffix(".xmp")
+        let isControlledBackup = lowered.contains(".gather-backup-")
+            || lowered.contains(".gather-header-")
+        guard isSidecar || isControlledBackup else {
+            throw MetadataWriteRouterError.embeddedWriteFailed(
+                "refusing to remove a non-metadata path")
+        }
         try await sidecar.removeFile(path)
     }
 

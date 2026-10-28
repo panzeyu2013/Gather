@@ -202,7 +202,25 @@ if [ -f "$SHAPE_FILE" ]; then
       [ -f "$f" ] || continue
       # 只认「<当前表数> 表 …」的行：ROADMAP/ADR 保留历史基线（45 表、旧 user_version），
       # 那些行是历史记录，不能当成现行声明（否则门禁要么假红、要么漏掉陈旧数字）。
-      current_lines=$(grep -F "${code_tables} 表" "$f" || true)
+      #
+      # 两条硬约束（评审 P1：旧实现可被「改措辞」和「折行」绕过）：
+      #   1) 按行内含「历史 / 已删除」排除，不能靠把「44 表」改写成「44 张表」逃检
+      #      —— 那种改法会让门禁对现行声明永久失明；
+      #   2) 折行声明（「44 表 /」换行「386 列 / user_version=1）」）按窗口拼接后再匹配，
+      #      否则第二行的数字永远不被检查。
+      current_lines=$(awk -v want="${code_tables} 表" '
+        { line[NR] = $0 }
+        END {
+          for (i = 1; i <= NR; i++) {
+            # BSD awk 对多字节正则不可靠：一律用 index() 做字节子串判断。
+            if (index(line[i], "历史") > 0 || index(line[i], "已删除") > 0) continue
+            text = line[i]
+            # 只在「声明被折行」时拼接（行尾是 /），否则会把下一段的历史数字算进来。
+            if (index(text, "列") == 0 && text ~ /\/$/) text = text " " line[i + 1]
+            if (index(text, "列") == 0 && text ~ /\/$/) text = text " " line[i + 2]
+            if (index(text, want) > 0) print text
+          }
+        }' "$f")
       while IFS= read -r claim; do
         [ -n "$claim" ] || continue
         if [ "$claim" != "$code_columns" ]; then

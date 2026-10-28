@@ -256,9 +256,11 @@ final class IPTCXMLDelegate: NSObject, XMLParserDelegate {
         case .structure:
             // 属性形式与元素形式可能混存（CiEmailWork 属性 + CiAdrCity 元素）：
             // 结构结束时必须成员级合并，整块 set 会把属性成员冲掉。
-            if contact.isEmpty {
-                descriptive.set(.contact(DescriptiveContact()), for: descriptor.field)
-            } else {
+            // 空结构 = 没有联系人信息（外部工具常留空壳）。**不写字段**：否则
+            // mergeAttributes 的 overlay 语义会把 JPEG 内嵌联系人整块抹掉
+            // （面板显示"无联系人"，JPEG_EMBEDDED_CLEAR_UNSUPPORTED 也永不触发）。
+            // 显式清空走写侧 clearedContactMembers / replaceContact，不靠读侧空结构。
+            if !contact.isEmpty {
                 let merged = (descriptive.contactInfo ?? DescriptiveContact())
                     .merging(contact)
                 descriptive.set(.contact(merged), for: descriptor.field)

@@ -192,7 +192,7 @@ metadata_write_mode 升级提示（产品决策）、交付根 canonical 校验�
 | 清空 location / intellectualGenre / scene 时 IIM dataset 不删 → 旧值复活，或内嵌写后校验失败回滚 | 补 IIM 映射（2:27 / 2:4 / 2:202，实测 ImageIO 读回键名）；usageTerms 确认 IIM 无对应 dataset（2:130 读作 ImageType）→ 读侧不再回退 IIM；补「清空后 IIM dataset 消失 + 回读 nil」测试 |
 | 第 2 个及以后的 APP13 被整段丢弃（Photoshop 拆段的缩略图/裁剪路径/大 IPTC 消失） | 合并全部 APP13 的 IRB 资源后按资源边界重新拆段写回；`.keep` 原样保留；补多 APP13 / 超 64KB 拆段测试 |
 | 交付指纹两个方向都错：改源片会被续跑跳过（manifest 谎报成功），改「联系表/画廊」开关却让指纹失效 → 整批重导成 _2 副本 | 配方身份去掉 artifacts（`OutputRecipe.withoutArtifacts`），job 去重键与 `recipeFingerprint` 都不含联系表/画廊选项；指纹并入 `deliveryFingerprint`（checksum/size/mtime/命名/sidecar 版本），源变即失效 |
-| `OUTPUT_*` / `WEBDAV_*` 错误码不在 `GatherErrorCode`，交付失败在 UI 退化成「发生未知错误」 | 9 个码进枚举 + 中文模板 + en 表；`translateCommon` 对 job 失败取 `CODE:` 首段；错误码清单契约（194）与交叉契约测试同步 |
+| `OUTPUT_*` / `WEBDAV_*` 错误码不在 `GatherErrorCode`，交付失败在 UI 退化成「发生未知错误」 | 9 个码进枚举 + 中文模板 + en 表；`translateCommon` 对 job 失败取 `CODE:` 首段；错误码清单契约（当轮 194；合入 main 的 JPEG_EMBEDDED_CLEAR_UNSUPPORTED 后为 195）与交叉契约测试同步 |
 | 取消整套交付 → 红条「发生未知错误」且结果区整块消失 | `ExportViewModel.isCancellation`（JobCancellationMarker / CancellationError）→ 走 notice「交付已取消；已写出的成片仍在交付目录中」，不再落错误条 |
 | WebDAV 发布不可取消、无进度；取消被吞成逐文件失败继续跑 | `publish` 增加 `onProgress` 并接到面板进度；每文件前 `Task.checkCancellation()`、`CancellationError` 原样抛出；面板加「停止发布」与关闭即取消 |
 | 发布失败在 sheet 内不可见（错误留在背后的页面） | sheet 内渲染错误横幅 + 地址 scheme 行内校验 |

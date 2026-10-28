@@ -490,6 +490,19 @@ public final class MetadataService: @unchecked Sendable {
             // 否则旧 IIM 会把已清空的字段"复活"（写侧已删 dataset，这里兜住外部残留）。
             let blockedByExplicitEmpty = (spec.dcKeys + spec.xmpKeys)
                 .contains { parsed.xmpPresentKeys.contains($0) }
+            if blockedByExplicitEmpty {
+                // 诊断：XMP 键在场但为空 → 忽略非空 IIM 残留（语义不能改，否则清空会
+                // 被旧 IIM "复活"）。外部工具混合形态（XMP 空壳 + IIM 有值）因此会被
+                // 读成空，这里 debug 留痕，便于排查"盘上有值却显示为空"。
+                let iimResidue = spec.isList
+                    ? firstList(parsed, keys: spec.iimKeys, isIIM: true) != nil
+                    : firstText(parsed, keys: spec.iimKeys, isIIM: true) != nil
+                if iimResidue {
+                    GatherLogger.log(
+                        "embedded XMP present-but-empty masked IPTC-IIM residue for field "
+                            + "\(spec.field.rawValue)", level: .debug)
+                }
+            }
             if spec.isList {
                 let list = firstList(parsed, keys: spec.dcKeys, isDC: true)
                     ?? firstList(parsed, keys: spec.xmpKeys, isDC: false)
@@ -1200,6 +1213,18 @@ public final class MetadataService: @unchecked Sendable {
             }
             let snapshot = await diskSnapshot(photoPath: readPath, sidecar: sidecar)
             let disk = snapshot.attributes
+            // P1：内嵌读不到（JPEG 的 APP1 解析失败）时，清空类写入无法判定是否真的
+            // 清掉，必须按不确定处理（进 failed + uncertain），不能报 written。
+            // 判定必须在**写缓存投影之前**：否则会先用"仅 sidecar"快照整列覆盖
+            // iptc_json，把内嵌值从面板抹掉，随后才报失败（B1 类问题在降级路径复现）。
+            if !snapshot.embeddedReadable, Self.hasClearAttempt(input.attributes) {
+                uncertain.append(input.photoId)
+                failed.append(MetadataApplyFailure(
+                    photoId: input.photoId,
+                    message: GatherErrorCode.XMP_WRITE_VERIFICATION_FAILED.rawValue
+                        + ": embedded metadata unreadable"))
+                continue
+            }
             // 缓存投影以回读的**盘上值**为准（写入可能是"字段合并"，本地输入不等于
             // 最终文件）。只有本次明确写了描述性元数据才刷新 IPTC 投影：rating/
             // 关键词写回时若 sidecar 解析失败，不能用空值把面板已有 IPTC 抹掉。
@@ -1313,16 +1338,6 @@ public final class MetadataService: @unchecked Sendable {
                         photoId: input.photoId, keywords: [])
                 }
             }
-            // P1：内嵌读不到（JPEG 的 APP1 解析失败）时，清空类写入无法判定是否真的
-            // 清掉，必须按不确定处理（进 failed + uncertain），不能报 written。
-            if !snapshot.embeddedReadable, Self.hasClearAttempt(input.attributes) {
-                uncertain.append(input.photoId)
-                failed.append(MetadataApplyFailure(
-                    photoId: input.photoId,
-                    message: GatherErrorCode.XMP_WRITE_VERIFICATION_FAILED.rawValue
-                        + ": embedded metadata unreadable"))
-                continue
-            }
             // P1：JPEG 的内嵌 IPTC/XMP 无法靠写 .xmp 附属文件清空。写后盘上值仍带
             // 旧字段、而 sidecar 已没有该字段 = sidecar 写入成功但内嵌值还在：必须显式
             // 失败（fail-closed），不能让调用方以为"清空成功"。
@@ -1422,6 +1437,12 @@ public final class MetadataService: @unchecked Sendable {
                 return true
             }
         }
+        // P1：成员级联系人清空不算"整体为空"，只体现在 clearedContactMembers 里；
+        // 漏判会让内嵌不可读时的清空按 written 放行（旧值仍在 APP1）。
+        if let cleared = attributes.clearedContactMembers, !cleared.isEmpty { return true }
+        // P1：成员级联系人清空不体现在"整体为空"里，只挂在 clearedContactMembers 上；
+        // 漏判会让内嵌不可读时的清空按 written 放行（旧值仍在 APP1）。
+        if let cleared = attributes.clearedContactMembers, !cleared.isEmpty { return true }
         if let keywords = attributes.keywords, keywords.isEmpty { return true }
         if let label = attributes.label, isBlank(label) { return true }
         return false

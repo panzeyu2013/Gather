@@ -128,7 +128,13 @@ enum LiveAPIErrorMapping {
             throw error
         } catch let error as CodedError {
             // P1-2 / R1：码即类型（PersistenceError / NavigationError / 域枚举）。
-            throw GatherError(code: error.code, underlying: String(describing: error))
+            // P2：描述里的 "CODE: 散文" 尾部要作为 params["detail"] 上屏，否则
+            // {{detail}} 模板会渲染成空括号。
+            let described = String(describing: error)
+            throw GatherError(
+                code: error.code,
+                params: Self.detailParams(in: described, code: error.code.rawValue),
+                underlying: described)
         }
     }
 
@@ -140,7 +146,11 @@ enum LiveAPIErrorMapping {
         case let gather as GatherError:
             return gather
         case let coded as CodedError:
-            return GatherError(code: coded.code, underlying: String(describing: coded))
+            let described = String(describing: coded)
+            return GatherError(
+                code: coded.code,
+                params: Self.detailParams(in: described, code: coded.code.rawValue),
+                underlying: described)
         case let job as JobServiceError:
             // allow: string-code（任务失败原因以文本落库 job.error 列，非类型化错误，R1 例外）
             // 执行器写的是 "CODE: 散文"（如 OUTPUT_RECIPE_CONFLICT: Web 2048），只做全串
@@ -150,13 +160,27 @@ enum LiveAPIErrorMapping {
                     .first.map(String.init) ?? message
                 // allow: string-code（同上：只认执行器写进 job.error 的 "CODE: 散文" 首段）
                 if let code = GatherErrorCode(rawValue: head) {
-                    return GatherError(code: code, underlying: message)
+                    return GatherError(
+                        code: code, params: Self.detailParams(in: message, code: head),
+                        underlying: message)
                 }
             }
             return nil
         default:
             return nil
         }
+    }
+
+    /// 从 "CODE: 散文" 取可上屏的明细（L10n 的 `{{detail}}` 插值位）。
+    ///
+    /// 执行器写进 job.error、域枚举的 description 都是这个形态；只把整串塞进
+    /// underlying 会让 UI 显示「…失败（）」——底层明细只进日志，用户看不到。
+    static func detailParams(in message: String, code: String) -> [String: String] {
+        let prefix = code + ":"
+        guard message.hasPrefix(prefix) else { return [:] }
+        let tail = message.dropFirst(prefix.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return tail.isEmpty ? [:] : ["detail": tail]
     }
 
     /// 域臂公共收敛（P2-5）：6 个 Live API 的通用臂已统一在 translateCommon；

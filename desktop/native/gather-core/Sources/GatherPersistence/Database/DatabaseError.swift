@@ -16,7 +16,7 @@ import CSQLite
 
 /// Database facade 的类型化错误。
 ///
-/// 与 `GatherError` 分层：`GatherError` 是 API/IPC 面向用户的错误契约（186 个
+/// 与 `GatherError` 分层：`GatherError` 是 API/IPC 面向用户的错误契约（195 个
 /// `GatherErrorCode`）；`DatabaseError` 是持久层内部错误，由 Service 决定映射成
 /// 哪个 `GatherErrorCode`，因此不参与 `ErrorCodeContractTests` 的固定清单。
 public enum DatabaseError: Error, Equatable, Sendable, LocalizedError {

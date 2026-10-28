@@ -7,6 +7,7 @@
 // - 瞬态失败（网络错误/5xx）指数退避重试，401/403 立即中止（凭据问题重试无意义）；
 // - 不记录密码、不打印 Authorization 头。
 import Foundation
+import GatherProtocol
 
 public struct WebDAVConfiguration: Equatable, Sendable {
     public var baseURL: URL
@@ -86,24 +87,24 @@ public struct WebDAVPublishResult: Equatable, Sendable {
     public var isSuccess: Bool { failed.isEmpty && !abortedOnAuth }
 }
 
-public enum WebDAVError: Error, Equatable, CustomStringConvertible {
+public enum WebDAVError: Error, Equatable, CustomStringConvertible, CodedError {
     case invalidBaseURL(String)
     case localPathMissing(String)
     case noMatchingFiles
 
-    public var code: String {
+    public var code: GatherErrorCode {
         switch self {
-        case .invalidBaseURL: "WEBDAV_URL_INVALID"
-        case .localPathMissing: "WEBDAV_LOCAL_MISSING"
-        case .noMatchingFiles: "WEBDAV_NO_MATCHING_FILES"
+        case .invalidBaseURL: .WEBDAV_URL_INVALID
+        case .localPathMissing: .WEBDAV_LOCAL_MISSING
+        case .noMatchingFiles: .WEBDAV_NO_MATCHING_FILES
         }
     }
 
     public var description: String {
         switch self {
-        case .invalidBaseURL(let value): "WEBDAV_URL_INVALID: " + value
-        case .localPathMissing(let path): "WEBDAV_LOCAL_MISSING: " + path
-        case .noMatchingFiles: "WEBDAV_NO_MATCHING_FILES"
+        case .invalidBaseURL(let value): code.rawValue + ": " + value
+        case .localPathMissing(let path): code.rawValue + ": " + path
+        case .noMatchingFiles: code.rawValue
         }
     }
 }

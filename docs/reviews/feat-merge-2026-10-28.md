@@ -10,7 +10,7 @@
 - `git merge --no-ff feat` → 合并提交 **`b35ea4d3`**（父 `f859ed2c` + `a59a2fbc`）；merge-base `726622ee`，
   main 侧 7 提交、feat 侧 1 提交。`git diff --diff-filter=D f859ed2c HEAD` 为空（无删除），
   feat 新增文件在合并树中逐一存在。
-- 规模：135 文件 / +9,437 −343（相对 `f859ed2c`），新增 30 个文件。
+- 规模：**138 文件 / +9,523 −348**（相对 `f859ed2c` `git diff --shortstat`），新增 **31** 个文件。
 - 三块主题：GatherProtocol 新契约（ModelReview / Output / MetadataTarget，错误码 186→194 再 +1 两侧合计 195）、
   GatherPersistence schema 重置为 v1（44 表 / 386 列 / 72 索引 / 65 外键）、GatherHost 的 JPEG 内嵌写回
   （JPEGSegments / IPTCIIM / XMPPacketStore / WebDAV 凭据）与 GatherUI 交付页。
@@ -25,7 +25,7 @@
 | `docs/README.md` | 44/385/v5、1,380/202、735/85、en 1,680 | 44/386/v1、1,416/211、754/88、en 1,746 | 取 feat 的结构与口径，数字按合并树实测重采样（§3） |
 | `docs/protocol-surface-baseline.json` | 310 类型 / 1,756 声明 | 332 / 1,904 | 两方都不是合并树实测值，直接 `--write-baseline` 重采样（332 / 1,909） |
 
-其余 10 个"双方都改"的文件（`Core.swift`、`TriageRepo.swift`、`WritebackService.swift`、`LiveCullingAPI.swift`、
+其余 11 个"双方都改"的文件（`Core.swift`、`TriageRepo.swift`、`WritebackService.swift`、`LiveCullingAPI.swift`、
 `LiveMetadataAPI.swift`、`L10n.swift`、`GatherLocalization.swift`、`Localizable.strings`、
 `ImageMetadataProvidersTests.swift`、`ADR.md`/`DEVELOPMENT.md`）由 ort 自动合并，逐文件复核为**语义并集**：
 feat 的模型初审/交付/内嵌写回 + main 的 `PhotoVisibility` 谓词收敛、`photo_count` 原子重算、
@@ -36,12 +36,14 @@ feat 的模型初审/交付/内嵌写回 + main 的 `PhotoVisibility` 谓词收�
 | 项 | 合并前（两侧各自） | 合并后 | 落点 |
 |---|---|---|---|
 | 错误码 | 186 / 194 | **195** | `Core.swift`、两个契约测试、`GatherLocalization.errorMessages`、ADR-017、DEVELOPMENT、ROADMAP |
-| en 键 | 1,680 / 1,746 | **1,748** | README、ROADMAP、DEVELOPMENT（`zh-Hans` 仍 9 占位） |
+| en 键 | 1,680 / 1,746 | **1,748**（侧车术语轮补 model.review 文案后为 1,749） | README、ROADMAP、DEVELOPMENT（`zh-Hans` 仍 9 占位） |
 | schema 形状 | 44/385/v5（main）、44/386/v1（feat） | **44 / 386 / 72 / 65，`user_version=1`** | README、ROADMAP、ADR、DEVELOPMENT；`gather-schema verify` 实测 |
 | 死代码告警 | feat 新增 2 处 | 清零 | `OutputService.swift:142` `var→let`；`:321` 删未用的 `day` 局部量与随之失效的 `date` 形参 |
 
-> `docs/ADR.md` 里"schema 5 时代 44 表 / 385 列"的历史叙述改写为"44 张表"，避免
-> `check-docs` 的形状校验把历史行当成现行声明（口径见该脚本 §5）。
+> 上一轮曾把 `docs/ADR.md` 里"schema 5 时代 44 表 / 385 列"改写成"44 张表"来绕开
+> `check-docs` 的形状校验 —— 这是**门禁假绿**（评审 R5 判 P1）。已在 sidecar 轮修正：
+> 门禁改为按"行内含历史/已删除"排除 + 折行拼接，ADR 措辞还原为"44 表"。
+> 见 [sidecar-merge-2026-10-28.md](sidecar-merge-2026-10-28.md) §4。
 
 ## 4. 实测（本机 2026-10-28，arm64 / Swift 6.4）
 

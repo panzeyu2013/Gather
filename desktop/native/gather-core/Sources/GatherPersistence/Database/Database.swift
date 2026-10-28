@@ -174,7 +174,7 @@ public final class Database: @unchecked Sendable {
     ///   * current  → 校验版本 + 列形 + FK 自检后返回（.opened）；
     ///   * empty    → 单事务建当前 DDL（.created）；
     ///   * older    → 默认 fail closed（v3 起无迁移链；仅显式 resetPolicy 才归档重建）
-    ///                + 形态校验（.migrated；失败回滚，库仍为旧版本，备份保留）；
+    ///                （迁移链已删除：没有 .migrated 结果，旧库只会被归档重建）；
     ///   * newer    → 抛 .versionUnsupported，文件不改（开发重置才改名）；
     ///   * corrupt  → 抛 .corrupt（非 SQLite / V0 有表 / 形态不符）；开发重置才改名；
     ///   * unreadableVersion → 抛 .corrupt；开发重置才改名。

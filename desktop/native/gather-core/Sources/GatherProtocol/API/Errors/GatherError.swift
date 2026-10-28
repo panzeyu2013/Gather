@@ -6,7 +6,7 @@
 // 校验归属：输入类型的 init/init(from:) 与 1B 的 API 实现都只抛 GatherError。
 //
 // 已知限制（D-010，待后续批次）：
-// - 参数错误使用 GatherErrorCode.INVALID_PARAM（当前 186 项），field/reason 完整保留。
+// - 参数错误使用 GatherErrorCode.INVALID_PARAM（当前 195 项），field/reason 完整保留。
 // - PHOTO_NOT_FOUND / INVALID_PARAM 已在枚举内；MISSING_PARAM 未单列，缺失参数
 //   统一由 INVALID_PARAM 表达。路径授权失败由 1B 在 API 实现边界收敛
 //   （见 PhotoPathPolicy）。

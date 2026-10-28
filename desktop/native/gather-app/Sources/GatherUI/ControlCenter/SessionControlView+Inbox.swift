@@ -118,7 +118,10 @@ extension SessionControlView {
         for (index, job) in status.failedJobs.prefix(Self.maxFailedJobRows).enumerated() {
             // 错误码不在翻译表时 detail 置 nil 不渲染（对齐 TS L148-150：
             // 原始诊断不落 UI 文案）。
-            let detail = l10n.resolvedTemplate(for: job.code)
+            // 明细在 job.message，不在 job.code 里：只传码会把 {{detail}} 插成空串
+            // （控制中心显示「…失败（）」，而同一任务的 JobRowView 用 jobErrorMessage 是对的）。
+            let raw = job.message.isEmpty ? job.code : job.code + ": " + job.message
+            let detail = l10n.resolvedTemplate(for: raw)
             items.append(InboxItem(
                 id: "job_failed-\(index)", kind: .jobFailed,
                 label: l10n.format("%@任务失败", Self.jobTypeLabel(job.type, with: l10n)), detail: detail,

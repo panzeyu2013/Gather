@@ -145,6 +145,7 @@ public final class TriageRepo: TriageRepository {
             FROM asset_analysis aa
             JOIN photos p ON p.asset_file_id = aa.asset_file_id
             WHERE aa.analysis_type = 'model_review' AND p.session_id = ?
+              AND \(PhotoVisibility.visiblePredicate(alias: "p"))
             """).query([.text(sessionId)]).first
         return (Int(row?[0].intValue ?? 0), row?[1].textValue ?? "")
     }

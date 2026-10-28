@@ -238,7 +238,10 @@ struct ExportDeliverySection: View {
                     }
                 }
                 if let first = recipe.errors.first {
-                    Text(first).font(GatherFont.secondary).foregroundStyle(GatherTheme.errorText)
+                    // 错误串由 ExportService+Run 拼成 "<文件名>: CODE: 散文"；
+                    // 直接上屏会把英文码丢给用户，码段必须过 L10n。
+                    Text(Self.deliveryErrorText(first, with: l10n))
+                        .font(GatherFont.secondary).foregroundStyle(GatherTheme.errorText)
                 }
             }
             Text(summary.manifestPath)
@@ -253,5 +256,17 @@ struct ExportDeliverySection: View {
                     .foregroundStyle(GatherTheme.errorText)
             }
         }
+    }
+
+    /// 交付项错误串 → 本地化文案。
+    ///
+    /// ExportService+Run 拼的是 "<文件名>: CODE: 散文"；直接上屏会把英文码丢给用户。
+    /// 这里只拆第一段冒号（文件名），其余整段交给 L10n 解析 "CODE: 散文" 形态。
+    static func deliveryErrorText(_ raw: String, with l10n: L10n) -> String {
+        guard let colon = raw.firstIndex(of: ":") else { return l10n.errorText(raw) }
+        let file = raw[raw.startIndex..<colon].trimmingCharacters(in: .whitespaces)
+        let rest = raw[raw.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        guard !rest.isEmpty else { return file }
+        return file + "：" + l10n.errorText(rest)
     }
 }
