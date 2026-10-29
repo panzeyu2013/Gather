@@ -337,8 +337,10 @@ fi
 #    （与 cleanup/protocol ratchet 同一套"只许收紧"的约定）。
 #    2026-10-28 两轮合并 + 三轮评审后累计收紧：2115/225 → 2195/241（feat 合入 +73/+15；
 #    契约测试与回归 +7/+1）。见 docs/reviews/{feat-merge,sidecar-merge,final-review}-2026-10-2*.md。
-BASELINE_TEST_DECL=2195
-BASELINE_SUITE_DECL=241
+#    2026-10-29 tests 合入：+10/+1（ModelReviewRepo 5 / ModelReviewService 编排 5，
+#    覆盖此前 0%/10.6% 的模型初审落库与缓存路径）→ 2205/242。
+BASELINE_TEST_DECL=2205
+BASELINE_SUITE_DECL=242
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
@@ -358,7 +360,8 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 
 # 7) 断言 ratchet：只数声明拦不住"删真用例、补空壳用例"。断言数（#expect / #require）
 #    才是"检查了多少事"的代理指标——把真用例删掉换成空函数，断言数会掉。
-BASELINE_ASSERT=10204
+#    2026-10-29 tests 合入 +40（同上 10 例）。
+BASELINE_ASSERT=10244
 assert_n=$(grep -rhoE '#(expect|require)\(' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')

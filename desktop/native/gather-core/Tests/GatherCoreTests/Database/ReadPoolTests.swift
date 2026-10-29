@@ -37,13 +37,18 @@ struct ReadPoolTests {
         try conn.exec("INSERT INTO t (v) VALUES ('seed');")
 
         let entered = LockedBox(Flag())
+        // 用信号量把「写事务保持打开」变成确定性事件：读到快照后再放行提交，
+        // 而不是固定睡 1s（旧实现让本用例独占约 1s，串行批 80% 的时间都在等它）。
+        let releaseCommit = DispatchSemaphore(value: 0)
         let hold = Task.detached {
             try conn.transaction {
                 entered.lock.withLock { entered.entered = true }
-                Thread.sleep(forTimeInterval: 1.0)
+                _ = releaseCommit.wait(timeout: .now() + 5)
                 try conn.exec("INSERT INTO t (v) VALUES ('during');")
             }
         }
+        // 断言提前抛出时也要放行后台事务，避免 5s 兜底超时拖尾。
+        defer { releaseCommit.signal() }
         for _ in 0..<200 where !(entered.lock.withLock { entered.entered }) {
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -55,6 +60,8 @@ struct ReadPoolTests {
         #expect(row?[0].intValue == 1, "读到事务前的已提交快照")
         #expect(elapsed < 0.6, "SELECT 不应等待写事务（实测 \(Int(elapsed * 1000))ms）")
 
+        // 读路径已经验证完毕，放行写事务提交。
+        releaseCommit.signal()
         try await hold.value
         let after = try conn.prepare("SELECT COUNT(*) FROM t").get()
         #expect(after?[0].intValue == 2, "提交后池读可见")

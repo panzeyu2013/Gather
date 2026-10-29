@@ -9,32 +9,41 @@ import GatherProtocol
 extension PreviewData {
     // MARK: 人脸（Face）
 
+    // 每个实参先落到显式类型的局部常量：Xcode 26 的 type-checker 对整段字面量
+    // 初始化式会超时（CI 实测 unable to type-check this expression in reasonable time）。
     static let faceClusters: [FaceClusterData] = (1...6).map { clusterIndex in
-        let members = (1...4).map { memberIndex in
-            ClusterMember(
+        let members: [ClusterMember] = (1...4).map { memberIndex in
+            let pathIndex: Int = (clusterIndex + memberIndex) % facePaths.count
+            let photoPath: String = facePaths[pathIndex]
+            return ClusterMember(
                 memberId: clusterIndex * 10 + memberIndex,
                 photoId: "preview-face-\(clusterIndex)-\(memberIndex)",
-                photoPath: facePaths[(clusterIndex + memberIndex) % facePaths.count],
-                filename: (facePaths[(clusterIndex + memberIndex) % facePaths.count] as NSString).lastPathComponent,
+                photoPath: photoPath,
+                filename: (photoPath as NSString).lastPathComponent,
                 bbox: [0.2, 0.16, 0.34, 0.44],
-                confidence: 0.92
-            )
+                confidence: 0.92)
         }
         let role: String? = clusterIndex == 1 ? "Mika" : (clusterIndex == 2 ? "Ren" : nil)
+        let label: String = role ?? "簇 \(clusterIndex)"
+        let size: Int = clusterIndex == 1 ? 12 : (clusterIndex == 2 ? 9 : 4)
+        let status: String = role == nil ? "new" : "bound"
+        let binding: FaceClusterBinding? = role.map { name in
+            FaceClusterBinding(roleName: name, keywords: [name, "人像"])
+        }
+        let matchConfidence: Double? = role == nil ? nil : 0.88
         return FaceClusterData(
             id: clusterIndex,
             sessionId: sessionOneId,
-            label: role ?? "簇 \(clusterIndex)",
-            size: clusterIndex == 1 ? 12 : (clusterIndex == 2 ? 9 : 4),
-            status: role == nil ? "new" : "bound",
+            label: label,
+            size: size,
+            status: status,
             thumbnailBase64: "",
-            binding: role.map { FaceClusterBinding(roleName: $0, keywords: [$0, "人像"]) },
+            binding: binding,
             thumbnailPhotoId: members[0].photoId,
             members: members,
             matchedPersonId: RolePerson.matchingId(role),
             matchedPersonName: role,
-            matchConfidence: role == nil ? nil : 0.88
-        )
+            matchConfidence: matchConfidence)
     }
 
     enum RolePerson {
@@ -54,36 +63,36 @@ extension PreviewData {
         downloading: false
     )
 
-    static let faceWritebackPreview = WritebackPreview(
-        items: (1...3).map { index in
-            WritebackItem(
+    static let faceWritebackPreview: WritebackPreview = {
+        let items: [WritebackItem] = (1...3).map { index in
+            let path: String = facePaths[index - 1]
+            let xmpPath: String = path.replacingOccurrences(of: ".NEF", with: ".xmp")
+            let preview: WritebackItemPreview = WritebackItemPreview(
+                dirtyFields: [.keywords],
+                before: WritebackAttributes(keywords: []),
+                after: WritebackAttributes(keywords: ["Mika", "人像"]),
+                source: "face-keyword",
+                sharedPhotoCount: 1,
+                externalChanged: false,
+                willCreate: true)
+            return WritebackItem(
                 id: index,
                 photoId: "preview-face-1-\(index)",
-                photoPath: facePaths[index - 1],
+                photoPath: path,
                 sessionId: sessionOneId,
                 module: "face-keyword",
                 keywords: ["Mika", "人像"],
                 attributes: WritebackAttributes(keywords: ["Mika", "人像"]),
-                xmpPath: facePaths[index - 1].replacingOccurrences(of: ".NEF", with: ".xmp"),
+                xmpPath: xmpPath,
                 backupPath: "",
                 xmpStatus: "pending",
                 errorMessage: "",
                 attemptCount: 0,
                 lastAttemptAt: "",
-                preview: WritebackItemPreview(
-                    dirtyFields: [.keywords],
-                    before: WritebackAttributes(keywords: []),
-                    after: WritebackAttributes(keywords: ["Mika", "人像"]),
-                    source: "face-keyword",
-                    sharedPhotoCount: 1,
-                    externalChanged: false,
-                    willCreate: true
-                )
-            )
-        },
-        totalCount: 3,
-        affectedPhotos: 3
-    )
+                preview: preview)
+        }
+        return WritebackPreview(items: items, totalCount: 3, affectedPhotos: 3)
+    }()
 
     static let faceWritebackResult = WritebackResult(
         totalAffected: 3,
@@ -97,48 +106,47 @@ extension PreviewData {
 
     // MARK: 相似度（Similarity）
 
-    static let similarityResult = SimilarityResult(
-        groups: (1...3).map { groupIndex in
-            let images = (1...4).map { imageIndex in
-                SimilarityImage(
-                    path: similarityPaths[(groupIndex + imageIndex) % similarityPaths.count],
-                    representative: imageIndex == 1 ? true : nil
-                )
+    static let similarityResult: SimilarityResult = {
+        let groups: [SimilarityGroup] = (1...3).map { groupIndex in
+            let images: [SimilarityImage] = (1...4).map { imageIndex in
+                let path: String = similarityPaths[(groupIndex + imageIndex) % similarityPaths.count]
+                let representative: Bool? = imageIndex == 1 ? true : nil
+                return SimilarityImage(path: path, representative: representative)
             }
-            return SimilarityGroup(
-                id: groupIndex,
-                label: "连拍组 \(groupIndex)",
-                count: 4,
-                images: images
-            )
-        },
-        ungrouped: [SimilarityImage(path: similarityPaths[5]), SimilarityImage(path: galleryPaths[10])],
-        stats: SimilarityResultStats(
+            return SimilarityGroup(id: groupIndex, label: "连拍组 \(groupIndex)", count: 4, images: images)
+        }
+        let ungrouped: [SimilarityImage] = [
+            SimilarityImage(path: similarityPaths[5]),
+            SimilarityImage(path: galleryPaths[10]),
+        ]
+        let stats = SimilarityResultStats(
             totalGroups: 3,
             totalUngrouped: 2,
             threshold: 10,
             minGroupSize: 2,
             groupingMode: .global,
-            precomputed: true
-        )
-    )
+            precomputed: true)
+        return SimilarityResult(groups: groups, ungrouped: ungrouped, stats: stats)
+    }()
 
     static let similarityWritebackItems: [WritebackItem] = (1...3).map { index in
-        let status = index == 1 ? "pending" : (index == 2 ? "written" : "failed")
+        let status: String = index == 1 ? "pending" : (index == 2 ? "written" : "failed")
+        let path: String = similarityPaths[index - 1]
+        let failed: Bool = status == "failed"
         return WritebackItem(
             id: index,
             photoId: "preview-similarity-\(index)",
-            photoPath: similarityPaths[index - 1],
+            photoPath: path,
             sessionId: sessionOneId,
             module: "similarity",
             keywords: ["连拍", "旅行"],
             attributes: WritebackAttributes(keywords: ["连拍", "旅行"]),
-            xmpPath: similarityPaths[index - 1].replacingOccurrences(of: ".NEF", with: ".xmp"),
+            xmpPath: path.replacingOccurrences(of: ".NEF", with: ".xmp"),
             backupPath: "",
             xmpStatus: status,
-            errorMessage: status == "failed" ? "XMP_WRITE_FAILED" : "",
-            attemptCount: status == "failed" ? 1 : 0,
-            lastAttemptAt: status == "failed" ? timestamp : "",
+            errorMessage: failed ? "XMP_WRITE_FAILED" : "",
+            attemptCount: failed ? 1 : 0,
+            lastAttemptAt: failed ? timestamp : "",
             preview: nil
         )
     }

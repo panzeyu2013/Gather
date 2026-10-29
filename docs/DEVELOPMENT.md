@@ -56,7 +56,9 @@ docs/                                # 当前文档；历史快照在 docs/archi
 
 ```bash
 cd desktop/native/gather-core
-swift test
+swift test          # 单包直跑（全串行，适合定位单例）
+# 日常/CI 用统一入口：并行主批 + 4 个进程级状态套件串行批
+CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh core
 ```
 
 ### 应用测试
@@ -65,14 +67,15 @@ swift test
 Clang 模块缓存权限问题，指定工作区可写的缓存目录：
 
 ```bash
-cd desktop/native/gather-app
-CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-parallel
+CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh app
 ```
 
-应用测试与其他 app 用例共享 MainActor 状态层与进程级语言/通知槽，默认并行在
-调度满载时会拖穿异步等待窗口（历史 flake 集中在 ControlCenter/Gallery 的
-生命周期断言）。因此 app 测试**始终加 `--no-parallel`**（CI 同口径）；core
-本地默认并行，CI 用 `--no-parallel` 避免日志套件竞态。
+app 测试与 core 一样默认并行。历史上整包并行会 SIGSEGV（真实 NSWindow 用例
+`close()` 触发 SwiftUI/KVO 二次 release，主线程 `objc_release`）；2026-10-29 已改为
+`orderOut()` 释放语义并修复 `CullingViewModelAPITests` 的 history 刷新竞态，
+50 次并行重复全绿。共享语言槽仍由 `AppLanguageLock` 串行；排查单例时可直接
+`swift test --no-parallel`。core 的日志/慢事务全局状态套件由 `scripts/test.sh`
+单独串行，其余用例并行；依据与实测见 [test-runtime-audit.md](test-runtime-audit.md)。
 
 ### 构建应用（发布/打包）
 
@@ -385,13 +388,22 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 提交前在仓库根目录至少运行：
 
 ```bash
-CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
-  swift test --package-path desktop/native/gather-core
-
-# app 测试串行：与 CI 同口径（共享 MainActor/进程级状态，并行会拖穿等待窗口）。
-CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
-  swift test --package-path desktop/native/gather-app --no-parallel
+# 统一入口：core 并行主批 + 4 个进程级状态套件串行批；app 并行。
+CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh core
+CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh app
+# 或一次跑两包（CI 分 job 执行，见 .github/workflows/ci.yml）
+./scripts/test.sh all
 ```
+
+**并行口径**：core 只有 `LoggerTests` / `TraceLoggingTests` / `LogFileSinkTests` /
+`ReadPoolTests` 改进程级日志或慢事务阈值，脚本把它们放到第二遍串行跑（`--skip-build`），
+其余 1,400+ 例并行。app 也并行（窗口 SIGSEGV 根因与修复见审计文档 §4）；实测
+（M5 Pro / Debug）core 13.3s → 1.4s、app 12.5s → 2.7s、总耗时 25.8s → 4.1s；
+覆盖率、重叠分析与残余项见 [test-runtime-audit.md](test-runtime-audit.md)。
+
+测试期间**不得出现可见窗口或系统面板**：真实挂载用例的宿主 NSWindow 必须
+`alphaValue = 0`（见 `WorkspaceVisibilityTests` 的守卫断言）；
+`NSOpenPanel`/`NSSavePanel`/`NSAlert` 只能由手工验收触发。
 
 **不要在日常提交里跑 `./desktop/native/build.sh`**：完整 `.app` 组装只在发布/打包
 （tag、`workflow_dispatch` 或明确的打包任务）执行；PR/日常测试只构建 test target。
