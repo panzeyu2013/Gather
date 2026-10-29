@@ -236,6 +236,11 @@ metadata_write_mode 升级提示（产品决策）、交付根 canonical 校验�
 证据：用 `git archive HEAD` 导出**未改动的 HEAD 树**到 /tmp 单独构建并跑全量，同样在 22:14:46 产生 crash report（与改动树同一签名）；
 `--no-parallel` 下 754 tests / 88 suites 全绿。建议单开 issue 定位并行测试里的 MainActor 竞态（可能是某个 SwiftUI 宿主测试）。
 
+> **2026-10-29 更新（已关闭）**：定位到 `WorkspaceVisibilityTests` 真实挂载窗口的
+> `NSWindow.close()` → SwiftUI/KVO 二次 release；改为 `orderOut()` 后 app 并行
+> **50/50 全绿**。另修了 `CullingViewModelAPITests` 的 history 刷新竞态。详见
+> [test-runtime-audit.md §4](../test-runtime-audit.md)。
+
 ### 18.6 本轮验收证据
 
 - core **1,416 tests / 211 suites** 全绿；app **754 tests / 88 suites** 全绿（`--no-parallel`）；

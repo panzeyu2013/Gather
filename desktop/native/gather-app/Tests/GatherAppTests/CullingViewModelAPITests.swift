@@ -382,6 +382,26 @@ struct CullingViewModelAPITests {
         await api.setPage(vmPage([
             vmAsset("p1", revision: 4, pickState: .picked), vmAsset("p2")
         ]))
+        // 同理，后台 refresh 的 history 快照也必须已含本次操作：否则 detached
+        // 刷新在 update 之后落地会用旧 history（空）覆盖本地 prepend 的 op 9。
+        // 串行调度下 update 通常先落地；并行/满载时会随机红（实测 50 次中 1 次）。
+        await api.setHistory([
+            CullingHistoryOperation(
+                id: 9,
+                sessionId: "s1",
+                entries: [
+                    CullingHistoryEntry(
+                        photoId: "p1",
+                        before: CullingStateSnapshot(
+                            pickState: .unreviewed, rating: 0, colorLabel: .none),
+                        after: CullingStateSnapshot(
+                            pickState: .picked, rating: 0, colorLabel: .none),
+                        expectedRevision: 3,
+                        fields: [.pickState]),
+                ],
+                undone: false,
+                createdAt: "2026-09-01T10:00:00.000Z")
+        ])
 
         await vm.update(asset, patch: CullingUpdatePatch(pickState: .picked), nextPhotoId: "p2")
 

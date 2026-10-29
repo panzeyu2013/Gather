@@ -519,16 +519,19 @@ struct GalleryViewModelTests {
         stub.rows = (0..<600).map { StubGalleryProvider.photo("p\($0)") }
         await viewModel.load()
 
-        // 激活搜索 → 走链式拉取路径。
+        // 激活搜索 → 走链式拉取路径。等可观测状态落定，而不是固定睡 500ms：
+        // 先等链至少发起取页，再等它跑完（isFetchingNextPage 归位）。
         viewModel.search = "p"
         viewModel.searchChanged()
-        try? await Task.sleep(for: .milliseconds(500))
+        #expect(await waitUntilAsync(timeout: 2) { stub.pageAttempts >= 2 }, "搜索链未发起取页")
+        #expect(await waitUntilAsync(timeout: 2) { !viewModel.isFetchingNextPage }, "搜索链未在超时内收敛")
         let attemptsAfterChain = stub.pageAttempts
 
         // 之后每一次请求都失败：链必须在第一个错误处终止。
         stub.pageError = "boom"
         await viewModel.loadMoreIfNeeded()
-        try? await Task.sleep(for: .milliseconds(80))
+        // 负向窗口：断言"失败后不再自动重试"，只能观察一小段时间。
+        await awaitNegativeWindow(.milliseconds(80))
         #expect(
             stub.pageAttempts <= attemptsAfterChain + 1,
             "失败后不得继续自动重试同一页（旧实现忽略返回值，会连发 21+ 次）"
@@ -547,8 +550,10 @@ struct GalleryViewModelTests {
         // 普通搜索不经过 reload（旧实现只在 reload 里清选择）。
         viewModel.search = "p9"
         viewModel.searchChanged()
-        try? await Task.sleep(for: .milliseconds(500))
-        #expect(viewModel.selectedIds.isEmpty, "查询条件变化后不得保留屏幕上已不存在的选择")
+        #expect(
+            await waitUntilAsync(timeout: 2) { viewModel.selectedIds.isEmpty },
+            "查询条件变化后不得保留屏幕上已不存在的选择"
+        )
     }
 
     @Test("D04：切变体让在途分页响应作废，不得把旧页写入新数据集")
@@ -563,11 +568,16 @@ struct GalleryViewModelTests {
         // 在途「取下一页」被挂起，随后切换变体（reload 递增数据代数）。
         stub.pageDelay = .milliseconds(200)
         let pending = Task { await viewModel.loadMoreIfNeeded() }
-        try? await Task.sleep(for: .milliseconds(20))
+        // 等分页请求真的在途（不再用 20ms 猜测），再切换变体让旧响应过期。
+        #expect(await waitUntilAsync(timeout: 2) { viewModel.isFetchingNextPage }, "分页请求未进入在途态")
         viewModel.expandVariants = true
         viewModel.filterOrVariantChanged()
         await pending.value
-        try? await Task.sleep(for: .milliseconds(400))
+        // 等新代数首页落定（p0），而不是固定睡 400ms。
+        #expect(
+            await waitUntilAsync(timeout: 2) { viewModel.filteredPhotos.first?.id == "p0" },
+            "切变体后新首页未在超时内落定"
+        )
 
         // 审计 5（测试有效性）：只断言「张数 == 200」是**假阴性**——旧实现把
         // 旧页 append 进空数组后同样是 200 行（只是内容从 p200 开始）。必须断言

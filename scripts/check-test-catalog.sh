@@ -338,8 +338,10 @@ fi
 #    2026-10-28 两次合并后收紧：2115/225 → 2193/241（feat 合入 +73/+15；本轮补
 #    输出/写目标/模型初审契约测试 +5/+1）。见 docs/reviews/feat-merge-2026-10-28.md
 #    与 docs/reviews/sidecar-merge-2026-10-28.md。
-BASELINE_TEST_DECL=2194
-BASELINE_SUITE_DECL=241
+#    2026-10-29 测试审计：补 ModelReviewRepo（6）/ ModelReviewService 编排（5）
+#    覆盖 0%/10.6% 的模型初审落库与缓存路径 → 2205/242（+11/+1）。
+BASELINE_TEST_DECL=2205
+BASELINE_SUITE_DECL=242
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')

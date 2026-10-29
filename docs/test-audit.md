@@ -1,5 +1,9 @@
 # 测试审计（Cut 0 · 2026-10-21）
 
+> **2026-10-29 更新**：运行时长/CPU/RSS、并行拆分、当前覆盖率（core 83.41% / app 46.59%）
+> 与残余缺口的现行口径见 [test-runtime-audit.md](test-runtime-audit.md)；本文保留 Cut 0 的
+> 删除/合并决策与历史台账。
+
 > 权威计划：`docs/reviews/refactor-design-breaking-2026-10-21.md`（§1 删除清单、§7.2 测试策略、§8.3 判定规则、§8.7 指标、§9 Cut 0）。
 > 口径：**只读审计**，未改任何源码/测试/脚本。所有条数来自源码 `@Test` / `@Suite` 机械计数（命令见附录 A），并与 `docs/reviews/architecture-review-2026-10-21.md:368` 的实测台账（core 994 / 141 suites、app 298 / 32 suites）对账一致。
 > 标注：**【已确认】**= 源码/计数据实；**【疑似】**= 需 Cut 1/2 决策确认。

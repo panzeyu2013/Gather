@@ -13,7 +13,9 @@ private let cullingUIPerfEnabled =
     ProcessInfo.processInfo.environment["GATHER_UI_PERF"] == "1"
 
 @MainActor
-@Suite("G0 网格 UI 首屏性能")
+// 串行：gridWindowFirstFrame 会建真实 NSWindow；与首帧渲染用例并发没有意义，
+// 也可能放大 AppKit/WindowServer 的时序噪声（性能门本身只测单例耗时）。
+@Suite("G0 网格 UI 首屏性能", .serialized)
 struct CullingGridPerfTests {
     // skip-owner: p0-perf
     // 到期：2027-06-30
@@ -72,7 +74,15 @@ struct CullingGridPerfTests {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_600, height: 1_000),
             styleMask: [.borderless], backing: .buffered, defer: false)
+        // 性能门只需要真实窗口的首帧，不需要用户看见：0 透明度 + 移出屏幕 +
+        // 无阴影/不参与窗口循环，避免 nightly 在有人值守的机器上闪一下。
         window.alphaValue = 0
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.transient, .ignoresCycle]
+        window.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
         window.contentView = host
         window.orderBack(nil)
         defer { window.orderOut(nil) }

@@ -118,7 +118,9 @@ private struct VisibilityProbe {
 // MARK: - 用例
 
 @MainActor
-@Suite("SessionWorkspace 两级可见性（R4 P1-2）")
+// 串行：mountedSessionPageDrivesPageVisibility 会建真实 NSWindow/NSHostingView，
+// 与同套件的其它 @MainActor 用例并发时历史上有 SIGSEGV（objc_release 过量释放）。
+@Suite("SessionWorkspace 两级可见性（R4 P1-2）", .serialized)
 struct WorkspaceVisibilityTests {
     /// 进入 sessionTab(culling)：activate 只标记会话可见；CullingView.onAppear
     /// 只启动 culling，gallery/control/similarity 一次请求都不发。
@@ -327,6 +329,9 @@ struct WorkspaceVisibilityTests {
     /// 真实挂载（Phase 4 收口）：GatherSessionPage 放进 NSWindow 后，onAppear /
     /// onDisappear 必须真的驱动页面级可见性。上一轮因 NSHostingView SIGSEGV
     /// 未保留，本轮改为挂真实 NSWindow（有窗口才有 appearance 回调）。
+    ///
+    /// 窗口只作为宿主存在，**不应对用户可见**：alpha=0 + 无阴影 + 不接收鼠标；
+    /// 下方 #expect 会守住这一点，避免再出现测试运行时闪窗。
     @Test("真实挂载：GatherSessionPage 的 onAppear/onDisappear 驱动页面可见性")
     func mountedSessionPageDrivesPageVisibility() async throws {
         // 测试进程没有 NSApplication 时，创建 NSWindow/NSHostingView 会在
@@ -346,23 +351,50 @@ struct WorkspaceVisibilityTests {
             backing: .buffered,
             defer: false
         )
+        // 只需要 SwiftUI 的挂载/卸载回调，不需要用户看见窗口：0 透明度 +
+        // 无阴影。旧实现直接用 orderFront，测试运行时会在屏幕上闪一个
+        // 640×480 的可见窗口（有时被注意到）。
+        window.alphaValue = 0
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        // ARC 下不要让 close() 再 release 一次：SwiftUI/KVO 仍持有窗口观察，
+        // 双重释放会在并行的自动释放池 drain 时变成 objc_release SIGSEGV
+        //（NSZombie 实测：-[NSKVONotifying_NSWindow release]: message sent to
+        // deallocated instance）。窗口由 ARC 释放，close 只做关闭语义。
+        window.isReleasedWhenClosed = false
         window.contentView = host
+        // 仍然 orderFront：让窗口真正进入 ordered/visible 状态，确保 appearance
+        // 回调在 macOS 14~26 上口径一致；alpha=0 保证用户不可见。
         window.orderFront(nil)
-        pumpRunLoop(0.3)
+        #expect(window.alphaValue == 0, "真实挂载用例的窗口必须不可见（防测试运行时弹窗）")
+        await settleMainQueue()
         #expect(probe.workspace.gallery.isVisible, "挂载后图库页未变为可见")
         // 卸载页面（onDisappear）：从窗口移除 contentView，而不是 close——
         // NSWindow.close 不保证 SwiftUI 的 onDisappear（实测可见性仍为 true）。
         window.contentView = nil
-        pumpRunLoop(0.3)
+        await settleMainQueue()
         #expect(!probe.workspace.gallery.isVisible, "卸载页面后图库页仍可见")
-        window.close()
+        // 只 orderOut，不用 close()：close 会触发窗口关闭通知/KVO，SwiftUI 的
+        // NSHostingView 仍持有窗口观察，并行时在自动释放池 drain 阶段可能
+        // 二次 release（NSZombie: -[NSKVONotifying_NSWindow release]）。
+        window.orderOut(nil)
         probe.workspace.close()
     }
 
-    /// 同步泵一次主 RunLoop：async 测试里不能直接调 RunLoop.run。
+    /// 让主队列排空若干轮（替代嵌套 RunLoop.run）。
+    ///
+    /// 旧实现用 RunLoop.current.run(until:) 在 MainActor 任务内部**同步重入**
+    /// 主队列：并行时会把其它套件的 @MainActor 测试/任务插进来执行，破坏 actor
+    /// 隔离并触发 NSHostingView 的 SIGSEGV（objc_release 过量释放，见
+    /// swiftpm-testing-helper .ips）。改为 await 让出，主队列照常排空，但
+    /// 隔离边界不被跨越；总时长只用于覆盖 SwiftUI 的挂载/卸载事务。
     @MainActor
-    private func pumpRunLoop(_ seconds: TimeInterval) {
-        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+    private func settleMainQueue(_ duration: Duration = .milliseconds(300)) async {
+        let deadline = ContinuousClock.now + duration
+        while ContinuousClock.now < deadline {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     /// VM 的可见性真相读取：Culling 沿用 isActive，其余 6 个是 isVisible。
