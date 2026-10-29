@@ -72,7 +72,7 @@ jobs:
     # 只在 macOS 26+ 上验证（2026-10-29 移除 macos-14）：工具链需 Swift 6.0+
     # 且 SDK ≥26，macos-14 镜像默认是 Xcode 15.4/Swift 5.10，包都无法解析。
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Toolchain version
@@ -87,11 +87,23 @@ jobs:
           key: core-${{ runner.os }}-${{ hashFiles('desktop/native/gather-core/Package.swift') }}
           restore-keys: core-${{ runner.os }}-
       - name: Core tests
-        # 并行主批 + 全局状态套件串行批（脚本内拆分，见 docs/test-runtime-audit.md）：
-        # Logger/TraceLogging/LogFileSink/ReadPool 会改进程级 GatherLogger 状态或
-        # 慢事务全局阈值，必须与主批分进程、串行执行；其余 1,400+ 例并行
-        #（实测 13.3s → 1.4s；测试进程 RSS 360MB → 600MB，用内存换 4× 墙钟）。
-        run: ./scripts/test.sh core --explicit-target-dependency-import-check error
+        # 串行 + 输出落盘 + 看门狗（2026-10-29 假死复盘）：
+        # swift-testing 的 --parallel 是同进程并发（worker≈核数），而本仓测试大量依赖
+        # 阻塞型锁（GatherLogger / DBConnection / 读池），日志还写 stdout。macOS runner
+        # 只有 3–4 vCPU，这些阻塞点会耗尽协作线程池 —— 实测一轮跑到 8 个用例在途后
+        # 整个进程 21 分钟零输出。所以 CI 只跑串行，并行入口留给本地 scripts/test.sh。
+        # 输出落盘避开 stdout 背压；alarm 保证挂死 20 分钟内带着日志失败，而不是静默等满 60 分钟。
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/gather-core-tests.log"
+          if ! perl -e 'alarm shift; exec @ARGV' 1200 \
+              swift test --package-path desktop/native/gather-core --no-parallel \
+                --explicit-target-dependency-import-check error >"$LOG" 2>&1; then
+            echo "::error::gather-core tests failed or timed out (tail below)"
+            tail -200 "$LOG"
+            exit 1
+          fi
+          tail -20 "$LOG"
       # WP7：schema 工具是 DDL 真相源的独立消费方；在 core job 内验证 44 表/
       # user_version=1（当前唯一 Schema）/外键 0 违规，避免只靠测试间接覆盖。
       - name: Schema verification
@@ -102,7 +114,7 @@ jobs:
     # 与 gather-core 同口径：只在 macOS 26+ 验证。
     runs-on: macos-26
     needs: gather-core
-    timeout-minutes: 60
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # 测试只构建 test target；下面单独构建 GatherApp 可执行（SwiftUI Commands
@@ -120,11 +132,20 @@ jobs:
         # swift test 不链接 GatherApp 可执行 → 菜单/场景装配的编译回归只在这里拦。
         run: swift build --package-path desktop/native/gather-app --explicit-target-dependency-import-check error
       - name: App tests
-        # 2026-10-29 定位并修复了 app 并行的 SIGSEGV：真实挂载用例的 NSWindow.close()
-        # 触发 SwiftUI/KVO 观察者二次 release（NSZombie: -[NSKVONotifying_NSWindow
-        # release]），改为 orderOut 后 50 次并行重复全绿；另修了 CullingViewModel
-        # history 刷新的竞态。脚本默认并行；排查单例时可直接 swift test --no-parallel。
-        run: ./scripts/test.sh app --explicit-target-dependency-import-check error
+        # 与 gather-core 同口径：CI 串行 + 输出落盘 + 看门狗。并行的 SIGSEGV 已于
+        # 2026-10-29 修掉（NSWindow.close → orderOut），但并行仍会放大阻塞型锁的线程池
+        # 耗尽风险，故 CI 不启用；本地用 scripts/test.sh app。
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/gather-app-tests.log"
+          if ! perl -e 'alarm shift; exec @ARGV' 1200 \
+              swift test --package-path desktop/native/gather-app --no-parallel \
+                --explicit-target-dependency-import-check error >"$LOG" 2>&1; then
+            echo "::error::gather-app tests failed or timed out (tail below)"
+            tail -200 "$LOG"
+            exit 1
+          fi
+          tail -20 "$LOG"
 
   # 原 toolchain-compat（macos-latest 上的 drift guard）已删除：core/app 两个
   # 测试 job 现在就跑在最新镜像（macos-26）上，单独再构建一遍纯属重复。

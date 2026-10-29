@@ -56,8 +56,8 @@ docs/                                # 当前文档；历史快照在 docs/archi
 
 ```bash
 cd desktop/native/gather-core
-swift test          # 单包直跑（全串行，适合定位单例）
-# 日常/CI 用统一入口：并行主批 + 4 个进程级状态套件串行批
+swift test          # 单包直跑（全串行，适合定位单例；CI 用的就是串行口径）
+# 本地日常入口：并行主批 + 4 个进程级状态套件串行批（CI 不用，见下）
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh core
 ```
 
@@ -70,12 +70,17 @@ Clang 模块缓存权限问题，指定工作区可写的缓存目录：
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh app
 ```
 
-app 测试与 core 一样默认并行。历史上整包并行会 SIGSEGV（真实 NSWindow 用例
+`scripts/test.sh` 本地默认并行。历史上整包并行会 SIGSEGV（真实 NSWindow 用例
 `close()` 触发 SwiftUI/KVO 二次 release，主线程 `objc_release`）；2026-10-29 已改为
 `orderOut()` 释放语义并修复 `CullingViewModelAPITests` 的 history 刷新竞态，
 50 次并行重复全绿。共享语言槽仍由 `AppLanguageLock` 串行；排查单例时可直接
-`swift test --no-parallel`。core 的日志/慢事务全局状态套件由 `scripts/test.sh`
-单独串行，其余用例并行；依据与实测见 [test-runtime-audit.md](test-runtime-audit.md)。
+`swift test --no-parallel`。
+
+**CI 只跑串行**（`swift test --no-parallel` + 输出落盘 + 20 分钟看门狗）：
+swift-testing 的 `--parallel` 是同进程并发（worker≈核数），本仓测试大量依赖阻塞型锁
+（`GatherLogger` / `DBConnection` / 读池）且日志写 stdout；macOS runner 只有 3–4 vCPU，
+2026-10-29 实测一轮跑到 8 个用例在途后整进程 21 分钟零输出。复盘与复现方式见
+[test-runtime-audit.md](test-runtime-audit.md) §9。
 
 ### 构建应用（发布/打包）
 

@@ -65,18 +65,22 @@ decisions back through metadata.
 ### Run tests
 
 ```bash
-# Core: parallel main batch + serial batch for process-global logger/DB-threshold suites.
-# App: parallel (the NSWindow/KVO SIGSEGV was fixed on 2026-10-29; see the audit doc).
+# Local only. Core: parallel main batch + serial batch for process-global
+# logger/DB-threshold suites. App: parallel (NSWindow/KVO SIGSEGV fixed 2026-10-29).
+# CI runs these suites serially — see the note below.
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh core
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh app
 
 # Or both: ./scripts/test.sh all
 ```
 
-The split is implemented in `scripts/test.sh` (same commands CI uses). Both
-packages run in parallel; use `swift test --no-parallel` when diagnosing a
-single shared-state suite. See `docs/test-runtime-audit.md` for measured
-timings, coverage, the SIGSEGV root cause and residual gaps.
+The split is implemented in `scripts/test.sh` and is meant for local runs.
+CI deliberately runs `swift test --no-parallel`: in-process parallelism plus
+blocking locks (logger / SQLite) starved the 3–4 vCPU CI runner's cooperative
+pool and stalled a whole run for 21 minutes (2026-10-29). Use
+`swift test --no-parallel` when diagnosing a single shared-state suite too.
+See `docs/test-runtime-audit.md` for timings, coverage, the SIGSEGV root cause
+and residual gaps.
 
 The default suites are correctness-only. Quality/recall/F1 baselines and
 CoreML/Vision integration are opt-in and run manually (the scheduled nightly
