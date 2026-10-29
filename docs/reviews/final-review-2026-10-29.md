@@ -92,3 +92,22 @@
 - core **1433 tests / 214 suites**、app **762 tests / 89 suites**（`--no-parallel`）exit 0。
 - `gather-schema verify`：`44/386/72/65`、`user_version=1`、violations=0。
 - 12 个 `check-*.sh` 全绿（strict 可用者带 `--strict`）。
+
+## 5. 收尾核查（closeout，2026-10-29）
+
+按 [DEVELOPMENT.md](../DEVELOPMENT.md) 的「提交与 Pull Request」逐项核对：
+
+| 项 | 结果 |
+|---|---|
+| 仓库产物 | `git ls-files` 中无 `release/`、`.build/`、`*.sqlite*`、`.DS_Store`；`.gitignore` 覆盖 `release/`、`desktop/release/`、`.build/`、`tests/fixtures/local/` |
+| 大文件 | 唯一 >2MB 的非文档文件是 `GatherAnalysis/…/SFace.mlpackage/…/weight.bin`（38.5MB）——DEVELOPMENT 明文允许的模型资产；其余为 `docs/archive` 的历史截图 |
+| 未跟踪目录 | `release/`（341MB 构建产物）、`desktop/coplugin/GatherLink.coplugin/`、`Capture_One_Plugin_SDK_(Mac)_v1.0.1/`、空目录 `tests/fixtures/`——全部被忽略，未入库 |
+| 冷构建 | core / app exit 0，源码告警 **0** |
+| 测试 | core 1433 / 214、app 762 / 89（`--no-parallel`），exit 0 |
+| schema | 44 / 386 / 72 / 65、`user_version=1`、violations=0 |
+| 门禁 | 12/12 exit 0 |
+| 提交规范 | 32 个未推送提交中，**非 merge 提交 100% 形如 `type(scope): subject`**；merge 提交沿用仓库既有的 `merge: 合入 <分支>（<范围>）` 形态（历史 5 个 merge 同形）。未改写历史，以免打断台账里引用的提交号 |
+| 推送 | 未推送：`origin/main` 落后 32 个提交，留给评审/合并方 |
+
+> 收尾只做核对与记账，没有新增代码改动。上面 §3 列出的 P1/P2 仍是**已知待办**，
+> 不是"已修"；它们需要各自的切口（清理入口 / 端口级重构 / 状态机收敛），应在单独 PR 里做。

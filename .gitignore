@@ -60,3 +60,6 @@ tests/fixtures/local/
 *.key
 *.mobileprovision
 *.entitlements.xcconfig
+
+# gh CLI 的临时缓存（CI 日志下载等），不得入库
+.gh-tmp-cache/
