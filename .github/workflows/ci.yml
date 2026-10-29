@@ -99,8 +99,11 @@ jobs:
           if ! perl -e 'alarm shift; exec @ARGV' 1200 \
               swift test --package-path desktop/native/gather-core --no-parallel \
                 --explicit-target-dependency-import-check error >"$LOG" 2>&1; then
-            echo "::error::gather-core tests failed or timed out (tail below)"
-            tail -200 "$LOG"
+            echo "::error::gather-core tests failed or timed out"
+            echo "=== failures ==="
+            grep -nE '✘|recorded an issue|^error:' "$LOG" | head -40 || true
+            echo "=== tail ==="
+            tail -120 "$LOG"
             exit 1
           fi
           tail -20 "$LOG"
@@ -141,8 +144,11 @@ jobs:
           if ! perl -e 'alarm shift; exec @ARGV' 1200 \
               swift test --package-path desktop/native/gather-app --no-parallel \
                 --explicit-target-dependency-import-check error >"$LOG" 2>&1; then
-            echo "::error::gather-app tests failed or timed out (tail below)"
-            tail -200 "$LOG"
+            echo "::error::gather-app tests failed or timed out"
+            echo "=== failures ==="
+            grep -nE '✘|recorded an issue|^error:' "$LOG" | head -40 || true
+            echo "=== tail ==="
+            tail -120 "$LOG"
             exit 1
           fi
           tail -20 "$LOG"
