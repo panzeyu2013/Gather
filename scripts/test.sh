@@ -30,7 +30,7 @@ FLAGS=(${SWIFT_TEST_FLAGS:-})
 CORE_SERIAL_FILTER='LoggerTests|TraceLoggingTests|LogFileSinkTests|ReadPoolTests'
 
 usage() {
-    sed -n '2,22p' "$0"
+    sed -n '2,21p' "$0"
 }
 
 # macOS 自带 bash 3.2：空数组在 set -u 下展开 "${arr[@]}" 会报 unbound variable

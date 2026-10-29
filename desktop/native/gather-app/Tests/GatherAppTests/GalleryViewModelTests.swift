@@ -523,8 +523,8 @@ struct GalleryViewModelTests {
         // 先等链至少发起取页，再等它跑完（isFetchingNextPage 归位）。
         viewModel.search = "p"
         viewModel.searchChanged()
-        #expect(await waitUntilAsync(timeout: 2) { stub.pageAttempts >= 2 }, "搜索链未发起取页")
-        #expect(await waitUntilAsync(timeout: 2) { !viewModel.isFetchingNextPage }, "搜索链未在超时内收敛")
+        #expect(await waitUntilAsync { stub.pageAttempts >= 2 }, "搜索链未发起取页")
+        #expect(await waitUntilAsync { !viewModel.isFetchingNextPage }, "搜索链未在超时内收敛")
         let attemptsAfterChain = stub.pageAttempts
 
         // 之后每一次请求都失败：链必须在第一个错误处终止。
@@ -551,7 +551,7 @@ struct GalleryViewModelTests {
         viewModel.search = "p9"
         viewModel.searchChanged()
         #expect(
-            await waitUntilAsync(timeout: 2) { viewModel.selectedIds.isEmpty },
+            await waitUntilAsync { viewModel.selectedIds.isEmpty },
             "查询条件变化后不得保留屏幕上已不存在的选择"
         )
     }
@@ -569,13 +569,13 @@ struct GalleryViewModelTests {
         stub.pageDelay = .milliseconds(200)
         let pending = Task { await viewModel.loadMoreIfNeeded() }
         // 等分页请求真的在途（不再用 20ms 猜测），再切换变体让旧响应过期。
-        #expect(await waitUntilAsync(timeout: 2) { viewModel.isFetchingNextPage }, "分页请求未进入在途态")
+        #expect(await waitUntilAsync { viewModel.isFetchingNextPage }, "分页请求未进入在途态")
         viewModel.expandVariants = true
         viewModel.filterOrVariantChanged()
         await pending.value
         // 等新代数首页落定（p0），而不是固定睡 400ms。
         #expect(
-            await waitUntilAsync(timeout: 2) { viewModel.filteredPhotos.first?.id == "p0" },
+            await waitUntilAsync { viewModel.filteredPhotos.first?.id == "p0" },
             "切变体后新首页未在超时内落定"
         )
 

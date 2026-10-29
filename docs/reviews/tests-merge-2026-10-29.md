@@ -27,7 +27,7 @@
 
 1. **`ModelReviewRepo.latestByAssetFile`** 已在 `bc7e4046` 的收口评审中按「零引用」删除
    （`docs/reviews/final-review-2026-10-29.md`），tests 侧仓储测试覆盖了该方法。
-   合并取舍：保留 main 的删除决定，删掉对应 1 例与 3 处断言，只覆盖保留的 `latest` 口径；
+   合并取舍：保留 main 的删除决定，删掉对应 1 例与 6 处断言，只覆盖保留的 `latest` 口径；
    新增用例 11 → 10，并同步 `docs/test-runtime-audit.md` 的计数与覆盖率说明。
 2. **`scripts/test.sh` 的 bash 3.2 兼容性**：脚本用 `"${FLAGS[@]}"` 透传 `SWIFT_TEST_FLAGS`；
    macOS 自带 bash 3.2 在 `set -u` 下展开空数组会报 `FLAGS[@]: unbound variable`，
@@ -40,7 +40,7 @@
 | --- | --- | --- |
 | core 用例 / 套件 | `SWIFT_TEST_FLAGS=--disable-sandbox ./scripts/test.sh core` | **1,443 / 216**（主批 1,419/212 + 串行批 24/4） |
 | app 用例 / 套件 | `SWIFT_TEST_FLAGS=--disable-sandbox ./scripts/test.sh app` | **762 / 89** |
-| `@Test` / `@Suite` 声明 | `grep -rhE '^[[:space:]]*@(Test|Suite)([[:space:]]|\()'`（两个 Tests 目录） | **2,205 / 242** |
+| `@Test` / `@Suite` 声明 | 两条 `grep -rhE '^[[:space:]]*@Test([[:space:]]|\()'` / `@Suite`（两个 Tests 目录）分别 `wc -l` | **2,205 / 242** |
 | 断言 ratchet | `grep -rhoE '#(expect|require)\('` | **10,244** |
 | en 键 | `grep -c '^"'`（en.lproj） | **1,748**（zh 占位 9） |
 
@@ -61,7 +61,19 @@
 `SWIFT_TEST_FLAGS=--disable-sandbox`（本机 SwiftPM 清单沙箱在 DSH 文件沙箱下不可用，
 CI 不需要该参数）。
 
-## 5. 残余
+## 5. 合并后只读评审（四视角：测试并行 / 脚本与 CI / UI 窗口 / 记账）
+
+| 发现 | 级别 | 处置 |
+| --- | --- | --- |
+| `batchUpdate` 用例未 seed history：detached refresh 若后落地会清空本地 prepend 的 op 11（与 `update` 的 1/50 同因） | P1 | 已修：夹具按「服务端已应用」返回 op 11，断言前 `await vm.refreshTask?.value` |
+| Gallery D05/D07 又硬编码 `waitUntilAsync(timeout: 2)`，与 `AsyncWait` 的 10s 上限/饥饿结论矛盾 | P2 | 已修：改用默认 10s（满足即返回，不拖慢） |
+| `test.sh -h` 的 `sed -n '2,22p'` 把 `set -euo pipefail` 打进帮助 | P2 | 已修：改 `2,21p` |
+| 记账/审计文档计数：删断言数、文件数 149/89、夜间口径残留、合并 grep 命令不可复现 | P2 | 已修：6 处断言、150/88、夜间 → 手动 opt-in、拆成两条 grep |
+| `update`/`batchUpdate` 的 history 夹具与本地 prepend 生成物等价，断言不再区分「是否真的 prepend」 | P2 | 保留：真实服务端会返回含本次操作的历史；要区分需给 `refreshTask` 加测试钩子，见残余 |
+| 串行套件名单无自检（套件改名则第一遍不跳过、第二遍空匹配，隔离静默失效） | P2【疑似】 | 保留：已人工核对名单 = 仅有的 4 个改进程级量的文件 |
+| `CullingGridPerfTests` 的 P95 取 `Int((n-1)*0.95)`，5 样本恒取 index 3、丢掉最大样本；离屏窗口可能不合成 | P1（既有，本次未引入） | 保留：`GATHER_UI_PERF` 是手动门，不在本次合并里改口径 |
+
+## 6. 残余
 
 1. **CI 首跑未观察**：本会话 app 并行重复 10/10 全绿（arm64 / Xcode 27.1），
    但 macos-26 / Xcode 26 上的并行稳定性需看首个 CI 周期；如出现 flake，按
@@ -70,3 +82,14 @@ CI 不需要该参数）。
 3. **未做 GUI 视觉验收**；未在 x86_64 上运行（仅 arm64）。
 4. **并发工作区风险**：合入过程中另一会话在同一 worktree 提交了预览夹具修复，才导致
    上述 message 混杂；后续长任务建议独占 worktree。
+5. **history 夹具有意弱化**：`update`/`batchUpdate` 的 seed 与 prepend 生成物等价，
+   删掉 `prependHistoryOperation` 也可能通过；要恢复区分度需要给 `refreshTask` 加测试钩子
+   或让 stub 支持「刷新返回操作前快照」。当前优先保证并行确定性。
+6. **窗口用例仍有固定等待**：`WorkspaceVisibilityTests.settleMainQueue` 固定 300ms×2，
+   未改成 `waitUntilAsync { gallery.isVisible }`（改动会拉长失败路径，留待下一轮）。
+7. **性能门既有问题**：`CullingGridPerfTests` 的 P95 取样恒丢最大样本；4 个串行套件
+   名单无自动自检。两者都不影响默认套件的正确性。
+8. **ratchet 口径既有缺口**：`@Suite` 行首正则只数到 242（token 口径 246，漏 3 个裸 `@Suite`
+   与 1 个 `@MainActor @Suite`）；断言数含 2 行文档注释（纯代码 10,242）；`--self-test` 未覆盖
+   ratchet 负例；skip 到期回看 12 行少于元数据扫描的 20 步。本次不改既有口径（避免在合并
+   末尾动门禁），留待下一轮统一。

@@ -404,6 +404,7 @@ struct CullingViewModelAPITests {
         ])
 
         await vm.update(asset, patch: CullingUpdatePatch(pickState: .picked), nextPhotoId: "p2")
+        await vm.refreshTask?.value
 
         let inputs = await api.updateInputs
         #expect(inputs.count == 1)
@@ -439,8 +440,37 @@ struct CullingViewModelAPITests {
             vmAsset("p2", revision: 2, pickState: .rejected),
             vmAsset("p3")
         ]))
+        // 与 update 用例同因：detached refresh 若在 batchUpdate 之后落地，会用它拿到的
+        // history 快照覆盖本地 prepend。夹具按「服务端已应用本次操作」返回 op 11，
+        // 并在断言前 await 刷新任务，消除落地顺序的影响。
+        await api.setHistory([
+            CullingHistoryOperation(
+                id: 11,
+                sessionId: "s1",
+                entries: [
+                    CullingHistoryEntry(
+                        photoId: "p1",
+                        before: CullingStateSnapshot(
+                            pickState: .unreviewed, rating: 0, colorLabel: .none),
+                        after: CullingStateSnapshot(
+                            pickState: .rejected, rating: 0, colorLabel: .none),
+                        expectedRevision: 1,
+                        fields: [.pickState]),
+                    CullingHistoryEntry(
+                        photoId: "p2",
+                        before: CullingStateSnapshot(
+                            pickState: .unreviewed, rating: 0, colorLabel: .none),
+                        after: CullingStateSnapshot(
+                            pickState: .rejected, rating: 0, colorLabel: .none),
+                        expectedRevision: 1,
+                        fields: [.pickState]),
+                ],
+                undone: false,
+                createdAt: "2026-09-01T10:00:00.000Z")
+        ])
 
         await vm.batchUpdate(patch: CullingUpdatePatch(pickState: .rejected))
+        await vm.refreshTask?.value
 
         let inputs = await api.batchUpdateInputs
         #expect(inputs.count == 1)

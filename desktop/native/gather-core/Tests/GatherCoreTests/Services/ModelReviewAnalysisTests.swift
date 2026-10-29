@@ -3,7 +3,7 @@
 // 分批进度、照片子集、取消与空会话。
 //
 // 刻意不触达 Vision：previewProvider 注入「直接抛错 / 命中缓存」两条路径，
-// 失败行在解码前返回，真实人脸/审美推理仍只在夜间 GATHER_MODEL_TESTS 覆盖。
+// 失败行在解码前返回，真实人脸/审美推理仍只在手动 opt-in 的 GATHER_MODEL_TESTS 覆盖。
 
 import Foundation
 import Testing

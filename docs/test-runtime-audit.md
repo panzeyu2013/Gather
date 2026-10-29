@@ -1,6 +1,6 @@
 # 测试体系审计与优化（2026-10-29）
 
-> 范围：`desktop/native/gather-core/Tests`（149 个文件）、`gather-app/Tests`（89 个文件）、
+> 范围：`desktop/native/gather-core/Tests`（150 个文件）、`gather-app/Tests`（88 个文件）、
 > `GatherTestSupport` 与 `scripts/test.sh` / `check-test-catalog.sh` / CI 测试步骤。
 > 机器：Apple Silicon（18 核 / 48GB）、macOS 26.0.1、Swift 6.4、Debug、执行器 18 workers。
 > 口径：测试耗时取 Swift Testing 汇总行（不含构建）；CPU/RSS 取 `/usr/bin/time -l` 的
@@ -16,8 +16,8 @@
 | app 用例 / 套件 | 762 / 89 | 762 / 89 | 持平（改并行） |
 | app 测试耗时 | 12.47s | **2.68s** | **−78%（窗口 SIGSEGV 修复后）** |
 | 默认套件总耗时 | 25.8s | **4.1s** | **−84%** |
-| core 测试进程峰值 RSS | 360MB（串行） | 600MB（并行） | +240MB，换 4.3× 墙钟 |
-| app 测试进程峰值 RSS | 199MB | 233MB | +34MB，换 4.1× 墙钟 |
+| core 测试进程峰值 RSS | 360MB（串行） | 600MB（并行） | +240MB（内存换墙钟，见耗步行） |
+| app 测试进程峰值 RSS | 199MB | 233MB | +34MB（内存换墙钟，见耗步行） |
 
 - **两包都并行**。app 整包并行的 SIGSEGV 已定位到真实挂载用例的 `NSWindow.close()`
   （SwiftUI/KVO 二次 release），改为 `orderOut()` 后 50 次并行重复全绿；见 §4。
@@ -86,7 +86,7 @@ CI 的 `gather-core` / `gather-app` step 已改为调用该脚本；README / DEV
 4. **模型初审**：审计前 `ModelReviewRepo` **0%**、`ModelReviewService` **10.6%**；
    本轮补 10 例后为 **95.3% / 53.9%**（`latestByAssetFile` 已在 main 收口删除，对应 1 例随合并去掉）。
    剩余缺口集中在 Vision 人脸/审美分支
-   （默认套件不跑 Vision，夜间模型门覆盖）。
+   （默认套件不跑 Vision，由手动 opt-in 的 `GATHER_MODEL_TESTS` 覆盖）。
 5. **app 启动与监视**：`AppBootstrap` 1.3%（472 行）、`SessionDirectoryMonitor` 9.6%
    （387 行）、`GatherAppDelegate` 23.5%；`SettingsViewModel+C1Health/Loading/Download/Sync`
    0~6.7%、`ExportViewModel+Delivery` 11.3%。这些是宿主逻辑，不是纯 View。
@@ -206,7 +206,7 @@ app 并行测试进程 RSS 233MB / user 3.6s（串行 199MB / 3.5s），墙钟 1
    用 `swift test --no-parallel` 或 `--filter` 二分，并把新增的窗口/通知类测试按
    §4.4 的 `alpha=0` + `orderOut` 约定落位。
 2. **ModelReviewService 剩余 46%**：主要是 Vision 关键点/审美分支；若要在 PR 覆盖，
-   需要把 `faceSignal`/`aestheticScores` 抽成可注入端口，或用受控合成 face box + 夜间门。
+   需要把 `faceSignal`/`aestheticScores` 抽成可注入端口，或用受控合成 face box + 手动 opt-in 门。
 3. **交付恢复分支**：Finalize/ReplayFlow 的崩溃窗口需要故障注入（当前 55~64%），
    这是比再加 happy-path 用例更高的收益点。
 4. **缓存写放大（生产观察，非测试缺陷）**：`ModelReviewService.analyze` 缓存命中后仍会
