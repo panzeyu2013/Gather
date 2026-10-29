@@ -104,9 +104,7 @@ struct GatherSessionToolbar: ToolbarContent {
         }
 
         if showsSettings {
-            if #available(macOS 26.0, *) {
-                ToolbarSpacer(.fixed, placement: .primaryAction)
-            }
+            ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     actions.onOpenSettings()

@@ -1794,7 +1794,6 @@
 "眼睛睁开" = "Eyes open";
 "眼睛半闭" = "Eyes half-closed";
 "面带微笑" = "Smiling";
-"本机不支持审美分" = "Aesthetics unavailable on this Mac";
 "人脸合焦 %.2f" = "Face focus %.2f";
 "审美 %.2f" = "Aesthetics %.2f";
 "模型级信号" = "Model-level signals";

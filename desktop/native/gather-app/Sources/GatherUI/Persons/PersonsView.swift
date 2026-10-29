@@ -65,8 +65,8 @@ package struct PersonsView: View {
             }
         }
         // 页面骨架统一由 DesignSystem 提供：frame / 语义背景 / 窗口标题与副标题。
-        // 底色与原 .background(GatherTheme.windowBackground) 等价
-        // （windowBackground == canvas），信息架构未变。
+        // 底色与原 .background(canvas 色) 等价（旧别名 windowBackground 已删除），
+        // 信息架构未变。
         .gatherPage(
             title: l10n("人脸库"),
             subtitle: personsSubtitle,

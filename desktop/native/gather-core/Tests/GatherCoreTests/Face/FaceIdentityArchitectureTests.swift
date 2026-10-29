@@ -205,7 +205,7 @@ struct FaceIdentityArchitectureTests {
 
     // skip-owner: face-model
     // 到期：2027-06-30
-    // 原因：加载 37MB SFace CoreML 包并跑真实推理，属夜间集成；默认 PR 只测纯逻辑。
+    // 原因：加载 37MB SFace CoreML 包并跑真实推理，属手动集成档；默认 PR 只测纯逻辑。
     // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceIdentityArchitectureTests
     @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
     func bundledModelRunsRealCoreMLInference() throws {

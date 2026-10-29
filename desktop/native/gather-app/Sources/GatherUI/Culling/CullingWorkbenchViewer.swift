@@ -583,20 +583,12 @@ private struct WindowBridge: NSViewRepresentable {
 
 // MARK: - 查看器缩放控件的功能层材质
 
-/// 缩放控件浮在照片之上，属于 Liquid Glass 的**功能层**。
-/// macOS 26+ 用 `.glass(.clear)`；更早版本保留原来的深色胶囊。
+/// 缩放控件浮在照片之上，属于 Liquid Glass 的**功能层**：用 `.glass(.clear)`。
 private struct ViewerZoomChrome: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content
-                .glassEffect(.clear, in: .capsule)
-                .padding(.leading, 12)
-                .padding(.bottom, 40)
-        } else {
-            content
-                .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.85)))
-                .padding(.leading, 12)
-                .padding(.bottom, 40)
-        }
+        content
+            .glassEffect(.clear, in: .capsule)
+            .padding(.leading, 12)
+            .padding(.bottom, 40)
     }
 }

@@ -86,8 +86,6 @@ public enum GatherTheme {
         highContrastDark: "#FFFFFF4D"
     )
 
-    /// 窗口 / 页面底色（兼容旧名）。
-    public static let windowBackground = GatherTheme.canvas
     /// 分组内容 / 卡片底色（兼容旧名，语义已指向 surface）。
     public static let contentBackground = GatherTheme.surface
     /// 次级分组底色（兼容旧名，语义已指向 surfaceMuted）。

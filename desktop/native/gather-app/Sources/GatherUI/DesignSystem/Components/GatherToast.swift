@@ -166,10 +166,10 @@ private struct ToastRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        // 功能层浮面：macOS 26+ 用 Liquid Glass，更早版本用 .regularMaterial。
-        // toast 是典型的「浮在内容之上的瞬时控件」，正是 Apple 允许用玻璃的场景；
-        // 卡片等**内容层**表面则一律保持标准材质（见 GatherGlass 的说明）。
-        .gatherFunctionalSurface(cornerRadius: GatherTheme.Radius.floating, bordered: false)
+        // 功能层浮面：用 Liquid Glass。toast 是典型的「浮在内容之上的瞬时控件」，
+        // 正是 Apple 允许用玻璃的场景；卡片等**内容层**表面则一律保持标准材质
+        // （见 GatherGlass 的说明）。
+        .gatherFunctionalSurface(cornerRadius: GatherTheme.Radius.floating)
         .shadow(color: GatherTheme.shadowFloating, radius: 16, y: 6)
     }
 }

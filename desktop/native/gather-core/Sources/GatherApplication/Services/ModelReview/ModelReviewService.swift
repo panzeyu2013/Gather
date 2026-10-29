@@ -5,7 +5,7 @@
 // - 只用系统模型（Vision / CoreGraphics），不引入模型资产；
 // - 一次解码供所有人脸与审美使用（不做 decodeRegion / 不做显著性请求）；
 // - 眼睛/微笑是**几何单调分**（不是概率），跨人脸只做相对比较；
-// - 审美分不可用（macOS < 15）时置 nil 并记 aesthetic_unavailable，不阻断其它信号。
+// - 审美分在 macOS 26+ 恒可用；取不到分数（分析失败）时置 nil，不写警告、不阻断其它信号。
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -206,15 +206,9 @@ public final class ModelReviewService: @unchecked Sendable {
             if let focus = primary?.focusScore, focus < TriagePolicy.v2.faceFocusMin {
                 warnings.append("face_out_of_focus")
             }
-            var aesthetic: Double?
-            var utility: Bool?
-            if #available(macOS 15.0, *) {
-                let scores = Self.aestheticScores(image)
-                aesthetic = scores?.score
-                utility = scores?.isUtility
-            } else {
-                warnings.append("aesthetic_unavailable")
-            }
+            let scores = Self.aestheticScores(image)
+            let aesthetic = scores?.score
+            let utility = scores?.isUtility
             if utility == true { warnings.append("utility_image") }
             return ModelReviewResult(
                 photoId: photo.id,
@@ -255,9 +249,8 @@ public final class ModelReviewService: @unchecked Sendable {
         dimensions: (width: Int, height: Int)? = nil,
         contentKey: String = ""
     ) -> String {
-        // 审美分依赖 OS 能力（macOS 15+）：能力位进指纹，升级系统后旧缓存自动失效。
-        var capabilities = 0
-        if #available(macOS 15.0, *) { capabilities |= 1 }
+        // 审美分能力位：macOS 26+ 恒可用；保留该位让旧缓存指纹不复活。
+        let capabilities = 1
         let source = (dimensions.map { "\($0.width)x\($0.height)" } ?? "0x0")
             + "|" + contentKey + "|cap:\(capabilities)"
         let faceDigest = faces
@@ -437,7 +430,6 @@ extension ModelReviewService {
         }
     }
 
-    @available(macOS 15.0, *)
     static func aestheticScores(_ image: CGImage) -> (score: Double, isUtility: Bool)? {
         let request = VNCalculateImageAestheticsScoresRequest()
         guard perform(VNImageRequestHandler(cgImage: image), [request]),

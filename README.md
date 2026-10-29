@@ -11,7 +11,7 @@ writeback.
 [简体中文](docs/README.md) · [Features](#core-workflows) · [Quick start](#quick-start)
 
 [![CI](https://github.com/panzeyu2013/Gather/actions/workflows/ci.yml/badge.svg)](https://github.com/panzeyu2013/Gather/actions/workflows/ci.yml)
-![macOS 14+](https://img.shields.io/badge/macOS-14%2B-252525?logo=apple)
+![macOS 26+](https://img.shields.io/badge/macOS-26%2B-252525?logo=apple)
 [![MIT License](https://img.shields.io/badge/license-MIT-c56a42.svg)](LICENSE)
 
 </div>
@@ -56,8 +56,8 @@ decisions back through metadata.
 
 ### Requirements
 
-- macOS 14 or later
-- Xcode command-line tools or Xcode with Swift 6.0+ support
+- macOS 26 or later
+- Xcode 26 or later (Swift 6.2+; the packages declare `swift-tools-version: 6.2`)
 - Capture One is optional for folder-only workflows
 - Face analysis requires the system Vision framework; real-dataset quality
   validation is an external acceptance activity
@@ -75,8 +75,9 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-p
 ```
 
 The default suites are correctness-only. Quality/recall/F1 baselines and
-CoreML/Vision integration run nightly (`.github/workflows/nightly.yml`), not in
-the PR loop. Normal tests never assemble the `.app` bundle.
+CoreML/Vision integration are opt-in and run manually (the scheduled nightly
+workflow was removed on 2026-10-29); they are not in the PR loop. Normal tests
+never assemble the `.app` bundle.
 
 ### Build a macOS application bundle
 

@@ -200,11 +200,21 @@ extension FaceKwService {
                 continue
             }
             let candidates = members.filter { $0.photoId == key.photoId }
-            let best = candidates
-                .map { (member: $0, overlap: FaceIdentityPolicy.overlap(key.bbox, parseBbox($0.bbox))) }
-                .max { lhs, rhs in
-                    lhs.overlap == rhs.overlap ? lhs.member.id > rhs.member.id : lhs.overlap < rhs.overlap
+            // 显式循环而不是 map + max(by:)：等价写法在 macOS 26 目标下会触发
+            // 「unable to type-check this expression in reasonable time」。
+            // 判定顺序与原来的 max(by:) 完全一致（重叠相同则比 id）。
+            var best: (member: FaceClusterMemberRow, overlap: Double)?
+            for member in candidates {
+                let overlap = FaceIdentityPolicy.overlap(key.bbox, parseBbox(member.bbox))
+                guard let current = best else {
+                    best = (member, overlap)
+                    continue
                 }
+                let currentIsLess = overlap == current.overlap
+                    ? current.member.id > member.id
+                    : current.overlap < overlap
+                if currentIsLess { best = (member, overlap) }
+            }
             if let best, best.overlap >= 0.5 {
                 resolved.append(best.member)
             }

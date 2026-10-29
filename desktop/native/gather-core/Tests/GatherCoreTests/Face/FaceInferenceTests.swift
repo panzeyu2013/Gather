@@ -76,7 +76,7 @@ struct FaceInferenceTests {
 
     // skip-owner: face-model
     // 到期：2027-06-30
-    // 原因：需要 Vision 人脸检测真实运行，归入夜间集成。
+    // 原因：需要 Vision 人脸检测真实运行，归入手动集成档。
     // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceInferenceTests
     @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
     func encoderReturnsEmptyForSolidImage() throws {
@@ -168,7 +168,7 @@ struct FaceInferenceTests {
 
     // skip-owner: face-model
     // 到期：2027-06-30
-    // 原因：构造 500 张图验证 Vision 批处理取消，属夜间集成。
+    // 原因：构造 500 张图验证 Vision 批处理取消，属手动集成档。
     // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceInferenceTests
     @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
     func inferencePropagatesCancellation() async throws {

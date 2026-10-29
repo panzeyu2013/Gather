@@ -16,8 +16,8 @@ swift build -c release            # 必须 release（debug 慢 ~10 倍）
 .build/release/gather-core-benchmarks --face-10k # 10k 合成人脸（显式档）
 ```
 
-默认单测只保留 correctness；`--quality`/`--margin`/`--smoke` 的质量指标由夜间
-`.github/workflows/nightly.yml` 跑并上传 NDJSON。
+默认单测只保留 correctness；`--quality`/`--margin`/`--smoke` 的质量指标改为手动
+执行并自行保存 NDJSON（原夜间 workflow 已于 2026-10-29 移除）。
 
 ## 覆盖项与口径
 

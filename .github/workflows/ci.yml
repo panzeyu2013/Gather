@@ -69,10 +69,15 @@ jobs:
 
   gather-core:
     name: gather-core tests
-    runs-on: macos-14
+    # 只在 macOS 26+ 上验证（2026-10-29 移除 macos-14）：工具链需 Swift 6.0+
+    # 且 SDK ≥26，macos-14 镜像默认是 Xcode 15.4/Swift 5.10，包都无法解析。
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Toolchain version
+        # 排障入口：runner 镜像换代（Xcode/SDK/Swift）先看这一行，别再靠猜。
+        run: swift --version && xcodebuild -version
       - name: Cache SwiftPM
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -92,14 +97,15 @@ jobs:
 
   gather-app:
     name: gather-app tests
-    runs-on: macos-14
+    # 与 gather-core 同口径：只在 macOS 26+ 验证。
+    runs-on: macos-26
     needs: gather-core
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # 测试只构建 test target；下面单独构建 GatherApp 可执行（SwiftUI Commands
       # 装配、Window scene 与 @Environment 取值只在可执行 target 里编译）。
-      # .app 组装与 GATHER_SDK_VERSION/linker flags 仍由 release/nightly 覆盖。
+      # .app 组装与 GATHER_SDK_VERSION/linker flags 仍由 release 覆盖。
       - name: Cache SwiftPM
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -119,19 +125,9 @@ jobs:
         # 是已知 flake 门；并行隔离问题留在残余清单，修好前不再进 CI。
         run: swift test --package-path desktop/native/gather-app --no-parallel --explicit-target-dependency-import-check error
 
-  toolchain-compat:
-    name: Newest toolchain build (drift guard)
-    runs-on: macos-latest
-    needs: boundary
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Toolchain version
-        run: swift --version && xcodebuild -version
-      - name: Core build on newest toolchain
-        run: swift build --package-path desktop/native/gather-core --explicit-target-dependency-import-check error
-      - name: App build on newest toolchain
-        run: swift build --package-path desktop/native/gather-app --explicit-target-dependency-import-check error
+  # 原 toolchain-compat（macos-latest 上的 drift guard）已删除：core/app 两个
+  # 测试 job 现在就跑在最新镜像（macos-26）上，单独再构建一遍纯属重复。
+  # 若将来把测试钉在旧镜像、又想提前感知新工具链，再按 macos-latest 加回来。
 
   # WP6c：可复现发布。只在 v* tag 或手动 dispatch 时运行；版本/SDK/签名凭据全部
   # 显式注入，缺任何一项都在 build.sh 的 GATHER_RELEASE=1 下失败，不静默跳过。
@@ -147,9 +143,9 @@ jobs:
   release:
     name: Release bundle (universal, signed, notarized)
     # Liquid Glass 需要 Mach-O 的 LC_BUILD_VERSION.sdk >= 26（见 gather-app/
-    # Package.swift）。需要 macos-26 或装有 Xcode 26 的 self-hosted runner；
-    # 若目标 runner 仍无 SDK 26，"Assert release SDK" 会 fail closed，而不是
-    # 静默产出无 Liquid Glass 的包。
+    # Package.swift）。CI 只在 macOS 26+ 上验证，发布固定在 macos-26；换
+    # self-hosted runner 时若没有 SDK 26，"Assert release SDK" 会 fail closed，
+    # 而不是静默产出无 Liquid Glass 的包。
     runs-on: macos-26
     needs: [gates, gather-app]
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -187,7 +183,7 @@ jobs:
           echo "VERSION: $VERSION"
       # P1-4/P2：发布包必须用 macOS 26 SDK 链接，否则 Mach-O 的
       # LC_BUILD_VERSION.sdk 会让 AppKit 强制旧外观（无 Liquid Glass）。
-      # macos-14 镜像无法提供 Xcode 26；这里 fail closed，避免静默发布。
+      # runner 换代/自托管镜像缺 SDK 26 时这里 fail closed，避免静默发布。
       - name: Assert release SDK
         run: |
           SDK_VERSION="$(xcrun --show-sdk-version)"
@@ -200,7 +196,7 @@ jobs:
               ;;
           esac
           if [ "$SDK_MAJOR" -lt 26 ]; then
-            echo "::error::release requires the macOS 26 SDK (Liquid Glass); this runner provides $SDK_VERSION. macos-14 cannot provide Xcode 26; move this job to macos-26 or a self-hosted Xcode 26 runner."
+            echo "::error::release requires the macOS 26 SDK (Liquid Glass); this runner provides $SDK_VERSION. Use macos-26 or a self-hosted runner with Xcode 26."
             exit 1
           fi
       - name: Import Developer ID certificate
@@ -260,7 +256,7 @@ jobs:
           test "$(plutil -extract CFBundleVersion raw -o - "$PLUGIN_PLIST")" = "$(plutil -extract CFBundleVersion raw -o - "$APP_PLIST")"
           PLUGIN_MINOS="$(vtool -show-build "$PLUGIN_BINARY" | awk '$1=="minos"{print $2; exit}')"
           echo "GatherLink.coplugin minos: $PLUGIN_MINOS"
-          test "$PLUGIN_MINOS" = "14.0"
+          test "$PLUGIN_MINOS" = "26.0"
       - name: Verify bundle
         run: |
           APP=release/Gather.app
@@ -283,7 +279,7 @@ jobs:
             MINOS="$(vtool -arch "$arch" -show-build "$APP_BINARY" | awk '$1=="minos"{print $2; exit}')"
             SDK="$(vtool -arch "$arch" -show-build "$APP_BINARY" | awk '$1=="sdk"{print $2; exit}')"
             echo "Mach-O $arch: minos=$MINOS sdk=$SDK"
-            test "$MINOS" = "14.0"
+            test "$MINOS" = "26.0"
             test "$SDK" = "$GATHER_SDK_VERSION"
           done
           BUILD_INFO="$APP/Contents/Resources/build-info.json"

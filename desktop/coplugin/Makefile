@@ -4,7 +4,8 @@ PRODUCT := GatherLink.coplugin
 # The packaged app's architecture. overridden by the afterPack hook, which
 # passes TARGET_ARCH (x86_64 / arm64) matching the app build.
 TARGET_ARCH ?= arm64
-TARGET := $(TARGET_ARCH)-apple-macosx10.14
+# minos 与 app 部署目标一致（app 只支持 macOS 26+）；build.sh 会再显式覆盖一次。
+TARGET := $(TARGET_ARCH)-apple-macosx26.0
 # Quote the framework path: the SDK directory name contains parentheses,
 # which otherwise break the generated shell command.
 SWIFT_FLAGS := -F "$(FRAMEWORK_PATH)" -framework CaptureOnePlugins -framework Cocoa -Xlinker -rpath -Xlinker "$(FRAMEWORK_PATH)"

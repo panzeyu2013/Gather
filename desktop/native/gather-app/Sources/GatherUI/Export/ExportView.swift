@@ -157,9 +157,7 @@ public struct ExportView: View {
                 culling: culling,
                 onOpenSettings: { openSettings() }
             )
-            if #available(macOS 26.0, *) {
-                ToolbarSpacer(.fixed, placement: .primaryAction)
-            }
+            ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItemGroup(placement: .primaryAction) {
                 Button(viewModel.isPreviewing ? l10n("正在计算…") : l10n("预览"), systemImage: "eye") {
                     // P1（第二轮验证）：预览会自己在 VM 里发起 preview，若留着

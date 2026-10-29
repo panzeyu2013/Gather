@@ -7,7 +7,7 @@
 //
 // 语义约定：
 // - eyeOpenScore 是**几何单调分**（0 闭 … 1 睁），不是概率；跨人脸只做相对比较。
-// - aestheticScore 只在 macOS 15+ 可用；不可用时为 nil 且带 aesthetic_unavailable 警告。
+// - aestheticScore 在 macOS 26+ 恒可用；取不到分数（分析失败）时为 nil，不写警告。
 // - 所有分数都可能为 nil（无脸/太小/模型不可用），调用方必须显式处理。
 import Foundation
 
@@ -65,7 +65,7 @@ public struct ModelReviewResult: Codable, Equatable, Sendable {
     public var isUtilityImage: Bool?
     public var faces: [FaceReviewSignal]
     /// 稳定警告码：eyes_closed_suspected / face_out_of_focus / utility_image /
-    /// aesthetic_unavailable / face_too_small / analysis_failed。
+    /// face_too_small / analysis_failed。
     public var warnings: [String]
     public var modelId: String
     public var modelVersion: String

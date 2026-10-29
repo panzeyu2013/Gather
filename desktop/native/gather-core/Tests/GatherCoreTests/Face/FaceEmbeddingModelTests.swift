@@ -83,7 +83,7 @@ struct FaceEmbeddingModelTests {
 
     // skip-owner: face-model
     // 到期：2027-06-30
-    // 原因：需要 Vision FeaturePrint 真实推理，归入夜间集成；默认套件只测纯逻辑。
+    // 原因：需要 Vision FeaturePrint 真实推理，归入手动集成档；默认套件只测纯逻辑。
     // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceEmbeddingModelTests
     @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
     func visionEmbedderReturnsUnitVectorOfDeclaredDimension() throws {
@@ -180,7 +180,7 @@ struct FaceEmbeddingModelTests {
 
     // skip-owner: face-model
     // 到期：2027-06-30
-    // 原因：加载并哈希 37MB 内置模型包，属夜间集成；默认套件保留 factory 错误路径。
+    // 原因：加载并哈希 37MB 内置模型包，属手动集成档；默认套件保留 factory 错误路径。
     // 手动条件：GATHER_MODEL_TESTS=1 swift test --filter FaceEmbeddingModelTests
     @Test(.enabled(if: IntegrationTestGate.modelTestsEnabled))
     func factoryUsesBundledIdentityModelForEmptyPath() throws {

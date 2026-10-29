@@ -17,8 +17,9 @@
 //   .build/debug/gather-core-benchmarks --incremental  # 2 万张 + 100 张新增的增量复用/耗时门
 //
 // 阈值断言（Cut 5 后续）：--quality / --margin / --incremental 与 --smoke 的
-// LSH 召回在 print 之后逐项判定，退化直接 exit 1；nightly.yml 依赖这个退出码，
-// 不再只把 NDJSON 上传留待人工比对。
+// LSH 召回在 print 之后逐项判定，退化直接 exit 1；手动/发版验收依赖这个退出码，
+// 不再只把 NDJSON 留待人工比对。
+// （原夜间 workflow 已于 2026-10-29 移除，下面这些门改为手动执行。）
 //   .build/debug/gather-core-benchmarks --face-10k     # 10k 合成人脸（显式档；debug 走 LSH，
 //                                                      #   -c release 走生产默认的精确 DBSCAN）
 import Foundation
@@ -71,9 +72,9 @@ func elapsedMs(_ since: DispatchTime) -> Double {
     Double(DispatchTime.now().uptimeNanoseconds - since.uptimeNanoseconds) / 1_000_000
 }
 
-// ── 阈值断言（夜间门禁）──
+// ── 阈值断言（手动门禁）──
 // 统计门从默认单测迁出后不能只「打印」：下限写进可执行文件，退化直接非零
-// 退出（nightly 变红），否则删掉的 ARI/召回/精确率断言等于无人守。
+// 退出（门禁变红），否则删掉的 ARI/召回/精确率断言等于无人守。
 // 阈值只依赖确定性数据与固定种子，与机器无关；耗时只设宽松上限，避免把
 // CI 负载波动误判成回归。
 /// 断言只走返回值（不共享可变状态）：各 benchmark 函数把自己违反的条目作为
@@ -235,7 +236,7 @@ func benchEmbeddingCluster(size: Int, seed: UInt32, lshMinPoints: Int) throws {
 
 // ── 质量基线（从单测迁出）──
 // 合成“身份中心 + 高质量样本 + 共享退化低质量样本”，输出 pairwise P/R/F1 与
-// noise 率。默认测试只验证行为；这里的数字用于夜间基线，不进入 PR 门禁。
+// noise 率。默认测试只验证行为；这里的数字用于手动基线，不进入 PR 门禁。
 
 func normalizedFloats(_ values: [Double]) -> [Float] {
     let norm = values.reduce(0.0) { $0 + $1 * $1 }.squareRoot()
@@ -304,7 +305,7 @@ func makeQualityEntries(
 
 func comb2(_ k: Int) -> Int { k < 2 ? 0 : k * (k - 1) / 2 }
 
-/// ARI（Hubert–Arabie）：与默认套件删除的统计实现同口径，仅用于夜间基线。
+/// ARI（Hubert–Arabie）：与默认套件删除的统计实现同口径，仅用于手动基线。
 func adjustedRandIndex(labels: [Int], predicted: [Int]) -> Double {
     precondition(labels.count == predicted.count)
     let count = labels.count
@@ -329,7 +330,7 @@ func adjustedRandIndex(labels: [Int], predicted: [Int]) -> Double {
         ? 1 : (Double(sumJointPairs) - expected) / (maximum - expected)
 }
 
-/// 手算小例自检：ARI 公式回归时 --quality 直接非零退出，而不是只在夜间打印错误数字。
+/// 手算小例自检：ARI 公式回归时 --quality 直接非零退出，而不是只在手动运行时打印错误数字。
 func validateQualityMetrics() {
     let hand = adjustedRandIndex(
         labels: [0, 0, 1, 1, 2, 2], predicted: [0, 0, 0, 1, 2, 2])
@@ -461,7 +462,7 @@ func benchQualityCluster() throws -> [String] {
 
 // ── margin 扫描（从默认单测迁出）──
 // 直接调用生产判定 FaceIdentityPolicy.decide，跑 0 / gap 边界 / 0.01 / 更大 margin；
-// 质量曲线用于夜间基线，不进入 PR 门禁。
+// 质量曲线用于手动基线，不进入 PR 门禁。
 func benchMarginSweep() -> [String] {
     var failures: [String] = []
     let thresholds = ["P0": 0.6, "P1": 0.6]
@@ -578,7 +579,7 @@ func benchLsh(
         throughputPerSec: Double(size) / (buildMs / 1000),
         metric: "buildMs=\(String(format: "%.1f", buildMs)) queryMs=\(String(format: "%.1f", queryMs)) selfRecallAt085=\(String(format: "%.4f", Double(hits) / Double(queries))) exactRecallAt085=\(String(format: "%.4f", exactRecall)) exactPairs=\(exactNeighborTotal) exactSample=\(recallSample) avgCandidates=\(String(format: "%.1f", Double(totalCandidates) / Double(queries)))"))
 
-    // 召回下限：小档（--smoke / nightly）断言精确召回与自召回，否则「LSH 退回
+    // 召回下限：小档（--smoke）断言精确召回与自召回，否则「LSH 退回
     // 空候选」这类退化只会让数字变小而不会失败。大档只做接线非空断言，
     // 避免把 20k/50k 的采样波动当回归。
     check(totalCandidates > 0, "lsh size=\(size): 候选集为空（索引接线错误）", into: &failures)
@@ -802,14 +803,14 @@ func benchFace10k(size: Int, dim: Int, identities: Int, seed: UInt32) throws {
 }
 
 // ── 入口 ──
-// margin 扫描：从默认单测迁出的生产判定曲线；夜间跑。
+// margin 扫描：从默认单测迁出的生产判定曲线；手动跑。
 if CommandLine.arguments.contains("--margin") {
     let failures = benchMarginSweep()
     print("benchmark=face-quality phase=margin-sweep doneMs=\(Int(elapsedMs(start)))")
     reportChecks("face-quality", failures)
 }
 
-// 质量基线：从默认单测迁出的合成聚类 P/R/F1/noise；夜间跑。
+// 质量基线：从默认单测迁出的合成聚类 P/R/F1/noise；手动跑。
 if CommandLine.arguments.contains("--quality") {
     let failures: [String]
     do {
@@ -822,7 +823,7 @@ if CommandLine.arguments.contains("--quality") {
     reportChecks("face-quality", failures)
 }
 
-// 增量聚类档（性能 + 复用门）：从默认单测迁出，夜间保留 2 万张规模。
+// 增量聚类档（性能 + 复用门）：从默认单测迁出，手动保留 2 万张规模。
 if CommandLine.arguments.contains("--incremental") {
     let failures: [String]
     do {

@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 // Gather Swift 核心库（Cut 3 / 3a，3b-6 删除过渡伞）。四层 target + schema 工具/基准可执行 + 测试基建。
 // 语言模式固定为 Swift 6：并发安全检查为硬错误（不再依赖 Swift 5 模式的警告）。
 import PackageDescription
@@ -34,8 +34,8 @@ let testLinkerSettings: [LinkerSetting] = []
 let package = Package(
     name: "gather-core",
     platforms: [
-        // 默认 SFace ML Program 的最低部署目标为 macOS 14。
-        .macOS(.v14),
+        // 只支持 macOS 26+（2026-10-29）：与 CI runner、Liquid Glass 的 SDK 判定同口径。
+        .macOS(.v26),
     ],
     products: [
         // Cut 3：4 个分层库（依赖方向 Protocol ← Persistence / Analysis ← Application）。

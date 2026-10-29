@@ -26,64 +26,36 @@ import SwiftUI
 ///
 /// ## 可用性
 ///
-/// app 仍部署到 macOS 14，所以每个 26.0 / 26.1 / 27.0 的 API 都必须门控；
-/// 低版本回退到改造前的等价实现，行为不降级。
+/// 部署目标已是 macOS 26（2026-10-29），26.0 系列 API 不再需要 `#available`
+/// 门控；低版本回退分支随部署目标一起删除。
 extension View {
     /// **功能层**表面：浮在内容之上的控件容器（toast / 查看器控制条 / 浮动选择栏）。
     ///
-    /// - macOS 26+：真正的 Liquid Glass。
-    /// - macOS 14–15：`.regularMaterial` + 分隔线描边（改造前的实现）。
+    /// 用系统 Liquid Glass；内容层仍按 HIG 用标准材质（见文件头铁律）。
     ///
     /// - Parameters:
     ///   - cornerRadius: 容器圆角。
     ///   - clear: 浮在照片/视频**媒体**之上时传 `true`。Apple 规定 `.clear` 只用于
     ///     媒体背景，且媒体偏亮时要自己叠一层暗化（调用方负责，例如挑片查看器
     ///     本来就有深色底）。
-    ///   - bordered: 低版本回退时是否画一圈分隔线。
-    @ViewBuilder
     func gatherFunctionalSurface(
         cornerRadius: CGFloat = GatherTheme.Radius.card,
-        clear: Bool = false,
-        bordered: Bool = true
+        clear: Bool = false
     ) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(clear ? .clear : .regular, in: .rect(cornerRadius: cornerRadius))
-        } else {
-            let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            self
-                .background(.regularMaterial, in: shape)
-                .overlay {
-                    if bordered {
-                        shape.strokeBorder(GatherTheme.hairline, lineWidth: 1)
-                    }
-                }
-        }
+        glassEffect(clear ? .clear : .regular, in: .rect(cornerRadius: cornerRadius))
     }
 
-    /// 内容区的**主要动作**按钮。
-    ///
-    /// macOS 26+ 用系统的 glass 按钮样式（Apple：「Instead of creating buttons with
-    /// custom Liquid Glass effects, you can adopt the look and feel of the material
-    /// with minimal code」）；低版本回退 `.borderedProminent`。
-    @ViewBuilder
+    /// 内容区的**主要动作**按钮：系统 glass 样式（Apple：「Instead of creating
+    /// buttons with custom Liquid Glass effects, you can adopt the look and feel of
+    /// the material with minimal code」）。
     package func gatherPrimaryActionButton() -> some View {
-        if #available(macOS 26.0, *) {
-            self.tint(GatherTheme.accentFill)
-                .buttonStyle(.glassProminent)
-        } else {
-            self.tint(GatherTheme.accentFill)
-                .buttonStyle(.borderedProminent)
-        }
+        self.tint(GatherTheme.accentFill)
+            .buttonStyle(.glassProminent)
     }
 
-    /// 内容区的**次要动作**按钮：macOS 26+ 用 glass，低版本回退 bordered。
-    @ViewBuilder
+    /// 内容区的**次要动作**按钮：系统 glass 样式。
     package func gatherSecondaryActionButton() -> some View {
-        if #available(macOS 26.0, *) {
-            self.buttonStyle(.glass)
-        } else {
-            self.buttonStyle(.bordered)
-        }
+        self.buttonStyle(.glass)
     }
 
 }

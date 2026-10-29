@@ -9,7 +9,7 @@
 2. **Swift 测试**：加载同一 JSON，逐 case 以 Swift 移植实现重算并与期望值比对；
    漂移由测试断言暴露。
 3. **质量/召回不再由默认套件承担**：近似算法召回、聚类 F1/ARI 由
-   `gather-core-benchmarks --quality/--smoke` 在夜间输出；默认套件只保留配置校验、
+   `gather-core-benchmarks --quality/--smoke` 在手动档输出；默认套件只保留配置校验、
    空索引、自召回与 exact golden。
 
 ## 当前覆盖
@@ -27,7 +27,7 @@
 
 - 覆盖：空索引、配置校验、`LSH_MIN_POINTS` 常量、小索引自召回（索引接线）。
 - 质量基线：1000×100 的召回统计已从默认套件删除；`gather-core-benchmarks --smoke`
-  输出 `exactRecallAt085`，夜间对比基线。
+  输出 `exactRecallAt085`，手动对比基线。
 - **HNSW 为历史实现，已删除**（CL-06）；历史决策见 `docs/ADR.md` 的 ADR-011
   （superseded，不再约束实现）。
 - matcher 的实例级 LSH 路径另由 `MatcherReconciliationTests` 的 exact fixture 覆盖。

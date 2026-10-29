@@ -137,8 +137,6 @@ struct CullingTriageCard: View {
                 }
                 if let aesthetic = review.aestheticScore {
                     chip(l10n.format("审美 %.2f", aesthetic))
-                } else if review.warnings.contains("aesthetic_unavailable") {
-                    chip(l10n("本机不支持审美分"))
                 }
             }
             .fixedSize(horizontal: false, vertical: true)

@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 // Gather 原生宿主 app。
 //
 // Cut 3 / 3b-2+3 拆分、3b-6 收口：从单 target 拆成 GatherUI（页面/视图模型，
@@ -21,13 +21,13 @@ import Foundation
 // 使并发诊断在 app 与 core 之间保持同一严格度。
 let swift6Settings: [SwiftSetting] = [.swiftLanguageMode(.v6)]
 
-/// 部署目标：app 仍可在 macOS 14 上运行。
-let macOSDeploymentTarget = "14.0"
+/// 部署目标：只支持 macOS 26+（2026-10-29；也是 Liquid Glass 起效的最低系统）。
+let macOSDeploymentTarget = "26.0"
 
-/// 安全默认 SDK 版本 = 部署目标：manifest 不探测 SDK，保证在任意较旧
-/// Xcode/SDK 上直接 `swift build/test` 也能链接成功。Liquid Glass 所需的
-/// 真实 SDK 版本由 `desktop/native/build.sh` 探测后 export，CI 也显式注入；
-/// 届时 Mach-O 的 LC_BUILD_VERSION.sdk 才是真实 SDK。
+/// 默认 SDK 版本 = 部署目标 26.0：manifest 不探测 SDK（求值是纯声明、
+/// 无外部进程），直接 `swift build/test` 时 Mach-O 的 LC_BUILD_VERSION.sdk
+/// 记 26.0 即满足 Liquid Glass 的 linked-on-or-after 判定；真实 SDK 版本由
+/// `desktop/native/build.sh` 探测后 export，CI 也显式注入。
 ///
 /// **WP7：manifest 求值是纯声明、无外部进程**；值只来自环境变量
 /// `GATHER_SDK_VERSION` 或这个常量。
@@ -35,12 +35,12 @@ let defaultSDKVersion = macOSDeploymentTarget
 
 /// 真实 SDK 版本，写进 Mach-O 的 LC_BUILD_VERSION.sdk。
 ///
-/// **为什么需要显式传**：SwiftPM 用 -target arm64-apple-macosx14.0 驱动编译，
-/// Swift driver 于是把 -platform_version macos 14.0 14.0 交给 ld —— 二进制里
+/// **为什么需要显式传**：SwiftPM 用 -target arm64-apple-macosx26.0 驱动编译，
+/// Swift driver 于是把 -platform_version macos 26.0 26.0 交给 ld —— 二进制里
 /// 记下的「SDK 版本」其实是**部署目标**，不是真实 SDK。
 ///
 /// 从 macOS 26 起 AppKit 用这个字段做 linked-on-or-after 判定：
-/// 记成 sdk 14.0 的 app 会被**强制渲染旧外观**（矩形按钮、不透明侧栏、
+/// 记成 sdk <26 的 app 会被**强制渲染旧外观**（矩形按钮、不透明侧栏、
 /// 旧窗口圆角、Toolbar 不进玻璃），Liquid Glass 一个都拿不到 ——
 /// 哪怕链接的是 MacOSX27.0.sdk、运行在 macOS 27 上。
 ///
@@ -69,7 +69,7 @@ let package = Package(
     name: "gather-app",
     defaultLocalization: "zh-Hans",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v26),
     ],
     products: [
         .executable(name: "gather-app", targets: ["GatherApp"]),

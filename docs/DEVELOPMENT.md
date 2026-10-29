@@ -1,6 +1,6 @@
 # Gather 开发与贡献指南
 
-Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
+Gather 是 macOS 26+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 `desktop/native/gather-core`，界面与应用生命周期位于 `desktop/native/gather-app`；
 仓库不依赖 Node.js、Electron、浏览器渲染层或本地 HTTP 服务。
 
@@ -9,9 +9,9 @@ Gather 是 macOS 14+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 
 ## 环境要求
 
-- macOS 14 或更高版本
-- Xcode 或 Xcode Command Line Tools
-- Swift 6.0 或更高版本（两个包均为 `swift-tools-version: 6.0` 且显式
+- macOS 26 或更高版本
+- Xcode 26 或 Xcode Command Line Tools（macOS 26 SDK）
+- Swift 6.2 或更高版本（两个包均为 `swift-tools-version: 6.2` 且显式
   `.swiftLanguageMode(.v6)`；迁移记录见 `docs/reviews/functional-design-review.md`）
 - Capture One 仅在需要验证原生插件/导入联动时才需要
 
@@ -120,7 +120,7 @@ defaults delete com.gather.desktop.native GatherApplicationSupportDirectory
   构建后用 `lipo -archs` 断言期望切片齐全。SDK 存在但缺切片时
   `GATHER_RELEASE=1` 直接 exit 1（本地非发布构建保留已构建切片并告警）。
   SDK 的 `CaptureOnePlugins.framework` 本身是 `x86_64 arm64`，插件源码不依赖
-  宿主架构。插件部署目标与 app 对齐为 14.0（`build.sh` 用 make 命令行覆盖
+  宿主架构。插件部署目标与 app 对齐为 26.0（`build.sh` 用 make 命令行覆盖
   `TARGET`，不改 `Makefile`）；嵌入 app 的插件副本会注入与 app 相同的
   `CFBundleShortVersionString` / `CFBundleVersion`。`Makefile` 仍会为构建机生成
   相对 `LC_RPATH`；`build.sh` 只从嵌入 app 的副本删除这条相对路径（保留
@@ -172,7 +172,7 @@ plutil -extract CFBundleShortVersionString raw -o - \
   release/Gather.app/Contents/Info.plist                     # 期望 0.0.0-dev
 plutil -extract CFBundleVersion raw -o - \
   release/Gather.app/Contents/Info.plist                     # 期望 git 提交数
-# Mach-O 实际值（期望 minos 14.0，sdk 为构建时 SDK）
+# Mach-O 实际值（期望 minos 26.0，sdk 为构建时 SDK）
 vtool -arch arm64 -show-build release/Gather.app/Contents/MacOS/Gather | grep -E 'minos|sdk'
 vtool -arch x86_64 -show-build release/Gather.app/Contents/MacOS/Gather | grep -E 'minos|sdk'
 # 有 SDK 时，插件版本应已被注入为与 app 相同
@@ -215,10 +215,11 @@ CI：`.github/workflows/ci.yml` 的 `release` job 只在 `v*` tag 或手动
 `release/Gather.zip` 与 `.sha256`。
 
 release job 在构建前执行 `Assert release SDK`：要求 macOS 26 SDK（Liquid Glass
-所需的 `LC_BUILD_VERSION.sdk >= 26`）。当前 `runs-on: macos-14` 的镜像无法提供
-Xcode 26，因此 tag release 会 fail closed；正式发版必须把该 job 移到
-`macos-26` 或装有 Xcode 26 的 self-hosted runner。构建后还会用 `vtool` 断言
-每个切片的 `minos=14.0` 且 `sdk` 与注入值一致，并校验 `build-info.json`、
+所需的 `LC_BUILD_VERSION.sdk >= 26`）。该 job 固定 `runs-on: macos-26`；换共享/
+自托管 runner 时若镜像不提供 SDK 26，会 fail closed 而不是静默产出旧外观的包。
+测试 job（`gather-core` / `gather-app`）同样只在 macOS 26+ 上跑，2026-10-29 起
+不再有 macOS 14 runner。构建后还会用 `vtool` 断言
+每个切片的 `minos=26.0` 且 `sdk` 与注入值一致，并校验 `build-info.json`、
 app 双切片、插件双切片/版本/minos；授权 SDK 不在仓库内，runner 未安装 SDK 时
 `build.sh` 在 `GATHER_RELEASE=1` 下直接 exit 1，不会静默产出无 C1 插件的包。
 
@@ -312,7 +313,7 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - `L10n`（`Support/L10n.swift:120`）：**key 即中文文案**；渲染期显式携带
   `language`（`L10n.Language.zhCN/en`），经 `Bundle.module` 的 `.lproj` 查表——
   `zh-Hans.lproj` 只有 9 个占位键，未命中自动回退 key（即中文）；`en.lproj`
-  （1,749 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
+  （1,748 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
   (language, key) 缓存查表结果，避免每帧重走 Bundle 查找。
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`
@@ -395,17 +396,17 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 **不要在日常提交里跑 `./desktop/native/build.sh`**：完整 `.app` 组装只在发布/打包
 （tag、`workflow_dispatch` 或明确的打包任务）执行；PR/日常测试只构建 test target。
 CI 的 `gather-app` job 单独 `swift build` 一次可执行（菜单/场景装配的编译回归），
-仍不附带 bundle build；`.app` 组装由 nightly 与 release job 覆盖。
+仍不附带 bundle build；`.app` 组装由 release job 与手动 `build.sh` 覆盖。
 
 默认套件按三层组织：
 
 | 层 | 何时跑 | 内容 |
 |---|---|---|
 | Unit/Correctness | 每次 PR | 行为、边界、错误码、成员集合、不变量 |
-| Integration | 夜间（`GATHER_MODEL_TESTS=1`）；真实照片用例仅手动（`GATHER_FACE_FIXTURE`，nightly 不设） | CoreML/Vision/真实照片/ImageIO |
-| Quality/Benchmark | 夜间/发版 | F1/ARI/P/R、margin 边界、LSH 召回、增量复用与性能基线（`gather-core-benchmarks --quality/--margin/--smoke/--incremental`）；**benchmark 内置阈值，超限即 exit 1**，nightly 直接吃退出码 |
+| Integration | 手动（`GATHER_MODEL_TESTS=1`）；真实照片用例仅手动（`GATHER_FACE_FIXTURE`） | CoreML/Vision/真实照片/ImageIO |
+| Quality/Benchmark | 手动/发版 | F1/ARI/P/R、margin 边界、LSH 召回、增量复用与性能基线（`gather-core-benchmarks --quality/--margin/--smoke/--incremental`）；**benchmark 内置阈值，超限即 exit 1**，直接把退出码当结论 |
 
-夜间命令示例：
+手动验收命令示例：
 
 ```bash
 swift build -c release --package-path desktop/native/gather-core
@@ -413,7 +414,7 @@ desktop/native/gather-core/.build/release/gather-core-benchmarks --quality
 desktop/native/gather-core/.build/release/gather-core-benchmarks --margin
 desktop/native/gather-core/.build/release/gather-core-benchmarks --smoke
 desktop/native/gather-core/.build/release/gather-core-benchmarks --incremental
-./desktop/native/build.sh            # 未签名 bundle 组装（PR 不跑，夜间补）
+./desktop/native/build.sh            # 未签名 bundle 组装（PR 不跑，手动补）
 GATHER_MODEL_TESTS=1 swift test --package-path desktop/native/gather-core \
   --no-parallel --filter 'FaceIdentityArchitectureTests|FaceEmbeddingModelTests|FaceInferenceTests'
 GATHER_TEST_MATRIX_STEPS=200 swift test --package-path desktop/native/gather-core \
@@ -429,7 +430,7 @@ fixture-dependent skip 与未执行的外部验收项；`.app` 组装仅在发�
 N−S”；当前 skip 共 **17** 条（`check-test-catalog.sh` 实测）：
 `FaceRealPhotoPipelineTests` 3 条（无 `GATHER_FACE_FIXTURE`）、模型集成 8 条
 （无 `GATHER_MODEL_TESTS=1`）与 P0 性能门 6 条（`GATHER_CULLING_PERF` /
-`GATHER_BACKUP_PERF` / `GATHER_UI_PERF`；夜间 CI 已置位三类 env），必须单列，
+`GATHER_BACKUP_PERF` / `GATHER_UI_PERF`；手动验收时需自行置位），必须单列，
 不能算作通过。skip 元数据与门禁见 `check-test-catalog.sh --strict`
 （识别 `.enabled(if:)`、`@Test`/`@Suite` 的 `.disabled`、`withKnownIssue`；要求
 `skip-owner` + 到期 + 原因）。

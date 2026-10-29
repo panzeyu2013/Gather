@@ -10,7 +10,7 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 [English](../README.md) · [核心工作流](#核心工作流) · [快速开始](#快速开始)
 
 [![CI](https://github.com/panzeyu2013/Gather/actions/workflows/ci.yml/badge.svg)](https://github.com/panzeyu2013/Gather/actions/workflows/ci.yml)
-![macOS 14+](https://img.shields.io/badge/macOS-14%2B-252525?logo=apple)
+![macOS 26+](https://img.shields.io/badge/macOS-26%2B-252525?logo=apple)
 [![MIT License](https://img.shields.io/badge/license-MIT-c56a42.svg)](../LICENSE)
 
 </div>
@@ -38,7 +38,7 @@ Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRoute
 
 > 当前基线（2026-10-28 P2 交付闭环合入 main 后采样）：8 个功能 target、Schema **44 表 / 386 列 / 72 索引 / 65 外键（user_version=1）**、
 > core **1,433 tests / 214 suites**、app **762 tests / 89 suites**（app 全量请用 `--no-parallel`，并行模式有既有 SIGSEGV，见决策 §18）、
-> en 1,749 键 / zh 9 占位键；无 Router、无字符串命令。
+> en 1,748 键 / zh 9 占位键；无 Router、无字符串命令。
 > 只有当前 schema 可打开；旧迁移链已删除，旧版本/未知形态默认 fail-closed，仅显式重置策略才归档重建。
 > **12 个** `check-*.sh` 门禁全绿（strict 可用者带 `--strict`，另有 test-catalog `--self-test` 负例）；
 > ratchet **60/255/0/0/0**（较 54/228：新增摄取/模板/IPTC/交付代码带来的 +6/+27，
@@ -68,8 +68,8 @@ Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRoute
 
 ### 环境要求
 
-- macOS 14 或更高版本
-- Xcode 或 Xcode Command Line Tools，支持 Swift 6.0+
+- macOS 26 或更高版本
+- Xcode 26 或 Xcode Command Line Tools（Swift 6.2+；两个包为 `swift-tools-version: 6.2`）
 - 仅使用本地文件夹时不要求 Capture One
 - 人脸分析用系统 Vision 做检测/对齐，身份特征来自随包分发的 SFace CoreML 模型
   （`FaceModels/SFace.mlpackage`，随 `build.sh` 一起校验与打包）；真实数据集推理
@@ -85,8 +85,8 @@ cd ../gather-app
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache swift test --no-parallel
 ```
 
-默认测试套件只验证正确性；质量/召回/F1 基线与 CoreML/Vision 集成在夜间
-(`.github/workflows/nightly.yml`) 运行。日常测试不组装 `.app`。
+默认测试套件只验证正确性；质量/召回/F1 基线与 CoreML/Vision 集成改为手动执行
+（原夜间 workflow 已于 2026-10-29 移除），不进 PR 循环。日常测试不组装 `.app`。
 
 ### 构建 macOS 应用（发布/打包）
 

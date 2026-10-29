@@ -11,7 +11,7 @@ set -euo pipefail
 #   GATHER_VERSION / GATHER_BUILD_NUMBER 版本注入；未设 = git describe / Info.plist 回退；
 #                                        BUILD_NUMBER 单独设置但无版本时警告并忽略
 #   GATHER_SDK_VERSION                   LC_BUILD_VERSION.sdk；未设 = xcrun 探测，
-#                                        探测失败回退 Package.swift 的 14.0
+#                                        探测失败回退 Package.swift 的 26.0
 #   CODESIGN_IDENTITY                    Developer ID 签名身份；未设 = 不签名
 #   GATHER_NOTARIZE=1                    公证 + staple（需要 GATHER_NOTARY_PROFILE
 #                                        或 APPLE_ID + APPLE_TEAM_ID + APPLE_APP_PASSWORD）
@@ -165,32 +165,32 @@ rm -f "$OUTPUT_DIR/Gather.zip" "$OUTPUT_DIR/Gather.zip.sha256"
 # WP7：Package.swift 只读 GATHER_SDK_VERSION（manifest 不执行外部进程）；
 # 真实 SDK（Mach-O 的 LC_BUILD_VERSION.sdk，决定 macOS 26+ 是否启用
 # Liquid Glass）由本脚本探测本机后 export，显式传入的值优先级最高。
-# 探测失败时 manifest 回退部署目标 14.0，Liquid Glass 不会启用，所以这里
-# 记录来源，release 模式拒绝静默走回退。
+# 部署目标已是 26.0，探测失败时默认值仍满足 SDK>=26；这里记录来源，
+# release 模式在探测失败时 fail closed（无法记录真实 SDK 属环境异常）。
 if [[ -z "${GATHER_SDK_VERSION:-}" ]]; then
   SDK_VERSION="$(xcrun --show-sdk-version 2>/dev/null || true)"
   if [[ -n "$SDK_VERSION" ]]; then
     export GATHER_SDK_VERSION="$SDK_VERSION"
     SDK_VERSION_SOURCE="xcrun"
   else
-    SDK_VERSION_SOURCE="Package.swift default (14.0)"
+    SDK_VERSION_SOURCE="Package.swift default (26.0)"
     if [[ "$RELEASE_MODE" == "1" ]]; then
-      echo "release mode requires xcrun --show-sdk-version (macOS 26 SDK for Liquid Glass); refusing the 14.0 fallback" >&2
+      echo "release mode requires xcrun --show-sdk-version to record the real SDK (Liquid Glass needs >= 26)" >&2
       exit 1
     fi
-    echo "warning: xcrun --show-sdk-version unavailable; Package.swift default SDK 14.0 applies (Liquid Glass disabled)" >&2
+    echo "warning: xcrun --show-sdk-version unavailable; Package.swift default SDK 26.0 applies" >&2
   fi
 else
   SDK_VERSION_SOURCE="GATHER_SDK_VERSION"
 fi
 DECLARED_SDK_VERSION="$(printf '%s' "${GATHER_SDK_VERSION:-}" | LC_ALL=C tr -d '[:space:]')"
-echo "SDK version for -platform_version: ${DECLARED_SDK_VERSION:-<Package.swift default 14.0>} (source: $SDK_VERSION_SOURCE)"
+echo "SDK version for -platform_version: ${DECLARED_SDK_VERSION:-<Package.swift default 26.0>} (source: $SDK_VERSION_SOURCE)"
 
 # 3b-6：两个包都开 SE-0409 严格依赖检查（target 只能 import 直接依赖）。
 DEPENDENCY_CHECK=(--explicit-target-dependency-import-check error)
 # app 的 SDK 版本在 manifest 求值期从 GATHER_SDK_VERSION 读取。SwiftPM 的
 # manifest 缓存不把该环境变量计入 key：同一 .build 下增量构建可能沿用旧的
-# -platform_version（实测 default 14.0 → env 27.0 不重链）。release 组装必须
+# -platform_version（历史实测：只改 env 不重链）。release 组装必须
 # 关闭 manifest 缓存，保证本脚本探测到的 SDK 真正写进 Mach-O。
 APP_BUILD_FLAGS=("${DEPENDENCY_CHECK[@]}" --manifest-cache none)
 swift build --package-path "$CORE_PACKAGE" -c "$CONFIGURATION" \
@@ -405,10 +405,9 @@ PLUGIN_SDK="$ROOT_DIR/Capture_One_Plugin_SDK_(Mac)_v1.0.1"
 PLUGIN_DIR="$ROOT_DIR/desktop/coplugin"
 PLUGIN_BUNDLE="$PLUGIN_DIR/GatherLink.coplugin"
 PLUGIN_BINARY="$PLUGIN_BUNDLE/Contents/MacOS/GatherLink"
-# P2-6：插件部署目标对齐 app（14.0）。Makefile 默认 10.14，会产生与 app
-# 不一致的 minos。make 的命令行变量优先于 Makefile 内的 ":=" 赋值，所以这里
-# 覆盖 TARGET，不改 Makefile 本身。
-PLUGIN_DEPLOYMENT_TARGET="14.0"
+# P2-6：插件部署目标对齐 app（26.0）。Makefile 的默认值也已对齐 26.0；这里
+# 仍显式覆盖 TARGET，避免 Makefile 与脚本再次漂移（make 命令行变量优先）。
+PLUGIN_DEPLOYMENT_TARGET="26.0"
 # build-info 用：未嵌入时为 none，嵌入后记录实际切片。
 PLUGIN_INFO="none"
 

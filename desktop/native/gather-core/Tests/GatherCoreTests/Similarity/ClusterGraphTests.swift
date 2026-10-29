@@ -8,7 +8,7 @@
 //   2. 内部一致性：单趟 result 与 state 同源（state.groups 为规范序、分量覆盖全集）、
 //      多档并集行 == 逐档单跑、streaming 图 == 位集图、模式分发 == 对应入口；
 //   3. 增量装配：IncrementalClusterer.update 的 state 与全量 run 的 state 逐位一致
-//      （默认 50 次随机增删 x 3 组参数；200 步完整矩阵留给夜间）。
+//      （默认 50 次随机增删 x 3 组参数；200 步完整矩阵留给手动全量档）。
 
 import Foundation
 import Testing
@@ -438,7 +438,7 @@ struct ClusterGraphIncrementalAssemblyTests {
     /// 50 次随机新增/移除（每次操作后重算全图），逐项断言：
     /// - IncrementalClusterer.update 的 state.components/groups == 全量 run 的 state；
     /// - 由 state 复原的 result 与全量 result 划分/种子序/未成组一致。
-    /// 200 步完整矩阵留给夜间；默认套件用 50 步覆盖全部操作类型。
+    /// 200 步完整矩阵留给手动全量档；默认套件用 50 步覆盖全部操作类型。
     @Test("随机增删：增量 state 与全量 state 逐位一致（默认 50 步，可用 GATHER_TEST_MATRIX_STEPS 放大）")
     func randomAddRemoveMatchesFullRun() throws {
         let configs: [(seed: UInt64, threshold: Int, minGroupSize: Int)] = [

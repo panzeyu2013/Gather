@@ -265,7 +265,7 @@ struct IncrementalClustererReconciliationTests {
     private static let matrixSteps =
         Int(ProcessInfo.processInfo.environment["GATHER_TEST_MATRIX_STEPS"] ?? "") ?? 50
     /// 随机操作序列（新增/移除/改哈希/重命名）下，每一步的增量结果都必须与
-    /// 全量重聚类等价（默认 50 步；200 步完整矩阵留给夜间）。
+    /// 全量重聚类等价（默认 50 步；200 步完整矩阵留给手动全量档）。
     @Test("随机操作逐步与全量重聚类一致（默认 50 步，可用 GATHER_TEST_MATRIX_STEPS 放大）", arguments: [
         MatrixConfig(seed: 1, threshold: 4, minGroupSize: 2),
         MatrixConfig(seed: 2, threshold: 8, minGroupSize: 2),
@@ -371,7 +371,7 @@ struct IncrementalClustererReconciliationTests {
         }
         #expect(
             operationCounts.allSatisfy { $0 > 0 },
-            "默认/夜间步数必须覆盖 add/remove/hash/rename/noop：\(operationCounts)")
+            "默认/全量步数必须覆盖 add/remove/hash/rename/noop：\(operationCounts)")
     }
 }
 
@@ -380,7 +380,7 @@ struct IncrementalClustererReconciliationTests {
 @Suite("IncrementalClusterer 增量复用语义")
 struct IncrementalClustererReuseTests {
     /// 性能验收（2 万张 + 新增 100 张 < 10s、recomputed=1/reused=49）由
-    /// `gather-core-benchmarks --incremental` 负责（nightly 跑，失败非零退出）；
+    /// `gather-core-benchmarks --incremental` 负责（手动跑，失败非零退出）；
     /// 单测只验证“未受影响的分量被复用、被触及的分量才重算”这一功能不变量。
     @Test("新增照片只重算被触及的分量，其余分量直接复用")
     func updateRecomputesOnlyTouchedComponents() throws {
