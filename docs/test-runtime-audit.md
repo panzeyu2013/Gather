@@ -55,6 +55,11 @@ CI 的 `gather-core` / `gather-app` step 已改为调用该脚本；README / DEV
 
 ## 3. 覆盖率（行）
 
+> 采样口径：本节数字来自 2026-10-29 tests 分支（`79e688ef`，基于 `d70343e5`）的全量
+> `--enable-code-coverage` 运行；合入 main 的源码改动后未整体重测。`ModelReviewRepo` /
+> `ModelReviewService` 的用例数在合并后为 5/5（`latestByAssetFile` 已删），百分比按该次
+> 快照理解；需要当前值请按 §8 重跑。
+
 ### 3.1 模块
 
 | 包 / 模块 | 行数 | 覆盖 |

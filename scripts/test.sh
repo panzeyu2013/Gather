@@ -3,7 +3,7 @@
 #
 # 分层原因（实测见 docs/test-runtime-audit.md）：
 # - gather-core 的绝大部分用例是 hermetic 的纯行为/临时库测试，可并行；
-#   并行实测 1,444 例（主批 1.2s + 状态批 0.2s），串行 ~9.2s（M5 Pro，Debug，不含构建）。
+#   并行实测 1,443 例（主批 1.2s + 状态批 0.2s），串行 ~9.2s（M5 Pro，Debug，不含构建）。
 # - 少数套件改的是**进程级** GatherLogger 状态（output/minimumLevel）或
 #   DBConnection 的全局慢事务阈值，跨套件并行会互相偷日志行/改写等级：
 #     LoggerTests / TraceLoggingTests / LogFileSinkTests / ReadPoolTests
