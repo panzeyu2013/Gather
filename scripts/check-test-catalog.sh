@@ -342,8 +342,12 @@ fi
 #    2026-10-30 interaction 合并 + 评审补测：+9/+1（commit 串行化/refresh 代/keep/
 #    invalidateAll/rowIndex/Toast/布局缓存）→ 2264/249；同时修正 @Suite 计数正则
 #    （此前漏掉裸 @Suite 与 @MainActor @Suite，少计 4 个）。
-BASELINE_TEST_DECL=2264
-BASELINE_SUITE_DECL=249
+#    2026-10-30 p1-next 合并：+174/+24（11 个 core 测试文件 + 2 个 app 测试文件；
+#    CollectionRepo/SavedSearch/KeywordFacet/KeywordPath/MetadataDeliveryLifecycle/
+#    MetadataRetention/PreviewAnalysis/ProofFeedback/SemanticIndex/TriageCalibration/
+#    ContactSheetPresentation + EmbeddedRewriteSession/XMPPacketReader）→ 2438/273。
+BASELINE_TEST_DECL=2438
+BASELINE_SUITE_DECL=273
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
@@ -366,7 +370,8 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 #    2026-10-29 tests 合入 +40（同上 10 例）。
 #    2026-10-30 interaction 合并 + 评审补测：+265（含 @Suite 计数修正后的 4 个套件、
 #    commit 串行化/refresh 代/keep/invalidateAll/rowIndex/Toast/布局缓存回归）。
-BASELINE_ASSERT=10509
+#    2026-10-30 p1-next 合并：+771（同上 13 个测试文件）。
+BASELINE_ASSERT=11280
 assert_n=$(grep -rhoE '#(expect|require)\(' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')

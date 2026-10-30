@@ -4,9 +4,18 @@
 
 - `spacing.literalPadding` 175 → 206（+31），`spacing.literalSpacing` 257 → 261（+4）。
   （合并日按合并后 UI 源码重算；本分支自测时为 208，差异来自主干的交互整改。）
+- 同次合并另外两个键是**收紧**：`empty.contentUnavailable` 29 → 28（本分支自测 30，主干 29）、
+  `font.callout` 本分支 89 → 合并后 86（主干未改）。`check-design-system.py` 允许静默下调，
+  故显式记在这里：上调 2 个键、收紧 2 个键，净增 29 处数字 padding。
 - 来源：新增的 Curation 侧栏/集合视图、查看器叠加层（直方图/合焦/参考对比）、校样与元数据同步条、语义检索面板。
 - 处置：本轮带 `--allow-growth` 更新 baseline（`scripts/design-system-baseline.json` 为唯一事实来源，本文记录理由）；
   后续统一换成 `GatherMetrics.Space/Layout` token，再次收紧 baseline。
+
+## 测试 ratchet（合并后收紧）
+
+- `check-test-catalog.sh`：`@Test` 2264 → **2438**、`@Suite` 249 → **273**、断言 10509 → **11280**。
+- 依据：本次合并带入 11 个 core + 2 个 app 测试文件（约 3,750 行），不收紧会留下
+  174 例 / 771 断言的"删除免检额度"。收紧后 `--strict` 实测 2438/2438 · 273/273 · 11280/11280。
 
 ## 清理 ratchet（已清零）
 
