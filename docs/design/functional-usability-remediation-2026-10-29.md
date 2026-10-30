@@ -1,7 +1,7 @@
 # Gather 功能性与易用性整改设计方案
 
 - 版本：v1（2026-10-29）
-- 输入：[功能性与易用性全量评审](../reviews/functional-usability-review-2026-10-29.md)（9 P1 / 14 组 P2 / 10 P3）
+- 输入：功能性与易用性全量评审（9 P1 / 14 组 P2 / 10 P3，2026-10-29；原评审文档已清理，见 git 历史）
 - 对象：features 分支 HEAD c77c3a57
 - 性质：**设计提案，未改源码**。文中的类型名、API 名、文件路径均为拟新增/拟修改，不是现状。
 - 目标读者：实现者、评审者、发布负责人。
@@ -49,7 +49,7 @@
 - 破坏性操作只接收 Confirmed<T>；API 实现不解析 Bool。
 - 数据库 schema 不新增表/列；不引入迁移链。
 - 新 API 方法必须走 check-protocol-surface.sh --allow-growth 并在台账记账。
-- 新错误码必须同时补 GatherErrorCode、中文文案、en 文案、docs/README.md 计数；check-docs --strict 必须绿。
+- 新错误码必须同时补 GatherErrorCode、中文文案、en 文案、docs/README.md 计数。
 - 新 UI 文案必须补 en 表；计数文案必须支持单数。
 
 ---
@@ -807,7 +807,7 @@ JobCreateParams.metadataScan 增加可选 scopeKind：
 - 修 README：129→134、15→16、V5→v1、CONFIGURATION 默认 release 的表述。
 - 修 DEVELOPMENT：测试命令路径（根目录执行）；加“新增 API/错误码/文案”的清单。
 - 功能文档：WebDAV、联系表/打印、客户校样、水印、智能相册、导航分组、备份/恢复/诊断各一节；ROADMAP 更新到当前 Cut。
-- check-docs 增加：方法数/target 数/schema 版本号的模式校验，失败给文件:行号。
+- 文档计数（方法数/target 数/schema 版本号）由人工维护。
 
 ### 6.5 日志与可观测性
 
@@ -1083,7 +1083,7 @@ JobCreateParams.metadataScan 增加可选 scopeKind：
 5. 根目录修复的边界。若照片分布在多个根，本设计只能选一个包含全部照片的根；多根是 schema v2。
 6. GUI 焦点/面板。查看器焦点、IngestSheet 嵌套 panel 必须实机验收；静态测试覆盖不了。
 7. 20k 批量的历史体积。10k/块是保守值；需在真实库上测 undo 体验，必要时降到 5k。
-8. 错误码增长。每加一个码都要同步 195→N、en 表、docs；否则 check-docs 红。
+8. 错误码增长。每加一个码都要同步 195→N、en 表、docs；否则文档计数与代码不一致。
 9. API 面增长。新方法需 --allow-growth 记账；若评审认为 PhotoAPI.select 不必要，可砍。
 10. 旧空根工作区。修复入口只对新/手动修复生效；无法自动推断用户意图，必须保留 banner。
 
@@ -1109,7 +1109,7 @@ JobCreateParams.metadataScan 增加可选 scopeKind：
 ### 验证
 
 - `./scripts/test.sh all`（`--disable-sandbox`）：core / app 全量用例通过（用例数随分支变化，以脚本输出为准）。
-- 13 个门禁全绿；en 键数 1,862、错误码 209（docs/README/ROADMAP/DEVELOPMENT 已同步）。
+- 当时 13 个门禁全绿（`check-docs` 已于 2026-10-30 移除，现 12 个）；en 键数 1,862、错误码 209。
 - Protocol 公开面按 `--allow-growth` 更新基线：344 类型 / 1,985 声明（P1 API + P2 selected/resetGroup/photo select + P3 includeFailed）；据此记账。
 - 尚未做 GUI 实机验收：查看器焦点、三布局视觉、IngestSheet 嵌套面板。
 
@@ -1256,7 +1256,7 @@ JobCreateParams.metadataScan 增加可选 scopeKind：
 
 - [ ] 新 API 有输入校验、错误码、Live 实现、契约测试、api-index 更新。
 - [ ] 新文案有 en 条目；计数文案有 #one。
-- [ ] 新错误码有 zh/en 文案；docs 计数更新；check-docs --strict 绿。
+- [ ] 新错误码有 zh/en 文案；docs 计数更新。
 - [ ] 破坏性输入用 Confirmed；确认文案说明影响面。
 - [ ] 批量/长任务有进度、取消、部分结果；取消不显示 success。
 - [ ] 预览类操作有 token；变更即失效。

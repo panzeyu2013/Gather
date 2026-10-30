@@ -271,5 +271,5 @@ stdout），`DBConnection` / `Database` / 读池也是 `NSRecursiveLock`。macOS
    测试热路径上的阻塞型锁换掉（DB 锁改 actor / `Mutex`），否则同样的线程池耗尽会复发。
 
 ---
-历史口径（Cut 0 的 994/298 与合并建议）见 [test-audit.md](test-audit.md)；日常命令与手工
+历史口径（Cut 0 的 994/298 与合并建议）见 git 历史；日常命令与手工
 验收清单见 [DEVELOPMENT.md](DEVELOPMENT.md)。

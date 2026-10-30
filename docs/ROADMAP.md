@@ -1,309 +1,73 @@
 # Gather 产品与技术 Roadmap
 
-> 版本：v3（2026-08-12）。v3 修订：**原生迁移（Swift/SwiftUI）已全部完成**
-> （原 NATIVE-DEVELOPMENT-ANALYSIS.md 的 Phase 0-4 台账已归档，本文档不再引用）；
-> 本节按「已完成 / 待做」两态标注，删除已过时的 Electron 时代任务（如 Rust core
-> 立项、WKWebView 桥、TS 对账），保留仍未兑现的产品与规模化承诺。
-> 2026-10-22 修订：HNSW 已删除（Cut 5 / 5b-2a，CL-06），文中 HNSW 条目均为历史设计/
-> 历史基线，不再代表当前实现；现行 ANN 只有 angular LSH（`Face/VectorIndex.swift`）。
-> 配套文档：[README.md](README.md)、[DEVELOPMENT.md](DEVELOPMENT.md)、[ADR.md](ADR.md)。
+> 状态：2026-10-30 整理。已完成阶段只保留结论；逐日基线与过程记录在 git 历史。
+> 现行口径以 [README.md](README.md)、[DEVELOPMENT.md](DEVELOPMENT.md)、[ADR.md](ADR.md) 为准。
 
----
+## 一、用户痛点与优先级
 
-## 一、用户痛点与优先级映射
-
-| # | 用户痛点（典型表述） | 根因 | 优先级 | 当前状态 |
-|---|---|---|---|---|
-| 1 | "导入 1 万张要等一晚上" | 全量哈希 + 串行遍历 | **P0** | ✅ 已完成（懒校验 + 并行遍历 + 任务化，见 §四） |
-| 2 | "相似度分析跑一半报超时失败" | 聚类无进展超时/无进度 | **P0** | ✅ 已完成（JobService executor + 心跳看门狗 + 取消） |
-| 3 | "人脸分析要几个小时，还只能用 CPU" | 串行管线 | **P0** | ✅ 已完成（Vision 原生 + 后台任务 + 取消） |
-| 4 | "几万张脸时聚类跑不动" | DBSCAN O(n²) | **P0** | ✅ 已完成（LSH 候选 + 连续内存 + 对账门禁） |
-| 5 | "找相似只能找到连拍" | dHash 感知哈希天花板 | **P1** | ⏳ 未做（决策 A：embedding，待 2.1 标注评估） |
-| 6 | "调阈值就卡，每次都要重新算" | 全量重跑 | **P1** | ✅ 已完成（邻域阈值档预计算，T±4/T±8） |
-| 7 | "翻片时一阵一阵地卡" | 缓存元数据全量序列化 | **P1** | ✅ 已完成（SQLite + 惰性淘汰，ADR-007） |
-| 8 | "大工作区打开挑片页要等很久" | 全会话加载 | **P1** | ✅ 已完成（逻辑资产分页，ADR-008） |
-| 9 | "在 Capture One 里改一张，结果就全没了" | 失效策略整 session 全删 | **P2** | ✅ 已完成（输入级失效 + 增量聚类 1.3/1.6：邻域局部更新 + 定期全局收敛） |
-| 10 | "绑定的角色换个 session 又要重新认" | 重识别无 ANN 索引 | **P2** | ✅ 已完成（LSH 索引 + face-matcher 接线；批量匹配走精确扫描；HNSW 已于 Cut 5 删除） |
-| 11 | "只有 Mac 能用" | 平台单一 | **P2（决策）** | ✅ 已决策：macOS 独占原生；Windows 保持决策门（4.3） |
-
-> P0/P1/P2 指"修复优先级"：P0 决定大图库是否可用，P1 决定日常体验，
-> P2 决定长期竞争力。
-
----
-
-## 二、关键技术决策与利弊分析
-
-### 决策 A：相似度从 dHash 升级为 Embedding（语义向量）——未立项
-
-保留 dHash 作为"精确相似/重复"的第一层（快、省、可解释），新增 Embedding 层
-（DINOv2 / CLIP-ViT 类模型）提供"语义相似"；双特征融合。
-
-- 价值假设："连拍备份是伪需求，同场景多角度才是真实语义"仍**未经标注数据证实**
-  （§八 评估计划），在证实前 embedding 只作为实验方向，不承诺具体成组行为；
-- 计算成本高 1-2 个数量级，需 GPU（CoreML/ANE）；余弦阈值不可解释需重设计 UI；
-- 结果漂移需模型版本指纹（`analysis_signature` 机制可复用，原生已沿用）；
-- **结论**：值得升级，但必须先验证产品语义（§八）再建管线；技术上
-  "dHash 打底 + embedding 分层"双模式，与增量索引（决策 B）、向量设施（决策 D）
-  同步落地。
-
-### 决策 B：增量索引与规模化——已落地
-
-- ✅ 文件级指纹、checksum 懒校验、后台补齐（1.1）；
-- ✅ 输入级失效（hash/观测/分析态按照片失效）+ 绑定成员迁移（1.2 部分）；
-- ✅ 阈值档预计算（1.4）；
-- ✅ 目录并行遍历 + 进度/暂停（1.5）；
-- ✅ 增量聚类 + 簇版本化 + 定期全局收敛（1.3）：`similarity_cluster_state/meta`
-  持久化分量与组种子，新增照片按 O(|added| × n) 邻域探测并入既有分量、只重算
-  受影响分量，未受影响分量直接复用旧簇；收敛间隔
-  （`similarity_cluster_convergence_interval`，默认 10）到期后全量收敛；
-- ✅ 增量 vs 全量对账矩阵（1.6）：随机 200 步增删改/重命名 × 5 组参数，逐步比对
-  划分、组顺序、代表图与未成组集合；
-
-### 决策 C：平台扩展——已落定为 macOS 独占原生
-
-- 原生迁移已完成（Swift/SwiftUI，Electron 已移除，2026-08-11）；
-- Windows 支持保持**独立决策门**（4.3），由社区/商业需求驱动，不阻塞其他决策；
-- 原"内核原生化（Rust core，Electron 外壳）"项已过时删除——Swift 原生已取代。
-
-### 决策 D：通用向量存储与 ANN 基础设施——已完成
-
-- 组件（历史：HNSW 增量插入 + angular LSH + 多样性启发式连接）原生实现于
-  `Face/VectorIndex.swift`；**HNSW 已于 Cut 5 删除（CL-06）**，现行实现只剩 angular
-  LSH（聚类候选生成 + matcher 实例级 LSH 路径），LSH 召回对账门禁保留；
-- 消费方已接线：`Face/Matcher.swift`（跨 session 重识别，痛点 10 闭环）；
-- 边界仍有效：SQLite 持久化 + 内存索引，不引入向量数据库选型。
-
----
-
-## 三、当前实现状态与基线（2026-10-22 快照，Cut 6 冻结）
-
-### 3.1 已完成（原生代码在主干，有单测覆盖）
-
-| 项 | 位置 | 说明 |
-|---|---|---|
-| 全原生迁移 | `desktop/native/` | Electron/React/TS/Node 残留清零（`scripts/check-no-legacy.sh` 门禁）；模块拆分为 8 个 target（Protocol/Persistence/Delivery/Analysis/Application/UI/Host/App）；2026-10-22 本机 `swift test`：gather-core **1,092 / 157 suites**，gather-app **581 / 66 suites**，exit 0 |
-| 类型化 API 16/126 | `gather-core/Sources/GatherProtocol/API/` + `gather-app/Sources/GatherHost/APIs/` | Cut 1 删除 118 条字符串命令与 Router；合并后实测 16 协议 / 126 方法（Cut 1 基线 16/110；P0/P1 增量以代码为准），经 `AppServices` 注入，0 处 `execute("x.y")`；映射表归档在 [archive/cuts/api-migration-map.md](archive/cuts/api-migration-map.md) |
-| Culling 逻辑资产分页 | `gather-core/Services/CullingService.swift` | keyset 游标、首选变体谓词、total 逻辑资产（ADR-008） |
-| 阈值预计算多档 | `SimilarityService` | 主档 + T±4/T±8 档位，`precomputed` 行排除不变量 |
-| 任务化分析/写回 | `Services/JobService.swift` + executors | 租约/心跳/checkpoint/dedupeKey/取消/重试；`sim.recluster` 已任务化（ADR-024） |
-| 相似 hash 批量复用 | `SimilarityService` | 分块 `IN` 查询，消除 N+1 |
-| Vision 人脸管线 | `gather-core/Sources/GatherAnalysis/Face/` | 检测 + 768 维特征编码 + Inference 调度；ONNX 仅质量门回退（ADR-026） |
-| 聚类/向量对账 | `Face/Clusterer` / `VectorIndex` | DBSCAN+LSH 对账；LSH 召回对账（HNSW topK 段已随 CL-06 删除） |
-| 写回可靠性 | `DeliveryCoordinator` + `DeliveryRepo` + 纯函数 `aggregateSessionState` | `deliveries/delivery_sessions/delivery_items/delivery_intents` 单事务确认；冲突检测/备份/重试/清理（ADR-015 历史；`MetadataSyncCoordinator`、`CaptureOneSyncState` 已删，见 ADR-028） |
-| 工作区状态 | `WorkspaceStatusService` | 只读聚合、固定优先级推荐、离线 TTL（ADR-012/013） |
-| 一跳化导入 | `SessionService` / `IndexerService` | 路径不跨 IPC、`truncated_import` 标记、去重键 |
-| 本地化 | `L10n` / `LanguageStore` + `.lproj` | 209 项错误码 + 任务/相位文案；en 1,862 键 / zh 9 占位键；切语言 Observation 重渲染，菜单重建（ADR-016/019/020） |
-| 主题与无障碍 | `GatherTheme` / RootView | 品牌令牌 + 语义字体/按钮层级/accessibilityHidden 门控 |
-| 深链/菜单/导入 | `GatherAppDelegate` | gather:// 深链、文件打开、拖拽、菜单、importCompleted 通知 |
-
-### 3.2 已实现但未接通（落差）
-
-- **真实人脸质量门**（真实数据集 ARI/NMI、推理质量标注验收）：代码链路完整，
-  质量门未执行（范围外），ONNX 回退开关按 ADR-026 悬置；
-- **Capture One 人工 Load-Metadata 矩阵**：发布前由测试人员执行（ADR 发布门禁 2）。
-
-### 3.3 已实测基线
-
-| 项 | 结果 |
-|---|---|
-| 算法基准（`gather-core-benchmarks`） | 2 万/5 万两档全过（dHash、embedding、LSH）；Cut 5 增 10k 合成人脸显式档 `--face-10k`（聚类 + 批量匹配） |
-| 聚类对账 | 25k 合成 8 簇 eps=0.6：ARI=1.0000 / NMI=1.0000 / 加速 3.1x（unit 级） |
-| （历史）HNSW 质量门禁 | recall@1 ≥ 0.9，查询 ≈0.3ms/次，增量插入召回波动 −0.008（HNSW 已删除，该指标不再维护） |
-| SchemaCurrent / 历史快照 | `SchemaCurrent.swift`（唯一 DDL）：当前 **44 表 / 386 列 / 72 索引 / 65 外键 / `user_version=1`**；空库由 `Database.open(at:)` 一次建齐；V1/V2 迁移链已删除，旧版本默认 fail-closed（显式 reset 才归档重建）；旧 35 版快照归档为 [schema.snapshot-v35.json](archive/schema.snapshot-v35.json)（历史，不参与门禁） |
-| 人脸算法基线（**合成标注集**，单 seed） | 门槛 0→0.5：低质量但方向正确的样本 F1 0.7273→0.6977（25% 进噪声、**跨身份误聚 0**）、低质量桥接点使同人分裂（R 1.0→0.5238）；ARI 用两种等价实现互证 |
-| margin 生产路径曲线（49 查询 / 6 人库） | 0 → 错绑 3；**0.01（出货默认）→ 错绑 2 + 歧义 2**；0.04 → 错绑 0（覆盖 0.857）；同覆盖率精度 0.9655→1.0000 |
-
-> 以上只证明单元/组件层面，不能替代真实素材的应用级验收（Stretch 门）。第三行是**合成 embedding** 层结论：不证明真实识别精度，不能替代真实标注集复核。
-
-### 3.4 尚未验证（应用级缺口）
-
-- 真实 RAW/JPEG 混合导入的端到端耗时与峰值内存（实材归因，范围外）；
-- 10 万规模下聚类/检索/缓存的真实表现（Stretch 门）；
-- 人脸推理与聚类在真实照片集上的吞吐与质量（范围外，见 3.2）；
-- 专用 CoreML 嵌入模型的**真实推理**路径：仓库无 `.mlmodel/.mlmodelc` 夹具，0 覆盖（纯函数/指纹/读取/工厂错误均有覆盖）；首次接入必须人工确认维度、是否已归一化、多输出模型的输出名。
-- 真实素材冒烟：`GATHER_FACE_FIXTURE=<jpg> swift test --filter FaceRealPhotoPipelineTests` 已可跑（真实人像 → 检测 → 对齐 → 768 维单位向量）；默认跳过（本机测试进程无法从 Data 解 RAW）。
-- 布局约束崩溃（F01/N01）与导入入口（F02）的**交互级**验收：单测能覆盖范围语义、任务分层、裁切换算与状态文案，
-  也能用 NSHostingView 拟合尺寸守住「页面最小宽度预算」（挑片 876→440pt），
-  但「连续切换标签/缩放窗口/开关检查器不触发约束循环」「一次点击只出现一个目录选择器」只能在真机交互中确认，
-  清单见 [UI 审查修复台账 §14](archive/reviews/ui-review-2026-09-29-fixes.md) 与
-  [第二轮修复台账 §11](archive/reviews/ui-review-2026-09-29-round2-fixes.md)。
-- 第三轮发散审计列出的 **P0/P1 待修项**（挑片/重复页 VM 未入草稿缓存、返回来源栈、
-  挑片人脸对齐公式与拖拽累积、选择集/阈值失效、E 报告的 6 处丢目标与 7 处重复主动作、
-  测试改造）见 [第三轮审计台账 §8](archive/reviews/ui-review-2026-09-29-round3-audit.md)。
-
-### 3.5 技术债与未决项（指针）
-
-工程侧技术债清单、不可再删清单与残余风险维护在
-[reviews/functional-design-review.md](reviews/functional-design-review.md)：含 6 份重复的
-并发游标类、8 组 app 重复函数、schema 单源化、公共基础设施抽取、查询性能项，以及
-"写回内核外 ~11 处裸 sidecar 路径""`MetadataWritebackFailure` 未进 UI""旧 118
-命令路由的运行时契约（Cut 1 已删除，由 API 行为测试替代）"等已知限制。未接线资产
-的删除裁决见 ADR-028。
-
----
-
-## 四、分阶段计划
-
-### 验收双档位
-
-- **Release 门（2 万照片）**：每个 Phase 的硬性通过条件；
-- **Stretch 门（10 万规模）**：不得崩溃、耗时记录在案；允许近似算法，但必须附
-  质量对账。不因追求 10 万档理想指标延迟可交付的止血版本。
-
-### Phase 0：性能止血 —— ✅ 全部完成
-
-| 任务 | 状态 |
-|---|---|
-| 0.1 聚类超时治理（动态超时 + 流式进度 + 心跳看门狗） | ✅ 已完成 |
-| 0.2 人脸管线并行化（滑动窗口并发 + 后台任务） | ✅ 已完成（Vision 原生，含取消） |
-| 0.3 DBSCAN 降复杂度（Float32Array + LSH 候选 + 质量对账） | ✅ 已完成 |
-| 0.4 磁盘缓存元数据改造（SQLite/WAL + 惰性淘汰） | ✅ 已完成 |
-| 0.5 culling 分页 + 富字段懒加载 | ✅ 已完成 |
-
-### Phase 1：增量索引与规模化（决策 B）
-
-| 任务 | 状态 | 验收标准 |
-|---|---|---|
-| 1.1 checksum 懒校验 + "跳过 checksum"设置 | ✅ 已完成 | 首次导入 5000 张 RAW ≤ 3 分钟（不含哈希） |
-| 1.2 文件级失效粒度 | ✅ 已完成 | 输入级失效 + 绑定迁移 + 增量聚类设施（1.3）已落地，变更照片不再触发全量重聚类 |
-| 1.3 增量聚类 + 簇版本化 + 定期全局收敛 | ✅ 已完成 | 新增 100 张后相似组在 10s 内局部更新（2 万张真实分布实测 0.21s）；全局一致性由 1.6 对账矩阵保证 |
-| 1.4 阈值预计算多档结果 | ✅ 已完成 | 阈值滑块切换 ≤ 500ms，无需重跑分析 |
-| 1.5 目录遍历并行化 + 扫描进度/暂停 | ✅ 已完成 | 10 万文件树首次扫描 ≤ 2 分钟（不含哈希） |
-| 1.6 增量 vs 全量对账测试矩阵 | ✅ 已完成 | 随机增删改/重命名 200 次 × 5 组（阈值 0-8 / 组大小 2-4），增量结果与全量逐步一致 |
-
-### 基础设施里程碑 V：通用向量存储 + ANN（决策 D）—— ✅ 已完成（HNSW 部分已历史化）
-
-> 2026-10-22 注记：本节的 HNSW 组件已随 Cut 5 / 5b-2a（CL-06）删除，现行只剩
-> angular LSH（`Face/VectorIndex.swift`）。下表 ✔ 描述当时的里程碑，不代表当前
-> 使用 HNSW。
-
-| 任务 | 状态 |
-|---|---|
-| V.1 向量表（SQLite 持久化 + 内存 HNSW；后者已删除）+ 模型版本指纹 | ✅ 已完成（VectorIndex.swift；指纹沿用 `analysis_signature`） |
-| V.2 与精确暴力的质量对账工具 | ✅ 已完成（历史 HNSW recall@1 ≥ 0.9 门禁；现行 LSH 召回由 vector 对账覆盖） |
-| V.3 增量索引更新（HNSW insert，已删除） | ✅ 已完成（历史记录；现行 LSH 建索引为整批重建，聚类增量走 ClusterPipeline） |
-
-### Phase 2：相似度 Embedding 升级（决策 A，依赖 V + 1.3）—— ⏳ 未立项
-
-| 任务 | 验收标准 |
-|---|---|
-| 2.1 产品价值验证（前置，见 §八）：标注数据评估 | 三档阈值 precision/recall/过度合并率有数据；连拍/同场景假设被证实或证伪 |
-| 2.2 图片 embedding 模型（DINOv2 类）+ GPU 执行提供方 | 单张推理：CoreML/ANE ≤ 30ms，CPU ≤ 150ms |
-| 2.3 双模融合：dHash 精确层 + embedding 语义层 | "连拍/备份"与"同场景多角度"分别成组，可分别调参 |
-| 2.4 模型版本指纹与结果版本化（复用 V.1） | 升级模型后旧结果可冻结/按版本重算，不静默漂移 |
-| 2.5 相似组 → 关键词候选（CLIP 图文关联，可选） | 自动生成组关键词候选，人工确认后写回 |
-
-### Phase 3：人脸增强（依赖 V）—— ◐ 部分完成
-
-| 任务 | 状态 | 验收标准 |
-|---|---|---|
-| 3.1 检测模型换固定输出尺度以启用 CoreML/ANE | ✅ 已取代（Vision + 内置 SFace 模型 38.5MB/Apache-2.0；原 ONNX/CoreML 议题见 ADR-026） | 1 万张人脸分析 ≤ 30 分钟，期间 UI 可操作 |
-| 3.2 跨 session 重识别：绑定角色 → 全局人脸库自动匹配 | ✅ 已完成（LSH 接入 `Face/Matcher.swift`） | 同角色跨 session 自动匹配，无需重新标注 |
-| 3.3 簇持久化与增量 | ⏳ **待做**（1.3 的增量设施已就绪，可直接复用同一模式） | 再次分析只处理新增/变更照片，簇在 10s 内更新 |
-
-### Phase 4：体验、生态与平台（决策 C 的落地窗口）
-
-| 任务 | 优先级 | 状态 |
-|---|---|---|
-| 4.1 Capture One 双向自动同步（插件扩展，减少手动 Load Metadata 环节） | 高 | ⏳ 待做（单向往 Gather 已完整：同步状态机/C1 健康面板/胶囊） |
-| 4.2 模板/批量关键词的 UX 打磨（Template 服务已落地） | 中 | ⏳ 待做 |
-| 4.3 Windows 支持评估与立项 | 按需求 | 决策门，保持未承诺 |
-| 4.4 （原 Rust core 立项评估） | — | ✅ 已过时删除：Swift 原生迁移完成（2026-08-11） |
-
----
-
-## 五、依赖关系与节奏
-
-```
-Phase 0（止血）✅ → Phase 1（增量索引）──┬─> 里程碑 V（向量 + ANN）✅
-                                          │         ↙       ↘
-                                          │  Phase 2（embedding）⏳  Phase 3（人脸重识别）◐
-   Phase 4（体验/平台）与 1-3 并行
-```
-
-- Phase 0 已闭环；里程碑 V 已闭环并被 Phase 3.2 消费；
-- Phase 2 依赖 V（✅）+ 决策 B 的失效粒度（1.3 ✅，embedding 可按同一增量设施
-  只重算变更照片）；
-- Phase 3.3 可直接复用 1.3 的增量设施（`IncrementalClusterer` + 状态表模式）。
-
-### 近期执行顺序
-
-1. **数据正确性优先**：增量聚类（1.3）+ 对账矩阵（1.6）已闭环；下一步是把同一
-   设施复用到人脸簇增量（3.3），补齐跨模块的规模化前提；
-2. **发布前置**：真实人脸质量门裁决（ADR-026 的回退开关保留/移除）+ C1 人工
-   Load-Metadata 矩阵（ADR 发布门禁）；
-3. **体验项**：recluster 任务化（ADR-024）、优雅停机（ADR-023）按发布窗口排期；
-4. **验证 embedding 产品价值**（2.1 标注评估），通过后再建设完整图片推理管线；
-5. Windows（4.3）保持决策门，不进入近期承诺。
-
----
-
-## 六、验收与基准体系
-
-原生迁移后基准由 `gather-core-benchmarks`（`desktop/native/gather-core/Sources/
-GatherCoreBenchmarks/`）承担：2 万/5 万两档全过（dHash、embedding、LSH；HNSW 档已随
-CL-06 删除），另加 Cut 5 的 10k 合成人脸显式档 `--face-10k`（FaceClusterer/DBSCAN +
-FaceMatcher 批量匹配；无模型，不测检测/嵌入）。合成数据驱动（原 `GATHER_TELEMETRY`
-已无读取点，Telemetry 模块已删，见 ADR-028）。
-
-| 基准 | 场景 | 关键指标 | 验收对象 |
+| # | 痛点 | 优先级 | 状态 |
 |---|---|---|---|
-| Import | 真实 RAW/JPEG 混合；冷缓存/热缓存两轮 | 总耗时、checksum 后台补齐进度、峰值内存 | 1.1、1.5（实材归因仍为范围外） |
-| Culling | 首屏、连续滚动多页 | 首屏耗时、命令载荷、决策乐观更新延迟 | 0.5、ADR-021 |
-| Similarity | 2 万/5 万条目、三档阈值 | 聚类耗时、取消、阈值切换耗时 | 0.1、0.3、1.4 |
-| Face | 1 千/1 万张脸 | 检测吞吐、聚类吞吐、质量对账、失败恢复 | 0.2、0.3、3.2 |
+| 1 | 导入 1 万张要等一晚上 | P0 | 已完成（懒校验 + 并行遍历 + 任务化） |
+| 2 | 相似度分析跑一半超时 | P0 | 已完成（JobService + 心跳看门狗 + 取消） |
+| 3 | 人脸分析几小时且只用 CPU | P0 | 已完成（Vision + 后台任务 + 取消） |
+| 4 | 几万张脸聚类跑不动 | P0 | 已完成（LSH 候选 + 对账门禁） |
+| 5 | 找相似只能找到连拍 | P1 | 未做（Embedding，待标注评估） |
+| 6 | 调阈值卡、每次重算 | P1 | 已完成（阈值档预计算 T±4/T±8） |
+| 7 | 翻片一阵阵地卡 | P1 | 已完成（SQLite 元数据缓存 + 惰性淘汰） |
+| 8 | 大工作区挑片页等很久 | P1 | 已完成（逻辑资产分页） |
+| 9 | C1 改一张就全丢 | P2 | 已完成（输入级失效 + 增量聚类） |
+| 10 | 换 session 要重新认人 | P2 | 已完成（LSH + matcher） |
+| 11 | 只有 Mac 能用 | P2 | 已决策：macOS 独占；Windows 保持决策门 |
 
-> 每个 Phase 结束跑对应基准（而非只跑组件基准），数值记入 §七。
+> P0 决定大图库是否可用，P1 决定日常体验，P2 决定长期竞争力。
 
----
+## 二、关键决策
 
-## 七、基线记录
+- **A（未立项）**：dHash 打底 + Embedding 分层。价值假设未经标注数据证实，
+  先做 §六 评估，再建管线。
+- **B（已落地）**：文件级指纹、checksum 懒校验、输入级失效、阈值档预计算、
+  目录并行遍历、增量聚类 + 定期全局收敛、增量 vs 全量对账矩阵。
+- **C（已定）**：macOS 独占原生（Electron 已移除）；Windows 是独立决策门。
+- **D（已完成）**：SQLite 持久化 + angular LSH（`Face/VectorIndex.swift`）；
+  HNSW 已随 Cut 5 删除，召回由对账门禁覆盖。
 
-| 日期 | 级别 | 规模 | 项 | 数值 | 备注 |
-|---|---|---|---|---|---|
-| 2026-08-06 | unit | 20k | dHash 聚类（th=16） | ≈1.05s | `cluster-engine-perf` 预算断言 <2s |
-| 2026-08-06 | unit | 1.5k | （历史）HNSW recall@1 门禁 | recall ≥ 0.9、查询 ≈0.3ms、波动 −0.008 | 合成 8 簇 512 维；HNSW 已于 Cut 5 删除，不再维护 |
-| 2026-08-09 | unit | 25k | LSH 聚类对账 | ARI=1.0000 / NMI=1.0000 / 3.1x | 合成 8 簇 eps=0.6 |
-| 2026-08-11 | app | 2 万/5 万 | 原生四套基准 | 两档全过 | `gather-core-benchmarks` |
-| 2026-08-12 | unit | — | 原生全量测试 | core 765 / app 92 全绿 | 迁移 + 对账收尾台账 |
-| 2026-08-13 | unit | — | 验收修复轮全量回归 | core 772 / app 172 全绿 | 深色徽标/awaitSync/键盘焦点 + 组件统一 + 写回直测 |
-| 2026-09-22 | unit | 2 万 | 增量聚类（真实分布 +100 张） | 0.21s（预算 <10s）；全量状态构建 27s | core 789 / app 172 全绿；对账矩阵 5 配置 × 200 步 |
-| 2026-09-28 | unit | — | 清理后全量回归 | core 795 / app 173 全绿 | 未接线资产删除（ADR-028）；两条门禁 exit 0 |
-| 2026-09-29 | unit | — | UI／交互审查修复轮全量回归 | core 951/952（1 项受构建沙箱限制）/ app 236 全绿 | 13 项发现见 [UI 审查修复台账](archive/reviews/ui-review-2026-09-29-fixes.md)；崩溃根因来自 4 份系统崩溃日志 |
-| 2026-09-29 | unit | — | UI 验收（第二轮）修复回归 | core 951/952（同上）/ app 250 全绿 | 10 项发现见 [第二轮修复台账](archive/reviews/ui-review-2026-09-29-round2-fixes.md)；挑片最小宽度 876→440pt 并加装布局预算守卫 |
-| 2026-09-29 | unit | — | 第三轮同类问题发散审计（6 路）+ P0/P1/P2 落地 | core 952/953 / app 265 全绿 | 8 类同型缺陷、40+ 条发现；12 项审计期 + 9 项 P0/P1 + 9 项 P2 续修见 [第三轮审计台账](archive/reviews/ui-review-2026-09-29-round3-audit.md) |
-| 2026-09-29 | unit | — | 五路审计（正确性/完整性/最优性）+ 后续修复 | core 958/959 / app 273 全绿 | 5 路只读审计确认 P0×1 + P1×8 + P2×10 并已修（英文占位符崩溃、图库 reload/事件刷新代数、定位三态、推荐去重、指纹覆盖、全失败明细、入口意图与菜单探针等）；C-1/C-2/B-2/G-4/P2-12/D-2 已续修，剩 A10/A11（产品口径）与原生验收见 [审计台账 §0.5](archive/reviews/ui-review-2026-09-29-round3-audit.md) |
-| 2026-09-30 | unit | — | 9-30 原生版审查（B1–B7）修复 | core 959/959* / app 279 全绿 | 返回语义（B1）、图库轮询生命周期（B2）、预览请求序号（B3）、人物选择收敛（B4）、缩略图过期判定（B5）、门禁 locale 与 CI（B6）、真 LRU（B7）见 [9-30 修复台账](archive/reviews/ui-review-2026-09-30-fixes.md)；* 唯一失败为沙箱环境性用例 |
-| 2026-09-30 | unit | — | 9-30 审查修复（B1–B7）+ 查看器可见区域细节解码 | core 961/962* / app 286 全绿 | 返回语义、图库轮询、预览序号、人物选择、缩略图过期、门禁 locale/CI、真 LRU；此后查看器改为「基准档底层 + 可见区域 tiled 细节层」（`RAWDecoder.decodeRegion` + `PhotoViewerGeometry.detailTile`）；* 唯一失败为沙箱环境性用例 |
-| 2026-09-30 | unit | — | 六路性能审计 + 全量修复第一轮（23 项） | core 962/963* / app 288 全绿 | 见 [性能审计台账](archive/reviews/perf-audit-2026-09-30.md)：磁盘缩略图缓存、解码闸门 actor 化、派生状态记忆化、`jobs.list` 轻投影、SHA-256 流式、`db_synchronous` 接线等；`*` 唯一失败为沙箱环境性用例 |
-| 2026-09-30 | unit | — | 全仓审查（11 项：P1×4 + P2×7）全量修复 | core 970/971* / app 291 全绿 | 见 [全仓审查修复台账](archive/reviews/full-review-2026-09-30.md)：XMP 续跑身份、run 级取消、迁移原子回滚、DB 关闭与句柄校验、指纹插值、数值设置分界、C1 管道排空、图库统一返回、模型安装暂存、插件状态/Makefile 依赖；`*` 唯一失败为沙箱环境性用例 |
-| 2026-09-30 | unit | — | 深审 D1–D8 修复 + 探针验收 | core 986/987* / app 298 全绿 | 见 [深审修复台账](archive/reviews/deep-review-2026-09-30-fixes.md)：导出失败回滚、孤儿恢复重取、清理 revision CAS、防抖取消、waitForIdle 超时、连接代数、模型整体回滚、参数上界；审查员 8 个探针已收入仓库作验收测试；`*` 唯一失败为沙箱环境性用例 |
-| 2026-09-29 | unit | — | 深度审查（D01–D12）修复 | core 953/954 / app 268 全绿 | 交付真实性（D01–D03）、图库异步边界（D04–D07）、目标照片定位（D08）、统一输出计划（D09）、入口意图（D10）、菜单兜底与人物入口（D11–D12）见 [第三轮审计台账 §0.3](archive/reviews/ui-review-2026-09-29-round3-audit.md)；仅剩原生人工验收 |
-| 2026-10-22 | unit | — | Cut 0–6 收口（破坏性重构） | core **1,092/157** + app **581/66** 全绿 | 7 target、SchemaV1 43 表/373 列、Router/118 命令删除、HNSW/ClusteringImpact 删除；当前账本见 [refactor-progress.md](refactor-progress.md) |
-| 2026-10-25 | unit | — | P0 五工作流 + Schema V3 | core **1,252/187** + app **687/78** 全绿 | 17 协议/121 方法、45 表/389 列/72 索引/65 外键（user_version=3）、8 道 strict 门禁；见 [P0 验收报告](reviews/p0-completion-2026-10-25.md) |
+## 三、当前状态（2026-10-29 采样）
 
----
+- 8 个功能 target；16 域 API / 140 方法；SQLite 单一 schema（44 表 / 386 列 /
+  user_version=1）；core 1,459 tests / 217 suites、app 794 / 90。
+- 已完成：原生迁移、分页、阈值多档、任务化、Vision 人脸、聚类/向量对账、
+  写回可靠性、本地化、主题与无障碍。
+- 未接通：真实人脸质量门（外部标注集）、C1 人工 Load-Metadata 矩阵（发布前）。
+- 未验证：真实素材导入耗时/峰值内存、10 万规模表现、真实照片吞吐与质量、
+  真实 CoreML 嵌入推理（仓库无夹具）。
+- 技术债与清理项：见 [cleanup-backlog.md](cleanup-backlog.md) 与 [ADR.md](ADR.md)。
 
-## 八、产品假设验证计划（决策 A 前置）
+## 四、后续计划
 
-「连拍备份是伪需求，同场景多角度才是真实语义」是高风险的确定性断言——婚礼、体育、
-棚拍、商品摄影对"相似"的定义差异很大。2.1 落地前建立人工标注数据集，评估：
+| 项 | 状态 |
+|---|---|
+| 3.3 人脸簇增量（复用 1.3 设施） | 待做 |
+| 2.1 Embedding 标注评估 → 2.2–2.5 | 待决策 |
+| 4.1 C1 双向自动同步（插件扩展） | 待做 |
+| 4.2 模板/批量关键词 UX | 待做 |
+| 4.3 Windows 评估 | 决策门，不承诺 |
 
-- 连拍是否应合并；
-- 同场景不同人物是否应合并；
-- 不同客户但构图相似是否误合并；
-- 时间、文件夹、相机与 EXIF 是否应参与融合；
-- 高/中/低三档阈值的 precision、recall 与过度合并率。
+## 五、验收与基准
 
-评估结论决定 2.2-2.5 是否立项。Embedding 确定为实验方向，但不把具体产品语义写成
-已验证事实。
+- Release 门 2 万、Stretch 门 10 万；benchmark 用 `gather-core-benchmarks`
+  （`--quality/--margin/--smoke/--incremental`），内置阈值、退出码即结论。
+- 每个 Phase 结束跑对应基准；数值记入发布说明，本文件不再维护逐日流水。
 
----
+## 六、产品假设验证（决策 A 前置）
 
-## 九、不做清单（防范围蔓延）
+建立人工标注集，评估：连拍是否应合并；同场景不同人物是否应合并；不同客户但构图
+相似是否误合并；时间/文件夹/相机与 EXIF 是否参与融合；高/中/低三档阈值的
+precision、recall 与过度合并率。结论决定 2.2–2.5 是否立项。
 
-- 不做 RAW 编辑、不做完整 DAM/目录迁移、不做地图/视频/移动端（短期）；
-- 不做语义搜索的自然语言 UI（除非 CLIP 候选落地）；
-- 不做云端同步（隐私定位不变，除非用户明确要求）；
-- 不做 Windows 原生、Tauri/Qt/其他跨平台框架（决策门 4.3 未开）；
-- 不保留双栈并存（Electron 残留已清零，边界扫描门禁守护）。
+## 七、不做清单
+
+- 不做 RAW 编辑、完整 DAM/目录迁移、地图/视频/移动端（短期）。
+- 不做语义搜索的自然语言 UI（除非 CLIP 候选落地）。
+- 不做云端同步。
+- 不做 Windows 原生、Tauri/Qt/其他跨平台框架（决策门未开）。
+- 不保留双栈并存（Electron 残留已清零，边界门禁守护）。

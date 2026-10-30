@@ -1,7 +1,7 @@
 # Gather 设计系统与页面配方（2026-10-24）
 
 > 目标：页面**声明角色**，不自己拼 font / color / background / chrome。
-> 背景与完整论证见 [外观与交互宏观架构评审](../reviews/appearance-interaction-architecture-2026-10-24.md)。
+> 背景与完整论证见 git 历史（原宏观架构评审已清理）。
 > 本文只写**怎么用**，不重复评审。
 
 ---

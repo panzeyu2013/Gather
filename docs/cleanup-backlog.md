@@ -1,6 +1,7 @@
 # 清理欠账清单（Cut 0 盘点）
 
-> 依据：`docs/reviews/refactor-design-breaking-2026-10-21.md` §1 / §8 / §9。
+> 2026-10-30：`check-docs.sh` 与 `docs/archive/` 已移除；文中历史路径仅作记录。
+> 依据：原 refactor 设计文档 §1 / §8 / §9（已清理，见 git 历史）。
 > 盘点日期：2026-10-21。仓库：`/Users/panzeyu2013/Desktop/code/develop/Gather`。
 > 本文件只做**盘点**，不删除任何代码；删除动作在对应 Cut 内执行，且必须与本文件的验收命令一一对应。
 > 标记约定：**【已确认】** = 有源码/命令证据；**【疑似】** = 静态扫描结论，需运行期或人工确认；**【需验证】** = 需 `EXPLAIN QUERY PLAN` / 基准 / 手工操作确认。
@@ -34,11 +35,11 @@
 - **历史位置（已删除）**：`SessionCommandRouter.swift`（3,258 行）、`Host/CommandRouter.swift`（51 行）、`Support/NativeCommandClient.swift`（77 行）；app 侧实测 14 个文件共 79 处 `.execute(`、74 条命令字面量。
 - **实际删除**：7 文件 / 4,052 行（`git show HEAD:<path> | wc -l`）：SessionCommandRouter 3,258、CommandRouter 51、NativeCommandClient 77、CommandSurfaceRuntimeTests 296、NativeCommandClientTests 223、StubCommandRouter 38、check-command-surface.sh 109；另删除工作区测试支撑 AppCompositionTestSupport（约 73 行，按 D-080 差额推算，未进 HEAD）。118 命令 → 16 协议 / 110 方法。
 - **验收结果**：`execute(`/`executeAsync(`/`enqueue(` 字面量 0；`SessionCommandRouter|CommandRouter|NativeCommandClient|WebResponse|StubCommandRouter` 源文件引用 0；check-no-legacy 的 R5 全部 enforced 0；app 455/55、core 1080/149 绿。
-- **风险**：已由 API 输入类型/`Confirmed<T>`/`PhotoPathPolicy` 承接；行为覆盖见 [cut1-completion-report.md](archive/cuts/cut1-completion-report.md)。
+- **风险**：已由 API 输入类型/`Confirmed<T>`/`PhotoPathPolicy` 承接；行为覆盖见 cut1-completion-report（已清理）。
 
 ### CL-02 迁移链 / 旧 Schema / 快照 —— status: done（2026-10-22，S5c-2b-3b-2b-3）
 - **结果**：删除 `Migrations.swift`（1,628 行）与 `SchemaV1Transition.swift`（121 行）；`Schema.swift` 649→14（仅 `activeAnalysisJobStatusSQLList` + check-docs 版本镜像）。`MigrationTests` 改写为 fresh-only（43 表 / user_version=1 / 无 legacy 表列）。
-- **现状**：`SchemaV1.swift` 是唯一 DDL 真相源；生产 `Database.open(at:)` 建库/重置（不兼容库含 -wal/-shm 整体改名）；`docs/archive/schema.snapshot-v35.json` 仅历史（schema 35），不参与门禁。
+- **现状**：`SchemaV1.swift` 是唯一 DDL 真相源；生产 `Database.open(at:)` 建库/重置（不兼容库含 -wal/-shm 整体改名）；旧 schema 快照（schema 35）仅作历史，不参与门禁。
 - **验收**：`MigrationRunner`/`SchemaV1Transition` 引用 = 0；fresh 库经 `SchemaV1.sql` 与 `Database.open` 两条路径同形。
 
 ### CL-03 outbox + writeback 双状态机 —— status: done（2026-10-22，S5c-2b-3b-2b-3）
@@ -52,7 +53,7 @@
 - **处置（2026-10-22）**：不保留“以后可能用”的类型储备，删除 `Support/RequestGate.swift`（34 行）、`Support/ViewState.swift`（49 行）及 `Tests/GatherAppTests/RequestGateTests.swift`（4 例/58 行）、`ViewStateTests.swift`（8 例/98 行），共 **4 文件 / 239 行 / 12 例**；4 个 VM 的私有代次原样保留。
 - **验收偏差**：原验收 `grep -rnE 'fetchGeneration|latestRequestID|tierRequestID|pageVersion' gather-app --include='*.swift'` = 0 **未达成**；实测仍 **37 行**（fetchGeneration 16 / latestRequestID 5 / tierRequestID 7 / pageVersion 11，其中 2 行双命中）。`RequestGate` 在生产与测试中的引用均为 0。
 - **解除条件**：真正决定统一时，先按 4 个 VM 的代次语义（Library 同时比较 generation + requestID、分页与刷新共用一个计数）重新设计，再新建类型并补乱序/取消/重入测试；不得只建类型不接线。
-- **残余**：`GatherUI/Support/LoadPhase.swift:9/18` 注释经 2026-10-22 16:48 复核已无 `ViewState` 引用（并行工作区已修；本轮按白名单未改 Sources）；`scripts/check-duplicate-symbols.sh` 的 RequestGate 规则与“Cut 4 落地”文案已于最终清理移除（见 [final-cleanup-docs.md](final-cleanup-docs.md)）。
+- **残余**：`GatherUI/Support/LoadPhase.swift:9/18` 注释经 2026-10-22 16:48 复核已无 `ViewState` 引用（并行工作区已修；本轮按白名单未改 Sources）；`scripts/check-duplicate-symbols.sh` 的 RequestGate 规则与“Cut 4 落地”文案已于最终清理移除（原记录 final-cleanup-docs.md 已清理）。
 - **风险**：守卫语义差异（Library 同时比较 generation + requestID）合并时丢条件；分页与刷新共用 generation 的副作用。
 
 ### CL-05 度门控 BFS + 双聚类 —— status: done（2026-10-22，5b-1 / 5b-2a）
@@ -435,7 +436,7 @@ grep -rn 'class LockedBox\|class AsyncGate' --include=*.swift desktop/native/*/T
 - **死链**：非 archive 当前文档 **0 缺失**（`face-clustering-benchmark.md` 13 条旧 `GatherCore` 源码链接改到 `GatherAnalysis`/`GatherDomain`）；归档 33 条旧源码链接按快照保留并在 archive 索引注明。
 - **构建产物**：删除 `release/Gather.app`（22 MB）与 4 个非活动 `.build` scratch（≈2.19 GiB）；保留并行构建正在写入的 `.build/scratch` 与两包增量缓存 `.build`。
 - **A/B 档收尾清理（2026-10-22）**：26 文件头 + 4 交付端口注释；删 `JobScopeCheckpoint`（1 文件/22 行，测试改 `JobCreateParams.metadataScanRequestedPathsKey`）、`IndexerService.sha256File`、`GatherProgressBar` 4 参数、`GatherLocalization.appLocale`、2 私有常量、`VectorIndex.Candidate`、`FaceSimMutationPort`、2 个未调用 helper、`makeGatherTestDB`（22 处→`makeTestDB`）；57 文件 +84/−208。core **1,100/165**、app **617/68**、9 门禁、schema verify（43 表/373 列/69 索引/62 FK/user_version=2）绿。
-- **实测**：en **1,322** / zh 9；测试文件 **166**；535 Swift 文件 / 138,829 行（17:00 采样；并行工作区仍在变）；ratchet **53/235/127/0/0**（baseline try? 240）；docs/test-catalog/ratchet 三门禁全 OK。详见 [final-cleanup-docs.md](final-cleanup-docs.md)。
+- **实测**：en **1,322** / zh 9；测试文件 **166**；535 Swift 文件 / 138,829 行（17:00 采样；并行工作区仍在变）；ratchet **53/235/127/0/0**（baseline try? 240）；docs/test-catalog/ratchet 三门禁全 OK。详见 git 历史（原 final-cleanup-docs.md）。
 
 ---
 

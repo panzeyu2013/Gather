@@ -81,8 +81,8 @@
 - `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift` 校验 fresh 库（直接 exec
   `SchemaCurrent.createSQL` 与经 `Database.open` 两种路径）同形：版本 1、44 表、
   无悬空外键、逐表列数与 CHECK 约束不漂移。Schema 变更只改这一份 DDL 并同步计数/指纹。
-- `docs/archive/schema.snapshot-v35.json` 是旧迁移链时代（schema 35）的**历史快照**，
-  只作归档，不参与门禁；当前 schema 以 `SchemaCurrent`（44 表 / user_version=1）为准。
+- 旧迁移链时代（schema 35）的 schema 快照只作**历史记录**（文件已随归档清理），
+  不参与门禁；当前 schema 以 `SchemaCurrent`（44 表 / user_version=1）为准。
 
 ---
 
@@ -600,7 +600,7 @@ ROADMAP 决策 B（1.3/1.6）：重分析此前按签名复用只重算变更照
 （表结构、状态机、写回影响面预览、断点恢复）不弱于竞品，**差距在算法**——此前
 embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、聚类没有"核心点"概念，
 且匹配是"最近且 ≥ 阈值即绑定"（会把夹在两人之间的脸猜错）。
-（对标详情与可学项见 `docs/reviews/face-clustering-benchmark.md`。）
+（对标详情与可学项见 ADR-029 与 `Face/Matcher.swift`。）
 
 **决策（第一轮，2026-09-28）**
 
@@ -622,7 +622,7 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
    的 `faces migrate`）。
 6. **schema 34（历史）**：`face_observations` 追加 6 列（quality / face_size_px /
    roll_degrees / model_id / model_version / embedding_dim）。当时快照
-   `docs/archive/schema.snapshot-v35.json` 记为 34/35（43 表不变）；该轮对应的 schema
+   当时快照记为 34/35（43 表不变）；该轮对应的 schema
    为 3（44 表），旧迁移链已删除，见 ADR-005/006。
 
    **schema 5（历史版本号；当时 44 表、385 列）**：schema 4 给 `photo_metadata_cache`
@@ -724,7 +724,7 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
 
 生产默认使用固定来源、Apache-2.0 许可的 SFace CoreML FP32 模型，Vision 负责检测/关键点/采集质量。模型规格隔离人物向量空间。人工身份与拒绝记录存为模型无关的持久事实，观测、聚类和人物向量作为可重建投影。模型切换在准备成功后以事务发布，任何失败保留旧结果。相似度门槛采用本地素材对照的保守起点 0.65，既有自定义值不覆盖。
 
-[完整实施依据、对照数据和验证边界](archive/reviews/face-identity-replacement-2026-10-03.md)。
+完整实施依据、对照数据和验证边界见 git 历史（原研究报告已清理）。
 
 ## ADR-031：删除未接线的模板域（Template API / Service / Repo，2026-10-24）
 
@@ -739,8 +739,8 @@ embedding 直接按 bbox 裁剪（无关键点对齐）、质量分未计算、�
 表进入休眠；`GatherErrorCode.TEMPLATE_*` 码值保留（错误码是对外契约，删除需单独裁决）；
 本地化键若只服务模板错误，由后续 l10n 清理统一处理。
 
-**复活条件**：产品确认模板导出/应用工作流时，按 `docs/reviews/architecture-remediation-2026-10-24.md`
-的 R3-B 方案重建（含零引用测试与 UI 接线），不得只建类型不接线。
+**复活条件**：产品确认模板导出/应用工作流时，按 R3-B 方案重建（含零引用测试与 UI 接线），
+不得只建类型不接线。
 
 ## ADR-032：Delivery 与 Persistence 的依赖风格（R8，2026-10-24）
 

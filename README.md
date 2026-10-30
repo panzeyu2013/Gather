@@ -139,14 +139,14 @@ See [Architecture Decisions](docs/ADR.md), [Development guide](docs/DEVELOPMENT.
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decisions](docs/ADR.md)
 - [简体中文文档](docs/README.md)
-- [Historical archive](docs/archive/README.md)
 
 ## Contributing
 
-Issues and pull requests are welcome. Before submitting a change, run the
-native core and app test suites. Do not run the full bundle build in the normal
-test loop; it is reserved for release/packaging (or when the change explicitly
-touches packaging and needs a bundle check).
+Issues and pull requests are welcome. The two Swift packages each carry their own test suite;
+`./scripts/test.sh core|app` (or `all`) runs them — see the [development guide](docs/DEVELOPMENT.md).
+Do not run the full bundle build in the normal test loop; it is reserved for
+release/packaging (or when the change explicitly touches packaging and needs a
+bundle check).
 
 ## License
 

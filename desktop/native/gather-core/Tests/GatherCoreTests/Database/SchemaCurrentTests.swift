@@ -453,8 +453,8 @@ struct SchemaCurrentTests {
         let current = try Database.openInMemory()
         defer { current.close() }
         #expect(try scalarInt(current.connection, "PRAGMA user_version") == 1)
-        // 版本有两个镜像：SchemaSQL.currentSchemaVersion 是 check-docs.sh 的代码源，
-        // 忘了同步会让文档门禁对着旧版本判绿（升版时最容易漏）。
+        // 版本有两个镜像：SchemaSQL.currentSchemaVersion 与 SchemaCurrent.userVersion；
+        // 忘了同步会让升版测试红。
         #expect(SchemaSQL.currentSchemaVersion == SchemaCurrent.userVersion)
     }
 

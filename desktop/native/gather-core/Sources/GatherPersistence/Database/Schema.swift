@@ -5,11 +5,11 @@
 // 本文件只保留两处**仍被引用**的常量：
 //   1) activeAnalysisJobStatusSQLList —— AnalysisJobRepo 的部分唯一索引 WHERE 子句
 //      字面量（SQLite 部分索引匹配是语法级的，必须与 DDL 逐字一致）；
-//   2) currentSchemaVersion —— check-docs.sh 的代码版本对照入口；它是
-//      SchemaCurrent.userVersion 的字面量镜像，SchemaCurrentTests 断言两者相等。
+//   2) currentSchemaVersion —— SchemaCurrent.userVersion 的字面量镜像；
+//      SchemaCurrentTests 断言两者相等。
 public enum SchemaSQL {
     /// 当前库版本（镜像 SchemaCurrent.userVersion；见文件头）。
-    // 注意：不要写类型标注（check-docs.sh 按 currentSchemaVersion = <n> 提取）。
+    // 注意：不要写类型标注（测试按字面量断言）。
     public static let currentSchemaVersion = 1
 
     /// 活跃 job 状态集合的 **SQL 字面量唯一真相源**（顺序是语义的一部分）：

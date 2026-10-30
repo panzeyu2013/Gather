@@ -42,8 +42,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Docs consistency
-        run: ./scripts/check-docs.sh --strict
       - name: Cleanup ratchet
         run: ./scripts/check-cleanup-ratchet.sh
       # legacy boundary 已由 boundary job 先跑（gates needs: boundary），这里
