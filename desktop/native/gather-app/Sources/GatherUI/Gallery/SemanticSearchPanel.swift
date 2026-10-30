@@ -86,7 +86,10 @@ struct SemanticSearchPanel: View {
                 outcome = try await api.semanticSearch(
                     SemanticSearchQuery(sessionId: sessionId, photoId: seedPhotoId))
             } catch {
-                errorText = error.localizedDescription
+                // error.localizedDescription 会把 "The operation couldn't be completed…"
+                // 直接铺到面板上；域错误/码值错误统一走 APIErrorPresentation 漏斗
+                // （与 MetadataSyncBar / Gallery 页同一出口），诊断只留在日志侧。
+                errorText = APIErrorPresentation.message(for: error, with: l10n)
             }
             isLoading = false
         }

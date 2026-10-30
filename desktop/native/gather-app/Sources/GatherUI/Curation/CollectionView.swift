@@ -25,6 +25,10 @@ final class CollectionViewModel {
     private(set) var isLoading = false
     private(set) var isMutating = false
     var actionError: CommandError?
+    /// 破坏性动作被取消时的可见文案（渲染期按语言解析；VM 只存 key + 参数）。
+    ///
+    /// 与 actionError 分开：取消不是错误，页面要用中性/成功色，不是红条。
+    var notice: LocalizedText?
 
     init(album: any AlbumAPI, collection: CollectionSummary) {
         self.album = album
@@ -42,9 +46,18 @@ final class CollectionViewModel {
         }
     }
 
+    /// 取消破坏性动作：可见文案（不静默 return，也不发命令）。
+    /// 与 Settings / Duplicates 的同名入口同一语义（LocalizedText.cancel）。
+    func reportCancellation(_ action: String) {
+        notice = LocalizedText.cancel(action)
+        actionError = nil
+    }
+
     /// 移除成员（只动集合，不动照片文件）。
-    func remove(photoId: String) async {
+    func remove(photoId: String, displayName: String? = nil) async {
         guard !isMutating else { return }
+        // 新动作开始：上一次取消提示已过期（否则"已取消…"会挂在成功之后）。
+        notice = nil
         isMutating = true
         defer { isMutating = false }
         do {
@@ -52,6 +65,8 @@ final class CollectionViewModel {
                 CollectionItemsInput(collectionId: collection.id, photoIds: [photoId])
             )
             await load()
+            // D7：破坏性动作成功后必须有可见回执（否则"点了没反应"）。
+            notice = LocalizedText("已移出「%@」", params: [displayName ?? photoId])
         } catch {
             actionError = CommandError(error)
         }
@@ -157,6 +172,9 @@ private struct CollectionContent: View {
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
+    /// 待确认的"移出集合"目标（D7：这条路径此前是唯一无确认的破坏性入口）。
+    @State private var pendingRemoval: CollectionMember?
+
     private let columns = [
         GridItem(.adaptive(minimum: 140, maximum: 200), spacing: GatherMetrics.Space.m),
     ]
@@ -170,8 +188,37 @@ private struct CollectionContent: View {
                     .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                     .padding(.top, GatherMetrics.Space.m)
             }
+            if let notice = model.notice {
+                // 取消/中性反馈与错误条分开：同一 NativeBanner，换语义色。
+                NativeBanner(text: notice.resolve(with: l10n), color: GatherTheme.success)
+                    .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+                    .padding(.top, GatherMetrics.Space.m)
+            }
             content
         }
+        // D7：移出集合是唯一"不可撤销且有副作用"的入口（position 是用户资产，
+        // 移出后重新加入会排到末尾），因此走仓库统一的破坏性确认门控：
+        // 菜单只挂"待确认"，Confirmed 只可能从确认分支到达。
+        .gatherDestructiveConfirm(
+            pending: $pendingRemoval,
+            title: l10n("确认移除该成员？"),
+            confirmLabel: { _ in l10n("移除成员") },
+            confirmRole: { _ in .destructive },
+            // 说明后果而不只是复述对象：position 是用户资产，移出后重新加入只能排到末尾。
+            message: { item in
+                l10n.format("移除成员「%@」", displayName(item)) + "\n"
+                    + l10n("移出成员会丢失它在集合里的排序位置，重新加入会排到末尾。")
+            },
+            onConfirm: { item in
+                Task { await model.remove(photoId: item.photoId, displayName: displayName(item)) }
+            },
+            onCancel: { _ in model.reportCancellation(l10n("移除成员")) }
+        )
+    }
+
+    /// 成员展示名：filename 为空时回退 photoId（与网格行/提示同一口径）。
+    private func displayName(_ item: CollectionMember) -> String {
+        item.filename.isEmpty ? item.photoId : item.filename
     }
 
     private var header: some View {
@@ -273,8 +320,10 @@ private struct CollectionContent: View {
                 Task { await model.moveBy(photoId: item.photoId, offset: 1) }
             }
             Divider()
+            // 只挂"待确认"：确认弹窗挂在页面根节点（见 body 的
+            // gatherDestructiveConfirm），这里不直接发命令。
             Button(l10n("移出集合"), role: .destructive) {
-                Task { await model.remove(photoId: item.photoId) }
+                pendingRemoval = item
             }
         }
         .help(l10n("拖放调整顺序；⌘↑/⌘↓ 微调"))

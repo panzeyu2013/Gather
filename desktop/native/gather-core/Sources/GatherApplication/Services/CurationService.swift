@@ -128,10 +128,9 @@ public struct CurationService: Sendable {
         guard try !collections.nameExists(sessionId: input.sessionId, name: name) else {
             throw CurationError.nameConflict(name)
         }
-        let sortOrder = try collections.nextSortOrder(sessionId: input.sessionId)
-        let row = try collections.create(
-            sessionId: input.sessionId, name: name, sortOrder: sortOrder
-        )
+        // A9：sortOrder 交给仓储在**同一事务内**取尾部再 INSERT。原实现先
+        // nextSortOrder 再 create（两条独立语句），并发建集合会拿到同一个 sort_order。
+        let row = try collections.create(sessionId: input.sessionId, name: name)
         return Self.summary(row)
     }
 
@@ -262,7 +261,10 @@ public struct CurationService: Sendable {
             name = try CurationNaming.normalized(raw)
         }
         if let cover = input.coverPhotoId {
-            guard try stacks.members(stackId: row.id).contains(where: { $0.photoId == cover }) else {
+            // P1-8：`stacks.members(stackId:)` 现在按 PhotoVisibility 过滤（展示口径），
+            // 用它校验封面会把"封面成员已被淘汰"误判成 PHOTO_NOT_FOUND。封面不动点的
+            // 判定要用**不带谓词**的成员关系（StackRepo.isMember，SA1 P1-8 同批新增）。
+            guard try stacks.isMember(stackId: row.id, photoId: cover) else {
                 throw CurationError.photoNotFound(cover)
             }
         }
@@ -287,20 +289,33 @@ public struct CurationService: Sendable {
     public func addStackMembers(_ input: StackMembersInput) throws -> Int {
         let row = try requireStack(input.stackId)
         let photoIds = try requirePhotos(sessionId: row.sessionId, photoIds: input.photoIds)
-        _ = try stacks.detachPhotos(photoIds: photoIds)
-        return try stacks.addMembers(stackId: row.id, photoIds: photoIds)
+        // 摘旧堆栈 + 加入目标堆栈必须同一事务（与 createStack 同一条纪律）：
+        // 原实现两步各是一个已提交事务，add 失败会留下"照片已被摘掉、却不在任何
+        // 堆栈"的半状态，而 API 返回失败。仓储方法内部也是事务，这里是嵌套 →
+        // SAVEPOINT（同一连接、同一线程），语义等价于外层一个事务。
+        return try connection.transaction {
+            _ = try stacks.detachPhotos(photoIds: photoIds)
+            return try stacks.addMembers(stackId: row.id, photoIds: photoIds)
+        }
     }
 
     @discardableResult
     public func removeStackMembers(_ input: StackMembersInput) throws -> Int {
         let row = try requireStack(input.stackId)
         try requirePhotoIds(input.photoIds)
-        let removed = try stacks.removeMembers(stackId: row.id, photoIds: input.photoIds)
-        // 成员被摘空的堆栈不留壳（与 detachPhotos 语义一致）。
-        if try stacks.members(stackId: row.id).isEmpty {
-            _ = try stacks.delete(id: row.id)
+        // 删成员 → 判空 → 删堆栈同一事务：原实现判空/删除在 removeMembers 提交之后，
+        // 两步之间失败会留下空壳堆栈；并发加入的成员也可能被误删（判空与删除之间）。
+        return try connection.transaction {
+            let removed = try stacks.removeMembers(stackId: row.id, photoIds: input.photoIds)
+            // 成员被摘空的堆栈不留壳（与 detachPhotos 语义一致）。
+            // P1-8：不能用 members(stackId:) 判空——它按 PhotoVisibility 过滤，堆栈里
+            // 只剩"已淘汰"成员时会看起来是空的，于是把还有成员的堆栈连成员一起删掉。
+            // 这里用不带谓词的 hasAnyMember（StackRepo，SA1 P1-8 同批新增）。
+            if try !stacks.hasAnyMember(stackId: row.id) {
+                _ = try stacks.delete(id: row.id)
+            }
+            return removed
         }
-        return removed
     }
 
     // MARK: - 跨工作区重复（只读）

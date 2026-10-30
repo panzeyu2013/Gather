@@ -569,6 +569,13 @@ struct CullingInspector: View {
                             reject: suggestion.confidence,
                             minExecutable: suggestion.confidence),
                         source: .userDialog))
+                // D6：校准写的是 settings（triage_keep/reject/min_executable），
+                // 但消费方在别处——挑片页的阈值/门限文案由 CullingView+Content 的
+                // settingsChanged 订阅重读，设置页的「可应用」卡片也看同一通知。
+                // 不广播就会出现"校准面板显示已应用、挑片页还在用旧阈值"。
+                // 与 SettingsViewModel 同一通知名/同一方式（object: nil）。
+                NotificationCenter.default.post(
+                    name: GatherAppNotification.settingsChanged, object: nil)
                 return (applied.keep, applied.reject, applied.minExecutable)
             })
     }

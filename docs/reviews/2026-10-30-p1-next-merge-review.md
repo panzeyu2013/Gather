@@ -11,10 +11,10 @@
 |---|---|
 | 合并规模 | 158 文件 +24,125 / −859（Swift 148 文件 +22,704 / −834；测试 25 文件 +4,305） |
 | 冲突 | 5 处文档/基线（README、docs/README、DEVELOPMENT、ADR、ROADMAP、design-system-baseline）手工解；14 个双侧改动文件全部自动合并 |
-| gather-core | **1,609 tests / 239 suites**（1,584 并行主批 + 25 串行状态批），exit 0 |
-| gather-app | **829 tests / 93 suites**，exit 0 |
-| schema | **55 表 / 449 列 / 84 索引（8 UNIQUE）/ 81 外键**，user_version=1 |
-| 本地化 | en **2,015** 键 / zh 9 占位键 |
+| gather-core | 合并当天 **1,609 / 239** → 修复波后 **1,616 / 240**（1,591 并行主批 + 25 串行状态批），exit 0 |
+| gather-app | 合并当天 **829 / 93** → 修复波后 **843 / 95**，exit 0 |
+| schema | **55 表 / 449 列 / 86 索引（8 UNIQUE）/ 81 外键**，user_version=1（84→86 是修复波补的两个 FK 索引） |
+| 本地化 | en **2,018** 键 / zh 9 占位键 |
 | 门禁 | **12 道 `check-*.sh` 全绿**（可用者带 `--strict`；cleanup ratchet 60/255/0/0/0 全持平） |
 | design-system | 显式上调 `spacing.literalPadding` 175→206、`literalSpacing` 257→261（`--allow-growth`），理由见 `docs/reviews/p1-next-wave-ratchet.md`；同次的 `empty.contentUnavailable` 29→28、`font.callout` 89→86 是收紧 |
 | 测试 ratchet | 合并收口时收紧：`@Test` 2264→2438、`@Suite` 249→273、断言 10509→11280（否则新测试有"删除免检额度"） |
@@ -89,3 +89,62 @@
 3. 策展可见性/一致性：P1-7、P1-8、P1-9。
 4. C1 体验与门禁性能：P1-10、P1-11。
 5. P2 里优先补 A6（新表 CHECK/CASCADE 用例，否则约束改坏不会红）与 D 组"无反馈/无确认"三条。
+
+## 8. 修复波结果（2026-10-30，全量修复）
+
+**结论：11 条 P1 与 24 条 P2 已全部处置**；4 条按"更小改动 + 明确记账"的替代方案落地。
+修复后实测：core **1,616 tests / 240 suites**、app **843 tests / 95 suites**（exit 0）、
+schema **55 表 / 449 列 / 86 索引（8 UNIQUE）/ 81 外键**、en **2,018** 键；
+12 道门禁全绿；test-catalog ratchet 收紧到 2459/276/11342、protocol-surface 收紧到 408 类型 / 2437 声明。
+
+| 编号 | 处置 | 关键位置 / 证据 |
+|---|---|---|
+| P1-1 | 修：内嵌读增补 XMP 优先合并（读回 lr 层级） | `MetadataWriteRouter.readEmbeddedXMPAttributes` + `readEmbedded`；新增 `MetadataWriteRouterReadTests`（4 例） |
+| P1-2 | 修：`run(policy:sessionId:)` + 调用方传会话；**未做** repo 级 SQL 下推（应用侧过滤 + 有界放大），会话作用域下不扫孤儿目录 | `MetadataRetentionService`、`LiveMetadataAPI`；`MetadataRetentionTests.retentionScopeOnlyTouchesOwnSession` |
+| P1-3 | 修：三条 purge 纳入 `isEnabled` | 同文件；孤儿用例改 `isEnabled: true` |
+| P1-4 | 修：锚定式孤儿判定（复用 `validate`），删除无生产者的 `.gather-archived-` | `DeliveryBackupPath.anchoredXMPPath(forBackupName:inDirectory:)` |
+| P1-5 | 修：短路改成"已落库且可消费行已 applied"，半成品 batch 走补偿重放；**未做**字段级重放（需新列） | `ProofFeedbackService` |
+| P1-6 | 修（方案 b）：commit 成功后才 `recordBackup`；`EmbeddedJPEGSession` 加 `committed` 锁让 abort 能删本次备份 | `WritebackService+Execute`、`EmbeddedJPEGSession` |
+| P1-7 | 修：代表张只在输入内选，展开只插输入内成员 | `StackFoldIndex` + 新 `StackFoldIndexTests`（10 例，每例校验"输出 ⊆ 输入且无重复"） |
+| P1-8 | 修：集合/堆栈用户可见读面加 `PhotoVisibility`；判空/封面校验改用不过滤的 `hasAnyMember`/`isMember` | `CollectionRepo`/`StackRepo`/`CurationService`；新 `CurationVisibilityTests`（2 例） |
+| P1-9 | 修：detach+add、remove+判空+delete 各自同一事务 | `CurationService` |
+| P1-10 | 修：全进程唯一 `C1Installation`（TTL 60s + 后台预热），协调器在 preflight 前短路；设置页挂载不再探测 C1 | `Composition/Core`、`C1RoundTripCoordinator`、`AppBootstrap`、`SettingsView` |
+| P1-11 | 修：门禁判定改内存快照（stale-while-revalidate），不再每次查 LaunchServices | 同 `Core.swift` |
+| A3 | 修：`ensure(paths:)` 物化全部祖先；**不改** rename 驱动源（会牵动计数口径，ensure 修好后不再分叉） | `KeywordRepo` |
+| A4 | 修：行取回按方向排序；`allowedSortFields` 只留 rowid | `PhotoFilterQuery`、`PhotoInputs` |
+| A5 | 修：补 `idx_photo_stacks_cover`、`idx_client_proof_photo`（必须在 workbench DDL 段：索引段先于 workbenchDDL，放 DDLIndexes 会 no such table） | `SchemaCurrent+DDLWorkbench`、`SchemaCurrent`（86 + 新指纹） |
+| A6 | 修：新表 CHECK 6 例 + CASCADE/SET NULL 4 例（断言行数），索引断言 84→86 | `SchemaCurrentTests` |
+| A7 | 修：抽 `recountUsage`，replace/delete/merge 三路复用；**残余**：照片 CASCADE 删除不计（需钩子/触发器） | `KeywordRepo` |
+| A8 | 修：非级联删除加 `hasSynonyms` 守护 | `KeywordRepo` |
+| A9 | 修：moveItem 读入事务、reorder 续接未列出成员、create 事务内 nextSortOrder | `CollectionRepo`、`CurationService` |
+| B6 | 修：`deleteVanishedRow` 事务内复核 status/lease/intent | `MetadataLifecycleRepo` |
+| B7 | 修：语义检索分块扫描 + 有界 top-K（20k 上限、512/块） | `SemanticIndex` |
+| B8 | 修：`minSamples <= 0` = 不设门槛（服务 + 协议 + VM + 卡片文案"未设门槛"） | `TriageCalibrationService`/`TriageCalibration`/`CullingViewModel+Triage`/`CullingTriageCard` |
+| C4 | 修：`notSettled` 自排延迟重试（上限 5 次 ≈7.5s，超限只记一次日志） | `C1RoundTripCoordinator` |
+| C6 | 修：`.gather-embedded-` 残留纳入可回收临时文件（原照片仍在），与备份口径分开计数 | `DeliveryBackupPath`、`MetadataRetentionService` |
+| C7 | 修：输出以 `error:` 开头即抛 `C1_SCRIPT_FAILED`，不 fallback | `CaptureOneBridge` |
+| C8 | 修：删除 `backupStats` 声明/实现与 `MetadataBackupSummary`/`MetadataBackupStats`（UI 零调用；状态条已由 `syncState` 提供同数据） | `MetadataAPI`、`LiveMetadataAPI`、`MetadataDeliveryService` |
+| D2 | 修：manifest 移出 WebDAV 发布白名单 | `ExportView+Delivery` |
+| D3 | 修：命中不在当前筛选时先清 facet/4 档再定位，四态都有可见反馈 | `GalleryInspector` |
+| D4 | 修：`searchString` 与 `searchCriteria` 严格互逆（五字段 OR） | `GalleryViewModel+Filters` |
+| D5 | 修：`searchActive` 收窄为客户端过滤路径；**同时补事件刷新的 criteria 缺口**（否则事件后滤镜消失） | `GalleryViewModel+Derived`、`GalleryViewModel+Events` |
+| D6 | 修：校准写入后广播 `settingsChanged` | `CullingInspector` |
+| D7 | 修：移出成员走确认门控 + 说明"position 丢失" + 成功 notice | `CollectionView`（新增 2 条 en 词条） |
+| D8 | 修：建集合失败用 sheet 内 `actionError`，`loadFailed` 只表示读取失败 | `CollectionSidebar` |
+| D9 | 修：参考胶囊只由查看器绘制（overlay 重复胶囊删除） | `ViewerOverlays`、`CullingWorkbenchViewer` |
+| E1 | 修：test-catalog ratchet 收紧（2438/273/11280 → 2459/276/11342） | `scripts/check-test-catalog.sh` |
+| E2 | 修：plan 文档补注"13 道为 feat 分支验收口径，现行 12 道" | `docs/design/p1-next/plan-2026-10-30.md` |
+| E3 | 修：台账补记 2 个收紧键与净增口径 | `docs/reviews/p1-next-wave-ratchet.md` |
+| E4 | 修：`addToCollection` 成功后刷新集合菜单 | `GalleryViewModel+Load` |
+| E5 | 不改：`performLoad` 只由首次激活/重试调用，补载与事件刷新都不经过它（已写进注释） | `GalleryViewModel+Load` |
+| E6 | 修（口径）：明确 zh 表只是 9 条占位、en 是唯一翻译表，中文覆盖率不在门禁范围 | `docs/DEVELOPMENT.md` |
+| 错误串上屏 ×2 | 修：走 `l10n.errorText` / `APIErrorPresentation` 漏斗，原文进日志 | `MetadataSyncBar`、`SemanticSearchPanel` |
+
+**仍需后续（已记账，不在本波）**
+
+- P1-2 的 repo 级会话下推，以及"会话作用域也回收本会话目录孤儿"（需 `orphanRoots(sessionId:)`）。
+- P1-5 的字段级重放（`applied_at` 是照片级记账，字段级要新列）。
+- A6 未扩到 `saved_searches`/`photo_semantics` 的 CASCADE 与 `photo_keywords.keyword_path`（无外键）。
+- A7 的照片 CASCADE 删除不计 `usage_count`。
+- `ProofFeedbackRepo.batchExists` 已无生产调用（文件头注释仍描述旧短路）。
+- 协调器 C4/C7 与 D4 纯函数的**行为用例**未加；本轮补的是可见性 2 例、会话作用域 1 例、内嵌 XMP 4 例、堆栈折叠 10 例、schema 约束 10 例。

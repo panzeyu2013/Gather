@@ -274,13 +274,37 @@ extension GalleryViewModel {
         criteriaChanged()
     }
 
+    /// searchCriteria 用到的字段集合（识别保存查询里的搜索词时按它取反）。
+    ///
+    /// 与 searchCriteria 的五个 .rule 一一对应。分两处维护是已知风险：新增搜索
+    /// 字段却忘了同步这里，搜索词又会还原不出——本组未加纯函数用例（测试文件
+    /// 归属见修复报告），改动这两处时必须成对检查。
+    private static let searchCriteriaFields: Set<String> = [
+        "filename",
+        "title",
+        "description",
+        FilterFields.keywords,
+        "keyword_path",
+    ]
+
     /// 识别"搜索串多字段 OR 组"并取出原搜索词（识别不到返回 nil）。
+    ///
+    /// D4：旧实现要求"组内每条规则都是 filename contains"，而 searchCriteria
+    /// 产出的是 filename / title / description / keywords / keyword_path 五字段
+    /// OR —— 条件恒不成立，本函数是死分支：恢复保存查询后搜索框永远是空的
+    ///（此时再点"保存"，新查询就把原来的搜索词丢掉了）。
+    ///
+    /// 现在的判定与 searchCriteria 严格互逆：顶层是 OR 且至少一条条件；每条都是
+    /// .contains、字段属于上面这五个、取值为同一个非空串。少一条（例如用户手写的
+    /// "filename 含 A OR filename 含 B"）就返回 nil，整组落回 rules——宁可规则
+    /// 编辑器里多一行，也不能让恢复查询丢语义。
     static func searchString(in group: FilterGroup) -> String? {
         guard group.logic == .or, !group.conditions.isEmpty else { return nil }
         var needle: String?
         for condition in group.conditions {
             guard case .rule(let rule) = condition, rule.operator == .contains,
-                  rule.field == "filename", let value = rule.value.stringValue,
+                  searchCriteriaFields.contains(rule.field),
+                  let value = rule.value.stringValue,
                   !value.isEmpty else { return nil }
             if let needle, needle != value { return nil }
             needle = value

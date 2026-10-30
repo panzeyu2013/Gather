@@ -449,19 +449,20 @@ struct ViewerAFPointOverlay: View {
     }
 }
 
-// MARK: - 参考对比（左上徽标 + 分割线 + 参考图）
+// MARK: - 参考对比（分割线 + 参考图；徽标由查看器绘制）
 
-/// 参考徽标 + 分割线拖动条 + 参考图（并排 / 分割 / 叠加）。
+/// 分割线拖动条 + 参考图（分割 / 叠加两种模式）。
 ///
 /// 参考图直接复用 PhotoThumbnailView（与主图同一个缓存键空间），
 /// 因此"参考照片不在当前页"时仍按需取预览，且不再多一条解码路径。
+///
+/// D9：这里**不画**参考徽标（"参考：X · 模式"）——由 CullingWorkbenchViewer
+/// 在 topLeading 统一绘制一次（并排模式下本组件根本不渲染，只有查看器那层
+/// 能保证三种模式都有徽标）。因此本类型也不再需要语言环境。
 struct ViewerReferenceOverlay: View {
     let state: CullingViewerOverlayState
     let cellSize: CGSize
     let onSplitChange: (Double, Double) -> Void
-
-    @Environment(\.languageStore) private var languageStore
-    private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -476,20 +477,7 @@ struct ViewerReferenceOverlay: View {
                         .allowsHitTesting(false)
                 }
             }
-            if let label = state.referenceFilename {
-                HStack(spacing: GatherMetrics.Space.xs) {
-                    Image(systemName: "rectangle.on.rectangle")
-                    Text(l10n.format("参考：%@", label))
-                    Text(l10n(state.referenceMode.labelKey))
-                        .foregroundStyle(GatherTheme.viewerTextSecondary)
-                }
-                .font(GatherFont.label)
-                .foregroundStyle(GatherTheme.viewerTextPrimary)
-                .padding(.horizontal, GatherMetrics.Space.xs)
-                .padding(.vertical, GatherMetrics.Space.xxs)
-                .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.85)))
-                .padding(GatherMetrics.Space.s)
-            }
+            // 徽标不在这里画（见类型注释 D9）：本组件只负责参考图与分割线。
             if state.referenceMode == .split {
                 splitHandle
             }

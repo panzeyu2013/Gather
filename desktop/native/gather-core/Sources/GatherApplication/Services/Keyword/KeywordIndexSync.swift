@@ -72,6 +72,9 @@ public final class KeywordIndexSync: Sendable {
     ///
     /// - 路径先过 KeywordPath（NFC/trim/丢空段/去重），与写盘编码同一套；
     /// - 先把路径补进 keywords 表：facet 的 usage_count 排序需要行存在；
+    ///   A3：ensure 现在会连同每一级祖先一起物化（"A|B" 也建 A），这样
+    ///   children(parentPath:)/rename 能在 keywords 上找到完整路径链 —— 原实现只插
+    ///   叶子，keywords 与 photo_keywords 的路径集合永久不一致。
     /// - 返回增删集合（调用方可据此提示"新增 3 个词"）。
     @discardableResult
     public func sync(

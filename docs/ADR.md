@@ -10,7 +10,7 @@
 > 已随迁移失效，语义与不变量不变，**原生对应实现位置见下表**（未列条目以
 > `desktop/native/gather-core` / `gather-app` 代码为准）。
 >
-> 当前 schema：1（唯一版本；`SchemaCurrent`，55 表 / 449 列 / 84 索引 / 81 外键）。
+> 当前 schema：1（唯一版本；`SchemaCurrent`，55 表 / 449 列 / 86 索引 / 81 外键）。
 > V1/V2 迁移链已删除：旧版本库默认 fail closed，只有显式 reset 才归档
 > db/-wal/-shm 后重建。下文历史 ADR 中的 schema 33/34/35 是当时版本，不是当前代码版本。
 
@@ -76,7 +76,7 @@
 ## ADR-006 Schema 唯一真相源
 
 - 唯一 DDL 真相源是 `gather-core/Sources/GatherPersistence/Database/SchemaCurrent.swift`
-  （55 表 / 449 列 / 84 索引 / 81 外键，一次成型；含 triage_suggestions、
+  （55 表 / 449 列 / 86 索引 / 81 外键，一次成型；含 triage_suggestions、
   face_cluster_constraints 与 P1 下一波的 11 张表）。索引 SQL 文本参与列形指纹，逐字保留。
 - `Tests/GatherCoreTests/Database/SchemaCurrentTests.swift` 校验 fresh 库（直接 exec
   `SchemaCurrent.createSQL` 与经 `Database.open` 两种路径）同形：版本 1、55 表、
@@ -814,7 +814,7 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
 
 状态：已实现。决策：**放弃兼容**，`SchemaCurrent.userVersion = 1`，单版本一次成型，
 无迁移链；`deliveries.target_kind`（sidecar/embedded）与 `output.run` job 类型直接进基线。
-计数 55 表 / 449 列 / 84 索引 / 81 外键（P1 下一波新增 11 张表），指纹见 `SchemaCurrent.expectedShapeFingerprint`。
+计数 55 表 / 449 列 / 86 索引 / 81 外键（P1 下一波新增 11 张表 + 修复波补 2 个 FK 索引），指纹见 `SchemaCurrent.expectedShapeFingerprint`。
 
 - 旧库（user_version != 1）仍按 fail-closed 处理：默认只抛错，显式 reset 才改名 `.incompatible-*` 重建。
 - 同步点：`Schema.swift` 镜像、`gather-schema` 说明、README/docs/ADR 的版本与列数声明、逐表列数测试。

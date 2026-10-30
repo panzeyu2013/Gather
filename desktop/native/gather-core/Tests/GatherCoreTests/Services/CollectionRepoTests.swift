@@ -592,3 +592,48 @@ struct CurationServiceCollectionTests {
         #expect(error.params["collectionId"] == "missing")
     }
 }
+
+// MARK: - 可见性口径（P1-8）
+
+/// 淘汰移出（`photos.archived_at` 非空）的照片**不得**出现在用户可见读面里，
+/// 但"按 id 的显式操作"与"判空"必须看见全体成员——否则撤销/移回要重新加成员，
+/// 而"成员全被淘汰"会被误判成空堆栈删掉。
+@Suite("策展读面的可见性（P1-8）")
+struct CurationVisibilityTests {
+    @Test("集合成员与 itemCount 只算未淘汰照片；显式 id 操作仍能看见")
+    func collectionHidesArchived() throws {
+        let fixture = try CurationFixture()
+        let collection = try fixture.makeCollection()
+        _ = try fixture.collections.appendItems(
+            collectionId: collection.id, photoIds: ["p0", "p1"])
+        #expect(try fixture.collections.items(collectionId: collection.id).map(\.photoId) == ["p0", "p1"])
+        #expect(try fixture.collections.get(id: collection.id)?.itemCount == 2)
+
+        _ = try fixture.db.prepare("UPDATE photos SET archived_at = ? WHERE id = ?")
+            .run([.text("2026-10-30T00:00:00.000Z"), .text("p0")])
+
+        #expect(try fixture.collections.items(collectionId: collection.id).map(\.photoId) == ["p1"])
+        #expect(try fixture.collections.get(id: collection.id)?.itemCount == 1)
+        // 显式 id 路径不过滤：撤销/移回不需要重新加成员。
+        #expect(try fixture.collections.contains(collectionId: collection.id, photoId: "p0"))
+        #expect(try fixture.collections.memberPhotoIds(collectionId: collection.id) == ["p0", "p1"])
+    }
+
+    @Test("堆栈成员/折叠只算未淘汰照片；判空与封面校验看全体成员")
+    func stackHidesArchivedButKeepsMembership() throws {
+        let fixture = try CurationFixture()
+        let stack = try fixture.stacks.create(
+            sessionId: "session-a", name: "Burst", coverPhotoId: nil, photoIds: ["p0", "p1"])
+        #expect(try fixture.stacks.members(stackId: stack.id).map(\.photoId) == ["p0", "p1"])
+
+        _ = try fixture.db.prepare("UPDATE photos SET archived_at = ? WHERE id = ?")
+            .run([.text("2026-10-30T00:00:00.000Z"), .text("p0")])
+
+        #expect(try fixture.stacks.members(stackId: stack.id).map(\.photoId) == ["p1"])
+        #expect(try fixture.stacks.folds(sessionId: "session-a")
+            .first(where: { $0.stackId == stack.id })?.photoIds == ["p1"])
+        // 判空/封面校验必须看全体成员：否则"成员全被淘汰"会被当成空堆栈删掉。
+        #expect(try fixture.stacks.hasAnyMember(stackId: stack.id))
+        #expect(try fixture.stacks.isMember(stackId: stack.id, photoId: "p0"))
+    }
+}

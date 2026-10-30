@@ -21,10 +21,13 @@ import Foundation
 /// 因此 sortBy 只接受能由 rowid 游标单调编码的顺序（导入顺序）；需要按拍摄
 /// 时间/评分排序时走 PhotoAPI.search（offset 分页），不在这里做复合游标。
 public struct PhotoPageQuery: Decodable, Sendable, Equatable {
-    /// 游标分页允许的排序字段：rowid 与 import_order 同义。
+    /// 游标分页允许的排序字段：只有 rowid（导入顺序）。
     /// 其余字段（date_taken/rating/...）需要 (排序值, rowid) 复合游标才能跨页
     /// 无重复无漏项，而 PhotoPage.cursor 只有 Int64 —— 显式失败好过静默错序。
-    public static let allowedSortFields: [String] = ["rowid", "import_order"]
+    /// 旧实现把 import_order 也列进来当 rowid 的别名，但服务端只按 photos.rowid
+    /// 排序、且该字段在 session_assets 上（并非同义），已删除避免"白名单承诺了
+    /// 一个没实现的顺序"。需要按拍摄时间/评分排序时走 PhotoAPI.search（offset 分页）。
+    public static let allowedSortFields: [String] = ["rowid"]
 
     public let sessionId: String
     public let limit: Int

@@ -61,20 +61,6 @@ public struct MetadataFinalizeOutcome: Sendable, Equatable {
     }
 }
 
-/// 元数据备份统计（设置页"维护"与诊断用）。
-public struct MetadataBackupStats: Sendable, Equatable {
-    public var count: Int
-    public var bytes: Int64
-    /// 最老备份的天数（没有备份时 nil）。
-    public var oldestDays: Int?
-
-    public init(count: Int, bytes: Int64, oldestDays: Int?) {
-        self.count = count
-        self.bytes = bytes
-        self.oldestDays = oldestDays
-    }
-}
-
 /// 生命周期服务的显式失败（不映射 GatherErrorCode；API 边界再转，D-030 的既有分工）。
 public enum MetadataDeliveryError: Error, Equatable, CustomStringConvertible, LocalizedError {
     /// 入参非法（空/超长 sessionId 等）。
@@ -174,20 +160,6 @@ public struct MetadataDeliveryService: Sendable {
         state.backupCount = backups.count
         state.backupBytes = backups.bytes
         return state
-    }
-
-    /// 备份统计（设置页维护 / 诊断）。sessionId 为 nil 时统计全库。
-    public func backupStats(sessionId: String? = nil) throws -> MetadataBackupStats {
-        let backups = try backupTotals(sessionId: sessionId)
-        let oldestDays: Int?
-        if let oldest = backups.oldest {
-            let interval = now().timeIntervalSince(oldest)
-            oldestDays = interval <= 0 ? 0 : Int(interval / 86_400)
-        } else {
-            oldestDays = nil
-        }
-        return MetadataBackupStats(
-            count: backups.count, bytes: backups.bytes, oldestDays: oldestDays)
     }
 
     // MARK: - 确认

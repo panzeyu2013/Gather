@@ -67,9 +67,16 @@ public struct StackRepo: Sendable {
         self.connection = connection
     }
 
+    /// 列清单（member_count 由相关子查询填充）。
+    ///
+    /// P1-8：member_count 只数**仍在工作区**的成员（PhotoVisibility），与 folds 的
+    /// photoIds 同口径。原实现数 photo_stack_members 的全部行，淘汰移出后徽标仍显示
+    /// 全堆张数，而折叠视图里已经只剩可见成员 —— 同一条堆栈两个数字。
     private static let columns = """
         s.id, s.session_id, s.name, s.cover_photo_id,
-        (SELECT COUNT(*) FROM photo_stack_members m WHERE m.stack_id = s.id),
+        (SELECT COUNT(*) FROM photo_stack_members m
+           JOIN photos p ON p.id = m.photo_id
+          WHERE m.stack_id = s.id AND \(PhotoVisibility.visiblePredicate(alias: "p"))),
         s.created_at, s.updated_at
         """
 
@@ -96,12 +103,20 @@ public struct StackRepo: Sendable {
             .get([.text(id)])?[0].textValue
     }
 
+    /// 堆栈成员（**用户可见读面**）。
+    ///
+    /// P1-8：不 JOIN 时淘汰移出的照片仍会回到堆栈视图里；这里 JOIN photos 并加
+    /// PhotoVisibility 谓词，与 collection items / folds / facet 同口径。
+    /// 写路径（addMembers 的 MAX(position)、removeMembers、clearCoverIfNotMember、
+    /// detachPhotos）各自用不带谓词的 SQL，不受影响。
     public func members(stackId: String) throws -> [StackMemberRow] {
         let rows = try connection.prepare("""
-            SELECT stack_id, photo_id, position
-            FROM photo_stack_members
-            WHERE stack_id = ?
-            ORDER BY position, photo_id
+            SELECT m.stack_id, m.photo_id, m.position
+            FROM photo_stack_members m
+            JOIN photos p ON p.id = m.photo_id
+            WHERE m.stack_id = ?
+              AND \(PhotoVisibility.visiblePredicate(alias: "p"))
+            ORDER BY m.position, m.photo_id
             """).query([.text(stackId)])
         return rows.map { row in
             StackMemberRow(
@@ -112,15 +127,41 @@ public struct StackRepo: Sendable {
         }
     }
 
+    /// 堆栈里是否还有成员（**不过滤**工作区可见性，含已淘汰移出的照片）。
+    ///
+    /// 写路径专用：判"成员是否被删空 → 是否连堆栈一起删"必须看全部成员行。
+    /// 被淘汰移出的照片仍是成员（archived_at 只表示不在工作区），若按 members()
+    /// 的可见口径判空，会把"只剩已移出成员"的堆栈整条删掉——成员关系与后续找回
+    /// 的上下文一起丢。读面请用 members() / folds()（带 PhotoVisibility 谓词）。
+    public func hasAnyMember(stackId: String) throws -> Bool {
+        try connection.prepare(
+            "SELECT 1 FROM photo_stack_members WHERE stack_id = ? LIMIT 1"
+        ).get([.text(stackId)]) != nil
+    }
+
+    /// photoId 是否仍是该堆栈的成员（**不过滤**可见性）。
+    ///
+    /// 封面校验专用：photo_stacks.cover_photo_id 的不变量是"封面必须是成员"
+    /// （SET NULL + 读侧 displayCoverPhotoId 都建立在这一点上）。用 hasAnyMember
+    /// 代替会把任意合法照片 id 放进来（只是 FK 过得去），封面从此指向非成员。
+    public func isMember(stackId: String, photoId: String) throws -> Bool {
+        try connection.prepare(
+            "SELECT 1 FROM photo_stack_members WHERE stack_id = ? AND photo_id = ?"
+        ).get([.text(stackId), .text(photoId)]) != nil
+    }
+
     /// 会话的折叠视图：每个堆栈一条，成员按 position 升序（两次查询，无 N+1）。
     public func folds(sessionId: String) throws -> [StackFold] {
         let stackRows = try list(sessionId: sessionId)
         guard !stackRows.isEmpty else { return [] }
+        // P1-8：折叠视图只折叠仍在工作区的成员（与 members() / member_count 同口径）。
         let memberRows = try connection.prepare("""
             SELECT m.stack_id, m.photo_id
             FROM photo_stack_members m
             JOIN photo_stacks s ON s.id = m.stack_id
+            JOIN photos p ON p.id = m.photo_id
             WHERE s.session_id = ?
+              AND \(PhotoVisibility.visiblePredicate(alias: "p"))
             ORDER BY m.stack_id, m.position, m.photo_id
             """).query([.text(sessionId)])
         var membersByStack: [String: [String]] = [:]

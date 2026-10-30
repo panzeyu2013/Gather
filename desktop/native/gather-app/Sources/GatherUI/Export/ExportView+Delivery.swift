@@ -140,8 +140,9 @@ struct ExportDeliverySection: View {
                     }
                 }
                 .sheet(isPresented: $showWebDAV) {
-                    // 只发布本次交付的**精确产物**（白名单必填）：manifest + 各配方成品 +
-                    // 联系表 + 画廊目录。allowDownload 由面板决定是否再加 large/成片。
+                    // 只发布本次交付的**精确产物**（白名单必填）：各配方成品 + 联系表 +
+                    // 画廊目录；manifest 不在其中（含本机绝对路径，见 publishPrefixes）。
+                    // allowDownload 由面板决定是否再加 large/成片。
                     WebDAVPublishSheet(
                         viewModel: viewModel,
                         localPath: URL(fileURLWithPath: summary.manifestPath)
@@ -246,15 +247,20 @@ struct ExportDeliverySection: View {
     /// 成片目录、用户放在交付根里的杂物会一起上服务器。现在的规则：
     /// - 每张成品按 manifest.files 精确列出（含联系表）；
     /// - 画廊只给目录前缀（thumbs/large/html/css/js/data.json 全在里面）；
-    /// - manifest 自己也在白名单里（客户/审计能看到交付了什么）；
+    /// - manifest（OutputRunSummary）**不进**白名单：它含本机绝对路径
+    ///   （manifestPath、每配方 destination、contactSheetPath），只用于本地审计；
+    ///   上传等于把摄影师的目录结构暴露给客户/审计（D2 回退）。
+    ///   如需给客户看"交付了什么"，另生成脱敏副本再发布（后续任务，不能在
+    ///   这里直接传原始 manifest）；
     /// - 落不到 run 根下的配方**直接跳过**，绝不退化成整根目录；
     /// - 结果为空 = 上层禁用发布按钮（面板里给原因），而不是"发整个目录"。
     static func publishPrefixes(for summary: OutputRunSummary) -> [String] {
         let root = URL(fileURLWithPath: summary.manifestPath)
             .deletingLastPathComponent().standardizedFileURL.path
+        // 合并前这里有一条注释明确写着"manifest 含本机绝对路径，不进发布白名单"；
+        // feat 合入时被反过来（无条件 insert 了 manifest 文件名）且注释被删。
+        // 现在恢复原判定与理由：白名单只收**可公开的成片/画廊产物**。
         var paths: Set<String> = []
-        let manifestName = URL(fileURLWithPath: summary.manifestPath).lastPathComponent
-        if !manifestName.isEmpty { paths.insert(manifestName) }
         for recipe in summary.recipes {
             let destination = URL(fileURLWithPath: recipe.destination).standardizedFileURL.path
             let prefix: String

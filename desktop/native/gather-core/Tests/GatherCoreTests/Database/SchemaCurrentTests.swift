@@ -3,7 +3,7 @@
 //
 // 为什么需要这组测试：V1 一次成型、没有迁移链兜底，任何「少一列 / 少一索引 /
 // 少一外键」都只会在运行期以静默错列（SELECT * 按位置取值）的形式暴露（draft §8 R1）。
-// 因此这里把 55 / 449 / 84 / 81 / user_version=1 五个数字、55 张表的逐表列数、
+// 因此这里把 55 / 449 / 86 / 81 / user_version=1 五个数字、55 张表的逐表列数、
 // CHECK 与 FK 的拒绝路径、CASCADE / SET NULL / RESTRICT 的删除语义全部钉成回归。
 //
 // 用户数据 FK（D-025）：role_bindings.cluster_id、person_photos.photo_id / session_id 是
@@ -346,6 +346,79 @@ private let schemaCurrentCheckCases: [SchemaCurrentCheckCase] = [
         setup: [],
         failing: "INSERT INTO persons (id,name,match_threshold,created_at,updated_at) VALUES ('pe','n',1.5,'t','t');"
     ),
+    // P1 下一波工作台表（A6）：11 张新表的 CHECK 原先零覆盖，约束改坏不会变红。
+    SchemaCurrentCheckCase(
+        name: "photo_keywords.source = face_keyword",
+        // 正确拼写是连字符 face-keyword（KeywordIndexSource.faceKeyword）；
+        // 写成下划线会让整条 face-keyword 索引写入抛 CHECK，而不是静默降级。
+        setup: [
+            "INSERT INTO sessions (id,status,created_at,updated_at) VALUES ('s','draft','t','t');",
+            "INSERT INTO photos (id,session_id,filepath,created_at,updated_at) VALUES ('p','s','/p.NEF','t','t');",
+        ],
+        failing: """
+            INSERT INTO photo_keywords (photo_id,keyword_path,source,updated_at)
+            VALUES ('p','旅行|巴黎','face_keyword','t');
+            """
+    ),
+    SchemaCurrentCheckCase(
+        name: "photo_keywords.source = vision",
+        setup: [
+            "INSERT INTO sessions (id,status,created_at,updated_at) VALUES ('s','draft','t','t');",
+            "INSERT INTO photos (id,session_id,filepath,created_at,updated_at) VALUES ('p','s','/p.NEF','t','t');",
+        ],
+        failing: """
+            INSERT INTO photo_keywords (photo_id,keyword_path,source,updated_at)
+            VALUES ('p','旅行','vision','t');
+            """
+    ),
+    SchemaCurrentCheckCase(
+        name: "client_proof_feedback.pick_state = maybe",
+        setup: [
+            "INSERT INTO sessions (id,status,created_at,updated_at) VALUES ('s','draft','t','t');",
+            "INSERT INTO photos (id,session_id,filepath,created_at,updated_at) VALUES ('p','s','/p.NEF','t','t');",
+        ],
+        failing: """
+            INSERT INTO client_proof_feedback (batch_id,session_id,photo_id,pick_state,imported_at)
+            VALUES ('b','s','p','maybe','t');
+            """
+    ),
+    SchemaCurrentCheckCase(
+        name: "client_proof_feedback.rating = 6",
+        setup: [
+            "INSERT INTO sessions (id,status,created_at,updated_at) VALUES ('s','draft','t','t');",
+            "INSERT INTO photos (id,session_id,filepath,created_at,updated_at) VALUES ('p','s','/p.NEF','t','t');",
+        ],
+        failing: """
+            INSERT INTO client_proof_feedback (batch_id,session_id,photo_id,rating,imported_at)
+            VALUES ('b','s','p',6,'t');
+            """
+    ),
+    SchemaCurrentCheckCase(
+        name: "triage_feedback.suggestion_verdict = maybe",
+        setup: [
+            "INSERT INTO sessions (id,status,created_at,updated_at) VALUES ('s','draft','t','t');",
+            "INSERT INTO photos (id,session_id,filepath,created_at,updated_at) VALUES ('p','s','/p.NEF','t','t');",
+        ],
+        failing: """
+            INSERT INTO triage_feedback
+              (photo_id,session_id,suggestion_verdict,suggestion_confidence,
+               user_action,policy_version,acted_at)
+            VALUES ('p','s','maybe',0.9,'keep','v1','t');
+            """
+    ),
+    SchemaCurrentCheckCase(
+        name: "triage_feedback.user_action = skip",
+        setup: [
+            "INSERT INTO sessions (id,status,created_at,updated_at) VALUES ('s','draft','t','t');",
+            "INSERT INTO photos (id,session_id,filepath,created_at,updated_at) VALUES ('p','s','/p.NEF','t','t');",
+        ],
+        failing: """
+            INSERT INTO triage_feedback
+              (photo_id,session_id,suggestion_verdict,suggestion_confidence,
+               user_action,policy_version,acted_at)
+            VALUES ('p','s','keep',0.9,'skip','v1','t');
+            """
+    ),
 ]
 
 // MARK: - 公共辅助
@@ -412,7 +485,7 @@ struct SchemaCurrentTests {
         #expect(columns == 449, "列数漂移：期望 449，实际 \(columns)")
     }
 
-    @Test("索引 84 个（含 8 个 UNIQUE）")
+    @Test("索引 86 个（含 8 个 UNIQUE）")
     func indexCount() throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }
@@ -421,9 +494,11 @@ struct SchemaCurrentTests {
             SELECT COUNT(*) FROM sqlite_master
              WHERE type = 'index' AND name NOT LIKE 'sqlite_%'
             """)
-        #expect(indexes == 84, "索引数漂移：期望 84，实际 \(indexes)")
+        #expect(indexes == 86, "索引数漂移：期望 86，实际 \(indexes)")
 
-        // 「含 unique」：8 个显式 UNIQUE 索引（其余 61 个普通索引），
+        // 「含 unique」：8 个显式 UNIQUE 索引（其余 63 个普通索引；A5 新增的两个
+        // 外键子键索引 idx_photo_stacks_cover / idx_client_proof_photo 是普通 INDEX，
+        // 所以 UNIQUE 计数必须仍是 8），
         // 且唯一性必须真的落在期望的列上（防止把 UNIQUE 写成普通 INDEX）。
         let uniqueIndexes = try scalarInt(db, """
             SELECT COUNT(*) FROM sqlite_master
@@ -788,5 +863,149 @@ struct SchemaCurrentTests {
 
         #expect(try scalarInt(db, "SELECT COUNT(*) FROM person_embeddings") == 0, "派生向量必须随照片级联删除")
         #expect(try scalarInt(db, "SELECT COUNT(*) FROM persons") == 1, "身份行不得被连带删除")
+    }
+
+    // MARK: 工作台表（P1 下一波）的删除语义（A6）
+    //
+    // 11 张新表原先只进列数清单：CHECK / CASCADE / SET NULL 改坏不会变红。
+    // 下面四条按"父行"分组钉住行数变化（只断言 COUNT 不够——必须能看出"少了哪一行"）。
+
+    @Test("删 photos 级联清空集合/堆栈成员/关键词/校样反馈，堆栈封面 SET NULL（A6）")
+    func deletingPhotoCascadesWorkbenchChildren() throws {
+        let db = try makeSchemaCurrentDatabase()
+        defer { db.close() }
+
+        try db.exec("""
+            INSERT INTO sessions (id,status,created_at,updated_at) VALUES ('s-wb','draft','t','t');
+            INSERT INTO photos (id,session_id,filepath,created_at,updated_at)
+              VALUES ('p-wb1','s-wb','/w/1.NEF','t','t');
+            INSERT INTO photos (id,session_id,filepath,created_at,updated_at)
+              VALUES ('p-wb2','s-wb','/w/2.NEF','t','t');
+            INSERT INTO collections (id,session_id,name,created_at,updated_at)
+              VALUES ('c-wb','s-wb','集合','t','t');
+            INSERT INTO collection_items (collection_id,photo_id,position,added_at)
+              VALUES ('c-wb','p-wb1',1024,'t');
+            INSERT INTO collection_items (collection_id,photo_id,position,added_at)
+              VALUES ('c-wb','p-wb2',2048,'t');
+            INSERT INTO photo_stacks (id,session_id,name,cover_photo_id,created_at,updated_at)
+              VALUES ('st-wb','s-wb','堆栈','p-wb1','t','t');
+            INSERT INTO photo_stack_members (stack_id,photo_id,position)
+              VALUES ('st-wb','p-wb1',1024);
+            INSERT INTO photo_stack_members (stack_id,photo_id,position)
+              VALUES ('st-wb','p-wb2',2048);
+            INSERT INTO keywords (path,name,parent_path,usage_count,created_at)
+              VALUES ('旅行|巴黎','巴黎','旅行',2,'t');
+            INSERT INTO photo_keywords (photo_id,keyword_path,source,updated_at)
+              VALUES ('p-wb1','旅行|巴黎','xmp','t');
+            INSERT INTO photo_keywords (photo_id,keyword_path,source,updated_at)
+              VALUES ('p-wb2','旅行|巴黎','xmp','t');
+            INSERT INTO client_proof_feedback (batch_id,session_id,photo_id,imported_at)
+              VALUES ('b-wb','s-wb','p-wb1','t');
+            INSERT INTO triage_feedback
+              (photo_id,session_id,suggestion_verdict,suggestion_confidence,
+               user_action,policy_version,acted_at)
+              VALUES ('p-wb1','s-wb','keep',0.9,'keep','v1','t');
+            """)
+
+        // 删前基数：确保下面的断言是"少了一张照片的子行"，不是夹具没插进去。
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM collection_items") == 2)
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photo_keywords") == 2)
+
+        try db.exec("DELETE FROM photos WHERE id = 'p-wb1';")
+
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM collection_items") == 1,
+                "collection_items 必须随照片级联删除，只剩 p-wb2")
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photo_stack_members") == 1,
+                "photo_stack_members 必须随照片级联删除，只剩 p-wb2")
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photo_keywords") == 1,
+                "photo_keywords 必须随照片级联删除，只剩 p-wb2 那行")
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM client_proof_feedback") == 0,
+                "客户校样反馈必须随照片级联删除（否则留下指向不存在照片的勾选）")
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM triage_feedback") == 0,
+                "triage 校准样本必须随照片级联删除")
+        #expect(try scalarInt(db, """
+            SELECT COUNT(*) FROM photo_stacks WHERE id = 'st-wb' AND cover_photo_id IS NULL
+            """) == 1, "cover_photo_id 必须 SET NULL，堆栈行本身保留")
+        // 父行（集合/堆栈/关键词）不得被顺手删掉：删照片只清子行。
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM collections") == 1)
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photo_stacks") == 1)
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM keywords") == 1)
+    }
+
+    @Test("删 collections 级联清空 collection_items，照片行保留（A6）")
+    func deletingCollectionCascadesItems() throws {
+        let db = try makeSchemaCurrentDatabase()
+        defer { db.close() }
+
+        try db.exec("""
+            INSERT INTO sessions (id,status,created_at,updated_at) VALUES ('s-c','draft','t','t');
+            INSERT INTO photos (id,session_id,filepath,created_at,updated_at)
+              VALUES ('p-c','s-c','/c/1.NEF','t','t');
+            INSERT INTO collections (id,session_id,name,created_at,updated_at)
+              VALUES ('col-c','s-c','集合','t','t');
+            INSERT INTO collection_items (collection_id,photo_id,position,added_at)
+              VALUES ('col-c','p-c',1024,'t');
+            """)
+
+        try db.exec("DELETE FROM collections WHERE id = 'col-c';")
+
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM collection_items") == 0,
+                "collection_items 必须随集合级联删除")
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photos") == 1,
+                "照片是独立事实，不得随集合删除（成员关系不是归属）")
+    }
+
+    @Test("删 photo_stacks 级联清空成员，照片与集合成员保留（A6）")
+    func deletingStackCascadesMembers() throws {
+        let db = try makeSchemaCurrentDatabase()
+        defer { db.close() }
+
+        try db.exec("""
+            INSERT INTO sessions (id,status,created_at,updated_at) VALUES ('s-st','draft','t','t');
+            INSERT INTO photos (id,session_id,filepath,created_at,updated_at)
+              VALUES ('p-st','s-st','/st/1.NEF','t','t');
+            INSERT INTO collections (id,session_id,name,created_at,updated_at)
+              VALUES ('col-st','s-st','集合','t','t');
+            INSERT INTO collection_items (collection_id,photo_id,position,added_at)
+              VALUES ('col-st','p-st',1024,'t');
+            INSERT INTO photo_stacks (id,session_id,name,cover_photo_id,created_at,updated_at)
+              VALUES ('st-st','s-st','堆栈','p-st','t','t');
+            INSERT INTO photo_stack_members (stack_id,photo_id,position)
+              VALUES ('st-st','p-st',1024);
+            """)
+
+        try db.exec("DELETE FROM photo_stacks WHERE id = 'st-st';")
+
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photo_stack_members") == 0,
+                "photo_stack_members 必须随堆栈级联删除")
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photos") == 1, "照片行必须保留")
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM collection_items") == 1,
+                "集合成员与堆栈是两条独立关系，不得被牵连")
+    }
+
+    @Test("删 keywords 级联清空 keyword_synonyms，其它路径的同义词不受牵连（A6）")
+    func deletingKeywordCascadesSynonyms() throws {
+        let db = try makeSchemaCurrentDatabase()
+        defer { db.close() }
+
+        try db.exec("""
+            INSERT INTO keywords (path,name,parent_path,usage_count,created_at)
+              VALUES ('旅行','旅行',NULL,0,'t');
+            INSERT INTO keywords (path,name,parent_path,usage_count,created_at)
+              VALUES ('旅行|巴黎','巴黎','旅行',0,'t');
+            INSERT INTO keyword_synonyms (keyword_path,synonym) VALUES ('旅行','travel');
+            INSERT INTO keyword_synonyms (keyword_path,synonym) VALUES ('旅行|巴黎','paris');
+            """)
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM keyword_synonyms") == 2)
+
+        try db.exec("DELETE FROM keywords WHERE path = '旅行';")
+
+        // keyword_synonyms.keyword_path 只对**本路径**建 CASCADE；父路径删除不会连带
+        // 删子路径行（子树由 KeywordRepo.delete 显式处理），所以子路径同义词必须还在。
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM keyword_synonyms") == 1,
+                "被删路径的同义词必须随 keyword_synonyms 的 CASCADE 删除")
+        #expect(try scalarInt(db, """
+            SELECT COUNT(*) FROM keyword_synonyms WHERE keyword_path = '旅行|巴黎'
+            """) == 1, "其它路径的同义词不得被牵连")
     }
 }

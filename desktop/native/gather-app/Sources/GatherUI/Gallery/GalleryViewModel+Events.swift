@@ -53,12 +53,29 @@ extension GalleryViewModel {
         do {
             var cursor: Int64?
             repeat {
-                let result = try await provider.photoPage(
-                    sessionId: sessionId,
-                    afterFirstRowid: cursor,
-                    limit: searchActive ? Self.chainFetchLimit : Self.pageSize,
-                    expandVariants: committedExpandVariants
-                )
+                // P1（D5 接缝）：facet/规则/4 档/搜索串走服务端 criteria 时，
+                // 事件刷新必须用**同一条** WHERE 重取；旧实现固定走 provider 的
+                // 无 criteria 分页，任何领域事件（挑片/写回/库变更）都会把筛过的网格
+                // 换成未筛行。D5 关掉了「事件后用链式拉取补几页」的兜底，这个缺口
+                // 会直接表现为"滤镜在刷新后消失"。
+                let limit = searchActive ? Self.chainFetchLimit : Self.pageSize
+                let result: (rows: [GalleryPhotoData], cursor: Int64?)
+                if let criteria = activeCriteria, let photoAPI {
+                    let page = try await photoAPI.page(try PhotoPageQuery(
+                        sessionId: sessionId,
+                        limit: limit,
+                        afterFirstRowid: cursor,
+                        expandVariants: committedExpandVariants,
+                        criteria: criteria))
+                    result = (page.rows.map(GalleryPhotoData.init), page.cursor)
+                } else {
+                    result = try await provider.photoPage(
+                        sessionId: sessionId,
+                        afterFirstRowid: cursor,
+                        limit: limit,
+                        expandVariants: committedExpandVariants
+                    )
+                }
                 guard generation == fetchGeneration else {
                     actionError = nil
                     return

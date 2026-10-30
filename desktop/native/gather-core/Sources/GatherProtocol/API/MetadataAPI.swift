@@ -88,9 +88,6 @@ public protocol MetadataAPI: Sendable {
     /// （留给最后一个模块收尾）；本模块仍有未确认 item 时按 XMP_CONFIRM_INCOMPLETE 跳过。
     func finalizeSync(_ input: Confirmed<SessionReference>) async throws -> MetadataDeliveryState
 
-    /// 备份统计（设置页维护；count/bytes/oldestDays）。
-    func backupStats() async throws -> MetadataBackupSummary
-
     /// 立即回收已确认交付的行与备份（XMP 保留；ignoreReloadAck 由用户显式确认）。
     func cleanupRetention(_ input: Confirmed<MetadataCleanupInput>) async throws -> MetadataCleanupSummary
 }
@@ -119,11 +116,6 @@ public extension MetadataAPI {
             field: "finalizeSync", reason: "metadata lifecycle API not wired")
     }
 
-    func backupStats() async throws -> MetadataBackupSummary {
-        throw GatherError.invalidParameter(
-            field: "backupStats", reason: "metadata maintenance API not wired")
-    }
-
     func cleanupRetention(
         _ input: Confirmed<MetadataCleanupInput>
     ) async throws -> MetadataCleanupSummary {
@@ -133,19 +125,7 @@ public extension MetadataAPI {
     }
 }
 
-// MARK: - 备份统计 / 手动回收（设置页维护）
-
-public struct MetadataBackupSummary: Codable, Equatable, Sendable {
-    public var count: Int
-    public var bytes: Int64
-    public var oldestDays: Int?
-
-    public init(count: Int = 0, bytes: Int64 = 0, oldestDays: Int? = nil) {
-        self.count = count
-        self.bytes = bytes
-        self.oldestDays = oldestDays
-    }
-}
+// MARK: - 手动回收（设置页维护）
 
 public struct MetadataCleanupInput: Codable, Equatable, Sendable {
     /// 立即回收已确认交付的行与备份；XMP 永远保留。

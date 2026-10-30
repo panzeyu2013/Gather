@@ -62,6 +62,9 @@ public enum KeywordRepoError: Error, Equatable, CustomStringConvertible {
     case hasChildren(path: String, count: Int)
     case notLeaf(String)
     case targetExists(String)
+    /// A8：非级联删除时该词还有同义词（keyword_synonyms 是 ON DELETE CASCADE，
+    /// 直接删会静默丢掉检索展开）。
+    case hasSynonyms(path: String, count: Int)
 
     public var description: String {
         switch self {
@@ -75,6 +78,8 @@ public enum KeywordRepoError: Error, Equatable, CustomStringConvertible {
             "KEYWORD_NOT_LEAF: \(path)"
         case .targetExists(let path):
             "KEYWORD_TARGET_EXISTS: \(path)"
+        case .hasSynonyms(let path, let count):
+            "KEYWORD_HAS_SYNONYMS: \(path) count=\(count)"
         }
     }
 }
@@ -156,6 +161,12 @@ public final class KeywordRepo: Sendable {
     // MARK: - 写（词库）
 
     /// 确保一组路径存在（新建/合并时补行）。已存在的不改拼写。
+    ///
+    /// A3：**连同每一级祖先一起物化**（"A|B|C" → A、A|B、A|B|C，父行先于子行）。
+    /// 原实现只插叶子，keywords 的路径集合与 photo_keywords 永久不一致：
+    /// 顶层/中间层没有行 → children(parentPath:) 缺父节点、词库树少层；
+    /// rename(from: "Travel") 对只存了 "Travel|Paris" 的库读不到子树，直接抛 notFound。
+    /// 幂等：INSERT OR IGNORE + 先按 serialized 去重（重复调用不新增行）。
     @discardableResult
     public func ensure(paths: [KeywordPath]) throws -> Int {
         guard !paths.isEmpty else { return 0 }
@@ -166,7 +177,7 @@ public final class KeywordRepo: Sendable {
             """)
         var inserted = 0
         try connection.transaction {
-            for path in paths {
+            for path in Self.withAncestors(paths) {
                 let changes = try statement.run([
                     .text(path.serialized),
                     .text(path.leaf),
@@ -177,6 +188,27 @@ public final class KeywordRepo: Sendable {
             }
         }
         return inserted
+    }
+
+    /// 路径 → 自身 + 全部祖先（由浅到深、按 serialized 去重，保持输入顺序）。
+    ///
+    /// 用 KeywordPath.parent 逐级上溯而不是手工切 segments：路径已经过 NFC/trim
+    /// 归一化，重建前缀必须走同一套值类型，否则会插进一个另写法的父行。
+    private static func withAncestors(_ paths: [KeywordPath]) -> [KeywordPath] {
+        var result: [KeywordPath] = []
+        var seen = Set<String>()
+        for path in paths {
+            var chain: [KeywordPath] = []
+            var cursor: KeywordPath? = path
+            while let current = cursor {
+                chain.append(current)
+                cursor = current.parent
+            }
+            for ancestor in chain.reversed() where seen.insert(ancestor.serialized).inserted {
+                result.append(ancestor)
+            }
+        }
+        return result
     }
 
     /// 改名（含子孙前缀级联，单事务）。返回被影响的节点/成员/同义词计数。
@@ -286,6 +318,9 @@ public final class KeywordRepo: Sendable {
             _ = try connection.prepare("DELETE FROM keyword_synonyms WHERE keyword_path = ?")
                 .run([.text(source)])
             _ = try connection.prepare("DELETE FROM keywords WHERE path = ?").run([.text(source)])
+            // A7：成员被折进 target 后必须重算 target 的 usage_count（原实现不回写，
+            // 合并只会让权重偏低，补全排序把热门词排到后面）。source 行已删，无需重算。
+            try recountUsage([target])
             return KeywordMutationResult(
                 nodes: 1,
                 members: Int(members),
@@ -308,6 +343,14 @@ public final class KeywordRepo: Sendable {
                 let kids = try children(parentPath: serialized).count
                 guard kids == 0 else {
                     throw KeywordRepoError.hasChildren(path: serialized, count: kids)
+                }
+                // A8：keyword_synonyms 的 FK 是 ON DELETE CASCADE，非级联删除时
+                // SQLite 会把该路径的同义词一并删掉（检索展开静默丢失）。原实现只
+                // 查 members/children，所以"看起来无成员的词"删除会连带丢用户数据。
+                // 同义词同样是用户数据，必须显式 setSynonyms([]) 清空后才允许删。
+                let synonyms = try synonymCount(path: serialized)
+                guard synonyms == 0 else {
+                    throw KeywordRepoError.hasSynonyms(path: serialized, count: synonyms)
                 }
             }
             let nodes = try connection.prepare("""
@@ -357,6 +400,15 @@ public final class KeywordRepo: Sendable {
         try connection.prepare(
             "SELECT synonym FROM keyword_synonyms WHERE keyword_path = ? ORDER BY synonym")
             .query([.text(path)]).compactMap { $0[0].textValue }
+    }
+
+    /// 该路径的同义词条数（非级联删除的守卫用；不展开子树——子级有同义词时
+    /// keyword_synonyms 的 CASCADE 也只作用于被删的那些路径，而子级本身会被
+    /// hasChildren 先拦下）。
+    private func synonymCount(path: String) throws -> Int {
+        Int(try connection.prepare(
+            "SELECT COUNT(*) AS n FROM keyword_synonyms WHERE keyword_path = ?")
+            .get([.text(path)])?[0].intValue ?? 0)
     }
 
     /// 全部同义词（词库同义词展开/自动补全用；一次查询，不分批）。
@@ -418,17 +470,39 @@ public final class KeywordRepo: Sendable {
                 }
             }
             // usage_count 只是排序权重：只重算受影响的路径（改动集合通常很小）。
-            let recompute = try connection.prepare(
-                "UPDATE keywords SET usage_count = (SELECT COUNT(*) FROM photo_keywords pk WHERE pk.keyword_path = keywords.path) WHERE path = ?")
-            for path in inserted.union(removed) {
-                _ = try recompute.run([.text(path)])
-            }
+            try recountUsage(inserted.union(removed))
             return (inserted.sorted(), removed.sorted())
         }
     }
 
     public func deletePhotoKeywords(photoId: String) throws -> Int {
-        try connection.prepare("DELETE FROM photo_keywords WHERE photo_id = ?").run([.text(photoId)])
+        try connection.transaction {
+            // A7：先取该照片占用的路径，删完再重算它们的 usage_count。
+            // 原实现只删行不回写，usage_count 只增不减（prefixMatches 排序长期失真）。
+            let affected = Set(try photoKeywordPaths(photoId: photoId))
+            let deleted = try connection.prepare(
+                "DELETE FROM photo_keywords WHERE photo_id = ?").run([.text(photoId)])
+            try recountUsage(affected)
+            return deleted
+        }
+    }
+
+    /// 重算这些路径的 usage_count（只重算受影响路径，通常很小）。
+    ///
+    /// A7：原实现只有 replacePhotoKeywords 会重算；删除照片关键词、合并词库都不回写
+    /// → usage_count 只增不减，prefixMatches 的 ORDER BY usage_count DESC 长期失真
+    /// （已删除的词顶在自动补全最前）。
+    /// 口径与 DDL/FacetQuery 一致：**该路径自身的行数**，不含子树的成员。
+    private func recountUsage(_ paths: Set<String>) throws {
+        guard !paths.isEmpty else { return }
+        let statement = try connection.prepare("""
+            UPDATE keywords SET usage_count =
+              (SELECT COUNT(*) FROM photo_keywords pk WHERE pk.keyword_path = keywords.path)
+            WHERE path = ?
+            """)
+        for path in paths.sorted() {
+            _ = try statement.run([.text(path)])
+        }
     }
 
     /// 某路径的成员数（includeDescendants=true 时按子树统计）。

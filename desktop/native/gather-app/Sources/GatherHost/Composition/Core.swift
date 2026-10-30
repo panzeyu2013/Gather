@@ -7,6 +7,7 @@
 // 运行时见 Composition/Runtime.swift，API 适配见 FeatureAPIs.swift / Root.swift。
 import Foundation
 import AppKit
+import os
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
@@ -131,10 +132,14 @@ struct CompositionCore {
         let xmpFileLock = XMPFileLock()
         // P1：reload-ack 门禁只在"本机确实装了 Capture One"时启用。旧实现
         // 默认常开，没装 C1 的用户连 confirm 都过不去（cleanup/finalize 死路）。
-        let c1Required: @Sendable () -> Bool = {
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.captureone.captureone") != nil
-                || NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.phaseone.captureone") != nil
-        }
+        //
+        // P1-11：原实现就地做两次 `NSWorkspace.urlForApplication`，而这个闭包落在
+        // **同步门禁路径**上（DeliveryCoordinator.confirm 每模块一次、
+        // isAwaitingReloadAck、state() 被状态条轮询）——每次都问 LaunchServices。
+        // 现在改为读 `C1Installation` 的进程级快照：纯内存同步读，重算在后台按
+        // TTL 进行（同一份判定也注入 C1 往返协调器，见 AppBootstrap 的 P1-10）。
+        C1Installation.warmUp()
+        let c1Required: @Sendable () -> Bool = { C1Installation.isInstalled() }
         let deliveryCoordinator = DeliveryCoordinator(
             connection: db, xmp: xmp, fileLock: xmpFileLock, target: targetResolver,
             c1Required: c1Required, eventSink: deliveryEventSink)
@@ -384,5 +389,105 @@ struct CompositionCore {
             deliveryCoordinator: deliveryCoordinator,
             metadataDeliveryService: metadataDeliveryService,
             xmpFileLock: xmpFileLock)
+    }
+}
+
+// MARK: - 本机是否装了 Capture One（P1-11 / P1-10 共用的唯一判定）
+
+/// "本机是否装了 Capture One"的**全进程唯一判定点**：交付门禁的 `c1Required`
+/// 与 C1 往返协调器的 `isC1Installed` 都读它（原先两处各自判定，现在只有这一份）。
+///
+/// 为什么必须缓存（P1-11）：原实现对每次调用都做两遍
+/// `NSWorkspace.urlForApplication(withBundleIdentifier:)`（LaunchServices 查询），
+/// 而调用点全在**同步门禁路径**上 —— DeliveryCoordinator 的 confirm（每模块一次）、
+/// `isAwaitingReloadAck`、`state()`（UI 状态条轮询）。门禁路径必须是廉价同步读，
+/// 所以这里的约定是：
+///   · `isInstalled()` 只读下面这把锁里的快照，**不做任何 IO**；
+///   · 快照超过 `ttlSeconds` 后仍然返回旧值，把重算交给后台任务
+///     （stale-while-revalidate）——绝不把 LaunchServices 查询压在调用者栈上；
+///   · 同一时刻最多一个重算在飞（`refreshing`），轮询不会把后台任务堆起来。
+/// 有意的副作用：运行中装/卸 C1 后门禁语义最多延迟 `ttlSeconds` 才翻转，
+/// 不再"同一进程里时开时关"。
+///
+/// 为什么不用 NSWorkspace 的 didLaunchApplication / didTerminate 失鲜：只有
+/// 运行/退出会发通知，**装/卸载不会**（DMG 拖拽、卸载器删目录都不产生通知），
+/// 而门禁关心的是"装没装"；两种机制叠加也只能覆盖一半，不如 TTL 一种机制，
+/// 也就不需要长期持有 observer token 的静态存储。
+enum C1Installation {
+    /// 两个历史 bundle id（Capture One 21+ 用 com.captureone.*，更早是 Phase One 品牌）。
+    static let bundleIdentifiers = ["com.captureone.captureone", "com.phaseone.captureone"]
+
+    /// 快照有效期（秒）：到期后先返回旧值，再后台重算。
+    static let ttlSeconds: TimeInterval = 60
+
+    /// 锁内状态：全是值类型，可安全交给锁保管。
+    private struct State: Sendable {
+        /// nil = 进程内还没算出过结果（warmUp 的首次探测尚未回来）。
+        var installed: Bool? = nil
+        /// 写入快照的时刻（Date.timeIntervalSinceReferenceDate）。
+        var recordedAt: TimeInterval = 0
+        /// 是否已有后台重算在飞。
+        var refreshing = false
+    }
+
+    /// 同步读的结果：快照值 + 是否已过期（过期只触发后台重算，不影响返回值）。
+    /// Sendable 是 OSAllocatedUnfairLock.withLock 对返回值的要求（R: Sendable）。
+    private struct Reading: Sendable {
+        let installed: Bool
+        let needsRefresh: Bool
+    }
+
+    private static let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// 门禁/协调器的同步读入口：纯内存，绝不触发 LaunchServices 查询。
+    ///
+    /// 快照为空时返回 false（"当作没装"）并触发一次后台重算。方向是刻意的：
+    /// 判错成"装了"会让 confirm 走进 reload-ack 死路（P1 的原始 bug），判错成
+    /// "没装"最多少拦一次确认。生产里 `warmUp()` 在组合根构造时已发起探测，
+    /// 那时还没有任何写回批次可收敛，实际不会命中空快照。
+    static func isInstalled() -> Bool {
+        let reading = currentReading(now: Date().timeIntervalSinceReferenceDate)
+        if reading.needsRefresh { refreshInBackground() }
+        return reading.installed
+    }
+
+    /// 组合根构造时预热一次：把首次 LaunchServices 探测挪出门禁路径。
+    static func warmUp() { refreshInBackground() }
+
+    /// 真正的 LaunchServices 查询（本类型唯一的 IO 点，只在后台任务里跑）。
+    /// internal：验收测试可直接断言，不必依赖跑测机器装没装 C1。
+    static func probeInstalled() -> Bool {
+        bundleIdentifiers.contains {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil
+        }
+    }
+
+    private static func currentReading(now: TimeInterval) -> Reading {
+        state.withLock { current in
+            guard let installed = current.installed else {
+                return Reading(installed: false, needsRefresh: true)
+            }
+            return Reading(
+                installed: installed,
+                needsRefresh: now - current.recordedAt >= ttlSeconds)
+        }
+    }
+
+    private static func refreshInBackground() {
+        let started = state.withLock { current -> Bool in
+            guard !current.refreshing else { return false }
+            current.refreshing = true
+            return true
+        }
+        guard started else { return }
+        Task.detached(priority: .utility) {
+            let installed = probeInstalled()
+            let now = Date().timeIntervalSinceReferenceDate
+            state.withLock { current in
+                current.installed = installed
+                current.recordedAt = now
+                current.refreshing = false
+            }
+        }
     }
 }

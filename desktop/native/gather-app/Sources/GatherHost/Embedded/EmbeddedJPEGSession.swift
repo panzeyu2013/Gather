@@ -150,6 +150,9 @@ final class EmbeddedJPEGSession: MetadataRewriteSession, Sendable {
     private let state = OSAllocatedUnfairLock<State>(initialState: .open)
     /// 本次会话是否真的新建了 header 备份（复用旧备份时 abort 不能删它）。
     private let createdBackup = OSAllocatedUnfairLock<Bool>(initialState: false)
+    /// commit 是否**真的成功**（P1-6）。closed 状态本身不足以区分"已提交"与
+    /// "提交失败"：成功之后备份是用户唯一撤销点，失败之后它只是本次会话的垃圾。
+    private let committed = OSAllocatedUnfairLock<Bool>(initialState: false)
 
     /// 会话状态。closed 也要记住备份路径：commit 之后仍要把 headerBackupPath
     /// 带进 report（否则交付行拿不到"首次写前的头备份"）。
@@ -326,19 +329,30 @@ final class EmbeddedJPEGSession: MetadataRewriteSession, Sendable {
 
     func commit(_ attributes: MetadataWriteAttributes) async throws -> MetadataRewriteReport {
         // 关闭会话：成功/失败都不再接受第二次 commit（文件已被替换或已放弃）。
+        // 注意这里先置 closed 再写盘：所以 closed 不等于"提交成功"，成功与否看
+        // committed 标记（abort 的删除判据，P1-6）。
         let backupPath = try state.withLock { state -> String in
             if state.isClosed { throw EmbeddedSessionError.alreadyClosed }
             let path = state.backupPath
             state = .closed(path)
             return path
         }
-        return try performCommit(attributes, headerBackupPath: backupPath)
+        let report = try performCommit(attributes, headerBackupPath: backupPath)
+        committed.withLock { $0 = true }
+        return report
     }
 
     /// 放弃：不写盘就没有需要撤销的副作用；本次新建的 header 备份要删掉。
+    ///
+    /// 原实现只判 `state.isClosed`，而 commit 在写盘**之前**就把状态置成 .closed，
+    /// 于是 commit 失败后的 abort 直接返回：本次新建的 .gather-header- 备份成了
+    /// 孤儿（P1-6）。现在区分两种 closed：
+    /// - closed 且 committed = 写盘已成功 → 备份是唯一撤销点，绝不删；
+    /// - closed 但没提交（commit 抛错 / 从未 commit）→ 照删不误。
     func abort() async {
+        let didCommit = committed.withLock { $0 }
         let backupPath = state.withLock { state -> String in
-            guard !state.isClosed else { return "" }
+            if state.isClosed, didCommit { return "" }
             let path = state.backupPath
             state = .closed(path)
             return path
@@ -349,6 +363,11 @@ final class EmbeddedJPEGSession: MetadataRewriteSession, Sendable {
         } catch {
             GatherLogger.log(
                 "embedded header backup cleanup failed: \(error)", level: .debug)
+            return
+        }
+        // 文件已删：状态里不能继续留着这个不存在的路径（commit 之后只剩诊断用途）。
+        state.withLock { state in
+            if case .closed = state { state = .closed("") }
         }
     }
 

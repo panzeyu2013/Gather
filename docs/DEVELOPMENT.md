@@ -136,7 +136,7 @@ GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication（服务编排；交付在 GatherDelivery）
   ├── GatherPersistence：SQLite WAL + SchemaCurrent
-  │     （55 表 / 449 列 / 84 索引 / 81 外键，user_version=1）
+  │     （55 表 / 449 列 / 86 索引 / 81 外键，user_version=1）
   ├── GatherAnalysis：图像读取、Vision 人脸、RAW/ImageIO 解码
   ├── JobService（可恢复任务：executor + checkpoint + dedupeKey）
   └── DeliveryCoordinator：deliveries 写回（重试 / 冲突 / 重启恢复）
@@ -186,6 +186,9 @@ GatherApplication（服务编排；交付在 GatherDelivery）
 - 语言持久化：`settings.ui_language` 是唯一真相源；`LanguageStore` 更新内存并广播
   `languageChanged`。菜单单轨（只有 SwiftUI `.commands`），标准菜单项跟随系统语言。
 - 孤儿键：`LocalizationParityTests` 断言 en 表无代码未引用键（allowlist 仅测试构造）。
+- **中文表只有占位**：`zh-Hans.lproj` 是 9 条占位键（中文即 key，运行时直接回退），
+  `en.lproj` 才是唯一翻译表。因此"中文覆盖率"不在门禁范围；新增文案必须补 en，
+  否则英文界面回落中文（parity 用例会红）。
 
 ## HIG 约定
 

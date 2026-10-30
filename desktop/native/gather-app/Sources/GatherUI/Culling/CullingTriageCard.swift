@@ -426,7 +426,10 @@ struct CullingTriageCard: View {
 
     private func sampleLine(_ model: TriageCalibrationPanelModel) -> some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
-            Text(l10n.format("人工样本 %lld / 最少 %lld", model.samples, model.minSamples))
+            // 0 = 不设门槛：写"最少 0"会让人以为永远不满足，改成显式的"未设门槛"。
+            Text(model.minSamples > 0
+                 ? l10n.format("人工样本 %lld / 最少 %lld", model.samples, model.minSamples)
+                 : l10n.format("人工样本 %lld（未设门槛）", model.samples))
                 .font(GatherFont.labelRegular)
                 .monospacedDigit()
             if !model.isApplicable {

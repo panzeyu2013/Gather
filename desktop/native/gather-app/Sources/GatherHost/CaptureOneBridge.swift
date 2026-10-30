@@ -100,8 +100,11 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     /// 1. 过滤非法/不存在的路径 → notFound（不 fallback：绝不因为"文件不在"而触发导入）；
     /// 2. AppleScript 逐路径 `whose path is "<posix>"` 匹配后 select（AppleScript 没有
     ///    `in {…}` 集合字面量，必须单值比较；路径按 AppleScript 字符串规则转义）；
-    /// 3. 脚本语法/字典不可用（C1 版本太老）或执行失败 → `open -a <app>`（等价
-    ///    NSWorkspace.open，**可能触发 C1 导入**），结果里 method 标明来源。
+    /// 3. 脚本语法/字典不可用（C1 版本太老）或 osascript 执行失败 → `open -a <app>`
+    ///    （等价 NSWorkspace.open，**可能触发 C1 导入**），结果里 method 标明来源。
+    ///    例外（C7）：脚本内部 `on error` 的 `error:<msg>` 报告就是**执行失败**，
+    ///    直接抛 C1_SCRIPT_FAILED、不兜底 —— 旧实现会把它当"未找到"（单路径）
+    ///    或整批导入（多路径）。
     ///
     /// 脚本成功但一条都没匹配（照片不在当前目录）：返回 appleScript + 全部 notFound，
     /// **不** fallback —— 否则会把"不在当前目录"变成"导入一批新文件"。
@@ -128,28 +131,12 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         }
 
         let appName = try await captureOneApplicationName()
+        // 只把"跑脚本"放进 do/catch：解析与兜底分支移到 do 之外，这样脚本执行失败
+        // （含下面的 "error:" 报告）的抛出不会被 catch 二次兜底成一次多余的 open -a。
+        let output: String
         do {
-            let output = try await runAppleScript(
+            output = try await runAppleScript(
                 Self.selectVariantsScript(appName: appName, paths: requested))
-            let flags = output
-                .split(whereSeparator: \.isNewline)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            if flags.count == requested.count {
-                var selected: [String] = []
-                for (index, flag) in flags.enumerated() where flag == "1" {
-                    selected.append(requested[index])
-                }
-                notFound.append(contentsOf: requested.enumerated()
-                    .filter { flags[$0.offset] != "1" }
-                    .map { $0.element })
-                return C1SelectionOutcome(
-                    method: .appleScript, paths: selected,
-                    notFound: notFound, appName: appName)
-            }
-            // 输出形状不认识（脚本被旧版 C1 静默改写等）→ 走兜底。
-            return try await openInCaptureOne(
-                appName: appName, paths: requested, notFound: notFound,
-                reason: .scriptUnsupported)
         } catch let error as CaptureOneBridgeError {
             switch error {
             case .notRunning, .notAuthorized, .noDocument, .timedOut:
@@ -167,6 +154,34 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
                 appName: appName, paths: requested, notFound: notFound,
                 reason: .scriptFailed(code: GatherErrorCode.C1_SCRIPT_FAILED.rawValue))
         }
+        // C7：脚本**成功执行**但内部 on error 明确报了错（"error:<msg>"，见
+        // selectVariantsScript 的 on error 分支）——这是执行失败，既不兜底
+        // （open -a 会把整批文件导入 C1），也不能被当成"没匹配到"。
+        // 原实现两条路都错：单路径时错误串恰好 1 行 = requested.count，被解析成
+        // "不是 1" → 全部 notFound（用户看到"未找到"）；多路径时行数不等 →
+        // scriptUnsupported → 兜底 open -a 整批导入。所以这里先判前缀、直接抛。
+        if let reported = Self.reportedScriptError(in: output) {
+            throw CaptureOneBridgeError.scriptFailed(reported)
+        }
+        let flags = output
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if flags.count == requested.count {
+            var selected: [String] = []
+            for (index, flag) in flags.enumerated() where flag == "1" {
+                selected.append(requested[index])
+            }
+            notFound.append(contentsOf: requested.enumerated()
+                .filter { flags[$0.offset] != "1" }
+                .map { $0.element })
+            return C1SelectionOutcome(
+                method: .appleScript, paths: selected,
+                notFound: notFound, appName: appName)
+        }
+        // 输出形状不认识（脚本被旧版 C1 静默改写等）→ 走兜底。
+        return try await openInCaptureOne(
+            appName: appName, paths: requested, notFound: notFound,
+            reason: .scriptUnsupported)
     }
 
     /// 兜底：让 C1 打开这些文件（可能触发导入）。失败归一到 C1_SCRIPT_FAILED。
@@ -422,7 +437,9 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
 
     /// 按路径逐个匹配后 select（§3.10.2）。
     ///
-    /// 输出：每条路径一行 "1"/"0"，与 paths 同序（调用方据此算 notFound）。
+    /// 输出：每条路径一行 "1"/"0"，与 paths 同序（调用方据此算 notFound）；
+    /// `on error` 分支返回单行 `"error:<msg>"`，由 reportedScriptError(in:) 先筛出
+    /// 并当脚本失败抛出（C7：不能被当"未找到"，也不能兜底 open -a）。
     /// 为什么单值比较：AppleScript 没有 `in {…}` 集合字面量，`whose path is X`
     /// 只能一次一个值；这也是 TS 侧同款脚本的形状。
     static func selectVariantsScript(appName: String, paths: [String]) -> String {
@@ -449,6 +466,27 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
           end try
         end tell
         """
+    }
+
+    /// 脚本内部 on error 的报告前缀（与 selectVariantsScript 的 `"error:"` 返回值一致）。
+    static let scriptErrorPrefix = "error:"
+
+    /// C7：把脚本的 `error:<msg>` 报告解析成可抛的错误消息（nil = 不是错误报告）。
+    ///
+    /// 为什么必须先判：这是 selectVariantsScript 在 `on error` 分支显式写出的，
+    /// 语义是"脚本执行失败"（无当前文档、字段不存在、旧版字典不支持…），形状与
+    /// `"1"/"0"` 报告完全不同。但原实现只按行数判断：单路径时 1 行 = 1 个请求，
+    /// 错误串被当成"没匹配到"→ 返回 notFound；多路径时行数不等 → scriptUnsupported
+    /// → 兜底 `open -a`（可能整批导入 C1）。两种都必须当脚本失败直接抛。
+    ///
+    /// 只认**整段输出的开头**（先 trim 空白），不用 contains：路径或消息中间出现
+    /// "error:" 不能触发误判；消息体里含换行也一并保留。
+    static func reportedScriptError(in output: String) -> String? {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(scriptErrorPrefix) else { return nil }
+        let message = String(trimmed.dropFirst(scriptErrorPrefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return message.isEmpty ? "script reported an error" : message
     }
 
     /// 双引号 / 反斜杠用码点构造：避免在本文件里堆叠难读的连续转义。

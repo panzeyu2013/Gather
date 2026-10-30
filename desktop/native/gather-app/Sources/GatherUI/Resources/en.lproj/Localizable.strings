@@ -1876,6 +1876,7 @@
 "保留 3★ / 淘汰 1★" = "Keep 3★ / reject 1★";
 "只给保留 3★" = "Keep 3★ only";
 "不写星级" = "Do not write ratings";
+"已移出「%@」" = "Removed “%@”";
 "已移出 %lld 张；跳过 %lld 张（非淘汰 %lld / 已移出 %lld / 不在会话 %lld）" = "Moved %lld; skipped %lld (not rejected %lld / already moved %lld / not in session %lld)";
 "已选中前 %lld 张（超出单次上限，其余请先缩小筛选范围）" = "Selected the first %lld photos (limit reached; narrow the filter for the rest)";
 "已移出 %lld 张" = "Moved %lld photos";
@@ -1995,6 +1996,7 @@
 "为什么给出这条建议" = "Why this suggestion";
 "亮度" = "Luminance";
 "人工样本 %lld / 最少 %lld" = "Human samples %lld / minimum %lld";
+"人工样本 %lld（未设门槛）" = "Human samples %lld (no minimum set)";
 "仍有 %lld 个文件未结束（共享文件或待确认项），稍后可重试。" = "%lld files are still unfinished (shared files or unconfirmed items). Try again later.";
 "以人脸中心 100% 查看" = "Zoom to 100% at face center";
 "以对焦点 100% 查看" = "Zoom to 100% at AF point";
@@ -2070,6 +2072,7 @@
 "用人工反馈校准置信度阈值（只在你确认后写入设置）" = "Calibrate confidence thresholds from human feedback (written only after you confirm)";
 "直方图" = "Histogram";
 "直方图（基于预览）" = "Histogram (preview)";
+"移出成员会丢失它在集合里的排序位置，重新加入会排到末尾。" = "Removing a member discards its position in the collection; re-adding puts it at the end.";
 "移出集合" = "Remove from collection";
 "精确 %lld 组 · 视觉 %lld 组" = "Exact %lld groups · visual %lld groups";
 "精确重复" = "Exact duplicates";

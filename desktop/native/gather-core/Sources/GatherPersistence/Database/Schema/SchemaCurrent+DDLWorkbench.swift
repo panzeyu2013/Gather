@@ -52,6 +52,11 @@ public extension SchemaCurrent {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX idx_photo_stacks_session ON photo_stacks(session_id, updated_at);
+    -- A5：cover_photo_id 是 ON DELETE SET NULL 子键；没有本索引时删一张照片要为每个
+    -- 父行全表扫 photo_stacks 去找引用行（封面引用极少，选择性很高）。
+    -- 索引放这里而不是 ddlIndexes：拼接序是 ddlIndexes → addendum → workbenchDDL，
+    -- 在 ddlIndexes 里引用本表会直接报 "no such table"。
+    CREATE INDEX idx_photo_stacks_cover ON photo_stacks(cover_photo_id);
 
     -- 48. 堆栈成员
     CREATE TABLE photo_stack_members (
@@ -108,6 +113,9 @@ public extension SchemaCurrent {
       UNIQUE (batch_id, photo_id)
     );
     CREATE INDEX idx_client_proof_session ON client_proof_feedback(session_id, imported_at);
+    -- A5：photo_id 是 ON DELETE CASCADE 子键（删照片/会话校样记录跟着走），
+    -- 没有子键索引时删除要逐父行全扫本表。
+    CREATE INDEX idx_client_proof_photo ON client_proof_feedback(photo_id);
 
     -- 53. 用户对 triage 建议的实际动作（校准样本）
     CREATE TABLE triage_feedback (

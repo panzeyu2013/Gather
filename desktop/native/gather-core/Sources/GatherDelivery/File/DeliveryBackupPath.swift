@@ -74,13 +74,17 @@ enum DeliveryBackupPathError: Error, Equatable, CustomStringConvertible, Localiz
 
 /// backup_path 的唯一校验入口（DeliveryFilePhase / 文件端口共用）。
 public enum DeliveryBackupPath {
-    /// 校验并返回**归一化后**的 backup_path；调用方必须用返回值做文件操作。
-    /// 受控备份 / 归档名标记：**删除守卫的唯一来源**（DeliveryTypes 与宿主 router 共用）。
+    /// 受控备份名标记：**删除守卫的唯一来源**（DeliveryTypes 与宿主 router 共用）。
     ///
     /// 放在 GatherDelivery 而不是 GatherProtocol：这是交付层的内部约定，不属于冻结的
     /// IPC 公开面（protocol-surface 门禁只看 GatherProtocol）。
+    ///
+    /// 原实现还列了 `.gather-archived-`：全仓没有任何生产者（宿主 XMPProvider.backup
+    /// 只生成 .gather-backup-，内嵌会话只生成 .gather-header-），把它留在"允许删除"
+    /// 白名单里只会扩大误删面，已删除（P1-4）。将来真要落地归档，必须同时给出
+    /// 生产者 + 锚定式判定（见 anchoredXMPPath），不能只加一个标记字符串。
     public static let controlledMarkers = [
-        ".gather-backup-", ".gather-header-", ".gather-archived-",
+        ".gather-backup-", ".gather-header-",
     ]
 
     /// 是否属于"受控备份 / 归档名"。
@@ -95,6 +99,81 @@ public enum DeliveryBackupPath {
         return controlledMarkers.contains { name.contains($0) }
     }
 
+    /// 从受控备份名反推 `<xmp>` 并校验二者关系（锚定式孤儿判定，P1-4）。
+    ///
+    /// 原实现（MetadataRetentionService 的孤儿回收）只问"文件名里是否含标记"
+    /// （isControlledName）：扫描根是用户照片目录的第一层，于是任何 >24h、DB 无引用、
+    /// 名字里碰巧含 `.gather-backup-` 的常规文件都会被删。这里改成正向对齐的锚定式：
+    /// 把名字按标记切成 (base, 后缀)，base 当候选 `<xmp>`，再复用 `validate` 的全部
+    /// 关系校验（同目录 + `base + marker` 前缀锚定 + 符号链接 / 非常规文件拒绝）。
+    ///
+    /// - Parameter directory: 待判定文件所在目录（孤儿扫描只扫会话根第一层，目录已知）。
+    /// - Returns: 归一化后的 `<xmp>`；nil = 这个名字不可能是受控备份（调用方只能跳过）。
+    public static func anchoredXMPPath(
+        forBackupName name: String,
+        inDirectory directory: String
+    ) -> String? {
+        guard !name.isEmpty, !name.contains("/"), !name.contains("\0"),
+              !directory.isEmpty else { return nil }
+        let backupPath = (directory as NSString).appendingPathComponent(name)
+        for marker in controlledMarkers {
+            // 取**最后一次**出现：uuid 段不含标记；base 里出现同名字符串时以前缀为准
+            // （validate 会再确认 `base + marker` 是 backupName 的前缀）。
+            guard let range = name.range(
+                of: marker, options: [.backwards, .caseInsensitive]),
+                range.upperBound < name.endIndex else { continue }
+            let base = String(name[..<range.lowerBound])
+            guard !base.isEmpty else { continue }
+            let candidate = (directory as NSString).appendingPathComponent(base)
+            do {
+                _ = try validate(xmpPath: candidate, backupPath: backupPath)
+            } catch {
+                // 关系不成立（不是这份 xmp 的备份）：试下一个标记，最终 nil。
+                continue
+            }
+            return TSPath.normalize(candidate)
+        }
+        return nil
+    }
+
+    /// 内嵌写回的照片拷贝型临时文件标记（C6）。
+    ///
+    /// `JPEGMetadataWriter.temporaryPath` 生成 `.<photo>.gather-embedded-<uuid>`：
+    /// 整份照片（新头部 + 扫描段）的临时副本，正常路径由 replaceItemAt 消费，只有
+    /// 崩溃/断电才会留在照片目录里。它与备份**不是**一类东西（不能 restore，也不对应
+    /// 任何 deliveries.backup_path），因此刻意不进 `controlledMarkers`：只由孤儿回收
+    /// 按"基础文件名仍在 + 年龄"判定后删除。
+    public static let embeddedTempMarker = ".gather-embedded-"
+
+    /// 从 `.<photo>.gather-embedded-<uuid>` 反推 `<photo>`；nil = 不是这类临时文件。
+    public static func embeddedTempBaseName(_ name: String) -> String? {
+        guard name.hasPrefix("."), !name.contains("/"), !name.contains("\0") else {
+            return nil
+        }
+        guard let range = name.range(
+            of: embeddedTempMarker, options: [.backwards, .caseInsensitive]),
+            range.upperBound < name.endIndex else { return nil }
+        let base = String(name[name.index(after: name.startIndex)..<range.lowerBound])
+        guard !base.isEmpty else { return nil }
+        return base
+    }
+
+    /// 是否可回收的内嵌临时文件：名字形态对得上，且**同目录的原照片仍在**
+    /// （照片本体还在才证明它是这份照片的拷贝副本，而不是用户自造的怪名字）。
+    public static func isRecoverableEmbeddedTemp(
+        name: String,
+        inDirectory directory: String
+    ) -> Bool {
+        guard let base = embeddedTempBaseName(name), !directory.isEmpty else { return false }
+        let photoPath = (directory as NSString).appendingPathComponent(base)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: photoPath, isDirectory: &isDirectory) else {
+            return false
+        }
+        return !isDirectory.boolValue
+    }
+
+    /// 校验并返回**归一化后**的 backup_path；调用方必须用返回值做文件操作。
     public static func validate(xmpPath: String, backupPath: String) throws -> String {
         let normalizedXMP = TSPath.normalize(xmpPath)
         guard !normalizedXMP.isEmpty else { throw DeliveryBackupPathError.emptyXMPPath }

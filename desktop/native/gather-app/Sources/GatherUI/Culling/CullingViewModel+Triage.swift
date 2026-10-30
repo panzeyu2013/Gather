@@ -376,7 +376,8 @@ public struct TriageCalibrationPanelModel: Equatable, Sendable {
     }
 
     /// 样本门禁：不足时只显示"样本不足"，禁用"应用"。
-    public var isApplicable: Bool { minSamples > 0 && samples >= minSamples }
+    /// minSamples <= 0 = 不设门槛（与服务侧 TriageCalibrationService 同口径）。
+    public var isApplicable: Bool { minSamples <= 0 || samples >= minSamples }
 
     /// 由当前设置推导的三档阈值（keep=高、minExecutable=中）。
     public var confidenceThresholds: TriageConfidenceThresholds {

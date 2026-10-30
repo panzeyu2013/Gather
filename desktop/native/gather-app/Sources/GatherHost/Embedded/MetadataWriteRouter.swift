@@ -217,8 +217,19 @@ final class MetadataWriteRouter: XMPProvider {
 
     private func readEmbedded(photoPath: String) async throws -> MetadataWriteAttributes {
         let parsed = try await ImageIOExifProvider().parse(filePath: photoPath, isJpeg: true)
-        let embedded = parsed.flatMap(MetadataService.embeddedAttributesFromParse)
+        var embedded = parsed.flatMap(MetadataService.embeddedAttributesFromParse)
             ?? MetadataWriteAttributes()
+        // P1-1：内嵌 XMP 才是层级关键词的真相源。ImageIO 只返回 dc:subject/IIM 的
+        // **扁平**列表，不返回 lr:hierarchicalSubject；只用它当基线的话，写侧
+        // patchDocument 会从 attributes.keywords 反推两套列表，把原有层级拍平成单段
+        // （Lightroom/Bridge 的层级关键词静默丢失）。这里用与快路径同一个扫描器
+        // 读一遍头部交给 XMPPacketReader；读不到/超限就保持 ImageIO 基线不动
+        // ——"读不到就不改"比猜一个更安全。
+        if let fromXMP = Self.readEmbeddedXMPAttributes(photoPath: photoPath) {
+            // keywords 是整体覆盖（XMP 的 dc + lr 已在 reader 里合并成路径列表），
+            // 其余字段 XMP 优先、nil 回退内嵌。
+            embedded = MetadataService.mergeAttributes(embedded, fromXMP)
+        }
         // 内嵌目标也允许存在外部 .xmp（策略上不会走到这里，但直接调用 readAttributes
         // 时仍要给出有效值）。合并规则与 MetadataService 一致：sidecar 逐字段覆盖。
         let sidecarPath = SidecarXMPProvider.resolveSidecarPath(photoPath)
@@ -234,6 +245,47 @@ final class MetadataWriteRouter: XMPProvider {
         }
         // 合并表唯一实现在 core（以前这里抄了一份，漏了三个字段）。
         return MetadataService.mergeAttributes(embedded, overlay)
+    }
+
+    /// 只读头部（到 SOS 或快路径同一个 4MiB 上限），交给 XMPPacketReader 解析内嵌属性。
+    ///
+    /// 为什么不用 ImageIO：CGImageProperties 不暴露 lr 命名空间，层级关键词读不出来。
+    /// 为什么不用 `EmbeddedJPEGSession.open`：那会顺带做整文件哈希与快照，读路径不需要。
+    /// 可见性：internal（`MetadataWriteRouterReadTests` 直接测它；本模块外的调用方没有）。
+    static func readEmbeddedXMPAttributes(photoPath: String) -> MetadataWriteAttributes? {
+        // 不用 try?：cleanup-ratchet 的 try_optional 是硬门禁，读路径失败只在本地返回 nil。
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: photoPath))
+        } catch {
+            return nil
+        }
+        defer {
+            do { try handle.close() } catch {}
+        }
+        var scanner = JPEGSegmentScanner()
+        var headerBytes: Int64 = 0
+        while headerBytes < EmbeddedJPEGSession.headerLimit, scanner.scanOffset == nil {
+            let chunk: Data
+            do {
+                chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+            } catch {
+                return nil
+            }
+            if chunk.isEmpty { break }
+            headerBytes += Int64(chunk.count)
+            do {
+                _ = try scanner.feed(chunk)
+            } catch {
+                return nil
+            }
+        }
+        // 没有 XMP 包 / 不是 JPEG 头部 → nil（调用方保留 ImageIO 基线）。
+        // 注意不能只看 attributes(segments:) 是否为 nil：没有 XMP 时它仍会给出
+        // 一个空属性（reader 的设计是"能读就给值"）。这里显式要求存在 XMP 段，
+        // 否则不如把基线交给 ImageIO（IPTC/EXIF 它读得更全）。
+        guard scanner.segments.contains(where: \.isXMP) else { return nil }
+        return XMPPacketReader.attributes(segments: scanner.segments)
     }
 
     // MARK: - pending 备份表

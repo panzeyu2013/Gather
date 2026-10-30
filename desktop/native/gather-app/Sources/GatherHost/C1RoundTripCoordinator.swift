@@ -68,6 +68,8 @@ public struct C1AutoReloadSettings: Equatable, Sendable {
 public enum C1AutoReloadSkipReason: String, Equatable, Sendable {
     /// c1_auto_reload=0。
     case autoReloadDisabled
+    /// 本机没装 Capture One（P1-10）：连 debounce/preflight 都不做，绝不 spawn osascript。
+    case c1Unavailable
     /// 预检不可达/无文档/未授权。
     case preflightUnavailable
     /// 本批没有成功写回的行。
@@ -140,8 +142,23 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
     /// 生产 debounce（plan §3.10.1：1.5s）。
     public static let defaultDebounceMilliseconds = 1_500
 
+    /// C4：notSettled 的自动重试上限（每批）。按 debounce 1.5s 算约 7.5s 的收敛窗口，
+    /// 再晚就交给下一次状态事件或手动 reload，不允许无限自旋。
+    public static let maxSettleRetries = 5
+
+    /// C4：重试计数带着"首次重试时的 written 计数"来区分批次：
+    /// written 变了就是新批次，上限必须重新计（否则上一批用尽后新批永不再自动 reload）。
+    private struct SettleRetry {
+        let written: Int
+        var attempts: Int
+    }
+
     private let bridge: any CaptureOneBridging
     private let syncStatus: @MainActor (String) async throws -> CullingSyncStatus
+    /// P1-10：本机是否装了 Capture One（生产 = 组合根同一份 C1Installation 判定）。
+    /// 没装时自动路径直接短路，既不排 debounce 也不做 preflight——preflight 才是
+    /// spawn osascript（System Events 探测）的地方，没装 C1 的机器会被弹自动化授权框。
+    private let isC1Installed: @Sendable () -> Bool
     private let settings: @MainActor () -> C1AutoReloadSettings
     private let clock: @MainActor () -> String
     private let extras: C1RoundTripExtras
@@ -154,6 +171,8 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
     private var pendingSessions: [String] = []
     /// 失败抑制：sessionId → 失败时的 written 计数（同批不重试）。
     private var suppressed: [String: Int] = [:]
+    /// C4：notSettled 的自动重试计数（sessionId → 该批 written + 已重试次数）。
+    private var settleRetries: [String: SettleRetry] = [:]
 
     /// 最近一次自动 reload 失败（nil = 没有未处理的失败）。
     public private(set) var lastFailure: C1AutoReloadFailure?
@@ -165,12 +184,16 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
     public init(
         bridge: any CaptureOneBridging,
         syncStatus: @escaping @MainActor (String) async throws -> CullingSyncStatus,
+        // 默认 true = "当作装了"：保持既有调用点（含测试替身）的语义不变；
+        // 生产由 AppBootstrap 注入 C1Installation.isInstalled。
+        isC1Installed: @escaping @Sendable () -> Bool = { true },
         settings: @escaping @MainActor () -> C1AutoReloadSettings = { .default },
         clock: @escaping @MainActor () -> String = C1RoundTripCoordinator.defaultNow,
         extras: C1RoundTripExtras = C1RoundTripExtras()
     ) {
         self.bridge = bridge
         self.syncStatus = syncStatus
+        self.isC1Installed = isC1Installed
         self.settings = settings
         self.clock = clock
         self.extras = extras
@@ -182,16 +205,69 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
     /// 只排一个 debounce 定时器；同一会话的多次事件合并。
     public func noteDeliveryStateChanged(sessionId: String) {
         guard !sessionId.isEmpty else { return }
-        if !pendingSessions.contains(sessionId) { pendingSessions.append(sessionId) }
+        // P1-10：本机没装 Capture One —— 直接短路，连 debounce 定时器都不排。
+        // 这个入口每轮写回收敛后都会被调用；原实现照常排定时器 →
+        // performAutoReload → bridge.preflight() → spawn osascript（System Events
+        // 探测），没装 C1 的用户就会看到非预期的自动化授权弹窗。
+        // 判定与组合根 c1Required 是同一份实现（C1Installation）。
+        guard isC1Installed() else {
+            // 报原因时优先反映用户设置：显式关掉自动 reload 时"没装 C1"不是重点。
+            publish(
+                sessionId: sessionId,
+                outcome: .skipped(settings().enabled ? .c1Unavailable : .autoReloadDisabled))
+            return
+        }
+        // 事件会把同一批的合并窗口重置：取消上一个定时器再重排。
         debounceTask?.cancel()
-        let delay = settings().debounceMilliseconds
+        scheduleAutoReload(
+            sessionId: sessionId, delayMilliseconds: settings().debounceMilliseconds)
+    }
+
+    /// 排一次 debounce 定时器（同一批只保留最后一个；C4 的重试复用同一条路径）。
+    ///
+    /// 这里**不**取消既有定时器：C4 的重试是从正在 drain 的那次定时器内部调过来的，
+    /// 取消自己会连带丢掉这次重试（取消别人由 noteDeliveryStateChanged 负责）。
+    private func scheduleAutoReload(sessionId: String, delayMilliseconds: Int) {
+        if !pendingSessions.contains(sessionId) { pendingSessions.append(sessionId) }
         debounceTask = Task { @MainActor [weak self] in
-            if delay > 0 {
-                do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
+            if delayMilliseconds > 0 {
+                do { try await Task.sleep(for: .milliseconds(delayMilliseconds)) } catch { return }
             }
             guard let self else { return }
             await self.drainAutoReloads()
         }
+    }
+
+    /// C4：notSettled 时自排一次延迟重试。
+    ///
+    /// 为什么需要：唯一事件源（CullingViewModel.refreshSyncStatus）只在 written 变化
+    /// 时通知协调器。批次以失败收敛（written 不增、pending/writing 归零）时不会再有
+    /// 事件，原实现就永久停在 notSettled —— 既不 reload（C1 里一直是旧元数据），
+    /// 也没有任何提示。这里复用同一个 debounce 定时器再读一次状态（不新增线程/定时器），
+    /// 并设上限避免无限自旋；超过上限只记一次可读日志（这不是写回失败，所以不写
+    /// lastFailure、不发失败通知、也不新增错误码）。
+    private func scheduleSettleRetry(sessionId: String, written: Int) {
+        var retry = settleRetries[sessionId] ?? SettleRetry(written: written, attempts: 0)
+        // written 变了 = 新批次：上一批用尽的上限不能连累新批次。
+        if retry.written != written { retry = SettleRetry(written: written, attempts: 0) }
+        guard retry.attempts < Self.maxSettleRetries else {
+            // attempts 先自增到"上限 + 1"作为已记账标记：同一批后续的 notSettled
+            // 事件不再排重试、也不再重复刷日志。
+            if retry.attempts == Self.maxSettleRetries {
+                retry.attempts += 1
+                settleRetries[sessionId] = retry
+                GatherLogger.log(
+                    "c1.auto_reload session=\(sessionId) result=skipped reason=notSettled"
+                        + " retries=\(Self.maxSettleRetries)"
+                        + " 已停止自动等待：写回批次仍未收敛，等下一次状态事件或手动 reload",
+                    level: .info)
+            }
+            return
+        }
+        retry.attempts += 1
+        settleRetries[sessionId] = retry
+        scheduleAutoReload(
+            sessionId: sessionId, delayMilliseconds: settings().debounceMilliseconds)
     }
 
     /// 立刻处理已排队的事件（测试/退出/设置变更后调用；不等 debounce）。
@@ -232,6 +308,7 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
         debounceTask?.cancel()
         debounceTask = nil
         pendingSessions.removeAll()
+        settleRetries.removeAll()
         lastOperation?.cancel()
         lastOperation = nil
     }
@@ -251,6 +328,9 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
     private func performAutoReload(sessionId: String) async -> C1RoundTripOutcome {
         let config = settings()
         guard config.enabled else { return .skipped(.autoReloadDisabled) }
+        // P1-10 第二道短路（覆盖经串行队列/C4 重试进来的调用）：没装 C1 时不读库、
+        // 不进 preflight（唯一的 spawn 点），也不写 lastFailure。
+        guard isC1Installed() else { return .skipped(.c1Unavailable) }
         let status: CullingSyncStatus
         do {
             status = try await syncStatus(sessionId)
@@ -262,7 +342,12 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
         }
         let signal = Self.signal(from: status, sessionId: sessionId)
         guard signal.hasWork else { return .skipped(.noWrittenRows) }
-        guard signal.isSettled else { return .skipped(.notSettled) }
+        guard signal.isSettled else {
+            // C4：不能只等下一次事件 —— 失败收敛的批次 written 不增，事件源不会
+            // 再通知（见 scheduleSettleRetry 的类型说明）。
+            scheduleSettleRetry(sessionId: sessionId, written: signal.written)
+            return .skipped(.notSettled)
+        }
         if suppressed[sessionId] == signal.written { return .skipped(.suppressedAfterFailure) }
         let statusPreflight = await bridge.preflight()
         guard statusPreflight.reachable, statusPreflight.appRunning,
@@ -273,6 +358,7 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
             try await bridge.reloadMetadata(sessionId: sessionId)
             reloadCount += 1
             suppressed.removeValue(forKey: sessionId)
+            settleRetries.removeValue(forKey: sessionId)
             lastFailure = nil
             return .reloaded(written: signal.written)
         } catch {
@@ -297,6 +383,7 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
             try await bridge.reloadMetadata(sessionId: sessionId)
             reloadCount += 1
             suppressed.removeValue(forKey: sessionId)
+            settleRetries.removeValue(forKey: sessionId)
             lastFailure = nil
             return .reloaded(written: 0)
         } catch {

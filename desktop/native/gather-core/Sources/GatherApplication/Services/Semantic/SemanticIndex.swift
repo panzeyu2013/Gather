@@ -208,6 +208,15 @@ public final class SemanticIndex {
     public static let defaultMinSimilarity = 0.92
     /// 场景分组单次参与的最大行数（贪心 O(n²)；20k 全扫会卡主线程）。
     public static let maxClusterRows = 2_000
+    /// 检索单次最多比较的行数（B7）。
+    ///
+    /// 原检索路径用 `loadRows(sessionId:limit: 0)`（全会话无上限）：20k 张 × 2048 维
+    /// Float16 会在一次检索里同时展开成 ~160MB+ 的 [Float]，而且每次检索重算。现在
+    /// 改成分块流式比较（见 scanChunkRows）+ 只保留 top-K 候选，内存与"命中数"成正比
+    /// 而不是与"会话张数"成正比；超过上限的会话按 photoId 顺序只比较前 maxScanRows 行。
+    public static let maxScanRows = 20_000
+    /// 单批解码的行数上限（2048 维 × 512 ≈ 4MB 向量 + 2MB BLOB）。
+    public static let scanChunkRows = 512
 
     private let store: any PhotoSemanticsStore
 
@@ -251,25 +260,27 @@ public final class SemanticIndex {
                 sessionId: sessionId, method: .featurePrint, hits: [], scanned: 0, skipped: 0,
                 unavailableReason: "semantic_unavailable: 当前照片没有语义向量")
         }
-        let decoded = try decode(store.loadRows(sessionId: sessionId, limit: 0))
+        // B7：分块扫描 + 有界 top-K（结果与"全量解码 → 排序 → prefix(limit)"一致）。
         var hits: [SemanticSearchHit] = []
-        for row in decoded.vectors where row.photoId != photoId {
+        let scan = try scanVectors(
+            sessionId: sessionId,
+            limit: Self.maxScanRows,
+            preferredDimension: query.vector.count
+        ) { row in
+            guard row.photoId != photoId else { return }
             let similarity = Self.cosine(query.vector, row.vector)
-            guard similarity >= minSimilarity else { continue }
-            hits.append(SemanticSearchHit(
-                photoId: row.photoId, similarity: similarity,
-                labels: row.labels, matchedLabels: []))
+            guard similarity >= minSimilarity else { return }
+            Self.insertBounded(
+                SemanticSearchHit(
+                    photoId: row.photoId, similarity: similarity,
+                    labels: row.labels, matchedLabels: []),
+                into: &hits,
+                capacity: limit,
+                rankedBefore: Self.similarityRankedBefore)
         }
-        hits.sort { lhs, rhs in
-            let left = lhs.similarity ?? 0
-            let right = rhs.similarity ?? 0
-            if left != right { return left > right }
-            return lhs.photoId < rhs.photoId
-        }
-        let capped = Array(hits.prefix(limit))
         return SemanticSearchOutcome(
-            sessionId: sessionId, method: .featurePrint, hits: capped,
-            scanned: decoded.vectors.count, skipped: decoded.skipped)
+            sessionId: sessionId, method: .featurePrint, hits: hits,
+            scanned: scan.scanned, skipped: scan.skipped)
     }
 
     // MARK: 标签匹配（文搜）
@@ -289,30 +300,33 @@ public final class SemanticIndex {
                 sessionId: sessionId, method: .labels, hits: [], scanned: 0, skipped: 0,
                 unavailableReason: "INVALID_PARAM: labels must not be empty")
         }
-        let decoded = try decode(store.loadRows(sessionId: sessionId, limit: 0))
+        // B7：分块扫描 + 有界 top-K（排序键与旧实现相同：命中标签数降序 + photoId）。
+        let capacity = max(0, limit)
         var hits: [SemanticSearchHit] = []
-        for row in decoded.vectors {
+        let scan = try scanVectors(
+            sessionId: sessionId,
+            limit: Self.maxScanRows,
+            preferredDimension: 0
+        ) { row in
             let matched = row.labels.filter { label in
                 let key = label.normalizedKey
                 return keys.contains { query in key.contains(query) }
             }
-            guard !matched.isEmpty else { continue }
+            guard !matched.isEmpty else { return }
             let rowKeys = row.labelKeys
             let jaccard = Self.jaccard(keys, rowKeys)
-            guard jaccard >= minJaccard else { continue }
-            hits.append(SemanticSearchHit(
-                photoId: row.photoId, similarity: nil, labels: row.labels,
-                matchedLabels: matched.map(\.label)))
-        }
-        hits.sort { lhs, rhs in
-            if lhs.matchedLabels.count != rhs.matchedLabels.count {
-                return lhs.matchedLabels.count > rhs.matchedLabels.count
-            }
-            return lhs.photoId < rhs.photoId
+            guard jaccard >= minJaccard else { return }
+            Self.insertBounded(
+                SemanticSearchHit(
+                    photoId: row.photoId, similarity: nil, labels: row.labels,
+                    matchedLabels: matched.map(\.label)),
+                into: &hits,
+                capacity: capacity,
+                rankedBefore: Self.labelsRankedBefore)
         }
         return SemanticSearchOutcome(
-            sessionId: sessionId, method: .labels, hits: Array(hits.prefix(limit)),
-            scanned: decoded.vectors.count, skipped: decoded.skipped)
+            sessionId: sessionId, method: .labels, hits: hits,
+            scanned: scan.scanned, skipped: scan.skipped)
     }
 
     // MARK: 场景分组
@@ -440,6 +454,86 @@ public final class SemanticIndex {
     }
 
     // MARK: 内部
+
+    /// 分块扫描会话向量（B7：不把全会话同时展开进内存）。
+    ///
+    /// - Parameters:
+    ///   - limit: 最多比较的行数（<= 0 = 不设上限，仅供内部调用点使用）。
+    ///   - preferredDimension: > 0 时只接受该维度的向量（图搜图：与查询向量不同维的
+    ///     行本来就会得到余弦 -1）；0 = 以第一个可解码行的维度为基准（旧 decode 的语义）。
+    ///   - body: 逐条回调（按 photoId 升序，稳定顺序，便于复现）。
+    /// - Returns: scanned = 参与比较的行数；skipped = 维度不符/解码失败的行数。
+    private func scanVectors(
+        sessionId: String,
+        limit: Int,
+        preferredDimension: Int,
+        body: (SemanticVector) -> Void
+    ) throws -> (scanned: Int, skipped: Int) {
+        // 先只取 id 集合（不读 BLOB），再按块读 BLOB：峰值内存 = 一个块。
+        let ids = try store.indexedPhotoIds(sessionId: sessionId).sorted()
+        let bounded = limit > 0 && ids.count > limit ? Array(ids.prefix(limit)) : ids
+        let chunkSize = max(1, Self.scanChunkRows)
+        var expectedDim = max(0, preferredDimension)
+        var scanned = 0
+        var skipped = 0
+        var offset = 0
+        while offset < bounded.count {
+            let end = min(offset + chunkSize, bounded.count)
+            let chunk = Array(bounded[offset..<end])
+            offset = end
+            // loadRows(sessionId:photoIds:) 内部再按 800 分块做 IN 查询。
+            for row in try store.loadRows(sessionId: sessionId, photoIds: chunk) {
+                let vector = SemanticFeatureCodec.decode(row.feature, dimension: row.featureDim)
+                guard !vector.isEmpty else { skipped += 1; continue }
+                // 同一会话内只比较同维向量：系统升级后 2048 vs 1024 混排会让余弦恒 -1。
+                if expectedDim == 0 { expectedDim = vector.count }
+                guard vector.count == expectedDim else { skipped += 1; continue }
+                scanned += 1
+                body(SemanticVector(
+                    photoId: row.photoId,
+                    labels: Self.decodeLabels(row.labelsJson),
+                    vector: vector,
+                    modelVersion: row.modelVersion))
+            }
+        }
+        return (scanned, skipped)
+    }
+
+    /// 有界 top-K：内存里只保留 capacity 条。
+    ///
+    /// 与"全量收集 → 排序 → prefix(capacity)"等价：比较器是全序（同分由 photoId
+    /// 决定），扫描顺序不影响谁能进前 K。
+    private static func insertBounded(
+        _ hit: SemanticSearchHit,
+        into hits: inout [SemanticSearchHit],
+        capacity: Int,
+        rankedBefore: (SemanticSearchHit, SemanticSearchHit) -> Bool
+    ) {
+        guard capacity > 0 else { return }
+        let index = hits.firstIndex { rankedBefore(hit, $0) } ?? hits.count
+        hits.insert(hit, at: index)
+        if hits.count > capacity { hits.removeLast() }
+    }
+
+    /// 图搜图排序：余弦降序、photoId 升序。
+    static func similarityRankedBefore(
+        _ lhs: SemanticSearchHit, _ rhs: SemanticSearchHit
+    ) -> Bool {
+        let left = lhs.similarity ?? 0
+        let right = rhs.similarity ?? 0
+        if left != right { return left > right }
+        return lhs.photoId < rhs.photoId
+    }
+
+    /// 文搜排序：命中标签数降序、photoId 升序。
+    static func labelsRankedBefore(
+        _ lhs: SemanticSearchHit, _ rhs: SemanticSearchHit
+    ) -> Bool {
+        if lhs.matchedLabels.count != rhs.matchedLabels.count {
+            return lhs.matchedLabels.count > rhs.matchedLabels.count
+        }
+        return lhs.photoId < rhs.photoId
+    }
 
     private func decode(
         _ rows: [PhotoSemanticsRow]

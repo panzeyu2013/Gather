@@ -355,9 +355,15 @@ package final class AppBootstrap {
         })
         CaptureOneBridge.shared = captureOneBridge
         // P1：自动 reload 协调器（手动/自动共用串行队列；C1 未运行时 preflight 会跳过）。
+        // P1-10：再注入"本机是否装了 C1"（与组合根门禁同一份 C1Installation 判定）。
+        // 事件源（CullingViewModel.refreshSyncStatus）在每轮 writeback 收敛后都会通知，
+        // 没装 C1 的用户原本会一路走到 bridge.preflight()（spawn osascript 做
+        // System Events 探测）→ 非预期的自动化授权弹窗。有了这道短路，
+        // c1_auto_reload 保持默认 "1" 也不会对没装 C1 的机器发起任何子进程。
         let c1RoundTrip = C1RoundTripCoordinator(
             bridge: captureOneBridge,
             syncStatus: { try await appServices.culling.syncStatus($0) },
+            isC1Installed: { C1Installation.isInstalled() },
             settings: {
                 C1AutoReloadSettings(
                     enabled: composition.settingsService.get(

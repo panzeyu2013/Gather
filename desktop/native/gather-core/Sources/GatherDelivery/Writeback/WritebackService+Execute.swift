@@ -504,9 +504,17 @@ extension WritebackService {
             throw WritebackConflictError(path: xmpPath)
         }
         // 写前真实备份（S5c-2b-3b-1）：必须在文件写入之前取；已有备份（重试）直接复用。
+        //
+        // P1-6：**先取备份、commit 成功之后才登记到 phaseOne**。原实现取到 backupPath
+        // 就 recordBackup，再 commit；commit 失败时 abort 会删掉这份备份，但 phaseOne
+        // 仍记着它 —— 同组后续 item 写成功时 markWritten 会把已删路径写进
+        // deliveries.backup_path，之后 cleanup/restore 永久 XMP_BACKUP_MISSING，而这次
+        // 真正落盘的写回没有活的撤销点。失败路径现在根本不登记。
+        let pendingBackup: String?
         if entry.delivery.backupPath.isEmpty, phaseOne.needsBackup(path: xmpPath) {
-            let backupPath = try await session.writeHeaderBackup()
-            phaseOne.recordBackup(path: xmpPath, backupPath: backupPath)
+            pendingBackup = try await session.writeHeaderBackup()
+        } else {
+            pendingBackup = nil
         }
         let merged = mergeAttributes(
             base: session.attributes, entry: entry, persistedItem: persistedItem)
@@ -514,9 +522,18 @@ extension WritebackService {
         do {
             report = try await session.commit(merged.attributes)
         } catch {
-            // 失败不一定走到替换；让会话清掉本次新建的 header 备份，避免孤儿。
+            // 失败不一定走到替换；让会话清掉本次新建的 header 备份，避免孤儿
+            // （EmbeddedJPEGSession.abort 现在认得"closed 但没提交"这种状态）。
             await session.abort()
             throw error
+        }
+        // 提交成功 = 这份备份对应"写前的盘上内容"，此时才允许它进交付行。
+        // 路径以 report.headerBackupPath（协议承诺的同一路径）为准，空则回退本地值。
+        if let pendingBackup, !pendingBackup.isEmpty {
+            let recorded = report.headerBackupPath.isEmpty
+                ? pendingBackup
+                : report.headerBackupPath
+            phaseOne.recordBackup(path: xmpPath, backupPath: recorded)
         }
         rewriteReports.record(path: xmpPath, report: report)
         phaseOne.recordPrepared(PreparedEntry(

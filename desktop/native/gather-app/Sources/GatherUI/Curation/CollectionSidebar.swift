@@ -80,10 +80,14 @@ public struct CollectionSidebar: View {
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     @State private var collections: [CollectionSummary] = []
+    /// 列表读取失败（侧栏内联提示"集合加载失败"）。
+    /// 只用于 reload()：建集合失败走 actionError，不能借用这条文案（D8）。
     @State private var loadFailed = false
     @State private var showCreateSheet = false
     @State private var newName = ""
     @State private var isWorking = false
+    /// 新建集合失败（sheet 内展示，保留已输入名称，弹窗不关）。
+    @State private var actionError: CommandError?
 
     public init(
         sessionId: String?,
@@ -118,6 +122,8 @@ public struct CollectionSidebar: View {
                 Spacer(minLength: 0)
                 Button {
                     newName = ""
+                    // 打开即清旧错误：上一次失败的红字不该跟着新的一次输入。
+                    actionError = nil
                     showCreateSheet = true
                 } label: {
                     Image(systemName: "plus")
@@ -168,6 +174,15 @@ public struct CollectionSidebar: View {
                 .font(GatherFont.sectionTitle)
             TextField(l10n("集合名称"), text: $newName)
                 .textFieldStyle(.roundedBorder)
+            if let error = actionError {
+                // 失败就地展示（sheet 不关、名称不丢），文案与其它页面同一漏斗：
+                // 旧实现借用 loadFailed → 侧栏写"集合加载失败"，把"建集合失败"
+                // 说成了"读列表失败"（D8）。
+                Text(l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.errorText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: GatherMetrics.Space.s) {
                 Spacer(minLength: 0)
                 Button(l10n("取消")) { showCreateSheet = false }
@@ -266,6 +281,7 @@ public struct CollectionSidebar: View {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         isWorking = true
+        actionError = nil
         defer { isWorking = false }
         do {
             let created = try await album.createCollection(
@@ -275,7 +291,9 @@ public struct CollectionSidebar: View {
             await reload()
             selection = .collection(created)
         } catch {
-            loadFailed = true
+            // 建集合失败 ≠ 列表读取失败：只置 actionError（sheet 内联红字），
+            // 不能置 loadFailed——那会让侧栏改口成"集合加载失败"并盖住已输入的名称。
+            actionError = CommandError(error)
         }
     }
 }

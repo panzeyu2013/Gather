@@ -226,12 +226,32 @@ public final class MetadataLifecycleRepo: Sendable {
         }
     }
 
-    /// 删除一条已由调用方确认"文件已消失"的行（事务内只做 id/xmpPath 复核）。
+    /// 删除一条已由调用方确认"文件已消失"的行。
+    ///
+    /// B6：事务内除了 id/xmpPath 还要复核**可删除前提**（与 vanishedCandidates 同一
+    /// 谓词：非 writing、无租约、无未完成 intent）。原实现只复核 id/xmpPath —— 候选
+    /// 列表读出到真正删除之间，另一条写回可能把该行重新置成 writing / 拿到租约 /
+    /// 建下新 intent，那时删行等于把"正在写的交付"从账上抹掉（撤销点与状态一起丢）。
     public func deleteVanishedRow(id: Int64, xmpPath: String) throws -> Bool {
         try connection.transaction {
-            guard try rowExists(id: id, xmpPath: xmpPath) else { return false }
+            guard try rowStillVanished(id: id, xmpPath: xmpPath) else { return false }
             return try deleteRowInTransaction(id: id)
         }
+    }
+
+    /// 事务内复核"仍是可删的消失行"（谓词与 vanishedCandidates 保持一致）。
+    private func rowStillVanished(id: Int64, xmpPath: String) throws -> Bool {
+        let count = try connection.prepare("""
+            SELECT COUNT(*) FROM deliveries d
+            WHERE d.id = ? AND d.xmp_path = ?
+              AND d.status <> 'writing'
+              AND d.lease_owner = ''
+              AND NOT EXISTS (
+                SELECT 1 FROM delivery_intents i
+                WHERE i.xmp_path = d.xmp_path AND i.phase <> 'applied'
+              )
+            """).get([.int(id), .text(xmpPath)])?[0].intValue ?? 0
+        return count == 1
     }
 
     private func rowExists(id: Int64, xmpPath: String) throws -> Bool {

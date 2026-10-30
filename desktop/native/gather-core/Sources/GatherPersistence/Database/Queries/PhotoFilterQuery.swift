@@ -150,6 +150,9 @@ public final class PhotoFilterQuery {
     /// - 排序只支持导入顺序（rowid）正/逆序：PhotoPage.cursor 是 Int64，
     ///   按 date_taken/rating 排序需要 (排序值, rowid) 复合游标才能跨页不重复，
     ///   那种查询走 PhotoAPI.search 的 offset 分页。
+    ///   因此这里**只按 photos.rowid 排**（A4：descending 同时作用于游标比较与
+    ///   行取回）；PhotoPageQuery.sortBy 的两个允许值（rowid / import_order）都落到
+    ///   同一个 rowid 顺序，本方法不 JOIN session_assets 去读 import_order 列。
     public func assetPage(
         sessionId: String,
         criteria: FilterGroup?,
@@ -191,12 +194,15 @@ public final class PhotoFilterQuery {
         for chunkStart in stride(from: 0, to: gids.count, by: 800) {
             let chunk = gids[chunkStart..<min(chunkStart + 800, gids.count)].map(\.gid)
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            // A4：行序与游标方向必须一致（原实现固定 ORDER BY p.rowid ASC，降序页
+            // 的游标按 DESC 推进、页内行却仍升序 —— 首页"最新在前"之后每一页都反着
+            // 排，UI 直接拼接时出现锯齿）。
             let chunkRows = try connection.prepare("""
                 SELECT \(PhotoRepo.photoPageColumns) FROM photos p
                 WHERE p.session_id = ?
                   AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders))
                   AND \(PhotoVisibility.visiblePredicate(alias: "p"))
-                ORDER BY p.rowid
+                ORDER BY p.rowid \(direction)
                 """).query([.text(sessionId)] + chunk.map { .text($0) })
             rows.append(contentsOf: try chunkRows.map { try PhotoPageRow(row: $0) })
         }

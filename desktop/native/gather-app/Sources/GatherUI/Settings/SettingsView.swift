@@ -150,9 +150,10 @@ public struct SettingsView: View {
             viewModel.saveModelPath(key: key, with: l10n)
         }
         .task { viewModel.load() }
-        // 对齐 C1HealthPanel.tsx：挂载时检测一次；重检走"重新检测"按钮
-        // （TS checkHealth 仅挂载时 + 手动触发，12s 定时器只轮询 sync-state）。
-        .task { await viewModel.checkC1Health() }
+        // P1-10 同族：**不在挂载时**探测 C1 健康。checkHealth 走 osascript 打
+        // System Events，没装 Capture One 的用户会收到非预期的自动化授权弹窗；
+        // 检测改为纯手动（分区里的"重新检测"按钮），12s 定时器只轮询 sync-state。
+        // （TS 版是挂载即检测，这里刻意偏离——TCC 弹窗不可接受。）
         // P0 / B0：维护分区的备份清单（MaintenanceAPI 为 nil 时 no-op）。
         .task { await viewModel.loadMaintenance() }
         // 对齐 C1HealthPanel.tsx：CullingAPI.syncStatus 每 12s 轮询刷新。

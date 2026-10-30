@@ -6,6 +6,7 @@
 //   AI 自动应用不算"用户同意"，否则精确率恒为 1；
 // - 样本 < triage_calibration_min_samples 时报告依然可读（曲线/样本量可见），但
 //   isApplicable=false、apply 抛 TRIAGE_NOT_READY —— 不自动应用、不偷偷调参；
+//   该设置取 0 = **不设门槛**（isApplicable 恒 true、apply 不因样本数拒绝；B8）；
 // - 应用只写三个置信度设置键（triage_keep_confidence_min / triage_reject_confidence_min /
 //   triage_min_executable_confidence），**不改 triage_policy 版本字符串**
 //   （TriagePolicy.usesModelSignals 用 version == "triage-v2" 精确比较）。
@@ -174,9 +175,13 @@ public struct TriageCalibrationReport: Equatable, Sendable {
     }
 
     /// 样本门禁：不足时 UI 只显示"样本不足"并禁用"应用"。
-    public var isApplicable: Bool { samples >= minSamples && minSamples > 0 }
+    ///
+    /// B8：minSamples = 0 表示"不设门槛"（用户显式关掉门槛）。原实现写成
+    /// `samples >= minSamples && minSamples > 0`，于是 0 恒为 false：用户设 0
+    /// 得到"恒样本不足（N/0）"，与"不设门槛"的意图正好相反。
+    public var isApplicable: Bool { minSamples <= 0 || samples >= minSamples }
 
-    /// 不可应用的原因（可直接上屏；nil = 可应用）。
+    /// 不可应用的原因（可直接上屏；nil = 可应用）。0 门槛不会走到这里（恒可应用）。
     public var disabledReason: String? {
         guard !isApplicable else { return nil }
         return "样本不足（\(samples)/\(minSamples)）"
@@ -364,7 +369,8 @@ public final class TriageCalibrationService {
         // 门禁用**可用样本数**（已按人工决定过滤），不是原始行数：
         // AI 自动应用写的 feedback 会因为 source=ai 被过滤掉，用它凑数等于骗自己。
         let sampleCount = try feedback.loadCalibrationSamples(sessionId: nil).count
-        guard sampleCount >= minimum, minimum > 0 else {
+        // B8：minimum <= 0 = 不设门槛（原实现要求 minimum > 0，0 恒抛"样本不足"）。
+        guard minimum <= 0 || sampleCount >= minimum else {
             throw TriageCalibrationError.insufficientSamples(
                 samples: sampleCount, minimum: minimum)
         }
@@ -399,7 +405,8 @@ public final class TriageCalibrationService {
         }
         let minimum = minimumSamples ?? minSamplesSetting()
         let sampleCount = try feedback.loadCalibrationSamples(sessionId: nil).count
-        guard sampleCount >= minimum, minimum > 0 else {
+        // B8：同上，0 = 不设门槛。
+        guard minimum <= 0 || sampleCount >= minimum else {
             throw TriageCalibrationError.insufficientSamples(
                 samples: sampleCount, minimum: minimum)
         }
@@ -427,6 +434,11 @@ public final class TriageCalibrationService {
             keep: Self.clamp(keep), reject: Self.clamp(reject), minExecutable: Self.clamp(floor))
     }
 
+    /// 最少样本门槛（0 = 不设门槛；默认 50）。
+    ///
+    /// B8：这里是"写入侧 clamp"的等价物——设置面没有按 key 的校验钩子（写路径是
+    /// 通用 settings API），所以负值/非有限值一律按 0 读回，绝不让一个越界设置变成
+    /// "永远不可应用"；上限仍夹到 1,000,000 防溢出。
     public func minSamplesSetting() -> Int {
         let raw = settings.number(for: TriageCalibrationKeys.minSamples, defaultValue: 50)
         guard raw.isFinite, raw > 0 else { return 0 }

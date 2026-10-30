@@ -164,8 +164,16 @@ struct MetadataSyncBar: View {
             resultText = l10n.format(
                 "已清理 %lld 份备份，保留 %lld，跳过 %lld",
                 summary.deleted, summary.retained, summary.skipped)
-            if !summary.errors.isEmpty {
-                errorText = summary.errors.first
+            if let first = summary.errors.first {
+                // 保留层拼的是 "CODE: 参数 reason=…"（参数已过 pathToken 脱敏）。
+                // 直接上屏等于把英文码与内部诊断丢给用户：码值走 L10n 码表漏斗
+                //（与 CullingViewModel.funnelErrorText / deliveryErrorText 同一口径），
+                // 原文只进日志。未登记的 METADATA_RETENTION_* 码会落到通用文案——
+                // 那是码表缺条目，不是这里该拼散文的地方（见修复报告待办）。
+                errorText = l10n.errorText(first)
+                GatherLogger.log(
+                    "metadata.cleanup errors: \(summary.errors.joined(separator: " | "))",
+                    level: .warn)
             }
         } catch {
             errorText = APIErrorPresentation.message(for: error, with: l10n)

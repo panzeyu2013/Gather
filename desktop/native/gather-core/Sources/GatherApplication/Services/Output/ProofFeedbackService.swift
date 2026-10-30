@@ -12,6 +12,11 @@
 // 幂等键 = batch_id = selection.json 内容 SHA-256 前 12 位：同一份文件重复导入
 // 直接短路（alreadyImported=true），改了一个字的文件则是新 batch。
 //
+// P1-5：短路条件不是"batch 存在"而是"batch 存在**且本次要应用的行都已 applied_at
+// 非空**"。原实现只看 batchExists，而落库在第 2 步、应用在第 3 步——中间抛错会留下
+// applied_at='' 的行，重试被短路成 0 变更，客户勾选/评分永久丢失。现在这种"半成品
+// batch"走补偿重放（只对未 applied 的行重做第 2/3 步），并用日志区分重放与首导。
+//
 // 冲突判定：本地值 != 客户值 且 本地 updated_at > submittedAt → 冲突，保留本地并
 // 逐条上报（UI 给"用客户值"）。本地没有缓存行 = 没有本地真相 → 直接采用。
 //
@@ -162,16 +167,9 @@ public final class ProofFeedbackService {
         }
         let batchId = Self.batchId(for: data)
         let submittedAt = parsed.submittedAt ?? ""
-
-        // 幂等：同一份文件已经导入过 → 0 变更（不再入队/不再覆盖任何本地值）。
-        if try repo.batchExists(batchId: batchId) {
-            return ClientSelectionImportReport(
-                picked: parsed.pickedPhotoIds.count,
-                applied: 0,
-                skipped: parsed.items.count,
-                failed: 0,
-                alreadyImported: true)
-        }
+        // 评分/色标是否自动应用（设置关掉时只落库，不碰本地值）。提到短路之前：
+        // "这条 batch 还有没有活要干"取决于这个开关。
+        let applyRating = getString(Self.applyRatingSettingKey, "0") == "1" && metadata != nil
 
         let allIds = parsed.items.map(\.photoId)
         let known = try repo.existingPhotoIds(
@@ -180,30 +178,81 @@ public final class ProofFeedbackService {
         let unknownCount = parsed.items.count - knownItems.count
         let importedAt = isoString(now())
 
-        // 1) 原始反馈全量落库（应用与否后面用 applied_at 标）。
-        let inserts = knownItems.map { item in
-            ProofFeedbackInsert(
-                photoId: item.photoId,
-                pickState: Self.pickState(for: item),
-                rating: item.rating,
-                label: item.label ?? "",
-                comment: item.comment ?? "",
-                submittedAt: submittedAt)
+        // 幂等 + 补偿重放（P1-5）。
+        //
+        // 原实现只看 batchExists：落库（insertBatch）在应用之前，两步之间抛错会留下
+        // applied_at='' 的行；重试被短路成"已导入/0 变更"，客户勾选与评分就永久丢失。
+        //
+        // 现在：只有"这条 batch 已落库，且**本次真正要应用的行**全部 applied_at 非空"
+        // 才短路；否则对剩余未应用行重放。刻意不写成"全部行非空"：评分应用默认关闭
+        // （proof_feedback_apply_rating=0），那些行按设计永远不会被消费，否则短路永远
+        // 不可达、每次重导都是 0 变更。
+        let existingRows = try repo.rows(batchId: batchId)
+        let appliedIds = Set(existingRows.filter(\.isApplied).map(\.photoId))
+        let isReplay: Bool
+        if existingRows.isEmpty {
+            isReplay = false
+        } else {
+            let pendingPicks = picks == nil
+                ? []
+                : parsed.pickedPhotoIds.filter {
+                    known.contains($0) && !appliedIds.contains($0)
+                }
+            let pendingFeedback = applyRating
+                ? knownItems.filter {
+                    ($0.rating != nil || $0.label != nil) && !appliedIds.contains($0.photoId)
+                }
+                : []
+            if pendingPicks.isEmpty, pendingFeedback.isEmpty {
+                // 全部要应用的行都已经消费过：0 变更（不再入队/不再覆盖任何本地值）。
+                return ClientSelectionImportReport(
+                    picked: parsed.pickedPhotoIds.count,
+                    applied: 0,
+                    skipped: parsed.items.count,
+                    failed: 0,
+                    alreadyImported: true)
+            }
+            isReplay = true
         }
-        let inserted = try repo.insertBatch(
-            batchId: batchId, sessionId: trimmedSession, items: inserts, importedAt: importedAt)
-        if inserted == 0, !inserts.isEmpty {
-            // 并发导入同一个文件：另一个调用已经落库 → 本调用按"已导入"处理。
-            return ClientSelectionImportReport(
-                picked: parsed.pickedPhotoIds.count,
-                applied: 0,
-                skipped: parsed.items.count,
-                failed: 0,
-                alreadyImported: true)
+        if isReplay {
+            // 与首导区分：这是"上次落库后应用没跑完"的补偿重放（批次内容相同）。
+            GatherLogger.log(
+                "proof feedback replay batch=\(batchId) rows=\(existingRows.count) "
+                    + "applied=\(appliedIds.count)",
+                level: .info)
+        }
+
+        // 1) 原始反馈全量落库（应用与否后面用 applied_at 标）。
+        //    重放不再落库：(batch_id, photo_id) 是幂等键，行已经在库里。
+        if !isReplay {
+            let inserts = knownItems.map { item in
+                ProofFeedbackInsert(
+                    photoId: item.photoId,
+                    pickState: Self.pickState(for: item),
+                    rating: item.rating,
+                    label: item.label ?? "",
+                    comment: item.comment ?? "",
+                    submittedAt: submittedAt)
+            }
+            let inserted = try repo.insertBatch(
+                batchId: batchId, sessionId: trimmedSession, items: inserts,
+                importedAt: importedAt)
+            if inserted == 0, !inserts.isEmpty {
+                // 并发导入同一个文件：另一个调用已经落库 → 本调用按"已导入"处理。
+                return ClientSelectionImportReport(
+                    picked: parsed.pickedPhotoIds.count,
+                    applied: 0,
+                    skipped: parsed.items.count,
+                    failed: 0,
+                    alreadyImported: true)
+            }
         }
 
         // 2) 勾选：走既有 applyImportedPicks（人工决策保护在服务里）。
-        let pickedIds = parsed.pickedPhotoIds.filter { known.contains($0) }
+        //    已 applied 的照片不再重复应用（重放时只做剩下的）。
+        let pickedIds = parsed.pickedPhotoIds.filter {
+            known.contains($0) && !appliedIds.contains($0)
+        }
         var pickedAppliedIds = Set<String>()
         var applied = 0
         var failed = 0
@@ -220,15 +269,18 @@ public final class ProofFeedbackService {
             skipped += max(0, pickedIds.count - applied - failed)
         }
 
-        // 3) 评分/色标：设置关掉时只落库（不碰本地值）。
-        let applyRating = getString(Self.applyRatingSettingKey, "0") == "1"
+        // 3) 评分/色标：设置关掉时只落库（不碰本地值；applyRating 已在函数前段算好，
+        //    因为"这条 batch 还有没有活要干"要用它判断是否重放）。
         var ratingApplied = 0
         var labelApplied = 0
         var conflicts: [ProofFeedbackConflict] = []
         var queued = Set<String>()
         var comments = 0
 
-        let ratingItems = knownItems.filter { $0.rating != nil || $0.label != nil }
+        // 已 applied 的照片不再重复入队（重放只做剩下的）。
+        let ratingItems = knownItems.filter {
+            ($0.rating != nil || $0.label != nil) && !appliedIds.contains($0.photoId)
+        }
         let localStates = try repo.localRatingStates(
             sessionId: trimmedSession, photoIds: ratingItems.map(\.photoId))
         let submittedDate = submittedAt.isEmpty ? nil : tsParseISODate(submittedAt)

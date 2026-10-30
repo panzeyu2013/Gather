@@ -111,7 +111,9 @@ public struct TriageCalibrationSnapshot: Codable, Equatable, Sendable {
         self.generatedAt = generatedAt
     }
 
-    public var isApplicable: Bool { minSamples > 0 && samples >= minSamples }
+    /// 0（或负）= 不设门槛。UI 与服务端必须同口径，否则设 0 会得到
+    /// "恒样本不足（N/0）"这种自相矛盾的状态（B8）。
+    public var isApplicable: Bool { minSamples <= 0 || samples >= minSamples }
 }
 
 public struct TriageCalibrationQuery: Codable, Equatable, Sendable {

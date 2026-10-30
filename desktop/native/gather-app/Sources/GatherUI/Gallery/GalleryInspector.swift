@@ -165,15 +165,52 @@ extension GalleryView {
                             viewModel.loadedPhotos.first(where: { $0.id == id })?.filename ?? id
                         },
                         onSelect: { id in
-                            viewModel.selectedIds = [id]
-                            // 命中可能不在当前筛选/已加载页：走定位（会按需补页/清条件）。
-                            Task {
-                                _ = await viewModel.locatePendingPhoto(
-                                    photoId: id, photoPath: nil)
-                            }
+                            // 命中可能不在当前筛选/已加载页：先清条件再定位（见方法注释）。
+                            Task { await locateSemanticHit(id) }
                         })
                 }
             }
+        }
+    }
+
+    /// 相似命中的定位（语义检索面板 onSelect）：先收敛数据集，再按需补页。
+    ///
+    /// 旧实现只在注释里承诺"会按需补页/清条件"：既没有任何清除代码，又把
+    /// locatePendingPhoto 的返回值丢掉 —— 命中被 facet / 4 档筛掉时，定位在
+    /// 错的数据集里扫到上限返回 outOfRange，用户点一下毫无反馈（D3）。
+    ///
+    /// 三步：
+    /// 1. 只有命中**不在 filteredPhotos 里**时才清条件：命中本来就在网格里时，
+    ///    清掉用户刚点的 facet 是纯副作用；
+    /// 2. 清条件走既有入口（filter = .all / clearFacetSelection()），它们各自会排
+    ///    一次"从首页重取"。随后再显式 await 一次 reload()：重取会清空 pages、
+    ///    按代数作废在途页，不等它落地定位就会在空数据集上误报「未找到」
+    ///    （代价是这一跳多一次首页请求，换确定性）；
+    /// 3. 四态都给反馈，复用 D08 的 reportPhotoTarget* / reportPhotoLocateFailed
+    ///    现成文案（都是已有 L10n key，不拼裸字符串）。
+    ///
+    /// 搜索串不在这里清：用户亲手输入的查询比"点过的 facet"更像意图，且
+    /// outOfRange 的既有文案已经提示"用搜索缩小范围后再试"。
+    @MainActor
+    private func locateSemanticHit(_ photoId: String) async {
+        let alreadyVisible = viewModel.filteredPhotos.contains { $0.id == photoId }
+        let hasFacetCondition = !viewModel.facetSelection.values.allSatisfy { $0.isEmpty }
+        if !alreadyVisible, hasFacetCondition || viewModel.filter != .all {
+            if viewModel.filter != .all { viewModel.filter = .all }
+            if hasFacetCondition { viewModel.clearFacetSelection() }
+            await viewModel.reload()
+        }
+        // 选择集会被 reload() 的 clearSelectionForNewQuery 清掉：放在收敛之后设置。
+        viewModel.selectedIds = [photoId]
+        switch await viewModel.locatePendingPhoto(photoId: photoId, photoPath: nil) {
+        case .found:
+            break
+        case .notFound:
+            viewModel.reportPhotoTargetMissing()
+        case .outOfRange:
+            viewModel.reportPhotoTargetOutOfRange()
+        case .failed:
+            viewModel.reportPhotoLocateFailed()
         }
     }
 }

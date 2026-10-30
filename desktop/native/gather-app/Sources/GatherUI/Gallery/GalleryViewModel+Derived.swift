@@ -16,12 +16,22 @@ extension GalleryViewModel {
 
     // MARK: 派生（TS loadedPhotos / searchActive / filtered）
 
-    /// TS: searchActive —— 搜索或筛选激活时链式拉满整个会话。
+    /// TS: searchActive —— **客户端过滤路径**激活时链式拉满整个会话。
     ///
-    /// P1 下一波：服务端 criteria（facet / 规则）也算激活——它们同样把数据集
-    /// 从"整会话"缩成"命中集"，只是过滤发生在 SQL 里。
+    /// 语义收窄（D5）：criteria 由服务端过滤时（`usesServerCriteria`）不算激活。
+    /// 旧实现把 facet / 规则也算进来，于是点一次 facet 就触发
+    /// `chainFetchIfActive()`（limit 1000/页）把**整个命中集**拉进内存：
+    /// 数据本来就只会有命中行（WHERE 在 SQL 里跑），链式拉满纯属把
+    /// 首屏代价绑定到命中集大小上；网格只需要可见的那几页。
+    /// 因此服务端 criteria 生效时退回自然分页（limit = pageSize，哨兵滚到哪取到哪），
+    /// `searchActive` 只留给"没有 PhotoAPI、必须在内存里筛选"的客户端路径。
+    ///
+    /// 注意这里取的是**提交态**（committedSearch/committedFilter）与
+    /// committedFacetSelection/committedRules——与 `activeCriteria` 同一份输入，
+    /// 保证"是否链式拉满"和"是否走服务端 WHERE"不会各自漂移。
     public var searchActive: Bool {
-        !committedSearch.trimmingCharacters(in: .whitespaces).isEmpty
+        guard !usesServerCriteria else { return false }
+        return !committedSearch.trimmingCharacters(in: .whitespaces).isEmpty
             || committedFilter != .all
             || !committedFacetSelection.values.allSatisfy { $0.isEmpty }
             || !committedRules.conditions.isEmpty
@@ -80,6 +90,11 @@ extension GalleryViewModel {
     }
 
     /// 堆栈折叠：每个堆栈只显示代表张（封面优先），徽标由格子读取 badgeCount。
+    ///
+    /// `compactMap` 是 P1-7 的破口所在：它按 id 回填行，**回填不到就静默丢行**。
+    /// 因此 StackFoldIndex 保证 emit 的每个 id 都属于本次输入（封面不在输入里时
+    /// 回退该堆首个成员）；这里不需要也不应该再做"补行"——补行会把不在当前
+    /// 筛选里的成员塞回网格，等于用折叠绕过筛选。
     private static func folded(
         _ photos: [GalleryPhotoData], index: StackFoldIndex
     ) -> [GalleryPhotoData] {

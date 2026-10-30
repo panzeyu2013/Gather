@@ -307,11 +307,15 @@ struct CullingWorkbenchViewer: View {
             }
         }
         // 参考对比指示（左上角）：参考照片不在当前页也仍可加载（按需取预览）。
+        // D9：**唯一**的参考徽标绘制点（ViewerReferenceOverlay 里那份重复的已删）。
+        // 并排模式下 overlay 组件不渲染，只有这里能保证三种对比模式都有徽标。
         .overlay(alignment: .topLeading) {
-            if overlayState.hasReference {
+            // 展示名缺失时整块不画：宁可没有胶囊，也不显示"参考："空标题。
+            if overlayState.hasReference, let referenceName = overlayState.referenceFilename,
+               !referenceName.isEmpty {
                 HStack(spacing: GatherMetrics.Space.xs) {
                     Image(systemName: "rectangle.on.rectangle")
-                    Text(l10n.format("参考：%@", overlayState.referenceFilename ?? ""))
+                    Text(l10n.format("参考：%@", referenceName))
                     Text(l10n(overlayState.referenceMode.labelKey))
                         .foregroundStyle(GatherTheme.viewerTextSecondary)
                 }

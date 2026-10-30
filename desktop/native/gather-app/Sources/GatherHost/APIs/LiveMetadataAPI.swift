@@ -115,24 +115,24 @@ public final class LiveMetadataAPI: MetadataAPI {
     }
 
     // MARK: - P1 下一波 §3.1：写回生命周期
-    public func backupStats() async throws -> MetadataBackupSummary {
-        guard let metadataDelivery else { throw Self.lifecycleNotWired("backupStats") }
-        let stats = try metadataDelivery.backupStats()
-        return MetadataBackupSummary(
-            count: stats.count, bytes: stats.bytes, oldestDays: stats.oldestDays)
-    }
-
+    // 注：`backupStats` 已删除（C8）：协议声明 + 实现俱全但 GatherUI 零调用点，
+    // 是"假接线"；状态条需要的备份数与体积由 `syncState` 的 backupCount/backupBytes 提供。
     public func cleanupRetention(
         _ input: Confirmed<MetadataCleanupInput>
     ) async throws -> MetadataCleanupSummary {
         guard let retention else { throw Self.lifecycleNotWired("cleanupRetention") }
+        // P1-2：会话作用域。原实现只读 ignoreReloadAck，把 run(policy:) 跑成全局，
+        // 于是在某个会话点"立即清理已确认备份"会确认（written→synced）并删除
+        // **所有会话**的已确认交付与备份。sessionId 必填且此处校验非空白：
+        // 破坏性入口不允许因为空串而静默退化成"全库清理"。
+        let sessionId = try LiveAPIInput.requireSessionId(input.value.sessionId)
         let policy: MetadataRetentionPolicy = input.value.ignoreReloadAck
             ? .immediate
             : MetadataRetentionPolicy(
                 retentionDays: 0, isEnabled: true, batchLimit: 200,
                 ignoreReloadAck: false, includeOrphanBackups: true,
                 adoptLegacyRows: false)
-        let result = await retention.run(policy: policy)
+        let result = await retention.run(policy: policy, sessionId: sessionId)
         return MetadataCleanupSummary(
             deleted: result.deletedDeliveries,
             retained: result.retainedDeliveries,

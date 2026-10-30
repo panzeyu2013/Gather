@@ -361,9 +361,10 @@ private let retentionPolicy = MetadataRetentionPolicy(
     try fileManager.setAttributes(
         [.modificationDate: aged], ofItemAtPath: referenced.backupPath)
 
+    // P1-3 之后：孤儿清理受 isEnabled 约束（保留期=0 不得偷偷删），所以这里必须是 true。
     let result = await fixture.retention.run(policy: MetadataRetentionPolicy(
         retentionDays: 7,
-        isEnabled: false,
+        isEnabled: true,
         includeOrphanBackups: true,
         adoptLegacyRows: false))
     #expect(result.orphanBackupsDeleted == 1)
@@ -388,4 +389,44 @@ private let retentionPolicy = MetadataRetentionPolicy(
         adoptLegacyRows: true))
     #expect(result.adopted == 1)
     #expect(try fixture.repo.get(delivery.xmpPath)?.typedStatus == .synced)
+}
+
+// MARK: - 9. 会话作用域（P1-2）
+
+/// "立即清理"传了 sessionId，就必须只动本会话。旧实现忽略该参数 → 在一个会话点
+/// 清理会确认并删除**所有会话**的行与备份（备份是唯一撤销点）。
+@Test func retentionScopeOnlyTouchesOwnSession() async throws {
+    let fixture = try makeRetentionFixture()
+    defer { fixture.cleanup() }
+    // 第二个会话（作用域外）。只影响 source_path 扫描，不需要照片。
+    _ = try fixture.db.prepare("""
+        INSERT INTO sessions (id, name, status, source_path, created_at, updated_at)
+        VALUES (?, '', 'draft', ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        """).run([.text("s2"), .text(fixture.dir)])
+
+    // 只属于 s1 的已确认交付（seedRetentionDelivery 固定 linkSession(s1) + confirm(s1)）。
+    let seeded = try seedRetentionDelivery(fixture, photoId: "p1", confirm: true)
+    // 保留期 0 的 cutoff 就是"现在"；confirmed_at 带毫秒（.000Z）与 cutoff 的秒级
+    // 文本比较会排到后面，所以显式回填一个旧确认时间（真实场景也是几天前）。
+    _ = try fixture.db.prepare(
+        "UPDATE delivery_sessions SET confirmed_at = ? WHERE session_id = ?")
+        .run([.text("2026-01-01T00:00:00.000Z"), .text("s1")])
+    // updated_at 是 expiredCandidates 的比较列（cutoff 取"现在"）：一起回填，
+    // 避免"刚确认完的同毫秒"让候选集变成空集（否则用例会偶发假绿/假红）。
+    _ = try fixture.db.prepare("UPDATE deliveries SET updated_at = ?")
+        .run([.text("2026-01-01T00:00:00.000Z")])
+    let scoped = MetadataRetentionPolicy(
+        retentionDays: 0, isEnabled: true, includeOrphanBackups: false, adoptLegacyRows: false)
+
+    // 作用域 = s2：一条都不能删（行与备份都在）。
+    let otherScope = await fixture.retention.run(policy: scoped, sessionId: "s2")
+    #expect(otherScope.deletedDeliveries == 0)
+    #expect(try fixture.repo.get(seeded.xmpPath) != nil)
+    #expect(FileManager.default.fileExists(atPath: seeded.backupPath))
+
+    // 作用域 = s1：本会话的这条被回收，备份随行删除。
+    let ownScope = await fixture.retention.run(policy: scoped, sessionId: "s1")
+    #expect(ownScope.deletedDeliveries == 1)
+    #expect(try fixture.repo.get(seeded.xmpPath) == nil)
+    #expect(!FileManager.default.fileExists(atPath: seeded.backupPath))
 }

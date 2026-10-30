@@ -40,26 +40,41 @@ struct StackFoldIndex: Equatable {
         stackIdByPhoto[photoId].flatMap { foldByStack[$0] }
     }
 
-    /// 这张照片是它所在堆栈的展示封面（网格里代表整堆的那张）。
+    /// 这张照片是它所在堆栈的**规范封面**（StackFold.displayCoverPhotoId）。
+    ///
+    /// 注意不等于"网格里当前代表整堆的那张"：封面被筛选掉/还没加载进来时，
+    /// 代表张会回退成该堆在输入里的首个成员（见 visiblePhotoIds）。
     func isRepresentative(_ photoId: String) -> Bool {
         guard let fold = fold(for: photoId) else { return false }
         return fold.displayCoverPhotoId == photoId
     }
 
     /// 徽标数字：成员总数（>1 才显示，1 张不显示徽标）。
+    ///
+    /// 口径保持在"这一堆一共几张"（折叠只影响展示，不是筛选）：成员被当前
+    /// 条件筛掉时徽标仍是全堆张数，与侧栏/堆栈管理的计数一致。
     func badgeCount(for photoId: String) -> Int {
         fold(for: photoId)?.photoIds.count ?? 0
     }
 
-    /// 折叠后的可见顺序：每个堆栈只保留一张（封面优先，否则首个遇到的成员）。
+    /// 折叠后的可见顺序：每个堆栈只保留一张代表（封面优先，否则首个遇到的成员）。
     ///
     /// 注意封面若在输入列表里出现得更晚，仍放在"首个成员"的位置——保证网格
     /// 不因为折叠而整体重排。输入里不属于任何堆栈的照片原样保留。
+    ///
+    /// **必须在输入内选代表**（P1-7）：旧实现无条件 emit `displayCoverPhotoId`，
+    /// 而调用方（GalleryViewModel.folded）用 `byId[代表]` 回填行——封面被 facet /
+    /// 4 档筛掉、或还在未加载的后续页时，这个 id 不在输入里，回填时被 compactMap
+    /// 静默丢弃，于是**整堆连同命中成员一起从网格消失**（胶囊却还按全堆张数显示）。
+    /// 因此：封面确实在输入里才用它，否则退到该堆在输入里的第一个成员。
+    /// 这样 emit 的每个 id 都属于输入，折叠只减少重复、绝不丢行。
     func visiblePhotoIds(_ photoIds: [String]) -> [String] {
         guard !foldByStack.isEmpty else { return photoIds }
         var result: [String] = []
         result.reserveCapacity(photoIds.count)
         var emittedStacks = Set<String>()
+        // 封面是否真的在本次输入里（一次构集合，避免逐张 contains 的 O(n²)）。
+        let present = Set(photoIds)
         for photoId in photoIds {
             guard let stackId = stackIdByPhoto[photoId], let fold = foldByStack[stackId] else {
                 result.append(photoId)
@@ -67,28 +82,44 @@ struct StackFoldIndex: Equatable {
             }
             if emittedStacks.contains(stackId) { continue }
             emittedStacks.insert(stackId)
-            result.append(fold.displayCoverPhotoId ?? photoId)
+            if let cover = fold.displayCoverPhotoId, present.contains(cover) {
+                result.append(cover)
+            } else {
+                result.append(photoId)
+            }
         }
         return result
     }
 
-    /// 展开某个堆栈（"点开抽屉"）：把该堆的成员按原顺序插回它代表的位置。
+    /// 展开某个堆栈（"点开抽屉"）：把该堆成员按堆内顺序插回它代表的位置。
+    ///
+    /// **契约**：入参是"已按当前查询筛选、但尚未折叠"的成员 id 列表（代表张也在
+    /// 其中）；返回同一批行，只把这一堆的成员收拢到首个成员的位置。传入已折叠的
+    /// 列表只含代表张，展开自然没有新行可插（调用方要传未折叠的输入）。
+    ///
+    /// 只插入**输入里存在的**成员（与 visiblePhotoIds 同一条红线）：下游按 id
+    /// 回填行，插进一个不在输入里的成员 id 会同样被静默丢弃，展开后的顺序也跟着
+    /// 错位；把被 facet 筛掉的成员塞回来更是等于用折叠绕过筛选。
     func expandedPhotoIds(_ photoIds: [String], stackId: String) -> [String] {
         guard let fold = foldByStack[stackId] else { return photoIds }
+        let present = Set(photoIds)
+        let members = fold.photoIds.filter { present.contains($0) }
         var result: [String] = []
-        result.reserveCapacity(photoIds.count + fold.photoIds.count)
+        result.reserveCapacity(photoIds.count + members.count)
         var inserted = false
         for photoId in photoIds {
             if stackIdByPhoto[photoId] == stackId {
                 if !inserted {
-                    result.append(contentsOf: fold.photoIds)
+                    result.append(contentsOf: members)
                     inserted = true
                 }
                 continue
             }
             result.append(photoId)
         }
-        if !inserted { result.append(contentsOf: fold.photoIds) }
+        // 该堆在输入里一个成员都没有（例如代表张被筛掉后整堆已不可见）：
+        // 没有可插回的位置，保持原样，不在末尾凭空追加。
+        guard inserted else { return photoIds }
         return result
     }
 }

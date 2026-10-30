@@ -59,11 +59,17 @@ extension GalleryViewModel {
     }
 
     /// 把照片加入集合；成功后留在当前页并刷新集合菜单数据。
+    ///
+    /// E4：注释承诺的"刷新集合菜单数据"此前只写在注释里（`createStack` 会刷新
+    /// 折叠索引，这里却什么都没有）——集合张数/新集合在别处变化后，"加入集合"
+    /// 菜单会一直显示打开页面那一刻的快照。加入是显式用户动作，多一次会话级
+    /// list 的代价可以接受，换菜单与库里一致。
     func addToCollection(_ collectionId: String, photoIds: [String]) async {
         guard let albumAPI, !photoIds.isEmpty else { return }
         do {
             _ = try await albumAPI.addCollectionItems(
                 CollectionItemsInput(collectionId: collectionId, photoIds: photoIds))
+            await refreshCollections()
         } catch {
             actionError = CommandError(error)
         }
@@ -90,6 +96,10 @@ extension GalleryViewModel {
         }
         // B8.2a：thumbnail_size 经 SettingsAPI.get（async）。
         thumbnailSize = await provider.thumbnailSize()
+        // E5：这两次是**首屏一次性**的预热（折叠索引 / 集合菜单），不在分页路径上：
+        // 补载走 loadMoreIfNeeded → fetchNextPage，不经过 performLoad；事件刷新走
+        // refreshOnEvent（自己重取 pages），也不经过这里。所以每页两次额外 RPC
+        // 的担忧不成立，保持串行即可（失败只记 debug 日志，不阻塞网格）。
         await refreshStackFolds()
         await refreshCollections()
         await refreshWorkspaceStatus()
@@ -170,6 +180,10 @@ extension GalleryViewModel {
         // 必须链式拉满。旧实现把链式拉满只放在 commitSearch 里，而「进入页面时带着
         // 筛选意图」（控制中心『N 张离线 → 查看』）路径上 commitSearch 早于首页加载，
         // hasNextPage 还是 false → 空转 → 用户停在「没有符合条件的照片」的死态。
+        //
+        // D5：`searchActive` 已收窄成"仅客户端过滤路径"——服务端 criteria（facet /
+        // 规则 / 4 档 / 搜索串）生效时它是 false，这里自然退回单页分页（命中集由
+        // WHERE 决定，链式拉满只会把首屏代价绑到命中集大小上）。
         if searchActive {
             await chainFetchIfActive()
         }
