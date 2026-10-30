@@ -152,7 +152,7 @@ struct GalleryRuleEditorSheet: View {
                 .font(GatherFont.sectionTitle)
             ScrollView {
                 FilterRuleEditor(group: $draft, l10n: l10n, onChange: {})
-                    .padding(.vertical, 4)
+                    .padding(.vertical, GatherMetrics.Space.xs)
             }
             .frame(minHeight: 160, maxHeight: 320)
             HStack {

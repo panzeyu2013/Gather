@@ -17,14 +17,14 @@ struct SessionControlJobRow: View {
                 .foregroundStyle(jobStatusColor(job.status))
                 .frame(width: 16)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     Text(job.isIngestRun ? l10n("摄取照片") : l10n.jobTypeText(job.type.rawValue))
                     GatherBadge(status: job.status, l10n: l10n)
                     Spacer(minLength: 0)
                 }
                 if job.progressTotal > 0 {
-                    HStack(spacing: 8) {
+                    HStack(spacing: GatherMetrics.Space.s) {
                         ProgressView(value: Double(job.progressCurrent), total: Double(job.progressTotal))
                             .progressViewStyle(.linear)
                         Text("\(job.progressCurrent)/\(job.progressTotal)")

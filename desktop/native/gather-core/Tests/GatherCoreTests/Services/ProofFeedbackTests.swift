@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Services/ProofFeedbackTests.swift
-// P1 下一波：客户校样反馈 v2（解析 / 冲突 / 幂等 / 端口断言）。
+// P1 下一波：客户校样反馈 v2（解析 / 冲突 / 幂等 / 字段级重放 / 端口断言）。
 
 import Foundation
 import Testing
@@ -24,6 +24,10 @@ private final class FakePickApplier: ProofPickApplying {
     }
 }
 
+private enum FakeQueueFailure: Error {
+    case enqueueFailed
+}
+
 private final class FakeMetadataQueue: ProofMetadataQueueing {
     struct Call: Equatable {
         let photoId: String
@@ -32,12 +36,18 @@ private final class FakeMetadataQueue: ProofMetadataQueueing {
     }
 
     var calls: [Call] = []
+    /// 接下来 N 次入队抛错（模拟单张入队失败；字段级补偿重放测试用）。
+    var failuresRemaining = 0
 
     @discardableResult
     func queueRatingLabel(
         sessionId: String, photoId: String, rating: Int?, label: String?
     ) throws -> Bool {
         calls.append(Call(photoId: photoId, rating: rating, label: label))
+        if failuresRemaining > 0 {
+            failuresRemaining -= 1
+            throw FakeQueueFailure.enqueueFailed
+        }
         return true
     }
 }
@@ -228,6 +238,53 @@ struct ProofFeedbackTests {
         #expect(queue.calls.count == 1)
     }
 
+    @Test("字段级重放：勾选已应用后重导不重复，评分被补应用")
+    func replaysOnlyPendingField() throws {
+        let db = try makeTestDB()
+        let sessionId = try makeSession(db)
+        try seedPhoto(db, sessionId: sessionId, photoId: "p1")
+        let picks = FakePickApplier()
+        let queue = FakeMetadataQueue()
+        let (service, _, _) = makeService(db, picks: picks, queue: queue)
+        let repo = ProofFeedbackRepo(connection: db)
+        let json = v2JSON(items: """
+        {"id":"p1","pick":true,"rating":4,"label":"Green"}
+        """)
+        let batchId = ProofFeedbackService.batchId(for: json)
+
+        // 第一次导入：勾选成功、评分入队失败（模拟交付行不可用）→ 只有勾选字段被记账。
+        queue.failuresRemaining = 1
+        let first = try service.`import`(sessionId: sessionId, data: json)
+        #expect(first.applied == 1)
+        #expect(first.failed == 1, "评分入队失败只影响该张")
+        let afterFirst = try repo.rows(batchId: batchId)
+        let firstRow = try #require(afterFirst.first)
+        #expect(firstRow.isPickApplied, "勾选字段已应用")
+        #expect(firstRow.isRatingApplied == false,
+                "评分没应用——applied_at 非空不能代表评分也应用了")
+        #expect(firstRow.isApplied, "applied_at 仍是总标记")
+
+        // 第二次导入（同一 batch）：勾选不重复应用，评分被补偿重放并记账。
+        let second = try service.`import`(sessionId: sessionId, data: json)
+        #expect(second.alreadyImported == false, "还有待办字段 → 必须重放，不能整批短路")
+        #expect(second.applied == 0, "勾选已应用过，不得重复计数")
+        #expect(second.ratingApplied == 1)
+        #expect(second.labelApplied == 1)
+        #expect(picks.calls == [["p1"]], "勾选端口只被调用一次")
+        #expect(queue.calls.count == 2, "第一次失败 + 第二次补入队")
+        let afterSecond = try repo.rows(batchId: batchId)
+        let secondRow = try #require(afterSecond.first)
+        #expect(afterSecond.count == 1, "重放不重复落库（幂等键 batch_id + photo_id）")
+        #expect(secondRow.isPickApplied && secondRow.isRatingApplied)
+
+        // 第三次导入：两个字段都应用过 → 0 变更短路，不再重放。
+        let third = try service.`import`(sessionId: sessionId, data: json)
+        #expect(third.alreadyImported)
+        #expect(third.applied == 0)
+        #expect(picks.calls.count == 1)
+        #expect(queue.calls.count == 2)
+    }
+
     @Test("设置关闭（proof_feedback_apply_rating=0）：只落库，不入队")
     func doesNotApplyRatingWhenDisabled() throws {
         let db = try makeTestDB()
@@ -243,6 +300,45 @@ struct ProofFeedbackTests {
         let rows = try ProofFeedbackRepo(connection: db).rows(
             batchId: ProofFeedbackService.batchId(for: json))
         #expect(rows.first?.rating == 4, "反馈本身仍要落库")
+    }
+
+    @Test("评分关闭时不把评分算待办：重导直接短路，不反复重放")
+    func disabledRatingIsNeverPending() throws {
+        let db = try makeTestDB()
+        let sessionId = try makeSession(db)
+        try seedPhoto(db, sessionId: sessionId, photoId: "p1")
+        try seedPhoto(db, sessionId: sessionId, photoId: "p2")
+        let picks = FakePickApplier()
+        let queue = FakeMetadataQueue()
+        let (service, _, _) = makeService(db, applyRating: false, picks: picks, queue: queue)
+        let repo = ProofFeedbackRepo(connection: db)
+        // p2 只有评分、没有勾选：设置关闭时它按设计永远不会被消费，但也不能把整批
+        // 永久钉在"需要补偿重放"上（否则每次重导都走重放分支）。
+        let json = v2JSON(items: """
+        {"id":"p1","pick":true,"rating":4,"label":"Green"},
+        {"id":"p2","pick":false,"rating":5}
+        """)
+        let batchId = ProofFeedbackService.batchId(for: json)
+
+        let first = try service.`import`(sessionId: sessionId, data: json)
+        #expect(first.alreadyImported == false, "首次导入只落库，不是「之前已导入过」")
+        #expect(queue.calls.isEmpty, "关闭时不得改动本地评分/色标")
+        #expect(first.ratingApplied == 0)
+        #expect(first.skipped == 2, "两条评分/色标都未应用，按旧口径计入 skipped")
+        let afterFirst = try repo.rows(batchId: batchId)
+        let ratingOnly = try #require(afterFirst.first { $0.photoId == "p2" })
+        #expect(ratingOnly.isApplied == false, "没应用的字段不写总标记（不假装消费过）")
+
+        // 评分不是待办 → 第二次导入必须 0 变更短路。
+        let second = try service.`import`(sessionId: sessionId, data: json)
+        #expect(second.alreadyImported)
+        #expect(second.applied == 0)
+        #expect(picks.calls == [["p1"]], "勾选只应用一次，不重复重放")
+        #expect(queue.calls.isEmpty)
+        let third = try service.`import`(sessionId: sessionId, data: json)
+        #expect(third.alreadyImported, "依然不重放")
+        #expect(picks.calls.count == 1)
+        #expect(queue.calls.isEmpty)
     }
 
     @Test("冲突：本地比客户提交更新 → 保留本地并上报")

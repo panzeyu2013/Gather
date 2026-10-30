@@ -116,11 +116,11 @@ extension LibraryView {
                 // 宽窗口一行三列；放不下时整组换成竖排（ViewThatFits 按理想宽度判断），
                 // 字段名与当前值在两种排布下都完整可读。
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: GatherMetrics.Space.m) {
                         primaryFilterControls
                         Spacer(minLength: 0)
                     }
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
                         primaryFilterControls
                     }
                 }
@@ -141,7 +141,7 @@ extension LibraryView {
             .task(id: viewModel.criteriaKey) {
                 await viewModel.refreshFacets()
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, GatherMetrics.Space.m)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
@@ -160,8 +160,8 @@ extension LibraryView {
                     .font(.callout)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
+        .padding(.horizontal, GatherMetrics.Space.xl)
+        .padding(.vertical, GatherMetrics.Space.m)
     }
 
     private var advancedFilters: some View {
@@ -176,7 +176,7 @@ extension LibraryView {
             advancedField(l10n("关键词"), text: $viewModel.filter.keyword)
             advancedField(l10n("人物"), text: $viewModel.filter.person)
             advancedField(l10n("目录路径前缀"), text: $viewModel.filter.directory)
-            HStack(spacing: 12) {
+            HStack(spacing: GatherMetrics.Space.m) {
                 filterSelect(
                     l10n("存储卷"),
                     allLabel: l10n("全部"),
@@ -200,7 +200,7 @@ extension LibraryView {
                 Spacer(minLength: 0)
             }
         }
-        .padding(.top, 4)
+        .padding(.top, GatherMetrics.Space.xs)
     }
 
     /// 表单行：LabeledContent 负责标签列，TextField 用系统字段样式（不再自定宽度/描边）。
@@ -229,7 +229,7 @@ extension LibraryView {
         selection: Binding<String>,
         options: [(String, String)]
     ) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: GatherMetrics.Space.controlGap) {
             Text(title)
                 .font(.callout)
                 .foregroundStyle(.secondary)

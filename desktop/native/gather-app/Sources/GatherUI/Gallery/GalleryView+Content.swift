@@ -19,7 +19,7 @@ extension GalleryView {
                     onDismiss: { viewModel.actionError = nil }
                 )
                 .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-                .padding(.top, 12)
+                .padding(.top, GatherMetrics.Space.m)
                 .transition(.opacity)
             }
             searchRow
@@ -69,8 +69,8 @@ extension GalleryView {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-        .padding(.top, 8)
-        .padding(.bottom, 2)
+        .padding(.top, GatherMetrics.Space.s)
+        .padding(.bottom, GatherMetrics.Space.xxs)
     }
 
     // MARK: - Lightbox 呈现
@@ -197,8 +197,8 @@ extension GalleryView {
                 }
             }
             .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-            .padding(.top, 8)
-            .padding(.bottom, 8)
+            .padding(.top, GatherMetrics.Space.s)
+            .padding(.bottom, GatherMetrics.Space.s)
             .frame(minHeight: 26)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: copy.kind)
         }
@@ -249,7 +249,7 @@ extension GalleryView {
     // MARK: - 选择栏（旧版：主色实底 + 白字白胶囊 → 系统选中色）
 
     private var selectionBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: GatherMetrics.Space.m) {
             Label {
                 Text(l10n.format("选中 %lld 张照片", viewModel.selectedIds.count))
                     .font(GatherFont.bodyStrong)

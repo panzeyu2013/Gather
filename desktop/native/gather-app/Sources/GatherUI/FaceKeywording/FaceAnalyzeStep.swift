@@ -9,7 +9,7 @@ extension FaceKeywordingView {
     var stepAnalyze: some View {
         VStack(alignment: .leading, spacing: 14) {
             modelsGuidanceStrip
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
                 HStack {
                     Text(l10n("匹配强度")).font(GatherFont.cardTitle)
                     Spacer()
@@ -30,7 +30,7 @@ extension FaceKeywordingView {
                         Text(l10n("每个簇最少包含的人脸数量（2–20）。"))
                             .font(GatherFont.secondary).foregroundStyle(.secondary)
                     }
-                    .padding(.top, 4)
+                    .padding(.top, GatherMetrics.Space.xs)
                 }
                 // 分析失败/取消：与页面横幅同源的原生提示条（不再是手绘 error 色块）。
                 if let error = viewModel.errorMessage,
@@ -44,7 +44,7 @@ extension FaceKeywordingView {
                     .help(viewModel.errorTooltip.map { l10n.resolve($0) } ?? "")
                 }
                 if viewModel.analysisPhase == .running { analysisProgress }
-                HStack(spacing: 12) {
+                HStack(spacing: GatherMetrics.Space.m) {
                     if viewModel.analysisPhase == .running {
                         Button(role: .destructive) {
                             Task { await viewModel.cancel() }
@@ -85,7 +85,7 @@ extension FaceKeywordingView {
     @ViewBuilder
     private var modelsGuidanceStrip: some View {
         if viewModel.modelsMissing {
-            HStack(spacing: 8) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 NativeBanner(
                     text: l10n("人脸模型不可用，请前往设置恢复内置模型或重新选择。"),
                     systemImage: "exclamationmark.triangle.fill",
@@ -141,7 +141,7 @@ extension FaceKeywordingView {
 
     /// TS AnalyzeProgress：相位文本 + (n/N) + 系统线性进度条。
     private var analysisProgress: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
             HStack {
                 Text(l10n.progressPhaseText(viewModel.progressPhase))
                     .font(.callout)
@@ -160,7 +160,7 @@ extension FaceKeywordingView {
             } else {
                 // TS AnalyzeProgress：total == 0（indeterminate）时相位文本
                 // 恒显示，轨道省略；补处理中文案对齐旧版（StepAnalyze.tsx:26-29）。
-                HStack(spacing: 8) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     ProgressView()
                     Text(l10n("处理中…"))
                         .font(.callout)

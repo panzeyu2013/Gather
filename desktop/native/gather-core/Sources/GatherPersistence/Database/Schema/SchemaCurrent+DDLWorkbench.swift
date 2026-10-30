@@ -110,6 +110,10 @@ public extension SchemaCurrent {
       submitted_at TEXT NOT NULL DEFAULT '',
       imported_at TEXT NOT NULL,
       applied_at TEXT NOT NULL DEFAULT '',
+      -- P1-5：字段级应用时间。勾选走 culling 决策、评分/色标走元数据写回，
+      -- 两个动作可能一个成功一个失败；只记 applied_at 会让重放分不清该重做哪个。
+      pick_applied_at TEXT NOT NULL DEFAULT '',
+      rating_applied_at TEXT NOT NULL DEFAULT '',
       UNIQUE (batch_id, photo_id)
     );
     CREATE INDEX idx_client_proof_session ON client_proof_feedback(session_id, imported_at);
@@ -144,5 +148,18 @@ public extension SchemaCurrent {
       computed_at TEXT NOT NULL
     );
     CREATE INDEX idx_photo_semantics_session ON photo_semantics(session_id, computed_at);
+
+    -- A7：keywords.usage_count 是派生值（该路径自身的 photo_keywords 行数）。
+    -- 仓储在 replace/delete/merge 三路会重算，但"删照片/删会话"走 DB CASCADE，
+    -- 不经过仓储 → 权重只增不减，prefixMatches 的 ORDER BY usage_count 随之失真。
+    -- 触发器按行递减（O(1)，不逐行 COUNT）：计数口径本身由重算路径保证，
+    -- 这里只需要把 CASCADE 造成的减量同步过去。
+    CREATE TRIGGER trg_photo_keywords_usage_after_delete
+    AFTER DELETE ON photo_keywords
+    BEGIN
+      UPDATE keywords
+         SET usage_count = CASE WHEN usage_count > 0 THEN usage_count - 1 ELSE 0 END
+       WHERE path = OLD.keyword_path;
+    END;
     """
 }

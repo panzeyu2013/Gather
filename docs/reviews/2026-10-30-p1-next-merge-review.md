@@ -100,10 +100,10 @@ schema **55 表 / 449 列 / 86 索引（8 UNIQUE）/ 81 外键**、en **2,018** 
 | 编号 | 处置 | 关键位置 / 证据 |
 |---|---|---|
 | P1-1 | 修：内嵌读增补 XMP 优先合并（读回 lr 层级） | `MetadataWriteRouter.readEmbeddedXMPAttributes` + `readEmbedded`；新增 `MetadataWriteRouterReadTests`（4 例） |
-| P1-2 | 修：`run(policy:sessionId:)` + 调用方传会话；**未做** repo 级 SQL 下推（应用侧过滤 + 有界放大），会话作用域下不扫孤儿目录 | `MetadataRetentionService`、`LiveMetadataAPI`；`MetadataRetentionTests.retentionScopeOnlyTouchesOwnSession` |
+| P1-2 | 修：`run(policy:sessionId:)` + **repo 级会话下推**（候选查询 EXISTS 过滤）+ 会话内孤儿回收（扫描根按会话、引用集合全库） | `MetadataLifecycleRepo`（`expired/empty/vanished/adoption/orphanRoots`）、`MetadataRetentionService`、`LiveMetadataAPI`；`MetadataRetentionTests` 4 例 |
 | P1-3 | 修：三条 purge 纳入 `isEnabled` | 同文件；孤儿用例改 `isEnabled: true` |
 | P1-4 | 修：锚定式孤儿判定（复用 `validate`），删除无生产者的 `.gather-archived-` | `DeliveryBackupPath.anchoredXMPPath(forBackupName:inDirectory:)` |
-| P1-5 | 修：短路改成"已落库且可消费行已 applied"，半成品 batch 走补偿重放；**未做**字段级重放（需新列） | `ProofFeedbackService` |
+| P1-5 | 修：字段级重放（新增 `pick_applied_at`/`rating_applied_at` 两列；勾选与评分各记各的，设置关闭的评分不算待办） | `client_proof_feedback` 两列、`ProofFeedbackRepo.markPickApplied/markRatingApplied`、`ProofFeedbackService`；`ProofFeedbackTests` 2 例 |
 | P1-6 | 修（方案 b）：commit 成功后才 `recordBackup`；`EmbeddedJPEGSession` 加 `committed` 锁让 abort 能删本次备份 | `WritebackService+Execute`、`EmbeddedJPEGSession` |
 | P1-7 | 修：代表张只在输入内选，展开只插输入内成员 | `StackFoldIndex` + 新 `StackFoldIndexTests`（10 例，每例校验"输出 ⊆ 输入且无重复"） |
 | P1-8 | 修：集合/堆栈用户可见读面加 `PhotoVisibility`；判空/封面校验改用不过滤的 `hasAnyMember`/`isMember` | `CollectionRepo`/`StackRepo`/`CurationService`；新 `CurationVisibilityTests`（2 例） |
@@ -114,7 +114,7 @@ schema **55 表 / 449 列 / 86 索引（8 UNIQUE）/ 81 外键**、en **2,018** 
 | A4 | 修：行取回按方向排序；`allowedSortFields` 只留 rowid | `PhotoFilterQuery`、`PhotoInputs` |
 | A5 | 修：补 `idx_photo_stacks_cover`、`idx_client_proof_photo`（必须在 workbench DDL 段：索引段先于 workbenchDDL，放 DDLIndexes 会 no such table） | `SchemaCurrent+DDLWorkbench`、`SchemaCurrent`（86 + 新指纹） |
 | A6 | 修：新表 CHECK 6 例 + CASCADE/SET NULL 4 例（断言行数），索引断言 84→86 | `SchemaCurrentTests` |
-| A7 | 修：抽 `recountUsage`，replace/delete/merge 三路复用；**残余**：照片 CASCADE 删除不计（需钩子/触发器） | `KeywordRepo` |
+| A7 | 修：抽 `recountUsage` 三路复用 + **DB 触发器**兜住照片/会话 CASCADE 删除 | `KeywordRepo`、`trg_photo_keywords_usage_after_delete`（`SchemaCurrent+DDLWorkbench`）；`SchemaCurrentTests` 1 例 |
 | A8 | 修：非级联删除加 `hasSynonyms` 守护 | `KeywordRepo` |
 | A9 | 修：moveItem 读入事务、reorder 续接未列出成员、create 事务内 nextSortOrder | `CollectionRepo`、`CurationService` |
 | B6 | 修：`deleteVanishedRow` 事务内复核 status/lease/intent | `MetadataLifecycleRepo` |
@@ -140,11 +140,33 @@ schema **55 表 / 449 列 / 86 索引（8 UNIQUE）/ 81 外键**、en **2,018** 
 | E6 | 修（口径）：明确 zh 表只是 9 条占位、en 是唯一翻译表，中文覆盖率不在门禁范围 | `docs/DEVELOPMENT.md` |
 | 错误串上屏 ×2 | 修：走 `l10n.errorText` / `APIErrorPresentation` 漏斗，原文进日志 | `MetadataSyncBar`、`SemanticSearchPanel` |
 
-**仍需后续（已记账，不在本波）**
+## 9. 残余波（2026-10-30 第二轮）
 
-- P1-2 的 repo 级会话下推，以及"会话作用域也回收本会话目录孤儿"（需 `orphanRoots(sessionId:)`）。
-- P1-5 的字段级重放（`applied_at` 是照片级记账，字段级要新列）。
-- A6 未扩到 `saved_searches`/`photo_semantics` 的 CASCADE 与 `photo_keywords.keyword_path`（无外键）。
-- A7 的照片 CASCADE 删除不计 `usage_count`。
-- `ProofFeedbackRepo.batchExists` 已无生产调用（文件头注释仍描述旧短路）。
-- 协调器 C4/C7 与 D4 纯函数的**行为用例**未加；本轮补的是可见性 2 例、会话作用域 1 例、内嵌 XMP 4 例、堆栈折叠 10 例、schema 约束 10 例。
+上一节列的 6 条残余已全部关闭：
+
+| 残余 | 处置 | 证据 |
+|---|---|---|
+| P1-2 repo 级下推 + 会话内孤儿回收 | 候选查询加 `EXISTS (delivery_sessions…)`；`orphanRoots(sessionId:)` 只扫本会话目录，**引用集合仍全库**（缩引用会删错别人的备份） | `MetadataRetentionTests`：下推、9 条 s2 抢占下仍删 s1、会话内孤儿回收保留"被 s2 引用"的同目录备份 |
+| P1-5 字段级重放 | `client_proof_feedback` 加 `pick_applied_at`/`rating_applied_at`；勾选/评分各记各的，`alreadyImported` 只在"没有待办且可办的字段"时为真 | `ProofFeedbackTests.replaysOnlyPendingField`（首导勾选成功+评分失败 → 二导补评分、勾选不重复）与 `disabledRatingIsNeverPending` |
+| A6 补面 | 加 `saved_searches`/`photo_semantics` 的 CASCADE 用例 | `SchemaCurrentTests.deletingSessionCascadesCurationRows` |
+| A7 CASCADE 计数 | 触发器 `trg_photo_keywords_usage_after_delete`（O(1) 递减，重算仍由仓储负责） | `SchemaCurrentTests.deletingPhotoKeepsUsageCountHonest` |
+| `batchExists` 死代码 | 删除方法；文件头注释改为"判据是字段级时间戳" | 全仓 0 引用 |
+| C4/C7/D4 行为用例 | 新增 `C1RoundTripTests`（C7 6 例 + C4 4 例，替身不 spawn 进程）与 `GalleryFilterSearchStringTests`（5 例） | `reloadCount == 1`、`syncStatus == maxSettleRetries+1`、未安装时 preflight 0 次 |
+
+一并处理的两件事：
+- **设计系统门禁的正则 bug**：`spacing.literalPadding` 用 `[0-9.]+` 匹配，字符集里的 `.` 让
+  `.padding(.horizontal, 12)` 也算"数字 padding"（178/206 是误报）。改成要求紧跟数字后，
+  再把 69 个文件 / 279 处可映射字面量换成 `GatherMetrics.Space.*`，baseline 收紧到
+  **literalPadding 206 → 5、literalSpacing 261 → 89**。
+- **schema 计数**：55 表 / **451 列**（+2 字段级列）/ 86 索引 / 81 外键，指纹
+  `5ed1f5f2…07a01`；文档与逐表列数测试同步。
+
+**仍留（明确记录）**
+- 校样导入的**冲突**不写 `rating_applied_at`：含冲突的 batch 每次重导都会再报一次冲突
+  （`alreadyImported` 为 false）。仓库没有"冲突已告知"列，做成一次性消费要么加列、要么改语义，
+  本轮按"成功才记账"保留并在此记账。
+- `gather-app/Sources/GatherApp/GatherApp.swift` 仍有 2 处数字 padding：`GatherMetrics` 是
+  GatherUI 的 internal 符号，GatherApp 是另一个 target，要用就得先把 token 提为 public。
+- 剩余非 token 间距（9/10/14/20/36/40/52/60 等）与 `spacing: 0` 31 处未映射——没有等值 token，
+  强行映射会改视觉。
+- 未验证项同 §6（C1 真机 TCC、20k 语义内存、`replaceItemAt` 真卷、GUI/视觉/键盘、签名公证、x86_64）。

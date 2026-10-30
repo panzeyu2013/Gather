@@ -57,7 +57,7 @@ extension SettingsView {
         LabeledContent {
             switch field.type {
             case .text:
-                HStack(spacing: 6) {
+                HStack(spacing: GatherMetrics.Space.controlGap) {
                     TextField("", text: fieldBinding(field))
                         .font(isPathField ? .body.monospaced() : .body)
                         .focused($focusedFieldKey, equals: field.key)
@@ -86,8 +86,8 @@ extension SettingsView {
                         }
                     }
                     .frame(width: 110)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, GatherMetrics.Space.s)
+                    .padding(.vertical, GatherMetrics.Space.xs)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(GatherTheme.surfaceMuted)

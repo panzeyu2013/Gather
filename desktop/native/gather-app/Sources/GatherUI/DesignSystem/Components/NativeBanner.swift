@@ -92,7 +92,7 @@ public struct NativeBanner: View {
     }
 
     public var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
             Image(systemName: resolvedImage)
                 .foregroundStyle(color)
                 .accessibilityHidden(true)

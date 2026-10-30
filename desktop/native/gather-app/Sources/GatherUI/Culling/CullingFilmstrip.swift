@@ -35,7 +35,7 @@ struct CullingFilmstrip: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GatherMetrics.Space.s) {
             Text(l10n("胶片"))
                 .font(GatherFont.bodyStrong)
                 .foregroundStyle(.secondary)
@@ -59,7 +59,7 @@ struct CullingFilmstrip: View {
             .help(isExpanded ? l10n("收起胶片条") : l10n("展开胶片条"))
             .accessibilityLabel(isExpanded ? l10n("收起胶片条") : l10n("展开胶片条"))
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, GatherMetrics.Space.m)
         .frame(height: GatherMetrics.Chrome.filmstripCollapsed)
         .background(GatherTheme.surface)
         .overlay(alignment: .bottom) { Divider() }
@@ -160,18 +160,18 @@ private struct CullingFilmThumbView: View {
                     Text("\(Int(asset.state.rating))★")
                         .font(GatherFont.label)
                         .foregroundStyle(GatherTheme.viewerTextPrimary)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, GatherMetrics.Space.xs)
                         .padding(.vertical, 1)
                         .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.8)))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(4)
+                        .padding(GatherMetrics.Space.xs)
                 }
                 if asset.state.pickState != .unreviewed {
                     Circle()
                         .fill(asset.state.pickState == .picked ? GatherTheme.success : GatherTheme.error)
                         .frame(width: 9, height: 9)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(4)
+                        .padding(GatherMetrics.Space.xs)
                         .accessibilityHidden(true)
                 }
                 Text(asset.photo.filename)
@@ -179,8 +179,8 @@ private struct CullingFilmThumbView: View {
                     .foregroundStyle(GatherTheme.viewerTextPrimary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
+                    .padding(.horizontal, GatherMetrics.Space.xs)
+                    .padding(.vertical, GatherMetrics.Space.xxs)
                     .background(GatherTheme.viewerBackground.opacity(0.7))
             }
         }

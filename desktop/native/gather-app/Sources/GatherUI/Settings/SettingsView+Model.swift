@@ -27,7 +27,7 @@ extension SettingsView {
                         }
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, GatherMetrics.Space.xs)
             } label: {
                 Label(l10n("模型、推理与性能参数"), systemImage: "gearshape.2")
             }
@@ -72,7 +72,7 @@ extension SettingsView {
                 }
 
                 LabeledContent(l10n("模型目录")) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: GatherMetrics.Space.s) {
                         Text(model.modelResourcesDir)
                             .font(.body.monospaced())
                             .foregroundStyle(.secondary)
@@ -118,7 +118,7 @@ extension SettingsView {
 
     private func modelPathRow(key: String, label: String) -> some View {
         LabeledContent(label) {
-            HStack(spacing: 6) {
+            HStack(spacing: GatherMetrics.Space.controlGap) {
                 TextField("", text: Binding(
                     get: { viewModel.edits[key] ?? viewModel.values[key] ?? "" },
                     set: { viewModel.edits[key] = $0 }
@@ -145,7 +145,7 @@ extension SettingsView {
 
     /// 模型缺失横幅：SF Symbol + 语义色底 + 原生进度条。
     private func installBlock(_ model: MLStatusData) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
             Label(
                 l10n("人脸模型未找到。请恢复内置 SFace，或选择有效的 CoreML 模型。"),
                 systemImage: "exclamationmark.triangle.fill"
@@ -158,7 +158,7 @@ extension SettingsView {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
 
-            HStack(spacing: 8) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 Button(l10n("下载人脸模型")) {
                     pendingModelInstall = PendingModelInstall(
                         modelDir: model.modelResourcesDir)
@@ -191,7 +191,7 @@ extension SettingsView {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
+        .padding(GatherMetrics.Space.m)
         .background(
             RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
                 .fill(GatherTheme.warning.opacity(0.10))

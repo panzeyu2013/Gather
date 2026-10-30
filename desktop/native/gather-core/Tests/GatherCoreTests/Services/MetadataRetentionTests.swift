@@ -9,7 +9,10 @@
 // 5. 零 item 行（CASCADE 清空）→ 删行 + 备份；
 // 6. 文件已消失行（父目录仍在）→ 删行 + 备份；卷离线（父目录不在）不碰；
 // 7. 孤儿备份：只删受控命名 + mtime>24h + DB 无引用的文件，普通文件/新备份/被引用备份不删；
-// 8. 存量收编：仅有 metadata item 的 written 交付按新策略自动确认。
+// 8. 存量收编：仅有 metadata item 的 written 交付按新策略自动确认；
+// 9. 会话作用域（P1-2）：只动本会话的行与备份；候选过滤与 LIMIT 一起下推到 SQL
+//    （旧实现"先全库截断再在 Application 侧跳过"会让本会话被别的会话的候选饿死）；
+// 10. 会话内孤儿回收：作用域只收窄扫描根，"是否被引用"仍用全库引用集合。
 
 import Foundation
 import os
@@ -118,12 +121,17 @@ private struct SeededRetentionDelivery {
     let backupPath: String
 }
 
+/// 种一条交付。
+///
+/// - Parameter sessionId: 交付链接/确认的会话（默认 s1 = fixture 的主会话）。作用域
+///   测试要造"别的会话的交付"时传 s2（调用前先用 seedSecondSession 落 s2 + 它的 photos）。
 private func seedRetentionDelivery(
     _ fixture: RetentionFixture,
     photoId: String,
     module: DeliveryModule = .metadata,
     confirm: Bool,
-    withItems: Bool = true
+    withItems: Bool = true,
+    sessionId: String = "s1"
 ) throws -> SeededRetentionDelivery {
     let photoPath = fixture.dir + "/" + photoId + ".jpg"
     let xmpPath = TSPath.xmpSidecarPath(photoPath)
@@ -140,7 +148,7 @@ private func seedRetentionDelivery(
             xmpPath: xmpPath, photoId: photoId, module: module,
             attributes: ["rating": .number(4)], status: .pending)
     }
-    _ = try fixture.repo.linkSession(xmpPath: xmpPath, sessionId: "s1")
+    _ = try fixture.repo.linkSession(xmpPath: xmpPath, sessionId: sessionId)
     let owner = "retention-" + UUID().uuidString
     _ = try fixture.repo.claimWriting(xmpPath: xmpPath, revision: 1, leaseOwner: owner)
     guard let written = try fixture.repo.markWritten(
@@ -157,7 +165,7 @@ private func seedRetentionDelivery(
     }
     if confirm {
         _ = try fixture.repo.confirm(
-            scope: .module, sessionId: "s1", module: module, requireReloadAck: false)
+            scope: .module, sessionId: sessionId, module: module, requireReloadAck: false)
     }
     guard let row = try fixture.repo.get(xmpPath) else {
         throw RetentionInjectedError.removeFailed
@@ -169,6 +177,33 @@ private func ageRetentionDelivery(_ fixture: RetentionFixture, id: Int64, days: 
     let stamp = isoString(Date().addingTimeInterval(-days * 86_400))
     _ = try fixture.db.prepare("UPDATE deliveries SET updated_at = ? WHERE id = ?")
         .run([.text(stamp), .int(id)])
+}
+
+/// 种一个"别的会话"（含它自己的 photos 行，photo_id 外键要用）。
+///
+/// sessionId 的作用域测试需要**真实存在**的第二会话：delivery_sessions.session_id
+/// 有外键，而且验证"作用域外不扫"要有它自己的 source_path。
+private func seedSecondSession(
+    _ fixture: RetentionFixture,
+    id: String,
+    sourcePath: String,
+    photoIds: [String]
+) throws {
+    _ = try fixture.db.prepare("""
+        INSERT INTO sessions (id, name, status, source_path, created_at, updated_at)
+        VALUES (?, '', 'draft', ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+        """).run([.text(id), .text(sourcePath)])
+    for photoId in photoIds {
+        // filepath 写 seedRetentionDelivery 真正落盘的位置（fixture.dir），
+        // source_path 才是"这个会话的照片目录"（两者在测试里可以不同）。
+        _ = try fixture.db.prepare("""
+            INSERT INTO photos (id, session_id, filepath, filename, created_at, updated_at)
+            VALUES (?, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+            """).run([
+                .text(photoId), .text(id), .text(fixture.dir + "/" + photoId + ".jpg"),
+                .text(photoId + ".jpg"),
+            ])
+    }
 }
 
 private func ackRetentionSession(_ fixture: RetentionFixture) throws {
@@ -404,7 +439,7 @@ private let retentionPolicy = MetadataRetentionPolicy(
         VALUES (?, '', 'draft', ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
         """).run([.text("s2"), .text(fixture.dir)])
 
-    // 只属于 s1 的已确认交付（seedRetentionDelivery 固定 linkSession(s1) + confirm(s1)）。
+    // 只属于 s1 的已确认交付（seedRetentionDelivery 默认 linkSession(s1) + confirm(s1)）。
     let seeded = try seedRetentionDelivery(fixture, photoId: "p1", confirm: true)
     // 保留期 0 的 cutoff 就是"现在"；confirmed_at 带毫秒（.000Z）与 cutoff 的秒级
     // 文本比较会排到后面，所以显式回填一个旧确认时间（真实场景也是几天前）。
@@ -429,4 +464,116 @@ private let retentionPolicy = MetadataRetentionPolicy(
     #expect(ownScope.deletedDeliveries == 1)
     #expect(try fixture.repo.get(seeded.xmpPath) == nil)
     #expect(!FileManager.default.fileExists(atPath: seeded.backupPath))
+}
+
+// MARK: - 10. 会话作用域下推（候选查询）
+
+/// 会话过滤必须在 SQL 里、在 LIMIT **之前**生效。
+///
+/// 下推前的形状是"全库先截断、再在 Application 侧跳过作用外行"：`limit: 1` 时第一行
+/// 若属于别的会话，本会话一条都轮不到（用户点了"立即清理"却什么都没发生）。上一版
+/// 用"多取 8 倍"把边界从 1 推到 8 —— 只是把 bug 推远（见下一个用例的 9 条更早候选），
+/// 下推之后 LIMIT 的语义才是"本会话的前 N 条"。
+@Test func retentionScopePushesSessionFilterIntoQuery() async throws {
+    let fixture = try makeRetentionFixture()
+    defer { fixture.cleanup() }
+    try seedSecondSession(
+        fixture, id: "s2", sourcePath: fixture.dir, photoIds: ["s2p0", "s2p1"])
+
+    // 两条 s2 候选都比 s1 那条更早：全库时间序的前两条都属于 s2。
+    var foreign: [SeededRetentionDelivery] = []
+    for (offset, photoId) in ["s2p0", "s2p1"].enumerated() {
+        let delivery = try seedRetentionDelivery(
+            fixture, photoId: photoId, confirm: true, sessionId: "s2")
+        try ageRetentionDelivery(fixture, id: delivery.row.id, days: 30 - Double(offset))
+        foreign.append(delivery)
+    }
+    let own = try seedRetentionDelivery(fixture, photoId: "p1", confirm: true)
+    try ageRetentionDelivery(fixture, id: own.row.id, days: 20)
+
+    let result = await fixture.retention.run(
+        policy: MetadataRetentionPolicy(
+            retentionDays: 7, isEnabled: true, batchLimit: 1,
+            includeOrphanBackups: false, adoptLegacyRows: false),
+        sessionId: "s1")
+
+    #expect(result.scanned == 1)
+    #expect(result.deletedDeliveries == 1)
+    #expect(try fixture.repo.get(own.xmpPath) == nil, "本会话的候选必须轮得到")
+    for delivery in foreign {
+        #expect(try fixture.repo.get(delivery.xmpPath) != nil, "作用域外的行必须原样保留")
+        #expect(FileManager.default.fileExists(atPath: delivery.backupPath))
+    }
+}
+
+/// 上一版靠"多取 8 倍再过滤"缓解饥饿，但放大不是修复：更早的候选超过倍数照样 0 删除。
+/// 这里刻意造 9 条更早的 s2 候选（> 旧放大倍数 8），limit 仍是 1。
+@Test func retentionScopeLimitIsNotStarvedByForeignCandidates() async throws {
+    let fixture = try makeRetentionFixture()
+    defer { fixture.cleanup() }
+    let foreignPhotos = (0..<9).map { "s2p\($0)" }
+    try seedSecondSession(
+        fixture, id: "s2", sourcePath: fixture.dir, photoIds: foreignPhotos)
+    for (offset, photoId) in foreignPhotos.enumerated() {
+        let delivery = try seedRetentionDelivery(
+            fixture, photoId: photoId, confirm: true, sessionId: "s2")
+        try ageRetentionDelivery(fixture, id: delivery.row.id, days: 40 - Double(offset))
+    }
+    let own = try seedRetentionDelivery(fixture, photoId: "p1", confirm: true)
+    try ageRetentionDelivery(fixture, id: own.row.id, days: 10)
+
+    let result = await fixture.retention.run(
+        policy: MetadataRetentionPolicy(
+            retentionDays: 7, isEnabled: true, batchLimit: 1,
+            includeOrphanBackups: false, adoptLegacyRows: false),
+        sessionId: "s1")
+
+    #expect(result.deletedDeliveries == 1, "作用域外的候选不占本批配额")
+    #expect(try fixture.repo.get(own.xmpPath) == nil)
+}
+
+// MARK: - 11. 会话内孤儿回收
+
+/// 作用域运行**也要**回收孤儿（上一版直接整段跳过），但两个集合不对称：
+/// 扫描根收窄到本会话 source_path，引用集合仍是全库。
+@Test func retentionScopedRunReclaimsOrphansUnderOwnRootOnly() async throws {
+    let fixture = try makeRetentionFixture()
+    defer { fixture.cleanup() }
+    let fileManager = FileManager.default
+    let aged = Date().addingTimeInterval(-2 * 86_400)
+
+    // s2 有自己的根目录：作用域 s1 的清理不该去别人的照片目录动手。
+    let s2Root = fixture.dir + "/s2-root"
+    try fileManager.createDirectory(atPath: s2Root, withIntermediateDirectories: true)
+    try seedSecondSession(fixture, id: "s2", sourcePath: s2Root, photoIds: ["s2p0"])
+
+    // 1) s1 根目录里"无引用且超龄"的受控备份：应删。
+    let orphan = fixture.dir + "/p9.xmp.gather-backup-" + UUID().uuidString.lowercased()
+    try Data("orphan".utf8).write(to: URL(fileURLWithPath: orphan))
+    try fileManager.setAttributes([.modificationDate: aged], ofItemAtPath: orphan)
+
+    // 2) 同目录、同样超龄，但被 s2 的交付引用：必须保留。这是"引用集合不能按会话
+    //    缩小"的证伪点——缩小了它就会在本会话的清理里被当孤儿删掉。
+    let referenced = try seedRetentionDelivery(
+        fixture, photoId: "s2p0", confirm: true, sessionId: "s2")
+    try fileManager.setAttributes(
+        [.modificationDate: aged], ofItemAtPath: referenced.backupPath)
+
+    // 3) s2 根目录里的超龄孤儿：作用域 s1 不扫它（扫描根是作用域的一部分）。
+    let foreignOrphan = s2Root + "/p7.xmp.gather-backup-" + UUID().uuidString.lowercased()
+    try Data("foreign".utf8).write(to: URL(fileURLWithPath: foreignOrphan))
+    try fileManager.setAttributes([.modificationDate: aged], ofItemAtPath: foreignOrphan)
+
+    let result = await fixture.retention.run(
+        policy: MetadataRetentionPolicy(
+            retentionDays: 7, isEnabled: true,
+            includeOrphanBackups: true, adoptLegacyRows: false),
+        sessionId: "s1")
+
+    #expect(result.orphanBackupsDeleted == 1)
+    #expect(!fileManager.fileExists(atPath: orphan))
+    #expect(
+        fileManager.fileExists(atPath: referenced.backupPath),
+        "被别的会话引用的备份不能当孤儿删")
+    #expect(fileManager.fileExists(atPath: foreignOrphan), "作用域外的目录不扫")
 }

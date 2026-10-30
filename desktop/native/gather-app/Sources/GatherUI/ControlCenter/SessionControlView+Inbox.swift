@@ -24,7 +24,7 @@ extension SessionControlView {
                     with: l10n
                 ).filter { $0.kind != .scanIncomplete }
                 if items.isEmpty {
-                    HStack(spacing: 6) {
+                    HStack(spacing: GatherMetrics.Space.controlGap) {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(GatherTheme.success)
                             .accessibilityHidden(true)
                         Text(l10n("全部正常")).foregroundStyle(.secondary)
@@ -44,7 +44,7 @@ extension SessionControlView {
             let icon = inboxIcon(item.kind)
             Image(systemName: icon.name).foregroundStyle(icon.color).frame(width: 16)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
                 Text(item.label)
                 if let detail = item.detail {
                     // 错误明细是内容语义：用 .callout 而不是 .footnote。

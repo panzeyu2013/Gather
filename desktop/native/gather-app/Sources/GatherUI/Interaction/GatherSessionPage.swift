@@ -91,7 +91,7 @@ struct GatherSessionTabStrip: View {
     @State private var backHovered = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GatherMetrics.Space.s) {
             Button(action: onBack) {
                 Image(systemName: "chevron.backward")
                     .font(.system(size: 11, weight: .semibold))
@@ -134,13 +134,13 @@ struct GatherSessionTabStrip: View {
     }
 
     private var tabBar: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: GatherMetrics.Space.xxs) {
             ForEach(SessionPage.tabOrder, id: \.self) { page in
                 if page == .control {
                     Rectangle()
                         .fill(GatherTheme.hairline)
                         .frame(width: 1, height: 14)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, GatherMetrics.Space.xs)
                         .accessibilityHidden(true)
                 }
                 SessionTabButton(
@@ -169,7 +169,7 @@ struct GatherSessionTabStrip: View {
     /// 与 GatherMenuField 同一策略：外观由我们画，Menu 只做透明命中层，
     /// 避免 macOS 26 的 borderlessButton 菜单样式抹掉底色、把指示符移到左边。
     private var compactMenu: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: GatherMetrics.Space.controlGap) {
             Text(l10n(current.titleKey))
                 .font(GatherFont.labelRegular)
                 .foregroundStyle(.primary)

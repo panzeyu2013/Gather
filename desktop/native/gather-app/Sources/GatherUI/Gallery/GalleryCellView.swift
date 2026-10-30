@@ -43,7 +43,7 @@ struct GalleryCellView: View {
                 .clipped()
                 .brightness(isHovered ? 0.03 : 0)
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 4) {
+                HStack(spacing: GatherMetrics.Space.xs) {
                     if photo.status == "missing" {
                         PhotoOverlayChip(
                             text: l10n("离线"),
@@ -63,9 +63,9 @@ struct GalleryCellView: View {
                     .font(GatherFont.secondary)
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, GatherMetrics.Space.s)
                     .padding(.top, 10)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, GatherMetrics.Space.controlGap)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         // 照片底部渐变遮罩（照片查看器的标准做法）。
@@ -121,7 +121,7 @@ struct GalleryCellView: View {
             .font(.title3)
             .symbolRenderingMode(.palette)
             .foregroundStyle(.white, GatherTheme.selection)
-            .padding(6)
+            .padding(GatherMetrics.Space.controlGap)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .accessibilityHidden(true)
     }

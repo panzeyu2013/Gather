@@ -3,7 +3,7 @@
 //
 // 为什么需要这组测试：V1 一次成型、没有迁移链兜底，任何「少一列 / 少一索引 /
 // 少一外键」都只会在运行期以静默错列（SELECT * 按位置取值）的形式暴露（draft §8 R1）。
-// 因此这里把 55 / 449 / 86 / 81 / user_version=1 五个数字、55 张表的逐表列数、
+// 因此这里把 55 / 451 / 86 / 81 / user_version=1 五个数字、55 张表的逐表列数、
 // CHECK 与 FK 的拒绝路径、CASCADE / SET NULL / RESTRICT 的删除语义全部钉成回归。
 //
 // 用户数据 FK（D-025）：role_bindings.cluster_id、person_photos.photo_id / session_id 是
@@ -33,7 +33,8 @@ struct SchemaCurrentCheckCase: Sendable, CustomTestStringConvertible {
     var testDescription: String { name }
 }
 
-/// 55 张表的逐表列数（v1 基线 386 + P1 下一波 11 张表 63 列 = 449；
+/// 55 张表的逐表列数（v1 基线 386 + P1 下一波 11 张表 63 列 = 449，再加 P1-5 字段级
+/// 应用的 2 列 = 451；
 /// Cut 5 / 5b-2b 给 similarity_cluster_meta +3：algorithm_version / input_signature / state_digest；
 /// W3 给 deliveries +1：target_kind）。
 private let schemaCurrentColumnCounts: [SchemaCurrentTableSpec] = [
@@ -90,7 +91,7 @@ private let schemaCurrentColumnCounts: [SchemaCurrentTableSpec] = [
     SchemaCurrentTableSpec(table: "keywords", columns: 6),
     SchemaCurrentTableSpec(table: "keyword_synonyms", columns: 2),
     SchemaCurrentTableSpec(table: "photo_keywords", columns: 4),
-    SchemaCurrentTableSpec(table: "client_proof_feedback", columns: 11),
+    SchemaCurrentTableSpec(table: "client_proof_feedback", columns: 13),
     SchemaCurrentTableSpec(table: "triage_feedback", columns: 8),
     SchemaCurrentTableSpec(table: "photo_semantics", columns: 7),
 ]
@@ -468,7 +469,7 @@ struct SchemaCurrentTests {
 
     // MARK: 建库与总量
 
-    @Test("exec(SchemaCurrent.createSQL) 成功：55 张表 / 449 列")
+    @Test("exec(SchemaCurrent.createSQL) 成功：55 张表 / 451 列")
     func appliesSchema() throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }
@@ -482,7 +483,7 @@ struct SchemaCurrentTests {
         for table in tables {
             columns += try db.prepare("PRAGMA table_info(\(table))").query([]).count
         }
-        #expect(columns == 449, "列数漂移：期望 449，实际 \(columns)")
+        #expect(columns == 451, "列数漂移：期望 451，实际 \(columns)")
     }
 
     @Test("索引 86 个（含 8 个 UNIQUE）")
@@ -981,6 +982,56 @@ struct SchemaCurrentTests {
         #expect(try scalarInt(db, "SELECT COUNT(*) FROM photos") == 1, "照片行必须保留")
         #expect(try scalarInt(db, "SELECT COUNT(*) FROM collection_items") == 1,
                 "集合成员与堆栈是两条独立关系，不得被牵连")
+    }
+
+    @Test("删会话级联清空 saved_searches / photo_semantics（A6 补面）")
+    func deletingSessionCascadesCurationRows() throws {
+        let db = try makeSchemaCurrentDatabase()
+        defer { db.close() }
+        try db.exec("""
+            INSERT INTO sessions (id,name,status,source_path,created_at,updated_at)
+              VALUES ('s1','','draft','/tmp','t','t');
+            INSERT INTO photos (id,session_id,filepath,filename,created_at,updated_at)
+              VALUES ('p1','s1','/tmp/p1.jpg','p1.jpg','t','t');
+            INSERT INTO saved_searches (id,name,session_id,criteria_json,created_at,updated_at)
+              VALUES ('q1','星级','s1','{}','t','t');
+            INSERT INTO photo_semantics (photo_id,session_id,labels_json,feature_dim,model_version,computed_at)
+              VALUES ('p1','s1','[]',0,'m1','t');
+            """)
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM saved_searches") == 1)
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photo_semantics") == 1)
+
+        try db.exec("DELETE FROM sessions WHERE id = 's1';")
+
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM saved_searches") == 0,
+                "保存查询随会话删除（session_id CASCADE）")
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photo_semantics") == 0,
+                "语义行随照片/会话删除（两个 CASCADE 任一都该清）")
+    }
+
+    @Test("删照片走 CASCADE 时 keywords.usage_count 同步递减（A7 触发器）")
+    func deletingPhotoKeepsUsageCountHonest() throws {
+        let db = try makeSchemaCurrentDatabase()
+        defer { db.close() }
+        try db.exec("""
+            INSERT INTO sessions (id,name,status,source_path,created_at,updated_at)
+              VALUES ('s1','','draft','/tmp','t','t');
+            INSERT INTO photos (id,session_id,filepath,filename,created_at,updated_at)
+              VALUES ('p1','s1','/tmp/p1.jpg','p1.jpg','t','t'),
+                     ('p2','s1','/tmp/p2.jpg','p2.jpg','t','t');
+            INSERT INTO keywords (path,name,parent_path,usage_count,created_at)
+              VALUES ('旅行','旅行',NULL,2,'t');
+            INSERT INTO photo_keywords (photo_id,keyword_path,source,updated_at)
+              VALUES ('p1','旅行','manual','t'), ('p2','旅行','manual','t');
+            """)
+        #expect(try scalarInt(db, "SELECT usage_count FROM keywords WHERE path='旅行'") == 2)
+
+        // 删除照片走 DB CASCADE，不经过 KeywordRepo.recountUsage：只有触发器能兜住。
+        try db.exec("DELETE FROM photos WHERE id = 'p1';")
+
+        #expect(try scalarInt(db, "SELECT COUNT(*) FROM photo_keywords") == 1)
+        #expect(try scalarInt(db, "SELECT usage_count FROM keywords WHERE path='旅行'") == 1,
+                "CASCADE 删掉一条关联后 usage_count 必须跟着减，否则排序权重只增不减")
     }
 
     @Test("删 keywords 级联清空 keyword_synonyms，其它路径的同义词不受牵连（A6）")

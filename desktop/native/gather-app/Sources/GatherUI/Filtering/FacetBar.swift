@@ -29,15 +29,15 @@ struct FacetBar: View {
     private static let bucketLimit = 12
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
             ForEach(visibleGroups, id: \.dimension) { group in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
                     Text(title(group.dimension))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(width: 56, alignment: .leading)
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: GatherMetrics.Space.xs) {
                             if group.dimension == "keyword" {
                                 keywordBreadcrumbChip
                             }
@@ -61,8 +61,8 @@ struct FacetBar: View {
             } label: {
                 Label(l10n("上级"), systemImage: "arrow.up.left")
                     .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
+                    .padding(.horizontal, GatherMetrics.Space.controlGap)
+                    .padding(.vertical, GatherMetrics.Space.xxs)
                     .background(
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
                             .fill(GatherTheme.surfaceMuted))
@@ -105,8 +105,8 @@ struct FacetBar: View {
             Text("\(bucket.value) · \(bucket.count)")
                 .font(.caption2)
                 .monospacedDigit()
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
+                .padding(.horizontal, GatherMetrics.Space.controlGap)
+                .padding(.vertical, GatherMetrics.Space.xxs)
                 .background(
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(isActive ? GatherTheme.accent.opacity(0.18) : GatherTheme.surface)

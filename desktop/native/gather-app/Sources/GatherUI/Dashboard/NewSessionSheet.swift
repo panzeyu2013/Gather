@@ -144,7 +144,7 @@ struct NewSessionSheet: View {
 
     private var folderRow: some View {
         LabeledContent(l10n("文件夹位置")) {
-            HStack(spacing: 8) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 TextField(
                     l10n("文件夹位置"),
                     text: $folderPath,
@@ -173,7 +173,7 @@ struct NewSessionSheet: View {
         case .idle:
             EmptyView()
         case .checking:
-            HStack(spacing: 8) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 ProgressView()
                     .controlSize(.small)
                 Text(l10n("正在检查 Capture One 连接…"))
@@ -201,7 +201,7 @@ struct NewSessionSheet: View {
     }
 
     private var footer: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("创建后会立即启动照片索引；索引进度和失败重试可在任务中心查看。"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -214,7 +214,7 @@ struct NewSessionSheet: View {
                     .disabled(!canCreate || viewModel.isCreating)
             }
         }
-        .padding(16)
+        .padding(GatherMetrics.Space.l)
     }
 
     /// TS handleCreate：本地 → createFromDirectory；Capture One → 预检门控后

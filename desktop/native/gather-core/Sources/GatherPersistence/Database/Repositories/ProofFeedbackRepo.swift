@@ -3,8 +3,9 @@
 //
 // 这张表是**原始反馈的审计账本**：导入即落库（含被跳过/冲突的项），应用与否
 // 记录在 applied_at。约束与语义：
-// - 幂等键 (batch_id, photo_id)：同一份 selection.json 重复导入不会产生第二行，
-//   也不会重复应用（ProofFeedbackService 用 batchExists 短路）；
+// - 幂等键 (batch_id, photo_id)：同一份 selection.json 重复导入不会产生第二行；
+//   重放判据是**字段级**的 pick_applied_at / rating_applied_at（P1-5：旧实现用
+//   batchExists 整批短路，落库后应用失败会把反馈永久判成"已导入"）；
 // - pick_state 的取值与 culling_decisions.decision 同一套（unreviewed/picked/rejected），
 //   由调用方把 pick=true/false 映射好再传；
 // - rating NULL = "客户没打分"，与 0（明确打 0 星）区分；
@@ -27,6 +28,10 @@ public struct ProofFeedbackRow: Equatable, Sendable {
     public let submittedAt: String
     public let importedAt: String
     public let appliedAt: String
+    /// 字段级应用时间（P1-5）：勾选与评分/色标是两个应用动作，失败重放要能分开记账。
+    /// 为空 = 该字段还没应用过；appliedAt 仍是"这张照片有任何字段被应用"的总标记。
+    public let pickAppliedAt: String
+    public let ratingAppliedAt: String
 
     public init(row: DBRow) {
         id = row[0].intValue ?? 0
@@ -40,15 +45,21 @@ public struct ProofFeedbackRow: Equatable, Sendable {
         submittedAt = row[8].textValue ?? ""
         importedAt = row[9].textValue ?? ""
         appliedAt = row[10].textValue ?? ""
+        pickAppliedAt = row[11].textValue ?? ""
+        ratingAppliedAt = row[12].textValue ?? ""
     }
 
     public var isApplied: Bool { !appliedAt.isEmpty }
+    /// 勾选是否已被应用（字段级）。
+    public var isPickApplied: Bool { !pickAppliedAt.isEmpty }
+    /// 评分/色标是否已被应用（字段级）。
+    public var isRatingApplied: Bool { !ratingAppliedAt.isEmpty }
     public var pick: PickState { PickState(rawValue: pickState) ?? .unreviewed }
 
     /// 显式列清单（行映射序 = 这里；禁止 SELECT *）。
     static let columns =
         "id, batch_id, session_id, photo_id, pick_state, rating, label, comment, "
-        + "submitted_at, imported_at, applied_at"
+        + "submitted_at, imported_at, applied_at, pick_applied_at, rating_applied_at"
 }
 
 /// 导入单条（应用前的原始值）。
@@ -128,15 +139,6 @@ public struct ProofFeedbackRepo: Sendable {
         return inserted
     }
 
-    /// 这个 batch 之前导入过吗（幂等短路；不推断内容是否相同——batch_id 就是内容哈希）。
-    public func batchExists(batchId: String) throws -> Bool {
-        guard !batchId.isEmpty else { return false }
-        let row = try connection.prepare(
-            "SELECT 1 FROM client_proof_feedback WHERE batch_id = ? LIMIT 1"
-        ).get([.text(batchId)])
-        return row != nil
-    }
-
     public func rows(batchId: String) throws -> [ProofFeedbackRow] {
         guard !batchId.isEmpty else { return [] }
         let rows = try connection.prepare("""
@@ -192,6 +194,49 @@ public struct ProofFeedbackRepo: Sendable {
             LIMIT 1
             """).get([.text(sessionId), .text(photoId)])
         return row.map { ProofFeedbackRow(row: $0) }
+    }
+
+    /// 标记勾选已应用（字段级；只更新该字段为空的行，返回更新行数）。
+    ///
+    /// applied_at 仍作为"这张照片有任何字段被应用"的总标记一起写入：
+    /// 检查器徽章与旧调用点只关心总标记，字段级时间戳只服务于重放判定。
+    @discardableResult
+    public func markPickApplied(
+        batchId: String, photoIds: [String], at appliedAt: String
+    ) throws -> Int {
+        try markFieldApplied(
+            column: "pick_applied_at", batchId: batchId, photoIds: photoIds, at: appliedAt)
+    }
+
+    /// 标记评分/色标已应用（字段级；只更新该字段为空的行）。
+    @discardableResult
+    public func markRatingApplied(
+        batchId: String, photoIds: [String], at appliedAt: String
+    ) throws -> Int {
+        try markFieldApplied(
+            column: "rating_applied_at", batchId: batchId, photoIds: photoIds, at: appliedAt)
+    }
+
+    /// 字段级标记的唯一实现（column 只接受上面两个常量，不做用户输入拼接）。
+    private func markFieldApplied(
+        column: String, batchId: String, photoIds: [String], at appliedAt: String
+    ) throws -> Int {
+        guard !batchId.isEmpty, !photoIds.isEmpty else { return 0 }
+        var updated = 0
+        try connection.transaction {
+            let statement = try connection.prepare("""
+                UPDATE client_proof_feedback
+                SET \(column) = ?,
+                    applied_at = CASE WHEN applied_at = '' THEN ? ELSE applied_at END
+                WHERE batch_id = ? AND photo_id = ? AND \(column) = ''
+                """)
+            for photoId in photoIds {
+                updated += try statement.run([
+                    .text(appliedAt), .text(appliedAt), .text(batchId), .text(photoId),
+                ])
+            }
+        }
+        return updated
     }
 
     /// 标记已应用（幂等：只更新 applied_at 为空的行；返回更新行数）。

@@ -18,8 +18,8 @@ struct PhotoOverlayChip: View {
         }
         .font(GatherFont.label)
         .foregroundStyle(.white)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
+        .padding(.horizontal, GatherMetrics.Space.controlGap)
+        .padding(.vertical, GatherMetrics.Space.xxs)
         .background(Capsule().fill(Color.black.opacity(0.68)))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(text)

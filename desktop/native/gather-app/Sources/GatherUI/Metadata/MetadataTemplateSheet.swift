@@ -46,7 +46,7 @@ struct MetadataTemplateSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("元数据模板"))
                 .font(.headline)
 
@@ -87,7 +87,7 @@ struct MetadataTemplateSheet: View {
                 .foregroundStyle(.secondary)
 
             if let preview {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                     let clears = preview.photos.reduce(0) { $0 + $1.clears.count }
                     Text(l10n.format("将写 %lld 张 / %lld 个字段；%lld 处冲突",
                                      preview.changedPhotos, preview.changedFields,
@@ -143,7 +143,7 @@ struct MetadataTemplateSheet: View {
                 Button(l10n("关闭")) { dismiss() }
             }
         }
-        .padding(16)
+        .padding(GatherMetrics.Space.l)
         .frame(width: 560)
         .task { await reload() }
         .task(id: selectedId) { await loadFields() }

@@ -30,8 +30,8 @@ extension SessionControlView {
             if let status = viewModel.workspaceStatus {
                 let view = recommendedNextView(status)
                 if !isDuplicateRecommendation(view, status: status) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+                    HStack(spacing: GatherMetrics.Space.controlGap) {
                         Image(systemName: "lightbulb").foregroundStyle(GatherTheme.warning)
                             .accessibilityHidden(true)
                         Text(l10n("推荐下一步")).font(GatherFont.sectionTitle)

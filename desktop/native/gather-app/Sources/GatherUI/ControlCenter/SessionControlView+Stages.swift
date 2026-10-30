@@ -8,12 +8,12 @@ extension SessionControlView {
     // MARK: 三硬阶段进度条（对齐 deriveStageMarks + index.tsx stageBar）
 
     var stagesCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("阶段进度")).font(GatherFont.sectionTitle)
             if let status = viewModel.workspaceStatus {
                 stageTrack(stageMarks(status.stage, with: l10n))
                 if status.softFlags.culled || status.softFlags.exported {
-                    HStack(spacing: 8) {
+                    HStack(spacing: GatherMetrics.Space.s) {
                         if status.softFlags.culled { GatherBadge(l10n("已挑片"), tone: .accent) }
                         if status.softFlags.exported { GatherBadge(l10n("已导出"), tone: .accent) }
                     }
@@ -59,7 +59,7 @@ extension SessionControlView {
     private func stageTrack(_ marks: [StageMark]) -> some View {
         HStack(spacing: 0) {
             ForEach(Array(marks.enumerated()), id: \.element.id) { index, mark in
-                VStack(spacing: 6) {
+                VStack(spacing: GatherMetrics.Space.controlGap) {
                     ZStack {
                         HStack(spacing: 0) {
                             connectorSegment(filled: mark.reached, hidden: index == 0)
@@ -82,7 +82,7 @@ extension SessionControlView {
                 .accessibilityValue(stageAccessibilityValue(mark))
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, GatherMetrics.Space.xxs)
     }
 
     private var stageDotDiameter: CGFloat { 20 }

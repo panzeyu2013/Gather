@@ -50,7 +50,7 @@ package struct PersonsView: View {
                     color: GatherTheme.error
                 )
                     .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-                    .padding(.top, 12)
+                    .padding(.top, GatherMetrics.Space.m)
             }
             // 空库用整页空态，不再左右各摆一个空态。
             if viewModel.phase == .loaded && viewModel.persons.isEmpty {
@@ -250,12 +250,12 @@ private struct PersonListRow: View {
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GatherMetrics.Space.s) {
             // 侧栏行保持紧凑：28pt 头像（42pt 圆形头像会把每行撑到 ~54pt）。
             avatar
                 .frame(width: 28, height: 28)
                 .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
                 Text(person.name).lineLimit(1)
                 Text(l10n.plural("%lld 张照片", count: person.photoCount)
                     + " · " + l10n.plural("%lld 个工作区", count: person.sessionCount))
@@ -337,7 +337,7 @@ private struct PersonDetailView: View {
         VStack(alignment: .leading, spacing: 0) {
             // 详情栏标题：26pt H1 +「人物详情」眉标删除（页面名由窗口标题承载，
             // 在列表里切换人物即可，不需要「返回人脸库」这种伪导航）。
-            HStack(alignment: .center, spacing: 16) {
+            HStack(alignment: .center, spacing: GatherMetrics.Space.l) {
                 avatar
                 VStack(alignment: .leading, spacing: 5) {
                     Text(person.name).font(GatherFont.pageTitle)
@@ -360,7 +360,7 @@ private struct PersonDetailView: View {
                     .help(l10n("把此人物合并到另一个人物"))
                 }
             }
-            .padding(24)
+            .padding(GatherMetrics.Space.xl)
 
             Form {
                 Section(l10n("基本信息")) {
@@ -427,7 +427,7 @@ private struct PersonDetailView: View {
                                     // 打开该照片所在工作区的图库并直接看这张（N07 通道）。
                                     onOpenPhoto?(photo.sessionId, photo.photoId)
                                 } label: {
-                                    VStack(alignment: .leading, spacing: 4) {
+                                    VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                                         PhotoThumbnailView(
                                             path: photo.filepath,
                                             size: 240,
@@ -457,7 +457,7 @@ private struct PersonDetailView: View {
                                 .accessibilityElement(children: .combine)
                             }
                         }
-                        .padding(.vertical, 4)
+                        .padding(.vertical, GatherMetrics.Space.xs)
                     }
                 }
                 // 破坏性动作用 Form 尾部的一个普通行，不再放在标题栏右侧最显眼处。
@@ -625,7 +625,7 @@ private struct CreatePersonSheet: View {
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.l) {
             Text(l10n("新建人物")).font(GatherFont.pageTitle)
             TextField(l10n("输入人物姓名"), text: $name)
                 .textFieldStyle(.roundedBorder)
@@ -635,7 +635,7 @@ private struct CreatePersonSheet: View {
                 .onSubmit { submit() }
             // 创建失败时 sheet 保持打开并在下方展示错误（状态色只落在图标上）。
             if let error = viewModel.actionError {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.controlGap) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(GatherTheme.error)
                         .accessibilityHidden(true)
@@ -651,7 +651,7 @@ private struct CreatePersonSheet: View {
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(24)
+        .padding(GatherMetrics.Space.xl)
         .frame(width: 380)
     }
 

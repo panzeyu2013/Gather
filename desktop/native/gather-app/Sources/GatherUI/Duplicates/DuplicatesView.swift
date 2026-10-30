@@ -68,12 +68,12 @@ public struct DuplicatesView: View {
                     color: GatherTheme.error
                 )
                 .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-                .padding(.top, 12)
+                .padding(.top, GatherMetrics.Space.m)
             }
             if let notice = viewModel.notice {
                 NativeBanner(text: l10n.resolve(notice), color: GatherTheme.success)
                     .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-                    .padding(.top, 12)
+                    .padding(.top, GatherMetrics.Space.m)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {

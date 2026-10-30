@@ -40,14 +40,14 @@ struct CullingInspector: View {
                 // 当前照片：决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）
                 // + 星级 + 颜色。系统 bordered 按钮 + 裸键 .keyboardShortcut（取代手绘卡片描边）。
                 GatherInspectorSection(l10n("当前照片")) {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
                         // 默认不再重复分区标题「当前照片」：只在真多选时补一行
                         // 「批量 N 张」，单选由标题本身表达（B-P2 / 单选也不该写"批量 1 张"）。
                         if viewModel.selectedPhotoIds.count > 1 {
                             Text(l10n.format("批量 %lld 张", viewModel.selectedPhotoIds.count))
                                 .controlLabelStyle()
                         }
-                        VStack(spacing: 6) {
+                        VStack(spacing: GatherMetrics.Space.controlGap) {
                             decisionButton(icon: "checkmark", iconColor: GatherTheme.success, title: l10n("保留"), shortcut: "P", key: "p") {
                                 Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }
                             }
@@ -64,7 +64,7 @@ struct CullingInspector: View {
                     //
                     // 旧实现是 "1★"/"2★" 文字按钮：窄列宽下六个按钮会被压缩成「…」，
                     // 整行不可读。图标按钮只占约 22pt/个，检查器任意列宽下都完整可见。
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                         let summary = viewModel.selectionSummary
                         Text(l10n("星级")).controlLabelStyle()
                         if summary?.hasMixedRating == true {
@@ -72,7 +72,7 @@ struct CullingInspector: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        HStack(spacing: 2) {
+                        HStack(spacing: GatherMetrics.Space.xxs) {
                             let current = summary?.rating ?? Int(viewModel.currentAsset?.state.rating ?? 0)
                             Button {
                                 Task { await viewModel.commit(patch: CullingUpdatePatch(rating: 0)) }
@@ -105,7 +105,7 @@ struct CullingInspector: View {
 
                     // 颜色标签：系统菜单选择器（取代手绘圆形色钮 + 选中外环）；
                     // C1 色标是数据本身（非状态色），沿用固定色值。
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
                         Text(l10n("颜色")).controlLabelStyle()
                         let summary = viewModel.selectionSummary
                         if summary?.hasMixedColorLabel == true {

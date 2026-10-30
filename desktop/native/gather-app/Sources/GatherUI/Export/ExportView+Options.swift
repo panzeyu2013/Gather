@@ -124,7 +124,7 @@ struct ExportOptionsSection: View {
                 }
             }
             LabeledContent(l10n("导出目录")) {
-                HStack(spacing: 8) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     // E 报告：占位与下方脚注重复，且过长会在窄窗口被截断。
                     TextField(l10n("选择导出目录"), text: $viewModel.destination)
                         .labelsHidden()

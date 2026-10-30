@@ -201,14 +201,14 @@ public struct PhotoThumbnailView: View {
                 // TS: thumbError —— 感叹号 + 文件名。
                 ZStack {
                     Rectangle().fill(placeholderSurface ?? GatherTheme.surfaceMuted)
-                    VStack(spacing: 4) {
+                    VStack(spacing: GatherMetrics.Space.xs) {
                         Image(systemName: "exclamationmark.triangle")
                             .foregroundStyle(placeholderTextColor)
                         Text((path as NSString).lastPathComponent)
                             .font(GatherFont.labelRegular)
                             .foregroundStyle(placeholderTextColor)
                             .lineLimit(1)
-                            .padding(.horizontal, 4)
+                            .padding(.horizontal, GatherMetrics.Space.xs)
                     }
                 }
             } else {

@@ -13,7 +13,7 @@ extension FaceKeywordingView {
         return Button {
             viewModel.select(cluster)
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                 clusterMontage(cluster)
                     .overlay(alignment: .topTrailing) {
                         if let summary = viewModel.reviewSummary(for: cluster.id),

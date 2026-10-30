@@ -30,7 +30,7 @@ struct IngestSheet: View {
     @State private var cancelling = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("摄取到当前会话"))
                 .font(.headline)
 
@@ -134,7 +134,7 @@ struct IngestSheet: View {
                     .disabled(isRunning || sources.isEmpty || destinationRoot.isEmpty || rootMissing)
             }
         }
-        .padding(16)
+        .padding(GatherMetrics.Space.l)
         .frame(width: 520)
         // 运行中禁止 Esc/点外部关闭：任务在后台继续但用户看不到进度会以为已取消。
         .interactiveDismissDisabled(isRunning)

@@ -58,7 +58,7 @@ extension FaceKeywordingView {
     /// TS stats：**写回前的影响范围**用内联统计文本（.plain，系统文本样式），
     /// 不再是三张与「写回结果」同权重的大数字卡；warning 不再充当数字前景色。
     private var writebackStats: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 24) {
+        HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.xl) {
             GatherStatCard(value: viewModel.boundClusters.count, label: l10n("已绑定簇"), style: .plain)
             GatherStatCard(value: viewModel.totalAffected, label: l10n("受影响照片"), style: .plain)
             GatherStatCard(value: viewModel.unboundClusters.count, label: l10n("未绑定并跳过"), style: .plain)
@@ -88,7 +88,7 @@ extension FaceKeywordingView {
     }
 
     private func boundPreviewRow(_ cluster: FaceClusterData) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
             HStack(spacing: 7) {
                 Text(cluster.binding?.roleName ?? "")
                     .font(.body.weight(.semibold))
@@ -113,7 +113,7 @@ extension FaceKeywordingView {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 8)
+        .padding(.vertical, GatherMetrics.Space.s)
         .accessibilityElement(children: .combine)
     }
 
@@ -122,7 +122,7 @@ extension FaceKeywordingView {
     @ViewBuilder
     private var xmpPreview: some View {
         if let preview = viewModel.preview {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
                 Text(l10n.format("XMP 写回预览 · 共 %lld 项 · %lld 张照片受影响", preview.totalCount, preview.affectedPhotos))
                     .font(GatherFont.secondary)
                 ScrollView {
@@ -161,7 +161,7 @@ extension FaceKeywordingView {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 8)
+        .padding(.vertical, GatherMetrics.Space.s)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(l10n.format("XMP 写回项 %@", URL(fileURLWithPath: item.xmpPath).lastPathComponent))
     }
@@ -185,7 +185,7 @@ extension FaceKeywordingView {
     /// TS WritebackReport：已写入/失败/已跳过三色统计卡 + 失败项明细 +
     /// 重试/确认同步/清理 + reload 行。
     private func resultSection(_ result: WritebackResult) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("写回报告")).font(GatherFont.cardTitle)
             WritebackReportCard(
                 written: result.written,
@@ -210,8 +210,8 @@ extension FaceKeywordingView {
     /// : undefined，WritebackReport.tsx:86-95）。help 只描述动作本身，
     /// 前置条件写在可见文案里（.help 在禁用按钮上不会显示）。
     private var reportActionsRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 if let result = viewModel.writebackResult, !result.failedItems.isEmpty {
                     Button(l10n("重试失败项")) {
                         pendingRetry = PendingFaceRetry(

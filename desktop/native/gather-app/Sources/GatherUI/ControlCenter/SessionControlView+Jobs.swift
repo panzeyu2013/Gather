@@ -33,7 +33,7 @@ extension SessionControlView {
                             SessionControlJobRow(job: job, l10n: l10n, onRetry: { viewModel.retry(job) })
                         }
                     }
-                    .padding(.top, 6)
+                    .padding(.top, GatherMetrics.Space.controlGap)
                 } label: {
                     Text(l10n.plural("已完成任务（%lld）", count: viewModel.historyJobs.count))
                         .font(GatherFont.secondary)

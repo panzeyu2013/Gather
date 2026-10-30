@@ -48,7 +48,7 @@ struct ExportPreviewSection: View {
                     .foregroundStyle(GatherTheme.warningText)
                 }
                 ForEach(preview.files.prefix(8), id: \.photoId) { file in
-                    HStack(spacing: 6) {
+                    HStack(spacing: GatherMetrics.Space.controlGap) {
                         Text(file.outputName)
                             .lineLimit(1)
                             .truncationMode(.middle)

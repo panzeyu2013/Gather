@@ -102,9 +102,9 @@ struct CullingWorkbenchViewer: View {
             let columns = visible.count > 1 ? 2 : 1
             let cellWidth = columns > 1 ? (geometry.size.width - 8) / 2 : geometry.size.width
             let cellHeight = cellGroups.count > 1 ? (geometry.size.height - 8) / 2 : geometry.size.height
-            VStack(spacing: 8) {
+            VStack(spacing: GatherMetrics.Space.s) {
                 ForEach(0..<cellGroups.count, id: \.self) { rowIndex in
-                    HStack(spacing: 8) {
+                    HStack(spacing: GatherMetrics.Space.s) {
                         ForEach(cellGroups[rowIndex]) { cell in
                             cellView(cell)
                                 .frame(width: cellWidth, height: cellHeight)
@@ -121,15 +121,15 @@ struct CullingWorkbenchViewer: View {
             Text("\(Int(effectiveScale * 100))%")
                 .font(GatherFont.label)
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.9))
-                .padding(.horizontal, 8)
+                .padding(.horizontal, GatherMetrics.Space.s)
                 .padding(.vertical, 3)
                 .background(Capsule().fill(GatherTheme.viewerSurface.opacity(0.85)))
-                .padding(.top, 8)
+                .padding(.top, GatherMetrics.Space.s)
                 .help(l10n("滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放"))
         }
         .overlay(alignment: .bottomLeading) {
             // 可见缩放控件承载 ⌘−/⌘0/⌘= 快捷键（取代零尺寸全透明的隐藏按钮）。
-            HStack(spacing: 4) {
+            HStack(spacing: GatherMetrics.Space.xs) {
                 Button { zoomOut() } label: {
                     Image(systemName: "minus.magnifyingglass")
                 }
@@ -191,8 +191,8 @@ struct CullingWorkbenchViewer: View {
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.horizontal, GatherMetrics.Space.s)
+            .padding(.vertical, GatherMetrics.Space.xs)
             // 浮在照片之上的功能层控件：macOS 26+ 用 **clear** 玻璃
             // （Apple：clear 专用于浮在照片/视频等媒体之上的组件），
             // 下面本来就有 viewerChrome 深色底，满足「亮媒体需暗化」的前提。
@@ -503,7 +503,7 @@ struct CullingWorkbenchViewer: View {
                     }
                 }
                 // 底部字幕条（文件名 / 来源 / 星级）。
-                HStack(spacing: 8) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     Text(asset.photo.filename).lineLimit(1)
                     Spacer()
                     Text(sourceLabel(asset))
@@ -515,7 +515,7 @@ struct CullingWorkbenchViewer: View {
                 .font(GatherFont.secondary)
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.92))
                 .padding(.horizontal, 9)
-                .padding(.vertical, 6)
+                .padding(.vertical, GatherMetrics.Space.controlGap)
                 .frame(maxWidth: .infinity)
                 .background(GatherTheme.viewerSurface.opacity(0.9))
                 // 右上保留/淘汰徽标。
@@ -546,7 +546,7 @@ struct CullingWorkbenchViewer: View {
                         showsWarning: !quality.warnings.isEmpty
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(8)
+                    .padding(GatherMetrics.Space.s)
                     .help(qualityHelpText(quality))
                 }
             }
@@ -950,7 +950,7 @@ private struct ViewerZoomChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .glassEffect(.clear, in: .capsule)
-            .padding(.leading, 12)
+            .padding(.leading, GatherMetrics.Space.m)
             .padding(.bottom, 40)
     }
 }

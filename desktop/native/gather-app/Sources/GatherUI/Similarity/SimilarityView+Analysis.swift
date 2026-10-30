@@ -11,7 +11,7 @@ extension SimilarityView {
     // MARK: 分析控制（TS AnalysisPanel）
 
     var analysisPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("分析控制"))
                 .font(GatherFont.sectionTitle)
             // 旧版两张手绘「模式卡」（primarySoft 底 + 主色描边 + 说明行）
@@ -55,9 +55,9 @@ extension SimilarityView {
                         range: 2...10
                     )
                 }
-                .padding(.top, 6)
+                .padding(.top, GatherMetrics.Space.controlGap)
             }
-            HStack(spacing: 12) {
+            HStack(spacing: GatherMetrics.Space.m) {
                 // 开始分析：busy 时禁用并显示处理中文案。
                 Button(viewModel.isAnalyzing ? l10n("处理中…") : l10n("开始分析")) {
                     viewModel.startAnalyze()

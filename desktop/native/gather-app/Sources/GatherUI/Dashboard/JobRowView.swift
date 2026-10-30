@@ -22,14 +22,14 @@ struct JobRowView: View {
         Group {
             if compact { compactBody } else { fullBody }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, GatherMetrics.Space.xxs)
     }
 
     /// 非 compact 行：TS Jobs.module.css .row 四列（身份 flexible≥180 /
     /// 状态 90 / 进度 flexible / 操作 80）。身份列改弹性下限：窄窗口收缩、
     /// 宽窗口舒展，英文类型文案不截断。
     private var fullBody: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: GatherMetrics.Space.l) {
             identityColumn
                 .frame(minWidth: 180, idealWidth: 220, maxWidth: .infinity, alignment: .leading)
             statusBadge
@@ -39,12 +39,12 @@ struct JobRowView: View {
             actions
                 .frame(width: 80, alignment: .trailing)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, GatherMetrics.Space.controlGap)
     }
 
     /// compact 行：TS .rowCompact 两列（身份 flexible + 状态 100），无进度无操作。
     private var compactBody: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: GatherMetrics.Space.l) {
             identityColumn
             Spacer(minLength: 0)
             statusBadge
@@ -102,7 +102,7 @@ struct JobRowView: View {
 
     @ViewBuilder
     private var actions: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GatherMetrics.Space.s) {
             if job.status == .queued || job.status == .running {
                 Button(l10n("取消"), action: onCancel)
             }

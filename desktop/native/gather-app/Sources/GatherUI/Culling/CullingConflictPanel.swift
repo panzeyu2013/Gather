@@ -15,7 +15,7 @@ struct CullingConflictPanel: View {
 
     var body: some View {
         if viewModel.conflicts.first != nil || !viewModel.failedSyncItems.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
                 if let conflict = viewModel.conflicts.first {
                     conflictBlock(conflict)
                 }
@@ -50,7 +50,7 @@ struct CullingConflictPanel: View {
     /// （采用外部值 / 保留 Gather 并显式结清）。所有出口都经确认弹窗。
     @ViewBuilder
     private func conflictBlock(_ conflict: MetadataConflict) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
             HStack {
                 Label(l10n("XMP 字段冲突"), systemImage: "exclamationmark.triangle.fill")
                     .font(GatherFont.cardTitle)
@@ -76,7 +76,7 @@ struct CullingConflictPanel: View {
             }
             ForEach(conflict.fields, id: \.field.rawValue) { field in
                 let key = "\(conflict.xmpPath)|\(field.field.rawValue)"
-                HStack(spacing: 8) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     Text(CullingDisplayFormat.metadataFieldTitle(field.field, with: l10n))
                         .font(GatherFont.secondaryStrong)
                         .frame(minWidth: 64, alignment: .leading)
@@ -100,7 +100,7 @@ struct CullingConflictPanel: View {
                     .fixedSize()
                     .accessibilityLabel(l10n("冲突处理方式"))
                 }
-                .padding(8)
+                .padding(GatherMetrics.Space.s)
                 .background(
                     RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
                         .fill(GatherTheme.secondaryContentBackground)
@@ -133,7 +133,7 @@ struct CullingConflictPanel: View {
 
     /// 失败写回清单：逐条展示路径与 coordinator 写入的真实原因 + 重试出口。
     private var failureBlock: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
             HStack {
                 Text(l10n.format("写回失败 %lld 项", viewModel.failedSyncItems.count))
                     .font(GatherFont.cardTitle)
@@ -142,7 +142,7 @@ struct CullingConflictPanel: View {
                 Button(l10n("重试失败项")) { pendingAction = .retryFailedWriteback }
             }
             ForEach(Array(viewModel.failedSyncItems.prefix(3)), id: \.xmpPath) { item in
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
                     Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
                         .font(.callout.weight(.medium))
                     // 上屏走错误码漏斗；原始诊断已由 applySyncStatus 写日志。
@@ -155,7 +155,7 @@ struct CullingConflictPanel: View {
                         .help(item.errorMessage.isEmpty ? "" : CullingViewModel.funnelErrorText(item.errorMessage, with: l10n))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(6)
+                .padding(GatherMetrics.Space.controlGap)
                 .background(
                     RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
                         .fill(GatherTheme.secondaryContentBackground)

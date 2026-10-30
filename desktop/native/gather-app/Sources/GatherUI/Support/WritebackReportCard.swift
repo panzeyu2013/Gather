@@ -44,18 +44,18 @@ public struct WritebackReportCard: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             HStack(spacing: 10) {
                 GatherStatCard(value: written, label: l10n("已写入"), color: GatherTheme.success)
                 GatherStatCard(value: failed, label: l10n("失败"), color: GatherTheme.error)
                 GatherStatCard(value: skipped, label: l10n("已跳过"), color: skippedColor)
             }
             if !failedItems.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                     Text(l10n.format("失败项（%lld）", failedItems.count))
                         .font(.callout.weight(.semibold))
                     ForEach(failedItems) { item in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
                             Text(item.path)
                                 .font(.callout)
                                 .lineLimit(1)
@@ -75,7 +75,7 @@ public struct WritebackReportCard: View {
                         }
                     }
                 }
-                .padding(12)
+                .padding(GatherMetrics.Space.m)
                 .background(
                     RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
                         .fill(GatherTheme.error.opacity(0.08))

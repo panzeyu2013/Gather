@@ -1,8 +1,8 @@
 {
   "font.callout": 86,
   "font.systemSize": 15,
-  "spacing.literalPadding": 206,
-  "spacing.literalSpacing": 261,
+  "spacing.literalPadding": 5,
+  "spacing.literalSpacing": 89,
   "empty.contentUnavailable": 28,
   "container.groupBox": 0,
   "theme.legacyAlias": 15,

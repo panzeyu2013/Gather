@@ -23,7 +23,7 @@ extension SimilarityView {
     // MARK: 写回面板（TS KeywordWritebackPanel + WritebackReport + c1-sync-controls）
 
     var writebackPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             HStack {
                 Text(l10n("分组关键字写回"))
                     .font(.headline)
@@ -54,7 +54,7 @@ extension SimilarityView {
                     Task { await viewModel.previewKeywordWriteback() }
                 }
             }
-            HStack(spacing: 12) {
+            HStack(spacing: GatherMetrics.Space.m) {
                 Button(l10n("预览")) {
                     Task { await viewModel.previewKeywordWriteback() }
                 }
@@ -90,7 +90,7 @@ extension SimilarityView {
     /// 写回预览明细（TS writebackPreview：before→after 关键词、新建/更新、
     /// 共享数、外部冲突、来源；超过 50 条计数提示）。
     private func writebackPreviewList(_ preview: WritebackPreview) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
             Text(l10n("XMP 写回预览"))
                 .font(.subheadline.weight(.semibold))
             Text(l10n.format("预览完成：%lld 张照片将合并这些关键词。", preview.affectedPhotos))
@@ -104,7 +104,7 @@ extension SimilarityView {
                     Text(l10n.format("另有 %lld 项未展开", preview.items.count - SimilarityViewModel.previewItemLimit))
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                        .padding(.top, 6)
+                        .padding(.top, GatherMetrics.Space.controlGap)
                 }
             }
         }
@@ -114,7 +114,7 @@ extension SimilarityView {
         let preview = item.preview
         let before = preview?.before.keywords ?? []
         let after = preview?.after.keywords ?? item.keywords
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
             // 文件名是内容语义 → .callout（旧版 10pt footnote）。
             Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
                 .font(.callout.weight(.semibold))
@@ -138,7 +138,7 @@ extension SimilarityView {
             .font(.callout)
             .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, GatherMetrics.Space.s)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -165,7 +165,7 @@ extension SimilarityView {
                     )
                 }
             )
-            HStack(spacing: 12) {
+            HStack(spacing: GatherMetrics.Space.m) {
                 if !result.failedItems.isEmpty {
                     Button(l10n("重试失败项")) {
                         pendingRetry = PendingSimilarityRetry(
@@ -188,7 +188,7 @@ extension SimilarityView {
                 .help(controls.cleanupHint.map { l10n.resolve($0) } ?? "")
             }
             // 两步流第一步：加载元数据（TS reloadRow + loadHint）。
-            HStack(spacing: 12) {
+            HStack(spacing: GatherMetrics.Space.m) {
                 Button(l10n("在 Capture One 中加载元数据")) {
                     Task { await viewModel.loadMetadataInCaptureOne() }
                 }

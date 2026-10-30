@@ -13,7 +13,7 @@ extension SimilarityView {
     var page: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.l) {
                     // 加载/轮询失败时以重试错误态展示（TS index.tsx:994-999 全页
                     // 错误块），横幅留给操作类（分析/写回）错误，避免双提示。
                     if let error = viewModel.errorMessage, !isLoadError {
@@ -90,7 +90,7 @@ extension SimilarityView {
     }
 
     private var loadingRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GatherMetrics.Space.s) {
             ProgressView()
                 .controlSize(.small)
             Text(l10n("加载结果中…"))
@@ -136,10 +136,10 @@ extension SimilarityView {
 
     @ViewBuilder
     private var progressSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
             if viewModel.progressTotal > 0 {
                 // TS ProgressBar → 原生线性进度条 + 百分比文本。
-                HStack(spacing: 8) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     ProgressView(value: progressRatio)
                         .progressViewStyle(.linear)
                         .accessibilityLabel(l10n("分析进度"))
@@ -152,7 +152,7 @@ extension SimilarityView {
             } else {
                 // TS ProgressBar：indeterminate（total == 0）时显示处理中文案
                 // （progressBar.inProgress，对齐旧版 处理中…）。
-                HStack(spacing: 8) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     ProgressView()
                         .controlSize(.small)
                     Text(l10n("处理中…"))
@@ -230,7 +230,7 @@ extension SimilarityView {
     /// TS GroupGrid 的列数公式 / 行高估算 / 内嵌 ScrollView 全部删除：
     /// LazyVGrid(.adaptive) 负责列宽，DisclosureGroup 负责展开，卡片高度自然。
     private func groupGrid(_ result: SimilarityResult) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)], spacing: 16) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: GatherMetrics.Space.l)], spacing: GatherMetrics.Space.l) {
             ForEach(result.groups, id: \.id) { group in
                 SimilarityGroupCardView(
                     group: group,

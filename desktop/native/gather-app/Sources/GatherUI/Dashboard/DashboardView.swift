@@ -81,8 +81,8 @@ package struct DashboardView: View {
                     text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
                     onDismiss: { viewModel.actionError = nil }
                 )
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
+                    .padding(.horizontal, GatherMetrics.Space.l)
+                    .padding(.top, GatherMetrics.Space.m)
                     .transition(.opacity)
             }
             phaseContent
@@ -379,7 +379,7 @@ package struct DashboardView: View {
                         .help(l10n("清理已完成"))
                     }
                 }
-                .padding(.top, 2)
+                .padding(.top, GatherMetrics.Space.xxs)
             }
         } header: {
             jobsSectionHeader
@@ -387,7 +387,7 @@ package struct DashboardView: View {
     }
 
     private var jobsSectionHeader: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
             Text(l10n("任务中心"))
                 .font(GatherFont.cardTitle)
             Text(l10n("后台任务 · 持久化分析任务、进度和失败恢复"))
@@ -401,7 +401,7 @@ package struct DashboardView: View {
         if let error = viewModel.jobsError {
             jobsFailureState(error)
         } else if viewModel.jobs.isEmpty {
-            HStack(spacing: 8) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 Image(systemName: "clock")
                     .imageScale(.small)
                     .foregroundStyle(.secondary)
@@ -410,7 +410,7 @@ package struct DashboardView: View {
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, GatherMetrics.Space.xs)
         } else {
             if viewModel.attentionJobs.isEmpty {
                 // quietState：成功语义用系统提示条（图标 + 低透明度底色），不是绿色正文。
@@ -462,7 +462,7 @@ package struct DashboardView: View {
                 )
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: GatherMetrics.Space.controlGap) {
                 Text(l10n("已完成历史"))
                 Text(verbatim: "\(viewModel.historyJobs.count)")
                     .monospacedDigit()

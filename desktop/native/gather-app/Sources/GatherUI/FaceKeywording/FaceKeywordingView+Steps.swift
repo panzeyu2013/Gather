@@ -29,19 +29,19 @@ extension FaceKeywordingView {
             )
                 // 通用回退文案时，不可读的原文（英文诊断）留在悬停提示里。
                 .help(viewModel.errorTooltip.map { l10n.resolve($0) } ?? "")
-                .padding(.horizontal, 24)
+                .padding(.horizontal, GatherMetrics.Space.xl)
                 .padding(.top, 10)
         }
         if let notice = viewModel.notice {
             NativeBanner(text: notice.resolve(with: l10n), color: GatherTheme.success)
-                .padding(.horizontal, 24)
+                .padding(.horizontal, GatherMetrics.Space.xl)
                 .padding(.top, 10)
         }
         // 部分失败（encodingFailures > 0）：页面级 warning 常驻，分析成功后
         // 自动跳到审核步骤也能看见，避免"有脸没被处理"被伪装成一切正常。
         if let warning = viewModel.encodingFailureWarning {
             NativeBanner(text: l10n.resolve(warning), color: GatherTheme.warning)
-                .padding(.horizontal, 24)
+                .padding(.horizontal, GatherMetrics.Space.xl)
                 .padding(.top, 10)
         }
     }
@@ -77,7 +77,7 @@ extension FaceKeywordingView {
     /// TS index.tsx steps 的三步向导：手绘胶囊换成系统分段控件；门控保留
     /// （已过步骤与当前步骤可回点，下一步仅在分析完成后可进入）。
     var stepPicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
             Picker(l10n("步骤"), selection: stepSelection) {
                 ForEach(stepItems, id: \.key) { item in
                     Text(l10n.resolve(item.label)).tag(item.key)
@@ -97,8 +97,8 @@ extension FaceKeywordingView {
         }
         .padding(.horizontal, GatherMetrics.Layout.pageGutter)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.top, GatherMetrics.Space.s)
+        .padding(.bottom, GatherMetrics.Space.xs)
     }
 
     /// 分段控件无法逐段禁用：非法选择被拒绝并给出可见说明，而不是静默忽略

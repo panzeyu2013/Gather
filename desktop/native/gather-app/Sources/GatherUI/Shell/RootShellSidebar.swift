@@ -114,7 +114,7 @@ extension RootView {
     /// 会话行：原生 Label 保留系统选中态/图标着色；尾部照片数帮助区分重名工作区。
     private func sidebarSessionLabel(_ session: SessionData) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 6) {
+            HStack(spacing: GatherMetrics.Space.controlGap) {
                 Label(session.name, systemImage: "rectangle.stack")
                     .lineLimit(1)
                     .truncationMode(.tail)

@@ -38,7 +38,7 @@ struct SimilarityGroupCardView: View {
         VStack(alignment: .leading, spacing: 10) {
             DisclosureGroup(isExpanded: expansionBinding) {
                 memberArea
-                    .padding(.top, 8)
+                    .padding(.top, GatherMetrics.Space.s)
             } label: {
                 cardLabel
             }
@@ -69,7 +69,7 @@ struct SimilarityGroupCardView: View {
             )
             .frame(width: Self.representativeThumbSize, height: Self.representativeThumbSize)
             .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous))
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
                 Text(group.label)
                     .font(GatherFont.cardTitle)
                     .lineLimit(1)
@@ -88,7 +88,7 @@ struct SimilarityGroupCardView: View {
         Divider()
         let visibleMembers = showAllMembers ? group.images : Array(group.images.prefix(Self.truncatedMemberLimit))
         let hasMore = group.images.count > Self.truncatedMemberLimit
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: GatherMetrics.Space.s)], spacing: GatherMetrics.Space.s) {
             ForEach(visibleMembers, id: \.path) { image in
                 SimilarityMemberCellView(path: image.path, onOpenPhoto: onOpenPhoto)
             }

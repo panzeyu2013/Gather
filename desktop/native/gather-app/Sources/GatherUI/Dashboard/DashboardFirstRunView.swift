@@ -99,7 +99,7 @@ struct DashboardFirstRunView: View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.l) {
             HStack(alignment: .center, spacing: GatherMetrics.Space.m) {
                 appIcon
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
                     Text("GATHER")
                         .font(GatherFont.eyebrow)
                         .tracking(1.6)
@@ -169,7 +169,7 @@ struct DashboardFirstRunView: View {
             .font(GatherFont.label)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 9)
-            .padding(.vertical, 4)
+            .padding(.vertical, GatherMetrics.Space.xs)
             .background(Capsule().fill(GatherTheme.surfaceMuted))
             .overlay(Capsule().strokeBorder(GatherTheme.hairline, lineWidth: 1))
     }
@@ -209,7 +209,7 @@ struct DashboardFirstRunView: View {
     }
 
     private var privacyNote: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: GatherMetrics.Space.controlGap) {
             Image(systemName: "lock.shield")
             Text(l10n("所有处理都在本地完成；照片不会被移动。"))
         }
@@ -288,7 +288,7 @@ private struct DashboardHeroCollage: View {
                         .font(.title3)
                         .symbolRenderingMode(.palette)
                         .foregroundStyle(.white, GatherTheme.selection)
-                        .padding(8)
+                        .padding(GatherMetrics.Space.s)
                 }
             }
             .shadow(color: .black.opacity(0.18), radius: 14, y: 9)

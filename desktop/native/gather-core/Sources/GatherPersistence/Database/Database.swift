@@ -3,7 +3,7 @@
 //
 // 定位：**唯一**的库入口。职责只有三件事：
 //   1. 打开即保证 schema 就绪：user_version == SchemaCurrent.userVersion（1）**且**
-//      列形与指纹一致（55 表 / 449 列 / 84 显式索引 / 81 外键）；
+//      列形与指纹一致（55 表 / 451 列 / 86 显式索引 / 81 外键）；
 //      0 且无表 → 建当前 schema；当前版本 → 直接打开；旧版本 / 更高版本 / 版本 0 有表 /
 //      形态不符 / 非 SQLite 文件 → **默认 fail closed**（只抛错，不改名、不删文件）；
 //      只有显式 Options.resetPolicy（生产 .renameOlderOnly / 开发 .renameToIncompatible）

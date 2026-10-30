@@ -124,7 +124,7 @@ struct PreviewShellChrome: View {
                 onSelect: { _ in }
             )
             Divider()
-            VStack(spacing: 12) {
+            VStack(spacing: GatherMetrics.Space.m) {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 34))
                     .foregroundStyle(.secondary)

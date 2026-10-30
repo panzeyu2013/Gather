@@ -92,7 +92,7 @@ struct DuplicatesGroupCardView: View {
                 .overlay(alignment: .topTrailing) {
                     if recommended {
                         GatherBadge(l10n("推荐"), tone: .accent)
-                            .padding(4)
+                            .padding(GatherMetrics.Space.xs)
                     }
                 }
                 .overlay(alignment: .topLeading) {
@@ -102,7 +102,7 @@ struct DuplicatesGroupCardView: View {
                         member.isKept ? l10n("保留") : l10n("丢弃"),
                         tone: member.isKept ? .success : .error
                     )
-                    .padding(4)
+                    .padding(GatherMetrics.Space.xs)
                 }
             Text(member.filename).font(GatherFont.secondary).lineLimit(1)
             if let fileSize = member.fileSize {
@@ -111,7 +111,7 @@ struct DuplicatesGroupCardView: View {
                     .font(GatherFont.secondary).foregroundStyle(.secondary)
             }
             // 按钮文案 = 点击后执行的动作（不再显示当前状态，避免标签与动作相反）。
-            HStack(spacing: 6) {
+            HStack(spacing: GatherMetrics.Space.controlGap) {
                 if let onOpenPhoto {
                     Button(l10n("查看照片")) { onOpenPhoto(member.photoId) }
                         .buttonStyle(.bordered)
@@ -126,7 +126,7 @@ struct DuplicatesGroupCardView: View {
                 .help(member.isKept ? l10n("丢弃此照片") : l10n("保留此照片"))
             }
         }
-        .padding(8)
+        .padding(GatherMetrics.Space.s)
         .background(
             RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
                 .fill(member.isKept ? GatherTheme.contentBackground : GatherTheme.secondaryContentBackground)

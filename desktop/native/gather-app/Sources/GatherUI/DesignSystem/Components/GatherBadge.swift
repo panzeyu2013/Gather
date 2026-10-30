@@ -50,7 +50,7 @@ public struct GatherBadge: View {
                 .lineLimit(1)
                 .foregroundStyle(.primary)
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, GatherMetrics.Space.s)
         .padding(.vertical, 3)
         // 实心 surface：徽标既可能落在白卡上，也可能压在照片上；
         // 半透明语义底色在照片上不可控，改用中性胶囊 + 语义圆点。

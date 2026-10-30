@@ -120,7 +120,7 @@ public struct ToastView: View {
         if center.toasts.isEmpty {
             EmptyView()
         } else {
-            VStack(alignment: .trailing, spacing: 8) {
+            VStack(alignment: .trailing, spacing: GatherMetrics.Space.s) {
                 ForEach(center.toasts) { toast in
                     ToastRow(toast: toast) {
                         center.dismiss(id: toast.id)
@@ -137,7 +137,7 @@ public struct ToastView: View {
                 }
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: center.toasts.map(\.id))
-            .padding(16)
+            .padding(GatherMetrics.Space.l)
             // 命中测试：容器**不能**关闭（祖先 false 会把子按钮一起关掉，子节点
             // 再写 allowsHitTesting(true) 也救不回来）。改为让纯展示的图标/文字
             // 不参与命中，按钮各自接收点击。

@@ -15,7 +15,7 @@ struct DuplicatesLoadingIndicator: View {
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GatherMetrics.Space.s) {
             ProgressView().controlSize(.small)
             if viewModel.isScanning {
                 Text(l10n.progressPhaseText(viewModel.scanProgressPhase))
@@ -40,7 +40,7 @@ struct DuplicatesLoadingIndicator: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+        .padding(.vertical, GatherMetrics.Space.s)
     }
 }
 
@@ -72,19 +72,19 @@ struct DuplicatesScanControls: View {
             // 重复页默认把滑杆、范围说明和预设一起摆在首屏。
             // （滑块始终可拖，预设仅负责置值，对齐 TS L332-340。）
             DisclosureGroup(isExpanded: $showAdvancedScan) {
-                HStack(spacing: 8) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     SliderInputIntView(title: l10n("视觉相似阈值"), value: $viewModel.threshold, range: 0...10)
                     Text(l10n("0 (严格) — 10 (宽松)"))
                         .font(GatherFont.secondary).foregroundStyle(.secondary)
                 }
-                .padding(.top, 4)
+                .padding(.top, GatherMetrics.Space.xs)
             } label: {
                 Text(l10n("高级：相似阈值"))
                     .font(GatherFont.secondary)
             }
             .disabled(viewModel.isScanning)
 
-            HStack(spacing: 12) {
+            HStack(spacing: GatherMetrics.Space.m) {
                 // 本页唯一的「开始扫描」主动作（空态不再重复放一个同权按钮）。
                 Button(viewModel.isScanning ? l10n("扫描中…") : l10n("开始扫描"), systemImage: "magnifyingglass") {
                     Task { await viewModel.scan() }

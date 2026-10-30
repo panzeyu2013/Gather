@@ -63,8 +63,8 @@ struct FilterRuleEditor: View {
     let onChange: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 Picker("", selection: logicBinding) {
                     Text(l10n("满足全部")).tag(FilterLogic.and)
                     Text(l10n("满足任一")).tag(FilterLogic.or)
@@ -89,7 +89,7 @@ struct FilterRuleEditor: View {
                             Text(logicLabel)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                                .padding(.leading, 2)
+                                .padding(.leading, GatherMetrics.Space.xxs)
                         }
                     }
                 }
@@ -115,7 +115,7 @@ struct FilterRuleEditor: View {
         let field = FilterFieldCatalog.field(rule.field)
         let kind = field?.kind ?? .text
         let operators = FilterFieldCatalog.operators(for: kind)
-        return HStack(spacing: 6) {
+        return HStack(spacing: GatherMetrics.Space.controlGap) {
             Picker("", selection: fieldBinding(index: index, rule: rule)) {
                 ForEach(FilterFieldCatalog.fields) { item in
                     Text(l10n(item.label)).tag(item.id)
@@ -149,7 +149,7 @@ struct FilterRuleEditor: View {
     private func valueEditor(index: Int, rule: FilterRule, kind: FilterFieldCatalog.Kind) -> some View {
         switch rule.operator {
         case .between:
-            HStack(spacing: 4) {
+            HStack(spacing: GatherMetrics.Space.xs) {
                 TextField(l10n("下限"), text: betweenBinding(index: index, rule: rule, second: false))
                     .labelsHidden()
                     .frame(width: 70)

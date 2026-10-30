@@ -7,15 +7,17 @@
 // 3. 应用：picks → CullingService.applyImportedPicks（source=imported，有人工保护）；
 //          rating/label → MetadataMutationService 入队（冲突不覆盖本地）；
 //          comment → 只落库（不写 XMP，不覆盖 dc:description）；
-// 4. 记 applied_at（幂等：同一 batch 第二次导入 0 变更）。
+// 4. 字段级记账：pick_applied_at / rating_applied_at（同时补 applied_at 总标记）。
 //
-// 幂等键 = batch_id = selection.json 内容 SHA-256 前 12 位：同一份文件重复导入
-// 直接短路（alreadyImported=true），改了一个字的文件则是新 batch。
+// 幂等键 = batch_id = selection.json 内容 SHA-256 前 12 位：同一份文件重复导入不再
+// 落库；只有本批**没有"待办且可办"的字段**时才短路（alreadyImported=true），改了一个
+// 字的文件则是新 batch。
 //
-// P1-5：短路条件不是"batch 存在"而是"batch 存在**且本次要应用的行都已 applied_at
-// 非空**"。原实现只看 batchExists，而落库在第 2 步、应用在第 3 步——中间抛错会留下
-// applied_at='' 的行，重试被短路成 0 变更，客户勾选/评分永久丢失。现在这种"半成品
-// batch"走补偿重放（只对未 applied 的行重做第 2/3 步），并用日志区分重放与首导。
+// P1-5：判据是**字段级**时间戳，不是整行的 applied_at。勾选成功、评分入队失败时，
+// 同一行的 applied_at 已非空——按照片级判定会把评分也算成"已应用"，重放不会补做，
+// 客户评分永久丢失。反过来 rating 应用关闭（proof_feedback_apply_rating=0）时，评分
+// 不是待办，不能让那些行把整批永久钉在"需要重放"上。半成品 batch 走补偿重放（只对
+// 未应用的字段重做第 2/3 步），并用日志区分重放与首导。
 //
 // 冲突判定：本地值 != 客户值 且 本地 updated_at > submittedAt → 冲突，保留本地并
 // 逐条上报（UI 给"用客户值"）。本地没有缓存行 = 没有本地真相 → 直接采用。
@@ -153,6 +155,8 @@ public final class ProofFeedbackService {
     }
 
     /// 导入 selection.json（v1/v2）。
+    ///
+    /// 幂等/重放是**字段级**的：本批没有"待办且可办"的字段时才是 0 变更短路。
     public func `import`(
         sessionId: String,
         data: Data
@@ -178,51 +182,53 @@ public final class ProofFeedbackService {
         let unknownCount = parsed.items.count - knownItems.count
         let importedAt = isoString(now())
 
-        // 幂等 + 补偿重放（P1-5）。
+        // 幂等 + 补偿重放（P1-5，字段级）。
         //
-        // 原实现只看 batchExists：落库（insertBatch）在应用之前，两步之间抛错会留下
-        // applied_at='' 的行；重试被短路成"已导入/0 变更"，客户勾选与评分就永久丢失。
-        //
-        // 现在：只有"这条 batch 已落库，且**本次真正要应用的行**全部 applied_at 非空"
-        // 才短路；否则对剩余未应用行重放。刻意不写成"全部行非空"：评分应用默认关闭
-        // （proof_feedback_apply_rating=0），那些行按设计永远不会被消费，否则短路永远
-        // 不可达、每次重导都是 0 变更。
+        // 落库（insertBatch）在应用之前，两步之间抛错会留下没应用的字段；重试若被
+        // 短路成"已导入/0 变更"，客户勾选与评分就永久丢失。所以短路条件 = 本批**没有
+        // 待办且可办的字段**：
+        // - 勾选待办：pickedIds 里、这一行还没有 pick_applied_at 的照片；
+        // - 评分待办：有 rating/label、且没有 rating_applied_at 的条目，前提是
+        //   proof_feedback_apply_rating=1（关闭时按设计永远不会被消费，算进待办会让
+        //   每次重导都进重放分支）；
+        // - "可办" = 对应端口已接线（picks 为 nil 时勾选不算待办，与旧实现一致）。
         let existingRows = try repo.rows(batchId: batchId)
-        let appliedIds = Set(existingRows.filter(\.isApplied).map(\.photoId))
+        let pickAppliedIds = Set(existingRows.filter(\.isPickApplied).map(\.photoId))
+        let ratingAppliedIds = Set(existingRows.filter(\.isRatingApplied).map(\.photoId))
+        // 字段级候选：只有从没应用过的才算，已应用的重放时不重复入队。
+        let pickedIds = parsed.pickedPhotoIds.filter {
+            known.contains($0) && !pickAppliedIds.contains($0)
+        }
+        let ratingCandidates = knownItems.filter {
+            ($0.rating != nil || $0.label != nil)
+                && !ratingAppliedIds.contains($0.photoId)
+        }
+        let pendingPickIds: [String] = picks == nil ? [] : pickedIds
+        let pendingRatingItems: [ClientFeedbackItem] = applyRating ? ratingCandidates : []
         let isReplay: Bool
         if existingRows.isEmpty {
             isReplay = false
+        } else if pendingPickIds.isEmpty, pendingRatingItems.isEmpty {
+            // 没有待办字段：0 变更（不再入队/不再覆盖任何本地值）。
+            return ClientSelectionImportReport(
+                picked: parsed.pickedPhotoIds.count,
+                applied: 0,
+                skipped: parsed.items.count,
+                failed: 0,
+                alreadyImported: true)
         } else {
-            let pendingPicks = picks == nil
-                ? []
-                : parsed.pickedPhotoIds.filter {
-                    known.contains($0) && !appliedIds.contains($0)
-                }
-            let pendingFeedback = applyRating
-                ? knownItems.filter {
-                    ($0.rating != nil || $0.label != nil) && !appliedIds.contains($0.photoId)
-                }
-                : []
-            if pendingPicks.isEmpty, pendingFeedback.isEmpty {
-                // 全部要应用的行都已经消费过：0 变更（不再入队/不再覆盖任何本地值）。
-                return ClientSelectionImportReport(
-                    picked: parsed.pickedPhotoIds.count,
-                    applied: 0,
-                    skipped: parsed.items.count,
-                    failed: 0,
-                    alreadyImported: true)
-            }
             isReplay = true
         }
         if isReplay {
             // 与首导区分：这是"上次落库后应用没跑完"的补偿重放（批次内容相同）。
             GatherLogger.log(
                 "proof feedback replay batch=\(batchId) rows=\(existingRows.count) "
-                    + "applied=\(appliedIds.count)",
+                    + "pendingPicks=\(pendingPickIds.count) "
+                    + "pendingRatings=\(pendingRatingItems.count)",
                 level: .info)
         }
 
-        // 1) 原始反馈全量落库（应用与否后面用 applied_at 标）。
+        // 1) 原始反馈全量落库（应用与否后面用字段级时间戳标，applied_at 只做总标记）。
         //    重放不再落库：(batch_id, photo_id) 是幂等键，行已经在库里。
         if !isReplay {
             let inserts = knownItems.map { item in
@@ -249,24 +255,23 @@ public final class ProofFeedbackService {
         }
 
         // 2) 勾选：走既有 applyImportedPicks（人工决策保护在服务里）。
-        //    已 applied 的照片不再重复应用（重放时只做剩下的）。
-        let pickedIds = parsed.pickedPhotoIds.filter {
-            known.contains($0) && !appliedIds.contains($0)
-        }
+        //    只提交字段级待办：已 pick_applied_at 的照片在重放时不重复应用。
         var pickedAppliedIds = Set<String>()
         var applied = 0
         var failed = 0
         var skipped = unknownCount
-        if pickedIds.isEmpty || picks == nil {
-            skipped += pickedIds.count
-        } else if let picks {
+        if let picks, !pendingPickIds.isEmpty {
             let outcome = try picks.applyImportedPicks(
-                sessionId: trimmedSession, photoIds: pickedIds)
+                sessionId: trimmedSession, photoIds: pendingPickIds)
             pickedAppliedIds = Set(outcome.appliedPhotoIds)
             applied = pickedAppliedIds.count
             failed = outcome.failed
             // 人工保护导致的未应用：既不成功也不失败，但要能被数出来。
-            skipped += max(0, pickedIds.count - applied - failed)
+            skipped += max(0, pendingPickIds.count - applied - failed)
+        } else if picks == nil {
+            // 没接线勾选端口：勾选确实没被应用，按旧口径计入 skipped（不算待办，
+            // 否则每次重导都会进重放分支）。
+            skipped += pickedIds.count
         }
 
         // 3) 评分/色标：设置关掉时只落库（不碰本地值；applyRating 已在函数前段算好，
@@ -277,41 +282,38 @@ public final class ProofFeedbackService {
         var queued = Set<String>()
         var comments = 0
 
-        // 已 applied 的照片不再重复入队（重放只做剩下的）。
-        let ratingItems = knownItems.filter {
-            ($0.rating != nil || $0.label != nil) && !appliedIds.contains($0.photoId)
-        }
-        let localStates = try repo.localRatingStates(
-            sessionId: trimmedSession, photoIds: ratingItems.map(\.photoId))
-        let submittedDate = submittedAt.isEmpty ? nil : tsParseISODate(submittedAt)
+        if !applyRating {
+            // 评分/色标不是待办（不进重放），但"未应用"要能被数出来，而不是静默丢弃。
+            skipped += ratingCandidates.count
+        } else if let metadata {
+            // 只处理字段级待办：已 rating_applied_at 的条目在重放时不重复入队。
+            let localStates = try repo.localRatingStates(
+                sessionId: trimmedSession, photoIds: pendingRatingItems.map(\.photoId))
+            let submittedDate = submittedAt.isEmpty ? nil : tsParseISODate(submittedAt)
 
-        for item in ratingItems {
-            if !applyRating || metadata == nil {
-                // 只落库：计入 skipped（"评分未应用"要能被数出来，而不是静默丢弃）。
-                skipped += 1
-                continue
-            }
-            let local = localStates[item.photoId]
-            if let conflict = Self.detectConflict(
-                item: item, local: local, submittedAt: submittedDate) {
-                conflicts.append(conflict)
-                skipped += 1
-                continue
-            }
-            do {
-                let queuedOK = try metadata?.queueRatingLabel(
-                    sessionId: trimmedSession, photoId: item.photoId,
-                    rating: item.rating, label: item.label) ?? false
-                if queuedOK {
-                    if item.rating != nil { ratingApplied += 1 }
-                    if item.label != nil { labelApplied += 1 }
-                    queued.insert(item.photoId)
-                } else {
+            for item in pendingRatingItems {
+                let local = localStates[item.photoId]
+                if let conflict = Self.detectConflict(
+                    item: item, local: local, submittedAt: submittedDate) {
+                    conflicts.append(conflict)
                     skipped += 1
+                    continue
                 }
-            } catch {
-                // 单张入队失败（照片不在会话/交付行冲突）只影响该张。
-                failed += 1
+                do {
+                    let queuedOK = try metadata.queueRatingLabel(
+                        sessionId: trimmedSession, photoId: item.photoId,
+                        rating: item.rating, label: item.label)
+                    if queuedOK {
+                        if item.rating != nil { ratingApplied += 1 }
+                        if item.label != nil { labelApplied += 1 }
+                        queued.insert(item.photoId)
+                    } else {
+                        skipped += 1
+                    }
+                } catch {
+                    // 单张入队失败（照片不在会话/交付行冲突）只影响该张。
+                    failed += 1
+                }
             }
         }
 
@@ -320,11 +322,18 @@ public final class ProofFeedbackService {
             comments += 1
         }
 
-        // 审计：真正被消费的行标 applied_at（真实勾选成功 + 评分/色标入队）。
-        let appliedPhotoIds = Array(queued.union(pickedAppliedIds))
-        if !appliedPhotoIds.isEmpty {
-            _ = try repo.markApplied(
-                batchId: batchId, photoIds: appliedPhotoIds, at: isoString(now()))
+        // 审计：**字段级**记账——只有真被应用的字段才标时间戳（失败 = 下次重放的依据，
+        // 成功 = 不重复入队）。markPickApplied / markRatingApplied 会同时补 applied_at
+        // 总标记，所以不再写照片级的 markApplied：否则一个字段成功就把另一个失败字段
+        // 也标成"已应用"。
+        let appliedAt = isoString(now())
+        if !pickedAppliedIds.isEmpty {
+            _ = try repo.markPickApplied(
+                batchId: batchId, photoIds: Array(pickedAppliedIds), at: appliedAt)
+        }
+        if !queued.isEmpty {
+            _ = try repo.markRatingApplied(
+                batchId: batchId, photoIds: Array(queued), at: appliedAt)
         }
 
         return ClientSelectionImportReport(

@@ -15,7 +15,7 @@ struct ViewerBadge: View {
     var showsWarning = false
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: GatherMetrics.Space.xs) {
             Image(systemName: systemImage)
                 .foregroundStyle(tone)
             Text(text)
@@ -29,8 +29,8 @@ struct ViewerBadge: View {
         }
         .font(.callout)
         .lineLimit(1)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.horizontal, GatherMetrics.Space.s)
+        .padding(.vertical, GatherMetrics.Space.xs)
         .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.85)))
         .accessibilityElement(children: .combine)
     }

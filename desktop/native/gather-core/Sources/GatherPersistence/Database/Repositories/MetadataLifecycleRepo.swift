@@ -73,10 +73,35 @@ public final class MetadataLifecycleRepo: Sendable {
     }
 
     // MARK: - 保留期 / 收编候选
+    //
+    // 会话作用域一律**下推**到 SQL（`sessionId: String? = nil`）：
+    // - nil = 全库（后台 24h job 只走这条，SQL 与行为逐字不变）；
+    // - 非 nil = 只取"关联了该会话"的交付，LIMIT 因此是"本会话的前 N 条"。
+    // 以前把过滤留在 Application 侧（先取 8×limit 再逐条跳过别的会话）：既可能被别的
+    // 会话的候选饿死，也让 LIMIT 的语义在两层之间分叉（SQL 里是"全库前 N 条"）。
+
+    /// 会话作用域谓词（主查询别名固定为 `d`）。
+    ///
+    /// 只判断"交付关联了该会话"，不掺确认态：reload-ack 门禁要看**全部**关联会话的
+    /// 状态，那是调用方的读取（linkedSessions），塞进 SQL 只会把语义摊薄。
+    /// 末尾带换行，便于直接拼在整个 WHERE 之后、ORDER BY 之前。
+    private static let sessionScopePredicate = """
+        AND EXISTS (
+          SELECT 1 FROM delivery_sessions ds
+          WHERE ds.delivery_id = d.id AND ds.session_id = ?
+        )
+        """
 
     /// 仅有 metadata/template item、状态 written、无未完成 intent 的交付（供存量收编）。
-    public func adoptionCandidates(limit: Int) throws -> [MetadataLifecycleRow] {
-        try connection.prepare("""
+    ///
+    /// - Parameter sessionId: 会话作用域。非 nil 时只返回本会话那条关联（JOIN 出来的
+    ///   `ds` 行）：收编的落点是 synced，而 synced 是"所有关联会话都已确认"的跨会话
+    ///   结论，不能因为 A 会话点了"立即清理"就把 B 会话的 written 推过去。
+    public func adoptionCandidates(
+        limit: Int,
+        sessionId: String? = nil
+    ) throws -> [MetadataLifecycleRow] {
+        var sql = """
             SELECT d.id, d.xmp_path, d.photo_path, ds.session_id
             FROM deliveries d
             JOIN delivery_sessions ds ON ds.delivery_id = d.id
@@ -94,21 +119,36 @@ public final class MetadataLifecycleRepo: Sendable {
                 WHERE other.delivery_id = d.id
                   AND other.module NOT IN ('metadata', 'template')
               )
-            ORDER BY d.updated_at ASC
-            LIMIT ?
-            """).query([.int(Int64(max(0, limit)))]).compactMap { row in
-                guard let id = row[0].intValue,
-                      let xmpPath = row[1].textValue, !xmpPath.isEmpty,
-                      let sessionId = row[3].textValue, !sessionId.isEmpty else { return nil }
-                return MetadataLifecycleRow(
-                    id: id, xmpPath: xmpPath, photoPath: row[2].textValue ?? "",
-                    sessionId: sessionId)
-            }
+            """
+        var values: [DBValue?] = []
+        if let sessionId {
+            // 不复用 sessionScopePredicate：`ds` 已经就是这里 JOIN 出来的关联行，
+            // 直接收窄它比再开一个同别名子查询更直白（结果等价）。
+            sql += "  AND ds.session_id = ?\n"
+            values.append(.text(sessionId))
+        }
+        sql += "ORDER BY d.updated_at ASC\nLIMIT ?"
+        values.append(.int(Int64(max(0, limit))))
+        return try connection.prepare(sql).query(values).compactMap { row in
+            guard let id = row[0].intValue,
+                  let xmpPath = row[1].textValue, !xmpPath.isEmpty,
+                  let linkedSession = row[3].textValue, !linkedSession.isEmpty else { return nil }
+            return MetadataLifecycleRow(
+                id: id, xmpPath: xmpPath, photoPath: row[2].textValue ?? "",
+                sessionId: linkedSession)
+        }
     }
 
     /// 已确认、超过保留期、无未完成 intent 的交付。
-    public func expiredCandidates(cutoff: String, limit: Int) throws -> [MetadataLifecycleRow] {
-        try connection.prepare("""
+    ///
+    /// - Parameter sessionId: 会话作用域（nil = 全库）；作用域内的 LIMIT 就是
+    ///   "本会话的前 N 条"，不会再被其它会话的更早候选挤掉。
+    public func expiredCandidates(
+        cutoff: String,
+        limit: Int,
+        sessionId: String? = nil
+    ) throws -> [MetadataLifecycleRow] {
+        var sql = """
             SELECT d.id, d.xmp_path, d.backup_path
             FROM deliveries d
             WHERE d.status = 'synced'
@@ -122,39 +162,63 @@ public final class MetadataLifecycleRepo: Sendable {
                 WHERE di.delivery_id = d.id
                   AND di.module IN ('metadata', 'template')
               )
-            ORDER BY d.updated_at ASC
-            LIMIT ?
-            """).query([.text(cutoff), .int(Int64(max(0, limit)))]).compactMap { row in
-                guard let id = row[0].intValue,
-                      let xmpPath = row[1].textValue, !xmpPath.isEmpty else { return nil }
-                return MetadataLifecycleRow(
-                    id: id, xmpPath: xmpPath, backupPath: row[2].textValue ?? "")
-            }
+            """
+        var values: [DBValue?] = [.text(cutoff)]
+        if let sessionId {
+            sql += MetadataLifecycleRepo.sessionScopePredicate
+            values.append(.text(sessionId))
+        }
+        sql += "ORDER BY d.updated_at ASC\nLIMIT ?"
+        values.append(.int(Int64(max(0, limit))))
+        return try connection.prepare(sql).query(values).compactMap { row in
+            guard let id = row[0].intValue,
+                  let xmpPath = row[1].textValue, !xmpPath.isEmpty else { return nil }
+            return MetadataLifecycleRow(
+                id: id, xmpPath: xmpPath, backupPath: row[2].textValue ?? "")
+        }
     }
 
     /// 没有任何 item、且超过最小年龄的孤儿交付行。
-    public func emptyCandidates(cutoff: String, limit: Int) throws -> [MetadataLifecycleRow] {
-        try connection.prepare("""
+    ///
+    /// - Parameter sessionId: 会话作用域（nil = 全库）；作用域外的空行留给全局回收。
+    public func emptyCandidates(
+        cutoff: String,
+        limit: Int,
+        sessionId: String? = nil
+    ) throws -> [MetadataLifecycleRow] {
+        var sql = """
             SELECT d.id, d.xmp_path, d.backup_path
             FROM deliveries d
             WHERE d.updated_at < ?
               AND NOT EXISTS (
                 SELECT 1 FROM delivery_items di WHERE di.delivery_id = d.id
               )
-            ORDER BY d.updated_at ASC
-            LIMIT ?
-            """).query([.text(cutoff), .int(Int64(max(0, limit)))]).compactMap { row in
-                guard let id = row[0].intValue,
-                      let xmpPath = row[1].textValue, !xmpPath.isEmpty else { return nil }
-                return MetadataLifecycleRow(
-                    id: id, xmpPath: xmpPath, backupPath: row[2].textValue ?? "")
-            }
+            """
+        var values: [DBValue?] = [.text(cutoff)]
+        if let sessionId {
+            sql += MetadataLifecycleRepo.sessionScopePredicate
+            values.append(.text(sessionId))
+        }
+        sql += "ORDER BY d.updated_at ASC\nLIMIT ?"
+        values.append(.int(Int64(max(0, limit))))
+        return try connection.prepare(sql).query(values).compactMap { row in
+            guard let id = row[0].intValue,
+                  let xmpPath = row[1].textValue, !xmpPath.isEmpty else { return nil }
+            return MetadataLifecycleRow(
+                id: id, xmpPath: xmpPath, backupPath: row[2].textValue ?? "")
+        }
     }
 
     /// 非 writing、无租约、无未完成 intent、带 metadata/template item 的交付
     /// （文件是否真的消失由 Application 侧判断：卷离线不能当删除）。
-    public func vanishedCandidates(limit: Int) throws -> [MetadataLifecycleRow] {
-        try connection.prepare("""
+    ///
+    /// - Parameter sessionId: 会话作用域（nil = 全库）。下推后"作用域外的行不占本批
+    ///   配额"是查询的自然结果，调用方不必再自己跳过。
+    public func vanishedCandidates(
+        limit: Int,
+        sessionId: String? = nil
+    ) throws -> [MetadataLifecycleRow] {
+        var sql = """
             SELECT d.id, d.xmp_path, d.backup_path
             FROM deliveries d
             WHERE d.status <> 'writing'
@@ -168,21 +232,38 @@ public final class MetadataLifecycleRepo: Sendable {
                 WHERE di.delivery_id = d.id
                   AND di.module IN ('metadata', 'template')
               )
-            ORDER BY d.updated_at ASC
-            LIMIT ?
-            """).query([.int(Int64(max(0, limit)))]).compactMap { row in
-                guard let id = row[0].intValue,
-                      let xmpPath = row[1].textValue, !xmpPath.isEmpty else { return nil }
-                return MetadataLifecycleRow(
-                    id: id, xmpPath: xmpPath, backupPath: row[2].textValue ?? "")
-            }
+            """
+        var values: [DBValue?] = []
+        if let sessionId {
+            sql += MetadataLifecycleRepo.sessionScopePredicate
+            values.append(.text(sessionId))
+        }
+        sql += "ORDER BY d.updated_at ASC\nLIMIT ?"
+        values.append(.int(Int64(max(0, limit))))
+        return try connection.prepare(sql).query(values).compactMap { row in
+            guard let id = row[0].intValue,
+                  let xmpPath = row[1].textValue, !xmpPath.isEmpty else { return nil }
+            return MetadataLifecycleRow(
+                id: id, xmpPath: xmpPath, backupPath: row[2].textValue ?? "")
+        }
     }
 
     // MARK: - 备份引用 / 会话
 
     /// 会话 source_path（孤儿备份扫描根）。
-    public func orphanRoots() throws -> [String] {
-        try connection.prepare("""
+    ///
+    /// - Parameter sessionId: 会话作用域（nil = 全部会话的根，后台 job 的路径）。
+    ///   非 nil 时只返回**这个会话**的根：作用域清理扫的目录必须收窄，否则会在
+    ///   别的会话的照片目录里按本会话的名义删文件。
+    public func orphanRoots(sessionId: String? = nil) throws -> [String] {
+        if let sessionId {
+            return try connection.prepare("""
+                SELECT DISTINCT source_path FROM sessions
+                WHERE source_path <> '' AND id = ?
+                """).query([.text(sessionId)]).compactMap { $0[0].textValue }
+                .filter { !$0.isEmpty }
+        }
+        return try connection.prepare("""
             SELECT DISTINCT source_path FROM sessions WHERE source_path <> ''
             """).query().compactMap { $0[0].textValue }.filter { !$0.isEmpty }
     }

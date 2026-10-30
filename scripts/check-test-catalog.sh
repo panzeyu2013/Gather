@@ -348,8 +348,10 @@ fi
 #    ContactSheetPresentation + EmbeddedRewriteSession/XMPPacketReader）→ 2438/273。
 #    2026-10-30 全量修复波：+21/+3（SchemaCurrent 的 CHECK/CASCADE 用例、策展可见性
 #    2 例、保留期会话作用域 1 例、内嵌 XMP 读 4 例、堆栈折叠 10 例 + 1 个新套件）→ 2459/276。
-BASELINE_TEST_DECL=2459
-BASELINE_SUITE_DECL=276
+#    2026-10-30 残余波：+21/+3（schema 触发器/CASCADE 2 例、保留期下推 3 例、校样字段级
+#    重放 2 例、C1 往返 9 例 + 2 个新套件、保存查询搜索串 5 例 + 1 个新套件）→ 2480/279。
+BASELINE_TEST_DECL=2480
+BASELINE_SUITE_DECL=279
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
@@ -374,7 +376,8 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 #    commit 串行化/refresh 代/keep/invalidateAll/rowIndex/Toast/布局缓存回归）。
 #    2026-10-30 p1-next 合并：+771（同上 13 个测试文件）。
 #    2026-10-30 全量修复波：+62（同上新增用例）。
-BASELINE_ASSERT=11342
+#    2026-10-30 残余波：+107（同上新增用例）。
+BASELINE_ASSERT=11449
 assert_n=$(grep -rhoE '#(expect|require)\(' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')

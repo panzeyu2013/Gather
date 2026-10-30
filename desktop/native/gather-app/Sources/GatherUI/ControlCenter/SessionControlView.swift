@@ -82,7 +82,7 @@ public struct SessionControlView: View {
                 .fill(GatherTheme.warning.opacity(0.10))
         )
         .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-        .padding(.top, 12)
+        .padding(.top, GatherMetrics.Space.m)
     }
 
     private func chooseSourceRoot() {
@@ -122,12 +122,12 @@ public struct SessionControlView: View {
                         color: GatherTheme.error
                     )
                         .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-                        .padding(.top, 12)
+                        .padding(.top, GatherMetrics.Space.m)
                 }
                 if let notice = viewModel.notice {
                     NativeBanner(text: l10n.resolve(notice), color: GatherTheme.success)
                         .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-                        .padding(.top, 12)
+                        .padding(.top, GatherMetrics.Space.m)
                 }
                 if let session = viewModel.session, session.sourcePath.isEmpty {
                     sourceRootBanner
@@ -155,7 +155,7 @@ public struct SessionControlView: View {
                             syncCard
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(24)
+                        .padding(GatherMetrics.Space.xl)
                     } else {
                         // 加载失败必须给出口（不再渲染空面板）。
                         ContentUnavailableView {

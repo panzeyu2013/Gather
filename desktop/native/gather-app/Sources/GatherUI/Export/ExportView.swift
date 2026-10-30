@@ -62,7 +62,7 @@ public struct ExportView: View {
                     color: GatherTheme.error
                 )
                     .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-                    .padding(.top, 12)
+                    .padding(.top, GatherMetrics.Space.m)
             }
             if let notice = viewModel.notice {
                 let noticeColor: Color = switch viewModel.noticeKind {
@@ -72,9 +72,9 @@ public struct ExportView: View {
                 }
                 NativeBanner(text: l10n.resolve(notice), color: noticeColor)
                     .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-                    .padding(.top, 12)
+                    .padding(.top, GatherMetrics.Space.m)
             }
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                 Text(l10n("导出设置"))
                     .font(GatherFont.pageTitle)
                 Text(l10n("先选择范围，再设置格式、命名与导出目录。"))
@@ -82,8 +82,8 @@ public struct ExportView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-            .padding(.top, 16)
-            .padding(.bottom, 4)
+            .padding(.top, GatherMetrics.Space.l)
+            .padding(.bottom, GatherMetrics.Space.xs)
             // 导出选项/预览/结果全部走系统分组表单（行标签由系统对齐）。
             Form {
                 ExportProgressSection(viewModel: viewModel)

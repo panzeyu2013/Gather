@@ -9,17 +9,25 @@
 //    删除逻辑）；备份删除在 DB 事务提交之后；
 // 3. 零 item 行（photo 被删导致 CASCADE 清空 items）：删行 + 备份；
 // 4. 文件已消失行（xmp_path 不存在且无未完成 intent）：删行 + 既有备份；
-// 5. 孤儿备份：只在会话根目录**第一层**找受控命名（.gather-backup-/.gather-header-）
+// 5. 孤儿备份：只在**扫描根的第一层**找受控命名（.gather-backup-/.gather-header-）
 //    且 mtime > 24h 且 DB 无 backup_path 指向它的文件；判定改用锚定式
 //    DeliveryBackupPath.anchoredXMPPath（从文件名反推 <xmp> 并复用 validate 的
 //    同目录/前缀/非常规文件校验），绝不按"名字含标记"盲删（P1-4）；同一循环顺手
 //    回收崩溃残留的 `.<photo>.gather-embedded-<uuid>` 照片拷贝临时文件（C6，
-//    独立计数，不进备份集合）。
+//    独立计数，不进备份集合）。扫描根：全局 = 所有会话的 source_path；会话作用域
+//    = 本会话的 source_path。
 //
 // 会话作用域（P1-2）：run(policy:sessionId:) 的 sessionId 为 nil = 全局回收
 // （后台 24h job 只走这条）；非 nil 时只处理与该会话关联的交付，绝不碰其它会话的
 // 行与备份——"立即清理已确认备份"是会话内动作，原实现忽略 sessionId，会把它跑成
 // "确认并删除所有会话的已确认交付与备份"。
+//
+// 作用域的落地一律**下推**（sessionId 直接传给 MetadataLifecycleRepo 的候选查询）：
+// 候选查询自己在 SQL 里按 delivery_sessions 过滤，LIMIT 因此是"本会话的前 N 条"。
+// 上一版把过滤留在 Application 侧、靠"先取 8×limit 再逐条跳过别的会话"补偿饥饿，
+// 一旦别的会话的候选更多、更早，本会话依旧轮不到（且多读的行全是白读）。孤儿扫描
+// 同理：作用域只缩小**扫哪些目录**，但"是否被引用"永远用**全库**引用集合——按会话
+// 缩小引用集合会把其它会话仍在用的备份判成孤儿，等于删掉别人的唯一撤销点。
 //
 // 3/4/5 三条清理都在 policy.isEnabled 之内（P1-3）：metadata_backup_retention_days=0
 // 的语义是"不自动删"，设置必须能阻止这三条；手动"立即清理"（.immediate）的
@@ -182,14 +190,9 @@ public struct MetadataRetentionService: Sendable {
         // 空串按"全局"处理：MetadataCleanupInput.sessionId 是必填 String，调用方
         // 若给了空串，绝不能把它当成一个真实会话去作用域过滤（那会静默什么都不做）。
         let scope = sessionId.flatMap { $0.isEmpty ? nil : $0 }
-        // 候选查询没有按会话过滤的重载（MetadataLifecycleRepo 不在本组文件清单）：
-        // 会话作用域下先多取几倍再在 Application 侧过滤，避免"前 limit 条全是别的
-        // 会话"把本会话饿死；仍然是有界查询。
-        let queryLimit = Self.candidateQueryLimit(limit, scoped: scope != nil)
 
         if policy.adoptLegacyRows {
-            let adoption = await adoptLegacyRows(
-                limit: limit, queryLimit: queryLimit, sessionId: scope)
+            let adoption = await adoptLegacyRows(limit: limit, sessionId: scope)
             result.adopted = adoption.adopted
             result.skipped += adoption.skipped
             result.errors.append(contentsOf: adoption.errors)
@@ -197,7 +200,7 @@ public struct MetadataRetentionService: Sendable {
         if policy.isEnabled {
             // async 段单独取返回值再合并：inout 跨 await 不做（可读性 + 互斥访问）。
             let retention = await retainExpired(
-                policy: policy, limit: limit, queryLimit: queryLimit, sessionId: scope)
+                policy: policy, limit: limit, sessionId: scope)
             result.scanned += retention.scanned
             result.deletedDeliveries += retention.deletedDeliveries
             result.retainedDeliveries += retention.retainedDeliveries
@@ -205,22 +208,12 @@ public struct MetadataRetentionService: Sendable {
             result.errors.append(contentsOf: retention.errors)
             // P1-3：三条清理纳入 isEnabled——原实现把它们放在 if 之外，
             // metadata_backup_retention_days=0（"不自动删"）时仍会删备份。
-            purgeEmptyRows(
-                limit: limit, queryLimit: queryLimit, sessionId: scope, result: &result)
-            purgeVanishedRows(
-                limit: limit, queryLimit: queryLimit, sessionId: scope, result: &result)
-            // 孤儿备份回收是**全局**维护动作：扫描根是 sessions.source_path，按会话
-            // 限定引用集合会让其它会话仍在用的备份看起来像孤儿（删错方向）。会话作用域
-            // 的清理只做"与本会话相关的行 + 它们的备份"。
+            purgeEmptyRows(limit: limit, sessionId: scope, result: &result)
+            purgeVanishedRows(limit: limit, sessionId: scope, result: &result)
+            // 孤儿回收在作用域下同样执行：扫的目录收窄到本会话 source_path，
+            // 引用集合仍是全库（见 purgeOrphanBackups）。
             if policy.includeOrphanBackups {
-                if scope == nil {
-                    purgeOrphanBackups(result: &result)
-                } else {
-                    GatherLogger.log(
-                        "trace=gc/deletions phase=orphans skipped=session-scope "
-                            + "session=\(MetadataDeliveryService.sessionToken(scope ?? ""))",
-                        level: .debug)
-                }
+                purgeOrphanBackups(sessionId: scope, result: &result)
             }
         }
 
@@ -235,36 +228,6 @@ public struct MetadataRetentionService: Sendable {
                 + "errors=\(result.errors.count)",
             level: .info)
         return result
-    }
-
-    /// 会话作用域下的候选查询放大倍数（见 run 里的说明；默认 200 → 1,600 行）。
-    static let scopedQueryFactor = 8
-
-    static func candidateQueryLimit(_ limit: Int, scoped: Bool) -> Int {
-        guard scoped else { return limit }
-        guard limit <= Int.max / scopedQueryFactor else { return Int.max }
-        return limit * scopedQueryFactor
-    }
-
-    /// 会话作用域复核：交付是否关联该会话（nil = 全局，恒 true）。
-    ///
-    /// 复用既有 `linkedSessions(deliveryId:)`（retainExpired 本来就要读它做 reload-ack
-    /// 判定），不为此新增跨文件的公开 API；查询失败按"不在作用域"跳过并记错误。
-    private func isInScope(
-        deliveryId: Int64,
-        sessionId: String?,
-        errors: inout [String]
-    ) -> Bool {
-        guard let sessionId else { return true }
-        do {
-            let sessions = try linkedSessions(deliveryId: deliveryId)
-            return sessions.contains { $0.id == sessionId }
-        } catch {
-            errors.append(
-                "METADATA_RETENTION_SCOPE_QUERY_FAILED: delivery=\(deliveryId) "
-                    + "reason=\(String(describing: error))")
-            return false
-        }
     }
 
     // MARK: - 1. 存量收编
@@ -282,7 +245,6 @@ public struct MetadataRetentionService: Sendable {
     /// 被门禁挡住（计入 skipped），不会"收编一半"。failed/conflict 行本身不碰。
     private func adoptLegacyRows(
         limit: Int,
-        queryLimit: Int,
         sessionId: String?
     ) async -> (adopted: Int, skipped: Int, errors: [String]) {
         var adopted = 0
@@ -290,7 +252,9 @@ public struct MetadataRetentionService: Sendable {
         var errors: [String] = []
         var rows: [AdoptionCandidate]
         do {
-            rows = try lifecycle.adoptionCandidates(limit: queryLimit).map {
+            // 会话作用域已下推：作用域运行只返回本会话的关联行（LIMIT 也是本会话的），
+            // 不再需要"多取 + 在 Application 侧 filter"。
+            rows = try lifecycle.adoptionCandidates(limit: limit, sessionId: sessionId).map {
                 AdoptionCandidate(
                     xmpPath: $0.xmpPath, photoPath: $0.photoPath,
                     sessionId: $0.sessionId)
@@ -298,14 +262,6 @@ public struct MetadataRetentionService: Sendable {
         } catch {
             errors.append("METADATA_RETENTION_ADOPT_QUERY_FAILED: \(String(describing: error))")
             return (0, 0, errors)
-        }
-        // 会话作用域（P1-2）：收编的落点是 synced，而 synced 是"所有关联会话都已
-        // 确认"的跨会话结论；在 A 会话点"立即清理"绝不能把 B 会话的 written 收编。
-        if let sessionId {
-            rows = rows.filter { $0.sessionId == sessionId }
-        }
-        if rows.count > limit {
-            rows = Array(rows.prefix(limit))
         }
         // 照片仍在才收编：文件都没了，确认只会把不可写的行推成 synced。
         var sessions = Set<String>()
@@ -355,27 +311,30 @@ public struct MetadataRetentionService: Sendable {
     private func retainExpired(
         policy: MetadataRetentionPolicy,
         limit: Int,
-        queryLimit: Int,
         sessionId: String?
     ) async -> MetadataRetentionResult {
         var result = MetadataRetentionResult()
         let cutoff = isoString(now().addingTimeInterval(-Double(policy.retentionDays) * 86_400))
         let candidates: [RetentionCandidate]
         do {
-            candidates = try lifecycle.expiredCandidates(cutoff: cutoff, limit: queryLimit).map {
-                RetentionCandidate(
-                    id: $0.id, xmpPath: $0.xmpPath, backupPath: $0.backupPath)
-            }
+            // 会话作用域已下推：候选只剩本会话关联的交付，LIMIT 也是本会话的。
+            candidates = try lifecycle.expiredCandidates(
+                cutoff: cutoff, limit: limit, sessionId: sessionId).map {
+                    RetentionCandidate(
+                        id: $0.id, xmpPath: $0.xmpPath, backupPath: $0.backupPath)
+                }
         } catch {
             result.errors.append(
                 "METADATA_RETENTION_QUERY_FAILED: \(String(describing: error))")
             return result
         }
 
-        // queryLimit 可能大于 limit（会话作用域下多取）：处理条数仍以 limit 封顶。
+        // 处理条数仍以 limit 封顶（processed 是配额，不是游标）。
         var processed = 0
         for candidate in candidates {
             guard processed < limit else { break }
+            // linkedSessions 仍是必需的：reload-ack 门禁要看**全部**关联会话的确认态，
+            // 作用域过滤不能替代它（下推只回答"关联了本会话"，不回答"别的会话 ack 没有"）。
             let sessions: [(id: String, acked: Bool)]
             do {
                 sessions = try linkedSessions(deliveryId: candidate.id)
@@ -385,10 +344,6 @@ public struct MetadataRetentionService: Sendable {
                     "METADATA_RETENTION_SESSIONS_FAILED: "
                         + "\(MetadataDeliveryService.pathToken(candidate.xmpPath)) "
                         + "reason=\(String(describing: error))")
-                continue
-            }
-            // 会话作用域（P1-2）：与本会话无关的交付原样留给全局回收，不计 scanned。
-            if let sessionId, !sessions.contains(where: { $0.id == sessionId }) {
                 continue
             }
             processed += 1
@@ -421,16 +376,17 @@ public struct MetadataRetentionService: Sendable {
 
     private func purgeEmptyRows(
         limit: Int,
-        queryLimit: Int,
         sessionId: String?,
         result: inout MetadataRetentionResult
     ) {
         let cutoff = isoString(now().addingTimeInterval(-Self.emptyRowMinimumAgeSeconds))
         let rows: [(id: Int64, xmpPath: String, backupPath: String)]
         do {
-            rows = try lifecycle.emptyCandidates(cutoff: cutoff, limit: queryLimit).map {
-                ($0.id, $0.xmpPath, $0.backupPath)
-            }
+            // 会话作用域已下推：没关联到本会话的空行根本不会出现在候选里。
+            rows = try lifecycle.emptyCandidates(
+                cutoff: cutoff, limit: limit, sessionId: sessionId).map {
+                    ($0.id, $0.xmpPath, $0.backupPath)
+                }
         } catch {
             result.errors.append(
                 "METADATA_RETENTION_EMPTY_QUERY_FAILED: \(String(describing: error))")
@@ -439,9 +395,6 @@ public struct MetadataRetentionService: Sendable {
         var processed = 0
         for row in rows {
             guard processed < limit else { break }
-            // 会话作用域（P1-2）：没有关联到本会话的空行留给全局回收。
-            guard isInScope(
-                deliveryId: row.id, sessionId: sessionId, errors: &result.errors) else { continue }
             processed += 1
             do {
                 if try deleteRowIfEmpty(id: row.id, xmpPath: row.xmpPath) {
@@ -466,13 +419,13 @@ public struct MetadataRetentionService: Sendable {
 
     private func purgeVanishedRows(
         limit: Int,
-        queryLimit: Int,
         sessionId: String?,
         result: inout MetadataRetentionResult
     ) {
         let rows: [(id: Int64, xmpPath: String, backupPath: String)]
         do {
-            rows = try lifecycle.vanishedCandidates(limit: queryLimit).map {
+            // 会话作用域已下推：别的会话的已消失行不进候选，也就不会占本批配额。
+            rows = try lifecycle.vanishedCandidates(limit: limit, sessionId: sessionId).map {
                 ($0.id, $0.xmpPath, $0.backupPath)
             }
         } catch {
@@ -484,15 +437,12 @@ public struct MetadataRetentionService: Sendable {
         var processed = 0
         for row in rows {
             guard processed < limit else { break }
-            // 会话作用域（P1-2）：别的会话的已消失行留给全局回收。
-            guard isInScope(
-                deliveryId: row.id, sessionId: sessionId, errors: &result.errors) else { continue }
             // 卷离线（父目录都不在）与文件真被删是两件事：只有后者才安全回收。
             let directory = (row.xmpPath as NSString).deletingLastPathComponent
             guard !directory.isEmpty,
                   fileManager.fileExists(atPath: directory),
                   !fileManager.fileExists(atPath: row.xmpPath) else { continue }
-            // 只有真正进入删除段的候选才占本批配额（作用域外/卷离线的行不占）。
+            // 只有真正进入删除段的候选才占本批配额（卷离线的行不占，留给下次）。
             processed += 1
             do {
                 if try deleteRow(id: row.id, xmpPath: row.xmpPath) {
@@ -515,18 +465,21 @@ public struct MetadataRetentionService: Sendable {
 
     // MARK: - 5. 孤儿备份 / 崩溃残留临时文件
 
-    /// 扫会话根目录第一层，删两类"DB 无引用且超过 24h"的文件：
+    /// 只扫**扫描根**第一层，删两类"DB 无引用且超过 24h"的文件：
     /// 1. 锚定通过的受控备份（`.gather-backup-`/`.gather-header-`）；
     /// 2. 崩溃残留的照片拷贝 `.gather-embedded-` 临时文件（C6）。
     ///
-    /// 只应**全局**运行（会话作用域下 run 会跳过它）：扫描根是全体会话的
-    /// source_path，而引用集合必须是全库的——按会话缩小引用集合会把其它会话仍在
-    /// 用的备份判成孤儿。
-    private func purgeOrphanBackups(result: inout MetadataRetentionResult) {
+    /// 两个集合刻意不对称（P1-2 收口的重点）：
+    /// - **扫描根**按会话作用域收缩（nil = 全体会话，非 nil = 本会话 source_path）：
+    ///   作用域清理不该跑去别人的照片目录动手；
+    /// - **引用集合**永远是全库（referencedBackupPaths 不接受 sessionId）：按会话缩小
+    ///   引用集合会把其它会话仍在用的备份判成孤儿，删掉的正是别人的唯一撤销点。
+    private func purgeOrphanBackups(sessionId: String?, result: inout MetadataRetentionResult) {
         let roots: [String]
         let referenced: Set<String>
         do {
-            roots = try lifecycle.orphanRoots()
+            roots = try lifecycle.orphanRoots(sessionId: sessionId)
+            // 引用集合不分作用域——见上面的说明，这是"删错方向"的唯一防线。
             referenced = try lifecycle.referencedBackupPaths()
         } catch {
             result.errors.append(

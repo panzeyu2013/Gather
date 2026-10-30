@@ -97,7 +97,7 @@ struct LightboxView: View {
     // MARK: 主体（照片 + 顶部文件名行 + 底部元数据行）
 
     private func photoViewer(_ photo: GalleryPhotoData) -> some View {
-        VStack(spacing: 12) {
+        VStack(spacing: GatherMetrics.Space.m) {
             headerRow(photo)
             zoomableImage(photo)
             footerRow(photo)
@@ -105,7 +105,7 @@ struct LightboxView: View {
     }
 
     private func headerRow(_ photo: GalleryPhotoData) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: GatherMetrics.Space.m) {
             Text(photo.filename)
                 .font(GatherFont.sectionTitle)
                 .lineLimit(1)
@@ -277,7 +277,7 @@ struct LightboxView: View {
             Button(l10n("关闭"), action: onClose)
                 .keyboardShortcut(.cancelAction)
         }
-        .padding(24)
+        .padding(GatherMetrics.Space.xl)
     }
 
     // MARK: 翻页（TS goNext/goPrev —— 切换照片重置缩放/位移）
@@ -369,7 +369,7 @@ struct LightboxView: View {
     }
 
     private func metadataItem(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
             Text(title)
                 .font(GatherFont.labelRegular)
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.7))

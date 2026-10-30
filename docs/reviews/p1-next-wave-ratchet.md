@@ -10,6 +10,14 @@
 - 来源：新增的 Curation 侧栏/集合视图、查看器叠加层（直方图/合焦/参考对比）、校样与元数据同步条、语义检索面板。
 - 处置：本轮带 `--allow-growth` 更新 baseline（`scripts/design-system-baseline.json` 为唯一事实来源，本文记录理由）；
   后续统一换成 `GatherMetrics.Space/Layout` token，再次收紧 baseline。
+- **同日残余波收紧**：`literalPadding` 206 → **5**、`literalSpacing` 261 → **89**。
+  两件事一起做才得出这个数：
+  1. `check-design-system.py` 的正则 bug：`\.padding\([0-9.]+` / `spacing:[ \t]*[0-9.]+` 的字符集含
+     `.`，把 `.padding(.horizontal, 12)` 这类带边形式（178 处）与 `spacing: .zero`（2 处）
+     也算成"数字字面量"。改成"必须紧跟数字"后，读数才是真的 5 / 89；
+  2. 69 个文件 / 279 处可映射字面量换成 `GatherMetrics.Space.*`（2/4/6/8/12/16/24/32/48 一一对应，
+     数值不变、零视觉变化；剩余 9/10/14/20/36/40/52/60 与 `spacing: 0` 无等值 token，保留）。
+  未映射：`GatherApp/GatherApp.swift` 2 处（`GatherMetrics` 是 GatherUI internal，跨 target 需先提 public）。
 
 ## 测试 ratchet（合并后收紧）
 
@@ -18,6 +26,8 @@
   174 例 / 771 断言的"删除免检额度"。收紧后 `--strict` 实测 2438/2438 · 273/273 · 11280/11280。
 - 全量修复波（同日）再收紧到 **2459 / 276 / 11342**：新增 schema CHECK/CASCADE 10 例、
   策展可见性 2 例、保留期会话作用域 1 例、内嵌 XMP 读 4 例、堆栈折叠 10 例（1 个新套件）。
+- 残余波（同日）再收紧到 **2480 / 279 / 11449**：schema 触发器 1 例 + CASCADE 1 例、保留期
+  下推/会话孤儿 3 例、校样字段级重放 2 例、C1 往返 9 例（2 个新套件）、保存查询搜索串 5 例（1 个新套件）。
 
 ## 清理 ratchet（已清零）
 

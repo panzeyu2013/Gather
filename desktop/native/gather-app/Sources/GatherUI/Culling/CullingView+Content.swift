@@ -147,7 +147,7 @@ extension CullingView {
                 Button(actionTitle, action: action)
             }
         }
-        .padding(.vertical, 48)
+        .padding(.vertical, GatherMetrics.Space.xxxl)
         // 空态自己撑满剩余区域并居中；GatherSessionPage 的 topLeading 只负责
         // 让页签行贴顶，不应把空态一起顶到上方。
         .frame(maxWidth: .infinity, maxHeight: .infinity)

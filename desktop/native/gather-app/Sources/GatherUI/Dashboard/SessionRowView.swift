@@ -24,13 +24,13 @@ struct SessionRowView: View {
     /// 右侧独立按钮组（stopPropagation）——SwiftUI 用 List(selection:) 承载
     /// 选中（⌘/⇧ 原生多选），「进入」按钮与菜单承载动作，不再自绘复选框。
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: GatherMetrics.Space.m) {
             identity
             Spacer(minLength: 12)
             actions
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 4)
+        .padding(.vertical, GatherMetrics.Space.xs)
         // macOS 最基本的"打开"手势：双击行。行尾「进入」按钮仍然保留
         // （可发现性），右键菜单仍提供显式项。
         .onTapGesture(count: 2, perform: onOpen)
@@ -42,8 +42,8 @@ struct SessionRowView: View {
 
     /// 名称 + 状态徽标 + 计数/冲突/离线 + 创建时间。
     private var identity: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 Text(session.name)
                     .font(.headline)
                     .lineLimit(1)
@@ -98,7 +98,7 @@ struct SessionRowView: View {
     /// 状态信号 = 语义色图标 + 低透明度底色；正文保持系统主文字色
     /// （GatherTheme.warning 对比度不足，绝不作为正文前景色）。
     private func statusPill(_ text: String, systemImage: String, color: Color) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: GatherMetrics.Space.xs) {
             Image(systemName: systemImage)
                 .imageScale(.small)
                 .foregroundStyle(color)
@@ -107,8 +107,8 @@ struct SessionRowView: View {
                 .font(.callout)
                 .foregroundStyle(.primary)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
+        .padding(.horizontal, GatherMetrics.Space.controlGap)
+        .padding(.vertical, GatherMetrics.Space.xxs)
         .background(Capsule().fill(color.opacity(0.15)))
         .accessibilityElement(children: .combine)
     }
@@ -135,7 +135,7 @@ struct SessionRowView: View {
 
     @ViewBuilder
     private var actions: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GatherMetrics.Space.s) {
             // TS retryScan：索引失败行显示「重试」，重新入队 metadata.scan。
             if deriveCardIndexKind(scanJob) == .failed {
                 Button(l10n("重试"), action: onRetryScan)

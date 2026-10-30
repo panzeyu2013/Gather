@@ -59,7 +59,7 @@ extension LibraryView {
             )
             .help(l10n("相册"))
 
-            HStack(spacing: 6) {
+            HStack(spacing: GatherMetrics.Space.controlGap) {
                 TextField(l10n("新相册名称"), text: $albumName)
                 Button(l10n("创建")) {
                     let name = albumName
@@ -71,7 +71,7 @@ extension LibraryView {
                 .disabled(albumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isSupportBusy)
             }
             if viewModel.selectedAlbumId != nil {
-                HStack(spacing: 8) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     Button(l10n("用当前筛选更新")) {
                         Task { await viewModel.updateSelectedAlbum() }
                     }
@@ -110,9 +110,9 @@ extension LibraryView {
                 // TS Library/index.tsx:348 —— 候选直出（卡片内可滚动，无分页门控）。
                 // C-6（性能审计）：旧实现在 ScrollView { VStack } 里**直出**全部候选
                 // （无 LIMIT），每次重建实例化所有行。LazyVStack 是零行为变化的修法。
-                LazyVStack(alignment: .leading, spacing: 6) {
+                LazyVStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
                 ForEach(viewModel.assetCandidates, id: \.id) { candidate in
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                         Text("\(Self.basename(candidate.leftPath)) ↔ \(Self.basename(candidate.rightPath))")
                             .font(GatherFont.secondary)
                             .lineLimit(1)
@@ -121,7 +121,7 @@ extension LibraryView {
                         Text(l10n.format("%@ · 置信度 %lld%%", Self.candidateStatusText(candidate.status, with: l10n), Int(candidate.confidence * 100)))
                             .font(GatherFont.secondary)
                             .foregroundStyle(.secondary)
-                        HStack(spacing: 6) {
+                        HStack(spacing: GatherMetrics.Space.controlGap) {
                             if candidate.status != .accepted {
                                 Button(l10n("接受")) {
                                     pendingAcceptCandidate = candidate
@@ -191,9 +191,9 @@ extension LibraryView {
                     .foregroundStyle(.secondary)
             } else {
                 // TS Library/index.tsx:377 —— 孤立 XMP 直出（卡片内可滚动，无分页门控）。
-                LazyVStack(alignment: .leading, spacing: 6) {
+                LazyVStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
                 ForEach(viewModel.metadataOrphans, id: \.xmpPath) { orphan in
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                         Text(Self.basename(orphan.xmpPath))
                             .font(GatherFont.secondary)
                             .lineLimit(1)
@@ -211,7 +211,7 @@ extension LibraryView {
                             .font(GatherFont.secondary)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
-                        HStack(spacing: 6) {
+                        HStack(spacing: GatherMetrics.Space.controlGap) {
                             if orphan.status == "pending" || orphan.status == "failed" {
                                 // 重试是「再试一次已授权的写回」，按钮本身即用户决定。
                                 Button(l10n("重试")) {
@@ -260,7 +260,7 @@ extension LibraryView {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(offlineVolumes, id: \.volumeId) { volume in
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                         Text(volume.roots.joined(separator: "、").isEmpty ? volume.volumeId : volume.roots.joined(separator: "、"))
                             .font(GatherFont.secondary)
                             .lineLimit(2)

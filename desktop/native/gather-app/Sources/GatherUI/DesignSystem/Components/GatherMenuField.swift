@@ -180,7 +180,7 @@ public struct GatherMenuRow<Value: Hashable>: View {
     }
 
     public var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: GatherMetrics.Space.controlGap) {
             Text(title)
                 .font(GatherFont.labelRegular)
                 .foregroundStyle(.secondary)

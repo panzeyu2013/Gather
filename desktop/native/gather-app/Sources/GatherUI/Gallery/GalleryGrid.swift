@@ -41,7 +41,7 @@ extension GalleryView {
             let rows = layoutRows(filtered: filtered, width: max(1, geometry.size.width - 48))
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 8) {
+                    LazyVStack(spacing: GatherMetrics.Space.s) {
                         ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                             rowView(row, filtered: filtered)
                                 .frame(height: row.height)
@@ -55,8 +55,8 @@ extension GalleryView {
                                 Task { await viewModel.loadMoreIfNeeded() }
                             }
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 16)
+                    .padding(.horizontal, GatherMetrics.Space.xl)
+                    .padding(.bottom, GatherMetrics.Space.l)
                 }
                 .focusable()
                 .focused($galleryGridFocused)
@@ -130,7 +130,7 @@ extension GalleryView {
     private static let prefetchRemaining = 20
 
     private func rowView(_ row: JustifiedLayoutRow, filtered: [GalleryPhotoData]) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GatherMetrics.Space.s) {
             ForEach(row.items, id: \.index) { item in
                 // 越界保护：布局缓存/数据刷新后 index 可能指向旧数组。
                 if let photo = filtered[safe: item.index] {

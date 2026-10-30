@@ -19,9 +19,9 @@ struct CullingInfoBar: View {
         // 出现**的内容一旦同时出现就会顶破最小窗口的 680pt 预算。
         // 放进横向滚动容器后，本行的最小宽度不再等于内容总宽。
         ScrollView(.horizontal) {
-            HStack(spacing: 12) {
+            HStack(spacing: GatherMetrics.Space.m) {
             // 上一张/下一张：可见按钮承载 ←/→ 裸键快捷键（取代窗口级 NSEvent 监听）。
-            HStack(spacing: 2) {
+            HStack(spacing: GatherMetrics.Space.xxs) {
                 Button { viewModel.retreatCurrent() } label: {
                     Image(systemName: "chevron.left")
                 }
@@ -53,7 +53,7 @@ struct CullingInfoBar: View {
             }
             // linkedNotice：同名 RAW/JPEG 共享 XMP 提示（对齐旧版 Culling.tsx:1393-1397）。
             if let current = viewModel.currentAsset, current.linkedVariantCount > 1 {
-                HStack(spacing: 4) {
+                HStack(spacing: GatherMetrics.Space.xs) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(GatherTheme.warning)
                         .accessibilityHidden(true)
@@ -68,7 +68,7 @@ struct CullingInfoBar: View {
             // 可分配空间，改为固定分隔线：语义上把「照片信息」与「同步动作」分开。
             Divider().frame(height: 16)
             if let sync = viewModel.syncStatus {
-                HStack(spacing: 4) {
+                HStack(spacing: GatherMetrics.Space.xs) {
                     Circle()
                         .fill(syncIndicatorColor(sync))
                         .frame(width: 5, height: 5)
@@ -136,7 +136,7 @@ struct CullingInfoBar: View {
 
     /// 行内计数：语义色只做圆点，数字保持主文字色。
     private func countItem(_ text: String, color: Color) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: GatherMetrics.Space.xs) {
             Circle()
                 .fill(color)
                 .frame(width: 5, height: 5)

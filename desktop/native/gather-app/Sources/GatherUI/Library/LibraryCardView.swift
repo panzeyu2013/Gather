@@ -27,7 +27,7 @@ struct LibraryCardView: View {
     /// 缩略图 + 说明文字直接排在窗口底色上（与「照片」App 网格一致）。
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
                 thumbnail
                 Text(photo.filename)
                     .font(GatherFont.bodyStrong)
@@ -104,7 +104,7 @@ struct LibraryCardView: View {
                     systemImage: "externaldrive.badge.xmark",
                     iconColor: GatherTheme.error
                 )
-                .padding(6)
+                .padding(GatherMetrics.Space.controlGap)
                 .help(l10n("离线"))
             }
         }
@@ -112,7 +112,7 @@ struct LibraryCardView: View {
 
     /// 星级：品牌 accent 只做强调（自造 hex 星级色已删除）。
     private var ratingRow: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: GatherMetrics.Space.xs) {
             Image(systemName: "star.fill")
                 .imageScale(.small)
                 .foregroundStyle(GatherTheme.accent)

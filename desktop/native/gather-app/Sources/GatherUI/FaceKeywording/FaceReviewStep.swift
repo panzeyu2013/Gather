@@ -53,8 +53,8 @@ extension FaceKeywordingView {
 
     /// TS StepReview.clusterPane：标题 + 组数 + 角色过滤 + 簇网格 + 加载更多。
     private var clusterPane: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 Text(l10n("人脸聚类")).font(GatherFont.sectionTitle)
                 Text(l10n.format("%lld 组", visibleClusters.count))
                     .font(GatherFont.secondary)
@@ -80,7 +80,7 @@ extension FaceKeywordingView {
                     .help(l10n("继续加载剩余的人脸簇"))
                     Spacer(minLength: 0)
                 }
-                .padding(.top, 4)
+                .padding(.top, GatherMetrics.Space.xs)
             }
         }
         .task(id: viewModel.clusters.count) {
@@ -126,7 +126,7 @@ extension FaceKeywordingView {
         Group {
             if let cluster = viewModel.selectedCluster {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
                         HStack(alignment: .firstTextBaseline) {
                             Text(cluster.label)
                                 .font(GatherFont.sectionTitle)
@@ -296,7 +296,7 @@ extension FaceKeywordingView {
     /// TS editor：角色名/关键字输入 + 绑定/更新绑定 + 解除绑定（解除绑定撤销
     /// 已写入关键词，经确认弹窗后才执行）。表单行改用 LabeledContent。
     private func editor(_ cluster: FaceClusterData) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
             Text(l10n("绑定角色")).font(GatherFont.cardTitle)
             LabeledContent(l10n("角色名称")) {
                 TextField(l10n("输入角色名称"), text: bindable.roleName)
@@ -308,7 +308,7 @@ extension FaceKeywordingView {
                     .textFieldStyle(.roundedBorder)
                     .labelsHidden()
             }
-            HStack(spacing: 8) {
+            HStack(spacing: GatherMetrics.Space.s) {
                 Button(cluster.binding != nil ? l10n("更新绑定") : l10n("绑定")) {
                     Task { await viewModel.bind(cluster) }
                 }
@@ -334,7 +334,7 @@ extension FaceKeywordingView {
         let candidates = viewModel.clusters.filter {
             $0.id != cluster.id && $0.binding == nil
         }
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
             Text(l10n("合并")).font(GatherFont.cardTitle)
             if candidates.isEmpty {
                 Text(l10n("没有其他簇可合并。"))

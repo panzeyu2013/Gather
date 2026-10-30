@@ -214,7 +214,7 @@ struct C1StatusCapsule: View {
         // （彩色文字在浅色/深色下都会跌破对比度）。胶囊自身的底色与描边
         // 已删除——它现在住在工具栏里，chrome 由系统提供。
         Button(action: onOpenSettings) {
-            HStack(spacing: 6) {
+            HStack(spacing: GatherMetrics.Space.controlGap) {
                 Circle()
                     .fill(visual.tone)
                     .frame(width: 6, height: 6)
@@ -228,7 +228,7 @@ struct C1StatusCapsule: View {
                     Text(queue, format: .number)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, GatherMetrics.Space.xs)
                         .padding(.vertical, 1)
                         .background(
                             Capsule()

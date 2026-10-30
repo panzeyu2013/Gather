@@ -37,7 +37,7 @@ public struct GatherStatCard: View {
             // 状态色只出现在圆点上，数字始终用系统前景色。
             // （systemGreen/systemRed 当正文色在浅色下只有 ~2:1 —— 这是
             // macOS 设计语言里"颜色用于填充、不用于文字"的原因。）
-            HStack(spacing: 6) {
+            HStack(spacing: GatherMetrics.Space.controlGap) {
                 if style != .plain {
                     Circle()
                         .fill(color)
@@ -78,7 +78,7 @@ private extension View {
         case .card:
             self
                 .padding(.vertical, 10)
-                .padding(.horizontal, 8)
+                .padding(.horizontal, GatherMetrics.Space.s)
                 .background(
                     RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
                         .fill(GatherTheme.surface)

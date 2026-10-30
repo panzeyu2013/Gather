@@ -9,7 +9,7 @@ extension LibraryView {
     // MARK: 状态行（TS toolbar：loading/totalCount + range）
 
     var statusBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: GatherMetrics.Space.m) {
             if viewModel.phase == .loading {
                 Text(l10n("加载中…"))
                     .font(.callout)
@@ -27,7 +27,7 @@ extension LibraryView {
                     .controlSize(.small)
             }
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, GatherMetrics.Space.xl)
         .padding(.vertical, 10)
     }
 
@@ -117,7 +117,7 @@ extension LibraryView {
     private var photoGrid: some View {
         VStack(spacing: 0) {
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 12) {
+                LazyVGrid(columns: columns, spacing: GatherMetrics.Space.m) {
                     ForEach(viewModel.photos, id: \.assetId) { photo in
                         LibraryCardView(
                             photo: photo,
@@ -126,7 +126,7 @@ extension LibraryView {
                         )
                     }
                 }
-                .padding(24)
+                .padding(GatherMetrics.Space.xl)
             }
             Divider()
             pagination
@@ -134,7 +134,7 @@ extension LibraryView {
     }
 
     private var pagination: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: GatherMetrics.Space.m) {
             Button(l10n("上一页")) {
                 viewModel.prevPage()
             }
@@ -148,8 +148,8 @@ extension LibraryView {
             .disabled(!viewModel.hasNextPage)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 8)
+        .padding(.horizontal, GatherMetrics.Space.xl)
+        .padding(.vertical, GatherMetrics.Space.s)
     }
 }
 // MARK: - 策展侧栏入口（§3.8）

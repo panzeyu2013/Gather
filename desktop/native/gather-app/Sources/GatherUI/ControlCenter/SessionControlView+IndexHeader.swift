@@ -28,7 +28,7 @@ extension SessionControlView {
                     }
                 case .error:
                     // 状态色只落在图标上，正文保持系统前景色（彩色正文对比度不足）。
-                    HStack(spacing: 6) {
+                    HStack(spacing: GatherMetrics.Space.controlGap) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(GatherTheme.error)
                             .accessibilityHidden(true)

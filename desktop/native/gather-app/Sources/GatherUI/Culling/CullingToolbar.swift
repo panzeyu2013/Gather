@@ -34,7 +34,7 @@ struct CullingToolbar: View {
     private var fullToolbar: some View {
         // 10 → 12：动作条是每次进页都会看见的"第一层"，控件之间留一点空气，
         // 比把 7 个控件挤成一条更像 macOS 应用而不是仪表盘。
-        HStack(spacing: 12) {
+        HStack(spacing: GatherMetrics.Space.m) {
             undoRedoButtons
 
             Divider().frame(height: 18)
@@ -79,12 +79,12 @@ struct CullingToolbar: View {
             qualityAnalysisBlock
                 .fixedSize()
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 6)
+        .padding(.horizontal, GatherMetrics.Space.xl)
+        .padding(.vertical, GatherMetrics.Space.controlGap)
     }
 
     private var compactToolbar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GatherMetrics.Space.s) {
             undoRedoButtons
 
             Menu {
@@ -120,8 +120,8 @@ struct CullingToolbar: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
+        .padding(.horizontal, GatherMetrics.Space.l)
+        .padding(.vertical, GatherMetrics.Space.controlGap)
     }
 
     @ViewBuilder
@@ -142,7 +142,7 @@ struct CullingToolbar: View {
     }
 
     private var compactQualityAnalysis: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: GatherMetrics.Space.controlGap) {
             Button {
                 Task { await viewModel.analyzeQuality() }
             } label: {
@@ -174,7 +174,7 @@ struct CullingToolbar: View {
     }
 
     private var undoRedoButtons: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: GatherMetrics.Space.xs) {
             // 挑片撤销是自建栈（不是 NSUndoManager）；⌘Z/⇧⌘Z 由 CullingView 的
             // focused-scope 命令接管 Edit 菜单，按钮只保留点击与禁用态。
             Button { Task { await viewModel.undo() } } label: {
@@ -196,7 +196,7 @@ struct CullingToolbar: View {
     }
 
     private var qualityAnalysisBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
             Button(viewModel.isQualityBusy ? l10n("质量分析中…") : l10n("分析技术质量")) {
                 Task { await viewModel.analyzeQuality() }
             }
@@ -211,7 +211,7 @@ struct CullingToolbar: View {
                 .progressViewStyle(.linear)
                 .controlSize(.mini)
                 .frame(width: 150)
-                HStack(spacing: 6) {
+                HStack(spacing: GatherMetrics.Space.controlGap) {
                     Text("\(qualityProgressPercent(job))% \(l10n.progressPhaseText(job.progressMessage))")
                         .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
@@ -229,7 +229,7 @@ struct CullingToolbar: View {
         _ title: String,
         @ViewBuilder picker: () -> PickerView
     ) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: GatherMetrics.Space.xs) {
             Text(title)
                 .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)

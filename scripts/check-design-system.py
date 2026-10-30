@@ -27,8 +27,11 @@ BASELINE = ROOT / "scripts" / "design-system-baseline.json"
 METRICS = {
     "font.callout": (re.compile(r"\.font\(\.callout"), "raw .callout"),
     "font.systemSize": (re.compile(r"\.system\(size:"), "raw .system(size:)"),
-    "spacing.literalPadding": (re.compile(r"\.padding\([0-9.]+"), "numeric .padding"),
-    "spacing.literalSpacing": (re.compile(r"spacing:[ \t]*[0-9.]+"), "numeric spacing:"),
+    # 只认**紧跟数字**的字面量。旧正则写的是 [0-9.]+：字符集里的 "." 让
+    # ".padding(.horizontal, 12)"（带边形式）也被算成"数字 padding"，
+    # 178/206 的计数是这类误报（2026-10-30 修）；同理 "spacing: .zero"。
+    "spacing.literalPadding": (re.compile(r"\.padding\([0-9]"), "numeric .padding"),
+    "spacing.literalSpacing": (re.compile(r"spacing:[ \t]*[0-9]"), "numeric spacing:"),
     "empty.contentUnavailable": (re.compile(r"ContentUnavailableView"), "inline empty state"),
     "container.groupBox": (re.compile(r"GroupBox[ \t]*\{"), "inline GroupBox"),
     "theme.legacyAlias": (

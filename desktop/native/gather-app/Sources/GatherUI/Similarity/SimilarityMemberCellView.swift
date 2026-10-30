@@ -28,7 +28,7 @@ struct SimilarityMemberCellView: View {
             // 单击即打开（与「关联照片」网格、全局图库卡片一致）。
             onOpenPhoto?(path)
         } label: {
-            VStack(spacing: 2) {
+            VStack(spacing: GatherMetrics.Space.xxs) {
                 PhotoThumbnailView(
                     path: path,
                     size: 256,
@@ -42,7 +42,7 @@ struct SimilarityMemberCellView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            .padding(4)
+            .padding(GatherMetrics.Space.xs)
             .background(
                 RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous)
                     .fill(isHovered ? Color.primary.opacity(GatherMetrics.Opacity.hover) : Color.clear)

@@ -32,7 +32,7 @@ struct ExportResultSection: View {
                     }
                     .buttonStyle(.borderless)
                 }
-                HStack(spacing: 8) {
+                HStack(spacing: GatherMetrics.Space.s) {
                     Button(l10n("生成 CSV 报告")) {
                         Task { await viewModel.generateReport(format: .csv) }
                     }

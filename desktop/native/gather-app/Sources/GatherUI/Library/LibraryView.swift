@@ -83,7 +83,7 @@ package struct LibraryView: View {
     /// 取消语义需要重建。保持 @State 所有权 = 现有隔离与取消语义不变。
     @State private var jobProgressDebounceTask: Task<Void, Never>?
 
-    let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)]
+    let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: GatherMetrics.Space.m)]
 
     /// 空库且没有筛选条件时，不显示筛选 / 状态条，让空态成为首屏唯一焦点。
     private var showsBrowseChrome: Bool {
@@ -112,7 +112,7 @@ package struct LibraryView: View {
                     onDismiss: { viewModel.actionError = nil }
                 )
                     .padding(.horizontal, GatherMetrics.Layout.pageGutter)
-                    .padding(.top, 12)
+                    .padding(.top, GatherMetrics.Space.m)
                     .transition(.opacity)
             }
             // 空库且无筛选时，筛选条 / 状态条不占首屏：只留一个整页空态。

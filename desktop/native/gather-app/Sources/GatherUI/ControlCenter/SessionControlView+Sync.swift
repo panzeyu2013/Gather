@@ -11,7 +11,7 @@ extension SessionControlView {
         VStack(alignment: .leading, spacing: 10) {
             Text(l10n("元数据同步")).font(GatherFont.sectionTitle)
             if let sync = viewModel.syncStatus {
-                HStack(spacing: 16) {
+                HStack(spacing: GatherMetrics.Space.l) {
                     syncCount(l10n("待处理"), sync.pending)
                     syncCount(l10n("写入中"), sync.writing)
                     syncCount(l10n("已写入"), sync.written)
@@ -20,7 +20,7 @@ extension SessionControlView {
                     Spacer()
                 }
                 // 状态色只落在图标上；正文保持系统前景色（彩色正文对比度不足）。
-                HStack(spacing: 6) {
+                HStack(spacing: GatherMetrics.Space.controlGap) {
                     // 只有「全部确认」才是绿色勾；待写入/写入中/待 C1 读取都是进行中
                     //（黄色），与胶囊的四色调映射一致（F08）。
                     if sync.failed + sync.conflict > 0 {
