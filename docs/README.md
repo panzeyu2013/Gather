@@ -7,7 +7,7 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 
 ## 架构
 
-SwiftUI（GatherUI）→ AppServices（16 个域 API / 140 个类型化方法）→ GatherHost
+SwiftUI（GatherUI）→ AppServices（16 个域 API / 172 个类型化方法）→ GatherHost
 （AppComposition / AppRuntime / Live*API）→ GatherApplication（服务与 JobService）；
 交付在 GatherDelivery，持久层是 GatherPersistence，图像/人脸在 GatherAnalysis。
 

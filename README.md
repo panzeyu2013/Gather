@@ -30,7 +30,7 @@ decisions back through metadata.
 
 - **Local-first:** photos, indexes, models, and metadata processing stay on the
   computer; the app does not run a local web service.
-- **Native workflow:** SwiftUI pages call 16 typed domain APIs (140 methods)
+- **Native workflow:** SwiftUI pages call 16 typed domain APIs (172 methods)
   in-process across eight functional SwiftPM targets (16 total, incl. test/tool targets); there is no Electron, browser
   renderer, JavaScript IPC runtime, or string-command router.
 - **Recoverable writeback:** metadata changes are persisted in the `deliveries`
@@ -107,7 +107,7 @@ and re-reads the signed entitlements. Assembly also asserts the bundled
 
 ```text
 SwiftUI (GatherUI)
-  ↓ AppServices：16 个域协议 / 140 个类型化方法（同进程直连）
+  ↓ AppServices：16 个域协议 / 172 个类型化方法（同进程直连）
 GatherHost（AppComposition 组合根 / AppRuntime / Live*API）
   ↓
 GatherApplication（服务编排、JobService）

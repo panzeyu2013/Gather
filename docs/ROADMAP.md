@@ -33,7 +33,7 @@
 
 ## 三、当前状态（2026-10-30 交互整改后采样）
 
-- 8 个功能 target；16 域 API / 140 方法；SQLite 单一 schema（55 表 / 449 列 /
+- 8 个功能 target；16 域 API / 172 方法；SQLite 单一 schema（55 表 / 449 列 /
   user_version=1）；core 1,609 tests / 239 suites、app 829 / 93。
 - 已完成：原生迁移、分页、阈值多档、任务化、Vision 人脸、聚类/向量对账、
   写回可靠性、本地化、主题与无障碍。

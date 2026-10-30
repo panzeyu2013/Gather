@@ -131,7 +131,7 @@ defaults delete com.gather.desktop.native GatherApplicationSupportDirectory
 
 ```text
 SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
-  ↓ AppServices（16 个域 API / 140 个类型化方法，同进程直连）
+  ↓ AppServices（16 个域 API / 172 个类型化方法，同进程直连）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication（服务编排；交付在 GatherDelivery）
@@ -223,7 +223,7 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 
 ## 类型化 API 契约
 
-- 16 个域协议 / 140 个方法（`GatherProtocol/API/*API.swift`）。旧 118 条字符串命令已
+- 16 个域协议 / 172 个方法（`GatherProtocol/API/*API.swift`）。旧 118 条字符串命令已
   删除，历史映射见 git 历史。
 - **破坏性操作**只接收 `Confirmed<T>`：类型层面禁止裸 Bool；UI 必须在真实确认弹窗
   分支构造。
