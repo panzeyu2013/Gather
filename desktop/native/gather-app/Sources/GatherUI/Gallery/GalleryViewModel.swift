@@ -260,6 +260,13 @@ public final class GalleryViewModel: PageVisibility {
     let metadataAPI: (any MetadataAPI)?
     /// P2-2：服务端全选（⌘A）；nil = 预览/旧测试，退回已加载页。
     let photoAPI: (any PhotoAPI)?
+    /// 集合/堆栈（nil = 未接线；加入集合/堆叠入口隐藏）。
+    let albumAPI: (any AlbumAPI)?
+    /// 已加载的堆栈折叠索引；刷新后版本号进入 filteredPhotos 缓存键。
+    var stackFolds = StackFoldIndex()
+    var stackFoldVersion = 0
+    /// 可加入的集合（AlbumAPI 未接线时为空）。
+    public internal(set) var collections: [CollectionSummary] = []
     public internal(set) var metadataDetail: PhotoMetadataDetail?
     private var metadataRequestID = 0
 
@@ -326,6 +333,7 @@ public final class GalleryViewModel: PageVisibility {
         job: any JobAPI,
         metadata: (any MetadataAPI)? = nil,
         photo: (any PhotoAPI)? = nil,
+        album: (any AlbumAPI)? = nil,
         debounceDelay: Duration = .milliseconds(300),
         // 默认值与 defaultActive/IdleStatusPollInterval 一致；public init 的默认
         // 参数不能引用 internal static，故此处写字面量（常量仅供测试引用）。
@@ -337,6 +345,7 @@ public final class GalleryViewModel: PageVisibility {
         self.jobAPI = job
         self.metadataAPI = metadata
         self.photoAPI = photo
+        self.albumAPI = album
         self.debounceDelay = debounceDelay
         self.activeStatusPollInterval = activeStatusPollInterval
         self.idleStatusPollInterval = idleStatusPollInterval

@@ -191,7 +191,10 @@ struct FeatureAPIs {
             xmp: composition.xmpProvider,
             fileLock: composition.xmpFileLock,
             settingsService: composition.settingsService,
-            metadataDelivery: composition.metadataDeliveryService
+            metadataDelivery: composition.metadataDeliveryService,
+            retention: MetadataRetentionService(
+                connection: composition.db,
+                coordinator: composition.deliveryCoordinator)
         )
     }
 

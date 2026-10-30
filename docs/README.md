@@ -37,8 +37,8 @@ Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRoute
 `NativeCommandClient`；历史命令映射见 [api-migration-map.md](archive/cuts/api-migration-map.md)。
 
 > 当前基线（2026-10-29 tests 合入后采样）：8 个功能 target、Schema **55 表 / 449 列 / 84 索引 / 81 外键（user_version=1）**、
-> core **1,459 tests / 217 suites**、app **794 tests / 90 suites**（本地用 `scripts/test.sh` 并行；CI 串行——并行+阻塞型锁会耗尽 runner 线程池，见 [test-runtime-audit.md](test-runtime-audit.md)）、
-> en 1,998 键 / zh 9 占位键；无 Router、无字符串命令。
+> core **1,609 tests / 239 suites**、app **820 tests / 92 suites**（本地用 `scripts/test.sh` 并行；CI 串行——并行+阻塞型锁会耗尽 runner 线程池，见 [test-runtime-audit.md](test-runtime-audit.md)）、
+> en 2,013 键 / zh 9 占位键；无 Router、无字符串命令。
 > 只有当前 schema 可打开；旧迁移链已删除，旧版本/未知形态默认 fail-closed，仅显式重置策略才归档重建。
 > **13 个** `check-*.sh` 门禁全绿（strict 可用者带 `--strict`，另有 test-catalog `--self-test` 负例；P3-5 增加 `check-warnings.sh`）；
 > ratchet **60/255/0/0/0**（较 54/228：新增摄取/模板/IPTC/交付代码带来的 +6/+27，

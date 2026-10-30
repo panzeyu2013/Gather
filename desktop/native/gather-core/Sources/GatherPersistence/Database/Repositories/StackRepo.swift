@@ -142,17 +142,21 @@ public struct StackRepo: Sendable {
     public func stackIdsByPhoto(photoIds: [String]) throws -> [String: String] {
         let unique = Self.unique(photoIds)
         guard !unique.isEmpty else { return [:] }
-        let placeholders = unique.map { _ in "?" }.joined(separator: ", ")
-        let rows = try connection.prepare("""
-            SELECT photo_id, stack_id FROM photo_stack_members
-            WHERE photo_id IN (\(placeholders))
-            ORDER BY photo_id, position
-            """).query(unique.map(DBValue.text))
         var map: [String: String] = [:]
-        for row in rows {
-            guard let photoId = row[0].textValue, let stackId = row[1].textValue else { continue }
-            // 一个照片只认第一个堆栈（正常数据下不会有第二个）。
-            if map[photoId] == nil { map[photoId] = stackId }
+        for chunk in unique.chunked(by: 400) where !chunk.isEmpty {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+            let rows = try connection.prepare("""
+                SELECT photo_id, stack_id FROM photo_stack_members
+                WHERE photo_id IN (\(placeholders))
+                ORDER BY photo_id, position
+                """).query(chunk.map(DBValue.text))
+            for row in rows {
+                guard let photoId = row[0].textValue, let stackId = row[1].textValue else {
+                    continue
+                }
+                // 一个照片只认第一个堆栈（正常数据下不会有第二个）。
+                if map[photoId] == nil { map[photoId] = stackId }
+            }
         }
         return map
     }
@@ -271,11 +275,14 @@ public struct StackRepo: Sendable {
         let ordered = Self.unique(photoIds)
         guard !ordered.isEmpty else { return 0 }
         return try connection.transaction {
-            let placeholders = ordered.map { _ in "?" }.joined(separator: ", ")
-            let removed = try connection.prepare("""
-                DELETE FROM photo_stack_members
-                WHERE stack_id = ? AND photo_id IN (\(placeholders))
-                """).run([.text(stackId)] + ordered.map(DBValue.text))
+            var removed = 0
+            for chunk in ordered.chunked(by: 400) where !chunk.isEmpty {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+                removed += try connection.prepare("""
+                    DELETE FROM photo_stack_members
+                    WHERE stack_id = ? AND photo_id IN (\(placeholders))
+                    """).run([.text(stackId)] + chunk.map(DBValue.text))
+            }
             if removed > 0 {
                 try clearCoverIfNotMember(stackId: stackId)
                 try touch(id: stackId)
@@ -290,14 +297,19 @@ public struct StackRepo: Sendable {
         let ordered = Self.unique(photoIds)
         guard !ordered.isEmpty else { return 0 }
         return try connection.transaction {
-            let affectedStacks = try connection.prepare("""
-                SELECT DISTINCT stack_id FROM photo_stack_members
-                WHERE photo_id IN (\(ordered.map { _ in "?" }.joined(separator: ", ")))
-                """).query(ordered.map(DBValue.text)).compactMap { $0[0].textValue }
-            let placeholders = ordered.map { _ in "?" }.joined(separator: ", ")
-            let removed = try connection.prepare(
-                "DELETE FROM photo_stack_members WHERE photo_id IN (\(placeholders))"
-            ).run(ordered.map(DBValue.text))
+            var affectedStacks = Set<String>()
+            var removed = 0
+            for chunk in ordered.chunked(by: 400) where !chunk.isEmpty {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+                let rows = try connection.prepare("""
+                    SELECT DISTINCT stack_id FROM photo_stack_members
+                    WHERE photo_id IN (\(placeholders))
+                    """).query(chunk.map(DBValue.text))
+                affectedStacks.formUnion(rows.compactMap { $0[0].textValue })
+                removed += try connection.prepare(
+                    "DELETE FROM photo_stack_members WHERE photo_id IN (\(placeholders))"
+                ).run(chunk.map(DBValue.text))
+            }
             for stackId in affectedStacks {
                 try clearCoverIfNotMember(stackId: stackId)
                 // 空堆栈（成员全被摘走）直接删除，避免留下看不见的壳。

@@ -2,9 +2,9 @@
 
 ## 设计系统 ratchet
 
-- `spacing.literalPadding` 175 → 207（+32），`spacing.literalSpacing` 257 → 261（+4）。
-- 来源：新增的 Curation 侧栏/集合视图、查看器叠加层（直方图/合焦/参考对比）、校样与元数据同步条。
-- 处置：本轮带 `--allow-growth` 更新 baseline（`docs/design/p1-next/plan-2026-10-30.md` §3.8/§3.9 已记录）；
+- `spacing.literalPadding` 175 → 208（+33），`spacing.literalSpacing` 257 → 261（+4）。
+- 来源：新增的 Curation 侧栏/集合视图、查看器叠加层（直方图/合焦/参考对比）、校样与元数据同步条、语义检索面板。
+- 处置：本轮带 `--allow-growth` 更新 baseline（`scripts/design-system-baseline.json` 为唯一事实来源，本文记录理由）；
   后续统一换成 `GatherMetrics.Space/Layout` token，再次收紧 baseline。
 
 ## 清理 ratchet（已清零）
@@ -28,9 +28,11 @@
 - 关键词：缓存落库后 `KeywordIndexSync.syncFromCache`；启动后台回填断点续跑。
 - 元数据备份 GC：启动 30s 后一次 + 24h 周期。
 
-## 仍不在范围
+## 仍不在范围 / 静态审查未闭环
 
 - AF 点真实 MakerNote 解析：机型表空表，按设计只做人脸中心回退（不伪造）。
 - 跨页按评分/拍摄时间排序：`PhotoPageQuery.allowedSortFields` 只有 rowid/import_order，
   需要复合游标；本轮只提供“已加载范围”客户端排序。
+- 词库管理（树/改名/合并/同义词）：本波未做，半截服务已删除，不保留死层。
+- 参考对比的并排模式为“右半格显示参考图”的简化版；分割线拖动/叠加已可用。
 - 加密 DMG / 交付到期撤销 job。

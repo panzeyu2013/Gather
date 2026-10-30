@@ -237,6 +237,14 @@ extension SettingsViewModel {
                 zhLabel: "最低可执行置信度",
                 zhDesc: "默认 0.55；低于此值一律待复核"
             ),
+            SettingField(
+                key: "semantic_index_enabled", type: .select([
+                    SelectOption(value: "0", labelZh: "关闭（默认）"),
+                    SelectOption(value: "1", labelZh: "开启"),
+                ]),
+                zhLabel: "语义索引",
+                zhDesc: "开启后质量分析在同一次预览解码上写 FeaturePrint 向量，供图库“查找相似照片”使用；大会话会增加磁盘与 Vision 开销。"
+            ),
         ]),
         SettingGroup(id: "face", titleZh: "人脸模型", fields: [
             SettingField(

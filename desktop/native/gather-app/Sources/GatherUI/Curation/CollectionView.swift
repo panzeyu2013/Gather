@@ -87,7 +87,15 @@ final class CollectionViewModel {
         guard let index = items.firstIndex(where: { $0.photoId == photoId }) else { return }
         let target = index + offset
         guard items.indices.contains(target) else { return }
-        await move(photoId: photoId, before: items[target].photoId)
+        // 下移必须锚到"目标位置的下一张之前"；锚到紧邻下一张会原地不动。
+        let beforeId: String?
+        if offset > 0 {
+            let next = target + 1
+            beforeId = items.indices.contains(next) ? items[next].photoId : nil
+        } else {
+            beforeId = items[target].photoId
+        }
+        await move(photoId: photoId, before: beforeId)
     }
 
     /// 计算拖放锚点（纯函数，便于单测）：before 的上一张作为 after；

@@ -56,6 +56,17 @@ struct MetadataSyncBar: View {
                         .disabled(isBusy)
                         .help(l10n("删除本次写回的备份与交付记录；XMP 文件保留，不会还原"))
                 }
+                Menu {
+                    Button(l10n("立即清理已确认备份"), role: .destructive) {
+                        Task { await cleanup() }
+                    }
+                    .disabled(isBusy)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help(l10n("删除已确认交付的备份与交付记录；XMP 文件保留"))
                 Button {
                     Task { await refresh() }
                 } label: {
@@ -137,6 +148,30 @@ struct MetadataSyncBar: View {
 
     // MARK: - 动作
 
+
+    /// 设置页/检查器的“立即清理”：只删已确认交付的备份与行，XMP 保留。
+    private func cleanup() async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let summary = try await api.cleanupRetention(
+                Confirmed(
+                    MetadataCleanupInput(sessionId: sessionId, ignoreReloadAck: true),
+                    source: .userDialog))
+            await refresh()
+            errorText = nil
+            resultText = l10n.format(
+                "已清理 %lld 份备份，保留 %lld，跳过 %lld",
+                summary.deleted, summary.retained, summary.skipped)
+            if !summary.errors.isEmpty {
+                errorText = summary.errors.first
+            }
+        } catch {
+            errorText = APIErrorPresentation.message(for: error, with: l10n)
+        }
+    }
+
     private func refresh() async {
         do {
             let fetched = try await api.syncState(sessionId)
@@ -178,6 +213,12 @@ struct MetadataSyncBar: View {
             if let first = updated.notices.first {
                 // 失败/跳过必须逐条可见（§3.1.5），不能显示"成功 0 条"。
                 resultText = noticeText(updated.notices, first: first)
+            } else if let deleted = updated.finalizedDeleted,
+                      let retained = updated.finalizedRetained,
+                      let skipped = updated.finalizedSkipped {
+                resultText = l10n.format(
+                    "已清理 %lld 份交付，保留 %lld，跳过 %lld",
+                    deleted, retained, skipped)
             } else if updated.synced == 0 && updated.written == 0 {
                 resultText = l10n("已结束同步（XMP 保留）")
             } else {

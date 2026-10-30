@@ -39,6 +39,10 @@ public struct MetadataDeliveryState: Codable, Equatable, Sendable {
     public var rows: [MetadataDeliveryRow]
     /// 逐条失败/跳过原因（finalize/confirm 的 XMP_* 码）；UI 直接展示。
     public var notices: [String]
+    /// 最近一次 finalize 的计数（nil = 本次不是 finalize 返回）。
+    public var finalizedDeleted: Int?
+    public var finalizedRetained: Int?
+    public var finalizedSkipped: Int?
 
     public init(
         pending: Int = 0,
@@ -50,7 +54,10 @@ public struct MetadataDeliveryState: Codable, Equatable, Sendable {
         backupBytes: Int64 = 0,
         requiresReloadAck: Bool = false,
         rows: [MetadataDeliveryRow] = [],
-        notices: [String] = []
+        notices: [String] = [],
+        finalizedDeleted: Int? = nil,
+        finalizedRetained: Int? = nil,
+        finalizedSkipped: Int? = nil
     ) {
         self.pending = pending
         self.written = written
@@ -62,5 +69,8 @@ public struct MetadataDeliveryState: Codable, Equatable, Sendable {
         self.requiresReloadAck = requiresReloadAck
         self.rows = rows
         self.notices = notices
+        self.finalizedDeleted = finalizedDeleted
+        self.finalizedRetained = finalizedRetained
+        self.finalizedSkipped = finalizedSkipped
     }
 }

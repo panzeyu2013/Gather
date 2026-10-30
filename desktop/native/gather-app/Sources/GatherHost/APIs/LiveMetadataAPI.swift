@@ -83,6 +83,8 @@ public final class LiveMetadataAPI: MetadataAPI {
     /// 可选：未接线时三个生命周期方法退回协议默认实现的行为（空状态 + INVALID_PARAM），
     /// 既有构造点（测试 / 预览）不必同时升级。组合根接线见 FeatureAPIs.makeMetadata。
     private let metadataDelivery: MetadataDeliveryService?
+    /// P1：设置页“立即清理/备份统计”。
+    private let retention: MetadataRetentionService?
 
     /// Sendable 由协议继承显式声明：类为 final，所有依赖都是构造后不再变更的
     /// Sendable let（Repo 只持连接、stateWriter 由 deliveryRepo 派生、
@@ -93,7 +95,8 @@ public final class LiveMetadataAPI: MetadataAPI {
         xmp: any XMPProvider,
         fileLock: XMPFileLock,
         settingsService: SettingsService,
-        metadataDelivery: MetadataDeliveryService? = nil
+        metadataDelivery: MetadataDeliveryService? = nil,
+        retention: MetadataRetentionService? = nil
     ) {
         self.metadataService = metadataService
         self.deliveryRepo = deliveryRepo
@@ -108,9 +111,35 @@ public final class LiveMetadataAPI: MetadataAPI {
             metadata: metadataService
         )
         self.metadataDelivery = metadataDelivery
+        self.retention = retention
     }
 
     // MARK: - P1 下一波 §3.1：写回生命周期
+    public func backupStats() async throws -> MetadataBackupSummary {
+        guard let metadataDelivery else { throw Self.lifecycleNotWired("backupStats") }
+        let stats = try metadataDelivery.backupStats()
+        return MetadataBackupSummary(
+            count: stats.count, bytes: stats.bytes, oldestDays: stats.oldestDays)
+    }
+
+    public func cleanupRetention(
+        _ input: Confirmed<MetadataCleanupInput>
+    ) async throws -> MetadataCleanupSummary {
+        guard let retention else { throw Self.lifecycleNotWired("cleanupRetention") }
+        let policy: MetadataRetentionPolicy = input.value.ignoreReloadAck
+            ? .immediate
+            : MetadataRetentionPolicy(
+                retentionDays: 0, isEnabled: true, batchLimit: 200,
+                ignoreReloadAck: false, includeOrphanBackups: true,
+                adoptLegacyRows: false)
+        let result = await retention.run(policy: policy)
+        return MetadataCleanupSummary(
+            deleted: result.deletedDeliveries,
+            retained: result.retainedDeliveries,
+            skipped: result.skipped,
+            errors: result.errors)
+    }
+
 
     /// 只读状态：metadata/template 两个模块的交付计数、备份体积与逐文件行。
     public func syncState(_ sessionId: String) async throws -> MetadataDeliveryState {
@@ -128,7 +157,7 @@ public final class LiveMetadataAPI: MetadataAPI {
         guard let metadataDelivery else { throw Self.lifecycleNotWired("confirmSync") }
         let id = try LiveAPIInput.requireSessionId(input.value.sessionId)
         do {
-            return try metadataDelivery.confirmSync(sessionId: id)
+            return try await metadataDelivery.confirmAndMaybeFinalize(sessionId: id)
         } catch {
             throw Self.lifecycleError(error)
         }
@@ -139,7 +168,12 @@ public final class LiveMetadataAPI: MetadataAPI {
         guard let metadataDelivery else { throw Self.lifecycleNotWired("finalizeSync") }
         let id = try LiveAPIInput.requireSessionId(input.value.sessionId)
         do {
-            return try await metadataDelivery.finalizeSync(sessionId: id).state
+            let outcome = try await metadataDelivery.finalizeSync(sessionId: id)
+            var state = outcome.state
+            state.finalizedDeleted = outcome.deleted
+            state.finalizedRetained = outcome.retained
+            state.finalizedSkipped = outcome.skipped
+            return state
         } catch {
             throw Self.lifecycleError(error)
         }

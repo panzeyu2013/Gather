@@ -510,7 +510,14 @@ extension WritebackService {
         }
         let merged = mergeAttributes(
             base: session.attributes, entry: entry, persistedItem: persistedItem)
-        let report = try await session.commit(merged.attributes)
+        let report: MetadataRewriteReport
+        do {
+            report = try await session.commit(merged.attributes)
+        } catch {
+            // 失败不一定走到替换；让会话清掉本次新建的 header 备份，避免孤儿。
+            await session.abort()
+            throw error
+        }
         rewriteReports.record(path: xmpPath, report: report)
         phaseOne.recordPrepared(PreparedEntry(
             itemId: itemId,

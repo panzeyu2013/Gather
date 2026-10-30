@@ -87,16 +87,23 @@ public protocol MetadataAPI: Sendable {
     /// 共享文件只删本模块 synced item；仍有其它模块 item 时保留行与备份
     /// （留给最后一个模块收尾）；本模块仍有未确认 item 时按 XMP_CONFIRM_INCOMPLETE 跳过。
     func finalizeSync(_ input: Confirmed<SessionReference>) async throws -> MetadataDeliveryState
+
+    /// 备份统计（设置页维护；count/bytes/oldestDays）。
+    func backupStats() async throws -> MetadataBackupSummary
+
+    /// 立即回收已确认交付的行与备份（XMP 保留；ignoreReloadAck 由用户显式确认）。
+    func cleanupRetention(_ input: Confirmed<MetadataCleanupInput>) async throws -> MetadataCleanupSummary
 }
 
 // MARK: - 默认实现（未接线 / 测试替身）
 
 public extension MetadataAPI {
-    /// 未接线时返回空状态：UI 显示"无待同步"，不伪造计数。
+    /// 未接线时显式失败（INVALID_PARAM）：不返回可被误读成"已同步"的空状态。
     /// 状态类型见 Protocol/MetadataDelivery.swift（与生产实现同一形状）。
     func syncState(_ sessionId: String) async throws -> MetadataDeliveryState {
         _ = sessionId
-        return MetadataDeliveryState()
+        throw GatherError.invalidParameter(
+            field: "syncState", reason: "metadata lifecycle API not wired")
     }
 
     /// 未接线时显式失败（INVALID_PARAM）：静默"成功但什么都没做"会让状态条骗人。
@@ -110,5 +117,58 @@ public extension MetadataAPI {
         _ = input
         throw GatherError.invalidParameter(
             field: "finalizeSync", reason: "metadata lifecycle API not wired")
+    }
+
+    func backupStats() async throws -> MetadataBackupSummary {
+        throw GatherError.invalidParameter(
+            field: "backupStats", reason: "metadata maintenance API not wired")
+    }
+
+    func cleanupRetention(
+        _ input: Confirmed<MetadataCleanupInput>
+    ) async throws -> MetadataCleanupSummary {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "cleanupRetention", reason: "metadata maintenance API not wired")
+    }
+}
+
+// MARK: - 备份统计 / 手动回收（设置页维护）
+
+public struct MetadataBackupSummary: Codable, Equatable, Sendable {
+    public var count: Int
+    public var bytes: Int64
+    public var oldestDays: Int?
+
+    public init(count: Int = 0, bytes: Int64 = 0, oldestDays: Int? = nil) {
+        self.count = count
+        self.bytes = bytes
+        self.oldestDays = oldestDays
+    }
+}
+
+public struct MetadataCleanupInput: Codable, Equatable, Sendable {
+    /// 立即回收已确认交付的行与备份；XMP 永远保留。
+    public var sessionId: String
+    /// true = 忽略 C1 reload-ack 门禁（用户显式点“立即清理”）。
+    public var ignoreReloadAck: Bool
+
+    public init(sessionId: String, ignoreReloadAck: Bool = true) {
+        self.sessionId = sessionId
+        self.ignoreReloadAck = ignoreReloadAck
+    }
+}
+
+public struct MetadataCleanupSummary: Codable, Equatable, Sendable {
+    public var deleted: Int
+    public var retained: Int
+    public var skipped: Int
+    public var errors: [String]
+
+    public init(deleted: Int = 0, retained: Int = 0, skipped: Int = 0, errors: [String] = []) {
+        self.deleted = deleted
+        self.retained = retained
+        self.skipped = skipped
+        self.errors = errors
     }
 }

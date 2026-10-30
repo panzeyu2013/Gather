@@ -28,6 +28,8 @@ struct CullingInspector: View {
     @State private var pendingTriageInput: TriageWritebackInput?
     @State private var showTriageWritebackConfirm = false
     @State private var showTriageUndoConfirm = false
+    /// P1：客户校样评论（photoId → 最近一条）；nil/空 = 没有反馈。
+    @State private var proofComments: [String: String] = [:]
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
@@ -439,6 +441,16 @@ struct CullingInspector: View {
                     }
                 }
 
+                // P1：客户校样评论（只读；导入时已落库）。
+                if let photoId = viewModel.currentAsset?.photo.id,
+                   let comment = proofComments[photoId], !comment.isEmpty {
+                    GatherInspectorSection(l10n("客户评论")) {
+                        Text(comment)
+                            .font(GatherFont.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
                 // 附加统计（对齐 summaryCard 的增强项：已评分/已标记）。
                 if let summary = viewModel.summary {
                     GatherInspectorSection(l10n("统计")) {
@@ -452,6 +464,14 @@ struct CullingInspector: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(GatherMetrics.Space.l)
+        }
+        .task(id: viewModel.sessionId) {
+            do {
+                proofComments = try await viewModel.cullingAPI.proofComments(
+                    sessionId: viewModel.sessionId)
+            } catch {
+                proofComments = [:]
+            }
         }
         .task(id: viewModel.currentAsset?.similarityGroupId) {
             guard viewModel.currentAsset?.similarityGroupId != nil else { return }

@@ -142,13 +142,37 @@ extension GalleryView {
                 photo: photo,
                 isSelected: viewModel.selectedIds.contains(photo.id),
                 thumbnailSize: viewModel.thumbnailSize,
-                cullingState: viewModel.batchCullingStates[photo.id]
+                cullingState: viewModel.batchCullingStates[photo.id],
+                stackCount: viewModel.stackFolds.badgeCount(for: photo.id)
             )
             .frame(width: item.width, height: rowHeight)
         }
         .buttonStyle(.plain)
         // HIG：上下文菜单描述指针下的对象（旧版在选中集非空时变成空菜单）。
         .contextMenu {
+            let targetIds = viewModel.selectedIds.contains(photo.id)
+                ? Array(viewModel.selectedIds) : [photo.id]
+            if viewModel.albumAPI != nil, !targetIds.isEmpty {
+                Menu(l10n("加入集合")) {
+                    if viewModel.collections.isEmpty {
+                        Text(l10n("还没有集合"))
+                    } else {
+                        ForEach(viewModel.collections) { collection in
+                            Button(collection.name) {
+                                Task {
+                                    await viewModel.addToCollection(
+                                        collection.id, photoIds: targetIds)
+                                }
+                            }
+                        }
+                    }
+                }
+                Button(l10n("新建堆栈")) {
+                    Task { await viewModel.createStack(photoIds: targetIds) }
+                }
+                .disabled(targetIds.count < 2)
+                Divider()
+            }
             if let url = GalleryView.finderURL(for: photo) {
                 Button(l10n("在 Finder 中显示")) {
                     NSWorkspace.shared.activateFileViewerSelecting([url])

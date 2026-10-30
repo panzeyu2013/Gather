@@ -243,7 +243,8 @@ struct CompositionCore {
             policyProvider: { TriagePolicy.fromSettings(settingsService) },
             enabledProvider: {
                 settingsService.get("triage_enabled", defaultValue: "0") == "1"
-            })
+            },
+            feedback: TriageFeedbackRepo(connection: db))
         // 3.4 CullingService：写回执行器走 WritebackService（CullingWritebackPort），
         // confirm/cleanup/syncStatus 走交付模型（不再注入旧 outbox 仓储）。
         let cullingService = CullingService(
@@ -322,6 +323,11 @@ struct CompositionCore {
                         photoId: $0.photoId, x: $0.x, y: $0.y,
                         width: $0.width, height: $0.height, quality: $0.quality)
                 }
+            },
+            // P1：语义索引采集（默认关；开启后在 quality.score 的同一次预览解码上写向量）。
+            semantics: PhotoSemanticsRepo(connection: db),
+            semanticsEnabled: {
+                settingsService.get("semantic_index_enabled", defaultValue: "0") == "1"
             })
         let indexerService = IndexerService(
             // WP3b-2：扫描写路径/派生失效 SQL 在 IndexerRepo，事务经 TransactionRunner。

@@ -205,6 +205,15 @@ public struct MetadataDeliveryService: Sendable {
         return try state(sessionId: id)
     }
 
+    /// 确认同步；若 metadata_sync_auto_finalize=1，再走一次 module finalize。
+    public func confirmAndMaybeFinalize(sessionId: String) async throws -> MetadataDeliveryState {
+        _ = try confirmSync(sessionId: sessionId)
+        if getSetting(Self.autoFinalizeKey, "0") == "1" {
+            _ = try await finalizeSync(sessionId: sessionId)
+        }
+        return try state(sessionId: try requireSession(sessionId))
+    }
+
     /// 写盘成功后的自动确认（§3.1.2）。
     ///
     /// 不抛：写盘已经成功，确认失败不能反过来把写盘报成失败；结果码让调用方

@@ -55,28 +55,6 @@ public struct ClientSelectionImportReport: Codable, Equatable, Sendable {
         self.alreadyImported = alreadyImported
     }
 
-    /// 由两段既有结果拼装（v1 勾选结果 + v2 反馈明细）。
-    ///
-    /// ClientFeedbackImportResult（ProofShare.swift）只带 conflicts/comments/
-    /// alreadyImported 三类明细；评分/色标计数由调用方显式给出（ProofFeedbackService
-    /// 直接返回本类型时无需用它）。
-    public init(
-        selection: ClientSelectionImportResult,
-        feedback: ClientFeedbackImportResult,
-        ratingApplied: Int = 0,
-        labelApplied: Int = 0
-    ) {
-        self.init(
-            picked: selection.picked,
-            applied: selection.applied,
-            skipped: selection.skipped,
-            failed: selection.failed,
-            ratingApplied: ratingApplied,
-            labelApplied: labelApplied,
-            comments: feedback.comments,
-            conflicts: feedback.conflicts,
-            alreadyImported: feedback.alreadyImported)
-    }
 
     /// v1 形态（旧调用点/旧 UI 只读这四个数时用）。
     public var selection: ClientSelectionImportResult {

@@ -308,14 +308,14 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         let payload = input.value
         let sessionId = try LiveAPIInput.requireSessionId(payload.sessionId)
         let data = Data(payload.json.utf8)
-        let sourceName = ""
+
         let report: ClientSelectionImportReport
         if proofFeedback != nil {
             report = try await Task.detached(priority: .userInitiated) {
                 try self.map {
                     // 服务非 Sendable：经 self 的 let 引用访问，不捕获成局部变量跨线程。
                     try self.proofFeedback!.import(
-                        sessionId: sessionId, data: data, sourceName: sourceName)
+                        sessionId: sessionId, data: data)
                 }
             }.value
         } else {
@@ -350,6 +350,11 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         }.value
     }
 
+
+    public func proofComments(sessionId: String) async throws -> [String: String] {
+        guard let proofFeedback else { return [:] }
+        return try map { try proofFeedback.comments(sessionId: sessionId) }
+    }
 
     public func adjustmentHint(photoId: String) async throws -> CropFrame? {
         guard let photoRepo,
@@ -467,6 +472,9 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             )
         }
         try await mapAsync { try await cullingService.flushQueuedMetadata(sessionId: input.sessionId) }
+        recordManualFeedback(
+            sessionId: input.sessionId, photoIds: [input.photoId],
+            pickState: input.patch.pickState)
         return result
     }
 
@@ -479,6 +487,9 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             )
         }
         try await mapAsync { try await cullingService.flushQueuedMetadata(sessionId: input.sessionId) }
+        recordManualFeedback(
+            sessionId: input.sessionId, photoIds: input.photoIds,
+            pickState: input.patch.pickState)
         return result
     }
 
@@ -571,6 +582,28 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     }
 
     // MARK: - 校验与错误映射
+
+    /// 人工改选 → triage_feedback（校准样本）。失败只记日志，不影响决策提交。
+    private func recordManualFeedback(
+        sessionId: String, photoIds: [String], pickState: PickState?
+    ) {
+        guard let pickState else { return }
+        let decision: CullingDecisionValue
+        switch pickState {
+        case .picked: decision = .keep
+        case .rejected: decision = .reject
+        case .unreviewed: decision = .pending
+        }
+        for photoId in Set(photoIds) {
+            do {
+                _ = try triageService.recordManualDecision(
+                    sessionId: sessionId, photoId: photoId, decision: decision)
+            } catch {
+                GatherLogger.log(
+                    "triage feedback record failed: \(error)", level: .debug)
+            }
+        }
+    }
 
     private func map<T>(_ body: () throws -> T) throws -> T {
         do {

@@ -2,7 +2,7 @@
 // Cut 2 / B-1：Database facade 的行为门禁（D-035）。
 //
 // 覆盖四件事（WP6b）：
-//   1. `:memory:` 打开即当前 schema v1（44 表 / user_version = 1；唯一版本，一次成型）；
+//   1. `:memory:` 打开即当前 schema v1（55 表 / user_version = 1；唯一版本，一次成型）；
 //   2. 文件库新建 → 关闭 → 重开数据保留（v1 幂等）；
 //   3. 版本不符（user_version != 当前）默认 fail-closed（不改名、不动文件，显式 reset 才归档重建）；
 //      user_version=99 的
@@ -107,7 +107,7 @@ struct DatabaseFacadeTests {
 
     // MARK: 1. 内存库
 
-    @Test(":memory:：open 直接建 schema v1（44 表 / user_version = 1）")
+    @Test(":memory:：open 直接建 schema v1（55 表 / user_version = 1）")
     func memoryOpenBuildsCurrentSchema() throws {
         let database = try Database.open(at: Database.inMemoryPath)
         defer { database.close() }
@@ -117,7 +117,7 @@ struct DatabaseFacadeTests {
         #expect(database.outcome == .created(SchemaCurrent.userVersion))
 
         let tables = try database.read { try userTables($0) }
-        #expect(tables.count == expectedCurrentTableCount, "当前 schema 必须是 44 张表，实际 \(tables.count)：\(tables)")
+        #expect(tables.count == expectedCurrentTableCount, "当前 schema 必须是 55 张表，实际 \(tables.count)：\(tables)")
         #expect(tables.contains("sessions"))
         #expect(tables.contains("delivery_intents"))
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaCurrent.userVersion)
@@ -179,7 +179,7 @@ struct DatabaseFacadeTests {
         )
         defer { database.close() }
 
-        // 新库必须是干净的 v1：版本 1、44 表、旧表不存在（WAL 残留不得复辟旧页）。
+        // 新库必须是干净的 v1：版本 1、55 表、旧表不存在（WAL 残留不得复辟旧页）。
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaCurrent.userVersion)
         let tables = try database.read { try userTables($0) }
         #expect(tables.count == expectedCurrentTableCount)

@@ -93,25 +93,4 @@ struct StackFoldIndex: Equatable {
     }
 }
 
-/// 缩略图右上角的堆栈徽标（成员数）。
-struct StackBadge: View {
-    let count: Int
-    /// 展开态（堆栈被点开时换成另一枚图标，视觉上区分"已展开"）。
-    var isExpanded = false
 
-    var body: some View {
-        HStack(spacing: GatherMetrics.Space.xxs) {
-            Image(systemName: isExpanded ? "square.stack.3d.down.right" : "square.stack.3d.up.fill")
-                .imageScale(.small)
-            Text("\(count)")
-                .font(GatherFont.label)
-                .monospacedDigit()
-        }
-        .foregroundStyle(GatherTheme.viewerTextPrimary)
-        .padding(.horizontal, GatherMetrics.Space.xs)
-        .padding(.vertical, GatherMetrics.Space.xxs)
-        .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.85)))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("堆栈 \(count) 张")
-    }
-}

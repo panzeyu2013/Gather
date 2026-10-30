@@ -398,7 +398,7 @@ package final class AppBootstrap {
             duplicate: appServices.duplicate,
             export: appServices.export,
             person: appServices.person,
-            captureOne: captureOneBridge,
+            captureOne: c1RoundTrip,
             libraryProvider: libraryProvider,
             galleryProvider: galleryProvider,
             dashboardProvider: provider,

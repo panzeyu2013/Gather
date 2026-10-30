@@ -441,7 +441,7 @@ public struct PreviewHistogram: Codable, Equatable, Sendable {
     public var isEmpty: Bool { luminance.isEmpty || sampleCount == 0 }
 }
 
-/// 合焦图参数（阈值默认 0.55，来自设置 focus_mask_threshold）。
+/// 合焦图参数（阈值默认 0.55；当前未暴露设置项）。
 public struct FocusMaskParameters: Codable, Equatable, Sendable {
     /// 0...1：局部方差归一化后高于该值的格子算"合焦"。
     public var threshold: Double

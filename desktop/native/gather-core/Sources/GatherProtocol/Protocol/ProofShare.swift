@@ -56,31 +56,6 @@ public struct ProofFeedbackConflict: Codable, Equatable, Sendable {
     }
 }
 
-public struct ClientFeedbackImportResult: Codable, Equatable, Sendable {
-    public var picked: Int
-    public var skipped: Int
-    public var failed: Int
-    public var conflicts: [ProofFeedbackConflict]
-    public var comments: Int
-    public var alreadyImported: Bool
-
-    public init(
-        picked: Int = 0,
-        skipped: Int = 0,
-        failed: Int = 0,
-        conflicts: [ProofFeedbackConflict] = [],
-        comments: Int = 0,
-        alreadyImported: Bool = false
-    ) {
-        self.picked = picked
-        self.skipped = skipped
-        self.failed = failed
-        self.conflicts = conflicts
-        self.comments = comments
-        self.alreadyImported = alreadyImported
-    }
-}
-
 public struct OutputShareOptions: Codable, Equatable, Sendable {
     /// false = 只上传 thumbs/proof，不上传 large 与成片。
     public var allowDownload: Bool

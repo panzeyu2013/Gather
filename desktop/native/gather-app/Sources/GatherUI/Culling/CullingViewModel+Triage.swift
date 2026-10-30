@@ -378,11 +378,6 @@ public struct TriageCalibrationPanelModel: Equatable, Sendable {
     /// 样本门禁：不足时只显示"样本不足"，禁用"应用"。
     public var isApplicable: Bool { minSamples > 0 && samples >= minSamples }
 
-    public var disabledReason: String? {
-        guard !isApplicable else { return nil }
-        return "样本不足（\(samples)/\(minSamples)）"
-    }
-
     /// 由当前设置推导的三档阈值（keep=高、minExecutable=中）。
     public var confidenceThresholds: TriageConfidenceThresholds {
         TriageConfidenceThresholds(high: currentKeep, medium: currentMinExecutable)

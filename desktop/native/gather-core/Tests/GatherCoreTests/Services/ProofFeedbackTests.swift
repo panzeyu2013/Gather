@@ -16,10 +16,11 @@ private final class FakePickApplier: ProofPickApplying {
 
     func applyImportedPicks(
         sessionId: String, photoIds: [String]
-    ) throws -> (applied: Int, failed: Int) {
+    ) throws -> (appliedPhotoIds: [String], failed: Int) {
         calls.append(photoIds)
         let usable = max(0, photoIds.count - skipFirstN)
-        return (applied == 0 ? usable : min(applied, usable), failed)
+        let count = applied == 0 ? usable : min(applied, usable)
+        return (Array(photoIds.prefix(count)), failed)
     }
 }
 

@@ -25,10 +25,10 @@ import GatherDelivery
 
 /// 勾选应用端口（生产 = CullingService）。
 public protocol ProofPickApplying: AnyObject {
-    /// - Returns: (成功应用的张数, 单张失败数)。人工保护导致的跳过不计入两者。
+    /// - Returns: (真正应用的 photoIds, 单张失败数)。人工保护导致的跳过不计入两者。
     func applyImportedPicks(
         sessionId: String, photoIds: [String]
-    ) throws -> (applied: Int, failed: Int)
+    ) throws -> (appliedPhotoIds: [String], failed: Int)
 }
 
 /// 评分/色标入队端口（生产 = MetadataMutationService）。
@@ -50,10 +50,10 @@ public final class CullingProofPickApplier: ProofPickApplying {
 
     public func applyImportedPicks(
         sessionId: String, photoIds: [String]
-    ) throws -> (applied: Int, failed: Int) {
+    ) throws -> (appliedPhotoIds: [String], failed: Int) {
         let outcome = try service.applyImportedPicks(
             sessionId: sessionId, photoIds: photoIds)
-        return (outcome.results.count, outcome.failed)
+        return (outcome.appliedPhotoIds, outcome.failed)
     }
 }
 
@@ -150,8 +150,7 @@ public final class ProofFeedbackService {
     /// 导入 selection.json（v1/v2）。
     public func `import`(
         sessionId: String,
-        data: Data,
-        sourceName: String = ""
+        data: Data
     ) throws -> ClientSelectionImportReport {
         let trimmedSession = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSession.isEmpty else { throw ProofFeedbackServiceError.invalidSession }
@@ -161,7 +160,6 @@ public final class ProofFeedbackService {
         } catch let error as ClientSelectionError {
             throw error.gatherError
         }
-        _ = sourceName
         let batchId = Self.batchId(for: data)
         let submittedAt = parsed.submittedAt ?? ""
 
@@ -206,6 +204,7 @@ public final class ProofFeedbackService {
 
         // 2) 勾选：走既有 applyImportedPicks（人工决策保护在服务里）。
         let pickedIds = parsed.pickedPhotoIds.filter { known.contains($0) }
+        var pickedAppliedIds = Set<String>()
         var applied = 0
         var failed = 0
         var skipped = unknownCount
@@ -214,10 +213,11 @@ public final class ProofFeedbackService {
         } else if let picks {
             let outcome = try picks.applyImportedPicks(
                 sessionId: trimmedSession, photoIds: pickedIds)
-            applied = outcome.applied
+            pickedAppliedIds = Set(outcome.appliedPhotoIds)
+            applied = pickedAppliedIds.count
             failed = outcome.failed
             // 人工保护导致的未应用：既不成功也不失败，但要能被数出来。
-            skipped += max(0, pickedIds.count - outcome.applied - outcome.failed)
+            skipped += max(0, pickedIds.count - applied - failed)
         }
 
         // 3) 评分/色标：设置关掉时只落库（不碰本地值）。
@@ -268,12 +268,8 @@ public final class ProofFeedbackService {
             comments += 1
         }
 
-        // 审计：真正被消费的行标 applied_at（勾选成功 + 评分/色标入队）。
-        var appliedPhotoIds = Array(queued)
-        if applied > 0 {
-            appliedPhotoIds.append(
-                contentsOf: pickedIds.filter { !queued.contains($0) }.prefix(applied))
-        }
+        // 审计：真正被消费的行标 applied_at（真实勾选成功 + 评分/色标入队）。
+        let appliedPhotoIds = Array(queued.union(pickedAppliedIds))
         if !appliedPhotoIds.isEmpty {
             _ = try repo.markApplied(
                 batchId: batchId, photoIds: appliedPhotoIds, at: isoString(now()))
@@ -294,7 +290,7 @@ public final class ProofFeedbackService {
     /// 检查器徽章用：该会话每条照片最近一条非空评论。
     public func comments(sessionId: String) throws -> [String: String] {
         var result: [String: String] = [:]
-        for row in try repo.rows(sessionId: sessionId) where !row.comment.isEmpty {
+        for row in try repo.commentRows(sessionId: sessionId) where !row.comment.isEmpty {
             if result[row.photoId] == nil { result[row.photoId] = row.comment }
         }
         return result
@@ -302,9 +298,7 @@ public final class ProofFeedbackService {
 
     /// 该会话已导入的批次数（UI 用：0 = 从没有客户反馈）。
     public func importedBatches(sessionId: String) throws -> Int {
-        var batches = Set<String>()
-        for row in try repo.rows(sessionId: sessionId) { batches.insert(row.batchId) }
-        return batches.count
+        try repo.batchCount(sessionId: sessionId)
     }
 
     // MARK: - 纯逻辑

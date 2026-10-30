@@ -42,9 +42,13 @@ package struct GalleryView: View {
     @State var pendingInitialPhotoId: String?
     /// 只有路径的调用方（相似度成员行）用：id 匹配不到时按 filepath 匹配。
     @State var pendingInitialPhotoPath: String?
-    /// P0 / B2：单张元数据编辑 sheet（检查器扩展不能自带存储属性）。
-    @State var showMetadataEditor = false
-    @State var showSemanticSearch = false
+    /// P0 / B2：检查器 sheet（同一个 .sheet(item:) 承载，避免叠多个 .sheet）。
+    enum GallerySheet: String, Identifiable {
+        case metadata
+        case semantic
+        var id: String { rawValue }
+    }
+    @State var inspectorSheet: GallerySheet?
     /// P1 下一波 §3.7.2：高级筛选规则 sheet。
     @State var showRuleEditor = false
     /// P1 下一波 §3.7.3：保存查询的命名 sheet 与草稿名。

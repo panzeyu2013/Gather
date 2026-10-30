@@ -159,6 +159,8 @@ extension GalleryViewModel {
         committedSearch = search.trimmingCharacters(in: .whitespaces)
         committedFilter = filter
         searchActiveWas = activeCriteria != nil
+        // 手动改任一条件后不再代表某条保存查询；applySavedSearch 会在 restore 后回填。
+        appliedSearchName = nil
         Task { await reload() }
     }
 
@@ -214,8 +216,8 @@ extension GalleryViewModel {
     /// 拆不出来的条件一律落进 rules（不丢语义）：宁可规则编辑器里多一行，
     /// 也不能让"恢复查询"少筛一批照片。顶层是 OR 组时不做拆分，整份进 rules。
     public func applySavedSearch(_ search: SavedSearchData) {
-        appliedSearchName = search.name
         restore(criteria: search.criteria)
+        appliedSearchName = search.name
     }
 
     /// criteria → UI 状态（拆解规则见 applySavedSearch）。

@@ -27,7 +27,7 @@ enum XMPPacketReader {
         var attributes: MetadataWriteAttributes
         /// 中间分段（诊断/测试用：xmp / dc / iptc / xmpPresentKeys）。
         var segments: MetadataParseSegments
-        /// lr:hierarchicalSubject（层级关键词；本波只读不写）。
+        /// lr:hierarchicalSubject（层级关键词；读侧交出层表，写入与 sidecar 共用 patchDocument）。
         var hierarchicalKeywords: [String]
         /// gather:Triage 原始信号（空串 = 显式清除，归一化为 nil）。
         var triageSignal: String?
@@ -228,8 +228,8 @@ enum XMPPacketReader {
         var iim: IPTCIIM?
         for payload in payloads {
             guard let resources = tryOptional({ try PhotoshopIRBList.parse(payload) }) else {
-                // 与写侧同口径：任一段解析不了就当 IIM 不存在（不删不改）。
-                return [:]
+                // 坏段只跳过本段：已成功解析的 IIM 不因后续段损坏而整体丢弃。
+                continue
             }
             guard iim == nil,
                   let resource = resources.first(where: { $0.resourceID == PhotoshopIRB.iptcNAA })

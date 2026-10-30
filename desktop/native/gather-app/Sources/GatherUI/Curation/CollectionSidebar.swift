@@ -252,6 +252,9 @@ public struct CollectionSidebar: View {
         do {
             collections = try await album.collections(sessionId)
             loadFailed = false
+        } catch is CancellationError {
+            // task(id:) 切工作区取消旧请求：保留现有列表，不当成加载失败。
+            return
         } catch {
             collections = []
             loadFailed = true

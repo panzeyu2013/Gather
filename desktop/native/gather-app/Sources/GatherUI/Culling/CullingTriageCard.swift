@@ -429,8 +429,10 @@ struct CullingTriageCard: View {
             Text(l10n.format("人工样本 %lld / 最少 %lld", model.samples, model.minSamples))
                 .font(GatherFont.labelRegular)
                 .monospacedDigit()
-            if let disabled = model.disabledReason {
-                Label(disabled, systemImage: "exclamationmark.triangle.fill")
+            if !model.isApplicable {
+                Label(
+                    l10n.format("样本不足（%lld/%lld）", model.samples, model.minSamples),
+                    systemImage: "exclamationmark.triangle.fill")
                     .font(GatherFont.secondary)
                     .foregroundStyle(GatherTheme.warning)
             }

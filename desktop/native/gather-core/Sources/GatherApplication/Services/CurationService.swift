@@ -87,6 +87,7 @@ public struct CurationService: Sendable {
     // 无 @unchecked：四个仓储都是值类型、只包一个线程安全的 DBConnection
     // （Persistence 层既定约定），本类型自身没有可变状态；唯一的缓存由
     // OSAllocatedUnfairLock 保护。
+    private let connection: DBConnection
     private let collections: CollectionRepo
     private let stacks: StackRepo
     private let duplicates: GlobalDuplicateQuery
@@ -99,12 +100,15 @@ public struct CurationService: Sendable {
     struct GlobalDuplicateCache: Sendable {
         var result: GlobalDuplicateScanResult?
         var computedAt: Date?
+        /// 参数指纹：includeVisual/threshold/limit 任一变化都不能复用旧结果。
+        var key: String?
     }
 
     /// 缓存有效期（秒）：5 分钟。超期后下次读取重扫（扫描本身是只读 SQL + 纯计算）。
     public static let globalDuplicateCacheTTL: TimeInterval = 300
 
     public init(connection: DBConnection) {
+        self.connection = connection
         self.collections = CollectionRepo(connection: connection)
         self.stacks = StackRepo(connection: connection)
         self.duplicates = GlobalDuplicateQuery(connection: connection)
@@ -238,13 +242,16 @@ public struct CurationService: Sendable {
         }
         let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = name.isEmpty ? "" : try CurationNaming.normalized(name)
-        _ = try stacks.detachPhotos(photoIds: photoIds)
-        let row = try stacks.create(
-            sessionId: input.sessionId,
-            name: normalized,
-            coverPhotoId: input.coverPhotoId,
-            photoIds: photoIds
-        )
+        // 摘旧堆栈 + 建新堆栈必须同一事务：create 失败不能留下"已摘掉"的半状态。
+        let row = try connection.transaction {
+            _ = try stacks.detachPhotos(photoIds: photoIds)
+            return try stacks.create(
+                sessionId: input.sessionId,
+                name: normalized,
+                coverPhotoId: input.coverPhotoId,
+                photoIds: photoIds
+            )
+        }
         return Self.summary(row)
     }
 
@@ -300,8 +307,8 @@ public struct CurationService: Sendable {
 
     /// 扫描跨工作区重复/相似。可取消：每完成一个阶段检查一次，取消时抛 CancellationError。
     ///
-    /// 结果按 (includeVisual, threshold, limit) 无关的整体缓存：读面只此一份，
-    /// 失效由 invalidateGlobalDuplicateCache() 或 TTL 触发。
+    /// 结果按参数指纹缓存（includeVisual/threshold/limit）：读面只此一份，
+    /// 失效由 invalidateGlobalDuplicateCache()、参数变化或 TTL 触发。
     public func scanGlobalDuplicates(
         _ input: GlobalDuplicateScanInput,
         isCancelled: @Sendable () -> Bool = { false }
@@ -312,11 +319,13 @@ public struct CurationService: Sendable {
         guard (1...500).contains(input.maxGroupCount) else {
             throw CurationError.invalidLimit(input.maxGroupCount)
         }
-        if let cached = cachedResult(), !isCancelled() { return cached }
+        let key = "\(input.includeVisual)|\(input.visualThreshold)|\(input.maxGroupCount)"
+        if let cached = cachedResult(key: key), !isCancelled() { return cached }
         let result = try performScan(input, isCancelled: isCancelled)
         cache.withLock { state in
             state.result = result
             state.computedAt = Date()
+            state.key = key
         }
         return result
     }
@@ -325,12 +334,14 @@ public struct CurationService: Sendable {
         cache.withLock { state in
             state.result = nil
             state.computedAt = nil
+            state.key = nil
         }
     }
 
-    private func cachedResult() -> GlobalDuplicateScanResult? {
+    private func cachedResult(key: String) -> GlobalDuplicateScanResult? {
         cache.withLock { state in
-            guard let result = state.result, let computedAt = state.computedAt else { return nil }
+            guard state.key == key,
+                  let result = state.result, let computedAt = state.computedAt else { return nil }
             guard Date().timeIntervalSince(computedAt) < Self.globalDuplicateCacheTTL else {
                 return nil
             }

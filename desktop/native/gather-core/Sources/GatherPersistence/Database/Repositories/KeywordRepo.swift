@@ -61,6 +61,7 @@ public enum KeywordRepoError: Error, Equatable, CustomStringConvertible {
     case hasMembers(path: String, count: Int)
     case hasChildren(path: String, count: Int)
     case notLeaf(String)
+    case targetExists(String)
 
     public var description: String {
         switch self {
@@ -72,6 +73,8 @@ public enum KeywordRepoError: Error, Equatable, CustomStringConvertible {
             "KEYWORD_HAS_CHILDREN: \(path) count=\(count)"
         case .notLeaf(let path):
             "KEYWORD_NOT_LEAF: \(path)"
+        case .targetExists(let path):
+            "KEYWORD_TARGET_EXISTS: \(path)"
         }
     }
 }
@@ -191,7 +194,7 @@ public final class KeywordRepo: Sendable {
             guard !rows.isEmpty else { throw KeywordRepoError.notFound(oldPath) }
             if try keyword(path: newPath) != nil {
                 // 目标已存在：改名会撞 UNIQUE(path)，也不该静默吞并（用 merge）。
-                throw KeywordRepoError.notFound("target exists: \(newPath)")
+                throw KeywordRepoError.targetExists(newPath)
             }
             let mappings: [(old: String, new: String, usage: Int64, createdAt: String)] = rows.map { row in
                 let old = row[0].textValue ?? ""
@@ -315,14 +318,15 @@ public final class KeywordRepo: Sendable {
                 DELETE FROM photo_keywords
                 WHERE \(KeywordPathSQL.subtreePredicate(column: "keyword_path", path: serialized).sql)
                 """).run(KeywordPathSQL.subtreePredicate(column: "keyword_path", path: serialized).params)
-            _ = try connection.prepare("""
+            let synonyms = try connection.prepare("""
                 DELETE FROM keyword_synonyms
                 WHERE \(KeywordPathSQL.subtreePredicate(column: "keyword_path", path: serialized).sql)
                 """).run(KeywordPathSQL.subtreePredicate(column: "keyword_path", path: serialized).params)
             _ = try connection.prepare("""
                 DELETE FROM keywords WHERE \(KeywordPathSQL.subtreePredicate(column: "path", path: serialized).sql)
                 """).run(KeywordPathSQL.subtreePredicate(column: "path", path: serialized).params)
-            return KeywordMutationResult(nodes: Int(nodes), members: members, synonyms: 0)
+            return KeywordMutationResult(
+                nodes: Int(nodes), members: members, synonyms: synonyms)
         }
     }
 

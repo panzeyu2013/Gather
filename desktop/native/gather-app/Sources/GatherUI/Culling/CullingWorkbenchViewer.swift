@@ -170,6 +170,19 @@ struct CullingWorkbenchViewer: View {
                 }
                 .help(l10n("设为参考 / 取消参考"))
                 .accessibilityLabel(l10n("参考对比"))
+                if overlayState.hasReference {
+                    Menu {
+                        Button(l10n("切换对比模式")) { overlayState.cycleReferenceMode() }
+                        Button(l10n("交换参考")) { overlayState.swapReference() }
+                        Toggle(isOn: $overlayState.showFullFrame) {
+                            Text(l10n("全图显示"))
+                        }
+                    } label: {
+                        Image(systemName: "rectangle.split.2x1")
+                    }
+                    .help(l10n("对比模式"))
+                    .accessibilityLabel(l10n("对比模式"))
+                }
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
@@ -292,13 +305,14 @@ struct CullingWorkbenchViewer: View {
             await refreshPreviewAnalysis()
         }
         .task(id: viewModel.currentPhotoId) {
-            guard let photoId = viewModel.currentPhotoId else {
-                cropFrame = nil
-                return
-            }
+            cropFrame = nil
+            guard let photoId = viewModel.currentPhotoId else { return }
             do {
-                cropFrame = try await viewModel.cullingAPI.adjustmentHint(photoId: photoId)
+                let frame = try await viewModel.cullingAPI.adjustmentHint(photoId: photoId)
+                guard !Task.isCancelled, viewModel.currentPhotoId == photoId else { return }
+                cropFrame = frame
             } catch {
+                guard !Task.isCancelled, viewModel.currentPhotoId == photoId else { return }
                 cropFrame = nil
             }
         }
@@ -338,6 +352,17 @@ struct CullingWorkbenchViewer: View {
             // 对比模式按格数收窄解码预算：4 格各解 8192px 会瞬时吃掉约 1GB。
             // 细节贴片与 onUnavailable 的整图高档位兜底必须共用同一个预算。
             let detailBudget = PhotoDetailTier.budget(forVisibleCells: max(1, compareCount))
+            let referenceAsset = overlayState.referencePhotoId.flatMap { id in
+                assets.first(where: { $0.photo.id == id })
+            }
+            // 叠加层坐标系：与 .fit 图像 + scaleEffect/offset 完全一致，而不是单元格矩形。
+            let imageRect = Self.displayedImageRect(
+                imageSize: CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height)),
+                cellSize: cellGeometry.size,
+                zoom: effectiveZoom,
+                offset: CGSize(
+                    width: offset.width + alignOffset.width,
+                    height: offset.height + alignOffset.height))
             ZStack(alignment: .bottom) {
                 // 整图适配（对齐旧版 .viewerImage object-fit: contain）：窄容器
                 // 时整体缩放而非裁切，缩放级作用于完整画面。
@@ -359,6 +384,31 @@ struct CullingWorkbenchViewer: View {
                     .scaleEffect(effectiveZoom)
                     .offset(x: offset.width + alignOffset.width, y: offset.height + alignOffset.height)
                     .allowsHitTesting(false)
+                // 并排对比：右半格显示参考图，左半格保留当前图（分割线可拖动时用 overlay 版本）。
+                if overlayState.hasReference,
+                   overlayState.referenceMode == .sideBySide,
+                   let referenceAsset,
+                   referenceAsset.photo.id != asset.photo.id {
+                    HStack(spacing: CGFloat.zero) {
+                        Color.clear
+                        PhotoThumbnailView(
+                            path: referenceAsset.photo.filepath,
+                            size: 1024,
+                            preview: true,
+                            contentMode: .fit,
+                            placeholderSurface: GatherTheme.viewerSurface,
+                            placeholderTextColor: GatherTheme.viewerTextSecondary
+                        )
+                        .frame(width: cellGeometry.size.width / 2)
+                        .clipped()
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .fill(GatherTheme.viewerTextPrimary.opacity(0.6))
+                                .frame(width: 1)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
                 // 可见区域细节层：按同一套几何算出「真正可见的图像矩形」，
                 // 只解码这一块（detailTileState 由缩放/平移变化去抖驱动）。
                 // A-6 残余（第二轮验证）：detailTileState 是整页唯一状态，其几何来自
@@ -394,18 +444,23 @@ struct CullingWorkbenchViewer: View {
                 if cell.asset.photo.id == currentAsset?.photo.id {
                     if overlayState.focusMaskVisible, let focusMask, !focusMask.isEmpty {
                         ViewerFocusMaskOverlay(mask: focusMask)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(width: imageRect.width, height: imageRect.height)
+                            .position(x: imageRect.midX, y: imageRect.midY)
                     }
                     if overlayState.cropVisible, let crop = currentCrop {
                         ViewerCropOverlay(
                             crop: crop,
                             showFullFrame: overlayState.showFullFrame
                         )
+                        .frame(width: imageRect.width, height: imageRect.height)
+                        .position(x: imageRect.midX, y: imageRect.midY)
                     }
                     if let afPoint = currentAFPoint() {
                         ViewerAFPointOverlay(point: afPoint) {
                             focus(on: afPoint, cellSize: cellGeometry.size)
                         }
+                        .frame(width: imageRect.width, height: imageRect.height)
+                        .position(x: imageRect.midX, y: imageRect.midY)
                     }
                     if overlayState.hasReference,
                        overlayState.referencePhotoId != cell.asset.photo.id,
@@ -624,6 +679,21 @@ struct CullingWorkbenchViewer: View {
 
     /// 适配显示尺寸的最长边（pt）——与 contentMode .fit 的几何一致。
     /// 用于「区域解码不可用」时的整图高档位兜底（见 cellView 的 onUnavailable）。
+    /// .fit 图像在缩放/平移后的显示矩形（归一化叠加层映射的唯一几何源）。
+    static func displayedImageRect(
+        imageSize: CGSize, cellSize: CGSize, zoom: CGFloat, offset: CGSize
+    ) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              cellSize.width > 0, cellSize.height > 0 else { return .zero }
+        let fitScale = min(cellSize.width / imageSize.width, cellSize.height / imageSize.height)
+        let width = imageSize.width * fitScale * zoom
+        let height = imageSize.height * fitScale * zoom
+        return CGRect(
+            x: cellSize.width / 2 - width / 2 + offset.width,
+            y: cellSize.height / 2 - height / 2 + offset.height,
+            width: width, height: height)
+    }
+
     static func fitPoints(imageSize: CGSize, cellSize: CGSize) -> Double {
         guard imageSize.width > 0, imageSize.height > 0, cellSize.width > 0, cellSize.height > 0 else { return 0 }
         let fitScale = min(cellSize.width / imageSize.width, cellSize.height / imageSize.height)
@@ -703,7 +773,11 @@ struct CullingWorkbenchViewer: View {
             focusMask = nil
             return
         }
+        // 先清空上一张的叠加数据，避免取消/取不到预览时继续显示旧照片的直方图与合焦图。
+        histogram = nil
+        focusMask = nil
         guard let image = await waitForPreviewImage(path: asset.photo.filepath) else { return }
+        guard !Task.isCancelled, viewModel.currentPhotoId == asset.photo.id else { return }
         // 栅格化在主线程完成（NSImage 非 Sendable）；只有纯像素计算下放到后台。
         let rasterized = PreviewPixelRasterizer.rgbaPixels(
             from: image,
@@ -754,8 +828,8 @@ struct CullingWorkbenchViewer: View {
     /// 无 sidecar/无裁剪 → nil（不画），绘制路径本身不变。
     private var currentCrop: CropFrame? { cropFrame }
 
-    /// AF 点：ExifAux / 机型表目前还没有数据源（CullingAsset 不带机型与 AF 索引），
-    /// 因此只会走"人脸中心"回退——这也是设计里明确的降级路径。
+    /// AF 点：camera_model 已透传；AF 索引仍无 ExifAux/MakerNote 数据源，
+    /// 机型表为空时只走"人脸中心"回退——设计里明确的降级路径，不伪造相机 AF。
     private func currentAFPoint() -> AFPoint? {
         guard let port = PreviewAnalysisRegistry.current(), let asset = currentAsset else {
             return nil

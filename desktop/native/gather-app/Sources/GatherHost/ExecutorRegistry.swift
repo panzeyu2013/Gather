@@ -229,7 +229,7 @@ enum ExecutorRegistry {
                             type: .qualityScore,
                             scopeType: "session",
                             scopeId: job.scopeId,
-                            dedupeKey: "quality.score:\(job.scopeId):auto-triage",
+                            dedupeKey: "quality.score:\(job.scopeId):auto-triage:\(Self.idsFingerprint(photoIds))",
                             checkpoint: ["photoIds": .array(photoIds.map(JSONValue.string))]
                         ))
                     } catch {
@@ -277,8 +277,13 @@ enum ExecutorRegistry {
                                 type: .metadataScan,
                                 scopeType: "session",
                                 scopeId: job.scopeId,
-                                dedupeKey: "metadata.scan:\(job.scopeId):auto-triage",
-                                checkpoint: ["autoQuality": .bool(true)]
+                                dedupeKey: "metadata.scan:\(job.scopeId):auto-triage:\(UUID().uuidString)",
+                                // 显式空数组：清掉上次终态继承的 requestedPaths，
+                                // 否则新导入的照片会被旧窄范围漏掉（空=全树）。
+                                checkpoint: [
+                                    "autoQuality": .bool(true),
+                                    "requestedPaths": .array([]),
+                                ]
                             ))
                         } catch {
                             GatherLogger.log(
@@ -500,6 +505,17 @@ enum ExecutorRegistry {
 
     /// JSONValue → Codable（JSONDecoder 往返；解码失败为契约漂移，抛原始错误）。
     /// 与原路由私有 decodeJSON（原 3100-3102 行）逐字同义。
+    /// 稳定短指纹（FNV-1a 64）：auto-triage 的 dedupeKey 只区分 photoIds 集合，
+    /// 不把完整 ID 列表塞进 dedupe_key。
+    static func idsFingerprint(_ photoIds: [String]) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in photoIds.sorted().joined(separator: "\u{1F}").utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return String(hash, radix: 16)
+    }
+
     private static func decodeJSON<T: Decodable>(_ type: T.Type, from value: JSONValue) throws -> T {
         try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
     }

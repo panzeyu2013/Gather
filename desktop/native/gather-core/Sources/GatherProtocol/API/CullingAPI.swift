@@ -31,6 +31,8 @@ public protocol CullingAPI: Sendable {
     func generateTriage(_ input: TriageGenerateInput) async throws -> TriageSummary
     /// P0 / T0：应用建议（只写 culling 决策，source=ai；绝不自动写 XMP）。
     func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult
+    /// P1：会话内客户校样评论（photoId → 最近一条评论）。
+    func proofComments(sessionId: String) async throws -> [String: String]
     /// P1：当前照片的 crs 裁剪框（只读；无 sidecar/无裁剪 → nil）。
     func adjustmentHint(photoId: String) async throws -> CropFrame?
     /// P1：技术质量建议的阈值校准报告（只读；样本不足时 isApplicable=false）。
@@ -61,6 +63,12 @@ public protocol CullingAPI: Sendable {
 }
 
 public extension CullingAPI {
+    /// 未接线（Preview/测试替身）：没有客户评论。
+    func proofComments(sessionId: String) async throws -> [String: String] {
+        _ = sessionId
+        return [:]
+    }
+
     /// 未接线（Preview/测试替身）：没有裁剪数据 → nil（不画标记）。
     func adjustmentHint(photoId: String) async throws -> CropFrame? {
         _ = photoId

@@ -42,12 +42,13 @@ extension GalleryViewModel {
     /// 语义（4 档 / facet / 规则 / 搜索串）过滤过，再筛一次只会让"只有 3 张命中"
     /// 的查询在网格里变成 0 张（例如 keyword_path 规则命中但文件名不含搜索词）。
     public var filteredPhotos: [GalleryPhotoData] {
-        let key = "\(pagesGeneration)|\(committedSearch)|\(committedFilter)|\(usesServerCriteria)|\(sortMode.rawValue)"
+        let key = "\(pagesGeneration)|\(committedSearch)|\(committedFilter)|\(usesServerCriteria)|\(sortMode.rawValue)|\(stackFoldVersion)"
         if let filteredCache, filteredCache.key == key {
             return filteredCache.photos
         }
         if usesServerCriteria {
-            let photos = Self.sorted(loadedPhotos, by: sortMode)
+            let photos = Self.folded(
+                Self.sorted(loadedPhotos, by: sortMode), index: stackFolds)
             filteredCache = (key, photos)
             return photos
         }
@@ -73,8 +74,20 @@ extension GalleryViewModel {
                 }
             }
         let sorted = Self.sorted(photos, by: sortMode)
-        filteredCache = (key, sorted)
-        return sorted
+        let folded = Self.folded(sorted, index: stackFolds)
+        filteredCache = (key, folded)
+        return folded
+    }
+
+    /// 堆栈折叠：每个堆栈只显示代表张（封面优先），徽标由格子读取 badgeCount。
+    private static func folded(
+        _ photos: [GalleryPhotoData], index: StackFoldIndex
+    ) -> [GalleryPhotoData] {
+        guard !index.isEmpty else { return photos }
+        let visible = index.visiblePhotoIds(photos.map(\.id))
+        guard visible.count != photos.count else { return photos }
+        let byId = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0) })
+        return visible.compactMap { byId[$0] }
     }
 
     /// 已加载范围的稳定排序（同值时按 id 兜底，避免每次重排抖动）。

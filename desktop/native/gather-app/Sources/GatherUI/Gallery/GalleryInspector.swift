@@ -131,11 +131,11 @@ extension GalleryView {
                         }
                     // P0 / B2：从图库直接编辑当前照片（写说明/版权不必回挑片页）。
                     GatherInspectorSection(l10n("元数据")) {
-                        Button(l10n("编辑元数据…")) { showMetadataEditor = true }
+                        Button(l10n("编辑元数据…")) { inspectorSheet = .metadata }
                             .buttonStyle(.bordered)
                             .frame(maxWidth: .infinity)
                             .disabled(viewModel.metadataAPI == nil)
-                        Button(l10n("查找相似照片…")) { showSemanticSearch = true }
+                        Button(l10n("查找相似照片…")) { inspectorSheet = .semantic }
                             .buttonStyle(.bordered)
                             .frame(maxWidth: .infinity)
                             .disabled(viewModel.photoAPI == nil)
@@ -147,25 +147,32 @@ extension GalleryView {
         }
         // 同 CullingView：理想列宽会计入最小宽度，收窄以避免窄窗口下的约束循环。
         .inspectorColumnWidth(min: GatherChromeMetrics.inspectorMinWidth, ideal: GatherChromeMetrics.inspectorIdealWidth, max: GatherChromeMetrics.inspectorMaxWidth)
-        .sheet(isPresented: $showMetadataEditor) {
-            if let api = viewModel.metadataAPI, let photoId = viewModel.selectedIds.first {
-                MetadataEditorSheet(
-                    photoId: photoId, api: api,
-                    onApplied: { _ in viewModel.loadMetadataDetail() })
-            }
-        }
-        .sheet(isPresented: $showSemanticSearch) {
-            if let api = viewModel.photoAPI, let photoId = viewModel.selectedIds.first {
-                SemanticSearchPanel(
-                    seedPhotoId: photoId,
-                    sessionId: viewModel.sessionId,
-                    api: api,
-                    nameFor: { id in
-                        viewModel.loadedPhotos.first(where: { $0.id == id })?.filename ?? id
-                    },
-                    onSelect: { id in
-                        viewModel.selectedIds = [id]
-                    })
+        .sheet(item: $inspectorSheet) { sheet in
+            switch sheet {
+            case .metadata:
+                if let api = viewModel.metadataAPI, let photoId = viewModel.selectedIds.first {
+                    MetadataEditorSheet(
+                        photoId: photoId, api: api,
+                        onApplied: { _ in viewModel.loadMetadataDetail() })
+                }
+            case .semantic:
+                if let api = viewModel.photoAPI, let photoId = viewModel.selectedIds.first {
+                    SemanticSearchPanel(
+                        seedPhotoId: photoId,
+                        sessionId: viewModel.sessionId,
+                        api: api,
+                        nameFor: { id in
+                            viewModel.loadedPhotos.first(where: { $0.id == id })?.filename ?? id
+                        },
+                        onSelect: { id in
+                            viewModel.selectedIds = [id]
+                            // 命中可能不在当前筛选/已加载页：走定位（会按需补页/清条件）。
+                            Task {
+                                _ = await viewModel.locatePendingPhoto(
+                                    photoId: id, photoPath: nil)
+                            }
+                        })
+                }
             }
         }
     }

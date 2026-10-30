@@ -148,6 +148,8 @@ final class EmbeddedJPEGSession: MetadataRewriteSession, Sendable {
     private let chunkBytes: Int
     private let hooks: EmbeddedJPEGSessionHooks
     private let state = OSAllocatedUnfairLock<State>(initialState: .open)
+    /// 本次会话是否真的新建了 header 备份（复用旧备份时 abort 不能删它）。
+    private let createdBackup = OSAllocatedUnfairLock<Bool>(initialState: false)
 
     /// 会话状态。closed 也要记住备份路径：commit 之后仍要把 headerBackupPath
     /// 带进 report（否则交付行拿不到"首次写前的头备份"）。
@@ -317,6 +319,7 @@ final class EmbeddedJPEGSession: MetadataRewriteSession, Sendable {
         } catch {
             throw EmbeddedSessionError.backupFailed(String(describing: error))
         }
+        createdBackup.withLock { $0 = true }
         state.withLock { if case .open = $0 { $0 = .backup(path) } }
         return path
     }
@@ -332,11 +335,20 @@ final class EmbeddedJPEGSession: MetadataRewriteSession, Sendable {
         return try performCommit(attributes, headerBackupPath: backupPath)
     }
 
-    /// 放弃：不写盘就没有任何需要撤销的副作用（临时文件在提交失败时已删）。
+    /// 放弃：不写盘就没有需要撤销的副作用；本次新建的 header 备份要删掉。
     func abort() async {
-        state.withLock { state in
-            guard !state.isClosed else { return }
-            state = .closed(state.backupPath)
+        let backupPath = state.withLock { state -> String in
+            guard !state.isClosed else { return "" }
+            let path = state.backupPath
+            state = .closed(path)
+            return path
+        }
+        guard !backupPath.isEmpty, createdBackup.withLock({ $0 }) else { return }
+        do {
+            try FileManager.default.removeItem(atPath: backupPath)
+        } catch {
+            GatherLogger.log(
+                "embedded header backup cleanup failed: \(error)", level: .debug)
         }
     }
 

@@ -407,11 +407,13 @@ public final class TriageCalibrationService {
             TriageCalibrationKeys.keepConfidenceMin, value: Self.format(keep))
         try settings.write(
             TriageCalibrationKeys.rejectConfidenceMin, value: Self.format(reject))
+        // 可执行下限只降不升：不高于当前值，也不高于本次 keep/reject。
+        let floor = min(minExecutable, currentThresholds().minExecutable, keep, reject)
         try settings.write(
-            TriageCalibrationKeys.minExecutableConfidence, value: Self.format(minExecutable))
+            TriageCalibrationKeys.minExecutableConfidence, value: Self.format(floor))
         onApplied?()
         return TriageCalibrationThresholds(
-            keep: keep, reject: reject, minExecutable: minExecutable)
+            keep: keep, reject: reject, minExecutable: floor)
     }
 
     /// 当前阈值（UI 显示"当前 vs 建议"）。

@@ -333,11 +333,14 @@ public struct CollectionRepo: Sendable {
         let ordered = Self.unique(photoIds)
         guard !ordered.isEmpty else { return 0 }
         return try connection.transaction {
-            let placeholders = ordered.map { _ in "?" }.joined(separator: ", ")
-            let removed = try connection.prepare("""
-                DELETE FROM collection_items
-                WHERE collection_id = ? AND photo_id IN (\(placeholders))
-                """).run([.text(collectionId)] + ordered.map(DBValue.text))
+            var removed = 0
+            for chunk in ordered.chunked(by: 400) where !chunk.isEmpty {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+                removed += try connection.prepare("""
+                    DELETE FROM collection_items
+                    WHERE collection_id = ? AND photo_id IN (\(placeholders))
+                    """).run([.text(collectionId)] + chunk.map(DBValue.text))
+            }
             if removed > 0 { try touch(id: collectionId) }
             return removed
         }
