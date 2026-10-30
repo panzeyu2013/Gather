@@ -86,6 +86,9 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
           key: core-${{ runner.os }}-${{ hashFiles('desktop/native/gather-core/Package.swift') }}
           restore-keys: core-${{ runner.os }}-
+      - name: Sources warnings
+        # P3-5：只对 Sources 开 -warnings-as-errors；测试 target 告警不阻断。
+        run: ./scripts/check-warnings.sh core
       - name: Core tests
         # 串行 + 输出落盘 + 看门狗（2026-10-29 假死复盘）：
         # swift-testing 的 --parallel 是同进程并发（worker≈核数），而本仓测试大量依赖
@@ -134,6 +137,9 @@ jobs:
       - name: App executable build
         # swift test 不链接 GatherApp 可执行 → 菜单/场景装配的编译回归只在这里拦。
         run: swift build --package-path desktop/native/gather-app --explicit-target-dependency-import-check error
+      - name: Sources warnings
+        # P3-5：GatherUI/GatherHost/GatherApp 的 Sources 告警即失败。
+        run: ./scripts/check-warnings.sh app
       - name: App tests
         # 与 gather-core 同口径：CI 串行 + 输出落盘 + 看门狗。并行的 SIGSEGV 已于
         # 2026-10-29 修掉（NSWindow.close → orderOut），但并行仍会放大阻塞型锁的线程池

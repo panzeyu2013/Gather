@@ -1,5 +1,5 @@
 // desktop/native/gather-app/Sources/GatherHost/APIs/LiveSessionAPI.swift
-// Cut 1 / 阶段 B1：SessionAPI 的 Live 实现（7 个方法）。
+// Cut 1 / 阶段 B1：SessionAPI 的 Live 实现（9 个方法）。
 //
 // 对应命令（9 条）：session.list / get / create / create_from_directory（M1 合并）/
 // update / delete / delete_many（M2 合并）/ add_photos、workspace.status。
@@ -29,6 +29,8 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
     private let sessionService: SessionService
     private let workspaceStatusService: WorkspaceStatusService
     private let jobService: JobService
+    /// 根修复后重建 FSEvents 监听需要；测试装配可省略（省略时只更新 DB）。
+    private let settingsAPI: (any SettingsAPI)?
 
     /// @unchecked Sendable 依据：三个依赖都是构造后不再变更的 let；SessionService /
     /// WorkspaceStatusService / JobService 的可变状态分别由 DBConnection 的递归锁与
@@ -36,98 +38,57 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
     public init(
         sessionService: SessionService,
         workspaceStatusService: WorkspaceStatusService,
-        jobService: JobService
+        jobService: JobService,
+        settingsAPI: (any SettingsAPI)? = nil
     ) {
         self.sessionService = sessionService
         self.workspaceStatusService = workspaceStatusService
         self.jobService = jobService
+        self.settingsAPI = settingsAPI
     }
 
     // MARK: - P1 / D：摄取
 
+    /// P1-3：摄取改为 ingest.run Job。
+    ///
+    /// API 仍返回最终结果以兼容既有调用；Job 在控制中心可见/可取消，
+    /// 执行体与 Job executor 共用 SessionIngestRunner，避免两条路径漂移。
     public func ingest(_ input: Confirmed<SessionIngestInput>) async throws -> SessionIngestResult {
         let payload = input.value
-        let options = IngestOptions(
-            destinationRoot: payload.destinationRoot,
-            renameTemplate: payload.renameTemplate,
-            secondDestinationRoot: payload.secondDestinationRoot,
-            verifyChecksum: payload.verifyChecksum
-        )
-        let service = IngestService(exif: ImageIOExifProvider())
+        let params = try map { try JobCreateParams.ingestRun(payload) }
+        // 摄取是显式用户动作：允许在 JobService 尚未 start（测试/冷启动）时拉起调度。
+        jobService.start()
+        let job = try map { try jobService.create(params) }
         return try await mapAsync {
-            // 目标必须落在会话源目录内：摄取写文件系统，不能接受任意磁盘路径。
-            guard let session = try sessionService.getSession(payload.sessionId) else {
-                throw GatherError(code: .SESSION_NOT_FOUND)
+            guard let result: SessionIngestResult = try await jobService.waitForResult(jobId: job.id) else {
+                throw JobServiceError.jobFailed(job.id, "ingest result missing")
             }
-            let base = URL(fileURLWithPath: session.sourcePath)
-                .resolvingSymlinksInPath().path
-            let destination = URL(fileURLWithPath: payload.destinationRoot)
-                .resolvingSymlinksInPath().path
-            guard !base.isEmpty, destination == base || destination.hasPrefix(base + "/") else {
-                throw GatherError.invalidParameter(
-                    field: "destinationRoot", reason: "must be inside the session source path")
-            }
-            // 第二目的地与主目的地同等边界：绝对路径、非根、不与主目的地相交，
-            // 也不得落在会话源树内（否则副本会被下一轮 scan 扫成重复资产）。
-            if let second = payload.secondDestinationRoot {
-                let secondPath = URL(fileURLWithPath: second)
-                    .resolvingSymlinksInPath().path
-                let destinationPath = URL(fileURLWithPath: payload.destinationRoot)
-                    .resolvingSymlinksInPath().path
-                guard secondPath.hasPrefix("/"), secondPath != "/" else {
-                    throw GatherError.invalidParameter(
-                        field: "secondDestinationRoot",
-                        reason: "must be an absolute directory other than /")
-                }
-                guard secondPath != destinationPath,
-                      !secondPath.hasPrefix(destinationPath + "/"),
-                      !destinationPath.hasPrefix(secondPath + "/") else {
-                    throw GatherError.invalidParameter(
-                        field: "secondDestinationRoot",
-                        reason: "must not overlap destinationRoot")
-                }
-                guard secondPath != base, !secondPath.hasPrefix(base + "/") else {
-                    throw GatherError.invalidParameter(
-                        field: "secondDestinationRoot",
-                        reason: "must be outside the session source path")
-                }
-            }
-            var existing: [String: String] = [:]
-            do {
-                existing = try sessionService.photoChecksums(sessionId: payload.sessionId)
-            } catch {
-                GatherLogger.log("ingest checksum lookup failed: \(error)", level: .warn)
-            }
-            let plan = try await service.plan(
-                sourcePaths: payload.sourcePaths, options: options,
-                existingChecksums: existing)
-            let result = service.execute(plan, options: options)
-            var registered = 0
-            var unregistered: [String] = []
-            // 登记走既有 add_photos 语义（RAW/JPEG 配对、去重、checksum 回填都复用）。
-            if !result.copied.isEmpty {
-                do {
-                    let addResult = try sessionService.addPhotos(
-                        sessionId: payload.sessionId, filepaths: result.copied, source: "ingest"
-                    )
-                    registered = addResult.added
-                    unregistered = addResult.failedFiles
-                } catch {
-                    // 文件已落盘但登记失败：如实返回"已复制未登记"，让用户/调用方
-                    // 可以重试 add_photos，而不是报整批失败把已落盘文件变成幽灵。
-                    registered = 0
-                    unregistered = result.copied
-                    GatherLogger.log("ingest register failed: \(error)", level: .warn)
-                }
-            }
-            return SessionIngestResult(
-                registered: registered,
-                copiedButUnregistered: unregistered,
-                skipped: result.skipped,
-                unreadable: result.unreadable,
-                failed: result.failed.map { MetadataApplyFailureDTO(photoId: $0.sourcePath, message: $0.message) }
+            return result
+        }
+    }
+
+    /// P1-3：设置/修复工作区根目录；服务端校验目录存在、非 forbidden、
+    /// 且包含工作区全部可见照片。
+    public func setSourceRoot(
+        _ input: Confirmed<SessionSetSourceRootInput>
+    ) async throws -> SessionData {
+        let updated = try map {
+            try sessionService.setSourceRoot(
+                sessionId: input.value.sessionId,
+                sourceRoot: input.value.sourceRoot
             )
         }
+        // 根修复是唯一写路径：控制中心/摄取面板都经过这里，必须重建监听。
+        // 旧 watcher 可能仍守旧根；先 stop 再按新根 start。
+        if let settingsAPI {
+            await SessionDirectoryMonitor.shared.stop(sessionId: updated.id)
+            await SessionDirectoryMonitor.shared.start(
+                sessionId: updated.id,
+                root: updated.sourcePath,
+                jobs: LiveJobAPI(jobService: jobService),
+                settings: settingsAPI)
+        }
+        return updated
     }
 
     // MARK: - SessionAPI
@@ -239,11 +200,14 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
     // MARK: - 内部
 
     private func createWithFilepaths(_ input: SessionCreateInput) throws -> SessionCreateResult {
-        // 与旧命令面 的 session.create 完全同一准入：只有“≥2 张照片的真实公共
-        // 父目录”才被接受，否则落空串；文件导入的扫描范围由 job checkpoint 承担。
+        // 文件导入**不**把公共父目录落成工作区根：那是历史 P0（选 3 张照片 =
+        // 递归扫描整个父目录，可能上溯到 home）。根只能来自调用方显式传入
+        // （单目录导入）或用户在控制中心显式「设置根目录…」（session.setSourceRoot）；
+        // 本次扫描范围由 job checkpoint 的 requestedPaths 承担。
+        let normalizedFilepaths = normalizeImportFilepaths(input.filepaths)
         let sourcePath = sanitizeSessionSourcePath(
             sourcePath: input.sourcePath ?? "",
-            filepaths: input.filepaths
+            filepaths: normalizedFilepaths
         )
         let session = try map {
             try sessionService.createSession(
@@ -256,7 +220,6 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
         // 与旧 UI 导入路径同一口径：job checkpoint 里的 requestedPaths 必须是
         // normalizeImportFilepaths 之后的路径（trim/去重/ScanPath.canonical），
         // 否则索引器按原始字符串匹配不到刚入库的 photos.filepath。
-        let normalizedFilepaths = normalizeImportFilepaths(input.filepaths)
         let added = try map {
             try sessionService.addPhotos(
                 sessionId: session.id,

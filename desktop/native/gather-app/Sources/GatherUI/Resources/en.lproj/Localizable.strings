@@ -36,7 +36,6 @@
 "auto=自动（RAW 附属文件，成品格式内嵌）, sidecar=XMP Sidecar, embedded=Embedded" = "auto=Automatic (RAW sidecar, embedded in rendered formats), sidecar=XMP Sidecar, embedded=Embedded";
 "模型下载返回了非 2xx 状态码" = "Model download returned a non-2xx status code";
 "重新检测" = "Check Again";
-"恢复所有设置默认值？" = "Restore all settings to defaults?";
 "恢复默认" = "Restore Defaults";
 "取消" = "Cancel";
 "设置" = "Settings";
@@ -55,6 +54,7 @@
 "未找到" = "Not Found";
 "保存" = "Save";
 "打开模型文件夹" = "Open Model Folder";
+"下载人脸模型" = "Download Face Model";
 "正在解压…" = "Extracting…";
 "人脸模型已安装" = "Face Model Installed";
 "Capture One 健康" = "Capture One Health";
@@ -112,6 +112,10 @@
 "已重置挑片状态" = "Culling state reset";
 "已处理元数据冲突" = "Metadata conflict resolved";
 "评分" = "Rating";
+"批量操作" = "Batch Actions";
+"确认批量操作？" = "Confirm Batch Action?";
+"应用批量更改" = "Apply Batch Changes";
+"将对 %lld 张照片执行“%@”；会立即写入数据库。" = "Apply this to %lld photos: “%@”? This writes to the database immediately.";
 "颜色标签" = "Color Label";
 "关键字" = "Keywords";
 "请先打开一个工作区，再进入挑片页。" = "Open a workspace before entering Culling.";
@@ -121,6 +125,17 @@
 "返回" = "Back";
 "挑片与写回" = "Culling & Writeback";
 "范围" = "Scope";
+"开始整套交付？" = "Start Full Delivery?";
+"将按以下配方写入交付目录。确认后不会再弹参数编辑；已有同名文件由配方/导出策略处理。" = "The delivery will be written to the target folder using the recipes below. Parameters cannot be edited after confirmation; existing files follow the recipe/export policy.";
+"目标目录" = "Destination Folder";
+"预计文件" = "Estimated Files";
+"%lld 个 · %@" = "%lld · %@";
+"空间不足：预计需要 %@，可用 %@。" = "Not enough space: %@ required, %@ available.";
+"预检发现 %lld 项源文件问题，确认后可能被跳过。" = "Preflight found %lld source issues; those items may be skipped.";
+"以下配方预检失败：%@" = "Preflight failed for these recipes: %@";
+"配方" = "Recipes";
+"开始交付" = "Start Delivery";
+"%lld 个" = "%lld";
 "仅未处理" = "Unprocessed Only";
 "状态" = "Status";
 "全部状态" = "All Statuses";
@@ -150,10 +165,10 @@
 "保留" = "Keep";
 "淘汰" = "Reject";
 "未处理" = "Unprocessed";
+"混合" = "Mixed";
+"设置所选 %lld 张照片的颜色标签" = "Set the color label for %lld selected photos";
 "保留当前 1 张" = "Keep Current (1)";
-"保留已选 K 张" = "Keep Selected (K)";
 "按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片" = "Hold ⌘ or Ctrl and click photos in the filmstrip to keep them";
-"其余照片自动淘汰" = "Remaining photos are rejected automatically";
 "取消选择" = "Deselect";
 "立即写入 XMP" = "Write XMP Now";
 "在 Capture One 中加载元数据" = "Load Metadata in Capture One";
@@ -161,7 +176,8 @@
 "重试失败项" = "Retry Failed Items";
 "保留 XMP 并结束" = "Keep XMP & Finish";
 "恢复原 XMP" = "Restore Original XMP";
-"同步…" = "Syncing…";
+"同步…" = "Sync…";
+"同步与写回" = "Sync & Writeback";
 "先在 Capture One 中 Load Metadata，再返回 Gather 确认同步" = "Load Metadata in Capture One first, then return to Gather to confirm the sync";
 "重置挑片" = "Reset Culling";
 "已完成同步，无需再次加载元数据" = "Sync complete; no need to load metadata again";
@@ -180,6 +196,13 @@
 "处理" = "Resolve";
 "保留 Gather" = "Keep Gather";
 "采用外部值" = "Use External Value";
+"全部采用外部值" = "Use External Values for All";
+"全部保留 Gather" = "Keep Gather for All";
+"对当前全部冲突使用同一策略；逐项应用，失败项会保留" = "Apply one strategy to all current conflicts; each is applied individually and failures remain";
+"已批量处理 %lld 个冲突（失败 %lld）" = "Processed %lld conflicts in batch (%lld failed)";
+"将把当前 %lld 个冲突全部采用外部值（丢弃 Gather 待写入值）。" = "Use external values for all %lld current conflicts (discard pending Gather values).";
+"将把当前 %lld 个冲突全部保留 Gather 值并结清。" = "Keep Gather values for all %lld current conflicts and close them.";
+"批量冲突裁决全部失败，请逐个重试" = "All batch conflict resolutions failed; retry them individually";
 "这是最后一个冲突" = "This is the last conflict";
 "无" = "None";
 "红" = "Red";
@@ -210,6 +233,12 @@
 "重试任务失败" = "Failed to retry task";
 "暂无工作区状态" = "No workspace status";
 "工作区控制中心" = "Workspace Control Center";
+"此工作区没有根目录" = "This workspace has no root folder";
+"没有根目录时无法摄取新照片或重扫整个目录。请选择一个包含全部照片的目录。" = "Without a root folder you cannot ingest new photos or rescan the whole folder. Choose a folder that contains all photos.";
+"设置根目录…" = "Set Root Folder…";
+"设为工作区根目录" = "Set as Workspace Root";
+"已设置工作区根目录" = "Workspace root folder set";
+"所选根目录不包含工作区内的全部照片（{{count}} 张在根外）。请选择包含全部照片的上级目录。" = "The selected root does not contain all photos in this workspace ({{count}} outside). Choose a parent folder that contains all photos.";
 "重试" = "Retry";
 "扫描中…" = "Scanning…";
 "索引失败" = "Indexing Failed";
@@ -353,6 +382,7 @@
 "全选" = "Select All";
 "显示" = "View";
 "导入" = "Import";
+"导入失败：%@" = "Import failed: %@";
 /* Sources/GatherUI/Gallery/GalleryView.swift */
 "小图" = "Small";
 "中图" = "Medium";
@@ -388,6 +418,8 @@
 "重新聚类" = "Recluster";
 "分组关键字写回" = "Group Keyword Writeback";
 "选择相似分组，关键词会合并写入每张照片旁的 .xmp 文件，不修改原图。" = "Select similar groups; keywords are merged into the .xmp file next to each photo without modifying the original.";
+"相似度分析/聚类进行中，写回已暂时禁用。" = "Similarity analysis/clustering is running; writeback is temporarily disabled.";
+"相似度分析/聚类进行中，暂不能写回" = "Similarity analysis/clustering is running; writeback is temporarily unavailable.";
 "输入关键词，多个关键词用逗号分隔" = "Enter keywords; separate multiple keywords with commas";
 "预览" = "Preview";
 "写入 XMP" = "Write XMP";
@@ -424,6 +456,7 @@
 "最近 7 天" = "Last 7 Days";
 "最近 30 天" = "Last 30 Days";
 "清除筛选" = "Clear Filters";
+"已清除筛选条件" = "Active filters cleared";
 "清除搜索" = "Clear Search";
 "智能相册" = "Smart Album";
 "相册" = "Album";
@@ -467,6 +500,8 @@
 "任务中心" = "Task Center";
 "后台任务 · 持久化分析任务、进度和失败恢复" = "Background tasks · persistent analysis tasks, progress, and failure recovery";
 "清理已完成" = "Clean Up Completed";
+"清理失败记录" = "Clear Failed Tasks";
+"同时清理已完成、失败、中断和取消的任务记录；阶段证据保留" = "Also clears completed, failed, interrupted, and cancelled task records; stage evidence is kept";
 "已完成历史" = "Completed History";
 "暂无后台任务" = "No Background Tasks";
 "当前没有运行中或失败的任务" = "No tasks are currently running or failed";
@@ -550,6 +585,18 @@
 "关联照片" = "Linked Photos";
 "暂无关联照片" = "No linked photos";
 "删除人物？" = "Delete this person?";
+"合并到…" = "Merge Into…";
+"把此人物合并到另一个人物" = "Merge this person into another person";
+"合并人物？" = "Merge People?";
+"将把「%@」合并到「%@」，源人物的绑定会转移并删除；此操作不可撤销。" = "Merge “%@” into “%@”; the source person's bindings move over and the source is deleted. This cannot be undone.";
+"已合并人物" = "People merged";
+"合并失败" = "Merge failed";
+"移除此照片" = "Remove This Photo";
+"移除此照片？" = "Remove This Photo?";
+"只断开该照片与本人物的人脸绑定，不删除照片文件。" = "Only the face binding between this photo and this person is removed; the photo file is not deleted.";
+"移除" = "Remove";
+"已从人物移除照片" = "Photo removed from person";
+"移除失败" = "Remove failed";
 "人物已删除" = "Person deleted";
 "删除失败" = "Delete Failed";
 "yyyy年M月d日" = "yyyy/M/d";
@@ -595,6 +642,8 @@
 "结果" = "Results";
 "生成 CSV 报告" = "Generate CSV Report";
 "生成 Markdown 报告" = "Generate Markdown Report";
+"收起错误" = "Collapse Errors";
+"查看全部 %lld 条错误" = "Show All %lld Errors";
 /* Duplicates/DuplicatesView.swift */
 "重复扫描完成" = "Duplicate scan complete";
 "扫描会先识别内容完全一致的文件，再查找视觉近似候选；不会删除照片。" = "The scan first identifies files with identical content, then looks for visually similar candidates; no photos are deleted.";
@@ -608,6 +657,11 @@
 "未发现视觉相似的照片" = "No visually similar photos found";
 "保留最佳" = "Keep Best";
 "保留全部" = "Keep All";
+"恢复未处理？" = "Reset to Unprocessed?";
+"恢复未处理" = "Reset to Unprocessed";
+"将清空组 #%lld 的处置标记，并把全部成员恢复为保留、未处理状态；可重新选择保留最佳或保留全部。" = "This clears group #%lld's resolution and restores all members to kept/unprocessed; you can then choose Keep Best or Keep All again.";
+"已恢复重复组 #%lld 为未处理" = "Duplicate group #%lld reset to unprocessed";
+"恢复未处理（组 #%lld）" = "Reset to unprocessed (group #%lld)";
 "推荐" = "Recommended";
 "丢弃" = "Discard";
 
@@ -684,6 +738,20 @@
 "已处理重复组 #%lld" = "Processed duplicate group #%lld";
 "已将簇 #%lld 合并到簇 #%lld" = "Merged cluster #%lld into cluster #%lld";
 "已更新 %lld 张照片" = "Updated %lld photos";
+"应用到跨页选择" = "Apply to Cross-page Selection";
+"已应用 %lld 张（选择共 %lld 张）" = "Applied %lld of %lld selected";
+"批量更新部分完成：已应用 %lld 张，其余块未执行；请重新全选后再试。" = "Batch partially completed: %lld applied; remaining chunks were not executed. Select again and retry.";
+"批量更新失败：%@" = "Batch update failed: %@";
+"选择超过单次上限（%lld 张），超出部分不会被处理；请缩小筛选范围。" = "The selection exceeds the %lld-photo limit; photos beyond it were not processed. Narrow the filter.";
+"已更新 %lld 张照片；%lld 张无变化" = "Updated %lld photos; %lld unchanged";
+"仅当前可见" = "Visible Only";
+"已应用 %lld 张（选择共 %lld 张）；分 %lld 步撤销" = "Applied %lld of %lld selected; undo in %lld steps";
+"已应用 %lld 张，%lld 张无变化（选择共 %lld 张）" = "Applied %lld (%lld unchanged of %lld selected)";
+"已应用 %lld 张，%lld 张无变化（选择共 %lld 张）；分 %lld 步撤销" = "Applied %lld (%lld unchanged of %lld selected); undo in %lld steps";
+"将把本次决策应用到 %lld 张照片（当前视图 %lld 张，%lld 张不可见）。可只应用到当前可见的 %lld 张。" = "Apply this decision to %lld photos (%lld in the current view, %lld not visible)? You can apply to only the %lld visible photos.";
+"；选择已命中 %lld 张上限，超出的照片不会被处理" = "; the selection hit the %lld-photo limit, so photos beyond it will not be processed";
+"将把本次决策应用到 %lld 张照片（当前视图 %lld 张，%lld 张不可见）%@。服务端会校验选择未变化；若筛选/范围/组员已变，则不会写入任何照片。" = "Apply this decision to %lld photos (%lld in the current view, %lld not visible)%@. The server verifies the selection has not changed; if filters, scope, or group members changed, nothing is written.";
+
 "已索引 %lld 张照片" = "Indexed %lld photos";
 "已索引 %lld%%" = "Indexed %lld%%";
 "已索引 ≥%lld 张照片" = "Indexed ≥%lld photos";
@@ -707,6 +775,10 @@
 "淘汰 %lld" = "Reject %lld";
 "清理完成：已恢复或移除 %lld 个附属文件。" = "Cleanup complete: %lld sidecar files restored or removed.";
 "相似组 · %lld 张" = "Similar groups · %lld photos";
+"相似组共 %lld 张（当前视图 %lld 张）：保留 %lld 张，淘汰其余 %lld 张%@。" = "The similar group has %lld photos (%lld in the current view): keep %lld and reject the remaining %lld%@.";
+"当前视图 %lld 张；其余将自动淘汰" = "%lld in the current view; the rest will be rejected automatically";
+"保留所选并淘汰同组其余" = "Keep selected and reject the rest of the group";
+"（如：%@…）" = "(e.g., %@…)";
 "确定要删除 \"%@\" 吗？这将移除该工作区中的所有照片和结果。" = "Delete “%@”? This will remove all photos and results in this workspace.";
 "确定要删除选中的 %lld 个工作区吗？这将移除这些工作区中的所有照片和结果，不可恢复。" = "Delete the %lld selected workspaces? This will remove all photos and results in those workspaces and cannot be undone.";
 "示例：%@" = "Example: %@";
@@ -725,6 +797,10 @@
 "还有 %lld 名成员" = "%lld more members";
 "还有 %lld 项…" = "%lld more items…";
 "选中 %lld 张照片" = "%lld photos selected";
+"全选筛选结果" = "Select All Filtered Results";
+"按当前搜索与筛选条件选择全部照片（最多 20,000 张）" = "Select all photos matching the current search and filters (up to 20,000)";
+"已选中前 %lld 张（超出单次上限，请缩小筛选范围）" = "Selected the first %lld photos (limit reached; narrow the filters)";
+"导出所选" = "Export Selected";
 "重试完成：成功 %lld，失败 %lld。" = "Retry complete: %lld succeeded, %lld failed.";
 "错误：%@" = "Error: %@";
 "阈值 %lld" = "Threshold %lld";
@@ -739,10 +815,12 @@
 "前往控制中心" = "Go to Control Center";
 "命名模式" = "Naming Pattern";
 "在 Finder 中显示" = "Show in Finder";
+"在灯箱中比较" = "Compare in Lightbox";
 "导出目录" = "Export Directory";
 "导出进度" = "Export Progress";
 "已下载 %d%%（%@）" = "Downloaded %d%% (%@)";
 "已请求取消质量分析" = "Quality analysis cancellation requested";
+"取消质量分析" = "Cancel Quality Analysis";
 "已请求取消重复扫描" = "Duplicate scan cancellation requested";
 "放大" = "Zoom In";
 "最长边" = "Longest Edge";
@@ -893,6 +971,7 @@
 "工作区不存在" = "Workspace not found";
 "未提供工作区 ID" = "No workspace ID was provided";
 "照片不属于当前工作区" = "The photo does not belong to the current workspace";
+"选择已变化（筛选/范围/组员被修改），本次未写入任何照片。请重新全选后再试。" = "The selection changed (filters, scope, or group members were modified); no photos were written. Select again and retry.";
 "挑片版本冲突：期望 {{expected}}，当前 {{current}}" = "Culling revision conflict: expected {{expected}}, current {{current}}";
 "挑片更新内容不能为空" = "The culling update payload cannot be empty";
 "无效的挑片范围" = "Invalid culling scope";
@@ -912,6 +991,7 @@
 "角色名称不能为空" = "The role name cannot be empty";
 "关键词必须是字符串数组" = "Keywords must be an array of strings";
 "写入项无效" = "Invalid writeback items";
+"写回预览已过期（绑定或关键词在预览后发生变化）。请重新生成预览后再写回。" = "The writeback preview is stale (bindings or keywords changed after the preview). Regenerate the preview before writing back.";
 "相似度分析已在进行中" = "Similarity analysis is already running";
 "当前工作区没有照片" = "The current workspace has no photos";
 "没有可用于聚类的哈希数据" = "No hash data available for clustering";
@@ -1012,10 +1092,17 @@
 "丢弃「%@」" = "Discard “%@”";
 "确认处理这个重复组？" = "Resolve this duplicate group?";
 "确认更改这张照片的保留状态？" = "Change this photo's keep status?";
-"未确认，已取消恢复默认设置" = "Not confirmed; restoring defaults was cancelled";
 "将从网络下载模型包并解压到 %@；同名模型文件会被覆盖，旧文件不可恢复。取消不会下载任何内容。" = "Download the model package and extract it to %@; files with the same names are overwritten and the old files cannot be recovered. Cancelling downloads nothing.";
-"将把当前 %lld 项设置恢复为默认值（模型路径、推理后端、缓存与写回参数等）；不会删除照片或 XMP 文件。取消不改变任何设置。" = "Restore the current %lld settings to their defaults (model paths, inference backend, cache and writeback parameters, etc.); no photos or XMP files are deleted. Cancelling changes nothing.";
 "恢复默认设置" = "Restore default settings";
+"选择要重置的范围。未勾选的内容会保留。" = "Choose what to reset. Anything unchecked is kept.";
+"偏好设置（%lld 项）" = "Preferences (%lld)";
+"用户内容" = "User content";
+"元数据模板 %lld 个 / 批次历史 %lld 条 / 交付配方 %lld 个 / 交付目录与备份目录设置" = "%lld metadata templates / %lld batch history entries / %lld delivery recipes / delivery and backup folder settings";
+"用户内容一旦清除不可恢复。" = "User content cannot be recovered once removed.";
+"我了解这些内容不可恢复" = "I understand this content cannot be recovered";
+"同时重置界面语言" = "Also reset the interface language";
+"已恢复默认设置并清除所选用户内容" = "Defaults restored and selected user content removed";
+"查看影响范围后选择要重置的内容（会先确认）" = "Review the impact and choose what to reset (confirmation required)";
 "确认下载并安装人脸模型？" = "Download and install the face model?";
 "下载并覆盖" = "Download and overwrite";
 "下载并安装人脸模型" = "Download and install the face model";
@@ -1146,7 +1233,6 @@
 "打开设置检查人脸模型" = "Open Settings to check the face models";
 "扫描索引与质量分析会入队后台任务，进度显示在「当前任务」中；失败的任务可重试。" = "Scanning, indexing and quality analysis run as background jobs; progress appears under “Current jobs” and failed jobs can be retried.";
 "把当前簇合并到选中的目标簇" = "Merge the current cluster into the selected target cluster";
-"把所有设置项恢复为默认值（会先确认）" = "Reset all settings to their defaults (asks first)";
 "拆分资产" = "Split asset";
 "拒绝关联" = "Reject link";
 "拒绝资产关联？" = "Reject the asset link?";
@@ -1172,6 +1258,8 @@
 "确认后写入 XMP 附属文件；不修改原始照片" = "Writes XMP sidecar files after confirmation; original photos are not modified";
 "第 %lld 张，共 %lld 张" = "Photo %lld of %lld";
 "筛选" = "Filter";
+"筛选 %lld" = "Filters: %lld";
+"点击清除筛选" = "Click to clear filters";
 "索引进度" = "Indexing progress";
 "绑定角色" = "Bind role";
 "结清本次写回，之后才可清理备份" = "Finish this write-back before backups can be cleaned up";
@@ -1189,7 +1277,6 @@
 "进行中" = "In progress";
 "选择" = "Select";
 "选择分组" = "Select group";
-"选择当前筛选下的全部照片" = "Select all photos under the current filter";
 "通过" = "Passed";
 "重复类型" = "Duplicate type";
 "重新关联" = "Re-link";
@@ -1215,6 +1302,7 @@
 "保留片（挑片决策为保留）" = "Picks only (culling decision: keep)";
 "工作区全部照片" = "All photos in the workspace";
 "所选照片" = "Selected photos";
+"所选照片（%lld 张）" = "Selected photos (%lld)";
 "本次将导出" = "This export";
 "%lld 个文件" = "%lld files";
 "选择导出目录后显示本次将导出的文件数。" = "Choose an export folder to see how many files this export will write.";
@@ -1584,7 +1672,6 @@
 "最低可执行置信度" = "Minimum Executable Confidence";
 "默认 0.55；低于此值一律待复核" = "Default 0.55; below this value everything goes to review.";
 "加载失败，重试" = "Failed to load. Retry";
-"所选照片不在当前视图内，请重新选择" = "The selected photos are out of view. Select them again.";
 "挑片网格" = "Culling Grid";
 "默认排序" = "Default Sort";
 "新窗口首次打开网格时的排序；窗口内切换只在本次窗口生效" = "Sort order when a new window first opens the grid; changes inside a window apply to that window only.";
@@ -1665,7 +1752,15 @@
 "复制后校验校验和" = "Verify checksum after copy";
 "已登记 %lld 张，跳过 %lld 张，失败 %lld 张" = "Registered %lld, skipped %lld, failed %lld";
 "开始摄取" = "Start Ingest";
+"取消摄取" = "Cancel Ingest";
+"正在摄取…" = "Ingesting…";
+"已复制 %lld/%lld" = "Copied %lld/%lld";
+"正在取消…" = "Cancelling…";
+"没有进行中的摄取任务" = "No ingest job is running";
+"当前工作区没有根目录，无法确定摄取目标。" = "This workspace has no root folder, so the ingest destination cannot be determined.";
+"已取消摄取；取消前已登记的照片会保留" = "Ingest cancelled; photos registered before cancellation are kept";
 "摄取照片…" = "Ingest Photos…";
+"摄取照片" = "Ingest Photos";
 "从存储卡或文件夹复制照片到工作目录并登记" = "Copy photos from a card or folder into the working directory and register them";
 "摄取未接线（缺少 session API）" = "Ingest is not wired (missing session API)";
 "技术建议写回" = "Write Back Suggestions";
@@ -1735,14 +1830,18 @@
 "还原这批照片的描述性字段；冲突字段按套用前快照恢复。" = "Restores descriptive fields for these photos; conflicting fields are restored from the pre-apply snapshot.";
 "目标路径已被其它资产登记，请先重连或清理该登记后再移出" = "The destination path is already registered to another asset; reconnect or clear that record first.";
 "其中 %lld 个字段会被清空" = "of which %lld fields will be cleared";
-"无法确定会话目录，请手动选择目标文件夹" = "Cannot determine the session folder; choose a destination manually";
+
 "已复制但未登记：%lld 张" = "Copied but not registered: %lld";
 "最近套用与写回" = "Recent Applies and Write-backs";
 "没有可撤销的批次" = "No undoable batches";
 "已撤销" = "Undone";
 "历史与撤销…" = "History and Undo…";
 "查看最近套用/写回批次并撤销" = "Review recent apply/write-back batches and undo them";
-"%@ · %lld 张 · %@" = "%@ · %lld photos · %@";
+"%lld 张 · %@" = "%lld photos · %@";
+"放弃未保存的改动？" = "Discard unsaved changes?";
+"放弃并关闭" = "Discard and Close";
+"继续编辑" = "Keep Editing";
+"关闭后本次修改不会保存。" = "Your changes will not be saved if you close.";
 "无法读取/越界被拒绝：%lld 个" = "Unreadable/out-of-root sources: %lld";
 "清空字段…" = "Clear Fields…";
 "未设置" = "Not set";
@@ -1864,3 +1963,7 @@
 "客户选择" = "Client selection";
 "取消交付" = "Cancel delivery";
 "已导入 %lld 张（跳过 %lld，失败 %lld）" = "Imported %lld photos (skipped %lld, failed %lld)";
+"预览已过期，请重新生成预览后再写回" = "The preview is stale; regenerate it before writing back.";
+"未导入照片：所选目录为空或不包含支持的格式" = "No photos imported: the folder is empty or has no supported formats.";
+"请先设置工作区根目录" = "Set a workspace root folder first.";
+"请选择要交付的照片" = "Select photos to deliver.";

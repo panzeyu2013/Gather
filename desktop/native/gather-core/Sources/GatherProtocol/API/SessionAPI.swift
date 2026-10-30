@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/SessionAPI.swift
-// Cut 1 / 阶段 1A：会话域协议（8 个方法）。
+// Cut 1 / 阶段 1A：会话域协议（9 个方法；P1-3 追加 setSourceRoot）。
 //
 // 职责：会话 CRUD、文件/目录导入、工作区状态。Dashboard 不再直连 SessionService，
 // 与其他 UI 一样只依赖本协议（第 13 个调用方）。
@@ -36,6 +36,9 @@ public protocol SessionAPI: Sendable {
 
     /// P1 / D：摄取（复制/重命名/校验 → 登记）。破坏性在于写文件系统，用 Confirmed 收口。
     func ingest(_ input: Confirmed<SessionIngestInput>) async throws -> SessionIngestResult
+
+    /// P1-3：为历史空根工作区设置/修复根目录（改变后续扫描/摄取/监听范围）。
+    func setSourceRoot(_ input: Confirmed<SessionSetSourceRootInput>) async throws -> SessionData
 
     /// workspace.status
     func status(_ sessionId: String) async throws -> WorkspaceStatus

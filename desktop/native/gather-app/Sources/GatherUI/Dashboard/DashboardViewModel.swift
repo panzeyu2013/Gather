@@ -42,7 +42,7 @@ package protocol DashboardDataProvider: Sendable {
     func listJobs(includeCheckpoint: Bool) async throws -> [AnalysisJobData]
     func cancelJob(_ jobId: String) async throws -> Bool
     func retryJob(_ jobId: String) async throws -> Bool
-    func clearCompletedJobs() async throws -> Int
+    func clearCompletedJobs(includeFailed: Bool) async throws -> Int
     /// 重跑 metadata.scan（dedupeKey 复用终态行；作用域经 checkpoint 继承）。
     func retryIndexScan(sessionId: String) async throws
 }

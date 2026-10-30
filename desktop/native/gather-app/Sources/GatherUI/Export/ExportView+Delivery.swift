@@ -4,10 +4,17 @@ import AppKit
 import SwiftUI
 import GatherProtocol
 
+struct PendingDeliveryConfirmation: Identifiable {
+    let id = UUID()
+    let input: OutputRunInput
+    let preflight: DeliveryPreflightSummary
+}
+
 struct ExportDeliverySection: View {
     let viewModel: ExportViewModel
     @Environment(\.languageStore) private var languageStore
     @State private var showWebDAV = false
+    @State private var pendingDelivery: PendingDeliveryConfirmation?
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
@@ -42,10 +49,26 @@ struct ExportDeliverySection: View {
                     }
                 }
                 Button(viewModel.isDelivering ? l10n("正在交付…") : l10n("开始整套交付")) {
-                    Task { await viewModel.runDelivery() }
+                    Task {
+                        if let input = await viewModel.prepareDeliveryInput() {
+                            let preflight = await viewModel.deliveryPreflight(for: input)
+                            pendingDelivery = PendingDeliveryConfirmation(
+                                input: input, preflight: preflight)
+                        }
+                    }
                 }
                 .gatherPrimaryActionButton()
-                .disabled(viewModel.isDelivering || viewModel.deliveryRecipes.isEmpty)
+                // 交付与单张导出共用会话级取消：运行期间互斥，避免互相误杀。
+                .disabled(viewModel.isDelivering || viewModel.isExporting || viewModel.deliveryRecipes.isEmpty)
+                .sheet(item: $pendingDelivery) { pending in
+                    DeliveryConfirmSheet(input: pending.input, preflight: pending.preflight) { input in
+                        // 确认分支：Confirmed 只在这里构造（D-011）。
+                        Task {
+                            await viewModel.executeDelivery(
+                                Confirmed(input, source: .userDialog))
+                        }
+                    }
+                }
             }
             if let progress = viewModel.deliveryProgress {
                 // 长交付此前只有"正在交付…"按钮文案，像卡死；这里给进度 + 相位。

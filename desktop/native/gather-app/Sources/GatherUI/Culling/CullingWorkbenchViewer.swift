@@ -181,7 +181,12 @@ struct CullingWorkbenchViewer: View {
                 Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected)) }
                 return .handled
             case "u":
-                Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed)) }
+                // P2-3：U 统一不前进（与检查器/网格一致），避免跳走当前照片。
+                Task {
+                    await viewModel.commit(
+                        patch: CullingUpdatePatch(pickState: .unreviewed),
+                        shouldAdvance: false)
+                }
                 return .handled
             case "0", "1", "2", "3", "4", "5":
                 guard let value = Int(press.characters) else { return .ignored }
@@ -407,17 +412,14 @@ struct CullingWorkbenchViewer: View {
         return groups
     }
 
-    /// 对齐 TS comparisonAssets（Culling.tsx:675-691）：单张对比直接返回当前；
-    /// 对比来源优先取当前照片相似度组内的成员（按已加载顺序），无组时取
-    /// 全列表；组内仅当前一张时返回 [current]，不取连续照片兜底。
+    /// P2-3：显式选中的 2/4 张优先；否则当前照片 ± 相邻，避免第 100 张对比
+    /// 列表第 1 张。
     private func comparisonAssets() -> [CullingAsset] {
-        guard let current = currentAsset else { return [] }
-        guard compareCount > 1 else { return [current] }
-        let pool = current.similarityGroupId.map { groupId in
-            assets.filter { $0.similarityGroupId == groupId }
-        } ?? assets
-        let others = pool.filter { $0.photo.id != current.photo.id }.prefix(compareCount - 1)
-        return [current] + Array(others)
+        CullingComparison.assets(
+            current: currentAsset,
+            assets: assets,
+            selectedIds: viewModel.selectedPhotoIds,
+            compareCount: compareCount)
     }
 
     /// 来源标签（对齐 TS sourceLabel：template/face-keyword/similarity/AI/导入/人工）。

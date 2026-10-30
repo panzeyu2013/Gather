@@ -161,6 +161,8 @@ extension View {
         title: String,
         confirmLabel: @escaping (Item) -> String,
         confirmRole: @escaping (Item) -> ButtonRole? = { _ in nil },
+        secondaryLabel: ((Item) -> String?)? = nil,
+        onSecondary: ((Item) -> Void)? = nil,
         message: @escaping (Item) -> String,
         onConfirm: @escaping (Item) -> Void,
         onCancel: @escaping (Item) -> Void
@@ -170,6 +172,8 @@ extension View {
             title: title,
             confirmLabel: confirmLabel,
             confirmRole: confirmRole,
+            secondaryLabel: secondaryLabel,
+            onSecondary: onSecondary,
             message: message,
             onConfirm: onConfirm,
             onCancel: onCancel
@@ -186,6 +190,9 @@ private struct GatherDestructiveConfirmModifier<Item>: ViewModifier {
     let title: String
     let confirmLabel: (Item) -> String
     let confirmRole: (Item) -> ButtonRole?
+    /// 可选第二动作（如「仅当前可见」）：返回 nil 时不渲染。
+    let secondaryLabel: ((Item) -> String?)?
+    let onSecondary: ((Item) -> Void)?
     let message: (Item) -> String
     let onConfirm: (Item) -> Void
     let onCancel: (Item) -> Void
@@ -204,6 +211,10 @@ private struct GatherDestructiveConfirmModifier<Item>: ViewModifier {
             // 继承该环境值会把对话框按钮一并禁用（打开后无法确认/取消）。
             Button(confirmLabel(item), role: confirmRole(item)) { onConfirm(item) }
                 .disabled(false)
+            if let label = secondaryLabel?(item) {
+                Button(label) { onSecondary?(item) }
+                    .disabled(false)
+            }
             Button(l10n("取消"), role: .cancel) { onCancel(item) }
                 .disabled(false)
         } message: { item in

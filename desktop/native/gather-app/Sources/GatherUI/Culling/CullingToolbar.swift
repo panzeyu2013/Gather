@@ -13,6 +13,8 @@ struct CullingToolbar: View {
     let viewModel: CullingViewModel
     let isBusy: Bool
     @Binding var layoutMode: CullingLayoutMode
+    /// P1-9：同步/写回/重置动作与布局无关；网格布局也必须能打开。
+    @Binding var pendingAction: PendingCullingAction?
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
@@ -64,6 +66,14 @@ struct CullingToolbar: View {
 
             Divider().frame(height: 18)
 
+            CullingSyncControls(
+                viewModel: viewModel,
+                isBusy: isBusy,
+                pendingAction: $pendingAction
+            )
+
+            filterChip
+
             qualityAnalysisBlock
                 .fixedSize()
         }
@@ -95,6 +105,15 @@ struct CullingToolbar: View {
             .fixedSize()
             .help(l10n("范围、自动前进与布局"))
 
+            filterChip
+
+            CullingSyncControls(
+                viewModel: viewModel,
+                isBusy: isBusy,
+                pendingAction: $pendingAction,
+                compact: true
+            )
+
             compactQualityAnalysis
 
             Spacer(minLength: 0)
@@ -104,6 +123,22 @@ struct CullingToolbar: View {
     }
 
     @ViewBuilder
+    private var filterChip: some View {
+        if viewModel.activeFilterCount > 0 {
+            Button {
+                Task { await viewModel.resetFilters() }
+            } label: {
+                Text(l10n.format("筛选 %lld", viewModel.activeFilterCount))
+                    .font(GatherFont.label)
+                    .padding([.horizontal], GatherMetrics.Space.s)
+                    .padding([.vertical], GatherMetrics.Space.xxs)
+                    .background(Capsule().fill(GatherTheme.surfaceMuted))
+            }
+            .buttonStyle(.plain)
+            .help(l10n("点击清除筛选"))
+        }
+    }
+
     private var compactQualityAnalysis: some View {
         HStack(spacing: 6) {
             Button {
@@ -127,6 +162,11 @@ struct CullingToolbar: View {
                 Text("\(qualityProgressPercent(job))%")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                Button { viewModel.cancelQualityAnalysis() } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .labelStyle(.iconOnly)
+                .help(l10n("取消质量分析"))
             }
         }
     }

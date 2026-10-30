@@ -367,6 +367,50 @@ struct APICullingTests {
         #expect(results[0].historyOperationId == results[1].historyOperationId)
     }
 
+    @Test("updateSelection：服务端重算 hash 后整份应用，并写历史")
+    func updateSelectionAppliesWholeSelection() async throws {
+        let fixture = try CullingAPIFixture()
+        let ids = try fixture.addPhotos(["a.jpg", "b.jpg"])
+        let selection = try await fixture.api.selection(
+            CullingSelectionQuery(sessionId: fixture.sessionId, scope: .all))
+        #expect(selection.ids.count == 2)
+        let hash = try #require(selection.idsHash, "selection 必须带 hash")
+
+        let result = try await fixture.api.updateSelection(
+            CullingSelectionUpdateInput(
+                sessionId: fixture.sessionId, scope: .all,
+                expectedIdsHash: hash, expectedCount: selection.ids.count,
+                patch: CullingUpdatePatch(pickState: .rejected)
+            )
+        )
+        #expect(result.requested == 2)
+        #expect(result.applied == 2)
+        #expect(result.failed.isEmpty)
+        #expect(result.historyOperationIds.count == 1, "\(result)")
+        #expect(try fixture.decision(ids[0]) == "reject")
+        #expect(try fixture.decision(ids[1]) == "reject")
+    }
+
+    @Test("updateSelection：选择 hash 变化时零写入并报 CULLING_SELECTION_CHANGED")
+    func updateSelectionRejectsStaleHash() async throws {
+        let fixture = try CullingAPIFixture()
+        let ids = try fixture.addPhotos(["a.jpg"])
+        let selection = try await fixture.api.selection(
+            CullingSelectionQuery(sessionId: fixture.sessionId, scope: .all))
+        let input = try CullingSelectionUpdateInput(
+            sessionId: fixture.sessionId, scope: .all,
+            expectedIdsHash: "stale-hash", expectedCount: selection.ids.count,
+            patch: CullingUpdatePatch(pickState: .rejected)
+        )
+        do {
+            _ = try await fixture.api.updateSelection(input)
+            Issue.record("stale hash 必须被拒绝")
+        } catch let error as GatherError {
+            #expect(error.code == .CULLING_SELECTION_CHANGED)
+        }
+        #expect(try fixture.decision(ids[0]) == nil, "hash 不符不得写入任何决策")
+    }
+
     @Test("decideGroup：keep 集合之外的同组成员全部 rejected")
     func decideGroupKeepsOnlySelection() async throws {
         let fixture = try CullingAPIFixture()

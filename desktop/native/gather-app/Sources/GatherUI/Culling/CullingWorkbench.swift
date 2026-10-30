@@ -24,7 +24,8 @@ struct CullingWorkbench: View {
             CullingToolbar(
                 viewModel: viewModel,
                 isBusy: isBusy,
-                layoutMode: $layoutMode
+                layoutMode: $layoutMode,
+                pendingAction: $pendingAction
             )
             // 竖向分割：查看器 + infoBar 占据上半区，全宽胶片条固定在底部。
             // （旧版把胶片条放在右侧，与右侧 .inspector 两栏夹击查看器。）
@@ -47,7 +48,7 @@ struct CullingWorkbench: View {
                         faceAlign: faceAlign
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    CullingInfoBar(viewModel: viewModel, isBusy: isBusy, pendingAction: $pendingAction)
+                    CullingInfoBar(viewModel: viewModel, isBusy: isBusy)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -6,6 +6,21 @@
 import Foundation
 import GatherProtocol
 
+
+/// P2-1：整套交付预检汇总（只计算结果，不写文件）。
+struct DeliveryPreflightSummary: Equatable {
+    let recipeCount: Int
+    let totalFiles: Int
+    let totalSizeBytes: Int
+    let freeSpaceBytes: Int
+    let issueCount: Int
+    let failedRecipeNames: [String]
+
+    var hasEnoughSpace: Bool {
+        freeSpaceBytes < 0 || totalSizeBytes <= freeSpaceBytes
+    }
+}
+
 extension ExportViewModel {
     /// 交付根目录：留空时沿用当前导出目标目录。
     public var effectiveDeliveryRoot: String {
@@ -13,35 +28,60 @@ extension ExportViewModel {
             ? destination : deliveryRoot
     }
 
+    /// P0：设置变化只作废缓存并原地重读，**不允许先清空数组**。
+    ///
+    /// 清空会被 ExportView+Delivery 的 `.onChange(of: deliveryRecipes)` 防抖落盘成
+    /// "[]"：用户自建配方永久丢失，且「保存过空数组保持空」会让默认配方也不再播种。
+    /// 内容没变就不改数组，避免 `onChange` 产生任何写回。
+    func invalidateDeliveryRecipes() {
+        hasLoadedDeliveryRecipes = false
+        recipeReloadTask?.cancel()
+        recipeReloadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let recipes = await self.readDeliveryRecipes()
+            guard !Task.isCancelled, let recipes else { return }
+            self.hasLoadedDeliveryRecipes = true
+            if recipes != self.deliveryRecipes { self.deliveryRecipes = recipes }
+        }
+    }
+
     /// 首次进入：先读 settings output.recipes；只有“从未保存/坏 JSON”才种默认配方。
     /// 保存过空数组时保持空（删除最后一个配方不得在下次运行被复活）。
     public func loadDeliveryRecipes() async {
         guard deliveryRecipes.isEmpty, !hasLoadedDeliveryRecipes else { return }
         hasLoadedDeliveryRecipes = true
-        if let settingsAPI {
-            // 交付目录与配方一起载入：下次进来不用再手打绝对路径。
-            if deliveryRoot.isEmpty, let key = try? SettingsKey("output.deliveryRoot") {
-                if let saved = try? await settingsAPI.get(key), !saved.isEmpty {
-                    deliveryRoot = saved
-                }
-            }
-            do {
-                let key = try SettingsKey("output.recipes")
-                let raw = try await settingsAPI.get(key)
-                if !raw.isEmpty, let data = raw.data(using: .utf8) {
-                    let recipes = try JSONDecoder().decode([OutputRecipe].self, from: data)
-                    deliveryRecipes = recipes
-                    return
-                }
-            } catch {
-                GatherLogger.log("output.recipes load failed: \(error)", level: .debug)
-            }
+        let recipes = await readDeliveryRecipes() ?? Self.defaultRecipes
+        if recipes != deliveryRecipes { deliveryRecipes = recipes }
+    }
+
+    /// 只读 settings，不改内存：nil = 读取失败（调用方保留现状），
+    /// 空串/坏 JSON 与旧实现一致地回落默认配方。
+    private func readDeliveryRecipes() async -> [OutputRecipe]? {
+        guard let settingsAPI else { return Self.defaultRecipes }
+        // 交付目录与配方一起载入；settingsChanged（reset/清除用户内容）后即使
+        // 当前值非空也必须重读，否则已清空的旧目录会在下次交付被写回 settings。
+        if let key = try? SettingsKey("output.deliveryRoot"),
+           let saved = try? await settingsAPI.get(key) {
+            deliveryRoot = saved
         }
-        deliveryRecipes = Self.defaultRecipes
+        do {
+            let key = try SettingsKey("output.recipes")
+            let raw = try await settingsAPI.get(key)
+            if !raw.isEmpty, let data = raw.data(using: .utf8) {
+                do { return try JSONDecoder().decode([OutputRecipe].self, from: data) } catch {
+                    // 坏 JSON 与旧实现一致：回落默认配方。
+                }
+            }
+        } catch {
+            GatherLogger.log("output.recipes load failed: \(error)", level: .debug)
+            return nil
+        }
+        return Self.defaultRecipes
     }
 
     public func addDeliveryRecipe() {
         guard deliveryRecipes.count < 32 else { return }
+        hasLoadedDeliveryRecipes = true
         var index = deliveryRecipes.count + 1
         var name = "Recipe \(index)"
         while deliveryRecipes.contains(where: { $0.name == name }) {
@@ -83,7 +123,8 @@ extension ExportViewModel {
     }
 
     private func persistDeliveryRecipes() {
-        guard let settingsAPI else { return }
+        // P0：未完成首次载入前不得落盘——否则会把「尚未读到的空数组」覆盖用户配方。
+        guard let settingsAPI, hasLoadedDeliveryRecipes else { return }
         let json: String
         do {
             let data = try JSONEncoder().encode(deliveryRecipes)
@@ -207,69 +248,128 @@ extension ExportViewModel {
         return CommandError(error).code.localizedCaseInsensitiveContains("cancelled")
     }
 
-    public func runDelivery() async {
-        guard !isDelivering else { return }
+    /// P2-1：先把交付参数校验/冻结成输入，交给确认 sheet；确认前不执行。
+    public func prepareDeliveryInput() async -> OutputRunInput? {
+        guard !isDelivering else { return nil }
         let root = effectiveDeliveryRoot
         guard !root.isEmpty else {
             errorMessage = CommandError.localized("请先选择交付目录")
-            return
+            return nil
         }
         if !hasLoadedDeliveryRecipes { await loadDeliveryRecipes() }
         guard !deliveryRecipes.isEmpty else {
             deliverySummary = nil
             errorMessage = CommandError.localized("没有可用的交付配方，请先添加")
-            return
+            return nil
+        }
+        if scope == .selected && selectedPhotoIds.isEmpty {
+            errorMessage = CommandError.localized("请选择要交付的照片")
+            return nil
         }
         persistDeliveryRecipes()
+        return makeDeliveryInput(root: root)
+    }
+
+
+    /// P2-1：逐配方跑一次 export.preview，汇总文件数/体积/空间/可执行性问题。
+    /// 预览失败不阻断确认，但会在 sheet 中列出失败配方。
+    func deliveryPreflight(for input: OutputRunInput) async -> DeliveryPreflightSummary {
+        var totalFiles = 0
+        var totalSize = 0
+        var freeSpace = -1
+        var issueCount = 0
+        var failedRecipes: [String] = []
+        for recipe in input.recipes {
+            let options = ExportOptions(
+                scope: input.scope,
+                selectedPhotoIds: input.selectedPhotoIds,
+                variantPolicy: .preferred,
+                format: recipe.format,
+                quality: recipe.quality,
+                maxDimension: recipe.maxDimension,
+                tiffCompression: recipe.format == .tiff ? .lzw : nil,
+                watermark: recipe.watermark,
+                naming: recipe.naming,
+                includeXmp: recipe.includeXmp || recipe.includeMetadata,
+                destination: input.destinationRoot)
+            do {
+                let preview = try await exportAPI.preview(
+                    ExportInput(sessionId: input.sessionId, options: options))
+                totalFiles += preview.totalFiles
+                totalSize += preview.totalSizeBytes
+                if preview.freeSpaceBytes >= 0 {
+                    freeSpace = freeSpace < 0
+                        ? preview.freeSpaceBytes
+                        : min(freeSpace, preview.freeSpaceBytes)
+                }
+                issueCount += preview.files.filter { $0.issue != nil }.count
+            } catch {
+                failedRecipes.append(recipe.name)
+            }
+        }
+        return DeliveryPreflightSummary(
+            recipeCount: input.recipes.count,
+            totalFiles: totalFiles,
+            totalSizeBytes: totalSize,
+            freeSpaceBytes: freeSpace,
+            issueCount: issueCount,
+            failedRecipeNames: failedRecipes)
+    }
+
+    /// 确认 sheet 的唯一下一动作：执行冻结好的输入（不再重读界面状态）。
+    /// 确认 sheet 的唯一执行入口：只能拿到确认分支构造的 Confirmed，VM 不再
+    /// 自行“补”用户确认（D-011 / DEVELOPMENT.md §523）。
+    public func executeDelivery(_ input: Confirmed<OutputRunInput>) async {
+        guard !isDelivering else { return }
         isDelivering = true
         deliverySummary = nil
         errorMessage = nil
         defer { isDelivering = false }
         do {
-            // 开关直接落到每条配方的 artifacts：编排层只按 artifacts 建联系表/画廊，
-            // 不传就等于开关无效（曾经的 blocker）。
-            let recipes = deliveryRecipes.map { recipe -> OutputRecipe in
-                var updated = recipe
-                var artifacts = Set(updated.artifacts)
-                if deliveryIncludeContactSheet {
-                    artifacts.insert(.contactSheet)
-                } else {
-                    artifacts.remove(.contactSheet)
-                }
-                if deliveryIncludeGallery {
-                    artifacts.insert(.gallery)
-                } else {
-                    artifacts.remove(.gallery)
-                }
-                // 顺序必须稳定：artifacts 会进配方指纹/job dedupeKey，
-                // Set 的迭代顺序随进程哈希种子变化，会让“再交付一次”算出新键。
-                updated.artifacts = OutputArtifactKind.allCases.filter { artifacts.contains($0) }
-                return updated
-            }
-            let input = OutputRunInput(
-                sessionId: sessionId,
-                scope: scope,
-                destinationRoot: root,
-                recipes: recipes,
-                contactSheet: deliveryIncludeContactSheet
-                    ? OutputContactSheetOptions(
-                        title: sessionName ?? "", subtitle: "", footer: "", columns: 4, rows: 5)
-                    : nil,
-                gallery: deliveryIncludeGallery
-                    ? OutputGalleryOptions(
-                        title: sessionName ?? "Gallery", subtitle: "", footer: "",
-                        thumbnailMaxDimension: 480, largeMaxDimension: 1600)
-                    : nil)
-            deliverySummary = try await exportAPI.runRecipes(Confirmed(input))
+            deliverySummary = try await exportAPI.runRecipes(input)
         } catch {
             // 取消不是失败：partial manifest 已由服务端写出，成片就在交付目录里。
-            // 旧实现落一条「操作失败：发生未知错误」，同时让结果区（manifest/联系表/
-            // 画廊/发布入口）整块消失，用户以为交付没发生过。
             if Self.isCancellation(error) {
                 notice = LocalizedText("交付已取消；已写出的成片仍在交付目录中")
             } else {
                 errorMessage = CommandError(error)
             }
         }
+    }
+
+    private func makeDeliveryInput(root: String) -> OutputRunInput {
+        // 开关直接落到每条配方的 artifacts：编排层只按 artifacts 建联系表/画廊。
+        let recipes = deliveryRecipes.map { recipe -> OutputRecipe in
+            var updated = recipe
+            var artifacts = Set(updated.artifacts)
+            if deliveryIncludeContactSheet {
+                artifacts.insert(.contactSheet)
+            } else {
+                artifacts.remove(.contactSheet)
+            }
+            if deliveryIncludeGallery {
+                artifacts.insert(.gallery)
+            } else {
+                artifacts.remove(.gallery)
+            }
+            // 顺序必须稳定：artifacts 会进配方指纹/job dedupeKey。
+            updated.artifacts = OutputArtifactKind.allCases.filter { artifacts.contains($0) }
+            return updated
+        }
+        return OutputRunInput(
+            sessionId: sessionId,
+            scope: scope,
+            selectedPhotoIds: scope == .selected ? selectedPhotoIds : nil,
+            destinationRoot: root,
+            recipes: recipes,
+            contactSheet: deliveryIncludeContactSheet
+                ? OutputContactSheetOptions(
+                    title: sessionName ?? "", subtitle: "", footer: "", columns: 4, rows: 5)
+                : nil,
+            gallery: deliveryIncludeGallery
+                ? OutputGalleryOptions(
+                    title: sessionName ?? "Gallery", subtitle: "", footer: "",
+                    thumbnailMaxDimension: 480, largeMaxDimension: 1600)
+                : nil)
     }
 }

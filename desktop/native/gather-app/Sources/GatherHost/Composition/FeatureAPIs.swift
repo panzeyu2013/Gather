@@ -33,8 +33,9 @@ struct FeatureAPIs {
     init(composition: AppComposition) {
         let job = Self.makeJob(composition)
         self.job = job
-        self.session = Self.makeSession(composition)
-        self.settings = Self.makeSettings(composition)
+        let settings = Self.makeSettings(composition)
+        self.settings = settings
+        self.session = Self.makeSession(composition, settings: settings)
         self.photo = Self.makePhoto(composition, job: job)
         self.asset = Self.makeAsset(composition)
         self.album = Self.makeAlbum(composition)
@@ -58,11 +59,14 @@ struct FeatureAPIs {
         LiveJobAPI(jobService: composition.jobService)
     }
 
-    private static func makeSession(_ composition: AppComposition) -> any SessionAPI {
+    private static func makeSession(
+        _ composition: AppComposition, settings: any SettingsAPI
+    ) -> any SessionAPI {
         LiveSessionAPI(
             sessionService: composition.sessionService,
             workspaceStatusService: composition.workspaceStatusService,
-            jobService: composition.jobService
+            jobService: composition.jobService,
+            settingsAPI: settings
         )
     }
 

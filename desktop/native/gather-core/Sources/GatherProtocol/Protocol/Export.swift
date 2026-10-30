@@ -80,6 +80,8 @@ public struct ExportNaming: Codable, Equatable, Sendable {
 // TS: ExportOptions
 public struct ExportOptions: Codable, Equatable, Sendable {
     public var scope: ExportScope
+    /// .selected 时必填：要导出的照片 ID；服务端校验属于会话且可见。
+    public var selectedPhotoIds: [String]?
     public var variantPolicy: ExportVariantPolicy? // TS: variantPolicy?
     public var format: ExportFormat
     public var quality: Double? // TS: quality?
@@ -92,6 +94,7 @@ public struct ExportOptions: Codable, Equatable, Sendable {
 
     public init(
         scope: ExportScope,
+        selectedPhotoIds: [String]? = nil,
         variantPolicy: ExportVariantPolicy? = nil,
         format: ExportFormat,
         quality: Double? = nil,
@@ -103,6 +106,7 @@ public struct ExportOptions: Codable, Equatable, Sendable {
         destination: String
     ) {
         self.scope = scope
+        self.selectedPhotoIds = selectedPhotoIds
         self.variantPolicy = variantPolicy
         self.format = format
         self.quality = quality

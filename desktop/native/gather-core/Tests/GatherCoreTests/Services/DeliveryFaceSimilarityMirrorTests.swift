@@ -395,8 +395,10 @@ struct DeliveryWritebackMirrorDomainTests {
         )
         harness.faceWriteback.executeResult = writtenFaceResult([item])
 
+        let token = try #require(
+            try await harness.faceService.preview(sessionId: "s1", options: nil).previewToken)
         let result = try await harness.faceService.writeback(
-            sessionId: "s1", confirmed: true, items: [item]
+            sessionId: "s1", confirmed: true, items: [item], expectedPreviewToken: token
         )
 
         #expect(result.errors.isEmpty)
@@ -432,8 +434,10 @@ struct DeliveryWritebackMirrorDomainTests {
             errors: ["/shoot/p1.jpg: boom"], failedItems: [failed], report: ""
         )
 
+        let token = try #require(
+            try await harness.faceService.preview(sessionId: "s1", options: nil).previewToken)
         let result = try await harness.faceService.writeback(
-            sessionId: "s1", confirmed: true, items: [failed]
+            sessionId: "s1", confirmed: true, items: [failed], expectedPreviewToken: token
         )
 
         #expect(result.failed == 1)

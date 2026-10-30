@@ -20,6 +20,10 @@ struct ExportRangeSection: View {
                     .tag(ExportScope.filtered)
                 Text(l10n.resolve(ExportConfirmation.scopeLabel(for: .session)))
                     .tag(ExportScope.session)
+                if !viewModel.selectedPhotoIds.isEmpty {
+                    Text(l10n.format("所选照片（%lld 张）", viewModel.selectedPhotoIds.count))
+                        .tag(ExportScope.selected)
+                }
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()

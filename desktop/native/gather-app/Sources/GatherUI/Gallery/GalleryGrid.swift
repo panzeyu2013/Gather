@@ -47,6 +47,21 @@ extension GalleryView {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 16)
             }
+            .focusable()
+            .focused($galleryGridFocused)
+            .onAppear { galleryGridFocused = true }
+            .onKeyPress(.leftArrow) { moveGalleryCursor(by: -1); return .handled }
+            .onKeyPress(.rightArrow) { moveGalleryCursor(by: 1); return .handled }
+            .onKeyPress(.upArrow) { moveGalleryCursor(by: -1); return .handled }
+            .onKeyPress(.downArrow) { moveGalleryCursor(by: 1); return .handled }
+            .onKeyPress(.space) { toggleGalleryCursor(); return .handled }
+            .onKeyPress(.return) { openGalleryCursor(); return .handled }
+            .onKeyPress(.escape) { viewModel.clearSelection(); return .handled }
+            .onKeyPress("a", phases: .down) { press in
+                guard press.modifiers.contains(.command) else { return .ignored }
+                Task { await viewModel.selectAllInScope() }
+                return .handled
+            }
         }
     }
 
@@ -126,7 +141,8 @@ extension GalleryView {
             GalleryCellView(
                 photo: photo,
                 isSelected: viewModel.selectedIds.contains(photo.id),
-                thumbnailSize: viewModel.thumbnailSize
+                thumbnailSize: viewModel.thumbnailSize,
+                cullingState: viewModel.batchCullingStates[photo.id]
             )
             .frame(width: item.width, height: rowHeight)
         }

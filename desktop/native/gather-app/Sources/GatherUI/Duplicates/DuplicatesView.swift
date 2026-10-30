@@ -27,6 +27,7 @@ public struct DuplicatesView: View {
     /// 破坏性动作的待确认上下文：非空即弹确认框；命令只在确认分支发出。
     @State private var pendingResolution: PendingGroupResolution?
     @State private var pendingMemberDecision: PendingMemberDecision?
+    @State private var pendingResetGroup: DuplicateGroup?
     /// 高级扫描参数（阈值）的展开状态（F13：与相似度/人脸页同一套渐进披露规则）。
     @State private var showAdvancedScan = false
 
@@ -110,6 +111,7 @@ public struct DuplicatesView: View {
                                     viewModel: viewModel,
                                     onResolve: { pendingResolution = $0 },
                                     onSetMemberKept: { pendingMemberDecision = $0 },
+                                    onReset: { pendingResetGroup = $0 },
                                     onOpenPhoto: openPhoto
                                 )
                             }
@@ -122,6 +124,23 @@ public struct DuplicatesView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
+                        .gatherDestructiveConfirm(
+                            pending: $pendingResetGroup,
+                            title: l10n("恢复未处理？"),
+                            confirmLabel: { _ in l10n("恢复未处理") },
+                            message: { group in
+                                l10n.format(
+                                    "将清空组 #%lld 的处置标记，并把全部成员恢复为保留、未处理状态；可重新选择保留最佳或保留全部。",
+                                    group.id)
+                            },
+                            onConfirm: { group in
+                                Task { await viewModel.resetGroup(group, confirmed: true) }
+                            },
+                            onCancel: { group in
+                                viewModel.reportCancellation(
+                                    l10n.format("恢复未处理（组 #%lld）", group.id))
+                            }
+                        )
                     }
                 }
                 .padding(GatherMetrics.Layout.pageGutter)

@@ -19,6 +19,10 @@ public enum GatherAppNotification {
     /// 导入成功后由 GatherApp.importFiles 统一 post（菜单/C1/deep-link 共用），
     /// RootView 订阅后导航到新工作区并 Toast 失败计数。
     public static let importCompleted = Notification.Name("gather.import.completed")
+    /// 导入**失败**（建库/入队/路径错误）：object 是 CommandError，userInfo 可带
+    /// 原始文件列表（retryFiles）供 RootView 提供“重试”。旧实现只写日志，
+    /// 用户点“导入文件夹”后界面毫无反应。
+    public static let importFailed = Notification.Name("gather.import.failed")
     /// T0 等设置保存后广播；已打开会话据此重读 enabled/auto 状态。
     public static let settingsChanged = Notification.Name("gather.settings.changed")
 }

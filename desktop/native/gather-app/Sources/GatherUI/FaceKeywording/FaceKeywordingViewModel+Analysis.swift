@@ -31,6 +31,7 @@ extension FaceKeywordingViewModel {
         errorMessage = nil
         errorDetail = nil
         encodingFailureWarning = nil
+        invalidateWritebackPreview()
         do {
             let result = try await face.analyze(FaceAnalyzeInput(
                 sessionId: sessionId,
@@ -121,6 +122,7 @@ extension FaceKeywordingViewModel {
             switch event.job.status {
             case .succeeded:
                 // TS finishAnalysis：succeeded 终态直接进入审核步骤。
+                invalidateWritebackPreview()
                 finishAnalysis()
                 progressCurrent = event.job.progressCurrent
                 progressTotal = event.job.progressTotal

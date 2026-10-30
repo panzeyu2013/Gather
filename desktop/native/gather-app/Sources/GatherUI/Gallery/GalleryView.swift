@@ -73,6 +73,11 @@ package struct GalleryView: View {
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     @State var density = 220.0
     @State var lightboxIndex: Int?
+    /// P2-2：网格键盘焦点与当前键盘游标。
+    @FocusState var galleryGridFocused: Bool
+    @State var keyboardCursorId: String?
+    /// P2-2：图库批量动作先确认（与挑片页同口径），避免误点改 2 万张。
+    @State var pendingGalleryBatch: PendingGalleryBatch?
     /// 网格行布局缓存（避免 ScrollView 滚动时反复重算 justified 布局）。
     @State var layoutCache = GalleryLayoutCache()
     /// Lightbox 打开期间错过的终态事件：关闭后补一次刷新。

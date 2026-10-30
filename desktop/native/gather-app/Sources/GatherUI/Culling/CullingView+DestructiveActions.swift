@@ -12,6 +12,12 @@ enum PendingCullingAction: Identifiable {
     case retryFailedWriteback
     case finalizeSync
     case resolveConflict(MetadataConflict, [MetadataField: MetadataConflictChoice])
+    /// P1-8：相似组决策的真实影响面（完整组员数 + 当前可见数 + 样本文件名）。
+    case groupDecision(CullingGroupDecisionPlan)
+    /// P1-7：跨页全选批量（服务端重算 + hash）。
+    case crossPageBatch(CullingCrossPageBatchPlan)
+    /// P2-5：全部冲突采用同一策略。
+    case resolveAllConflicts(MetadataConflictChoice)
 
     var id: String {
         switch self {
@@ -25,6 +31,12 @@ enum PendingCullingAction: Identifiable {
                 .map { "\($0.key.rawValue)=\($0.value.rawValue)" }
                 .sorted()
                 .joined(separator: ",")
+        case .groupDecision(let plan):
+            "group:\(plan.id)"
+        case .crossPageBatch(let plan):
+            "cross:\(plan.id)"
+        case .resolveAllConflicts(let choice):
+            "resolve_all:\(choice.rawValue)"
         }
     }
 
@@ -42,6 +54,10 @@ enum PendingCullingAction: Identifiable {
         case .retryFailedWriteback: return LocalizedText("重试失败写回项")
         case .finalizeSync: return LocalizedText("保留 XMP 并结束同步")
         case .resolveConflict: return LocalizedText("裁决 XMP 冲突")
+        case .groupDecision: return LocalizedText("保留所选并淘汰同组其余")
+        case .crossPageBatch: return LocalizedText("应用到跨页选择")
+        case .resolveAllConflicts(let choice):
+            return LocalizedText(choice == .useRemote ? "全部采用外部值" : "全部保留 Gather")
         }
     }
 
@@ -77,6 +93,37 @@ extension CullingView {
             return usesRemote
                 ? l10n.format("将丢弃 Gather 待写入值、采用外部值，结清 %@ 的冲突。", name)
                 : l10n.format("将把 Gather 的值写回 %@（覆盖外部修改）并结清冲突。", name)
+        case .groupDecision(let plan):
+            let names = plan.sampleRejectedNames.joined(separator: "、")
+            let sample = names.isEmpty ? "" : l10n.format("（如：%@…）", names)
+            return l10n.format(
+                "相似组共 %lld 张（当前视图 %lld 张）：保留 %lld 张，淘汰其余 %lld 张%@。",
+                plan.totalCount,
+                plan.visibleCount,
+                plan.keepPhotoIds.count,
+                plan.totalCount - plan.keepPhotoIds.count,
+                sample
+            )
+        case .resolveAllConflicts(let choice):
+            return l10n.format(
+                choice == .useRemote
+                    ? "将把当前 %lld 个冲突全部采用外部值（丢弃 Gather 待写入值）。"
+                    : "将把当前 %lld 个冲突全部保留 Gather 值并结清。",
+                viewModel.conflicts.count)
+        case .crossPageBatch(let plan):
+            let hidden = plan.totalCount - plan.visibleCount
+            if plan.snapshot != nil {
+                let truncation = plan.snapshot?.truncated == true
+                    ? l10n.format("；选择已命中 %lld 张上限，超出的照片不会被处理",
+                                  CullingSelectionQuery.maxIds)
+                    : ""
+                return l10n.format(
+                    "将把本次决策应用到 %lld 张照片（当前视图 %lld 张，%lld 张不可见）%@。服务端会校验选择未变化；若筛选/范围/组员已变，则不会写入任何照片。",
+                    plan.totalCount, plan.visibleCount, hidden, truncation)
+            }
+            return l10n.format(
+                "将把本次决策应用到 %lld 张照片（当前视图 %lld 张，%lld 张不可见）。可只应用到当前可见的 %lld 张。",
+                plan.totalCount, plan.visibleCount, hidden, plan.visibleCount)
         }
     }
 
@@ -94,6 +141,12 @@ extension CullingView {
             Task { await viewModel.finalizeSync(confirmed: true) }
         case .resolveConflict(let conflict, let choices):
             Task { await viewModel.resolve(conflict, choices: choices, confirmed: true) }
+        case .groupDecision(let plan):
+            Task { await viewModel.performGroupDecision(plan) }
+        case .crossPageBatch(let plan):
+            Task { await viewModel.performCrossPageBatch(plan, onlyVisible: false) }
+        case .resolveAllConflicts(let choice):
+            Task { await viewModel.resolveAllConflicts(choice: choice, confirmed: true) }
         }
     }
 }

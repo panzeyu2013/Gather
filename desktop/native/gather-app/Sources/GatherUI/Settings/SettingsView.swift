@@ -34,8 +34,8 @@ import GatherProtocol
 /// - 状态行用 Label + SF Symbol + 语义色，不再用 ✓/✗ 字形与纯颜色信号。
 public struct SettingsView: View {
     @State var viewModel: SettingsViewModel
-    @State private var pendingReset: PendingSettingsReset?
-    @State private var pendingModelInstall: PendingModelInstall?
+    @State private var pendingResetImpact: SettingsResetImpact?
+    @State var pendingModelInstall: PendingModelInstall?
     /// 正在用文件选择器编辑的设置项（目录项选文件夹，其余选文件）。
     @State var pickingField: SettingField?
     /// 正在用文件选择器编辑的模型路径键。
@@ -114,11 +114,11 @@ public struct SettingsView: View {
                 .help(l10n("重新读取全部设置项"))
 
                 Button {
-                    pendingReset = PendingSettingsReset(keyCount: viewModel.values.count)
+                    Task { pendingResetImpact = await viewModel.previewResetImpact() }
                 } label: {
                     Label(l10n("恢复默认"), systemImage: "arrow.counterclockwise")
                 }
-                .help(l10n("把所有设置项恢复为默认值（会先确认）"))
+                .help(l10n("查看影响范围后选择要重置的内容（会先确认）"))
             }
         }
         .fileImporter(
@@ -167,15 +167,18 @@ public struct SettingsView: View {
         .refreshOnDomainEvents([.metadata]) {
             await viewModel.refreshSyncState()
         }
-        .gatherDestructiveConfirm(
-            pending: $pendingReset,
-            title: l10n("恢复所有设置默认值？"),
-            confirmLabel: { _ in l10n("恢复默认") },
-            confirmRole: { _ in .destructive },
-            message: { $0.scopeText(with: l10n) },
-            onConfirm: { _ in viewModel.reset(confirmed: true) },
-            onCancel: { _ in viewModel.reportCancellation(l10n("恢复默认设置")) }
-        )
+        .sheet(item: $pendingResetImpact) { impact in
+            ResetImpactSheet(impact: impact) { preferences, userContent, language in
+                // 确认分支：Confirmed 只在这里构造。
+                let input = SettingsResetInput(
+                    resetPreferences: preferences,
+                    resetUserContent: userContent,
+                    resetLanguage: language)
+                Task {
+                    await viewModel.reset(Confirmed(input, source: .userDialog))
+                }
+            }
+        }
         // 模型覆盖安装：同名文件会被覆盖且不可恢复，先确认。
         .gatherDestructiveConfirm(
             pending: $pendingModelInstall,

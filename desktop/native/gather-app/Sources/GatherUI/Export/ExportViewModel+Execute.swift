@@ -145,6 +145,7 @@ extension ExportViewModel {
         }
         return ExportOptions(
             scope: scope,
+            selectedPhotoIds: scope == .selected ? selectedPhotoIds.sorted() : nil,
             variantPolicy: variantPolicy,
             format: format,
             quality: parsedQuality,

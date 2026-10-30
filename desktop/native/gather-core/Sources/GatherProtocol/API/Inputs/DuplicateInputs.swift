@@ -60,6 +60,24 @@ public struct DuplicateResolveInput: Decodable, Sendable, Equatable {
     }
 }
 
+/// dup.reset_group 的载荷（Confirmed<DuplicateResetGroupInput>）。
+public struct DuplicateResetGroupInput: Decodable, Sendable, Equatable {
+    public let groupId: Int
+
+    public init(groupId: Int) throws {
+        self.groupId = try APIValidation.nonNegative(groupId, field: "groupId")
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(groupId: container.decode(Int.self, forKey: .groupId))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case groupId
+    }
+}
+
 /// dup.resolve_member 的载荷（Confirmed<DuplicateResolveMemberInput>）。
 public struct DuplicateResolveMemberInput: Decodable, Sendable, Equatable {
     public let memberId: Int

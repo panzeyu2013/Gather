@@ -53,6 +53,33 @@ extension JobCreateParams {
             checkpoint: metadataScanCheckpoint(requestedPaths: requestedPaths)
         )
     }
+
+    /// ingest.run checkpoint 的请求键，必须与 Host 执行器读取的键一致。
+    public static let ingestRunRequestKey = "request"
+
+    /// 摄取 Job 的唯一构造入口：完整请求编码进 checkpoint，执行器按同一形状解码。
+    /// P2：dedupeKey 带请求指纹；同会话换来源再摄取不得复用旧 job（否则返回
+    /// 上一次请求的结果）。完全相同的请求仍复用活跃 job。
+    public static func ingestRun(_ input: SessionIngestInput) throws -> JobCreateParams {
+        let data = try JSONEncoder().encode(input)
+        let json = String(decoding: data, as: UTF8.self)
+        var fingerprint: UInt64 = 1_469_598_103_934_665_603
+        for byte in json.utf8 {
+            fingerprint = (fingerprint ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        // 复用 checksum.backfill 作为 Job 载体：analysis_jobs.type 的 CHECK 约束
+        // 不含 ingest.run，且本设计明确不改 schema；执行器按 operation 分派。
+        return JobCreateParams(
+            type: .checksumBackfill,
+            scopeType: "session",
+            scopeId: input.sessionId,
+            dedupeKey: "ingest.run:\(input.sessionId):\(String(fingerprint, radix: 16))",
+            checkpoint: [
+                "operation": .string("ingest"),
+                ingestRunRequestKey: .string(json),
+            ]
+        )
+    }
 }
 
 /// jobs.list 的过滤条件。
@@ -75,10 +102,19 @@ public struct JobListFilter: Decodable, Sendable, Equatable {
 
 /// jobs.clear_completed 的载荷（Confirmed<ClearCompletedInput>）。
 public struct ClearCompletedInput: Decodable, Sendable, Equatable {
-    public init() {}
+    /// false = 只清成功终态（默认，保护阶段证据）；true = 只清失败/中断/取消。
+    public let includeFailed: Bool
+
+    public init(includeFailed: Bool = false) {
+        self.includeFailed = includeFailed
+    }
 
     public init(from decoder: Decoder) throws {
-        // 无字段；保留显式 init 以便未来扩展（如 dryRun）。
-        _ = decoder
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.includeFailed = try container.decodeIfPresent(Bool.self, forKey: .includeFailed) ?? false
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case includeFailed
     }
 }

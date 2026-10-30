@@ -15,8 +15,8 @@ Sources/GatherUI/
     Components/   Card / Section / Badge / Banner / EmptyState / Toast
     Patterns/     GatherPage（全局页骨架）
     Modifiers/    gatherSurface / gatherText
-  Interaction/    （规划中）路由、命令、事件、生命周期
-  Features/       Dashboard / Library / …
+  Interaction/    路由、命令、事件、生命周期（GatherSessionPage / SessionPage）
+  Dashboard/ Library/ Culling/ …  按功能分目录（不再有 Features/ 层）
   Shell/          RootView / Scene 装配 / Overlay
   Support/        基础设施：L10n、错误、端口、缓存、事件中心
 ```
@@ -223,7 +223,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 | Dashboard / Library / Persons / Settings 使用 `gatherPage` | ✅ 第一里程碑 |
 | 7 个会话页使用 `GatherSessionPage` + 生命周期 | ✅ Phase 2 |
 | `AppRoute` / `SessionPage` / `\.navigator` environment | ✅ Phase 3（旧 `Destination` / `SessionTab` 已删除） |
-| `AppCommandCenter` 菜单命令 | ⚠️ Phase 4 部分：主路径已接；undo/redo 仍只在 Culling 页内，AppDelegate 兜底回退通知、菜单 canPerform/禁用态未完成 |
+| `AppCommandCenter` 菜单命令 | ✅ Phase 4：菜单可执行性由 `AppCommandCenter.installed` 驱动并置灰；undo/redo 仅挑片页自建历史栈，其他页面保留系统撤销/重做 |
 | `refreshOnDomainEvents` / `refreshOnJobTerminal` | ✅ Phase 4 |
 | `GatherSessionToolbar` 共享工具栏 | ✅ P2（7 页迁移；Control/Face 改 @Bindable 修 SIGSEGV） |
 | `GatherInspectorSection` 共享检查器 | 下一阶段 |

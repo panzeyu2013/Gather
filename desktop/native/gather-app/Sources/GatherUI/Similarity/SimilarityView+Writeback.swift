@@ -37,6 +37,11 @@ extension SimilarityView {
             Text(l10n("选择相似分组，关键词会合并写入每张照片旁的 .xmp 文件，不修改原图。"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            if viewModel.isAnalyzing || viewModel.isReclustering {
+                Text(l10n("相似度分析/聚类进行中，写回已暂时禁用。"))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.errorText)
+            }
             LabeledContent(l10n("关键词")) {
                 TextField(
                     l10n("输入关键词，多个关键词用逗号分隔"),

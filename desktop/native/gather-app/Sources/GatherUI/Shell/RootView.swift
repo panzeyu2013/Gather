@@ -146,6 +146,9 @@ package struct RootView: View {
             // 菜单/C1/文件拖入都会在这里完成建库；侧栏立即补一条。
             Task { await viewModel.refreshSidebarSessions() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.importFailed)) { notification in
+            handleImportFailed(notification)
+        }
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.captureOneError)) { notification in
             handleCaptureOneError(notification)
         }

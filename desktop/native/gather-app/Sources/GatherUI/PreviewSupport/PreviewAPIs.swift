@@ -45,6 +45,12 @@ struct PreviewSessionAPI: SessionAPI {
         throw PreviewAPIError.unavailable("session.create")
     }
 
+    func setSourceRoot(
+        _ input: Confirmed<SessionSetSourceRootInput>
+    ) async throws -> SessionData {
+        throw PreviewAPIError.unavailable("session.setSourceRoot")
+    }
+
     func update(_ input: SessionUpdateParams) async throws -> SessionData {
         throw PreviewAPIError.unavailable("session.update")
     }
@@ -100,6 +106,14 @@ struct PreviewSettingsAPI: SettingsAPI {
 
     func reset() async throws -> [String: String] {
         throw PreviewAPIError.unavailable("settings.reset")
+    }
+
+    func previewReset() async throws -> SettingsResetImpact {
+        throw PreviewAPIError.unavailable("settings.previewReset")
+    }
+
+    func reset(_ input: Confirmed<SettingsResetInput>) async throws -> SettingsResetResult {
+        throw PreviewAPIError.unavailable("settings.resetScopes")
     }
 
     func setLanguage(_ language: InterfaceLanguage) async throws -> InterfaceLanguage {
@@ -163,6 +177,12 @@ struct PreviewCullingAPI: CullingAPI {
 
     func batchUpdate(_ input: CullingBatchUpdateInput) async throws -> [CullingUpdateResult] {
         throw PreviewAPIError.unavailable("culling.batch_update")
+    }
+
+    func updateSelection(
+        _ input: CullingSelectionUpdateInput
+    ) async throws -> CullingSelectionUpdateResult {
+        throw PreviewAPIError.unavailable("culling.update_selection")
     }
 
     func decideGroup(_ input: CullingDecideGroupInput) async throws -> [CullingUpdateResult] {
@@ -420,6 +440,10 @@ struct PreviewDuplicateAPI: DuplicateAPI {
 
     func resolveMember(_ input: Confirmed<DuplicateResolveMemberInput>) async throws -> Bool {
         throw PreviewAPIError.unavailable("dup.resolve_member")
+    }
+
+    func resetGroup(_ input: Confirmed<DuplicateResetGroupInput>) async throws -> Bool {
+        throw PreviewAPIError.unavailable("dup.reset_group")
     }
 }
 

@@ -19,6 +19,7 @@ extension CullingViewModel {
         sortMode = sort
         // P0：排序变化后旧选择可能不可见；提交前必须清空。
         selectedPhotoIds.removeAll()
+        invalidateSelectionSnapshot()
         await loadPage(reset: true)
     }
 
@@ -47,6 +48,14 @@ extension CullingViewModel {
     public func selectAllLoaded() {
         guard !loadedPhotoIds.isEmpty else { return }
         selectedPhotoIds = loadedPhotoIds
+        selectionAnchorId = nil
+        invalidateSelectionSnapshot()
+    }
+
+    /// 任何手动选择变化都让服务端快照失效，防止用旧 hash 写新集合。
+    func invalidateSelectionSnapshot() {
+        selectionSnapshot = nil
+        pendingCrossPageBatch = nil
     }
 
     /// P0 / A1：⌘A 选中**当前 scope/filters 的全部照片**（不只已加载页）。
@@ -70,6 +79,14 @@ extension CullingViewModel {
             let result = try await cullingAPI.selection(query)
             guard generation == loadGeneration, scope == currentAPIScope else { return }
             selectedPhotoIds = Set(result.ids)
+            selectionAnchorId = nil
+            selectionSnapshot = CullingSelectionSnapshot(
+                scope: scope,
+                filters: query.filters,
+                groupId: query.groupId,
+                idsHash: result.idsHash ?? "",
+                count: result.ids.count,
+                truncated: result.truncated)
             if result.truncated {
                 notice = CullingNotice(
                     "已选中前 %lld 张（超出单次上限，其余请先缩小筛选范围）",
@@ -84,18 +101,42 @@ extension CullingViewModel {
         }
     }
 
+    /// 胶片条 ⇧ 点击：从当前照片到目标照片的范围选择，并把当前移到目标。
+    ///
+    /// 与网格 shift 语义一致；锚点是 selectionAnchorId（普通/⌘ 点击更新），
+    /// current 只跟随目标移动，连续 ⇧ 不会丢第一段。
+    public func selectRangeFromCurrent(to photoId: String) {
+        guard let current = currentPhotoId, current != photoId else {
+            selectCurrent(photoId)
+            return
+        }
+        // 锚点保持上一次普通/⌘ 点击的位置；current 只用于显示/决策目标。
+        // 页切换后锚点可能已不可见：回落到 current，避免 ⇧ 无反应。
+        let anchor = (selectionAnchorId.flatMap { candidate in
+            page?.assets.contains(where: { $0.photo.id == candidate }) == true ? candidate : nil
+        }) ?? current
+        selectRange(from: anchor, to: photoId)
+        currentPhotoId = photoId
+    }
+
     /// ⇧ 范围选择：当前照片到目标照片（按当前页顺序）。
     public func selectRange(from anchor: String, to target: String) {
         guard let assets = page?.assets,
               let start = assets.firstIndex(where: { $0.photo.id == anchor }),
               let end = assets.firstIndex(where: { $0.photo.id == target }) else { return }
         let range = start <= end ? start...end : end...start
-        selectedPhotoIds.formUnion(range.map { assets[$0].photo.id })
+        // ⇧ 是“本次锚点区间”而不是并集：反复 ⇧ 不应累积区间外的旧选择。
+        selectedPhotoIds = Set(range.map { assets[$0].photo.id })
+        invalidateSelectionSnapshot()
     }
 
     /// 网格点击：⌘ 切换，⇧ 范围，否则单选并清空多选。
     public func gridClick(_ photoId: String, modifiers: NSEvent.ModifierFlags) {
-        if modifiers.contains(.shift), let anchor = currentPhotoId, anchor != photoId {
+        if modifiers.contains(.shift), let current = currentPhotoId {
+            let anchor = (selectionAnchorId.flatMap { candidate in
+                page?.assets.contains(where: { $0.photo.id == candidate }) == true
+                    ? candidate : nil
+            }) ?? current
             selectRange(from: anchor, to: photoId)
             currentPhotoId = photoId
             return
@@ -106,6 +147,8 @@ extension CullingViewModel {
             return
         }
         selectedPhotoIds = [photoId]
+        selectionAnchorId = photoId
+        invalidateSelectionSnapshot()
         currentPhotoId = photoId
     }
 }

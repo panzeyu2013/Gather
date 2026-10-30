@@ -1,4 +1,4 @@
-# 当前有效评审（57 篇）
+# 当前有效评审（58 篇）
 
 `docs/reviews/` 保留当前计划/验收/收尾报告（含本文、4 篇核心计划/验收、final-acceptance 5 篇、final-sweep 4 篇及其余执行报告）；18 篇历史评审已于 2026-10-22 归档到
 [../archive/reviews/](../archive/reviews/)，索引见 [../archive/README.md](../archive/README.md)。
@@ -16,6 +16,7 @@
 | [sidecar-merge-2026-10-28.md](sidecar-merge-2026-10-28.md) | sidecar 术语合并 + 全仓术语统一 + 六路只读评审的 P1/P2 修复（含 check-docs 假绿修正） |
 | [final-review-2026-10-29.md](final-review-2026-10-29.md) | 最终四视角全量评审（正确性/完整性/最优性/简洁性）：本轮已修清单 + 未修项的明确记账与下一步 |
 | [tests-merge-2026-10-29.md](tests-merge-2026-10-29.md) | tests（并行化/运行时审计/模型初审覆盖）合入 main：冲突解决、bash 3.2 修复、基线重采样与验证证据（含 `1c3c4074` 提交信息不符的记账） |
+| [functional-usability-review-2026-10-29.md](functional-usability-review-2026-10-29.md) | 功能性与易用性全量评审（用户/开发者双视角）：9 P1 / 14 组 P2 / 10 P3，含逐条证据、修复顺序与实测基线 |
 | [face-clustering-benchmark.md](face-clustering-benchmark.md) | 人脸识别/聚类对标基线 |
 | [functional-design-review.md](functional-design-review.md) | 功能设计评审与工程债指针 |
 | [visual-style-review-2026-10-23.md](visual-style-review-2026-10-23.md) | 样式/视觉设计评审与优化方案 |

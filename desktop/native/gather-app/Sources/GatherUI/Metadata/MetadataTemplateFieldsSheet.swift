@@ -14,8 +14,10 @@ struct MetadataTemplateFieldsSheet: View {
 
     @State private var selected = Set<DescriptiveField>()
     @State private var values: [DescriptiveField: String]
+    @State private var initialValues: [DescriptiveField: String]
     @State private var errorText: String?
     @State private var isBusy = false
+    @State private var showDiscardConfirm = false
 
     init(viewModel: CullingViewModel, template: MetadataTemplateSummary,
          fields: DescriptiveMetadata) {
@@ -31,6 +33,11 @@ struct MetadataTemplateFieldsSheet: View {
             }
         }
         _values = State(initialValue: initial)
+        _initialValues = State(initialValue: initial)
+    }
+
+    private var isDirty: Bool {
+        !selected.isEmpty || values != initialValues
     }
 
     var body: some View {
@@ -86,7 +93,9 @@ struct MetadataTemplateFieldsSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button(l10n("取消")) { dismiss() }
+                Button(l10n("取消")) {
+                    if isDirty { showDiscardConfirm = true } else { dismiss() }
+                }
                 Button(l10n("保存")) { Task { await save() } }
                     .keyboardShortcut(.defaultAction)
                     .disabled(isBusy)
@@ -94,6 +103,17 @@ struct MetadataTemplateFieldsSheet: View {
         }
         .padding(GatherMetrics.Space.l)
         .frame(width: 560)
+        .interactiveDismissDisabled(isDirty)
+        .confirmationDialog(
+            l10n("放弃未保存的改动？"),
+            isPresented: $showDiscardConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(l10n("放弃并关闭"), role: .destructive) { dismiss() }
+            Button(l10n("继续编辑"), role: .cancel) {}
+        } message: {
+            Text(l10n("关闭后本次修改不会保存。"))
+        }
     }
 
     private var contactSummary: String {
@@ -145,7 +165,7 @@ struct MetadataTemplateFieldsSheet: View {
                     id: template.id, name: template.name, fields: edited))
             dismiss()
         } catch {
-            errorText = String(describing: error)
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
     }
 }

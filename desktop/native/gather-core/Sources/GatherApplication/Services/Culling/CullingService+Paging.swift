@@ -75,7 +75,10 @@ extension CullingService {
             similarity: similarity,
             limit: query.limit ?? CullingSelectionQuery.maxIds
         )
-        return CullingSelectionIds(ids: result.ids, truncated: result.truncated)
+        return CullingSelectionIds(
+            ids: result.ids,
+            truncated: result.truncated,
+            idsHash: CullingSelectionHash.make(ids: result.ids))
     }
 
     // MARK: - 分页（TS pagePhotosQuery / loadAssetRows / preferredRowPredicate /

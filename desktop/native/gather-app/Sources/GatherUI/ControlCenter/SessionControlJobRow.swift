@@ -19,7 +19,7 @@ struct SessionControlJobRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Text(l10n.jobTypeText(job.type.rawValue))
+                    Text(job.isIngestRun ? l10n("摄取照片") : l10n.jobTypeText(job.type.rawValue))
                     GatherBadge(status: job.status, l10n: l10n)
                     Spacer(minLength: 0)
                 }

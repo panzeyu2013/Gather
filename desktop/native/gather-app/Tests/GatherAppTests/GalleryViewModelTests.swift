@@ -657,6 +657,8 @@ struct GalleryViewModelTests {
         viewModel.toggleSelection("p2")
         viewModel.toggleSelection("p1")
         #expect(viewModel.selectedIds == ["p2"])
+        viewModel.selectAll(["p1", "p2"])
+        #expect(viewModel.selectedIds == ["p1", "p2"], "⌘A 全选已加载照片")
         viewModel.clearSelection()
         #expect(viewModel.selectedIds.isEmpty)
     }
@@ -882,6 +884,28 @@ struct GalleryViewModelTests {
         #expect(viewModel.hasNextPage == false)
         // 键集顺序 = rowid 升序（无重复/无遗漏）。
         #expect(Set(viewModel.loadedPhotos.map(\.id)).count == 450)
+    }
+
+    @Test("P1：批量写入后用服务端 states 回显挑片状态")
+    func batchWriteRecordsStatesForCells() {
+        let (viewModel, _) = makeStubVM()
+        viewModel.recordBatchStates([
+            CullingUpdateResult(
+                states: [
+                    AssetCullingState(
+                        photoId: "p1", pickState: .rejected, rating: 0, colorLabel: .none,
+                        source: .manual, revision: 2, updatedAt: "2026-01-01T00:00:00.000Z"),
+                    AssetCullingState(
+                        photoId: "p2", pickState: .picked, rating: 4, colorLabel: .none,
+                        source: .manual, revision: 2, updatedAt: "2026-01-01T00:00:00.000Z"),
+                ],
+                xmpPath: "", syncStatus: .clean)
+        ])
+        #expect(viewModel.batchCullingStates["p1"]?.pickState == .rejected)
+        #expect(viewModel.batchCullingStates["p2"]?.rating == 4)
+
+        viewModel.clearSelectionForNewQuery()
+        #expect(viewModel.batchCullingStates.isEmpty, "查询变化后回显必须失效")
     }
 
     // 真实库：faceCount 来自 face_observations 聚合（hasFace 过滤）。

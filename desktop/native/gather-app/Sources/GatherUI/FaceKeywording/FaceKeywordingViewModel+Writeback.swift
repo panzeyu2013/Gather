@@ -28,6 +28,15 @@ extension FaceKeywordingViewModel {
         }
     }
 
+    /// 任何会改变写回结果的状态变化（绑定/解绑/合并/拆分/移除成员/重新分析）
+    /// 都必须让旧预览失效。P1-4：旧实现只在 previewWriteback() 赋值 preview，
+    /// 绑定变化后仍能按旧 items 提交，导致把过期关键词写回 XMP。
+    public func invalidateWritebackPreview() {
+        guard preview != nil || writebackResult != nil else { return }
+        preview = nil
+        writebackResult = nil
+    }
+
     /// 写回确认准备：无预览时先生成一次预览，让确认弹窗展示真实影响范围
     /// （绑定簇 / 受影响照片 / XMP 项与示例路径）。返回是否存在可确认的写回项。
     public func prepareWritebackConfirmation() async -> Bool {
@@ -60,13 +69,23 @@ extension FaceKeywordingViewModel {
         isWritingBack = true
         defer { isWritingBack = false }
         do {
-            let input = try FaceWritebackInput(sessionId: sessionId, items: preview.items)
+            let input = try FaceWritebackInput(
+                sessionId: sessionId,
+                items: preview.items,
+                expectedPreviewToken: preview.previewToken
+            )
             writebackResult = try await face.writeback(Confirmed(input, source: .userDialog))
             isSyncConfirmed = false
             publishChange(.metadata)
             notice = FaceNotice("已写回 %lld 项；请先让 Capture One 重新加载元数据", params: ["\(writebackResult?.written ?? 0)"])
         } catch {
-            errorMessage = CommandError(error)
+            let commandError = CommandError(error)
+            if commandError.code == GatherErrorCode.FKW_PREVIEW_STALE.rawValue {
+                // 过期令牌：旧预览已无意义，清掉并让用户重新生成，避免反复提交。
+                invalidateWritebackPreview()
+                notice = FaceNotice("预览已过期，请重新生成预览后再写回")
+            }
+            errorMessage = commandError
         }
     }
 
@@ -81,7 +100,11 @@ extension FaceKeywordingViewModel {
             return
         }
         do {
-            let input = try FaceWritebackInput(sessionId: sessionId, items: items)
+            let input = try FaceWritebackInput(
+                sessionId: sessionId,
+                items: items,
+                expectedPreviewToken: preview?.previewToken
+            )
             writebackResult = try await face.writeback(Confirmed(input, source: .userDialog))
             isSyncConfirmed = false
             publishChange(.metadata)

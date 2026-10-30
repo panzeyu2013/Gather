@@ -55,7 +55,7 @@ struct JobRowView: View {
     /// TS .identity 列：类型 strong +「工作区 · 名称」+「尝试 N 次」+ 错误。
     private var identityColumn: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(Self.typeLabel(job.type, with: l10n))
+            Text(Self.typeLabel(job, with: l10n))
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
             Text(scopeText)
@@ -96,7 +96,7 @@ struct JobRowView: View {
             fraction: Double(DashboardViewModel.progressPercent(of: job)) / 100,
             fill: GatherTheme.accent,
             label: "\(DashboardViewModel.progressPercent(of: job))% \(l10n.progressPhaseText(job.progressMessage))",
-            accessibilityText: Self.typeLabel(job.type, with: l10n)
+            accessibilityText: Self.typeLabel(job, with: l10n)
         )
     }
 
@@ -113,8 +113,9 @@ struct JobRowView: View {
     }
 
     /// TS JOB_TYPE_KEYS（jobs.type.* 中文键值）。
-    static func typeLabel(_ type: AnalysisJobType, with l10n: L10n) -> String {
-        switch type {
+    static func typeLabel(_ job: AnalysisJobData, with l10n: L10n) -> String {
+        if job.isIngestRun { return l10n("摄取照片") }
+        switch job.type {
         case .metadataScan: return l10n("照片索引与元数据")
         case .checksumBackfill: return l10n("文件校验和补全")
         case .similarityAnalyze: return l10n("相似照片分析")

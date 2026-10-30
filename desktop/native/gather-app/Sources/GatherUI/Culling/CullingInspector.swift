@@ -13,6 +13,8 @@ struct CullingInspector: View {
     @Binding var gridDensity: CullingGridDensity
     /// T0：复核队列需要把布局切到网格。
     @Binding var layoutMode: CullingLayoutMode
+    /// P1-8：相似组决策必须走统一确认弹窗；检查器只负责“准备影响面”。
+    @Binding var pendingAction: PendingCullingAction?
     @State private var filtersExpanded = false
     /// P1 / D：淘汰移出的确认弹窗（移动文件属于破坏性操作，必须显式确认）。
     @State private var confirmMoveRejected = false
@@ -57,9 +59,15 @@ struct CullingInspector: View {
                     // 旧实现是 "1★"/"2★" 文字按钮：窄列宽下六个按钮会被压缩成「…」，
                     // 整行不可读。图标按钮只占约 22pt/个，检查器任意列宽下都完整可见。
                     VStack(alignment: .leading, spacing: 4) {
+                        let summary = viewModel.selectionSummary
                         Text(l10n("星级")).controlLabelStyle()
+                        if summary?.hasMixedRating == true {
+                            Text(l10n("混合"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         HStack(spacing: 2) {
-                            let current = Int(viewModel.currentAsset?.state.rating ?? 0)
+                            let current = summary?.rating ?? Int(viewModel.currentAsset?.state.rating ?? 0)
                             Button {
                                 Task { await viewModel.commit(patch: CullingUpdatePatch(rating: 0)) }
                             } label: {
@@ -93,7 +101,16 @@ struct CullingInspector: View {
                     // C1 色标是数据本身（非状态色），沿用固定色值。
                     VStack(alignment: .leading, spacing: 6) {
                         Text(l10n("颜色")).controlLabelStyle()
+                        let summary = viewModel.selectionSummary
+                        if summary?.hasMixedColorLabel == true {
+                            Text(l10n("混合"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         Picker(l10n("颜色"), selection: colorSelectionBinding) {
+                            if summary?.hasMixedColorLabel == true {
+                                Text(l10n("混合")).tag(CaptureOneColorLabel?.none)
+                            }
                             ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
                                 Label {
                                     Text(CullingDisplayFormat.title(label, with: l10n))
@@ -107,7 +124,9 @@ struct CullingInspector: View {
                         .pickerStyle(.menu)
                         .labelsHidden()
                         .disabled(isBusy)
-                        .help(l10n("设置当前照片的颜色标签"))
+                        .help(viewModel.selectedPhotoIds.count > 1
+                              ? l10n.format("设置所选 %lld 张照片的颜色标签", viewModel.selectedPhotoIds.count)
+                              : l10n("设置当前照片的颜色标签"))
                         .accessibilityLabel(l10n("颜色标签"))
                     }
                 }
@@ -346,9 +365,9 @@ struct CullingInspector: View {
                         .padding(.top, GatherMetrics.Space.xs)
                     } label: {
                         HStack {
-                            Text(activeFilterCount == 0
+                            Text(viewModel.activeFilterCount == 0
                                  ? l10n("全部照片")
-                                 : l10n.format("%lld 项筛选", activeFilterCount))
+                                 : l10n.format("%lld 项筛选", viewModel.activeFilterCount))
                                 .font(GatherFont.secondary)
                                 .foregroundStyle(.secondary)
                             Spacer(minLength: 0)
@@ -357,18 +376,18 @@ struct CullingInspector: View {
                 }
 
                 // 相似组决策（对齐旧版 groupDecision：仅当前照片所在组 >1 张时显示）。
-                if currentGroupAssets.count > 1, let current = viewModel.currentAsset {
+                if knownGroupCount > 1, let current = viewModel.currentAsset {
                     let groupIds = Set(currentGroupAssets.map(\.photo.id))
                     let selectedInGroup = viewModel.selectedPhotoIds.intersection(groupIds)
-                    let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < currentGroupAssets.count
+                    let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < knownGroupCount
                     GatherInspectorSection(
-                        l10n.format("相似组 · %lld 张", currentGroupAssets.count),
-                        subtitle: l10n("其余照片自动淘汰")
+                        l10n.format("相似组 · %lld 张", knownGroupCount),
+                        subtitle: l10n.format("当前视图 %lld 张；其余将自动淘汰", currentGroupAssets.count)
                     ) {
                         Button(l10n("保留当前 1 张")) {
                             Task {
-                                await viewModel.keepInGroupRejectRest(
-                                    current.similarityGroupId ?? "",
+                                await prepareGroupDecision(
+                                    groupId: current.similarityGroupId ?? "",
                                     keepPhotoIds: [current.photo.id]
                                 )
                             }
@@ -377,18 +396,20 @@ struct CullingInspector: View {
                         .frame(maxWidth: .infinity)
                         .disabled(isBusy)
 
-                        Button(selectedInGroup.isEmpty ? l10n("保留已选 K 张") : l10n.format("保留已选 %lld 张", selectedInGroup.count)) {
-                            Task {
-                                await viewModel.keepInGroupRejectRest(
-                                    current.similarityGroupId ?? "",
-                                    keepPhotoIds: selectedInGroup.sorted()
-                                )
+                        if !selectedInGroup.isEmpty {
+                            Button(l10n.format("保留已选 %lld 张", selectedInGroup.count)) {
+                                Task {
+                                    await prepareGroupDecision(
+                                        groupId: current.similarityGroupId ?? "",
+                                        keepPhotoIds: selectedInGroup.sorted()
+                                    )
+                                }
                             }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            .disabled(!keepValid || isBusy)
+                            .help(keepValid ? "" : l10n("按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"))
                         }
-                        .buttonStyle(.bordered)
-                        .frame(maxWidth: .infinity)
-                        .disabled(!keepValid || isBusy)
-                        .help(keepValid ? "" : l10n("按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"))
                     }
                 }
 
@@ -428,19 +449,10 @@ struct CullingInspector: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(GatherMetrics.Space.l)
         }
-    }
-
-    private var activeFilterCount: Int {
-        let filter = viewModel.filterState
-        return [
-            filter.unreviewedOnly,
-            filter.pickState != nil,
-            filter.rating != nil,
-            filter.colorLabel != nil,
-            filter.qualityStatus != nil,
-            filter.metadataConflictOnly,
-            filter.triageVerdicts?.isEmpty == false,
-        ].filter { $0 }.count
+        .task(id: viewModel.currentAsset?.similarityGroupId) {
+            guard viewModel.currentAsset?.similarityGroupId != nil else { return }
+            await viewModel.ensureSimilarityGroupsLoaded()
+        }
     }
 
     private func decisionButton(
@@ -465,12 +477,35 @@ struct CullingInspector: View {
     /// 当前照片的颜色标签（工具列菜单选择器；选中即写入当前照片）。
     private var colorSelectionBinding: Binding<CaptureOneColorLabel?> {
         Binding(
-            get: { viewModel.currentAsset?.state.colorLabel },
+            get: {
+                if let summary = viewModel.selectionSummary {
+                    return summary.colorLabel
+                }
+                return viewModel.currentAsset?.state.colorLabel
+            },
             set: { value in
                 guard let value else { return }
                 Task { await viewModel.commit(patch: CullingUpdatePatch(colorLabel: value)) }
             }
         )
+    }
+
+    /// P1-8：完整组员数（服务端 groups）；未加载时回退当前视图，避免阻塞渲染。
+    private var knownGroupCount: Int {
+        guard let groupId = viewModel.currentAsset?.similarityGroupId else {
+            return currentGroupAssets.count
+        }
+        return viewModel.similarityGroups
+            .first(where: { $0.groupId == groupId })?
+            .images.count ?? currentGroupAssets.count
+    }
+
+    /// 先加载完整组、生成影响面，再交给统一确认弹窗（不直接执行）。
+    private func prepareGroupDecision(groupId: String, keepPhotoIds: [String]) async {
+        guard let plan = await viewModel.prepareGroupDecision(
+            groupId: groupId, keepPhotoIds: keepPhotoIds
+        ) else { return }
+        pendingAction = .groupDecision(plan)
     }
 
     /// 当前照片所在相似组（已加载范围内）成员，对齐 TS currentGroupAssets。

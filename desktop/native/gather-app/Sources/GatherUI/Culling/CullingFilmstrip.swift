@@ -106,7 +106,8 @@ struct CullingFilmstrip: View {
 }
 
 /// 胶片缩略图：100pt 图 + 4pt 色标线 + 左上星级 + 右上决策圆点 + 底部文件名。
-/// 点击选择当前照片；⌘/Ctrl/Shift 点击切换多选（对齐旧版 Culling.tsx:1509-1530）。
+/// 点击选择当前照片并清空多选；⌘/Ctrl 切换单项；⇧ 从当前到目标做范围选择
+/// （与网格同一语义；旧实现把 ⇧ 当切换，已修正）。
 private struct CullingFilmThumbView: View {
     let viewModel: CullingViewModel
     let asset: CullingAsset
@@ -132,7 +133,10 @@ private struct CullingFilmThumbView: View {
 
     var body: some View {
         Button {
-            if NSEvent.modifierFlags.intersection([.command, .control, .shift]) != [] {
+            let modifiers = NSEvent.modifierFlags
+            if modifiers.contains(.shift) {
+                viewModel.selectRangeFromCurrent(to: asset.photo.id)
+            } else if modifiers.contains(.command) || modifiers.contains(.control) {
                 viewModel.toggleSelection(asset.photo.id)
             } else {
                 viewModel.selectCurrent(asset.photo.id)

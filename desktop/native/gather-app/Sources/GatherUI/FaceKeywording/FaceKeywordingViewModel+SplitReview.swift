@@ -176,6 +176,7 @@ extension FaceKeywordingViewModel {
                 params: ["\(result.newClusterId)", "\(result.movedCount)"]
             )
             reviewActionError = nil
+            invalidateWritebackPreview()
             await reload()
             if let newCluster = clusters.first(where: { $0.id == result.newClusterId }) {
                 select(newCluster)
@@ -199,6 +200,7 @@ extension FaceKeywordingViewModel {
             publishChange(.faceKeywording)
             notice = FaceNotice("已从簇 #%lld 移除成员", params: ["\(cluster.id)"])
             reviewActionError = nil
+            invalidateWritebackPreview()
             await reload()
             if clusters.contains(where: { $0.id == cluster.id }) {
                 await loadReview(clusterId: cluster.id, reset: true)

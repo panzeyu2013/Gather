@@ -85,8 +85,8 @@ package final class LiveDashboardDataProvider: DashboardDataProvider {
         try await jobAPI.retry(jobId)
     }
 
-    package func clearCompletedJobs() async throws -> Int {
-        try await jobAPI.clearCompleted(Confirmed(ClearCompletedInput()))
+    package func clearCompletedJobs(includeFailed: Bool) async throws -> Int {
+        try await jobAPI.clearCompleted(Confirmed(ClearCompletedInput(includeFailed: includeFailed)))
     }
 
     package func retryIndexScan(sessionId: String) async throws {

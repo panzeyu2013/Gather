@@ -2,7 +2,7 @@
 // Cut 1 / 阶段 1A：API 目录索引（只有注释，无运行时代码）。
 //
 // 本目录只放类型化协议与输入/输出类型，不含实现：
-// - *API.swift：16 个域协议（110 个方法），文件头注明职责 / 对应命令 / 校验归属；
+// - *API.swift：16 个域协议（140 个方法），文件头注明职责 / 对应命令 / 校验归属；
 // - Core/：Confirmed、PageRequest、PhotoPathPolicy、Validation；
 // - Errors/GatherError.swift：API 边界唯一错误类型（code + params + underlying）；
 // - Inputs/：形状不匹配或需要校验/默认值的 Decodable + Sendable 输入；
@@ -33,7 +33,7 @@
 // PersonCreateResult、PersonPhotosResult、GlobalPhotoPage、JobHandle/JobEvent）。
 //
 // 待办 / 风险：
-// 1. D-010（P0）：GatherErrorCode.INVALID_PARAM（当前 195 项）已在 Protocol/Core.swift；
+// 1. D-010（P0）：GatherErrorCode.INVALID_PARAM（当前 198 项）已在 Protocol/Core.swift；
 //    GatherError.invalidParameter 直接使用该码，params 携带 field/reason。
 //    路径授权失败由 PHOTO_NOT_FOUND 收敛（见 PhotoPathPolicy）。
 // 2. 输入 init(from:) 对缺字段/未知枚举抛 DecodingError；1B 在 API 边界统一映射为

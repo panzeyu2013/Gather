@@ -47,8 +47,10 @@ public final class LiveJobAPI: JobAPI {
     }
 
     public func clearCompleted(_ input: Confirmed<ClearCompletedInput>) async throws -> Int {
-        _ = input.value // 载荷当前无字段；Confirmed 是调用点标记，不是布尔门禁。
-        return try jobService.clearCompleted()
+        let statuses: [AnalysisJobStatus] = input.value.includeFailed
+            ? [.succeeded, .failed, .interrupted, .cancelled]
+            : [.succeeded]
+        return try jobService.clearCompleted(statuses: statuses)
     }
 
     public func start(_ request: JobRequest) async throws -> JobHandle {

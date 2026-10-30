@@ -40,6 +40,8 @@ public enum FaceKwServiceError: Error, Equatable {
     case writebackConfirmRequired
     /// TS: Error('FKW_ITEMS_INVALID')
     case itemsInvalid
+    /// P1-4：写回预览在生成后绑定/关键词发生变化。
+    case previewStale
     /// TS: Error('FKW_CLEANUP_CONFIRM_REQUIRED')
     case cleanupConfirmRequired
     /// 写回 Provider 未注入（迁移接缝，非 TS 错误码；3.4 Wave 接线后不可达）。
@@ -79,6 +81,7 @@ extension FaceKwServiceError: CustomStringConvertible {
         case .unbindConfirmRequired: "FKW_UNBIND_CONFIRM_REQUIRED"
         case .writebackConfirmRequired: "WRITEBACK_CONFIRM_REQUIRED"
         case .itemsInvalid: "FKW_ITEMS_INVALID"
+        case .previewStale: "FKW_PREVIEW_STALE"
         case .cleanupConfirmRequired: "FKW_CLEANUP_CONFIRM_REQUIRED"
         case .writebackProviderMissing: "WRITEBACK_PROVIDER_NOT_INJECTED"
         case .clusterBound: "FACE_CLUSTER_BOUND"
@@ -111,6 +114,7 @@ extension FaceKwServiceError {
         case .unbindConfirmRequired: .FKW_UNBIND_CONFIRM_REQUIRED
         case .writebackConfirmRequired: .WRITEBACK_CONFIRM_REQUIRED
         case .itemsInvalid: .FKW_ITEMS_INVALID
+        case .previewStale: .FKW_PREVIEW_STALE
         case .cleanupConfirmRequired: .FKW_CLEANUP_CONFIRM_REQUIRED
         case .writebackProviderMissing: .WRITEBACK_OTHER_MODULE_ACTIVE
         case .clusterBound: .FACE_CLUSTER_BOUND
@@ -302,11 +306,19 @@ public struct FaceKwWritebackPreview: Codable, Equatable, Sendable {
     public var items: [FaceKwWritebackItem]
     public var totalCount: Int
     public var affectedPhotos: Int
+    /// P1-4：预览身份（绑定指纹），写回时复算校验。
+    public var previewToken: String?
 
-    public init(items: [FaceKwWritebackItem], totalCount: Int, affectedPhotos: Int) {
+    public init(
+        items: [FaceKwWritebackItem],
+        totalCount: Int,
+        affectedPhotos: Int,
+        previewToken: String? = nil
+    ) {
         self.items = items
         self.totalCount = totalCount
         self.affectedPhotos = affectedPhotos
+        self.previewToken = previewToken
     }
 }
 

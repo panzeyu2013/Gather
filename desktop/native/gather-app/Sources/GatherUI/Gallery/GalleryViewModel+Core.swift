@@ -3,6 +3,7 @@
 // 627-666、883-904、906-909 行）。纯搬移：shutdown 终态、隐藏期不刷新与
 // 选择清空语义不变；clearSelectionForNewQuery 改 internal（+Load/+Filter 调用）。
 import Foundation
+import GatherProtocol
 
 extension GalleryViewModel {
 
@@ -60,11 +61,14 @@ extension GalleryViewModel {
     /// 清空的语义是「筛选条件下的旧选择没有稳定含义」——否则选择栏会显示屏幕上
     /// 不存在的照片数量，「全选/取消全选当前结果」也无法取消这些隐藏项。
     func clearSelectionForNewQuery() {
+        isScopeSelection = false
+        batchCullingStates = [:]
         guard !selectedIds.isEmpty else { return }
         selectedIds = []
     }
 
     public func toggleSelection(_ id: String) {
+        isScopeSelection = false
         if selectedIds.contains(id) {
             selectedIds.remove(id)
         } else {
@@ -73,7 +77,21 @@ extension GalleryViewModel {
     }
 
     public func clearSelection() {
+        isScopeSelection = false
         selectedIds = []
+    }
+
+    /// P1：批量写入后的本地回显。list_page 行不含挑片状态，只能叠加服务端返回的 states。
+    public func recordBatchStates(_ results: [CullingUpdateResult]) {
+        for state in results.flatMap(\.states) {
+            batchCullingStates[state.photoId] = state
+        }
+    }
+
+    /// P2-2：当前已加载照片全选（服务端跨页全选另行接 PhotoAPI.select）。
+    public func selectAll(_ ids: [String]) {
+        isScopeSelection = false
+        selectedIds.formUnion(ids)
     }
     // MARK: 错误载体（Cut 4 / 4a-3b-2b）
 

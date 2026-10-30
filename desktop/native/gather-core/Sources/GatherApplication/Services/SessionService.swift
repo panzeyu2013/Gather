@@ -226,11 +226,87 @@ public final class SessionService {
                 result[row.checksum] = row.id
             } else {
                 // 懒索引默认不回填 checksum；摄取去重要对存量照片现算一次，
-                // 否则重复摄取同一批卡会再复制一份。
-                do { result[try FileHasher.sha256File(row.filepath)] = row.id } catch {}
+                // 否则重复摄取同一批卡会再复制一份。算完立即回写：下次摄取
+                // 直接读 checksum，不再对整库逐张 SHA-256。
+                do {
+                    let sum = try FileHasher.sha256File(row.filepath)
+                    result[sum] = row.id
+                    let attrs: [FileAttributeKey: Any]
+                    do {
+                        attrs = try FileManager.default.attributesOfItem(atPath: row.filepath)
+                    } catch {
+                        attrs = [:]
+                    }
+                    let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+                    let mtimeMs = (attrs[.modificationDate] as? Date)
+                        .map { $0.timeIntervalSince1970 * 1000 } ?? 0
+                    do {
+                        try photoRepo.updateChecksum(
+                            photoId: row.id, checksum: sum,
+                            fileSize: size, fileMtimeMs: mtimeMs)
+                    } catch {
+                        GatherLogger.log(
+                            "ingest checksum backfill failed for \(row.id): \(error)",
+                            level: .debug)
+                    }
+                } catch {
+                    GatherLogger.log(
+                        "ingest checksum skipped for \(row.id): \(error)", level: .debug)
+                }
             }
         }
         return result
+    }
+
+    /// P1-3：设置/修复工作区根目录。
+    ///
+    /// 根必须是已存在目录、非 forbidden root，且包含工作区**全部可见照片**；
+    /// 不满足时显式失败，不做“部分照片留在根外”的半状态。成功后不触发扫描，
+    /// UI 再让用户选择“扫描整个根/扫描新增”。
+    public func setSourceRoot(sessionId: String, sourceRoot: String) throws -> SessionData {
+        guard try sessionRepo.get(id: sessionId) != nil else {
+            throw SessionServiceError.sessionNotFound
+        }
+        guard !sourceRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SessionServiceError.sourceNotDir
+        }
+        // 词汇路径与真实路径都保留：索引里存下的照片可能用链接前缀，
+        // 也可能用真实前缀。只按 resolved 判会把合法链接根误拒。
+        let lexicalRoot = ScanPath.canonical(sourceRoot)
+        let resolvedRoot = ScanPath.canonical(
+            URL(fileURLWithPath: sourceRoot).resolvingSymlinksInPath().path)
+        guard !lexicalRoot.isEmpty, !resolvedRoot.isEmpty else {
+            throw SessionServiceError.sourceNotDir
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolvedRoot, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw SessionServiceError.sourceNotDir
+        }
+        guard !ScanPath.isForbiddenRoot(lexicalRoot),
+              !ScanPath.isForbiddenRoot(resolvedRoot) else {
+            throw SessionServiceError.sourceRootForbidden
+        }
+        let photos = try photoRepo.getBySessionProjection(sessionId: sessionId)
+            .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }
+        let outside = photos.filter {
+            !ScanPath.isWithin(candidate: $0.filepath, root: lexicalRoot)
+                && !ScanPath.isWithin(candidate: $0.filepath, root: resolvedRoot)
+        }
+        guard outside.isEmpty else {
+            throw GatherError(
+                code: .SESSION_SOURCE_EXCLUDES_PHOTOS,
+                params: ["count": "\(outside.count)"]
+            )
+        }
+        // 保留用户选择的词汇路径，后续扫描/监听与照片前缀同口径。
+        guard try sessionRepo.updateSourcePath(id: sessionId, path: lexicalRoot) else {
+            throw SessionServiceError.sessionNotFound
+        }
+        guard let updated = try sessionRepo.get(id: sessionId) else {
+            throw SessionServiceError.sessionNotFound
+        }
+        return try toSessionData(updated)
     }
 
     public func updateSession(sessionId: String, name: String) throws -> SessionData {

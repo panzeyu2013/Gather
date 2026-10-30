@@ -19,6 +19,23 @@ struct CullingConflictPanel: View {
                 if let conflict = viewModel.conflicts.first {
                     conflictBlock(conflict)
                 }
+                if viewModel.conflicts.count > 1 {
+                    HStack(spacing: GatherMetrics.Space.s) {
+                        Text(l10n.format("还有 %lld 个冲突", viewModel.conflicts.count - 1))
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(l10n("全部采用外部值")) {
+                            pendingAction = .resolveAllConflicts(.useRemote)
+                        }
+                        .buttonStyle(.bordered)
+                        Button(l10n("全部保留 Gather")) {
+                            pendingAction = .resolveAllConflicts(.keepLocal)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .help(l10n("对当前全部冲突使用同一策略；逐项应用，失败项会保留"))
+                }
                 if !viewModel.failedSyncItems.isEmpty {
                     if viewModel.conflicts.first != nil { Divider() }
                     failureBlock

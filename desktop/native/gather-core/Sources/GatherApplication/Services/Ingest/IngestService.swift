@@ -106,10 +106,18 @@ public struct IngestPlan: Equatable, Sendable {
     public var items: [IngestItem]
     public var skipped: [String]
     public var unreadable: [String]
-    public init(items: [IngestItem], skipped: [String], unreadable: [String]) {
+    /// 目标已存在且内容与源一致：本次不复制，但调用方必须登记这些**目标路径**。
+    /// 崩溃恢复时这批文件是最容易漏登记的一类（源 checksum 不在库里，plan 又会
+    /// 因目标已存在而跳过；只登记 copied 会让它们永久停留在 _ingest）。
+    public var alreadyPresent: [String]
+    public init(
+        items: [IngestItem], skipped: [String], unreadable: [String],
+        alreadyPresent: [String] = []
+    ) {
         self.items = items
         self.skipped = skipped
         self.unreadable = unreadable
+        self.alreadyPresent = alreadyPresent
     }
     public var conflictCount: Int { items.filter(\.conflict).count }
 }
@@ -148,17 +156,21 @@ public struct IngestResult: Equatable, Sendable {
     public var unreadable: [String]
     public var secondCopied: [String]
     public var failed: [IngestFailure]
+    /// 目标已存在且内容一致（plan 阶段判定）；这些路径也必须登记。
+    public var alreadyPresent: [String]
     public init(copied: [String], skipped: [String], unreadable: [String] = [],
-                secondCopied: [String], failed: [IngestFailure]) {
+                secondCopied: [String], failed: [IngestFailure],
+                alreadyPresent: [String] = []) {
         self.copied = copied
         self.skipped = skipped
         self.unreadable = unreadable
         self.secondCopied = secondCopied
         self.failed = failed
+        self.alreadyPresent = alreadyPresent
     }
     /// 登记阶段要扫描的目录（等于成功落地的父目录集合）。
     public var registeredDirectories: [String] {
-        Array(Set(copied.map { ($0 as NSString).deletingLastPathComponent })).sorted()
+        Array(Set((copied + alreadyPresent).map { ($0 as NSString).deletingLastPathComponent })).sorted()
     }
 }
 
@@ -257,6 +269,7 @@ public final class IngestService: @unchecked Sendable {
         var items: [IngestItem] = []
         var skipped: [String] = []
         var unreadable: [String] = []
+        var alreadyPresent: [String] = []
         var sequence = 1
         var usedDestinations = Set<String>()
         var usedDestinationsFolded = Set<String>()
@@ -270,8 +283,8 @@ public final class IngestService: @unchecked Sendable {
 
         for source in sourcePaths {
             // 同一目录与其子项一起传入时只处理一次，避免同文件两份拷贝。
-            let sourceKey = (source as NSString).standardizingPath
-            guard seenSources.insert(sourceKey).inserted else { continue }
+            // 去重只按“最终文件”做：直接传入的文件此前若先插入 sourceKey，
+            // 内层对同一路径的 insert 会失败，导致单文件 plan 静默为空。
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: source, isDirectory: &isDirectory) else {
                 unreadable.append(source)
@@ -342,7 +355,8 @@ public final class IngestService: @unchecked Sendable {
                     let sourceSum = try? checksum(file)
                     let destSum = try? checksum(dest)
                     if let sourceSum, let destSum, sourceSum == destSum {
-                        skipped.append(file)
+                        // 目标已存在且内容一致：不复制，但必须让调用方登记目标路径。
+                        alreadyPresent.append(dest)
                         continue
                     }
                     conflict = true
@@ -370,19 +384,29 @@ public final class IngestService: @unchecked Sendable {
                 items[index].conflict = true
             }
         }
-        return IngestPlan(items: items, skipped: skipped, unreadable: unreadable)
+        return IngestPlan(
+            items: items, skipped: skipped, unreadable: unreadable,
+            alreadyPresent: alreadyPresent)
     }
 
     /// 执行：临时文件 → 校验 → rename → 第二目的地；单张失败整体回滚（见文件头）。
-    public func execute(_ plan: IngestPlan, options: IngestOptions) -> IngestResult {
+    public func execute(
+        _ plan: IngestPlan,
+        options: IngestOptions,
+        shouldCancel: () -> Bool = { false },
+        onProgress: (_ completed: Int, _ total: Int) -> Void = { _, _ in }
+    ) -> IngestResult {
         var copied: [String] = []
         var skipped: [String] = []
         var secondCopied: [String] = []
         var failed: [IngestFailure] = []
 
         for item in plan.items {
+            // P1-3：Job 取消时在文件边界停下，已完成的文件保持已落地/可登记状态。
+            if shouldCancel() { break }
             if item.conflict {
                 skipped.append(item.sourcePath)
+                onProgress(copied.count + skipped.count + failed.count, plan.items.count)
                 continue
             }
             // 单张原子性：只回滚这张自己产出的文件。
@@ -506,10 +530,47 @@ public final class IngestService: @unchecked Sendable {
                 }
                 failed.append(IngestFailure(sourcePath: item.sourcePath, message: message))
             }
+            onProgress(copied.count + skipped.count + failed.count, plan.items.count)
+        }
+        // 已存在的主副本不走 items 循环；第二目的地可能仍缺（崩溃恢复常见）。
+        // 补拷失败必须进 failed，不能让 job 以“全部成功”收尾。
+        if let second = options.secondDestinationRoot {
+            for dest in plan.alreadyPresent {
+                do {
+                    let target = try secondDestinationPath(
+                        for: dest, destinationRoot: options.destinationRoot, secondRoot: second)
+                    if !fileManager.fileExists(atPath: target) {
+                        try fileManager.createDirectory(
+                            atPath: (target as NSString).deletingLastPathComponent,
+                            withIntermediateDirectories: true)
+                        try transfer(dest, to: target, move: false, verify: false)
+                        secondCopied.append(target)
+                    }
+                    let destSidecar = (dest as NSString).deletingPathExtension + ".xmp"
+                    if fileManager.fileExists(atPath: destSidecar) {
+                        let targetSidecar = (target as NSString).deletingPathExtension + ".xmp"
+                        if fileManager.fileExists(atPath: targetSidecar) {
+                            guard try checksum(destSidecar) == checksum(targetSidecar) else {
+                                throw IngestError.destinationExists(targetSidecar)
+                            }
+                        } else {
+                            try fileManager.createDirectory(
+                                atPath: (targetSidecar as NSString).deletingLastPathComponent,
+                                withIntermediateDirectories: true)
+                            try transfer(destSidecar, to: targetSidecar, move: false, verify: false)
+                        }
+                    }
+                } catch {
+                    failed.append(IngestFailure(
+                        sourcePath: dest,
+                        message: "第二目的地补拷失败：\(error)"))
+                }
+            }
         }
         return IngestResult(
             copied: copied, skipped: skipped + plan.skipped,
-            unreadable: plan.unreadable, secondCopied: secondCopied, failed: failed)
+            unreadable: plan.unreadable, secondCopied: secondCopied, failed: failed,
+            alreadyPresent: plan.alreadyPresent)
     }
 
     /// 单文件落地：临时文件 → 校验 → 原子 rename。

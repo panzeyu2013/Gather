@@ -18,18 +18,3 @@ struct PendingModelInstall: Identifiable {
         )
     }
 }
-
-/// 恢复默认设置的确认上下文：影响范围 = 将被重置的设置项数量。
-struct PendingSettingsReset: Identifiable {
-    let keyCount: Int
-
-    var id: String { "settings-reset-\(keyCount)" }
-
-    /// Cut 4 / 4b-2g：确认文案在呈现期按页面 l10n 解析（结构体不持语言）。
-    func scopeText(with l10n: L10n) -> String {
-        l10n.format(
-            "将把当前 %lld 项设置恢复为默认值（模型路径、推理后端、缓存与写回参数等）；不会删除照片或 XMP 文件。取消不改变任何设置。",
-            keyCount
-        )
-    }
-}

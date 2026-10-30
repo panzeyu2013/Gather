@@ -143,6 +143,91 @@ struct GatherAppDelegateTests {
         #expect(AppImport.defaultImportName(source: "local", l10n: L10n(language: .zhCN)) == "导入照片")
     }
 
+    /// P1-1：目录导入必须建出带 sourcePath 的目录工作区，否则之后无法重扫/摄取。
+    @Test func importDirectoryCreatesWorkspaceWithSourcePath() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-import-dir-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try makeJPEG(at: directory.appendingPathComponent("one.jpg"))
+
+        let db = try makeTestDB()
+        let composition = AppComposition.make(db: db)
+        let services = AppServices.live(composition: composition)
+
+        await AppImport.importFiles(
+            [directory.path],
+            sessionAPI: services.session,
+            l10n: L10n(language: .zhCN)
+        )
+
+        let sessions = try await services.session.list()
+        let session = try #require(sessions.first)
+        #expect(ScanPath.canonical(session.sourcePath) == ScanPath.canonical(directory.path),
+                "目录导入必须落 sourcePath；空串会让摄取/重扫永久失败")
+    }
+
+    /// P1-1：多文件导入保持 path-scope（source_path 为空），根只能由用户显式设置。
+    @Test func importMultipleFilesStaysPathScope() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-import-files-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try makeJPEG(at: directory.appendingPathComponent("one.jpg"))
+        let second = try makeJPEG(at: directory.appendingPathComponent("two.jpg"))
+
+        let db = try makeTestDB()
+        let composition = AppComposition.make(db: db)
+        let services = AppServices.live(composition: composition)
+
+        await AppImport.importFiles(
+            [first.path, second.path],
+            sessionAPI: services.session,
+            l10n: L10n(language: .zhCN)
+        )
+
+        let sessions = try await services.session.list()
+        let session = try #require(sessions.first)
+        #expect(session.sourcePath.isEmpty,
+                "公共父目录不得落成工作区根（历史 P0）；根由用户显式设置")
+    }
+
+    /// P1-2：建库失败必须 post importFailed，而不是只写日志。
+    @Test func importFailurePostsVisibleNotification() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-import-failed-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let photo = directory.appendingPathComponent("one.jpg")
+        try Data("jpeg-fixture".utf8).write(to: photo)
+
+        let stub = B8SessionAPIStub() // create 默认抛 INVALID_PARAM，模拟建库失败
+        final class Box: @unchecked Sendable {
+            var error: CommandError?
+            var retryFiles: [String]?
+        }
+        let box = Box()
+        let token = NotificationCenter.default.addObserver(
+            forName: GatherAppNotification.importFailed,
+            object: nil,
+            queue: nil
+        ) { notification in
+            box.error = notification.object as? CommandError
+            box.retryFiles = notification.userInfo?[GatherAppImportUserInfoKey.retryFiles] as? [String]
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        await AppImport.importFiles(
+            [photo.path],
+            sessionAPI: stub,
+            l10n: L10n(language: .zhCN)
+        )
+
+        let error = try #require(box.error)
+        #expect(error.code == GatherErrorCode.INVALID_PARAM.rawValue)
+        #expect(box.retryFiles == [ScanPath.canonical(photo.path)])
+    }
+
     /// 生成真实可解码的 1x1 JPEG（RAWDecoder.getDimensions 依赖 ImageIO 读头）。
     private func makeJPEG(at url: URL) throws -> URL {
         let colorSpace = CGColorSpaceCreateDeviceRGB()

@@ -35,6 +35,8 @@ struct ExecutorRegistryDependencies {
     let imagePreloadService: ImagePreloadService
     let exportService: ExportService
     let outputService: OutputService
+    /// P1-3：ingest.run 执行器需要会话/登记服务。
+    let sessionService: SessionService
 }
 
 /// JobService 执行器注册表：装配期一次性注册 8 个 type。
@@ -79,6 +81,7 @@ enum ExecutorRegistry {
         let imagePreloadService = deps.imagePreloadService
         let exportService = deps.exportService
         let outputService = deps.outputService
+        let sessionService = deps.sessionService
 
         return [
             (.similarityAnalyze, { job, context in
@@ -240,6 +243,13 @@ enum ExecutorRegistry {
             // TS 源: indexer.ipc.ts:26-32 —— checksum.backfill executor（后台回填
             // 懒索引留下的空 checksum）。
             (.checksumBackfill, { job, context in
+                // P1-3：ingest.run 复用 checksum.backfill 载体（schema CHECK 不允许新 type），
+                // 由 checkpoint.operation 分派；请求完整编码在 checkpoint。
+                if job.checkpoint["operation"]?.stringValue == "ingest" {
+                    let payload = try SessionIngestRunner.decode(job.checkpoint)
+                    let runner = SessionIngestRunner(sessionService: sessionService)
+                    return try await runner.run(payload, context: context)
+                }
                 let result = try await indexerService.backfillChecksums(
                     sessionId: job.scopeId,
                     context: context

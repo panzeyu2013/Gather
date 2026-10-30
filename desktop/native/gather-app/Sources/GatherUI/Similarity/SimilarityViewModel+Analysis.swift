@@ -64,6 +64,8 @@ extension SimilarityViewModel {
     public func startAnalyze() {
         guard !isAnalyzing else { return }
         isAnalyzing = true
+        // 旧预览/旧报告都基于旧结果代，必须一起失效（否则重试失败项会重放旧 pending 行）。
+        markWritebackDraftChanged()
         actionError = nil
         progressCurrent = 0
         progressTotal = 0
@@ -123,6 +125,7 @@ extension SimilarityViewModel {
     public func recluster() async {
         guard !isReclustering, result != nil else { return }
         isReclustering = true
+        markWritebackDraftChanged()
         actionError = nil
         defer { isReclustering = false }
         // 捕获发起时的结果代：await 期间更新代（事件驱动刷新）已被采纳

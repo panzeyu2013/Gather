@@ -258,8 +258,10 @@ private struct MaintenanceSettingsSection: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.prompt = l10n("选择")
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await viewModel.saveBackupDirectory(url.path) }
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in await viewModel.saveBackupDirectory(url.path) }
+        }
     }
 
     private func openBackupDirectory() {
@@ -274,8 +276,10 @@ private struct MaintenanceSettingsSection: View {
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = "Gather-Diagnostics-\(Self.stamp()).zip"
         panel.prompt = l10n("导出")
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await viewModel.exportDiagnostics(to: url) }
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in await viewModel.exportDiagnostics(to: url) }
+        }
     }
 
     private static func stamp() -> String {

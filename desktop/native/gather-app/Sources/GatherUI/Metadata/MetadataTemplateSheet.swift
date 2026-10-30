@@ -200,7 +200,7 @@ struct MetadataTemplateSheet: View {
         } catch {
             guard selectedId == id else { return }
             editorFields = nil
-            errorText = String(describing: error)
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
     }
 
@@ -208,7 +208,7 @@ struct MetadataTemplateSheet: View {
         do {
             templates = try await viewModel.metadataAPI.templates()
         } catch {
-            errorText = String(describing: error)
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
     }
 
@@ -238,7 +238,7 @@ struct MetadataTemplateSheet: View {
             selectedId = summary.id
             errorText = nil
         } catch {
-            errorText = String(describing: error)
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
     }
 
@@ -254,7 +254,7 @@ struct MetadataTemplateSheet: View {
             outcome = nil
             await reload()
         } catch {
-            errorText = String(describing: error)
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
     }
 
@@ -269,7 +269,7 @@ struct MetadataTemplateSheet: View {
             outcome = nil
             errorText = nil
         } catch {
-            errorText = String(describing: error)
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
     }
 
@@ -295,7 +295,7 @@ struct MetadataTemplateSheet: View {
             await viewModel.loadPage(reset: true)
             viewModel.loadMetadataDetail()
         } catch {
-            errorText = String(describing: error)
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
     }
 

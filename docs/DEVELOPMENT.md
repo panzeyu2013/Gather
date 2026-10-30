@@ -56,8 +56,9 @@ docs/                                # 当前文档；历史快照在 docs/archi
 
 ```bash
 cd desktop/native/gather-core
-swift test          # 单包直跑（全串行，适合定位单例；CI 用的就是串行口径）
-# 本地日常入口：并行主批 + 4 个进程级状态套件串行批（CI 不用，见下）
+swift test          # 单包直跑（全串行，适合定位单例）
+cd ../..            # 回到仓库根；scripts/test.sh 在根目录
+# 本地日常入口：并行主批 + 4 个进程级状态套件串行批（CI 串行，见下）
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh core
 ```
 
@@ -265,7 +266,7 @@ App Sandbox**：当前签名与运行模型没有沙盒容器，授权路径访�
 
 ```text
 SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
-  ↓ AppServices（16 个域 API / 134 个类型化方法，同进程直连）
+  ↓ AppServices（16 个域 API / 140 个类型化方法，同进程直连）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication 服务（交付编排在 GatherDelivery）
@@ -321,12 +322,12 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - `L10n`（`Support/L10n.swift:120`）：**key 即中文文案**；渲染期显式携带
   `language`（`L10n.Language.zhCN/en`），经 `Bundle.module` 的 `.lproj` 查表——
   `zh-Hans.lproj` 只有 9 个占位键，未命中自动回退 key（即中文）；`en.lproj`
-  （1,748 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
+  （1,849 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
   (language, key) 缓存查表结果，避免每帧重走 Bundle 查找。
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`
   重建整棵页面树。
-- 错误码翻译：`L10n.errorText(_:)` 覆盖 **195 项** `GatherErrorCode`（P0 后含 Triage/Keyword/Face/Maintenance；B03 起旧
+- 错误码翻译：`L10n.errorText(_:)` 覆盖 **198 项** `GatherErrorCode`（P0 后含 Triage/Keyword/Face/Maintenance；B03 起旧
   `GatherLocalization` 翻译出口已删，`errorMessages` 码表仍由它持有）
   （`errorMessages` 表与枚举逐项对齐，缺失即测试红）；未知码回退通用文案。
 - 任务侧映射：`jobStatusText` / `jobTypeText` / `progressPhaseText` 分别覆盖
@@ -502,6 +503,7 @@ Cut 1 后字符串命令面已删除；当前机器判据（CI 的 boundary job 
 ./scripts/check-coded-errors.sh          # 错误码类型化：Persistence 无裸码字符串；Host 反解须标 allow: string-code
 ./scripts/check-backlog-evidence.sh      # cleanup-backlog 的 pending/deferred 段必须有证据标记
 ./scripts/check-design-system.sh         # 设计系统 ratchet（scripts/design-system-baseline.json）
+./scripts/check-warnings.sh              # P3-5：core/app Sources -warnings-as-errors（CI 两 job 均执行）
 ```
 
 门禁与扫描一律以当前工作树为准；未暂存的删除仍会被 `git ls-files` 列出，不能据此
@@ -513,7 +515,7 @@ CL 段必须写可复核的证据（`证据` / `未完成原因` / `实测` / `�
 
 ## 类型化 API 契约（Cut 1 收口）
 
-Cut 1 已用 **16 个域协议 / 134 个方法**替代 118 条字符串命令：
+Cut 1 已用 **16 个域协议 / 140 个方法**替代 118 条字符串命令：
 Session、Culling、Export、Job、Duplicate、Face、Similarity、Photo、Album、Person、
 Metadata、Settings、Navigation、Asset、Quality、Maintenance（`GatherProtocol/API/*API.swift`；
 Template 域已于 2026-10-24 按 ADR-031 删除）。

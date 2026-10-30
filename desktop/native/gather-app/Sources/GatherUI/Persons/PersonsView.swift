@@ -330,6 +330,8 @@ private struct PersonDetailView: View {
     @State private var name = ""
     @State private var notes = ""
     @State private var showDelete = false
+    @State private var pendingMergeTarget: PersonData?
+    @State private var pendingRemovePhoto: PersonPhotoItem?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -345,6 +347,16 @@ private struct PersonDetailView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+                if viewModel.persons.count > 1 {
+                    Menu(l10n("合并到…")) {
+                        ForEach(viewModel.persons.filter { $0.id != person.id }, id: \.id) { target in
+                            Button(target.name) { pendingMergeTarget = target }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help(l10n("把此人物合并到另一个人物"))
+                }
             }
             .padding(24)
 
@@ -435,6 +447,11 @@ private struct PersonDetailView: View {
                                 .buttonStyle(.plain)
                                 .disabled(onOpenPhoto == nil)
                                 .help(l10n("打开这张照片"))
+                                .contextMenu {
+                                    Button(l10n("移除此照片")) {
+                                        pendingRemovePhoto = photo
+                                    }
+                                }
                                 .accessibilityElement(children: .combine)
                             }
                         }
@@ -463,6 +480,60 @@ private struct PersonDetailView: View {
         .onChange(of: person.id) { _, _ in
             name = person.name
             notes = person.notes
+        }
+        .confirmationDialog(
+            l10n("合并人物？"),
+            isPresented: Binding(
+                get: { pendingMergeTarget != nil },
+                set: { if !$0 { pendingMergeTarget = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(l10n("合并"), role: .destructive) {
+                guard let target = pendingMergeTarget else { return }
+                pendingMergeTarget = nil
+                Task {
+                    let ok = await viewModel.merge(
+                        sourceId: person.id, targetId: target.id, confirmed: true)
+                    GatherToastCenter.shared.show(
+                        type: ok ? .success : .error,
+                        message: ok
+                            ? l10n("已合并人物")
+                            : viewModel.actionError.map { CommandErrorText.resolve($0, with: l10n) }
+                                ?? l10n("合并失败"))
+                    if !ok { viewModel.clearActionError() }
+                }
+            }
+            Button(l10n("取消"), role: .cancel) { pendingMergeTarget = nil }
+        } message: {
+            Text(l10n.format(
+                "将把「%@」合并到「%@」，源人物的绑定会转移并删除；此操作不可撤销。",
+                person.name, pendingMergeTarget?.name ?? ""))
+        }
+        .confirmationDialog(
+            l10n("移除此照片？"),
+            isPresented: Binding(
+                get: { pendingRemovePhoto != nil },
+                set: { if !$0 { pendingRemovePhoto = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(l10n("移除"), role: .destructive) {
+                guard let photo = pendingRemovePhoto else { return }
+                pendingRemovePhoto = nil
+                Task {
+                    let ok = await viewModel.removePhoto(
+                        personId: person.id, photoId: photo.photoId, confirmed: true)
+                    GatherToastCenter.shared.show(
+                        type: ok ? .success : .error,
+                        message: ok
+                            ? l10n("已从人物移除照片")
+                            : viewModel.actionError.map { CommandErrorText.resolve($0, with: l10n) }
+                                ?? l10n("移除失败"))
+                    if !ok { viewModel.clearActionError() }
+                }
+            }
+            Button(l10n("取消"), role: .cancel) { pendingRemovePhoto = nil }
+        } message: {
+            Text(l10n("只断开该照片与本人物的人脸绑定，不删除照片文件。"))
         }
         .alert(l10n("删除人物？"), isPresented: $showDelete) {
             // 与共享确认弹窗同理：宿主页隐藏时不能被 isActive 的 disabled 连坐。

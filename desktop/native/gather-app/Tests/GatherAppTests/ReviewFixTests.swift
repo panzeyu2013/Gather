@@ -430,6 +430,89 @@ struct ReviewFixTests {
         #expect(viewModel.scope == .filtered)
     }
 
+    @Test("P2-1：selected 入口设置范围与照片 ID，空选择回落工作区")
+    func selectedIntentSetsScopeAndIDs() throws {
+        let viewModel = ExportViewModel(
+            sessionId: "s1",
+            export: B6bExportAPIStub(),
+            session: B8SessionAPIStub()
+        )
+        viewModel.applyRangeIntent(.selected(["a", "b"]))
+        #expect(viewModel.scope == .selected)
+        #expect(viewModel.selectedPhotoIds == ["a", "b"])
+        viewModel.destination = "/tmp/gather-selected"
+        let options = try viewModel.exportOptions()
+        #expect(options.selectedPhotoIds == ["a", "b"])
+
+        viewModel.applyRangeIntent(.selected([]))
+        #expect(viewModel.scope == .session)
+        #expect(try viewModel.exportOptions().selectedPhotoIds == nil)
+    }
+
+    @Test("P2-1：交付预检逐配方汇总文件数/体积/空间")
+    func deliveryPreflightAggregatesPreviews() async throws {
+        let export = B6bExportAPIStub()
+        export.previewResult = ExportPreview(
+            totalFiles: 3, totalSizeBytes: 1_000, freeSpaceBytes: 500, files: [])
+        let viewModel = ExportViewModel(
+            sessionId: "s1", export: export, session: B8SessionAPIStub())
+        await viewModel.loadDeliveryRecipes()
+        viewModel.scope = .selected
+        viewModel.selectedPhotoIds = ["p1"]
+        viewModel.deliveryRoot = "/tmp/gather-delivery"
+
+        let input = try #require(await viewModel.prepareDeliveryInput())
+        let preflight = await viewModel.deliveryPreflight(for: input)
+
+        #expect(preflight.recipeCount == input.recipes.count)
+        #expect(preflight.totalFiles == 3 * input.recipes.count)
+        #expect(preflight.totalSizeBytes == 1_000 * input.recipes.count)
+        #expect(preflight.freeSpaceBytes == 500)
+        #expect(!preflight.hasEnoughSpace)
+        #expect(export.previewInputs.count == input.recipes.count)
+        #expect(export.previewInputs.first?.options?.selectedPhotoIds == ["p1"])
+    }
+
+    @Test("P2-1：交付确认前冻结 selected 范围与配方，确认后再执行")
+    func deliveryPrepareFreezesInput() async throws {
+        let viewModel = ExportViewModel(
+            sessionId: "s1",
+            export: B6bExportAPIStub(),
+            session: B8SessionAPIStub()
+        )
+        await viewModel.loadDeliveryRecipes()
+        viewModel.scope = .selected
+        viewModel.selectedPhotoIds = ["p1", "p2"]
+        viewModel.deliveryRoot = "/tmp/gather-delivery"
+
+        let input = try #require(await viewModel.prepareDeliveryInput())
+        #expect(input.scope == .selected)
+        #expect(input.selectedPhotoIds == ["p1", "p2"])
+        #expect(input.recipes.count == viewModel.deliveryRecipes.count)
+        #expect(input.destinationRoot == "/tmp/gather-delivery")
+    }
+
+    @Test("P0：settings 变化只重读配方，不清空、不落盘")
+    func settingsChangeReloadsRecipesWithoutWipe() async throws {
+        let recipe = OutputRecipe(name: "客户交付", format: .jpeg, quality: 82, maxDimension: 2048)
+        let json = String(decoding: try JSONEncoder().encode([recipe]), as: UTF8.self)
+        let settings = B8SettingsAPIStub(values: ["output.recipes": json])
+        let viewModel = ExportViewModel(
+            sessionId: "s1", export: B6bExportAPIStub(),
+            session: B8SessionAPIStub(), settings: settings)
+        await viewModel.loadDeliveryRecipes()
+        #expect(viewModel.deliveryRecipes.map(\.name) == ["客户交付"])
+        let writesBefore = settings.setInputs.filter { $0.key.value == "output.recipes" }.count
+
+        viewModel.invalidateDeliveryRecipes()
+        let settled = await waitUntilAsync { viewModel.hasLoadedDeliveryRecipes }
+        #expect(settled, "重读任务必须有界完成")
+        #expect(viewModel.deliveryRecipes.map(\.name) == ["客户交付"],
+                "settings 变化只作废缓存，不得清空用户配方")
+        #expect(settings.setInputs.filter { $0.key.value == "output.recipes" }.count == writesBefore,
+                "内容没变时不得把 output.recipes 写回 settings")
+    }
+
     @Test("B3（9-30 审查）：手动预览也进入同一套计划发布契约（记录 plannedSignature）")
     func manualPreviewPublishesSignature() async {
         let export = B6bExportAPIStub()
@@ -1002,5 +1085,31 @@ struct ReviewFixTests {
         let acquired = await waiter.value
         #expect(acquired == false, "被取消的等待者必须返回 false（否则 inFlight 永不清理）")
         await gate.release()
+    }
+}
+
+@Suite("交付 job 身份")
+struct OutputRunIdentityTests {
+    @Test("selected 成员进入 job 身份：同配方同目录换选择不得复用旧 job")
+    func selectedPhotoIdsParticipateInOutputRunIdentity() {
+        let recipe = OutputRecipe(name: "客户交付")
+        func input(_ ids: [String]) -> OutputRunInput {
+            OutputRunInput(
+                sessionId: "s1",
+                scope: .selected,
+                selectedPhotoIds: ids,
+                destinationRoot: "/tmp/gather-output",
+                recipes: [recipe])
+        }
+        let first = input(["p1", "p2"])
+        let reordered = input(["p2", "p1"])
+        let different = input(["p1"])
+
+        #expect(LiveExportAPI.outputRunFingerprint(first)
+                == LiveExportAPI.outputRunFingerprint(reordered),
+                "同一选择的顺序不同不得换身份")
+        #expect(LiveExportAPI.outputRunFingerprint(first)
+                != LiveExportAPI.outputRunFingerprint(different),
+                "不同选择必须形成不同的去重键")
     }
 }

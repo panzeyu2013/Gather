@@ -80,6 +80,24 @@ public final class SessionControlViewModel: PageVisibility {
         self.activePollInterval = activePollInterval
     }
 
+    /// P1-3：为历史空根工作区设置/修复根目录；成功后刷新并提示。
+    public func setSourceRoot(_ path: String) async {
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let input = try SessionSetSourceRootInput(sessionId: sessionId, sourceRoot: path)
+            let updated = try await sessionAPI.setSourceRoot(
+                Confirmed(input, source: .userDialog))
+            session = updated
+            // 监听重建由 LiveSessionAPI.setSourceRoot 的唯一写路径完成。
+            notice = LocalizedText("已设置工作区根目录")
+            errorMessage = nil
+            await load()
+        } catch {
+            errorMessage = CommandError(error)
+        }
+    }
+
     // MARK: - 可见性 / 轮询 / 关闭（Cut 4 / 4a-2b）
 
     /// 可见性唯一入口（PageVisibility）：把旧 SessionControlView 的 .task 里的

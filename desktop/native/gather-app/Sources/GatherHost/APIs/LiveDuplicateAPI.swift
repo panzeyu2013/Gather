@@ -111,6 +111,14 @@ public final class LiveDuplicateAPI: DuplicateAPI {
         }
     }
 
+    public func resetGroup(_ input: Confirmed<DuplicateResetGroupInput>) async throws -> Bool {
+        let payload = input.value
+        return try map {
+            try duplicateService.resetGroup(groupId: payload.groupId)
+            return true
+        }
+    }
+
     // MARK: - 校验与错误映射
 
     private func map<T>(_ body: () throws -> T) throws -> T {

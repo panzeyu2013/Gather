@@ -756,14 +756,38 @@ struct ExportServiceTests {
                 == ["keep", "pending", "reject"]
         )
 
-        // 没有跨页选择集契约的范围必须显式拒绝（不静默降级成整个工作区）。
-        let selected = ExportOptions(
+        // 所选照片范围：空/未知 ID 显式拒绝，合法 ID 只导出该集合。
+        let selectedEmpty = ExportOptions(
             scope: .selected, variantPolicy: .preferred, format: .original,
             naming: ExportNaming(pattern: "{original}"), includeXmp: false,
             destination: destination.path
         )
-        #expect(throws: ExportServiceError.scopeUnsupported) {
-            _ = try service.preview(sessionId: session.id, options: selected)
+        do {
+            _ = try service.preview(sessionId: session.id, options: selectedEmpty)
+            Issue.record("空 selectedPhotoIds 必须拒绝")
+        } catch let error as GatherError {
+            #expect(error.code == .EXPORT_PARAMS_INVALID)
+        }
+
+        let selected = ExportOptions(
+            scope: .selected, selectedPhotoIds: ["keep"],
+            variantPolicy: .preferred, format: .original,
+            naming: ExportNaming(pattern: "{original}"), includeXmp: false,
+            destination: destination.path
+        )
+        #expect(try service.preview(sessionId: session.id, options: selected).files.map(\.photoId) == ["keep"])
+
+        let unknown = ExportOptions(
+            scope: .selected, selectedPhotoIds: ["missing"],
+            variantPolicy: .preferred, format: .original,
+            naming: ExportNaming(pattern: "{original}"), includeXmp: false,
+            destination: destination.path
+        )
+        do {
+            _ = try service.preview(sessionId: session.id, options: unknown)
+            Issue.record("未知 selectedPhotoIds 必须拒绝")
+        } catch let error as GatherError {
+            #expect(error.code == .EXPORT_PARAMS_INVALID)
         }
     }
 
@@ -986,5 +1010,33 @@ struct ExportOrientationTests {
         // 方向必须烘焙进像素：24×16 + orientation=6 → 输出 16×24。
         #expect(properties[kCGImagePropertyPixelWidth] as? Int == 16)
         #expect(properties[kCGImagePropertyPixelHeight] as? Int == 24)
+    }
+
+    @Test("P3-3：报表拒绝未知类型/格式，不再空成功")
+    func reportRejectsUnknownTypeAndFormat() throws {
+        let db = try makeTestDB()
+        let service = ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            connection: db)
+
+        var caught: GatherError?
+        do {
+            _ = try service.generateReport(sessionId: "s1", reportType: "unknown")
+        } catch let error as GatherError {
+            caught = error
+        }
+        #expect(caught?.code == .EXPORT_PARAMS_INVALID)
+        #expect(caught?.params["field"] == "reportType")
+
+        caught = nil
+        do {
+            _ = try service.generateReport(
+                sessionId: "s1", reportType: "session_summary", format: "pdf")
+        } catch let error as GatherError {
+            caught = error
+        }
+        #expect(caught?.code == .EXPORT_PARAMS_INVALID)
+        #expect(caught?.params["field"] == "format")
     }
 }

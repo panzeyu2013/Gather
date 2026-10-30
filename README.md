@@ -30,8 +30,8 @@ decisions back through metadata.
 
 - **Local-first:** photos, indexes, models, and metadata processing stay on the
   computer; the app does not run a local web service.
-- **Native workflow:** SwiftUI pages call 16 typed domain APIs (129 methods)
-  in-process across eight functional SwiftPM targets (15 total, incl. test/tool targets); there is no Electron, browser
+- **Native workflow:** SwiftUI pages call 16 typed domain APIs (140 methods)
+  in-process across eight functional SwiftPM targets (16 total, incl. test/tool targets); there is no Electron, browser
   renderer, JavaScript IPC runtime, or string-command router.
 - **Recoverable writeback:** metadata changes are persisted in the `deliveries`
   queue and processed with conflict detection and restart recovery.
@@ -94,8 +94,8 @@ never assemble the `.app` bundle.
 ```
 
 The full bundle build is a release/packaging activity, not part of the normal
-test loop. The bundle is assembled at `release/Gather.app`. Set
-`CONFIGURATION=release` for a release build. The script does not require a
+test loop. The bundle is assembled at `release/Gather.app`. `release` is the
+default (set `CONFIGURATION=debug` for a debug build). The script does not require a
 JavaScript toolchain and leaves signing disabled unless `CODESIGN_IDENTITY`
 is explicitly provided. When signing, it applies hardened runtime plus
 `desktop/native/Gather.entitlements` (Apple Events for the Capture One bridge)
@@ -107,7 +107,7 @@ and re-reads the signed entitlements. Assembly also asserts the bundled
 
 ```text
 SwiftUI (GatherUI)
-  ↓ AppServices：16 个域协议 / 134 个类型化方法（同进程直连）
+  ↓ AppServices：16 个域协议 / 140 个类型化方法（同进程直连）
 GatherHost（AppComposition 组合根 / AppRuntime / Live*API）
   ↓
 GatherApplication（服务编排、JobService）
@@ -121,7 +121,7 @@ The eight targets are `GatherProtocol` (values, API, error codes),
 (delivery engine), `GatherAnalysis`, `GatherApplication` (services),
 `GatherUI`, `GatherHost`, and `GatherApp`. `AppComposition` is
 the single composition root; `AppRuntime` owns job lifecycle. There is no
-118-command router; `Database.open(at:)` opens the current schema (V5);
+118-command router; `Database.open(at:)` opens the current schema (user_version=1);
 incompatible databases fail closed (no migration chain).
 
 Destructive operations use the compile-time `Confirmed<T>` marker plus real UI

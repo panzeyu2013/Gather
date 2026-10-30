@@ -178,22 +178,12 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
                     continuation.resume(returning: .cancelled)
                     return
                 }
-                let urls = FileManager.default.enumerator(
-                    at: directory,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]
-                )?.compactMap { $0 as? URL } ?? []
-                let files = urls.filter { url in
-                    let ext = ".\(url.pathExtension.lowercased())"
-                    guard RAWDecoder.supportedExtensions.contains(ext),
-                          let values = try? url.resourceValues(forKeys: [.isRegularFileKey]) else { return false }
-                    return values.isRegularFile == true
-                }
-                if files.isEmpty {
-                    continuation.resume(returning: .directory(directory))
-                } else {
-                    continuation.resume(returning: .files(files.map(\.path)))
-                }
+                // P1-1：这里选择的是**目录**，必须按目录会话创建。
+                // 旧实现把目录递归枚举成照片文件再走 files 分支，导致
+                // sessions.source_path 为空：之后整目录重扫 noSourcePath、
+                // 摄取目标校验永远失败、目录监听不启动。
+                // 文件级导入仍由 Finder 拖入 / 打开文件 / deep-link 走 .files。
+                continuation.resume(returning: .directory(directory))
             }
             if let window = NSApp.keyWindow {
                 panel.beginSheetModal(for: window, completionHandler: handle)

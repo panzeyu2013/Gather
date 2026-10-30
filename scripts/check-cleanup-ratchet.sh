@@ -43,9 +43,11 @@ if [ "$SWIFT_N" -lt 300 ]; then
 fi
 
 WRITE=0
+ALLOW_GROWTH=0
 for arg in "$@"; do
   case "$arg" in
     --write-baseline) WRITE=1 ;;
+    --allow-growth) ALLOW_GROWTH=1 ;;
     -h|--help)
       sed -n '2,20p' "$0"
       exit 0
@@ -109,6 +111,24 @@ write_baseline() {
 }
 JSON
 }
+
+if [ "$WRITE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
+  grew=0
+  for key in $METRICS; do
+    cur=$(metric "$key")
+    base=$(grep -E "\"$key\"[[:space:]]*:[[:space:]]*[0-9]+" "$BASELINE" 2>/dev/null | grep -oE '[0-9]+' | head -n 1 || true)
+    [ -n "$base" ] || continue
+    if [ "$cur" -gt "$base" ]; then
+      echo "  涨：$key $base -> $cur" >&2
+      grew=1
+    fi
+  done
+  if [ "$grew" -ne 0 ]; then
+    echo "check-cleanup-ratchet: REFUSED — 基线膨胀必须显式批准" >&2
+    echo "  确需扩张时加 --allow-growth，并在 docs/reviews/ 台账记账。" >&2
+    exit 1
+  fi
+fi
 
 if [ "$WRITE" -eq 1 ]; then
   write_baseline

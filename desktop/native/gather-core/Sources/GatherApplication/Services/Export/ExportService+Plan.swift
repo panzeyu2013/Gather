@@ -391,7 +391,23 @@ extension ExportService {
             let keptPhotoIds = try reports.keptPhotoIds(sessionId: sessionId)
             scoped = inWorkspace.filter { $0.status != "removed" && keptPhotoIds.contains($0.id) }
         case .selected:
-            throw ExportServiceError.scopeUnsupported
+            // P2-1：只有显式选择才允许导出“所选照片”，且每个 ID 必须属于
+            // 本会话、可见、非 removed；空/越界/未知 ID 一律显式失败。
+            guard let requested = options.selectedPhotoIds, !requested.isEmpty else {
+                throw GatherError(code: .EXPORT_PARAMS_INVALID, params: ["field": "selectedPhotoIds"])
+            }
+            var seen = Set<String>()
+            // Set 迭代序不稳定：先排序，保证 {seq} 编号可复现。
+            let ids = requested.filter { seen.insert($0).inserted }.sorted()
+            guard ids.count <= 20_000 else {
+                throw GatherError(code: .EXPORT_PARAMS_INVALID, params: ["field": "selectedPhotoIds"])
+            }
+            let exportable = inWorkspace.filter { $0.status != "removed" }
+            let byId = Dictionary(uniqueKeysWithValues: exportable.map { ($0.id, $0) })
+            guard ids.allSatisfy({ byId[$0] != nil }) else {
+                throw GatherError(code: .EXPORT_PARAMS_INVALID, params: ["field": "selectedPhotoIds"])
+            }
+            scoped = ids.compactMap { byId[$0] }
         }
         let policy = options.variantPolicy ?? .preferred
         if policy == .all { return scoped }

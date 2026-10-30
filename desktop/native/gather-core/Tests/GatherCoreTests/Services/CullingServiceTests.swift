@@ -2839,3 +2839,85 @@ struct ClientSelectionManualTests {
         #expect(after.decisionSource == "manual")
     }
 }
+
+@Suite("CullingService 跨页选择 updateSelection")
+struct CullingSelectionUpdateTests {
+    @Test("hash 不符：零写入并抛 CULLING_SELECTION_CHANGED")
+    func hashMismatchWritesNothing() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1")
+        try addPhoto(harness.db, id: "p2")
+        let selection = try harness.service.selectableIds(
+            CullingSelectionQuery(sessionId: "session", scope: .all))
+        #expect(selection.ids.count == 2)
+
+        let input = try CullingSelectionUpdateInput(
+            sessionId: "session",
+            scope: .all,
+            expectedIdsHash: "not-the-current-hash",
+            expectedCount: 2,
+            patch: CullingUpdatePatch(pickState: .rejected))
+        do {
+            _ = try harness.service.updateSelection(input)
+            Issue.record("hash 不符必须拒绝")
+        } catch let error as GatherError {
+            #expect(error.code == .CULLING_SELECTION_CHANGED)
+        }
+        #expect(try harness.decision("p1") == nil, "拒绝时不得写任何行")
+        #expect(try harness.decision("p2") == nil)
+        #expect(try harness.historyRepo.list(sessionId: "session").isEmpty)
+    }
+
+    @Test("按代表照片计数 applied；变体展开的 states 不虚增；每块一条历史")
+    func appliesSelectionAndCountsRepresentatives() throws {
+        let harness = try makeHarness()
+        try addVariantPair(harness.db, assetId: "asset1")
+        try addPhoto(harness.db, id: "p2")
+
+        let selection = try harness.service.selectableIds(
+            CullingSelectionQuery(sessionId: "session", scope: .all))
+        let hash = try #require(selection.idsHash)
+        let result = try harness.service.updateSelection(
+            try CullingSelectionUpdateInput(
+                sessionId: "session",
+                scope: .all,
+                expectedIdsHash: hash,
+                expectedCount: selection.ids.count,
+                patch: CullingUpdatePatch(pickState: .rejected)))
+
+        #expect(result.requested == 2)
+        #expect(result.applied == 2, "applied 必须按请求的代表照片计数")
+        #expect(result.states.count == 3, "变体展开的状态可多于请求数")
+        #expect(result.historyOperationIds.count == 1)
+        #expect(try harness.historyRepo.list(sessionId: "session").count == 1)
+    }
+
+    @Test("空选择：hash/count 一致时是零写入 no-op")
+    func emptySelectionIsNoOp() throws {
+        let harness = try makeHarness()
+        let selection = try harness.service.selectableIds(
+            CullingSelectionQuery(sessionId: "session", scope: .all))
+        let hash = try #require(selection.idsHash)
+        let result = try harness.service.updateSelection(
+            try CullingSelectionUpdateInput(
+                sessionId: "session",
+                scope: .all,
+                expectedIdsHash: hash,
+                expectedCount: 0,
+                patch: CullingUpdatePatch(pickState: .picked)))
+        #expect(result.requested == 0)
+        #expect(result.applied == 0)
+        #expect(result.states.isEmpty)
+    }
+
+    @Test("组 id 不可解析：选择为空而不是退化成全部照片")
+    func unparseableGroupReturnsEmpty() throws {
+        let harness = try makeHarness()
+        try addPhoto(harness.db, id: "p1")
+        let selection = try harness.service.selectableIds(
+            CullingSelectionQuery(
+                sessionId: "session", scope: .similarityGroup, groupId: "missing"))
+        #expect(selection.ids.isEmpty)
+        #expect(selection.truncated == false)
+    }
+}

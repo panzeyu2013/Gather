@@ -519,6 +519,16 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
         return result
     }
 
+    func updateSelection(
+        _ input: CullingSelectionUpdateInput
+    ) async throws -> CullingSelectionUpdateResult {
+        try await delayIfNeeded()
+        return CullingSelectionUpdateResult(
+            requested: input.expectedCount,
+            applied: 0,
+            truncated: false)
+    }
+
     func decideGroup(_ input: CullingDecideGroupInput) async throws -> [CullingUpdateResult] {
         try await delayIfNeeded()
         let (error, result): ((any Error)?, [CullingUpdateResult]) = box.lock.withLock {

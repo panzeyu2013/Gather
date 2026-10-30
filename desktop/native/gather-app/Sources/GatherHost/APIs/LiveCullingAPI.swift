@@ -381,6 +381,16 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         return result
     }
 
+    public func updateSelection(
+        _ input: CullingSelectionUpdateInput
+    ) async throws -> CullingSelectionUpdateResult {
+        let result = try map { try cullingService.updateSelection(input) }
+        try await mapAsync {
+            try await cullingService.flushQueuedMetadata(sessionId: input.sessionId)
+        }
+        return result
+    }
+
     public func decideGroup(_ input: CullingDecideGroupInput) async throws -> [CullingUpdateResult] {
         try map {
             try cullingService.decideSimilarityGroup(

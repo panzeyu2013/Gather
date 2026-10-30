@@ -18,6 +18,7 @@
 // 任务行叶子 View 在 SessionControlJobRow。
 
 import SwiftUI
+import AppKit
 import GatherProtocol
 
 public struct SessionControlView: View {
@@ -56,6 +57,48 @@ public struct SessionControlView: View {
     @Environment(\.languageStore) private var languageStore
     var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
+    /// P1-3：历史文件导入会话没有根目录；这里给出唯一修复入口，
+    /// 避免用户打开摄取后按提示手选目录却必然被服务端拒绝。
+    private var sourceRootBanner: some View {
+        HStack(alignment: .center, spacing: GatherMetrics.Space.m) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(GatherTheme.warningText)
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
+                Text(l10n("此工作区没有根目录"))
+                    .font(GatherFont.bodyStrong)
+                Text(l10n("没有根目录时无法摄取新照片或重扫整个目录。请选择一个包含全部照片的目录。"))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Button(l10n("设置根目录…")) { chooseSourceRoot() }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(viewModel.isWorking)
+        }
+        .padding(GatherMetrics.Space.m)
+        .background(
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
+                .fill(GatherTheme.warning.opacity(0.10))
+        )
+        .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+        .padding(.top, 12)
+    }
+
+    private func chooseSourceRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = l10n("设为工作区根目录")
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                await viewModel.setSourceRoot(url.path)
+            }
+        }
+    }
+
     public var body: some View {
         GatherSessionPage(
             page: .control,
@@ -85,6 +128,9 @@ public struct SessionControlView: View {
                     NativeBanner(text: l10n.resolve(notice), color: GatherTheme.success)
                         .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                         .padding(.top, 12)
+                }
+                if let session = viewModel.session, session.sourcePath.isEmpty {
+                    sourceRootBanner
                 }
                 ScrollView {
                     if viewModel.isLoading {

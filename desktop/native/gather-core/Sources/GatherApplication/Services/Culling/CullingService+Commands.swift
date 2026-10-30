@@ -243,10 +243,8 @@ extension CullingService {
         patch: CullingUpdatePatch
     ) throws -> [CullingUpdateResult] {
         try validatePatch(patch)
-        var uniqueIds: [String] = []
-        for photoId in photoIds where !uniqueIds.contains(photoId) {
-            uniqueIds.append(photoId)
-        }
+        var seenIds = Set<String>()
+        let uniqueIds = photoIds.filter { seenIds.insert($0).inserted }
         if uniqueIds.isEmpty { throw CullingServiceError.emptySelection }
         if uniqueIds.count > Self.batchMax { throw CullingServiceError.tooManyPhotoIds }
         let entry = try getSessionUpdateContext(sessionId: sessionId)
@@ -293,12 +291,16 @@ extension CullingService {
         let syncFallback: MetadataSyncStatus = (patch.rating != nil || patch.colorLabel != nil)
             ? .pending : .clean
         var syncByXmp: [String: MetadataSyncStatus] = [:]
-        for photoId in operationIds {
-            guard let photo = photoById[photoId] else { continue }
-            let xmpPath = DeliveryPath.sidecar(photo.filepath)
-            if syncByXmp[xmpPath] == nil {
-                syncByXmp[xmpPath] = try currentSyncStatus(
-                    xmpPath: xmpPath, fallback: syncFallback)
+        let xmpPaths = Set(operationIds.compactMap { photoById[$0].map {
+            TSPath.normalize(DeliveryPath.sidecar($0.filepath))
+        } })
+        // 10k 批次逐张 getItem 会变成 1 万次查询；getMany 一次 IN 取回。
+        let deliveryByPath = try deliveryItems.getMany(xmpPaths: Array(xmpPaths))
+        for xmpPath in xmpPaths {
+            if let status = deliveryByPath[xmpPath]?.typedStatus {
+                syncByXmp[xmpPath] = Self.syncStatus(from: status)
+            } else {
+                syncByXmp[xmpPath] = syncFallback
             }
         }
         // 复审 B3：受影响照片并集只读一次；仅当各操作集合互不相交时才预读，
@@ -360,7 +362,8 @@ extension CullingService {
                         historySink: historySink
                     ),
                     preloadedDecision: disjoint ? current : nil,
-                    preloadedSyncStatus: disjoint ? syncByXmp[targetXmp] : nil,
+                    preloadedSyncStatus: disjoint
+                        ? syncByXmp[TSPath.normalize(targetXmp)] : nil,
                     preloadedDecisionRows: preloadedDecisionRows,
                     preloadedCacheRows: preloadedCacheRows
                 ))

@@ -82,8 +82,8 @@ extension CullingViewModel {
         if let page = snapshot.page {
             let ids = Set(page.assets.map(\.photo.id))
             loadedPhotoIds = ids
-            // P0 / A1：不再按"当前页"裁剪选择集——跨页选择必须保留到提交时。
-            // 批量决策仍与已加载页求交（宁可漏杀）；移出用完整选择集，由服务端逐张校验。
+            // P0 / A1：不再按"当前页"裁剪选择集——跨页选择必须保留到提交时；
+            // 提交端按 10k 分块写完整选择集（batchUpdate），或走服务端 updateSelection。
             // 内容版本：网格布局缓存/在途 conflicts 守卫都据此判断“页已变”。
             pageVersion += 1
             self.page = page
@@ -341,8 +341,16 @@ extension CullingViewModel {
 
     public func setScope(_ scope: ScopeMode) async {
         guard scopeMode != scope else { return }
+        let hadFilters = filterState.isActive
         scopeMode = scope
         selectedPhotoIds.removeAll()
+        invalidateSelectionSnapshot()
+        // P2-4：筛选只在“按筛选”范围生效；离开该范围时清空，避免检查器
+        // 仍显示 N 项筛选、空态却没有任何可清除的入口。
+        if scope != .filtered, hadFilters {
+            filterState = FilterState()
+            notice = CullingNotice("已清除筛选条件")
+        }
         await loadPage(reset: true)
     }
 
@@ -358,12 +366,30 @@ extension CullingViewModel {
         }
     }
 
+    /// P1-8：仅用于“显示完整组员数”的首次加载；已加载则零请求。
+    public func ensureSimilarityGroupsLoaded() async {
+        guard similarityGroups.isEmpty else { return }
+        await loadSimilarityGroupsIfNeeded(force: true)
+    }
+
+    /// P1-8：决策前强制刷新完整组员数，避免用旧缓存生成影响面。
+    public func refreshSimilarityGroups() async {
+        do {
+            similarityGroups = try await cullingAPI.groups(sessionId)
+        } catch {
+            similarityGroups = []
+            errorMessage = CommandError(error)
+        }
+    }
+
     public func selectSimilarityGroup(_ groupId: String) async {
         await loadSimilarityGroupsIfNeeded(force: true)
         guard similarityGroups.contains(where: { $0.groupId == groupId }) else { return }
         selectedSimilarityGroupId = groupId
         scopeMode = .similarityGroup
         selectedPhotoIds.removeAll()
+        selectionAnchorId = nil
+        invalidateSelectionSnapshot()
         await loadPage(reset: true)
     }
 }

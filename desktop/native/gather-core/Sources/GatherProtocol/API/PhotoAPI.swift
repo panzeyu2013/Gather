@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/PhotoAPI.swift
-// Cut 1 / 阶段 1A：照片域协议（8 个方法）。
+// Cut 1 / 阶段 1A：照片域协议（9 个方法；P2-2 追加 select）。
 //
 // 职责：照片分页、查询 DSL、建议、派生媒体（尺寸/缩略图/预览）。
 // 对应命令（9 条）：photo.list_page、filter.photos + filter.photos_global（M3 合并）、
@@ -24,6 +24,9 @@ public protocol PhotoAPI: Sendable {
 
     /// filter.photos / filter.photos_global（M3：sessionId == nil 即全局）
     func search(_ query: PhotoQuery) async throws -> PhotoSearchResult
+
+    /// P2-2：按当前图库搜索/筛选取完整 ID 集（20k 上限 + hash），供 ⌘A。
+    func select(_ query: PhotoSelectionQuery) async throws -> PhotoSelectionIds
 
     /// filter.suggest
     func suggestions(_ query: PhotoSuggestionQuery) async throws -> [FilterSuggestion]

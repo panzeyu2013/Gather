@@ -107,6 +107,7 @@ public final class OutputService: @unchecked Sendable {
             let destination = destinations[index]
             let options = ExportOptions(
                 scope: input.scope,
+                selectedPhotoIds: input.selectedPhotoIds,
                 variantPolicy: .preferred,
                 format: recipe.format,
                 quality: recipe.quality,

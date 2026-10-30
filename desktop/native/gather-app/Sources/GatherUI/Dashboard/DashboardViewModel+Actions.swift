@@ -166,9 +166,9 @@ extension DashboardViewModel {
         }
     }
 
-    func clearCompletedJobs() async {
+    func clearCompletedJobs(includeFailed: Bool = false) async {
         do {
-            _ = try await provider.clearCompletedJobs()
+            _ = try await provider.clearCompletedJobs(includeFailed: includeFailed)
             await refreshJobs()
         } catch {
             actionError = CommandError(error)

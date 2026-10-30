@@ -32,6 +32,17 @@ private struct APIFixture {
         let faceRepo = FaceRepo(connection: db)
         let settingsService = SettingsService(repo: SettingsRepo(connection: db))
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))
+        // P1-3：ingest API 走 Job；测试装配也要注册同一执行体。
+        let ingestRunner = SessionIngestRunner(sessionService: SessionService(
+            sessionRepo: sessionRepo, photoRepo: photoRepo, faceRepo: faceRepo,
+            connection: db, dimensionsProvider: { _ in (width: 100, height: 100) }))
+        jobService.registerExecutor(type: .checksumBackfill) { job, context in
+            guard job.checkpoint["operation"]?.stringValue == "ingest" else {
+                throw JobServiceError.jobFailed(job.id, "unexpected checksum job")
+            }
+            let payload = try SessionIngestRunner.decode(job.checkpoint)
+            return try await ingestRunner.run(payload, context: context)
+        }
         let sessionService = SessionService(
             sessionRepo: sessionRepo,
             photoRepo: photoRepo,
@@ -177,6 +188,103 @@ struct APISessionTests {
         let requested = scan.checkpoint[JobCreateParams.metadataScanRequestedPathsKey]?
             .arrayElements?.compactMap(\.stringValue) ?? []
         #expect(requested == normalizeImportFilepaths([a, b]))
+    }
+
+    @Test("session：setSourceRoot 修复 path-scope 并拒绝不含全部照片的根")
+    func setSourceRootRepairsPathScope() async throws {
+        let fixture = try APIFixture()
+        let directory = try makeTempDirectory()
+        let outside = try makeTempDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let photo = try makeTempFile(in: directory, name: "one.jpg")
+
+        // 单文件导入：没有安全公共父目录 → path-scope（sourcePath 为空）。
+        let created = try await fixture.sessionAPI.create(
+            SessionCreateInput(name: "path-scope", filepaths: [photo])
+        )
+        #expect(created.session.sourcePath == "")
+
+        let repaired = try await fixture.sessionAPI.setSourceRoot(
+            Confirmed(try SessionSetSourceRootInput(
+                sessionId: created.session.id, sourceRoot: directory.path))
+        )
+        #expect(repaired.sourcePath == ScanPath.canonical(directory.path))
+
+        let error = await gatherError {
+            try await fixture.sessionAPI.setSourceRoot(
+                Confirmed(try SessionSetSourceRootInput(
+                    sessionId: created.session.id, sourceRoot: outside.path))
+            )
+        }
+        #expect(error?.code == .SESSION_SOURCE_EXCLUDES_PHOTOS)
+        #expect(error?.params["count"] == "1")
+    }
+
+    @Test("session：多文件导入不把公共父目录落成工作区根（历史 P0 防回归）")
+    func fileImportKeepsSourcePathEmpty() async throws {
+        let fixture = try APIFixture()
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let a = try makeTempFile(in: directory, name: "a.jpg")
+        let b = try makeTempFile(in: directory, name: "b.jpg")
+
+        let created = try await fixture.sessionAPI.create(
+            SessionCreateInput(name: "files", filepaths: [a, b]))
+        #expect(created.session.sourcePath == "",
+                "公共父目录只用于取名；落成 source_path 会把目录监听/兜底扫描放大到整个父目录")
+    }
+
+    @Test("session：ingest 走 Job（checksum.backfill 载体 + operation 分派）并登记")
+    func ingestRunsAsJob() async throws {
+        let fixture = try APIFixture()
+        let workspace = try makeTempDirectory()
+        let source = try makeTempDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: workspace)
+            try? FileManager.default.removeItem(at: source)
+        }
+        let sourceFile = try makeTempFile(in: source, name: "a.jpg")
+        let session = try await fixture.sessionAPI.create(
+            SessionCreateInput(name: "ingest", sourcePath: workspace.path))
+
+        let result = try await fixture.sessionAPI.ingest(
+            Confirmed(try SessionIngestInput(
+                sessionId: session.session.id,
+                sourcePaths: [sourceFile],
+                destinationRoot: workspace.path))
+        )
+        #expect(result.registered == 1)
+        #expect(result.failed.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: sourceFile),
+                "默认复制模式：源文件必须保留")
+
+        let jobs = try await fixture.jobAPI.list(JobListFilter())
+        let ingestJob = try #require(jobs.first {
+            $0.type == .checksumBackfill
+                && $0.checkpoint["operation"]?.stringValue == "ingest"
+        })
+        #expect(ingestJob.status == .succeeded)
+        #expect(ingestJob.dedupeKey.hasPrefix("ingest.run:\(session.session.id):"))
+
+        // 崩溃恢复：新会话的 destination 已有同内容文件、但该会话没有照片登记。
+        // plan 会把它归入 alreadyPresent；runner 必须登记，否则文件永久留在 _ingest。
+        let second = try await fixture.sessionAPI.create(
+            SessionCreateInput(name: "ingest-recovery", sourcePath: workspace.path))
+        let recovered = try await fixture.sessionAPI.ingest(
+            Confirmed(try SessionIngestInput(
+                sessionId: second.session.id,
+                sourcePaths: [sourceFile],
+                destinationRoot: workspace.path))
+        )
+        #expect(recovered.registered == 1,
+                "alreadyPresent 必须登记，不能只登记 copied")
+        let count = try fixture.db.prepare(
+            "SELECT COUNT(*) FROM photos WHERE session_id = ?"
+        ).get([.text(second.session.id)])?[0].intValue ?? 0
+        #expect(count == 1)
     }
 
     @Test("session：目录准入（禁根 / 非目录）显式失败；metadata.scan 入队失败回滚")

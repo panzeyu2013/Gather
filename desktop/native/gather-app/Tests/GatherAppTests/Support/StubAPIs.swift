@@ -247,10 +247,13 @@ private struct StubDuplicateState {
     var resolveError: (any Error)?
     var resolveMemberResult = true
     var resolveMemberError: (any Error)?
+    var resetGroupResult = true
+    var resetGroupError: (any Error)?
     var scanInputs: [DuplicateScanInput] = []
     var groupsCalls: [String] = []
     var resolveInputs: [Confirmed<DuplicateResolveInput>] = []
     var resolveMemberInputs: [Confirmed<DuplicateResolveMemberInput>] = []
+    var resetGroupInputs: [Confirmed<DuplicateResetGroupInput>] = []
 }
 
 /// 可配置 DuplicateAPI：默认 groups 返回空、resolve/resolveMember 返回 true。
@@ -301,6 +304,7 @@ final class B5bDuplicateAPIStub: DuplicateAPI, @unchecked Sendable {
     var groupsCalls: [String] { box.lock.withLock { box.groupsCalls } }
     var resolveInputs: [Confirmed<DuplicateResolveInput>] { box.lock.withLock { box.resolveInputs } }
     var resolveMemberInputs: [Confirmed<DuplicateResolveMemberInput>] { box.lock.withLock { box.resolveMemberInputs } }
+    var resetGroupInputs: [Confirmed<DuplicateResetGroupInput>] { box.lock.withLock { box.resetGroupInputs } }
 
     func scan(_ input: DuplicateScanInput) async throws -> DuplicateScanResult {
         let (error, result): ((any Error)?, DuplicateScanResult) = box.lock.withLock {
@@ -333,6 +337,15 @@ final class B5bDuplicateAPIStub: DuplicateAPI, @unchecked Sendable {
         let (error, result): ((any Error)?, Bool) = box.lock.withLock {
             box.resolveMemberInputs.append(input)
             return (box.resolveMemberError, box.resolveMemberResult)
+        }
+        if let error { throw error }
+        return result
+    }
+
+    func resetGroup(_ input: Confirmed<DuplicateResetGroupInput>) async throws -> Bool {
+        let (error, result): ((any Error)?, Bool) = box.lock.withLock {
+            box.resetGroupInputs.append(input)
+            return (box.resetGroupError, box.resetGroupResult)
         }
         if let error { throw error }
         return result

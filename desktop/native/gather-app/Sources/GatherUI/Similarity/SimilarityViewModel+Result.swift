@@ -16,6 +16,8 @@ extension SimilarityViewModel {
         guard syncThreshold else { return }
         resultRequestID += 1
         result = newResult
+        // 结果代变化后旧预览/旧失败项不再对应任何分组。
+        markWritebackDraftChanged()
         selectedGroupIds = []
         // C-1：结果替换后旧的展开态没有意义（分组 id 可能已变）。
         expandedGroupIds = []

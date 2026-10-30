@@ -31,12 +31,9 @@ struct MetadataBatchSheet: View {
                         ForEach(batches, id: \.batchId) { batch in
                             HStack(spacing: GatherMetrics.Space.m) {
                                 VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
-                                    Text(batch.kind == "triage"
-                                         ? l10n("技术建议写回") : batch.name)
+                                    Text(batch.kind == "triage" ? l10n("技术建议写回") : batch.name)
                                         .font(GatherFont.body)
-                                    Text(l10n.format("%@ · %lld 张 · %@",
-                                                     batch.kind == "triage"
-                                                        ? l10n("技术建议写回") : batch.name,
+                                    Text(l10n.format("%lld 张 · %@",
                                                      batch.photoCount,
                                                      displayDate(batch.appliedAt)))
                                         .font(.caption)
@@ -96,7 +93,7 @@ struct MetadataBatchSheet: View {
             batches = try await viewModel.metadataAPI.recentBatches(limit: 20)
             errorText = nil
         } catch {
-            errorText = String(describing: error)
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
     }
 
@@ -108,6 +105,7 @@ struct MetadataBatchSheet: View {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
+        formatter.locale = l10n.locale
         return formatter.string(from: date)
     }
 
@@ -134,7 +132,7 @@ struct MetadataBatchSheet: View {
             await viewModel.loadPage(reset: true)
             viewModel.loadMetadataDetail()
         } catch {
-            errorText = String(describing: error)
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
     }
 }

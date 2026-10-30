@@ -102,6 +102,15 @@ public struct CullingView: View {
                         }
                         return .destructive
                     },
+                    secondaryLabel: { action in
+                        guard case .crossPageBatch(let plan) = action,
+                              plan.visibleCount < plan.totalCount else { return nil }
+                        return l10n("仅当前可见")
+                    },
+                    onSecondary: { action in
+                        guard case .crossPageBatch(let plan) = action else { return }
+                        Task { await viewModel.performCrossPageBatch(plan, onlyVisible: true) }
+                    },
                     message: { confirmationMessage($0) },
                     onConfirm: { perform($0) },
                     onCancel: { viewModel.noteCancelledAction($0.actionText) }
@@ -109,6 +118,11 @@ public struct CullingView: View {
         }
         .onChange(of: viewModel.sortMode) { _, newValue in
             sortRaw = newValue.rawValue
+        }
+        .onChange(of: viewModel.pendingCrossPageBatch?.id) { _, _ in
+            guard let plan = viewModel.pendingCrossPageBatch else { return }
+            pendingAction = .crossPageBatch(plan)
+            viewModel.pendingCrossPageBatch = nil
         }
         .toolbar {
             GatherSessionToolbar(
@@ -129,7 +143,8 @@ public struct CullingView: View {
                 isBusy: isBusy,
                 faceAlign: $faceAlign,
                 gridDensity: densityBinding,
-                layoutMode: layoutBinding
+                layoutMode: layoutBinding,
+                pendingAction: $pendingAction
             )
                 // 约束循环修复（N01）：SwiftUI 把**理想列宽**计入承载视图的最小宽度
                 //（实测 min 260 / ideal 300 时贡献 300pt）。收窄到 ideal 260，

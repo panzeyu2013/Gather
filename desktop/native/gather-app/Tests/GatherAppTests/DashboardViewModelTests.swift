@@ -88,7 +88,7 @@ private final class StubDashboardProvider: DashboardDataProvider, @unchecked Sen
         return true
     }
 
-    func clearCompletedJobs() async throws -> Int {
+    func clearCompletedJobs(includeFailed: Bool) async throws -> Int {
         clearCallCount += 1
         return 1
     }
@@ -487,9 +487,9 @@ struct DashboardViewModelTests {
         )
     }
 
-    // 文件导入（C1 同路径）：source_path 必须为空，扫描范围由 job
-    // checkpoint["requestedPaths"] 显式携带本次选中集合。
-    @Test func fileImportLeavesSourcePathEmptyAndPersistsRequestedPaths() async throws {
+    // 文件导入（C1 同路径）：公共父目录**不**落成工作区根（历史 P0）；
+    // 扫描范围由 job checkpoint["requestedPaths"] 显式携带本次选中集合。
+    @Test func fileImportKeepsSourcePathEmptyAndPersistsRequestedPaths() async throws {
         let (provider, _) = try makeLiveProvider()
         let dir = NSTemporaryDirectory() + "/gather-file-import-" + UUID().uuidString
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -501,9 +501,11 @@ struct DashboardViewModelTests {
 
         let outcome = try await provider.createSessionFromFiles(
             name: "C1", source: "capture-one", filepaths: [a, b])
-        #expect(outcome.session.sourcePath == "", "文件导入不得把公共父目录落成 source_path")
+        #expect(outcome.session.sourcePath.isEmpty,
+                "公共父目录只用于取名；落成 source_path 会把监听/兜底扫描放大到整个父目录")
         let listed = try await provider.listSessions().first { $0.id == outcome.session.id }
-        #expect(listed?.sourcePath == "", "落库的 source_path 也必须为空")
+        #expect((listed?.sourcePath ?? "") == "",
+                "落库的 source_path 必须为空（path-scope）")
 
         // Live provider 的 createSessionFromFiles 已在 API 内入队一次；契约断言
         // 需要完整 checkpoint（Dashboard 运行时走轻投影）。
@@ -535,6 +537,22 @@ struct DashboardViewModelTests {
         let remaining = try await provider.listJobs(includeCheckpoint: true)
         #expect(remaining.map(\.id) == ["scan1"])
         #expect(viewModel.hasClearableJobs == false)
+    }
+
+    @Test func clearFailedRowsRemovesFailedTerminalJobs() async throws {
+        let (provider, db) = try makeLiveProvider()
+        try insertSession(db, "s1")
+        try insertJob(db, id: "scan1", type: "metadata.scan", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
+        try insertJob(db, id: "t1", type: "thumbnail.build", scopeId: "s1", status: "failed", updatedAt: "2026-01-01T00:00:00.000Z")
+
+        let viewModel = DashboardViewModel(provider: provider)
+        await viewModel.loadAll()
+        #expect(viewModel.hasFailedJobs == true)
+
+        await viewModel.clearCompletedJobs(includeFailed: true)
+        let remaining = try await provider.listJobs(includeCheckpoint: true)
+        #expect(remaining.map(\.id) == ["scan1"], "失败记录被清理，阶段证据保留")
+        #expect(viewModel.hasFailedJobs == false)
     }
 
     // ── 卡片计数文案（TS deriveCardIndexKind + photoCountLabel 语义）──

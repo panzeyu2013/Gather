@@ -155,12 +155,16 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         struct Identity: Encodable {
             var sessionId: String
             var scope: ExportScope
+            /// .selected 的实际成员必须进入身份；否则同会话/同配方/同目录下
+            /// 换一批选择仍命中旧 queued/running job，按旧选择出片。
+            var selectedPhotoIds: [String]?
             var destinationRoot: String
             var recipes: [OutputRecipe]
         }
         let identity = Identity(
             sessionId: input.sessionId,
             scope: input.scope,
+            selectedPhotoIds: input.selectedPhotoIds?.sorted(),
             destinationRoot: input.destinationRoot,
             recipes: input.recipes.map(\.withoutArtifacts))
         let encoder = JSONEncoder()

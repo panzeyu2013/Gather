@@ -329,11 +329,15 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     // Session 来源 + 身份
     case SESSION_SOURCE_NOT_DIR
     case SESSION_SOURCE_ROOT_FORBIDDEN
+    /// 指定根目录不包含工作区内的全部照片（params[count] 为根外张数）。
+    case SESSION_SOURCE_EXCLUDES_PHOTOS
     case SESSION_NOT_FOUND
     case SESSION_IDS_REQUIRED
     // Culling
     case CULLING_PHOTO_NOT_IN_SESSION
     case CULLING_REVISION_CONFLICT
+    /// 选择在“预览/确认”与“执行”之间发生变化（scope/filters/组员）。
+    case CULLING_SELECTION_CHANGED
     case CULLING_PATCH_INVALID
     case CULLING_INVALID_SCOPE
     case CULLING_FINALIZE_CONFIRM_REQUIRED
@@ -354,6 +358,8 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case FKW_ROLE_NAME_EMPTY
     case FKW_KEYWORDS_INVALID
     case FKW_ITEMS_INVALID
+    /// 写回预览已过期（绑定/成员/关键词在预览后发生变化）。
+    case FKW_PREVIEW_STALE
     // Similarity
     case SIM_ANALYSIS_RUNNING
     case SIM_NO_PHOTOS
@@ -435,11 +441,19 @@ public struct WritebackPreview: Codable, Equatable, Sendable {
     public var items: [WritebackItem]
     public var totalCount: Int
     public var affectedPhotos: Int
+    /// P1-4：预览身份。写回时服务端复算，不一致拒绝写入。
+    public var previewToken: String?
 
-    public init(items: [WritebackItem], totalCount: Int, affectedPhotos: Int) {
+    public init(
+        items: [WritebackItem],
+        totalCount: Int,
+        affectedPhotos: Int,
+        previewToken: String? = nil
+    ) {
         self.items = items
         self.totalCount = totalCount
         self.affectedPhotos = affectedPhotos
+        self.previewToken = previewToken
     }
 }
 

@@ -7,7 +7,10 @@ import GatherProtocol
 extension CullingViewModel {
     private func applyDecisionStates(_ states: [AssetCullingState]) {
         guard let page else { return }
-        let byId = Dictionary(uniqueKeysWithValues: states.map { ($0.photoId, $0) })
+        // 共享 sidecar 的跨 chunk 更新可能重复返回同一照片；用覆盖合并而不是
+        // Dictionary(uniqueKeysWithValues:)（后者遇到重复键会直接 trap）。
+        var byId: [String: AssetCullingState] = [:]
+        for state in states { byId[state.photoId] = state }
         var assets = page.assets
         for index in assets.indices where byId[assets[index].photo.id] != nil {
             assets[index].state = byId[assets[index].photo.id]!
@@ -126,6 +129,10 @@ extension CullingViewModel {
         guard let next = assets.dropFirst(currentIndex + 1)
             .first(where: { $0.similarityGroupId != currentGroupId }) else { return }
         currentPhotoId = next.photo.id
+        // 自动前进后选择集必须一起收敛；否则下一次 P/X 仍写上一组。
+        selectedPhotoIds = [next.photo.id]
+        selectionAnchorId = next.photo.id
+        invalidateSelectionSnapshot()
     }
     // MARK: - P1 / D：淘汰移出（移到 _rejects，不删除）
 
@@ -190,10 +197,14 @@ extension CullingViewModel {
         } else {
             selectedPhotoIds.insert(photoId)
         }
+        selectionAnchorId = photoId
+        invalidateSelectionSnapshot()
     }
 
     public func clearSelection() {
         selectedPhotoIds = []
+        selectionAnchorId = nil
+        invalidateSelectionSnapshot()
     }
 
     /// 单张更新；nextPhotoId 非空时在刷新前预置当前照片（自动前进目标）。
@@ -227,7 +238,13 @@ extension CullingViewModel {
                     fields: patch.fields
                 )
             }
-            if let nextPhotoId { currentPhotoId = nextPhotoId }
+            if let nextPhotoId {
+                currentPhotoId = nextPhotoId
+                // P1：自动前进必须同步选择集。否则连续按 P/X 时 targets 仍是上一张，
+                // 会在视图已前进的情况下反复重写同一张照片。
+                selectedPhotoIds = [nextPhotoId]
+                invalidateSelectionSnapshot()
+            }
             postCullingChange()
             refreshSilently()
         } catch {
@@ -240,40 +257,58 @@ extension CullingViewModel {
         patch: CullingUpdatePatch,
         targets: Set<String>? = nil
     ) async {
-        // commit 传 visibleSelection；直接调用时再与当前已加载页求交，
-        // 防止分页/筛选后隐藏的选择被批量写入。
-        let loaded = Set(page?.assets.map { $0.photo.id } ?? [])
-        let requested = targets ?? selectedPhotoIds
-        let photoIds = requested.intersection(loaded).sorted()
-        guard !photoIds.isEmpty else {
+        // P1-7：批量目标 = 完整选择集，不再与当前已加载页求交。
+        // 协议单次上限 10k：超过就按 10k 分块串行提交，跨页大选择不再被“请分批”挡住。
+        let requested = Array(targets ?? selectedPhotoIds).sorted()
+        guard !requested.isEmpty else {
             errorMessage = CommandError.localized("请选择至少一张照片")
             return
         }
+        // 可见项才有 before 快照；屏幕外的项由服务端返回 states，本地只刷新页。
+        let requestedSet = Set(requested)
+        let beforeByPhoto = Dictionary(
+            uniqueKeysWithValues: (page?.assets ?? []).compactMap { asset in
+                requestedSet.contains(asset.photo.id)
+                    ? (asset.photo.id, snapshot(of: asset.state))
+                    : nil
+            }
+        )
+        let chunkSize = 10_000
+        var applied = 0
+        var firstOperation: (id: Int, states: [AssetCullingState])?
         do {
-            // 选择集与 before 都在 await 前快照：等待期间用户仍可能改选择/触发刷新。
-            let beforeByPhoto = Dictionary(
-                uniqueKeysWithValues: (page?.assets ?? []).compactMap { asset in
-                    photoIds.contains(asset.photo.id)
-                        ? (asset.photo.id, snapshot(of: asset.state))
-                        : nil
+            var index = 0
+            while index < requested.count {
+                let end = min(index + chunkSize, requested.count)
+                let chunk = Array(requested[index..<end])
+                let input = try CullingBatchUpdateInput(
+                    sessionId: sessionId,
+                    photoIds: chunk,
+                    patch: patch
+                )
+                let results = try await cullingAPI.batchUpdate(input)
+                let states = results.flatMap { $0.states }
+                applyDecisionStates(states)
+                // 按请求的代表照片计数：pick 会展开资产变体、rating/label 会联动
+                // 共享 sidecar，states 行数可能大于 chunk 行数。
+                let written = Set(states.map(\.photoId))
+                applied += chunk.filter { written.contains($0) }.count
+                if firstOperation == nil, let id = results.first?.historyOperationId {
+                    firstOperation = (id, states)
                 }
-            )
-            let input = try CullingBatchUpdateInput(
-                sessionId: sessionId,
-                photoIds: photoIds,
-                patch: patch
-            )
-            let results = try await cullingAPI.batchUpdate(input)
-            applyDecisionStates(results.flatMap { $0.states })
-            let afterByPhoto = Dictionary(
-                uniqueKeysWithValues: results.flatMap(\.states).map { ($0.photoId, snapshot(of: $0)) }
-            )
-            let revisionsByPhoto = Dictionary(
-                uniqueKeysWithValues: results.flatMap(\.states).map { ($0.photoId, $0.revision) }
-            )
-            if let id = results.first?.historyOperationId {
+                index = end
+            }
+            // 只有单块才能用本地预读快照拼完整 operation；多块时整条服务端
+            // operation 可能包含屏幕外照片，本地只记第一块会在刷新前撤销不全。
+            if requested.count <= chunkSize, let firstOperation, !beforeByPhoto.isEmpty {
+                var afterByPhoto: [String: CullingStateSnapshot] = [:]
+                var revisionsByPhoto: [String: Int] = [:]
+                for state in firstOperation.states {
+                    afterByPhoto[state.photoId] = snapshot(of: state)
+                    revisionsByPhoto[state.photoId] = state.revision
+                }
                 prependHistoryOperation(
-                    id: id,
+                    id: firstOperation.id,
                     photoIds: Array(beforeByPhoto.keys),
                     beforeByPhoto: beforeByPhoto,
                     afterByPhoto: afterByPhoto,
@@ -281,12 +316,24 @@ extension CullingViewModel {
                     fields: patch.fields
                 )
             }
-            notice = CullingNotice("已更新 %lld 张照片", params: ["\(photoIds.count)"])
+            // 文案用真实写入数：服务端会跳过“合并变体/决策未变化”，请求数会虚高。
+            notice = applied == requested.count
+                ? CullingNotice("已更新 %lld 张照片", params: ["\(applied)"])
+                : CullingNotice(
+                    "已更新 %lld 张照片；%lld 张无变化",
+                    params: ["\(applied)", "\(requested.count - applied)"])
             postCullingChange()
             refreshSilently()
         } catch {
             pageVersion += 1
-            errorMessage = CommandError(error)
+            if applied == 0 {
+                // 首块即失败：保留真实错误码/诊断，不能改写成“部分完成 0 张”。
+                errorMessage = CommandError(error)
+            } else {
+                errorMessage = CommandError.localized(
+                    "批量更新部分完成：已应用 %lld 张，其余块未执行；请重新全选后再试。",
+                    params: ["\(applied)"])
+            }
         }
     }
 
@@ -294,37 +341,174 @@ extension CullingViewModel {
     /// 无选中时作用于当前照片；U 待定不前进，其余决策按自动前进开关前进。
     public func commit(patch: CullingUpdatePatch, shouldAdvance: Bool = true) async {
         guard !isLoading else { return }
-        // P0：只提交当前已加载页里仍可见的选择；筛选/排序后隐藏的旧选择
-        // 不能因为快捷键命中而写到不可见照片。
-        let loaded = Set(page?.assets.map { $0.photo.id } ?? [])
-        let visibleSelection = selectedPhotoIds.intersection(loaded)
-        if !selectedPhotoIds.isEmpty, visibleSelection.isEmpty {
-            // 选择仍在但已不可见（筛选/刷新/翻页后）：绝不回退到当前照片，
-            // 否则会把 P/X 写进用户根本没选中的照片（宁可漏杀不可错杀）。
-            errorMessage = CommandError.localized("所选照片不在当前视图内，请重新选择")
+        guard !selectedPhotoIds.isEmpty else {
+            guard let asset = currentAsset else { return }
+            let nextId = shouldAdvance && autoAdvance ? nextPhotoId(after: asset.photo.id) : nil
+            await update(asset, patch: patch, nextPhotoId: nextId)
             return
         }
-        let targets = visibleSelection.isEmpty
-            ? (currentAsset.map { [$0.photo.id] } ?? [])
-            : Array(visibleSelection)
-        guard !targets.isEmpty else { return }
-        if targets.count == 1 {
-            guard let asset = page?.assets.first(where: { $0.photo.id == targets[0] }) else { return }
+        let targets = Array(selectedPhotoIds)
+        // 服务端范围快照只在“选择集与快照一一对应”时可用；任何手动微调都会作废它。
+        let snapshot = selectionSnapshot.flatMap { snap in
+            snap.count == selectedPhotoIds.count && !snap.idsHash.isEmpty ? snap : nil
+        }
+        let loaded = Set(page?.assets.map { $0.photo.id } ?? [])
+        let visible = targets.filter { loaded.contains($0) }
+        if visible.count < targets.count {
+            // 有屏幕外照片：先让用户看到影响面。范围快照由服务端重算 + hash 绑定；
+            // 显式选择按 id 分块提交——两条路都必须先确认再执行。
+            pendingCrossPageBatch = CullingCrossPageBatchPlan(
+                patch: patch,
+                snapshot: snapshot,
+                photoIds: targets,
+                visiblePhotoIds: visible)
+            return
+        }
+        if let snapshot {
+            await performSelectionUpdate(patch: patch, snapshot: snapshot)
+            return
+        }
+        if targets.count == 1,
+           let asset = page?.assets.first(where: { $0.photo.id == targets[0] }) {
             let nextId = shouldAdvance && autoAdvance ? nextPhotoId(after: targets[0]) : nil
             await update(asset, patch: patch, nextPhotoId: nextId)
         } else {
-            await batchUpdate(patch: patch, targets: visibleSelection)
+            await batchUpdate(patch: patch, targets: Set(targets))
         }
     }
+
+    /// 服务端快照批量：hash 不符时零写入，并清空失效选择。
+    func performSelectionUpdate(
+        patch: CullingUpdatePatch,
+        snapshot: CullingSelectionSnapshot
+    ) async {
+        do {
+            let input = try CullingSelectionUpdateInput(
+                sessionId: sessionId,
+                scope: snapshot.scope,
+                filters: snapshot.filters,
+                groupId: snapshot.groupId,
+                expectedIdsHash: snapshot.idsHash,
+                expectedCount: snapshot.count,
+                patch: patch)
+            let result = try await cullingAPI.updateSelection(input)
+            let skipped = result.skipped.count
+            let steps = result.historyOperationIds.count
+            if !result.failed.isEmpty {
+                if result.applied == 0, let failure = result.failed.first {
+                    // 首块即失败：保留服务端 detail/code，不要改写成“0 张部分完成”。
+                    errorMessage = CommandError.localized(
+                        "批量更新失败：%@", params: [failure.detail])
+                } else {
+                    errorMessage = CommandError.localized(
+                        "批量更新部分完成：已应用 %lld 张，其余块未执行；请重新全选后再试。",
+                        params: ["\(result.applied)"])
+                }
+            } else if skipped > 0 {
+                // 全被“无变化/合并变体”跳过时也必须给反馈，否则界面毫无变化。
+                notice = CullingNotice(
+                    steps > 1
+                        ? "已应用 %lld 张，%lld 张无变化（选择共 %lld 张）；分 %lld 步撤销"
+                        : "已应用 %lld 张，%lld 张无变化（选择共 %lld 张）",
+                    params: steps > 1
+                        ? ["\(result.applied)", "\(skipped)", "\(result.requested)", "\(steps)"]
+                        : ["\(result.applied)", "\(skipped)", "\(result.requested)"])
+            } else {
+                notice = CullingNotice(
+                    steps > 1
+                        ? "已应用 %lld 张（选择共 %lld 张）；分 %lld 步撤销"
+                        : "已应用 %lld 张（选择共 %lld 张）",
+                    params: steps > 1
+                        ? ["\(result.applied)", "\(result.requested)", "\(steps)"]
+                        : ["\(result.applied)", "\(result.requested)"])
+            }
+            if result.truncated {
+                notice = CullingNotice(
+                    "选择超过单次上限（%lld 张），超出部分不会被处理；请缩小筛选范围。",
+                    params: ["\(CullingSelectionQuery.maxIds)"])
+            }
+            postCullingChange()
+            // 结果带逐张 states：先就地回显，再只刷摘要/同步态。已加载 >2000 张时
+            // forcePage 会被 silentRefreshPageLimit 拒绝，不能依赖整页重取。
+            applyDecisionStates(result.states)
+            refreshSilently()
+        } catch {
+            let commandError = CommandError(error)
+            if commandError.code == GatherErrorCode.CULLING_SELECTION_CHANGED.rawValue {
+                selectedPhotoIds.removeAll()
+                invalidateSelectionSnapshot()
+            }
+            errorMessage = commandError
+        }
+    }
+
+    /// 确认弹窗动作：应用到全部，或只应用当前已加载的可见项。
+    func performCrossPageBatch(
+        _ plan: CullingCrossPageBatchPlan,
+        onlyVisible: Bool
+    ) async {
+        pendingCrossPageBatch = nil
+        if onlyVisible {
+            invalidateSelectionSnapshot()
+            selectedPhotoIds = Set(plan.visiblePhotoIds)
+            await batchUpdate(patch: plan.patch, targets: Set(plan.visiblePhotoIds))
+        } else if let snapshot = plan.snapshot {
+            await performSelectionUpdate(patch: plan.patch, snapshot: snapshot)
+        } else {
+            await batchUpdate(patch: plan.patch, targets: Set(plan.photoIds))
+        }
+    }
+
+    /// P2-3：多选时的混合态摘要。只统计已加载且选中的照片；跨页未加载时
+    /// 视为不完整（hasMixed* 为 true），避免把当前页的单一值冒充整个选择集。
+    public struct SelectionSummary: Equatable {
+        public let selectedCount: Int
+        public let loadedCount: Int
+        public let ratings: Set<Int>
+        public let colorLabels: Set<CaptureOneColorLabel>
+
+        public var rating: Int? {
+            ratings.count == 1 && selectedCount == loadedCount ? ratings.first : nil
+        }
+
+        public var colorLabel: CaptureOneColorLabel? {
+            colorLabels.count == 1 && selectedCount == loadedCount ? colorLabels.first : nil
+        }
+
+        // rating/colorLabel 为 nil 当且仅当“混合或跨页”（见上方两个计算属性）。
+        public var hasMixedRating: Bool { rating == nil }
+        public var hasMixedColorLabel: Bool { colorLabel == nil }
+    }
+
+    public var selectionSummary: SelectionSummary? {
+        guard !selectedPhotoIds.isEmpty, let assets = page?.assets else { return nil }
+        let selected = assets.filter { selectedPhotoIds.contains($0.photo.id) }
+        guard !selected.isEmpty else { return nil }
+        return SelectionSummary(
+            selectedCount: selectedPhotoIds.count,
+            loadedCount: selected.count,
+            ratings: Set(selected.map { Int($0.state.rating) }),
+            colorLabels: Set(selected.map(\.state.colorLabel))
+        )
+    }
+
     public func nextPhotoId(after photoId: String) -> String? {
         guard let assets = page?.assets,
               let index = assets.firstIndex(where: { $0.photo.id == photoId }) else { return nil }
         return assets.indices.contains(index + 1) ? assets[index + 1].photo.id : nil
     }
 
+    /// 选中当前照片并把多选收敛为这一张。
+    ///
+    /// P1-6：旧实现只改 currentPhotoId，胶片条普通点击后旧多选仍在；
+    /// 随后 P/X 会按 selectedPhotoIds 批量写入，导致“点在 A、改的是 B/C”。
+    /// 普通点击 = 单选，必须同时清空多选（与网格 gridClick 的普通点击语义一致）。
     public func selectCurrent(_ photoId: String) {
         guard page?.assets.contains(where: { $0.photo.id == photoId }) == true else { return }
         currentPhotoId = photoId
+        selectedPhotoIds = [photoId]
+        selectionAnchorId = photoId
+        invalidateSelectionSnapshot()
     }
 
     /// TS advance：←/→ 翻页；到达已加载窗口末尾且还有下一页时后台加载。
@@ -335,6 +519,8 @@ extension CullingViewModel {
                 let next = assets[index + 1].photo.id
                 currentPhotoId = next
                 selectedPhotoIds = [next]
+                selectionAnchorId = next
+                invalidateSelectionSnapshot()
             } else if hasMore {
                 // 末张：加载下一页后真正前进到新页首张（否则停在末张，看起来像卡住）。
                 Task {
@@ -346,6 +532,8 @@ extension CullingViewModel {
                     else { return }
                     currentPhotoId = assets[index + 1].photo.id
                     selectedPhotoIds = [assets[index + 1].photo.id]
+                    selectionAnchorId = assets[index + 1].photo.id
+                    invalidateSelectionSnapshot()
                 }
             }
         } else {
@@ -359,6 +547,8 @@ extension CullingViewModel {
             let previous = assets[max(0, index - 1)].photo.id
             currentPhotoId = previous
             selectedPhotoIds = [previous]
+            selectionAnchorId = previous
+            invalidateSelectionSnapshot()
         } else {
             currentPhotoId = assets.first?.photo.id
         }

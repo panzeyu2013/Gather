@@ -155,6 +155,19 @@ public final class CullingViewModel: PageVisibility {
     /// confirm 按钮需 ack + written 才可用（deriveSyncControls 保守策略）。
     public internal(set) var reloadAcked = false
     public var filterState = FilterState()
+
+    /// P2-3：活跃筛选维度数（检查器与工具栏 chip 同一真相源）。
+    public var activeFilterCount: Int {
+        [
+            filterState.unreviewedOnly,
+            filterState.pickState != nil,
+            filterState.rating != nil,
+            filterState.colorLabel != nil,
+            filterState.qualityStatus != nil,
+            filterState.metadataConflictOnly,
+            filterState.triageVerdicts?.isEmpty == false,
+        ].filter { $0 }.count
+    }
     public var autoAdvance = true
     /// 审计 P1-并发：可见性门控——画质分析 500ms 轮询在页面离开
     /// （条件渲染销毁）后停止，避免隐藏期后台空转。
@@ -179,6 +192,13 @@ public final class CullingViewModel: PageVisibility {
         return page?.assets.first { $0.photo.id == currentPhotoId } ?? page?.assets.first
     }
     public internal(set) var selectedPhotoIds: Set<String> = []
+    /// ⇧ 范围选择的稳定锚点：普通/⌘ 点击更新，⇧ 点击只移动 current，不改锚点。
+    /// 旧实现用 currentPhotoId 当锚点，第二次 ⇧ 会丢掉第一次的范围。
+    var selectionAnchorId: String?
+    /// P1-7：最近一次服务端全选快照；手动改选择必须失效。
+    var selectionSnapshot: CullingSelectionSnapshot?
+    /// 跨页批量待确认计划（由 CullingView 观察并弹确认）。
+    var pendingCrossPageBatch: CullingCrossPageBatchPlan?
     /// 本次会话已加载的全部 photoIds（loadMore 累加、整页刷新重置）。
     var loadedPhotoIds: Set<String> = []
     /// P0 / A2：triage 星级策略（产品未拍板前显式暴露；默认保持 3/1 不改现状）。

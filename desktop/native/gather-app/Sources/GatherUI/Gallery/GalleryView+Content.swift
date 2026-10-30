@@ -3,6 +3,7 @@
 // 与入口意图消费，原 GalleryView.swift 222-241、397-492、499-703 行逐字搬移。
 // Lightbox 的呈现与本页生命周期入口留在同一文件；网格行内 .onAppear 在 GalleryGrid。
 import SwiftUI
+import AppKit
 import GatherProtocol
 
 extension GalleryView {
@@ -21,10 +22,31 @@ extension GalleryView {
             }
             searchRow
             indexHeaderRow
-            if !viewModel.selectedIds.isEmpty {
+            if !viewModel.loadedPhotos.isEmpty {
                 selectionBar
             }
             content
+        }
+        .confirmationDialog(
+            l10n("确认批量操作？"),
+            isPresented: Binding(
+                get: { pendingGalleryBatch != nil },
+                set: { if !$0 { pendingGalleryBatch = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(l10n("应用批量更改"), role: .destructive) {
+                if let pending = pendingGalleryBatch {
+                    pendingGalleryBatch = nil
+                    applyBatchCulling(pending.patch)
+                }
+            }
+            Button(l10n("取消"), role: .cancel) { pendingGalleryBatch = nil }
+        } message: {
+            if let pending = pendingGalleryBatch {
+                Text(l10n.format(
+                    "将对 %lld 张照片执行“%@”；会立即写入数据库。",
+                    pending.count, pending.label))
+            }
         }
     }
 
@@ -230,15 +252,65 @@ extension GalleryView {
                     .foregroundStyle(GatherTheme.selection)
             }
             Spacer(minLength: 0)
-            Button(l10n("全选")) {
-                toggleSelectAllVisible()
+            Button(l10n("全选筛选结果")) {
+                Task { await viewModel.selectAllInScope() }
             }
             .buttonStyle(.borderless)
-            .help(l10n("选择当前筛选下的全部照片"))
+            .disabled(viewModel.filteredPhotos.isEmpty)
+            .help(l10n("按当前搜索与筛选条件选择全部照片（最多 20,000 张）"))
+            Menu(l10n("批量操作")) {
+                Button(l10n("保留")) {
+                    requestBatchCulling(
+                        CullingUpdatePatch(pickState: .picked), label: l10n("保留"))
+                }
+                Button(l10n("淘汰")) {
+                    requestBatchCulling(
+                        CullingUpdatePatch(pickState: .rejected), label: l10n("淘汰"))
+                }
+                Menu(l10n("评分")) {
+                    ForEach(0...5, id: \.self) { rating in
+                        Button("\(rating)") {
+                            requestBatchCulling(
+                                CullingUpdatePatch(rating: Double(rating)),
+                                label: "\(rating) ★")
+                        }
+                    }
+                }
+                Menu(l10n("色标")) {
+                    ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
+                        Button(CullingDisplayFormat.title(label, with: l10n)) {
+                            requestBatchCulling(
+                                CullingUpdatePatch(colorLabel: label),
+                                label: CullingDisplayFormat.title(label, with: l10n))
+                        }
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(viewModel.selectedIds.isEmpty)
+            Button(l10n("导出所选")) {
+                navigator?.openExport(
+                    viewModel.sessionId,
+                    intent: .selected(Array(viewModel.selectedIds)))
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewModel.selectedIds.isEmpty)
+            Button(l10n("在灯箱中比较")) {
+                openSelectedInLightbox()
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewModel.selectedIds.isEmpty)
+            Button(l10n("在 Finder 中显示")) {
+                revealSelectedInFinder()
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewModel.selectedIds.isEmpty)
             Button(l10n("取消选择")) {
                 viewModel.clearSelection()
             }
             .buttonStyle(.borderless)
+            .disabled(viewModel.selectedIds.isEmpty)
             .keyboardShortcut(.escape, modifiers: [])
         }
         .foregroundStyle(.primary)
@@ -249,16 +321,103 @@ extension GalleryView {
         .accessibilityElement(children: .contain)
     }
 
-    /// 全选/取消全选当前筛选结果（VM 只暴露 toggle，逐个切换保持单一事实源）。
-    private func toggleSelectAllVisible() {
-        let visible = viewModel.filteredPhotos.map(\.id)
-        guard !visible.isEmpty else { return }
-        let selected = viewModel.selectedIds
-        if visible.allSatisfy({ selected.contains($0) }) {
-            visible.forEach { viewModel.toggleSelection($0) }
+    /// P2-2：网格键盘游标移动；首帧无游标时从首张或首个已选项开始。
+    func moveGalleryCursor(by delta: Int) {
+        let photos = viewModel.filteredPhotos
+        guard !photos.isEmpty else { return }
+        // 多选时 Set 无序：锚点按可见顺序取首个选中项，方向键才不会跳随机照片。
+        let anchor = keyboardCursorId
+            ?? photos.first(where: { viewModel.selectedIds.contains($0.id) })?.id
+        let start = anchor.flatMap { id in photos.firstIndex { $0.id == id } } ?? 0
+        let next = min(max(0, start + delta), photos.count - 1)
+        let id = photos[next].id
+        keyboardCursorId = id
+        viewModel.clearSelection()
+        viewModel.toggleSelection(id)
+    }
+
+    func toggleGalleryCursor() {
+        let photos = viewModel.filteredPhotos
+        guard !photos.isEmpty else { return }
+        // 游标可能停在筛选前的旧照片：必须回落到当前可见集合，
+        // 否则空格会把“看不见的照片”选进批次。
+        let id: String
+        if let cursor = keyboardCursorId, photos.contains(where: { $0.id == cursor }) {
+            id = cursor
+        } else if let selected = viewModel.selectedIds.first(where: { candidate in
+            photos.contains { $0.id == candidate }
+        }) {
+            id = selected
         } else {
-            visible.filter { !selected.contains($0) }.forEach { viewModel.toggleSelection($0) }
+            id = photos[0].id
         }
+        keyboardCursorId = id
+        viewModel.toggleSelection(id)
+    }
+
+    func openGalleryCursor() {
+        let photos = viewModel.filteredPhotos
+        guard !photos.isEmpty else { return }
+        let id = keyboardCursorId
+            ?? viewModel.selectedIds.first
+            ?? photos[0].id
+        if let index = photos.firstIndex(where: { $0.id == id }) {
+            lightboxIndex = index
+        }
+    }
+    /// P2-2：批量动作——灯箱打开首个选中项（灯箱内可继续 ←/→）。
+    func openSelectedInLightbox() {
+        guard let id = viewModel.filteredPhotos
+            .first(where: { viewModel.selectedIds.contains($0.id) })?.id,
+              let index = viewModel.filteredPhotos.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        lightboxIndex = index
+    }
+
+    /// P2-2：先记录待确认批次；确认后才调用批量写入。
+    func requestBatchCulling(_ patch: CullingUpdatePatch, label: String) {
+        guard !viewModel.selectedIds.isEmpty else { return }
+        pendingGalleryBatch = PendingGalleryBatch(
+            patch: patch, count: viewModel.selectedIds.count, label: label)
+    }
+
+    /// P2-2：批量评分/色标/保留/淘汰，走 CullingAPI.batchUpdate（≤10k/次）。
+    func applyBatchCulling(_ patch: CullingUpdatePatch) {
+        let ids = Array(viewModel.selectedIds)
+        guard !ids.isEmpty else { return }
+        Task {
+            do {
+                var applied = 0
+                for start in stride(from: 0, to: ids.count, by: 10_000) {
+                    let end = min(start + 10_000, ids.count)
+                    let input = try CullingBatchUpdateInput(
+                        sessionId: viewModel.sessionId,
+                        photoIds: Array(ids[start..<end]),
+                        patch: patch)
+                    let results = try await culling.batchUpdate(input)
+                    viewModel.recordBatchStates(results)
+                    applied += results.flatMap(\.states).count
+                }
+                GatherEventCenter.postDomainChange(.culling, sessionId: viewModel.sessionId)
+                GatherToastCenter.shared.show(
+                    type: .success,
+                    message: l10n.format("已更新 %lld 张照片", applied))
+            } catch {
+                GatherToastCenter.shared.show(
+                    type: .error,
+                    message: CommandErrorText.resolve(CommandError(error), with: l10n))
+            }
+        }
+    }
+
+    /// P2-2：批量动作——Finder 中显示全部选中照片。
+    func revealSelectedInFinder() {
+        let urls = viewModel.filteredPhotos
+            .filter { viewModel.selectedIds.contains($0.id) }
+            .compactMap { finderURLForPath($0.filepath) }
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 
     // MARK: - 内容（TS justified 网格 + 哨兵分页）
@@ -349,4 +508,12 @@ extension GalleryView {
         }
         .frame(maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
     }
+}
+
+/// 图库批量动作的待确认上下文（确认后才调用 CullingAPI）。
+struct PendingGalleryBatch: Identifiable {
+    let id = UUID()
+    let patch: CullingUpdatePatch
+    let count: Int
+    let label: String
 }

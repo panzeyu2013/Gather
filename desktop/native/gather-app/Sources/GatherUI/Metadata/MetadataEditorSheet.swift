@@ -28,6 +28,7 @@ struct MetadataEditorSheet: View {
     @State private var isLoading = true
     @State private var isBusy = false
     @State private var errorText: String?
+    @State private var showDiscardConfirm = false
     /// 盘上元数据读不到：fail-closed，禁用保存（缓存值可能落后，保存会覆盖外部改动）。
     @State private var diskReadFailed = false
 
@@ -73,7 +74,9 @@ struct MetadataEditorSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button(l10n("取消")) { dismiss() }
+                Button(l10n("取消")) {
+                    if changedFieldCount > 0 { showDiscardConfirm = true } else { dismiss() }
+                }
                 Button(l10n("应用")) { Task { await apply() } }
                     .keyboardShortcut(.defaultAction)
                     .disabled(isBusy || isLoading || diskReadFailed || changedFieldCount == 0)
@@ -82,6 +85,17 @@ struct MetadataEditorSheet: View {
         .padding(GatherMetrics.Space.l)
         .frame(width: 620)
         .task { await load() }
+        .interactiveDismissDisabled(changedFieldCount > 0)
+        .confirmationDialog(
+            l10n("放弃未保存的改动？"),
+            isPresented: $showDiscardConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(l10n("放弃并关闭"), role: .destructive) { dismiss() }
+            Button(l10n("继续编辑"), role: .cancel) {}
+        } message: {
+            Text(l10n("关闭后本次修改不会保存。"))
+        }
     }
 
     private func section(title: String, fields: [DescriptiveField]) -> some View {
