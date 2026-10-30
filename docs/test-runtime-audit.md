@@ -29,7 +29,7 @@
 
 ## 2. 并行拆分（`scripts/test.sh`）
 
-core 的 1,443 例里只有 4 个套件依赖**进程级**状态：
+core 的 1,459 例里只有 4 个套件依赖**进程级**状态：
 
 | 套件 | 为什么不能并行 |
 | --- | --- |
@@ -51,7 +51,8 @@ app 侧没有进程级 logger 类套件；并行安全由 `AppLanguageLock`（�
 ./scripts/test.sh all    # 两包
 ```
 
-CI 的 `gather-core` / `gather-app` step 已改为调用该脚本；README / DEVELOPMENT 同步。
+CI 的 `gather-core` / `gather-app` step 仍**直跑** `swift test --no-parallel`（`ci.yml`），
+不走本脚本；本地并行入口与 CI 串行口径的差异见 §9（2026-10-30 复核修正）。
 
 ## 3. 覆盖率（行）
 

@@ -378,4 +378,3 @@ Text(visual.label)
 3. **LRU 与意图的竞态未验证**：`enqueueIntent` 内部 `sessionStore.workspace(for:)` 会**新建** workspace 并触发 `enforceCapacity()`（SessionStore.swift:44-55, 115-122）。容量 6 时若同时活跃 7 个会话，理论上存在"写入意图的 workspace 立刻被淘汰 → `enqueue` 因 closed 静默丢弃"的窗口。默认容量与真实使用（≤5 个最近会话）不重叠，故未升级为发现；容量调小就会变成真 bug。
 4. **矩阵 #19 的前提**是"关窗后 `Window` 场景销毁、重开时 `@State` 重新初始化"。若 SwiftUI 保留了场景状态，实际表现可能更好，需一次 ⌘W → 显示主窗口 实机确认。
 5. **A 范围外但会污染本报告判断的两处**（建议由图库/挑片线单独收口）：图库 `selectionBar` 在"0 张选中"时也常驻（GalleryView+Content.swift:25-27、:245-315，32pt 高；0 选中时「导出所选/灯箱比较/Finder 显示/取消选择」+ 两个星级/色标 Menu 全灰，只剩「全选筛选结果」可点），860×560 下净吃高度；`GalleryGrid` 的 `.onAppear { galleryGridFocused = true }`（GalleryGrid.swift:52）会抢焦点，可能盖掉搜索框输入。
-

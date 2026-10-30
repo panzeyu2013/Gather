@@ -13,7 +13,7 @@
 | 相似度「结果指纹写错 → isResultStale 恒 false」 | **部分成立**：阈值维度其实是准的；错的是**预计算档的组大小/分组模式**——`adoptResult` 把**草稿值**写进 `resultParams`，而结果显示的分组是服务端按档位参数算的 | `SimilarityViewModel+Result.swift:31-35` |
 | 相似度「预计算档应把草稿同步成结果参数」 | **不采纳**：现有测试明确要求"预计算档不覆盖组大小草稿"（TS lastSyncedResult 语义） | `SimilarityViewModelTests.swift:117-128` |
 | 缩略图「加 mtime 进内存键」 | **降级做法**：每格 stat 代价高。改为**可失效的缓存世代** + 外部变更时定向失效（先做 API 与入口，FSEvents 留给下一轮） | `PhotoThumbnailView.swift:760-782`（只有 image/setImage，无 remove） |
-| 术语统一（工作区/会话） | **不做**：223 vs 234 处，改文案＝改 key＋en 表＋门禁计数，属于一次性大迁移，收益是"文案一致"而不是"体验变好" | `C1HealthSection.swift:99` 等 |
+| 术语统一（工作区/会话） | **不做**：223 vs 234 处，改文案＝改 key＋en 表＋门禁计数，属于一次性大迁移，收益是"文案一致"而不是"体验变好" | `SettingsView+C1HealthSection.swift` 等 |
 | 导出失败项逐项重试 | **本轮不做**：需要新的 API 形状（按 item 重跑），属于功能而非样式/交互 | `ExportView+Result.swift:14-56` |
 
 其余 11 项核查通过，可执行。
@@ -80,7 +80,7 @@
 | S2 | ✅ | 新增 `GatherCollapsibleSection`；挑片检查器「元数据 / 元数据模板 / 导入 / 技术建议写回」四段收成折叠分区（默认收起），首屏让位给"当前照片" | 构建/测试 |
 | S3 | ✅ | `GatherEmptyState` 改为品牌色图形 + 标题 + 说明 + 动作（去掉系统空态视图）；ratchet `empty` 30 → 29 | 门禁 |
 | S4 | ✅ | 侧栏行高：会话行 `minHeight 34`、其它行 `minHeight 24`（用 frame 不用 padding，避免 ratchet 记账） | 构建 |
-| S5 | ✅ | 状态胶囊：从未写回时中性点 +「尚未写回」+下一步提示；信息条同一口径；新增 3 条文案，en 1,862 → 1,865，三处文档计数同步 | check-docs |
+| S5 | ✅ | 状态胶囊：从未写回时中性点 +「尚未写回」+下一步提示；信息条同一口径；新增 3 条文案，en 1,862 → 1,865，三处文档计数同步（合并 `76db8e41` 后只剩 README 保留计数） | check-docs |
 | I1 | ✅ | 图库方向键游标滚动跟随：`ScrollViewReader` + 行 id + `rowIndex(containing:)` | 构建/测试 |
 | I2 | ✅ | 工作台会话行支持双击打开（行尾「进入」按钮保留） | 构建 |
 | I3 | ⏭ 未做 | 挑片网格悬停：与"选中/当前"双层描边叠加会互相干扰，收益低 | — |
@@ -98,7 +98,7 @@
 swift build                 ✅ Build complete
 swift test                  ✅ 796 tests / 90 suites
 check-design-system         ✅ PASS（font.callout 86 / empty 30→29 / 其余持平）
-check-docs                  ✅ PASS（错误码 209 / en 1,865 键）
+check-docs                  ✅ PASS（错误码 209 / en 1,865 键；门禁已于 main 76db8e41 移除，此行为合并前快照）
 check-layering              ✅ PASS
 check-duplicate-symbols     ✅ PASS
 check-no-legacy             ✅ PASS
@@ -111,4 +111,3 @@ check-warnings              ✅ PASS（全量重建无新告警）
    所以 `.padding(.vertical, 3)` 也会被记账。想加留白又不涨指标，用 `.frame(minHeight:)`。
 2. **`ContentUnavailableView` 的注释也算命中**：把组件从代码里删掉但注释还写着名字，指标不会降。
    要么连注释一起改，要么接受"指标下降滞后一轮"。
-

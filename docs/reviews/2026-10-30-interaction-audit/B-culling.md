@@ -2,7 +2,7 @@
 
 > 范围：`desktop/native/gather-app/Sources/GatherUI/Culling/` 全部 30 个文件 / 7,672 行，加必要的 `GatherSessionPage` / `GatherSessionToolbar` / `C1StatusCapsule` / `GatherChromeMetrics` / `LiveCullingAPI` / `CullingService+Delivery` 交叉证据。
 > 方法：**只读静态审计**（read / grep / wc），未运行 `swift build`／`swift test`，未实机点 GUI。凡依赖运行时焦点/布局求解的结论在文中标「待实机」。
-> 已读过的历史评审（不重复其已修项）：`functional-usability-remediation-2026-10-30.md`、`functional-usability-review-2026-10-29.md`。
+> 已读过的历史评审（不重复其已修项）：`functional-usability-remediation-2026-10-30.md`、`functional-usability-review-2026-10-29.md`（两份原评审已随 main `76db8e41` 文档收敛删除，见 git 历史）。
 
 ---
 

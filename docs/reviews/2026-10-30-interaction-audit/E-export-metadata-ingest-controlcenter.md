@@ -3,7 +3,7 @@
 - 日期：2026-10-30
 - 范围：Export/（18 文件 2329 行）、Metadata/（7 文件 1229 行）、Culling/IngestSheet.swift（309 行）、ControlCenter/（14 文件 1420 行），合计约 5.3k 行，逐文件读完
 - 方法：只读静态审计（read/grep/wc），未编译、未跑测试、未实机；布局数字由 token 推算（GatherMetrics.Layout.pageGutter=24、gatherCard padding=16、Space.l=16）
-- 基线：docs/reviews/functional-usability-remediation-2026-10-30.md 的残余 P2（inline apply 无 preview 阶段）在当前代码里**仍然如此**，本报告只补它造成的 UI 后果，不重复记账
+- 基线：docs/reviews/functional-usability-remediation-2026-10-30.md（已随 main `76db8e41` 删除，见 git 历史）的残余 P2（inline apply 无 preview 阶段）在当前代码里**仍然如此**，本报告只补它造成的 UI 后果，不重复记账
 
 ## 结论
 

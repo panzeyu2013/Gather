@@ -38,7 +38,7 @@ SwiftUI（GatherUI）→ AppServices（16 个域 API / 140 个类型化方法）
 ## 当前基线（2026-10-30 交互整改后采样，以脚本输出为准）
 
 - 8 个功能 target（含测试/工具共 16 个）。
-- gather-core 1,459 tests / 217 suites；gather-app 796 tests / 90 suites。
+- gather-core 1,459 tests / 217 suites；gather-app 805 tests / 91 suites。
 - 12 个 `check-*.sh` 门禁（2026-10-30 移除 `check-docs.sh`）；en 1,865 键。
 
 ## 文档

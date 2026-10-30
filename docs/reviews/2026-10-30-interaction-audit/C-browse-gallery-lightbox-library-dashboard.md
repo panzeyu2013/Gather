@@ -589,7 +589,7 @@ if viewModel.sessions.isEmpty { emptySessionsState } else { ForEach(...) }
 
 1. **刷新/世代竞态防线做得扎实**：`fetchGeneration` + `fetchingGeneration` + `statusRequestID` + `facetsRequestID` + `latestRequestID` 五层守卫，"旧响应覆盖新筛选"这类曾经的 P0 已经很难复现（`+Load.swift:74-79`、`+Fetch.swift:13-25` 的注释把病因写得很清楚）。`refreshOnEvent` 用"重取到 targetCount 再整份替换"实现**就地更新、不闪 loading、不跳页**（`+Events.swift:29-32, 72-76`），方向是对的。
 2. **分页去重是认真的**：哨兵 + 行内预取两个触发点共用 `loadMoreIfNeeded()` 的 `hasNextPage/fetchingGeneration` 早退（`+Scroll.swift:12-21`），链式拉页还有 D05 的"无进展即终止"，不会自旋 21 次。
-3. **破坏性操作全部走确认 + `confirmed` 编译期门控**：图库批量（`GalleryView+Content.swift:30-50` 带影响条数）、工作区单删/批删（`DashboardView.swift:129-164`）、相册删除/合并/重新关联/恢复原片（`LibraryView+Load.swift:86-168` + `Confirmed<T>`）——确认文案里都写清了"影响多少、是否可恢复"，这是本轮最完整的一条线。
+3. **破坏性操作全部走确认 + `confirmed` 编译期门控**：图库批量（`GalleryView+Content.swift:30-50` 带影响条数）、工作区单删/批删（`DashboardView.swift:129-164`）、相册删除/合并/重新关联/恢复原片（`LibraryViewModel+Load.swift:86-168` + `Confirmed<T>`）——确认文案里都写清了"影响多少、是否可恢复"，这是本轮最完整的一条线。
 4. **灯箱滚轮捕获没有污染背景**：`ScrollWheelCatcher` 消费 wheel 事件且不转发（`LightboxView.swift:405-412`），加上 sheet 本身是模态的，背景网格不会被意外滚动——这条被点名的风险实际是安全的。
 5. **挑片页那套"游标 + scrollTo + 列表末尾重试"是现成的正确范式**（`CullingGrid.swift:188-224`），图库只要照抄就能一次性解决 P1-3、P1-5、P2-1 三个问题。
 6. **空态/失败态都有明确出口**：图库真空态给"导入文件夹/前往控制中心/刷新"三条，无结果给"清除筛选"，加载失败给"重试"；全局图库还区分了"库是空的"（导入）与"筛掉了"（清除筛选）两种语义（`LibraryView+Content.swift:70-97`）。

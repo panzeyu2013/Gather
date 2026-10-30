@@ -210,7 +210,7 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 ./scripts/check-protocol-surface.sh --strict
 ./scripts/check-duplicate-symbols.sh --strict
 ./scripts/check-test-catalog.sh --strict # 测试文件头注释 / skip 元数据
-./scripts/check-select-star.sh
+./scripts/check-select-star.sh --strict
 ./scripts/check-preview-surface.sh --strict
 ./scripts/check-coded-errors.sh
 ./scripts/check-backlog-evidence.sh

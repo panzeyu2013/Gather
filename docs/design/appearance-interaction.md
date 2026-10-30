@@ -131,7 +131,7 @@ GatherEmptyState(
 }
 ```
 
-`GatherEmptyState` 是系统 `ContentUnavailableView` 的薄包装：
+`GatherEmptyState` 是品牌色空态（2026-10-30 起自绘，不再是 `ContentUnavailableView` 包装）：
 - 页面级空态用它；
 - List Section 行内（会被行高约束）继续用 `ContentUnavailableView`，不要强行塞入；
 - 错误态必须保留重试/清除筛选等出口。

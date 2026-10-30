@@ -1,5 +1,12 @@
 # 收尾检查报告（2026-10-30）
 
+> **合并后校正（2026-10-30，main a9a34e31 起）**：本文件是 interaction 分支合并**前**的收尾快照，正文保留原样。
+> 合并后的实际口径：`check-docs.sh` 已随 main `76db8e41` 移除，现为 **12 个** `check-*.sh`（非 13）；
+> en 1,865 键的计数只保留在 `docs/README.md`（DEVELOPMENT/ROADMAP 的旧计数段已随文档收敛删除）；
+> 评审补测后 app 为 **805 tests / 91 suites**，@Test/@Suite ratchet 收紧为 **2,264 / 249**；
+> 两处 EOF 空行已在本合并后的文档校正提交修复。
+
+
 > 范围：本轮全部改动（审计 → 实施 → 样式 → 计划全量执行）+ 工作树状态 + 13 个仓库门禁 + 两套测试。
 > 结论：**可交付**。13/13 门禁通过、core 1459 + app 796 全绿、`git diff --check` 干净；
 > 3 项暂缓（各有明确前置条件），8 项需实机确认（不影响代码质量门禁）。
@@ -65,7 +72,7 @@ feat(ui): 交互与样式整改（三批）——焦点/串行化/刷新语义 +
 | 文档声明的 en 键数 | ✅ 三处（DEVELOPMENT / README / ROADMAP）已同步 1,865 |
 | 文档声明的测试数 | ✅ docs/README 由 794 修正为 796，采样日期更新 |
 | 新 token 是否有使用者 | ✅ `Radius.media` 6 处；`Radius.thumbnail` 仍有 8 处（小控件） |
-| 新组件是否有使用者 | ✅ `GatherCollapsibleSection` 4 处、`gatherAnimatePresence` 6 处 |
+| 新组件是否有使用者 | ✅ `GatherCollapsibleSection` 4 处、`gatherAnimatePresence` 4 处（另 1 处修饰符定义） |
 | 是否有死代码 | ✅ 无新增未使用符号（duplicate-symbols 通过） |
 | 是否改动公开协议面 | ✅ 未改（Protocol 冻结） |
 

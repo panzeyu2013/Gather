@@ -3,7 +3,7 @@
 - 范围：`Similarity/`(14 文件 2176 行)、`Duplicates/`(4 文件 1056 行)、`FaceKeywording/`(15 文件 2660 行)、`Persons/`(2 文件 927 行)
 - 方式：只读静态审计（read/grep/统计），未构建、未实机
 - 路径简写：**`G/` = `desktop/native/gather-app/Sources/GatherUI/`**（例：`G/Similarity/SimilarityView.swift:94`）
-- 基线：三轮评审收口 `docs/reviews/functional-usability-remediation-2026-10-30.md` 的残余 P2（人物多 dialog）在本轮复核仍然成立，行号见 P2-1。
+- 基线：三轮评审收口 `docs/reviews/functional-usability-remediation-2026-10-30.md` 的残余 P2（人物多 dialog）在本轮复核仍然成立，行号见 P2-1；该原评审已随 main `76db8e41` 文档收敛删除，见 git 历史。
 
 ---
 
@@ -319,7 +319,7 @@ private var representative: SimilarityImage {
 1. **写回安全链是完整的**：预览令牌（`expectedPreviewToken`）+ `Confirmed(source: .userDialog)` + 服务端 `SIM_PREVIEW_STALE/FKW_PREVIEW_STALE` 复核（`G/Similarity/SimilarityViewModel+Writeback.swift:96-138`、`G/FaceKeywording/FaceKeywordingViewModel+Writeback.swift:60-90`），`Confirmed` 只在确认分支构造。
 2. **重复页的局部 patch 与服务端口径对齐**：`recommendation` 与服务端同公式且 mtime 非法时为 NaN 永不中选（`G/Duplicates/DuplicatesViewModel.swift:430-475`），成员改动后组徽标同源重算（`:360-371`）——避免了"成员改回保留、徽标仍显示保留最佳"。
 3. **人脸页对"部分失败"不粉饰**：`encodingFailures > 0` 时不出"分析完成"而是常驻 warning 横幅（`G/FaceKeywording/FaceKeywordingViewModel+Analysis.swift:11-23`）；`select()` 只在真正换簇时重置编辑字段，不冲掉未提交草稿（`G/FaceKeywording/FaceKeywordingViewModel.swift:262-276`）。
-4. **分析状态可跨页签恢复**：相似度/人脸都从 `jobs.list` 恢复进行中的任务并续接进度（`G/Similarity/SimilarityViewModel+Load.swift:38-49`、`G/FaceKeywording/FaceKeywordingViewModel+Analysis.swift:339-355`），且分析代次守卫能防旧结果覆盖新结果。
+4. **分析状态可跨页签恢复**：相似度/人脸都从 `jobs.list` 恢复进行中的任务并续接进度（`G/Similarity/SimilarityViewModel+Load.swift:38-49`、`G/FaceKeywording/FaceKeywordingViewModel.swift:339-355`），且分析代次守卫能防旧结果覆盖新结果。
 5. **确认宿主连坐问题已被识别**：弹窗按钮全部 `.disabled(false)` 防"页面隐藏时 isActive 连接"（`G/DesignSystem/Components/GatherCommonViews.swift:210-219`、`G/Persons/PersonsView.swift:560/567`），重复页把两个弹窗拆到不同节点。
 6. **状态文案全部延迟本地化**（`LocalizedText` + 渲染期 `l10n.resolve`），切语言不会残留旧语言片段；`Notice` 连"取消动作名"都存 key+参数（`G/Similarity/SimilarityViewModel.swift:93-122`）。
 
