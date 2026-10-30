@@ -64,6 +64,9 @@ public final class TriageService {
     private let policyProvider: (() -> TriagePolicy)?
     private let fixedEnabled: Bool
     private let enabledProvider: (() -> Bool)?
+    /// P1 §3.11.4：用户动作 → triage_feedback（校准样本来源）。nil = 不记录
+    /// （测试假件/未接线），不改变任何判定语义。
+    private let feedback: (any TriageFeedbackStore)?
     private let now: () -> String
     private let gateCacheTTL: TimeInterval
     private let clock: () -> Date
@@ -89,7 +92,8 @@ public final class TriageService {
         enabledProvider: (() -> Bool)? = nil,
         now: @escaping () -> String = TriageService.defaultNow,
         gateCacheTTL: TimeInterval = 2,
-        clock: @escaping () -> Date = Date.init
+        clock: @escaping () -> Date = Date.init,
+        feedback: (any TriageFeedbackStore)? = nil
     ) {
         self.repository = repository
         self.decisions = decisions
@@ -102,6 +106,7 @@ public final class TriageService {
         self.now = now
         self.gateCacheTTL = gateCacheTTL
         self.clock = clock
+        self.feedback = feedback
     }
 
     // MARK: - 门控
@@ -314,6 +319,10 @@ public final class TriageService {
         var skippedConflict = 0
         var entries: [CullingHistoryEntry] = []
         var historyOperationId: Int?
+        // §3.11.4：用户点了"应用建议"本身就是对建议的表态；feedback 在事务**外**写
+        // （派生数据，写失败不回滚已落库的决策），校准侧还会按 source 过滤掉 AI 应用。
+        let actedAt = now()
+        var feedbackEntries: [TriageFeedbackEntry] = []
 
         try transactions.transaction {
             for suggestion in selected {
@@ -400,6 +409,15 @@ public final class TriageService {
                     appliedPhotos += 1
                 }
                 if suggestion.verdict == .keep { appliedKeep += 1 } else { appliedReject += 1 }
+                feedbackEntries.append(TriageFeedbackEntry(
+                    suggestionVerdict: suggestion.verdict.rawValue,
+                    userAction: suggestion.verdict.rawValue,
+                    suggestionConfidence: suggestion.confidence,
+                    policyVersion: suggestion.policyVersion,
+                    photoId: suggestion.photoId,
+                    sessionId: payload.sessionId,
+                    actedAt: actedAt
+                ))
             }
 
             if !entries.isEmpty, let history {
@@ -409,6 +427,8 @@ public final class TriageService {
                 ).id
             }
         }
+
+        recordFeedback(feedbackEntries)
 
         return TriageApplyResult(
             appliedAssets: appliedKeep + appliedReject,
@@ -421,6 +441,55 @@ public final class TriageService {
             skippedConflict: skippedConflict,
             historyOperationId: historyOperationId
         )
+    }
+
+    // MARK: - 反馈（校准样本）
+
+    /// 手动改决策后写 feedback（CullingService 写完 culling_decisions 后调用）。
+    ///
+    /// - 只记录人工来源（manual/imported）：模板写入（template）不是用户对建议的表态；
+    /// - 该照片没有建议行 = 没有可比对的建议，返回 false（不是错误）；
+    /// - 覆盖写：同一 photo 反复改只留最后一条（仓储负责）。
+    @discardableResult
+    public func recordManualDecision(
+        sessionId: String,
+        photoId: String,
+        decision: CullingDecisionValue,
+        source: CullingDecisionSource = .manual
+    ) throws -> Bool {
+        guard source.isHumanDecision, let feedback else { return false }
+        guard let snapshot = try feedback.suggestionSnapshot(photoId: photoId) else { return false }
+        let entry = TriageFeedbackEntry(
+            suggestionVerdict: snapshot.verdict,
+            userAction: Self.feedbackAction(for: decision),
+            suggestionConfidence: snapshot.confidence,
+            policyVersion: snapshot.policyVersion,
+            photoId: photoId,
+            sessionId: sessionId,
+            actedAt: now()
+        )
+        _ = try feedback.record([entry])
+        return true
+    }
+
+    /// pending（含显式清空）→ cleared；其余按 keep/reject。
+    static func feedbackAction(for decision: CullingDecisionValue) -> String {
+        switch decision {
+        case .keep: return TriageVerdict.keep.rawValue
+        case .reject: return TriageVerdict.reject.rawValue
+        case .pending: return "cleared"
+        }
+    }
+
+    /// feedback 是派生数据：写失败只记日志，绝不把已成功的 apply 变成失败。
+    private func recordFeedback(_ entries: [TriageFeedbackEntry]) {
+        guard let feedback, !entries.isEmpty else { return }
+        do {
+            _ = try feedback.record(entries)
+        } catch {
+            GatherLogger.log(
+                "triage feedback write failed (\(entries.count) rows): \(error)", level: .warn)
+        }
     }
 
     // MARK: - 映射/工具
@@ -519,6 +588,8 @@ public final class TriageService {
             String(format: "%.4f", policy.rejectConfidenceMin),
             String(format: "%.4f", policy.minExecutableConfidence),
             "\(policy.maxReasons)",
+            // 阈值指纹（version + 三个置信度）已由上面三项覆盖；这里显式带上，
+            // 让"校准写设置 → 建议 stale"这条因果在代码里可见（见文件末尾扩展）。
             // 开关本身就是判据的一部分：关掉模型信号必须让旧建议变 stale。
             policy.usesModelSignals ? "model:1" : "model:0",
         ].joined(separator: ",")
@@ -528,5 +599,27 @@ public final class TriageService {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: Date())
+    }
+}
+
+// MARK: - 阈值指纹（§3.11.2）
+
+public extension TriagePolicy {
+    /// 版本 + 三个可执行置信度的稳定指纹。
+    ///
+    /// 为什么需要它：阈值校准写的就是这三个设置值，而
+    /// `TriagePolicy.usesModelSignals` 用 `version == "triage-v2"` **精确比较**——
+    /// 把 version 改成 "triage-v2.<n>" 会让模型信号静默失效（有模型行也不再用）。
+    /// 因此阈值变化只用指纹表达：这三个值本来就在
+    /// `TriageService.thresholdsDigest(for:)` 里参与
+    /// `triage_suggestions.input_fingerprint`，写设置即让旧建议 stale。
+    /// 本属性是可直接比较/展示的聚合值（UI 提示"阈值已变，建议需重算"）。
+    var thresholdFingerprint: String {
+        [
+            version,
+            String(format: "%.4f", keepConfidenceMin),
+            String(format: "%.4f", rejectConfidenceMin),
+            String(format: "%.4f", minExecutableConfidence),
+        ].joined(separator: "|")
     }
 }

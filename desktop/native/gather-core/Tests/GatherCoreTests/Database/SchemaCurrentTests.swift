@@ -3,7 +3,7 @@
 //
 // 为什么需要这组测试：V1 一次成型、没有迁移链兜底，任何「少一列 / 少一索引 /
 // 少一外键」都只会在运行期以静默错列（SELECT * 按位置取值）的形式暴露（draft §8 R1）。
-// 因此这里把 44 / 386 / 72 / 65 / user_version=1 五个数字、44 张表的逐表列数、
+// 因此这里把 55 / 449 / 84 / 81 / user_version=1 五个数字、55 张表的逐表列数、
 // CHECK 与 FK 的拒绝路径、CASCADE / SET NULL / RESTRICT 的删除语义全部钉成回归。
 //
 // 用户数据 FK（D-025）：role_bindings.cluster_id、person_photos.photo_id / session_id 是
@@ -33,7 +33,7 @@ struct SchemaCurrentCheckCase: Sendable, CustomTestStringConvertible {
     var testDescription: String { name }
 }
 
-/// 44 张表的逐表列数（draft §9.1，已用 §7.1 DDL 实测复算，合计 386；
+/// 55 张表的逐表列数（v1 基线 386 + P1 下一波 11 张表 63 列 = 449；
 /// Cut 5 / 5b-2b 给 similarity_cluster_meta +3：algorithm_version / input_signature / state_digest；
 /// W3 给 deliveries +1：target_kind）。
 private let schemaCurrentColumnCounts: [SchemaCurrentTableSpec] = [
@@ -81,6 +81,18 @@ private let schemaCurrentColumnCounts: [SchemaCurrentTableSpec] = [
     SchemaCurrentTableSpec(table: "smart_albums", columns: 10),
     SchemaCurrentTableSpec(table: "triage_suggestions", columns: 10),
     SchemaCurrentTableSpec(table: "face_cluster_constraints", columns: 6),
+    // P1 下一波：11 张表
+    SchemaCurrentTableSpec(table: "saved_searches", columns: 6),
+    SchemaCurrentTableSpec(table: "collections", columns: 6),
+    SchemaCurrentTableSpec(table: "collection_items", columns: 4),
+    SchemaCurrentTableSpec(table: "photo_stacks", columns: 6),
+    SchemaCurrentTableSpec(table: "photo_stack_members", columns: 3),
+    SchemaCurrentTableSpec(table: "keywords", columns: 6),
+    SchemaCurrentTableSpec(table: "keyword_synonyms", columns: 2),
+    SchemaCurrentTableSpec(table: "photo_keywords", columns: 4),
+    SchemaCurrentTableSpec(table: "client_proof_feedback", columns: 11),
+    SchemaCurrentTableSpec(table: "triage_feedback", columns: 8),
+    SchemaCurrentTableSpec(table: "photo_semantics", columns: 7),
 ]
 
 /// CHECK 用例（覆盖 job / delivery / photo / session / 资产 / 相似度 / 人脸 / 挑片等状态列）。
@@ -383,24 +395,24 @@ struct SchemaCurrentTests {
 
     // MARK: 建库与总量
 
-    @Test("exec(SchemaCurrent.createSQL) 成功：44 张表 / 386 列")
+    @Test("exec(SchemaCurrent.createSQL) 成功：55 张表 / 449 列")
     func appliesSchema() throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }
 
         let expectedTables = Set(schemaCurrentColumnCounts.map(\.table))
         let tables = try userTables(db)
-        #expect(tables.count == 44, "表数漂移：期望 44，实际 \(tables.count)")
+        #expect(tables.count == 55, "表数漂移：期望 55，实际 \(tables.count)")
         #expect(Set(tables) == expectedTables, "表清单与当前 DDL 不一致")
 
         var columns = 0
         for table in tables {
             columns += try db.prepare("PRAGMA table_info(\(table))").query([]).count
         }
-        #expect(columns == 386, "列数漂移：期望 386，实际 \(columns)")
+        #expect(columns == 449, "列数漂移：期望 449，实际 \(columns)")
     }
 
-    @Test("索引 72 个（含 8 个 UNIQUE）")
+    @Test("索引 84 个（含 8 个 UNIQUE）")
     func indexCount() throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }
@@ -409,7 +421,7 @@ struct SchemaCurrentTests {
             SELECT COUNT(*) FROM sqlite_master
              WHERE type = 'index' AND name NOT LIKE 'sqlite_%'
             """)
-        #expect(indexes == 72, "索引数漂移：期望 72，实际 \(indexes)")
+        #expect(indexes == 84, "索引数漂移：期望 84，实际 \(indexes)")
 
         // 「含 unique」：8 个显式 UNIQUE 索引（其余 61 个普通索引），
         // 且唯一性必须真的落在期望的列上（防止把 UNIQUE 写成普通 INDEX）。
@@ -428,7 +440,7 @@ struct SchemaCurrentTests {
         #expect(photoPathUnique == 1, "idx_photos_session_filepath 必须是 UNIQUE")
     }
 
-    @Test("外键 65 个，PRAGMA foreign_key_check 干净")
+    @Test("外键 81 个，PRAGMA foreign_key_check 干净")
     func foreignKeyCount() throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }
@@ -437,7 +449,7 @@ struct SchemaCurrentTests {
         for table in try userTables(db) {
             foreignKeys += try db.prepare("PRAGMA foreign_key_list(\(table))").query([]).count
         }
-        #expect(foreignKeys == 65, "外键数漂移：期望 65，实际 \(foreignKeys)")
+        #expect(foreignKeys == 81, "外键数漂移：期望 81，实际 \(foreignKeys)")
 
         let dirty = try scalarInt(db, "SELECT COUNT(*) FROM pragma_foreign_key_check")
         #expect(dirty == 0, "空库的 foreign_key_check 必须干净（否则 FK 的父键不是 PK/UNIQUE）")
@@ -460,7 +472,7 @@ struct SchemaCurrentTests {
 
     // MARK: 逐表列数（删列漂移门禁）
 
-    @Test("逐表列数（44 张表）", arguments: schemaCurrentColumnCounts)
+    @Test("逐表列数（55 张表）", arguments: schemaCurrentColumnCounts)
     func columnCounts(_ spec: SchemaCurrentTableSpec) throws {
         let db = try makeSchemaCurrentDatabase()
         defer { db.close() }

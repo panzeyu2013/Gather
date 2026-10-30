@@ -44,6 +44,12 @@ package struct GalleryView: View {
     @State var pendingInitialPhotoPath: String?
     /// P0 / B2：单张元数据编辑 sheet（检查器扩展不能自带存储属性）。
     @State var showMetadataEditor = false
+    @State var showSemanticSearch = false
+    /// P1 下一波 §3.7.2：高级筛选规则 sheet。
+    @State var showRuleEditor = false
+    /// P1 下一波 §3.7.3：保存查询的命名 sheet 与草稿名。
+    @State var showSaveSearchPrompt = false
+    @State var savedSearchName = ""
     /// 生产装配（Cut 4 / 4a-2a-2）：VM 来自会话工作区（workspace.gallery），
     /// 外壳不再维护 gallery 单槽，也不再在导航时替换 VM。
     ///
@@ -169,6 +175,20 @@ package struct GalleryView: View {
         }
         .sheet(isPresented: lightboxPresented) {
             lightboxSheet
+        }
+        // §3.7.2：规则编辑器（草稿 + 应用，编辑期间不重取数据）。
+        .sheet(isPresented: $showRuleEditor) {
+            GalleryRuleEditorSheet(
+                l10n: l10n,
+                initial: viewModel.rules,
+                onApply: { viewModel.applyRules($0) })
+        }
+        // §3.7.3：保存当前筛选（同名覆盖）。
+        .sheet(isPresented: $showSaveSearchPrompt) {
+            saveSearchPromptSheet
+        }
+        .task(id: viewModel.sessionId) {
+            await viewModel.refreshSavedSearches()
         }
     }
 }

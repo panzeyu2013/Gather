@@ -87,6 +87,7 @@ private struct AppRuntimeFixture {
                 faceBoxes: { _, _ in [] },
                 previewProvider: { _, _ in throw RuntimeNoopError.unsupported }),
             modelReviewEnabled: { false },
+            triageAutoGenerateEnabled: { false },
             indexerService: IndexerService(
                 connection: db,
                 sessionRepo: sessionRepo,

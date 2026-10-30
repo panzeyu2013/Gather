@@ -1,10 +1,13 @@
 // desktop/native/gather-app/Sources/GatherUI/Library/LibraryFacetBar.swift
-// P1 / C：facet 栏（相机 / 镜头 / ISO / 年份 / 色标）。
+// P1 / C：Library 的 facet 栏（相机 / 镜头 / ISO / 年份 / 色标 / 关键词）。
 //
-// 交互模型（与 Lightroom / Bridge 一致）：
-// - 同一维单选（点第二次取消），跨维取交集；
-// - 计数由服务端按"排除自身维度"计算，因此选机身 A 之后镜头 facet 仍显示全部镜头；
-// - 点选立即提交筛选（onCommit），不参与搜索框的防抖。
+// P1 下一波 §3.7.2：真正的实现已移到共享的 Filtering/FacetBar.swift（Gallery 复用同一份）；
+// 本文件保留为**薄适配器**——init 签名（groups/filter/l10n/onCommit）与行为逐字不变，
+// 因此 LibraryView+Filters 的调用点不需要修改。
+//
+// 适配语义：Library 的筛选状态是强类型字段（camera/lens/iso/year/label/keyword 字符串），
+// keyword 维在 Library 侧映射到既有的"关键词文本"字段（扁平 contains 匹配），
+// 不做层级下钻（Gallery 才用 keyword_path 下钻）。
 import SwiftUI
 import GatherProtocol
 
@@ -15,84 +18,27 @@ struct LibraryFacetBar: View {
     let onCommit: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(visibleGroups, id: \.dimension) { group in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(title(group.dimension))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 56, alignment: .leading)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(group.buckets, id: \.value) { bucket in
-                                chip(group.dimension, bucket)
-                            }
-                        }
-                    }
-                }
+        FacetBar(
+            groups: groups,
+            selected: selectedValues,
+            l10n: l10n,
+            keywordNode: nil,
+            onSelect: { dimension, value in
+                set(dimension, value)
+                onCommit()
             }
-        }
+        )
     }
 
-    /// 只展示有内容的维度；每维最多 12 个桶，但**已选值必须可见**
-    /// （长尾维度里排 12 名之外的选中项否则无法取消）。
-    private var visibleGroups: [PhotoFacetGroup] {
-        groups.filter { !$0.buckets.isEmpty }.map { group in
-            var buckets = Array(group.buckets.prefix(12))
-            let active = currentValue(group.dimension)
-            if !active.isEmpty, !buckets.contains(where: { $0.value == active }),
-               let selected = group.buckets.first(where: { $0.value == active }) {
-                buckets.insert(selected, at: 0)
-                if buckets.count > 13 { buckets.removeLast() }
-            }
-            return PhotoFacetGroup(dimension: group.dimension, buckets: buckets)
-        }
-    }
-
-    private func title(_ dimension: String) -> String {
-        switch dimension {
-        case "camera": l10n("相机")
-        case "lens": l10n("镜头")
-        case "iso": l10n("ISO")
-        case "year": l10n("年份")
-        case "label": l10n("色标")
-        default: l10n(dimension)
-        }
-    }
-
-    private func chip(_ dimension: String, _ bucket: PhotoFacetBucket) -> some View {
-        let isActive = currentValue(dimension) == bucket.value
-        return Button {
-            set(dimension, isActive ? "" : bucket.value)
-            onCommit()
-        } label: {
-            Text("\(bucket.value) · \(bucket.count)")
-                .font(.caption2)
-                .monospacedDigit()
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(isActive ? GatherTheme.accent.opacity(0.18) : GatherTheme.surface)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .strokeBorder(isActive ? GatherTheme.accent : GatherTheme.hairline, lineWidth: 1)
-                )
-        }
-        .buttonStyle(.borderless)
-        .help(l10n.format("按 %@ 筛选", bucket.value))
-    }
-
-    private func currentValue(_ dimension: String) -> String {
-        switch dimension {
-        case "camera": filter.camera
-        case "lens": filter.lens
-        case "iso": filter.iso
-        case "year": filter.year
-        case "label": filter.label
-        default: ""
-        }
+    private var selectedValues: [String: String] {
+        [
+            "camera": filter.camera,
+            "lens": filter.lens,
+            "iso": filter.iso,
+            "year": filter.year,
+            "label": filter.label,
+            "keyword": filter.keyword,
+        ]
     }
 
     private func set(_ dimension: String, _ value: String) {
@@ -102,6 +48,7 @@ struct LibraryFacetBar: View {
         case "iso": filter.iso = value
         case "year": filter.year = value
         case "label": filter.label = value
+        case "keyword": filter.keyword = value
         default: break
         }
     }

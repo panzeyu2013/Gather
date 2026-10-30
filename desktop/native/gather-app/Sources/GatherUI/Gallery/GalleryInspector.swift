@@ -48,6 +48,20 @@ extension GalleryView {
         .help(l10n("网格尺寸"))
     }
 
+    /// P1：已加载范围的排序（服务端游标只支持导入序，避免跨页重复/漏项）。
+    private var sortPicker: some View {
+        GatherMenuRow(
+            l10n("排序（当前已加载）"),
+            selection: $viewModel.sortMode,
+            options: [
+                GatherMenuOption(l10n("导入顺序"), value: GallerySortMode.importOrder),
+                GatherMenuOption(l10n("文件名"), value: GallerySortMode.filename),
+                GatherMenuOption(l10n("导入时间"), value: GallerySortMode.createdAt),
+            ]
+        )
+        .help(l10n("只对已加载的照片排序；跨页仍按导入序加载"))
+    }
+
     /// TS Gallery.tsx:274-280 —— 变体展开开关。
     /// 旧版手绘「primarySoft 底 + 主色描边 + aria-pressed」→ 原生 Toggle；
     /// 检查器行用系统勾选样式（.button 图标胶囊只适合工具栏，标签不可读）。
@@ -89,11 +103,23 @@ extension GalleryView {
         ScrollView {
             VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
                 GatherInspectorSection(l10n("筛选")) {
-                    filterPicker
+                    VStack(alignment: .leading, spacing: 10) {
+                        filterPicker
+                        // P1 下一波 §3.7.2：facet 栏（相机/镜头/ISO/年份/色标/关键词）。
+                        // 计数与网格同口径；点选立即提交，不参与搜索防抖。
+                        facetBarSection
+                        ruleEditorEntry
+                        if viewModel.appliedSearchName != nil {
+                            Text(l10n.format("已应用查询：%@", viewModel.appliedSearchName ?? ""))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 GatherInspectorSection(l10n("显示")) {
                     VStack(alignment: .leading, spacing: 10) {
                         densityPicker
+                        sortPicker
                         variantsToggle
                     }
                 }
@@ -109,6 +135,10 @@ extension GalleryView {
                             .buttonStyle(.bordered)
                             .frame(maxWidth: .infinity)
                             .disabled(viewModel.metadataAPI == nil)
+                        Button(l10n("查找相似照片…")) { showSemanticSearch = true }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            .disabled(viewModel.photoAPI == nil)
                     }
                 }
             }
@@ -122,6 +152,20 @@ extension GalleryView {
                 MetadataEditorSheet(
                     photoId: photoId, api: api,
                     onApplied: { _ in viewModel.loadMetadataDetail() })
+            }
+        }
+        .sheet(isPresented: $showSemanticSearch) {
+            if let api = viewModel.photoAPI, let photoId = viewModel.selectedIds.first {
+                SemanticSearchPanel(
+                    seedPhotoId: photoId,
+                    sessionId: viewModel.sessionId,
+                    api: api,
+                    nameFor: { id in
+                        viewModel.loadedPhotos.first(where: { $0.id == id })?.filename ?? id
+                    },
+                    onSelect: { id in
+                        viewModel.selectedIds = [id]
+                    })
             }
         }
     }

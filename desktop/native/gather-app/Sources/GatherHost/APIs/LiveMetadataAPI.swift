@@ -78,6 +78,11 @@ public final class LiveMetadataAPI: MetadataAPI {
     private let templateStore: MetadataTemplateStore
     private let batchStore: MetadataApplyBatchStore
     private let templateService: MetadataTemplateService
+    /// P1 下一波 §3.1：写回生命周期（状态 / 自动确认 / module 作用域结束 / 备份统计）。
+    ///
+    /// 可选：未接线时三个生命周期方法退回协议默认实现的行为（空状态 + INVALID_PARAM），
+    /// 既有构造点（测试 / 预览）不必同时升级。组合根接线见 FeatureAPIs.makeMetadata。
+    private let metadataDelivery: MetadataDeliveryService?
 
     /// Sendable 由协议继承显式声明：类为 final，所有依赖都是构造后不再变更的
     /// Sendable let（Repo 只持连接、stateWriter 由 deliveryRepo 派生、
@@ -87,7 +92,8 @@ public final class LiveMetadataAPI: MetadataAPI {
         deliveryRepo: DeliveryRepo,
         xmp: any XMPProvider,
         fileLock: XMPFileLock,
-        settingsService: SettingsService
+        settingsService: SettingsService,
+        metadataDelivery: MetadataDeliveryService? = nil
     ) {
         self.metadataService = metadataService
         self.deliveryRepo = deliveryRepo
@@ -101,6 +107,98 @@ public final class LiveMetadataAPI: MetadataAPI {
             batches: batchStore,
             metadata: metadataService
         )
+        self.metadataDelivery = metadataDelivery
+    }
+
+    // MARK: - P1 下一波 §3.1：写回生命周期
+
+    /// 只读状态：metadata/template 两个模块的交付计数、备份体积与逐文件行。
+    public func syncState(_ sessionId: String) async throws -> MetadataDeliveryState {
+        guard let metadataDelivery else { return MetadataDeliveryState() }
+        let id = try LiveAPIInput.requireSessionId(sessionId)
+        do {
+            return try metadataDelivery.state(sessionId: id)
+        } catch {
+            throw Self.lifecycleError(error)
+        }
+    }
+
+    /// 确认同步（.metadata + .template）。
+    public func confirmSync(_ input: Confirmed<SessionReference>) async throws -> MetadataDeliveryState {
+        guard let metadataDelivery else { throw Self.lifecycleNotWired("confirmSync") }
+        let id = try LiveAPIInput.requireSessionId(input.value.sessionId)
+        do {
+            return try metadataDelivery.confirmSync(sessionId: id)
+        } catch {
+            throw Self.lifecycleError(error)
+        }
+    }
+
+    /// 结束同步（只 drop，保留 XMP）；未确认项按 XMP_CONFIRM_INCOMPLETE 逐条进 notices。
+    public func finalizeSync(_ input: Confirmed<SessionReference>) async throws -> MetadataDeliveryState {
+        guard let metadataDelivery else { throw Self.lifecycleNotWired("finalizeSync") }
+        let id = try LiveAPIInput.requireSessionId(input.value.sessionId)
+        do {
+            return try await metadataDelivery.finalizeSync(sessionId: id).state
+        } catch {
+            throw Self.lifecycleError(error)
+        }
+    }
+
+    /// 生命周期错误 → GatherError（不新增错误码：INVALID_PARAM / XMP_CONFIRM_* 现有码）。
+    private static func lifecycleError(_ error: Error) -> Error {
+        if let delivery = error as? MetadataDeliveryError {
+            switch delivery {
+            case .invalidParameter(let message):
+                return GatherError.invalidParameter(field: "sessionId", reason: message)
+            case .confirmIncomplete(let blockers):
+                return GatherError(
+                    code: .XMP_CONFIRM_INCOMPLETE,
+                    params: ["detail": blockers.joined(separator: ",")])
+            case .reloadNotAcknowledged:
+                return GatherError(code: .XMP_CONFIRM_REQUIRES_SYNC)
+            }
+        }
+        return LiveAPIErrorMapping.translateCommon(error) ?? error
+    }
+
+    private static func lifecycleNotWired(_ method: String) -> GatherError {
+        GatherError.invalidParameter(
+            field: method, reason: "metadata lifecycle service not wired")
+    }
+
+    /// 写盘成功后自动确认（§3.1.2）。
+    ///
+    /// 模板/内联/triage 接口没有会话入参：按写入成功的照片反查会话，逐会话确认。
+    /// 失败不改变写盘结果（写盘已成功），只记日志——状态条下一次刷新就能看到 written。
+    private func autoConfirmAfterWrite(photoIds: [String]) {
+        guard let metadataDelivery, !photoIds.isEmpty else { return }
+        let sessions: [String]
+        do {
+            sessions = Set(try metadataService.getPhotosByIds(photoIds).map(\.sessionId)).sorted()
+        } catch {
+            GatherLogger.log(
+                "metadata auto-confirm: session lookup failed (\(photoIds.count) photos)",
+                level: .warn)
+            return
+        }
+        for sessionId in sessions {
+            let outcome = metadataDelivery.autoConfirmAfterWrite(sessionId: sessionId)
+            switch outcome {
+            case .confirmed, .nothingToDo:
+                continue
+            case .deferredToReloadAck, .disabled:
+                GatherLogger.log(
+                    "metadata auto-confirm kept written: \(outcome) "
+                        + "session=\(MetadataDeliveryService.sessionToken(sessionId))",
+                    level: .debug)
+            case .failed(let message):
+                GatherLogger.log(
+                    "metadata auto-confirm failed: \(message) "
+                        + "session=\(MetadataDeliveryService.sessionToken(sessionId))",
+                    level: .warn)
+            }
+        }
     }
 
     // MARK: - 读取
@@ -176,6 +274,7 @@ public final class LiveMetadataAPI: MetadataAPI {
             }
         }
         let outcome = await service.apply(decisions, batchId: batchId, now: nowISOString())
+        autoConfirmAfterWrite(photoIds: outcome.written)
         return TriageWritebackResult(
             batchId: batchId,
             written: outcome.written,
@@ -315,6 +414,7 @@ public final class LiveMetadataAPI: MetadataAPI {
             policy: payload.policy,
             now: nowISOString()
         )
+        autoConfirmAfterWrite(photoIds: result.written)
         return MetadataTemplateApplyOutcome(
             batchId: result.batchId,
             written: result.written,
@@ -350,6 +450,7 @@ public final class LiveMetadataAPI: MetadataAPI {
             clearedContactMembers: payload.clearedContactMembers ?? [],
             now: nowISOString()
         )
+        autoConfirmAfterWrite(photoIds: result.written)
         return MetadataTemplateApplyOutcome(
             batchId: result.batchId,
             written: result.written,
@@ -380,6 +481,7 @@ public final class LiveMetadataAPI: MetadataAPI {
 
     public func undoTemplate(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> MetadataTemplateApplyOutcome {
         let result = try await templateService.undo(batchId: input.value.batchId)
+        autoConfirmAfterWrite(photoIds: result.written)
         return MetadataTemplateApplyOutcome(
             batchId: result.batchId,
             written: result.written,
@@ -796,6 +898,8 @@ public final class LiveMetadataAPI: MetadataAPI {
                 added: payload.addedKeywords,
                 removed: payload.removedKeywords
             )
+            // §3.1.2：关键词写盘成功后同样自动确认（否则行永远停在 written）。
+            autoConfirmAfterWrite(photoIds: payload.photoIds)
             guard let sessionId = try metadataService.sessionId(forPhotoIds: payload.photoIds) else {
                 throw GatherError.invalidParameter(field: "photoIds", reason: "photos not found")
             }
@@ -810,6 +914,10 @@ public final class LiveMetadataAPI: MetadataAPI {
         let sessionId = input.value.sessionId
         return try await mapAsync {
             let result = try await metadataService.retryKeywordWriteback(sessionId: sessionId)
+            // 重试后写盘成功的项需要立刻确认（会话已知，直接按会话确认）。
+            if let metadataDelivery, result.written > 0 {
+                _ = metadataDelivery.autoConfirmAfterWrite(sessionId: sessionId)
+            }
             let status = try deliveryRepo.metadataSummary(sessionId: sessionId, module: .metadata)
             return MetadataKeywordApplyResult(result: result, status: status)
         }

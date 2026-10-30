@@ -4,6 +4,11 @@
 // 写入序列（每一步失败都不得留下半成品）：
 //   读文件 → 段表 → 补丁 XMP → 更新 IIM → 重建 → 头部备份 → 原子替换 → 双读校验
 // 校验失败用原字节回滚（备份保留，交付层可重试/审计）。
+//
+// P1 下一波（plan §3.2.7）：段编辑逻辑抽成 `segmentEdits`，被两条路径共用——
+//   - `rewritten(document:)`：纯数据重写（旧路径，语义逐字节不变）；
+//   - `rewriteHeader(segments:)`：只重建头部（流式快路径，scan 由调用方分块拷贝）。
+// 两者对"改哪几段、IIM 怎么合并"必须完全一致，否则快慢路径会写出不同的文件。
 import Foundation
 import GatherApplication
 import GatherProtocol
@@ -44,25 +49,76 @@ enum JPEGMetadataWriterError: Error, Equatable, CustomStringConvertible {
 
 enum JPEGMetadataWriter {
 
+    /// 段编辑结果（XMP 段指令 + APP13 指令 + 是否动过 IIM）。
+    /// 两条写盘路径必须从这里取编辑指令，不得各写一份。
+    struct SegmentEdits {
+        let xmp: JPEGSegmentEdit
+        let iptc: JPEGPhotoshopEdit
+        let touchedIIM: Bool
+    }
+
     /// 纯数据重写（不做 IO，便于单测与"写到临时文件再校验"的组合）。
     /// 返回新字节与是否动过 IIM。
     static func rewritten(
         data: Data,
         attributes: MetadataWriteAttributes,
-        target: String
+        target: String,
+        dcSubjectStyle: KeywordDCSubjectStyle = .leaf
     ) throws -> (data: Data, touchedIIM: Bool) {
         try rewritten(
-            document: JPEGDocument(data: data), attributes: attributes, target: target)
+            document: JPEGDocument(data: data), attributes: attributes, target: target,
+            dcSubjectStyle: dcSubjectStyle)
     }
 
     /// 已解析文档的重写：写盘路径不必把整份文件解析两遍。
     static func rewritten(
         document: JPEGDocument,
         attributes: MetadataWriteAttributes,
-        target: String
+        target: String,
+        dcSubjectStyle: KeywordDCSubjectStyle = .leaf
     ) throws -> (data: Data, touchedIIM: Bool) {
+        let edits = try segmentEdits(
+            xmpPacket: document.xmpPacket,
+            photoshopIRBPayloads: document.photoshopIRBPayloads,
+            attributes: attributes,
+            target: target,
+            dcSubjectStyle: dcSubjectStyle)
+        let rebuilt = try document.rebuilding(xmp: edits.xmp, iptc: edits.iptc)
+        return (rebuilt, edits.touchedIIM)
+    }
+
+    /// 只重建头部（流式快路径）：输出 SOI…SOS 之前的字节，scan 由调用方分块拷贝。
+    /// 与 `rewritten(document:)` 走同一份 `segmentEdits`，差别只在是否拼 scan。
+    static func rewriteHeader(
+        segments: [JPEGSegment],
+        attributes: MetadataWriteAttributes,
+        target: String,
+        dcSubjectStyle: KeywordDCSubjectStyle = .leaf
+    ) throws -> (header: Data, touchedIIM: Bool) {
+        let edits = try segmentEdits(
+            xmpPacket: segments.first(where: \.isXMP)?.xmpPacket,
+            photoshopIRBPayloads: segments.compactMap(\.photoshopIRB),
+            attributes: attributes,
+            target: target,
+            dcSubjectStyle: dcSubjectStyle)
+        let header = try JPEGHeaderWriter.rebuild(
+            segments: segments, xmp: edits.xmp, iptc: edits.iptc)
+        return (header, edits.touchedIIM)
+    }
+
+    /// 段编辑：XMP 包补丁 + IIM 数据集三态合并。
+    /// `xmpPacket` / `photoshopIRBPayloads` 的语义与 `JPEGDocument` 的同名属性一致
+    /// （XMP 取首个段、APP13 取全部段）。
+    static func segmentEdits(
+        xmpPacket: Data?,
+        photoshopIRBPayloads: [Data],
+        attributes: MetadataWriteAttributes,
+        target: String,
+        dcSubjectStyle: KeywordDCSubjectStyle = .leaf
+    ) throws -> SegmentEdits {
         let packet = try XMPPacketStore.patched(
-            existing: document.xmpPacket, attributes: attributes, target: target)
+            existing: xmpPacket, attributes: attributes, target: target,
+            dcSubjectStyle: dcSubjectStyle)
 
         let iimUpdates = IPTCIIMMapping.updates(
             for: attributes.descriptive, keywords: attributes.keywords)
@@ -73,7 +129,7 @@ enum JPEGMetadataWriter {
             // 会静默丢资源（缩略图 / 裁剪路径 / 大 IPTC）。任一段解析失败就整块不动：
             // 把"解析不了的 IIM"当成空表重写会删掉别人的 dataset。
             var resources: [PhotoshopIRB]? = []
-            for payload in document.photoshopIRBPayloads {
+            for payload in photoshopIRBPayloads {
                 do {
                     resources?.append(contentsOf: try PhotoshopIRBList.parse(payload))
                 } catch {
@@ -110,16 +166,15 @@ enum JPEGMetadataWriter {
                 touchedIIM = true
             }
         }
-
-        let rebuilt = try document.rebuilding(xmp: .replace(packet), iptc: iptcEdit)
-        return (rebuilt, touchedIIM)
+        return SegmentEdits(xmp: .replace(packet), iptc: iptcEdit, touchedIIM: touchedIIM)
     }
 
     /// 写盘：原子替换 + 写后双读校验；校验失败回滚原字节。
     static func write(
         photoPath: String,
         attributes: MetadataWriteAttributes,
-        headerBackupPath: String? = nil
+        headerBackupPath: String? = nil,
+        dcSubjectStyle: KeywordDCSubjectStyle = .leaf
     ) async throws -> EmbeddedMetadataWriteReport {
         guard !attributes.isEmpty else {
             throw JPEGMetadataWriterError.verificationFailed("empty attributes")
@@ -127,7 +182,8 @@ enum JPEGMetadataWriter {
         let original = try Data(contentsOf: URL(fileURLWithPath: photoPath))
         let document = try JPEGDocument(data: original)
         let rewritten = try rewritten(
-            document: document, attributes: attributes, target: photoPath)
+            document: document, attributes: attributes, target: photoPath,
+            dcSubjectStyle: dcSubjectStyle)
 
         // 头部备份：只需 SOI…SOS 之前的字节；restore = 旧头部 + 当前 scan。
         let headerLength = original.count - document.scan.count
@@ -153,7 +209,7 @@ enum JPEGMetadataWriter {
             var actual = parsed.flatMap(MetadataService.embeddedAttributesFromParse)
                 ?? MetadataWriteAttributes()
             // gather:Triage 是私有命名空间，embeddedAttributesFromParse 不解析它；
-            // 直接从写后的 XMP 包体校验，避免“建议写回必失败并回滚”。
+            // 直接从写后的 XMP 包体校验，避免"建议写回必失败并回滚"。
             if let signal = attributes.triageSignal, !signal.isEmpty {
                 // 只在写后的 XMP 包体里找私有命名空间值：不再把整份 JPEG（可能几十 MB）
                 // 解成 String，避免一次写盘多出一份文件大小的峰值内存。
@@ -215,7 +271,7 @@ enum JPEGMetadataWriter {
     // MARK: - 原子写
 
     /// 清理临时文件：文件不存在视为成功；其它失败只记日志（不覆盖用户数据）。
-    private static func removeTemporary(_ path: String) {
+    static func removeTemporary(_ path: String) {
         do {
             try FileManager.default.removeItem(atPath: path)
         } catch let error as NSError where error.code == NSFileNoSuchFileError {
@@ -226,10 +282,7 @@ enum JPEGMetadataWriter {
     }
 
     static func atomicReplace(path: String, data: Data) throws {
-        let directory = (path as NSString).deletingLastPathComponent
-        let name = (path as NSString).lastPathComponent
-        let temporary = (directory as NSString).appendingPathComponent(
-            "." + name + ".gather-embedded-" + UUID().uuidString.lowercased())
+        let temporary = temporaryPath(for: path)
         do {
             try data.write(to: URL(fileURLWithPath: temporary))
             let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: temporary))
@@ -240,20 +293,33 @@ enum JPEGMetadataWriter {
             throw JPEGMetadataWriterError.atomicWriteFailed(String(describing: error))
         }
         do {
-            if FileManager.default.fileExists(atPath: path) {
-                // 不加 .usingNewMetadataOnly：保留原文件的权限/ACL/扩展属性，
-                // 只替换内容（只读介质/受控目录下这一点很关键）。
-                _ = try FileManager.default.replaceItemAt(
-                    URL(fileURLWithPath: path),
-                    withItemAt: URL(fileURLWithPath: temporary),
-                    backupItemName: nil,
-                    options: [])
-            } else {
-                try FileManager.default.moveItem(atPath: temporary, toPath: path)
-            }
+            try install(temporary: temporary, at: path)
         } catch {
             removeTemporary(temporary)
             throw JPEGMetadataWriterError.atomicWriteFailed(String(describing: error))
+        }
+    }
+
+    /// 同目录临时文件名：与目标同卷才能原子 rename（跨卷会退化成拷贝+删除）。
+    static func temporaryPath(for path: String) -> String {
+        let directory = (path as NSString).deletingLastPathComponent
+        let name = (path as NSString).lastPathComponent
+        return (directory as NSString).appendingPathComponent(
+            "." + name + ".gather-embedded-" + UUID().uuidString.lowercased())
+    }
+
+    /// 把"已经写完并 fsync 过"的临时文件装到目标路径。
+    /// 不加 .usingNewMetadataOnly：保留原文件的权限/ACL/扩展属性，只替换内容
+    /// （只读介质/受控目录下这一点很关键）。
+    static func install(temporary: String, at path: String) throws {
+        if FileManager.default.fileExists(atPath: path) {
+            _ = try FileManager.default.replaceItemAt(
+                URL(fileURLWithPath: path),
+                withItemAt: URL(fileURLWithPath: temporary),
+                backupItemName: nil,
+                options: [])
+        } else {
+            try FileManager.default.moveItem(atPath: temporary, toPath: path)
         }
     }
 }

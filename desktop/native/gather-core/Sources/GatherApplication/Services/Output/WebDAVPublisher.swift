@@ -133,28 +133,88 @@ public final class WebDAVPublisher: Sendable {
     }
 
     /// 上传本地文件/目录到 <base>/<remoteFolder>。
+    ///
+    /// 分享策略（share != nil = "严格发布模式"）：
+    /// - `includePrefixes` 为空时按**交付产物清单**收窄（manifest / share / 联系表 /
+    ///   画廊入口 / thumbs），**绝不回退成"上传整个目录"**；
+    /// - `allowDownload == false`：`large/` 与成片一律不上传（客户只能看缩略图，
+    ///   灯箱按 gallery.js 的 data-thumb 回退）；
+    /// - 发布包内额外写一份 `share.json`（createdAt/expiresAt/allowDownload/itemCount），
+    ///   proof.js 读它来判断是否过期 —— 不在本地目录里留文件。
+    /// share == nil 时保持旧行为（既有测试/旧调用点不变）。
     public func publish(
         localPath: String,
         configuration: WebDAVConfiguration,
         includePrefixes: [String]? = nil,
+        share: OutputShareOptions? = nil,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) async throws -> WebDAVPublishResult {
         guard configuration.baseURL.scheme?.hasPrefix("http") == true else {
             throw WebDAVError.invalidBaseURL(configuration.baseURL.absoluteString)
         }
+        let strict = share != nil
+        let allowDownload = share?.allowDownload ?? true
         var files = try Self.collectFiles(at: localPath)
         if let includePrefixes, !includePrefixes.isEmpty {
             let normalized = includePrefixes.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
             files = files.filter { file in
                 normalized.contains { file.relative == $0 || file.relative.hasPrefix($0 + "/") }
             }
-            // 白名单与目录不匹配时不能“成功上传 0 个文件”：那是静默失败。
+        } else if strict {
+            files = files.filter { Self.isShareArtifact($0.relative, allowDownload: allowDownload) }
+        }
+        if strict, !allowDownload {
+            // 成片目录永不默认上传；不允许下载时 large/ 也不传。
+            files = files.filter { !Self.requiresDownload($0.relative) }
+        }
+        if strict || (includePrefixes?.isEmpty == false) {
+            // 白名单与目录不匹配时不能"成功上传 0 个文件"：那是静默失败。
             guard !files.isEmpty else { throw WebDAVError.noMatchingFiles }
         }
         let root = Self.joinRemote(configuration.baseURL, configuration.remoteFolder)
         var uploaded = 0
         var failures: [WebDAVPublishFailure] = []
         var directoryCache = Set<String>()
+
+        // 分享清单：随包上传一份（proof.js 读 expiresAt 决定是否还能提交）。
+        if let share {
+            let remoteDirectory = root
+            switch await ensureDirectoryChain(
+                to: remoteDirectory, configuration: configuration, created: &directoryCache) {
+            case .created:
+                break
+            case .failed(let reason):
+                failures.append(WebDAVPublishFailure(
+                    path: remoteDirectory.path, reason: reason))
+            case .authFailure:
+                return WebDAVPublishResult(
+                    uploaded: uploaded, failed: failures, remoteRoot: root.path, abortedOnAuth: true)
+            }
+            let shareURL = Self.joinRemote(remoteDirectory, "share.json")
+            do {
+                let response = try await putWithRetry(
+                    url: shareURL,
+                    data: Self.shareManifestJSON(share: share, itemCount: files.count),
+                    path: "share.json", configuration: configuration)
+                if response.isSuccess {
+                    uploaded += 1
+                } else if response.isAuthFailure {
+                    failures.append(WebDAVPublishFailure(
+                        path: "share.json", reason: "HTTP \(response.status)"))
+                    return WebDAVPublishResult(
+                        uploaded: uploaded, failed: failures, remoteRoot: root.path,
+                        abortedOnAuth: true)
+                } else {
+                    failures.append(WebDAVPublishFailure(
+                        path: "share.json", reason: "HTTP \(response.status)"))
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                failures.append(WebDAVPublishFailure(
+                    path: "share.json", reason: String(describing: error)))
+            }
+        }
 
         for (index, file) in files.enumerated() {
             // 取消立即止损：之前 catch 会把取消记成「单文件失败」继续传完剩下的文件，
@@ -305,6 +365,73 @@ public final class WebDAVPublisher: Sendable {
     }
 
     // MARK: - 纯函数
+
+    /// 白名单外的文件不得因为"前缀匹配不上"而回落成整目录上传。
+    ///
+    /// 严格模式（有分享策略）下只认这些交付产物：
+    /// - 任意层级的 `thumbs/` 图片；
+    /// - `large/` 图片（仅 allowDownload）；
+    /// - 根层/画廊层的 manifest / share / 联系表 / 画廊入口（html/css/js/json/pdf）。
+    public static func isShareArtifact(_ relative: String, allowDownload: Bool) -> Bool {
+        let parts = relative.split(separator: "/").map(String.init)
+        guard let name = parts.last, !name.isEmpty else { return false }
+        let ext = (name as NSString).pathExtension.lowercased()
+        let parents = parts.dropLast()
+        if parents.contains("thumbs") {
+            return ["jpg", "jpeg", "png", "webp"].contains(ext)
+        }
+        if parents.contains("large") {
+            return allowDownload && ["jpg", "jpeg", "png", "webp"].contains(ext)
+        }
+        guard ["html", "css", "js", "json", "pdf"].contains(ext) else { return false }
+        if name.hasPrefix("manifest-") || name == "share.json" || name.hasPrefix("contact-sheet-") {
+            return true
+        }
+        let galleryLevel = parents.isEmpty || parents == ["gallery"]
+        guard galleryLevel else { return false }
+        return ["index.html", "gallery.css", "gallery.js", "data.json", "proof.html", "proof.js"]
+            .contains(name)
+    }
+
+    /// 需要"允许下载"才能发布的文件：大图与成片（thumbs 之外的一切图片）。
+    public static func requiresDownload(_ relative: String) -> Bool {
+        let parts = relative.split(separator: "/").map(String.init)
+        guard let name = parts.last else { return false }
+        let ext = (name as NSString).pathExtension.lowercased()
+        guard ["jpg", "jpeg", "png", "webp", "tif", "tiff"].contains(ext) else { return false }
+        return !parts.dropLast().contains("thumbs")
+    }
+
+    /// 随包上传的 share.json（proof.js 读它显示/禁用过期提交）。
+    public static func shareManifestJSON(
+        share: OutputShareOptions, itemCount: Int, createdAt: String? = nil
+    ) -> Data {
+        struct Manifest: Encodable {
+            var version: Int
+            var createdAt: String
+            var expiresAt: String?
+            var allowDownload: Bool
+            var itemCount: Int
+            var remoteSubfolder: String
+        }
+        let stamp = createdAt ?? {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime]
+            return formatter.string(from: Date())
+        }()
+        let manifest = Manifest(
+            version: 1, createdAt: stamp, expiresAt: share.expiresAt,
+            allowDownload: share.allowDownload, itemCount: itemCount,
+            remoteSubfolder: share.remoteSubfolder)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do {
+            return try encoder.encode(manifest)
+        } catch {
+            // 编码一个固定结构不会失败；真失败就退回最小合法 JSON。
+            return Data("{\"version\":1}".utf8)
+        }
+    }
 
     static func headers(
         configuration: WebDAVConfiguration, contentType: String? = nil

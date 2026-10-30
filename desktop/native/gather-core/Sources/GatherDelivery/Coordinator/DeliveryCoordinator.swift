@@ -223,9 +223,18 @@ public struct DeliveryCoordinator: Sendable {
     let fileLock: XMPFileLock
     private let fingerprint: DeliveryFingerprintProvider
     private let resolvePhotoPath: DeliveryPhotoPathResolver
-    /// reload_acked_at 门禁（§5.4-2）。默认开启；测试/嵌入场景可显式关闭，
-    /// 生产组合根不得关闭（否则确认/收尾会绕过 Capture One 的重载确认）。
+    /// reload_acked_at 门禁（§5.4-2）的静态开关。默认开启；测试/嵌入场景可显式关闭。
     private let requireReloadAckEnabled: Bool
+    /// 门禁的 C1 侧条件（P1 下一波 §3.1.2）：C1 在本机**实际在用**时才为 true。
+    ///
+    /// 为什么需要第二个条件：requirement 的真实语义是"Capture One 还显示旧值，
+    /// 必须等它 reload 之后再确认/收尾"。未装 C1 的用户永远不会写 reload_acked_at，
+    /// 只按 requireReloadAck 判定会把他们永久挡在 XMP_CONFIRM_REQUIRES_SYNC 后面
+    /// （连 confirm 都过不去，metadata 的自动确认与 GC 全部不可达）。
+    /// 判定必须是**廉价的同步读**（confirm/finalize 在同步路径上过门禁）：
+    /// 组合根传入"设置 + 最近一次 preflight 结果"的缓存闭包，nil = 不做额外收窄
+    /// （保持旧语义；测试与嵌入不必接线）。
+    private let c1Required: (@Sendable () -> Bool)?
     /// 交付状态变化后的会话级通知（宿主刷新 C1 同步徽标）。
     ///
     /// S5c-2b-3b-2b-2：旧 MetadataSyncCoordinator 删除后，confirm/cleanup/finalize/
@@ -248,6 +257,7 @@ public struct DeliveryCoordinator: Sendable {
             delivery.photoPath
         },
         requireReloadAck: Bool = true,
+        c1Required: (@Sendable () -> Bool)? = nil,
         eventSink: (@Sendable (String) -> Void)? = nil
     ) {
         self.connection = connection
@@ -260,6 +270,7 @@ public struct DeliveryCoordinator: Sendable {
         self.fingerprint = fingerprint
         self.resolvePhotoPath = resolvePhotoPath
         self.requireReloadAckEnabled = requireReloadAck
+        self.c1Required = c1Required
         self.eventSink = eventSink
     }
 
@@ -275,6 +286,7 @@ public struct DeliveryCoordinator: Sendable {
             delivery.photoPath
         },
         requireReloadAck: Bool = true,
+        c1Required: (@Sendable () -> Bool)? = nil,
         eventSink: (@Sendable (String) -> Void)? = nil
     ) {
         self.init(
@@ -286,6 +298,7 @@ public struct DeliveryCoordinator: Sendable {
             fingerprint: fingerprint,
             resolvePhotoPath: resolvePhotoPath,
             requireReloadAck: requireReloadAck,
+            c1Required: c1Required,
             eventSink: eventSink
         )
     }
@@ -303,6 +316,7 @@ public struct DeliveryCoordinator: Sendable {
             delivery.photoPath
         },
         requireReloadAck: Bool = true,
+        c1Required: (@Sendable () -> Bool)? = nil,
         eventSink: (@Sendable (String) -> Void)? = nil
     ) {
         self.init(
@@ -312,6 +326,7 @@ public struct DeliveryCoordinator: Sendable {
             fingerprint: fingerprint,
             resolvePhotoPath: resolvePhotoPath,
             requireReloadAck: requireReloadAck,
+            c1Required: c1Required,
             eventSink: eventSink
         )
     }
@@ -413,11 +428,34 @@ public struct DeliveryCoordinator: Sendable {
     /// 在纯 SchemaCurrent 上会 SQL 编译失败。单列读取与旧实现逐字一致，也不用内存 ack
     /// （冷启动同样有效）。
     private func requireReloadAck(_ sessionId: String) throws {
-        guard requireReloadAckEnabled else { return }
+        guard reloadAckGateEnabled else { return }
         let acked = try SessionReloadAckRepo(connection: connection).reloadAck(sessionId: sessionId)
         guard let acked, !acked.isEmpty else {
             throw DeliveryCoordinatorError.reloadNotAcknowledged(sessionId: sessionId)
         }
+    }
+
+    // MARK: - reload-ack 门禁的只读问询（P1 下一波 §3.1.2）
+
+    /// 门禁当前是否生效：静态开关 AND C1 侧条件（组合根注入）。
+    ///
+    /// 未装 C1 时 c1Required() 返回 false → 门禁关闭，confirm/finalize 照常推进；
+    /// 这就是"无 C1 用户不再被卡死"的唯一判定点。
+    public var reloadAckGateEnabled: Bool {
+        guard requireReloadAckEnabled else { return false }
+        guard let c1Required else { return true }
+        return c1Required()
+    }
+
+    /// 该会话是否**正等** Capture One 重载确认（门禁生效且 reload_acked_at 为空）。
+    ///
+    /// 供自动确认判定"写盘成功后能不能直接确认"：true → 保持 written，
+    /// 等 C1 reload 后再确认（状态条显示"待 C1 重载"）。
+    public func isAwaitingReloadAck(sessionId: String) throws -> Bool {
+        guard reloadAckGateEnabled else { return false }
+        let acked = try SessionReloadAckRepo(connection: connection).reloadAck(sessionId: sessionId)
+        guard let acked else { return true }
+        return acked.isEmpty
     }
 
     // MARK: - confirm
@@ -449,7 +487,7 @@ public struct DeliveryCoordinator: Sendable {
                 scope: .module,
                 sessionId: sessionId,
                 module: module,
-                requireReloadAck: requireReloadAckEnabled)
+                requireReloadAck: reloadAckGateEnabled)
             DeliveryTrace.log(
                 trace,
                 "event=done op=confirm phase=confirm module=\(module.rawValue) "
@@ -518,6 +556,58 @@ public struct DeliveryCoordinator: Sendable {
         }
         try requireReloadAck(sessionId)
         return try await makeCleanupFlow().finalize(sessionId: sessionId, module: module)
+    }
+
+    /// 保留期回收（§3.1.4）的**唯一引擎入口**：按交付行结束一条已确认交付。
+    ///
+    /// 与 finalize(sessionId:module:) 的差别只有两处：
+    /// - 候选由调用方（MetadataRetentionService）按保留期选出，可能跨会话；
+    /// - reload-ack 门禁由调用方按会话判定后显式跳过未 ack 的会话（C1 仍显示旧值时
+    ///   备份是唯一还原点），因此本入口不再过门禁；
+    /// - module 视为 nil：整条交付（仍有未 synced item 时 DB 段门禁 fail-closed 拒绝，
+    ///   行与备份原样保留）。
+    ///
+    /// 不抛出：单条失败进 summary.errors，intent 保留，下次 GC/replay 重试。
+    /// 备份删除仍在 DB 事务提交之后（与 finalize 的顺序契约一致）。
+    public func finalizeForRetention(
+        xmpPath: String,
+        sessionId: String = ""
+    ) async -> DeliveryFinalizeSummary {
+        guard !xmpPath.isEmpty else {
+            return DeliveryFinalizeSummary(
+                deletedCount: 0,
+                skippedCount: 0,
+                errors: ["DELIVERY_COORDINATOR_INVALID_ARGUMENT: xmpPath 不能为空"],
+                retainedCount: 0
+            )
+        }
+        do {
+            guard let row = try deliveryRepo.get(xmpPath) else {
+                return DeliveryFinalizeSummary(
+                    deletedCount: 0,
+                    skippedCount: 1,
+                    errors: ["XMP_FINALIZE_SKIPPED: \(xmpPath) reason=row-not-found"],
+                    retainedCount: 0
+                )
+            }
+            let summary = await makeCleanupFlow().finalizeDeliveryRow(row, sessionId: sessionId)
+            if summary.deletedCount > 0 {
+                emitStateChanged(sessionId)
+            }
+            return summary
+        } catch {
+            return DeliveryFinalizeSummary(
+                deletedCount: 0,
+                skippedCount: 0,
+                errors: [Self.retentionFailure(xmpPath, error)],
+                retainedCount: 0
+            )
+        }
+    }
+
+    /// GC 的错误串同样带完整路径（错误仍可定位），只进 summary，不进日志。
+    private static func retentionFailure(_ xmpPath: String, _ error: Error) -> String {
+        "XMP_FINALIZE_DB_FAILED: \(xmpPath) reason=\(String(describing: error))"
     }
 
     // MARK: - 写回镜像

@@ -270,7 +270,7 @@ SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication 服务（交付编排在 GatherDelivery）
-  ├── GatherPersistence：SQLite WAL + SchemaCurrent（44 表 / 386 列 / user_version=1）
+  ├── GatherPersistence：SQLite WAL + SchemaCurrent（55 表 / 449 列 / user_version=1）
   ├── GatherAnalysis：图片读取、Vision 人脸、RAW/ImageIO 解码
   ├── JobService（可恢复任务，executor + checkpoint + dedupeKey）
   └── DeliveryCoordinator：deliveries 写回（重试 / 冲突 / 重启恢复）
@@ -295,7 +295,7 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 
 - SQLite 使用 WAL；唯一建库入口是 `Database.open(at:)`：新库按
   `SchemaCurrent.createSQL` 单事务建库并写 `PRAGMA user_version = 1`
-  （44 表 / 386 列 / 72 索引 / 65 外键）。只有空库与当前版本可直接使用；
+  （55 表 / 449 列 / 84 索引 / 81 外键）。只有空库与当前版本可直接使用；
   旧版本（V1/V2 迁移链已删除）、版本更高、版本 0 有表、形态不符、非 SQLite 文件
   默认 fail closed；开发重置策略才把 db/-wal/-shm 改名为 `<db>.incompatible-<ts>`
   后重建（ADR-005/006）。
@@ -322,7 +322,7 @@ GatherApplication 服务（交付编排在 GatherDelivery）
 - `L10n`（`Support/L10n.swift:120`）：**key 即中文文案**；渲染期显式携带
   `language`（`L10n.Language.zhCN/en`），经 `Bundle.module` 的 `.lproj` 查表——
   `zh-Hans.lproj` 只有 9 个占位键，未命中自动回退 key（即中文）；`en.lproj`
-  （1,862 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
+  （1,998 键）提供英文翻译，未翻译的 key 仍回退中文。`L10nStringCache` 按
   (language, key) 缓存查表结果，避免每帧重走 Bundle 查找。
 - 页面经 `LanguageStore`（`@MainActor @Observable`）取得 `languageStore.l10n`；
   切语言只更新 store 并触发 Observation 重渲染，不再用 `.id(languageVersion)`

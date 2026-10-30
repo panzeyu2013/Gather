@@ -84,6 +84,8 @@ extension GalleryViewModel {
         pageCursors = []
         committedSearch = search.trimmingCharacters(in: .whitespaces)
         committedFilter = filter
+        committedFacetSelection = facetSelection
+        committedRules = rules
         committedExpandVariants = expandVariants
         searchActiveWas = false
         phase = .loading
@@ -102,5 +104,7 @@ extension GalleryViewModel {
         // 兜底：仅在本轮没有在途请求时收尾（有在途请求时由它自己写 phase）。
         // 旧实现无条件兜底：首页被拒时会把「空数据集」标成 loaded，用户看到假空态。
         if phase == .loading, fetchingGeneration == nil { phase = .loaded }
+        // facet 与网格同源：每次重载后按同一 criteria 重算面板（未接线 PhotoAPI 时为空）。
+        await refreshFacets()
     }
 }

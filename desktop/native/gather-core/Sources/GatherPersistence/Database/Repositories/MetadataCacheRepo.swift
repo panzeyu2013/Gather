@@ -137,7 +137,7 @@ public struct MetadataCacheInput {
 }
 
 /// photo_metadata_cache 仓库（TS MetadataCacheRepository）。
-public final class MetadataCacheRepo {
+public final class MetadataCacheRepo: Sendable {
     private let connection: DBConnection
 
     public init(connection: DBConnection) {

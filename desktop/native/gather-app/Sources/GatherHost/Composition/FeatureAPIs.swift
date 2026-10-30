@@ -85,7 +85,10 @@ struct FeatureAPIs {
             imagePreloadService: composition.imagePreloadService,
             settingsService: composition.settingsService,
             jobAPI: job,
-            facetQuery: FacetQuery(connection: composition.db)
+            facetQuery: FacetQuery(connection: composition.db),
+            savedSearchRepo: SavedSearchRepo(connection: composition.db),
+            semanticIndex: SemanticIndex(
+                store: PhotoSemanticsRepo(connection: composition.db))
         )
     }
 
@@ -96,7 +99,8 @@ struct FeatureAPIs {
     private static func makeAlbum(_ composition: AppComposition) -> any AlbumAPI {
         LiveAlbumAPI(
             albumRepo: composition.smartAlbumRepo,
-            filterEngine: composition.filterEngine
+            filterEngine: composition.filterEngine,
+            curation: composition.curationService
         )
     }
 
@@ -106,7 +110,8 @@ struct FeatureAPIs {
 
     /// 只包装组合根的 CullingService（会话级更新上下文缓存、写回端口都只有一份）。
     private static func makeCulling(_ composition: AppComposition) -> any CullingAPI {
-        LiveCullingAPI(
+        let settings = composition.settingsService
+        return LiveCullingAPI(
             cullingService: composition.cullingService,
             triageService: composition.triageService,
             sessionRepo: SessionRepo(connection: composition.db),
@@ -118,7 +123,18 @@ struct FeatureAPIs {
                     timestamp: nowISOString())
             },
             fileLock: composition.xmpFileLock,
-            modelReviewRepo: ModelReviewRepo(connection: composition.db)
+            modelReviewRepo: ModelReviewRepo(connection: composition.db),
+            proofFeedback: ProofFeedbackService(
+                repo: ProofFeedbackRepo(connection: composition.db),
+                picks: CullingProofPickApplier(service: composition.cullingService),
+                metadata: MetadataMutationProofQueue(
+                    mutations: composition.metadataMutationService),
+                getString: { key, value in
+                    settings.get(key, defaultValue: value)
+                }),
+            calibration: TriageCalibrationService(
+                feedback: TriageFeedbackRepo(connection: composition.db),
+                settings: composition.settingsService)
         )
     }
 
@@ -141,7 +157,8 @@ struct FeatureAPIs {
     private static func makeDuplicate(_ composition: AppComposition) -> any DuplicateAPI {
         LiveDuplicateAPI(
             duplicateService: composition.duplicateService,
-            jobService: composition.jobService
+            jobService: composition.jobService,
+            curation: composition.curationService
         )
     }
 
@@ -168,12 +185,13 @@ struct FeatureAPIs {
     }
 
     private static func makeMetadata(_ composition: AppComposition) -> any MetadataAPI {
-        LiveMetadataAPI(
+        return LiveMetadataAPI(
             metadataService: composition.metadataService,
             deliveryRepo: composition.deliveryRepo,
             xmp: composition.xmpProvider,
             fileLock: composition.xmpFileLock,
-            settingsService: composition.settingsService
+            settingsService: composition.settingsService,
+            metadataDelivery: composition.metadataDeliveryService
         )
     }
 

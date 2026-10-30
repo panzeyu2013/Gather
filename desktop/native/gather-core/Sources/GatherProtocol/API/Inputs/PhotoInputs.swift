@@ -13,17 +13,47 @@
 import Foundation
 
 /// photo.list_page 的键集分页查询。
+///
+/// P1 下一波 §3.7.1：criteria / sortBy / sortOrder 为**可选**新增字段，
+/// 缺字段 = nil（旧客户端/测试的解码结果不变）。
+///
+/// 游标语义没有变：afterFirstRowid 仍是"上一页最后一个资产组的首行 rowid"。
+/// 因此 sortBy 只接受能由 rowid 游标单调编码的顺序（导入顺序）；需要按拍摄
+/// 时间/评分排序时走 PhotoAPI.search（offset 分页），不在这里做复合游标。
 public struct PhotoPageQuery: Decodable, Sendable, Equatable {
+    /// 游标分页允许的排序字段：rowid 与 import_order 同义。
+    /// 其余字段（date_taken/rating/...）需要 (排序值, rowid) 复合游标才能跨页
+    /// 无重复无漏项，而 PhotoPage.cursor 只有 Int64 —— 显式失败好过静默错序。
+    public static let allowedSortFields: [String] = ["rowid", "import_order"]
+
     public let sessionId: String
     public let limit: Int
     public let afterFirstRowid: Int64?
     public let expandVariants: Bool
+    /// 服务端筛选（与 PhotoAPI.facets 同一套 FilterEngine 语义）。
+    public let criteria: FilterGroup?
+    /// 排序字段（nil = 导入顺序）；取值见 allowedSortFields。
+    public let sortBy: String?
+    /// asc / desc（归一化为小写）；nil = 默认（导入顺序正序）。
+    public let sortOrder: String?
+
+    /// 是否带有效筛选（空组等同于不带）。
+    public var hasCriteria: Bool {
+        guard let criteria else { return false }
+        return !criteria.conditions.isEmpty
+    }
+
+    /// 排序方向：true = 逆序（rowid 游标按降序推进）。
+    public var isDescending: Bool { sortOrder == "desc" }
 
     public init(
         sessionId: String,
         limit: Int? = nil,
         afterFirstRowid: Int64? = nil,
-        expandVariants: Bool = false
+        expandVariants: Bool = false,
+        criteria: FilterGroup? = nil,
+        sortBy: String? = nil,
+        sortOrder: String? = nil
     ) throws {
         self.sessionId = try APIValidation.nonBlank(sessionId, field: "sessionId", maxLength: 128)
         self.limit = PageRequest.normalizedLimit(
@@ -36,6 +66,29 @@ public struct PhotoPageQuery: Decodable, Sendable, Equatable {
         }
         self.afterFirstRowid = afterFirstRowid
         self.expandVariants = expandVariants
+        self.criteria = criteria
+        if let sortBy {
+            let normalized = sortBy.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard Self.allowedSortFields.contains(normalized) else {
+                throw GatherError.invalidParameter(
+                    field: "sortBy",
+                    reason: "cursor pagination supports "
+                        + Self.allowedSortFields.joined(separator: "/")
+                        + " only; use filter.photos for sorted results")
+            }
+            self.sortBy = normalized
+        } else {
+            self.sortBy = nil
+        }
+        if let sortOrder {
+            let normalized = sortOrder.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard normalized == "asc" || normalized == "desc" else {
+                throw GatherError.invalidParameter(field: "sortOrder", reason: "must be asc or desc")
+            }
+            self.sortOrder = normalized
+        } else {
+            self.sortOrder = nil
+        }
     }
 
     public init(from decoder: Decoder) throws {
@@ -44,12 +97,15 @@ public struct PhotoPageQuery: Decodable, Sendable, Equatable {
             sessionId: try container.decode(String.self, forKey: .sessionId),
             limit: try container.decodeIfPresent(Int.self, forKey: .limit),
             afterFirstRowid: try container.decodeIfPresent(Int64.self, forKey: .afterFirstRowid),
-            expandVariants: try container.decodeIfPresent(Bool.self, forKey: .expandVariants) ?? false
+            expandVariants: try container.decodeIfPresent(Bool.self, forKey: .expandVariants) ?? false,
+            criteria: try container.decodeIfPresent(FilterGroup.self, forKey: .criteria),
+            sortBy: try container.decodeIfPresent(String.self, forKey: .sortBy),
+            sortOrder: try container.decodeIfPresent(String.self, forKey: .sortOrder)
         )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, limit, afterFirstRowid, expandVariants
+        case sessionId, limit, afterFirstRowid, expandVariants, criteria, sortBy, sortOrder
     }
 }
 
@@ -222,5 +278,137 @@ public struct PreviewPreloadInput: Decodable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case paths, maxDimension
+    }
+}
+
+// MARK: - P1 下一波 §3.7.3：保存查询（Gallery/Library 共用）
+
+/// savedSearches 的作用域查询：sessionId == nil 返回全局 + 该会话的（见实现契约）。
+public struct SavedSearchesQuery: Decodable, Sendable, Equatable {
+    public let sessionId: String?
+
+    public init(sessionId: String? = nil) throws {
+        if let sessionId {
+            self.sessionId = try APIValidation.nonBlank(sessionId, field: "sessionId", maxLength: 128)
+        } else {
+            self.sessionId = nil
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(sessionId: try container.decodeIfPresent(String.self, forKey: .sessionId))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId
+    }
+}
+
+/// 保存的查询（wire：id/name/session_id/criteria_json/created_at/updated_at）。
+///
+/// criteria 是**完整**筛选：4 档过滤、搜索串与规则编辑器条件在保存前已合成为一个
+/// FilterGroup（§3.7.2），恢复时整份回填，不依赖 UI 侧的第二份状态。
+public struct SavedSearchData: Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    /// nil = 全局查询（跨会话）。
+    public var sessionId: String?
+    public var criteria: FilterGroup
+    public var createdAt: String
+    public var updatedAt: String
+
+    public init(
+        id: String,
+        name: String,
+        sessionId: String?,
+        criteria: FilterGroup,
+        createdAt: String,
+        updatedAt: String
+    ) {
+        self.id = id
+        self.name = name
+        self.sessionId = sessionId
+        self.criteria = criteria
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+/// saveSearch 的输入；name 在同作用域内唯一（重名 = 覆盖，不新增一行）。
+public struct SaveSearchInput: Decodable, Sendable, Equatable {
+    public static let maxNameLength = 120
+
+    public let name: String
+    public let sessionId: String?
+    public let criteria: FilterGroup
+
+    public init(name: String, sessionId: String? = nil, criteria: FilterGroup) throws {
+        // bounded(allowEmpty: false) 会同时做 trim + 长度校验 + 空白拒绝。
+        self.name = try APIValidation.bounded(
+            name, field: "name", maxLength: Self.maxNameLength, allowEmpty: false)
+        if let sessionId {
+            self.sessionId = try APIValidation.nonBlank(sessionId, field: "sessionId", maxLength: 128)
+        } else {
+            self.sessionId = nil
+        }
+        self.criteria = criteria
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            name: try container.decode(String.self, forKey: .name),
+            sessionId: try container.decodeIfPresent(String.self, forKey: .sessionId),
+            criteria: try container.decode(FilterGroup.self, forKey: .criteria)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, sessionId, criteria
+    }
+}
+
+public struct DeleteSavedSearchInput: Decodable, Sendable, Equatable {
+    public let id: String
+
+    public init(id: String) throws {
+        self.id = try APIValidation.nonBlank(id, field: "id", maxLength: 128)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(id: try container.decode(String.self, forKey: .id))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+    }
+}
+
+/// 计数查询：与 PhotoAPI.search 同口径（按逻辑资产去重），但不带分页。
+public struct SearchCountInput: Decodable, Sendable, Equatable {
+    public let sessionId: String?
+    public let criteria: FilterGroup
+
+    public init(criteria: FilterGroup, sessionId: String? = nil) throws {
+        self.criteria = criteria
+        if let sessionId {
+            self.sessionId = try APIValidation.nonBlank(sessionId, field: "sessionId", maxLength: 128)
+        } else {
+            self.sessionId = nil
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            criteria: try container.decode(FilterGroup.self, forKey: .criteria),
+            sessionId: try container.decodeIfPresent(String.self, forKey: .sessionId)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId, criteria
     }
 }

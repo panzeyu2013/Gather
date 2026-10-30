@@ -7,6 +7,19 @@
 //   - buildWhereClause 保留为公开包装（album IPC 用它做 criteria 校验）；
 //   - FilteredPhotoData 形状不变。
 // 行为红线（与 TS 逐条对应）仍由 PhotoFilterQuery 的 SQL 保证，见其文件头。
+//
+// P1 下一波 §3.6.4：层级关键词的字段映射（FilterFields.keywordPath = "keyword_path"）
+// 落在 PhotoFilterQuery.buildKeywordPathCondition —— SQL 生成本就在 Persistence（本文件
+// 头已声明"SQL 生成下沉"），在这里再抄一份字段表只会制造第二真相。对应关系：
+//
+//   keyword_path  eq            → photo_keywords.keyword_path = ?（叶子多选）
+//   keyword_path  starts_with   → 命中节点自身 + 全部子孙（facet 下钻）
+//   keyword_path  contains      → 序列化路径子串（旧 keywords contains 的手感）
+//   keyword_path  in/contains_any/contains_all/exists → EXISTS/COUNT 子查询
+//   keywords      （旧字段）    → pmc.keywords JSON 文本检索，语义不变
+//
+// 因此本文件不需要新的分支：filterPhotos / countGlobally / whereClause 已把字段名
+// 原样交给 PhotoFilterQuery，keyword_path 在那里被识别。
 import Foundation
 import GatherPersistence
 import GatherProtocol

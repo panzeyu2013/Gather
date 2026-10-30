@@ -31,6 +31,7 @@ enum XMPPacketStore {
             xmlns:dc="http://purl.org/dc/elements/1.1/"
             xmlns:xmp="http://ns.adobe.com/xap/1.0/"
             xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+            xmlns:lr="http://ns.adobe.com/lightroom/1.0/"
             xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
             xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
             xmlns:xmpRights="http://ns.adobe.com/xap/1.0/rights/">
@@ -41,10 +42,15 @@ enum XMPPacketStore {
     """
 
     /// 对现有包体做补丁；existing == nil 时以骨架为底。返回新包体字节。
+    ///
+    /// P1 下一波 §3.6.3：内嵌与 sidecar 走**同一条** patchDocument，所以
+    /// lr:hierarchicalSubject 的写入/清空/命名空间注入自动一致；dcSubjectStyle
+    /// 由调用方从设置键 keyword_dc_style 传入（缺省 leaf = 旧行为）。
     static func patched(
         existing: Data?,
         attributes: MetadataWriteAttributes,
-        target: String
+        target: String,
+        dcSubjectStyle: KeywordDCSubjectStyle = .leaf
     ) throws -> Data {
         let document: String
         if let existing, !existing.isEmpty {
@@ -58,7 +64,8 @@ enum XMPPacketStore {
             document = skeleton
         }
         let patched = try SidecarXMPProvider.patchDocument(
-            document, attributes: attributes, xmpPath: target)
+            document, attributes: attributes, xmpPath: target,
+            dcSubjectStyle: dcSubjectStyle)
         guard isWellFormedXML(patched) else {
             throw XMPPacketStoreError.malformedAfterPatch
         }

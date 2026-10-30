@@ -179,7 +179,44 @@ public struct IngestResult: Equatable, Sendable {
     }
 }
 
-// MARK: - 服务
+// MARK: - 完成信号（§3.11.1 自动初审的触发点）
+
+/// 导入完成的**事实**（不是请求）：本服务只搬文件，不知道 sessionId/photoIds，
+/// 因此回调只报告"落地了哪些目标路径、有没有被取消"，由调用方（Host 的
+/// SessionIngestRunner）在登记后按新增 photoIds 入队 analysis.pipeline。
+///
+/// 为什么放在这里：plan §3.11.1 要求"导入完成后再分析"（不能阻塞导入），
+/// 而 IngestService 是唯一知道"复制真的结束了"的地方。
+public struct IngestCompletion: Equatable, Sendable {
+    /// 本次真正新落地的目标路径。
+    public let copied: [String]
+    /// 目标已存在且内容一致（同样要登记/分析，否则永远不进候选集）。
+    public let alreadyPresent: [String]
+    public let secondCopied: [String]
+    public let failedCount: Int
+    /// 用户取消：调用方**不得**据此触发自动分析（更不能 apply）。
+    public let cancelled: Bool
+
+    public init(
+        copied: [String],
+        alreadyPresent: [String],
+        secondCopied: [String],
+        failedCount: Int,
+        cancelled: Bool
+    ) {
+        self.copied = copied
+        self.alreadyPresent = alreadyPresent
+        self.secondCopied = secondCopied
+        self.failedCount = failedCount
+        self.cancelled = cancelled
+    }
+
+    /// 需要登记的路径（与 IngestResult.registeredDirectories 同口径）。
+    public var registeredPaths: [String] { copied + alreadyPresent }
+
+    /// 是否值得触发自动初审（有落地文件且没被取消）。
+    public var shouldTriggerAnalysis: Bool { !cancelled && !registeredPaths.isEmpty }
+}
 
 /// 单张源文件的拍摄元数据（摄取重命名模板的输入）。
 public struct IngestCaptureMetadata: Equatable, Sendable {
@@ -421,16 +458,21 @@ public final class IngestService: @unchecked Sendable {
         _ plan: IngestPlan,
         options: IngestOptions,
         shouldCancel: () -> Bool = { false },
-        onProgress: (_ completed: Int, _ total: Int) -> Void = { _, _ in }
+        onProgress: (_ completed: Int, _ total: Int) -> Void = { _, _ in },
+        onCompleted: ((IngestCompletion) -> Void)? = nil
     ) -> IngestResult {
         var copied: [String] = []
         var skipped: [String] = []
         var secondCopied: [String] = []
         var failed: [IngestFailure] = []
+        var cancelled = false
 
         for item in plan.items {
             // P1-3：Job 取消时在文件边界停下，已完成的文件保持已落地/可登记状态。
-            if shouldCancel() { break }
+            if shouldCancel() {
+                cancelled = true
+                break
+            }
             if item.conflict {
                 skipped.append(item.sourcePath)
                 onProgress(copied.count + skipped.count + failed.count, plan.items.count)
@@ -608,10 +650,20 @@ public final class IngestService: @unchecked Sendable {
                 }
             }
         }
-        return IngestResult(
+        let result = IngestResult(
             copied: copied, skipped: skipped + plan.skipped,
             unreadable: plan.unreadable, secondCopied: secondCopied, failed: failed,
             alreadyPresent: plan.alreadyPresent)
+        // 唯一触发点：复制/回滚/第二目的地都收尾之后才回调，取消也照实上报
+        // （cancelled=true → 调用方不触发自动分析，已落地文件仍按现状登记）。
+        // 回调不得抛错/不得阻塞导入语义：它只做"要不要入队"的决策。
+        onCompleted?(IngestCompletion(
+            copied: result.copied,
+            alreadyPresent: result.alreadyPresent,
+            secondCopied: result.secondCopied,
+            failedCount: result.failed.count,
+            cancelled: cancelled))
+        return result
     }
 
     /// 单文件落地：临时文件 → 校验 → 原子 rename。

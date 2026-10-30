@@ -6,6 +6,11 @@
 // - 一次解码供所有人脸与审美使用（不做 decodeRegion / 不做显著性请求）；
 // - 眼睛/微笑是**几何单调分**（不是概率），跨人脸只做相对比较；
 // - 审美分在 macOS 26+ 恒可用；取不到分数（分析失败）时置 nil，不写警告、不阻断其它信号。
+//
+// P1 §3.11.5：同一次解码**顺手**产出场景语义（VNClassifyImageRequest top-8 +
+// VNGenerateImageFeaturePrintRequest），写 photo_semantics。默认关闭
+// （semantic_index_enabled=0）：未开启时零额外 Vision 调用、零额外存储。
+// Vision 不可用 → 跳过并记 semantic_unavailable，绝不阻断初审。
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -52,6 +57,10 @@ public final class ModelReviewService: @unchecked Sendable {
     private let faceBoxes: (_ sessionId: String, _ photoIds: [String]) throws -> [ModelReviewFaceBox]
     private let previewProvider: PreviewProvider
     private let statProvider: (_ path: String) throws -> (size: Int64, mtimeMs: Double)
+    /// 语义索引存储（nil = 未接线：完全不采集，行为与旧版一致）。
+    private let semantics: (any PhotoSemanticsStore)?
+    /// semantic_index_enabled（默认 0）。每次 analyze 读一次快照，避免逐张读设置。
+    private let semanticsEnabled: () -> Bool
 
     public init(
         photoRepo: any PhotoRepository,
@@ -59,13 +68,17 @@ public final class ModelReviewService: @unchecked Sendable {
         faceBoxes: @escaping (String, [String]) throws -> [ModelReviewFaceBox],
         previewProvider: @escaping PreviewProvider = ModelReviewService.defaultPreviewProvider,
         statProvider: @escaping (String) throws -> (size: Int64, mtimeMs: Double)
-            = ModelReviewService.defaultStat
+            = ModelReviewService.defaultStat,
+        semantics: (any PhotoSemanticsStore)? = nil,
+        semanticsEnabled: @escaping () -> Bool = { false }
     ) {
         self.photoRepo = photoRepo
         self.modelReviewRepo = modelReviewRepo
         self.faceBoxes = faceBoxes
         self.previewProvider = previewProvider
         self.statProvider = statProvider
+        self.semantics = semantics
+        self.semanticsEnabled = semanticsEnabled
     }
 
     public static func defaultPreviewProvider(path: String, maxDimension: Int) async throws -> Data {
@@ -78,6 +91,17 @@ public final class ModelReviewService: @unchecked Sendable {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT))
         }
         return (size: Int64(info.st_size), mtimeMs: Double(info.st_mtimespec.tv_sec) * 1000)
+    }
+
+    /// analyze 的逐张输入（缓存命中/需解码 + 是否需要补语义行）。
+    private struct WorkItem {
+        var index: Int
+        var photo: PhotoProjectionRow
+        var faces: [ModelReviewFaceBox]
+        var fingerprint: String
+        var cached: ModelReviewResult?
+        /// 该照片还缺语义行：本次采集（缓存命中的也要单独补一次解码）。
+        var needSemantics: Bool
     }
 
     public func analyze(
@@ -100,15 +124,22 @@ public final class ModelReviewService: @unchecked Sendable {
         var inserts: [ModelReviewInsert] = []
         inserts.reserveCapacity(photos.count)
         var resultsByIndex = [ModelReviewResult?](repeating: nil, count: photos.count)
+        var collectedSemantics: [PhotoSemanticsInsert] = []
+
+        // §3.11.5：语义索引默认关闭（semantic_index_enabled=0）。开启时在同一次解码上
+        // 顺手采集；已建过语义行的照片不重复采集（升级/回填只补缺失的那些）。
+        let semanticsStore = collectSemantics ? semantics : nil
+        var indexedPhotoIds: Set<String> = []
+        if let semanticsStore {
+            do {
+                indexedPhotoIds = try semanticsStore.indexedPhotoIds(sessionId: sessionId)
+            } catch {
+                // 读语义索引失败不该阻断初审：本批按"未建索引"处理（可能重复采集）。
+                GatherLogger.log("model.review semantics lookup failed: \(error)", level: .warn)
+            }
+        }
 
         // 先把每张的输入算好（缓存命中/需解码），解码本身按 analyzeConcurrency 并发。
-        struct WorkItem {
-            var index: Int
-            var photo: PhotoProjectionRow
-            var faces: [ModelReviewFaceBox]
-            var fingerprint: String
-            var cached: ModelReviewResult?
-        }
         var work: [WorkItem] = []
         work.reserveCapacity(photos.count)
         for (index, photo) in photos.enumerated() {
@@ -126,7 +157,8 @@ public final class ModelReviewService: @unchecked Sendable {
             }
             work.append(WorkItem(
                 index: index, photo: photo, faces: faces,
-                fingerprint: fingerprint, cached: cachedResult))
+                fingerprint: fingerprint, cached: cachedResult,
+                needSemantics: semanticsStore != nil && !indexedPhotoIds.contains(photo.id)))
         }
 
         var completed = 0
@@ -134,31 +166,47 @@ public final class ModelReviewService: @unchecked Sendable {
             if isCancelled() { throw CancellationError() }
             let batch = Array(work[start..<min(start + Self.analyzeConcurrency, work.count)])
             let evaluated = try await withThrowingTaskGroup(
-                of: (Int, ModelReviewResult).self, returning: [(Int, ModelReviewResult)].self
+                of: Evaluated.self, returning: [Evaluated].self
             ) { group in
                 for item in batch {
                     if let cachedResult = item.cached {
-                        group.addTask { (item.index, cachedResult) }
+                        group.addTask {
+                            Evaluated(index: item.index, result: cachedResult, semantics: nil)
+                        }
                     } else {
                         let service = self
                         group.addTask {
-                            (item.index, await service.evaluate(
+                            let outcome = await service.evaluate(
                                 photo: item.photo, faces: item.faces,
-                                fingerprint: item.fingerprint))
+                                fingerprint: item.fingerprint,
+                                needSemantics: item.needSemantics)
+                            return Evaluated(
+                                index: item.index,
+                                result: outcome.result,
+                                semantics: outcome.semantics)
                         }
                     }
                 }
-                var collected: [(Int, ModelReviewResult)] = []
-                for try await pair in group { collected.append(pair) }
+                var collected: [Evaluated] = []
+                for try await value in group { collected.append(value) }
                 return collected
             }
             var batchInserts: [ModelReviewInsert] = []
-            for (index, result) in evaluated.sorted(by: { $0.0 < $1.0 }) {
-                resultsByIndex[index] = result
+            var batchSemantics: [PhotoSemanticsInsert] = []
+            for item in evaluated.sorted(by: { $0.index < $1.index }) {
+                let result = item.result
+                resultsByIndex[item.index] = result
+                if let observation = item.semantics,
+                   let insert = Self.makeSemanticsInsert(
+                       observation: observation,
+                       photo: photos[item.index],
+                       computedAt: result.updatedAt) {
+                    batchSemantics.append(insert)
+                }
                 // 失败行不落库：否则本地化瞬时失败会被 REPLACE 刷新 updated_at，
                 // 让 triage 指纹（count+max updated_at）反复变化、建议永久 stale。
                 guard result.status == .succeeded else { continue }
-                if let assetFileId = photos[index].assetFileId,
+                if let assetFileId = photos[item.index].assetFileId,
                    let insert = Self.makeInsert(result: result, assetFileId: assetFileId) {
                     batchInserts.append(insert)
                 }
@@ -168,9 +216,22 @@ public final class ModelReviewService: @unchecked Sendable {
                 try modelReviewRepo.insertResults(
                     batchInserts, modelId: Self.modelId, modelVersion: Self.modelVersion)
             }
+            // 语义行与模型行分开落库：语义失败不影响初审结果（+ 便于灰度和清空）。
+            writeSemantics(batchSemantics)
+            collectedSemantics.append(contentsOf: batchSemantics)
             completed += batch.count
             onProgress?(completed, photos.count)
         }
+        // 语义回填：模型结果命中缓存（不需要重跑初审）但缺语义行的照片，
+        // 单独补一次解码。只在"刚开启语义索引"时发生一次，不改变初审结果。
+        if let semanticsStore {
+            let covered = Set(collectedSemantics.map(\.photoId)).union(indexedPhotoIds)
+            try await backfillSemantics(
+                work.filter { $0.needSemantics && !covered.contains($0.photo.id) },
+                store: semanticsStore,
+                isCancelled: isCancelled)
+        }
+
         let results = resultsByIndex.compactMap { $0 }
         guard results.count == photos.count else {
             throw CancellationError()
@@ -178,17 +239,27 @@ public final class ModelReviewService: @unchecked Sendable {
         return results
     }
 
+    /// 一次解码的产物：初审结果 + （可选）语义观测。
+    struct Evaluated {
+        let index: Int
+        let result: ModelReviewResult
+        let semantics: SemanticObservation?
+    }
+
     private func evaluate(
         photo: PhotoProjectionRow,
         faces: [ModelReviewFaceBox],
-        fingerprint: String
-    ) async -> ModelReviewResult {
+        fingerprint: String,
+        needSemantics: Bool
+    ) async -> (result: ModelReviewResult, semantics: SemanticObservation?) {
         let now = nowISOString()
         do {
             let data = try await previewProvider(photo.filepath, Self.previewMaxDimension)
             guard let image = Self.decode(data) else {
                 throw NSError(domain: "ModelReview", code: 1)
             }
+            // 同一个 1280 解码上顺手采集语义（唯一额外成本是两次 Vision 请求）。
+            let semantics = needSemantics ? Self.observeSemantics(image) : nil
             var warnings: [String] = []
             var signals: [FaceReviewSignal] = []
             for (index, face) in faces.prefix(3).enumerated() {
@@ -210,7 +281,7 @@ public final class ModelReviewService: @unchecked Sendable {
             let aesthetic = scores?.score
             let utility = scores?.isUtility
             if utility == true { warnings.append("utility_image") }
-            return ModelReviewResult(
+            return (result: ModelReviewResult(
                 photoId: photo.id,
                 assetFileId: photo.assetFileId,
                 status: .succeeded,
@@ -224,9 +295,9 @@ public final class ModelReviewService: @unchecked Sendable {
                 modelId: Self.modelId,
                 modelVersion: Self.modelVersion,
                 inputFingerprint: fingerprint,
-                updatedAt: now)
+                updatedAt: now), semantics: semantics)
         } catch {
-            return ModelReviewResult(
+            return (result: ModelReviewResult(
                 photoId: photo.id,
                 assetFileId: photo.assetFileId,
                 status: .failed,
@@ -235,7 +306,7 @@ public final class ModelReviewService: @unchecked Sendable {
                 modelId: Self.modelId,
                 modelVersion: Self.modelVersion,
                 inputFingerprint: fingerprint,
-                updatedAt: now)
+                updatedAt: now), semantics: nil)
         }
     }
 
@@ -355,6 +426,76 @@ public final class ModelReviewService: @unchecked Sendable {
             warningsJson: warnings,
             fingerprint: result.inputFingerprint,
             updatedAt: result.updatedAt)
+    }
+
+    // MARK: - 语义（photo_semantics）
+
+    /// 语义采集总开关：接了存储 + 设置开启（semantic_index_enabled，默认 0）。
+    private var collectSemantics: Bool { semantics != nil && semanticsEnabled() }
+
+    /// Vision 语义采集；不可用时记 semantic_unavailable 并返回 nil（不阻断初审）。
+    static func observeSemantics(_ image: CGImage) -> SemanticObservation? {
+        switch ImageSemanticsExtractor.observe(image) {
+        case .success(let observation):
+            return observation
+        case .failure(let failure):
+            // 旧系统/Vision 不可用：只记日志，不写进 warnings（那会污染既有字段语义）。
+            GatherLogger.log("model.review \(failure.description)", level: .warn)
+            return nil
+        }
+    }
+
+    static func makeSemanticsInsert(
+        observation: SemanticObservation,
+        photo: PhotoProjectionRow,
+        computedAt: String
+    ) -> PhotoSemanticsInsert? {
+        guard !observation.labels.isEmpty || !observation.feature.isEmpty else { return nil }
+        return PhotoSemanticsInsert(
+            photoId: photo.id,
+            sessionId: photo.sessionId,
+            labelsJson: SemanticIndex.encodeLabels(observation.labels),
+            feature: observation.feature.isEmpty
+                ? nil : SemanticFeatureCodec.encode(observation.feature),
+            featureDim: observation.feature.count,
+            modelVersion: ImageSemanticsExtractor.modelVersion,
+            computedAt: computedAt)
+    }
+
+    /// 语义行落库；失败只记日志（初审结果已提交，不能被语义连带改判失败）。
+    private func writeSemantics(_ inserts: [PhotoSemanticsInsert]) {
+        guard let semantics, !inserts.isEmpty else { return }
+        do {
+            try semantics.upsert(inserts)
+        } catch {
+            GatherLogger.log(
+                "model.review semantics write failed (\(inserts.count) rows): \(error)",
+                level: .warn)
+        }
+    }
+
+    /// 缓存命中但缺语义行的回填（开启语义索引后的一次性补齐；取消即停）。
+    private func backfillSemantics(
+        _ items: [WorkItem],
+        store: any PhotoSemanticsStore,
+        isCancelled: () -> Bool
+    ) async throws {
+        guard !items.isEmpty else { return }
+        for item in items {
+            if isCancelled() { throw CancellationError() }
+            do {
+                let data = try await previewProvider(item.photo.filepath, Self.previewMaxDimension)
+                guard let image = Self.decode(data),
+                      let observation = Self.observeSemantics(image),
+                      let insert = Self.makeSemanticsInsert(
+                          observation: observation, photo: item.photo,
+                          computedAt: nowISOString()) else { continue }
+                try store.upsert([insert])
+            } catch {
+                // 单张失败不阻断整批回填（文件消失/损坏都算单张失败）。
+                GatherLogger.log("model.review semantics backfill failed: \(error)", level: .warn)
+            }
+        }
     }
 }
 

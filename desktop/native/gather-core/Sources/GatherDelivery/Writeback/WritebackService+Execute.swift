@@ -2,6 +2,7 @@
 // 拆分（final-sweep-code P1-1 / 纯移动）：WritebackService 按角色拆分——执行与写盘循环。
 // 源：HEAD ab7752e 的 Writeback/WritebackService.swift；仅调整跨文件访问级与文件头注释。
 import Foundation
+import os
 import GatherPersistence
 import GatherProtocol
 
@@ -131,6 +132,8 @@ extension WritebackService {
         // 可变状态，必须串行写入（实测并发 append 会 SIGSEGV 或静默丢项）——统一收进
         // PhaseOneCollector 的锁内，快照在 await 返回后转单线程合并。
         let phaseOne = PhaseOneCollector()
+        // 快路径（内嵌会话）的写后报告：commit 时就地算出指纹，Phase 2 不再重读整文件。
+        let rewriteReports = RewriteReportCollector()
         _ = try await batchAsync(runnableGroups, concurrency: 4) { group in
             let xmpPath = group.0
             let groupItems = group.1
@@ -143,6 +146,7 @@ extension WritebackService {
                     entryById: entryById,
                     resolvedByPhoto: resolvedByPhoto,
                     phaseOne: phaseOne,
+                    rewriteReports: rewriteReports,
                     sessionId: sessionId
                 )
             }
@@ -198,13 +202,25 @@ extension WritebackService {
         // 持久化属性。回读失败只进 errors，不改判已落盘的 written，也不再把
         // 两列留空等 outbox 镜像。
         var fingerprintByPath: [String: String] = [:]
+        // 快路径的写后报告（内嵌会话在 commit 内已算出指纹与扫描摘要）。
+        let rewriteReportByPath = rewriteReports.snapshot
         for path in writtenPaths.sorted() {
-            do {
-                fingerprintByPath[path] = try await MetadataFingerprint.contentFingerprint(path)
-            } catch {
-                errors.append("DELIVERY_FINGERPRINT_FAILED: \(path): \(error)")
+            let report = rewriteReportByPath[path]
+            if let report, !report.fingerprintAfter.isEmpty {
+                // 第 7 次整文件读在这里消失：指纹来自 commit 的增量哈希。
+                fingerprintByPath[path] = report.fingerprintAfter
+            } else {
+                do {
+                    fingerprintByPath[path] = try await MetadataFingerprint.contentFingerprint(path)
+                } catch {
+                    errors.append("DELIVERY_FINGERPRINT_FAILED: \(path): \(error)")
+                }
             }
             guard let photoPath = photoPathByPath[path] else { continue }
+            if report != nil {
+                // 第 8 次整文件读在这里消失：base_values 用本项已持有的写入属性。
+                continue
+            }
             do {
                 baseValuesByPath[path] = try await xmp.readAttributes(photoPath: photoPath).asJSONValue
             } catch {
@@ -332,6 +348,7 @@ extension WritebackService {
         entryById: [Int: DeliveryWritebackEntry],
         resolvedByPhoto: [String: ResolvedPhotoAsset],
         phaseOne: PhaseOneCollector,
+        rewriteReports: RewriteReportCollector,
         sessionId: String
     ) async {
         for item in items {
@@ -361,6 +378,22 @@ extension WritebackService {
                 // 会写到旧路径/旧 sidecar。
                 let resolvedTarget = resolvedByPhoto[entry.item.photoId]
                 let writePhotoPath = resolvedTarget?.filepath ?? photoPath
+                // P1 下一波（plan §3.2）：内嵌目标优先走"一次打开"会话——写前指纹、
+                // 备份、读属性、写盘、写后校验全部复用同一次顺序遍历。会话返回 nil
+                // （非内嵌/不支持/读取回退）时落回下面的旧路径，语义逐字节不变。
+                if let session = await openRewriteSession(photoPath: writePhotoPath) {
+                    try await writeWithSession(
+                        session: session,
+                        entry: entry,
+                        persistedItem: persistedItem,
+                        xmpPath: xmpPath,
+                        photoPath: photoPath,
+                        writePhotoPath: writePhotoPath,
+                        itemId: Int64(itemId),
+                        phaseOne: phaseOne,
+                        rewriteReports: rewriteReports)
+                    continue
+                }
                 // P1：写前基线校验。plan/入队到真正写盘之间外部可能改过 sidecar；
                 // 有 base_fingerprint 时先比对，避免 keepExternal 计划被静默覆盖。
                 if (entry.item.typedModule == .metadata
@@ -404,66 +437,13 @@ extension WritebackService {
                 // 直写（S5c-2b-3b-2a）：先读当前属性再只覆盖本次字段，
                 // 保留外部写入的 dateTaken/GPS；关键词按磁盘现状重新合并，
                 // 避免 preview 快照与 execute 之间外部新增的词被静默丢弃。
-                var attributesToWrite = try await xmp.readAttributes(photoPath: writePhotoPath)
-                let keywordsBeforeWrite = attributesToWrite.keywords ?? []
-                let writeKeywords = orderedUnion(keywordsBeforeWrite, persistedItem.keywords)
-                // attributes.keywords（如 culling 写回计划）也必须合并。
-                let mergedKeywords = orderedUnion(
-                    writeKeywords,
-                    persistedItem.attributes?.keywords ?? []
-                )
-                // 关键词写入模式（S5c-2b-3b-2b-2）：手动元数据把意图落在
-                // delivery_items.attributes_json.keywords_mode。replace = 以项里的
-                // keywords 为权威列表（replace/remove 必须能删词）；缺省/merge =
-                // 与盘上现状取并集（culling/人脸/相似度的只增语义不变）。
-                let keywordsMode = entry.item.attributes[
-                    MetadataMutationService.keywordsModeKey]?.stringValue
-                if keywordsMode == MetadataKeywordWriteMode.delta.rawValue {
-                    // K0：delta 在锁内按盘上现状重新合并，绝不覆盖 preview 后外部新增的词。
-                    let added = entry.item.attributes["keywords_added"]?
-                        .arrayElements?.compactMap(\.stringValue) ?? []
-                    let removed = entry.item.attributes["keywords_remove"]?
-                        .arrayElements?.compactMap(\.stringValue) ?? []
-                    attributesToWrite.keywords = KeywordPlanner.apply(
-                        existing: keywordsBeforeWrite, added: added, removed: removed)
-                } else if keywordsMode == MetadataKeywordWriteMode.replace.rawValue {
-                    attributesToWrite.keywords = persistedItem.keywords
-                } else {
-                    attributesToWrite.keywords = persistedItem.attributes != nil
-                        ? mergedKeywords
-                        : writeKeywords
-                }
-                if let attributes = persistedItem.attributes {
-                    if let rating = attributes.rating { attributesToWrite.rating = rating }
-                    if let label = attributes.label { attributesToWrite.label = label }
-                }
-                // P1 / IPTC：描述性元数据按字段三态合并到盘上现值（nil 保留、
-                // 空值清空、有值写入），绝不整块覆盖外部新增的字段。
-                if let descriptiveValue = entry.item.attributes["descriptive"],
-                   let descriptive = try? descriptiveValue.decode(DescriptiveMetadata.self),
-                   !descriptive.isEmpty {
-                    var merged = (attributesToWrite.descriptive ?? DescriptiveMetadata())
-                        .applying(descriptive)
-                    // 撤销模板时结构字段必须整块还原（含删除模板新增的 contact 成员）；
-                    // 普通套用仍走成员级合并，绝不覆盖外部填写的其它成员。
-                    // P0：标志为真但补丁没带 contact 时，绝不能拿空结构整块替换——
-                    // 那会把 sidecar 里的 CreatorContactInfo 静默删光。
-                    if entry.item.attributes["replace_contact"]?.boolValue == true,
-                       let contact = descriptive.contactInfo {
-                        merged.set(.contact(contact), for: .contactInfo)
-                    }
-                    attributesToWrite.descriptive = merged
-                    // P2：把"整块替换"标志带到 Converge，否则崩溃重放/撤销时缓存投影
-                    // 只做成员级合并，模板删掉的 contact 成员会留在 iptc_json。
-                    if entry.item.attributes["replace_contact"]?.boolValue == true,
-                       descriptive.contactInfo != nil {
-                        attributesToWrite.replaceContact = true
-                    }
-                }
-                // P1 / E：triage 私有命名空间信号随交付落盘。
-                if let signal = entry.item.attributes["triageSignal"]?.stringValue {
-                    attributesToWrite.triageSignal = signal
-                }
+                // 合并规则抽在 mergeAttributes 里：快路径（内嵌会话）与旧路径共用同一份。
+                let merged = mergeAttributes(
+                    base: try await xmp.readAttributes(photoPath: writePhotoPath),
+                    entry: entry,
+                    persistedItem: persistedItem)
+                let attributesToWrite = merged.attributes
+                let keywordsBeforeWrite = merged.keywordsBeforeWrite
                 try await xmp.writeAttributes(
                     photoPath: writePhotoPath, attributes: attributesToWrite)
                 phaseOne.recordPrepared(PreparedEntry(
@@ -484,4 +464,158 @@ extension WritebackService {
             }
         }
     }
+
+    // MARK: - 内嵌快路径（plan §3.2）
+
+    /// 打开写回会话。nil = 走旧路径；打开失败只留痕（快路径不得让原本能写成功的项失败）。
+    private func openRewriteSession(photoPath: String) async -> (any MetadataRewriteSession)? {
+        guard let factory = rewriteSessions else { return nil }
+        do {
+            return try await factory.open(photoPath: photoPath)
+        } catch {
+            GatherLogger.log(
+                "embedded rewrite session unavailable, falling back "
+                    + "(path token=\(TSPath.basename(photoPath))): \(error)",
+                level: .debug)
+            return nil
+        }
+    }
+
+    /// 快路径的单项写盘：一次打开的会话同时覆盖
+    /// 写前指纹（session.fingerprintBefore）/ 备份 / 读属性（session.attributes）/
+    /// 写盘 + 写后校验（session.commit）/ 写后指纹（report.fingerprintAfter）。
+    /// 与旧路径的差异只有"少读几遍整文件"，语义与错误码保持同一口径。
+    private func writeWithSession(
+        session: any MetadataRewriteSession,
+        entry: DeliveryWritebackEntry,
+        persistedItem: WritebackItem,
+        xmpPath: String,
+        photoPath: String,
+        writePhotoPath: String,
+        itemId: Int64,
+        phaseOne: PhaseOneCollector,
+        rewriteReports: RewriteReportCollector
+    ) async throws {
+        // 写前基线校验（P1）：与旧路径同一语义、同一稳定码，只是指纹改用会话快照
+        // 里的值 —— 省掉第 1 次整文件读。
+        if (entry.item.typedModule == .metadata || entry.item.typedModule == .template),
+           !entry.delivery.baseFingerprint.isEmpty,
+           session.fingerprintBefore != entry.delivery.baseFingerprint {
+            throw WritebackConflictError(path: xmpPath)
+        }
+        // 写前真实备份（S5c-2b-3b-1）：必须在文件写入之前取；已有备份（重试）直接复用。
+        if entry.delivery.backupPath.isEmpty, phaseOne.needsBackup(path: xmpPath) {
+            let backupPath = try await session.writeHeaderBackup()
+            phaseOne.recordBackup(path: xmpPath, backupPath: backupPath)
+        }
+        let merged = mergeAttributes(
+            base: session.attributes, entry: entry, persistedItem: persistedItem)
+        let report = try await session.commit(merged.attributes)
+        rewriteReports.record(path: xmpPath, report: report)
+        phaseOne.recordPrepared(PreparedEntry(
+            itemId: itemId,
+            delivery: entry.delivery,
+            persistedItem: persistedItem,
+            photoPath: photoPath,
+            writePhotoPath: writePhotoPath,
+            writtenAttributes: merged.attributes,
+            keywordsBeforeWrite: merged.keywordsBeforeWrite
+        ))
+    }
+
+    /// 组内合并：盘上现值 + 本项意图 → 待写属性。
+    /// 旧路径（xmp.readAttributes）与快路径（session.attributes）共用这一份实现，
+    /// 否则两条路径会写出不同关键词顺序/不同三态结果。
+    private func mergeAttributes(
+        base: MetadataWriteAttributes,
+        entry: DeliveryWritebackEntry,
+        persistedItem: WritebackItem
+    ) -> (attributes: MetadataWriteAttributes, keywordsBeforeWrite: [String]) {
+        var attributesToWrite = base
+        let keywordsBeforeWrite = attributesToWrite.keywords ?? []
+        let writeKeywords = orderedUnion(keywordsBeforeWrite, persistedItem.keywords)
+        // attributes.keywords（如 culling 写回计划）也必须合并。
+        let mergedKeywords = orderedUnion(
+            writeKeywords,
+            persistedItem.attributes?.keywords ?? []
+        )
+        // 关键词写入模式（S5c-2b-3b-2b-2）：手动元数据把意图落在
+        // delivery_items.attributes_json.keywords_mode。replace = 以项里的
+        // keywords 为权威列表（replace/remove 必须能删词）；缺省/merge =
+        // 与盘上现状取并集（culling/人脸/相似度的只增语义不变）。
+        let keywordsMode = entry.item.attributes[
+            MetadataMutationService.keywordsModeKey]?.stringValue
+        if keywordsMode == MetadataKeywordWriteMode.delta.rawValue {
+            // K0：delta 在锁内按盘上现状重新合并，绝不覆盖 preview 后外部新增的词。
+            let added = entry.item.attributes["keywords_added"]?
+                .arrayElements?.compactMap(\.stringValue) ?? []
+            let removed = entry.item.attributes["keywords_remove"]?
+                .arrayElements?.compactMap(\.stringValue) ?? []
+            attributesToWrite.keywords = KeywordPlanner.apply(
+                existing: keywordsBeforeWrite, added: added, removed: removed)
+        } else if keywordsMode == MetadataKeywordWriteMode.replace.rawValue {
+            attributesToWrite.keywords = persistedItem.keywords
+        } else {
+            attributesToWrite.keywords = persistedItem.attributes != nil
+                ? mergedKeywords
+                : writeKeywords
+        }
+        if let attributes = persistedItem.attributes {
+            if let rating = attributes.rating { attributesToWrite.rating = rating }
+            if let label = attributes.label { attributesToWrite.label = label }
+        }
+        // P1 / IPTC：描述性元数据按字段三态合并到盘上现值（nil 保留、
+        // 空值清空、有值写入），绝不整块覆盖外部新增的字段。
+        if let descriptiveValue = entry.item.attributes["descriptive"],
+           let descriptive = try? descriptiveValue.decode(DescriptiveMetadata.self),
+           !descriptive.isEmpty {
+            var merged = (attributesToWrite.descriptive ?? DescriptiveMetadata())
+                .applying(descriptive)
+            // 撤销模板时结构字段必须整块还原（含删除模板新增的 contact 成员）；
+            // 普通套用仍走成员级合并，绝不覆盖外部填写的其它成员。
+            // P0：标志为真但补丁没带 contact 时，绝不能拿空结构整块替换——
+            // 那会把 sidecar 里的 CreatorContactInfo 静默删光。
+            if entry.item.attributes["replace_contact"]?.boolValue == true,
+               let contact = descriptive.contactInfo {
+                merged.set(.contact(contact), for: .contactInfo)
+            }
+            attributesToWrite.descriptive = merged
+            // P2：把"整块替换"标志带到 Converge，否则崩溃重放/撤销时缓存投影
+            // 只做成员级合并，模板删掉的 contact 成员会留在 iptc_json。
+            if entry.item.attributes["replace_contact"]?.boolValue == true,
+               descriptive.contactInfo != nil {
+                attributesToWrite.replaceContact = true
+            }
+        }
+        // P1 / E：triage 私有命名空间信号随交付落盘。
+        if let signal = entry.item.attributes["triageSignal"]?.stringValue {
+            attributesToWrite.triageSignal = signal
+        }
+        return (attributesToWrite, keywordsBeforeWrite)
+    }
+}
+
+/// 快路径的写后报告收集（并发 body 写入，Phase 2 单线程读快照）。
+/// 与 PhaseOneCollector 同锁纪律：锁内不含 await。
+final class RewriteReportCollector: Sendable {
+    private let reports = OSAllocatedUnfairLock<[String: MetadataRewriteReport]>(initialState: [:])
+
+    /// 同一交付（xmpPath）在一个组内串行写：后一次覆盖前一次，最终指纹以最后一次为准。
+    func record(path: String, report: MetadataRewriteReport) {
+        reports.withLock { $0[path] = report }
+    }
+
+    var snapshot: [String: MetadataRewriteReport] {
+        reports.withLock { $0 }
+    }
+}
+
+/// 写前基线不符（快路径）：稳定码与旧路径一致（XMP_EXTERNAL_EDIT_CONFLICT），
+/// 由 MetadataWritebackFailure.from 落库成与旧路径同名的冲突。
+struct WritebackConflictError: Error, MetadataCodedError, CustomStringConvertible {
+    let path: String
+
+    var code: String { "XMP_EXTERNAL_EDIT_CONFLICT" }
+    var xmpPath: String { path }
+    var description: String { "XMP_EXTERNAL_EDIT_CONFLICT: " + path }
 }

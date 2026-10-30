@@ -32,11 +32,15 @@ final class MetadataWriteRouter: XMPProvider {
     /// 不需要 @unchecked。
     private let sidecar: SidecarXMPProvider
     private let modeProvider: @Sendable () -> String
+    /// 内嵌写盘的 dc:subject 风格（leaf/path）；sidecar 由 SidecarXMPProvider 自己持有。
+    private let dcSubjectStyle: KeywordDCSubjectStyle
     private let pendingBackups = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
 
     init(sidecar: SidecarXMPProvider = SidecarXMPProvider(),
+         dcSubjectStyle: KeywordDCSubjectStyle = .leaf,
          modeProvider: @escaping @Sendable () -> String = { "sidecar" }) {
         self.sidecar = sidecar
+        self.dcSubjectStyle = dcSubjectStyle
         self.modeProvider = modeProvider
     }
 
@@ -111,7 +115,8 @@ final class MetadataWriteRouter: XMPProvider {
                 ?? photoPath + ".gather-header-" + UUID().uuidString.lowercased()
             do {
                 _ = try await JPEGMetadataWriter.write(
-                    photoPath: photoPath, attributes: attributes, headerBackupPath: backupPath)
+                    photoPath: photoPath, attributes: attributes,
+                    headerBackupPath: backupPath, dcSubjectStyle: dcSubjectStyle)
             } catch {
                 if ownsBackup {
                     do {

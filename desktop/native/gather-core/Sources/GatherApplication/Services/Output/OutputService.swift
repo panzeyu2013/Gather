@@ -59,9 +59,16 @@ public enum OutputServiceError: Error, Equatable, CustomStringConvertible, Coded
 
 public final class OutputService: @unchecked Sendable {
     private let exportService: ExportService
+    /// 交付展示元数据（一次 JOIN 取全批）。未接线时全部降级为空字段，
+    /// 输出与升级前一致（老测试/预览路径不必改构造）。
+    private let presentationSource: any OutputPresentationSource
 
-    public init(exportService: ExportService) {
+    public init(
+        exportService: ExportService,
+        presentationSource: any OutputPresentationSource = EmptyOutputPresentationSource()
+    ) {
         self.exportService = exportService
+        self.presentationSource = presentationSource
     }
 
     /// 逐配方执行。失败只记在该配方的 errors 里，不中断后续配方与 manifest。
@@ -186,6 +193,10 @@ public final class OutputService: @unchecked Sendable {
 
             // 联系表/画廊只收真正写出的产物（导出失败或文件缺失的照片不入册）。
             let outputs = written.filter { FileManager.default.fileExists(atPath: $0.url.path) }
+            // 一次 JOIN 取全批元数据（N+1 会随张数线性劣化）；失败只降级并计入
+            // metadataMissing，绝不能因为"没扫元数据"把整批交付判失败。
+            let presentations = loadPresentations(
+                sessionId: input.sessionId, outputs: outputs, errors: &errors)
 
             var galleryPath: String?
             var galleryItems: Int?
@@ -196,7 +207,8 @@ public final class OutputService: @unchecked Sendable {
                 } else {
                     do {
                         let built = try makeGallery(
-                            outputs: outputs, destination: destination,
+                            outputs: outputs, presentations: presentations,
+                            destination: destination,
                             gallery: gallery, isCancelled: isCancelled)
                         galleryPath = built.indexPath
                         galleryItems = built.itemCount
@@ -218,7 +230,8 @@ public final class OutputService: @unchecked Sendable {
                 } else {
                     do {
                         let built = try makeContactSheet(
-                            outputs: outputs, destination: destination,
+                            outputs: outputs, presentations: presentations,
+                            destination: destination,
                             sheet: sheet, isCancelled: isCancelled)
                         contactSheetPath = built.path
                         contactSheetFailed = built.failedImages
@@ -249,7 +262,8 @@ public final class OutputService: @unchecked Sendable {
                 contactSheetPath: contactSheetPath,
                 contactSheetFailedImages: contactSheetFailed,
                 galleryPath: galleryPath, galleryItems: galleryItems,
-                gallerySkipped: gallerySkipped, files: files, errors: errors))
+                gallerySkipped: gallerySkipped, files: files,
+                metadataMissing: presentations.metadataMissing, errors: errors))
         }
 
         var manifestError: String?
@@ -347,18 +361,69 @@ public final class OutputService: @unchecked Sendable {
 
     // MARK: - 联系表 / 画廊
 
+    /// 展示元数据：顺序与 outputs 一致；失败/缺行降级为空字段并计入 metadataMissing。
+    private func loadPresentations(
+        sessionId: String,
+        outputs: [(photoId: String, url: URL, name: String)],
+        errors: inout [String]
+    ) -> OutputPresentationSnapshot {
+        guard !outputs.isEmpty else { return OutputPresentationSnapshot() }
+        let snapshot: OutputPresentationSnapshot
+        do {
+            snapshot = try presentationSource.presentations(
+                sessionId: sessionId, photoIds: outputs.map(\.photoId))
+        } catch {
+            // 取数失败不是交付失败：元数据只是"锦上添花"，成片已经写盘。
+            errors.append("presentation: " + String(describing: error))
+            GatherLogger.log("output presentation source failed", level: .warn)
+            return OutputPresentationSnapshot(
+                items: outputs.map {
+                    DeliveryPresentationItem(
+                        photoId: $0.photoId, filePath: $0.url.path, filename: $0.name)
+                },
+                metadataMissing: outputs.count)
+        }
+        return snapshot
+    }
+
+    /// 把"真正写出的成片"与展示元数据合成一张表：成品名/路径以写盘结果为准。
+    private static func merge(
+        outputs: [(photoId: String, url: URL, name: String)],
+        presentations: OutputPresentationSnapshot
+    ) -> [DeliveryPresentationItem] {
+        var byId: [String: DeliveryPresentationItem] = [:]
+        for item in presentations.items { byId[item.photoId] = item }
+        return outputs.map { output in
+            guard var item = byId[output.photoId] else {
+                return DeliveryPresentationItem(
+                    photoId: output.photoId, filePath: output.url.path, filename: output.name)
+            }
+            item.photoId = output.photoId
+            item.filePath = output.url.path
+            item.filename = output.name
+            return item
+        }
+    }
+
     private func makeContactSheet(
         outputs: [(photoId: String, url: URL, name: String)],
+        presentations: OutputPresentationSnapshot,
         destination: String,
         sheet: OutputContactSheetOptions,
         isCancelled: () -> Bool
     ) throws -> (path: String, failedImages: Int) {
-        let items = outputs.map {
-            ContactSheetItem(path: $0.url.path, caption: $0.name)
+        let items = Self.merge(outputs: outputs, presentations: presentations).map { item in
+            ContactSheetItem(
+                presentation: item,
+                caption: CaptionFormatter.format(
+                    sheet.captionTemplate, item: item, fields: sheet.fields))
         }
         let sheetOptions = ContactSheetOptions(
             columns: sheet.columns, rows: sheet.rows,
-            title: sheet.title, subtitle: sheet.subtitle, footerText: sheet.footer)
+            title: sheet.title, subtitle: sheet.subtitle, footerText: sheet.footer,
+            fields: sheet.fields,
+            showLabelChip: sheet.showLabelChip,
+            showPickBorder: sheet.showPickBorder)
         let name = "contact-sheet-\(Self.timestamp()).pdf"
         let url = URL(fileURLWithPath: destination).appendingPathComponent(name)
         let result = try ContactSheetRenderer.render(
@@ -368,12 +433,13 @@ public final class OutputService: @unchecked Sendable {
 
     private func makeGallery(
         outputs: [(photoId: String, url: URL, name: String)],
+        presentations: OutputPresentationSnapshot,
         destination: String,
         gallery: OutputGalleryOptions,
         isCancelled: () -> Bool
     ) throws -> GalleryResult {
-        let items = outputs.map {
-            GalleryItem(id: $0.photoId, path: $0.url.path, name: $0.name, caption: $0.name)
+        let items = Self.merge(outputs: outputs, presentations: presentations).map {
+            GalleryItem(presentation: $0)
         }
         return try GalleryBuilder.build(
             items: items,
@@ -382,7 +448,8 @@ public final class OutputService: @unchecked Sendable {
                 subtitle: gallery.subtitle,
                 footer: gallery.footer,
                 thumbnailMaxDimension: gallery.thumbnailMaxDimension,
-                largeMaxDimension: gallery.largeMaxDimension),
+                largeMaxDimension: gallery.largeMaxDimension,
+                fields: gallery.fields),
             destination: URL(fileURLWithPath: destination).appendingPathComponent("gallery"),
             isCancelled: isCancelled)
     }

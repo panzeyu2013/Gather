@@ -3,6 +3,7 @@
 // confirm_sync/cleanup。
 import Foundation
 import GatherProtocol
+import GatherUI
 
 private final class CaptureOneCompletionGate: @unchecked Sendable {
     private let lock = NSLock()
@@ -28,6 +29,11 @@ private final class CaptureOneCompletionGate: @unchecked Sendable {
 // Cut 3 / 3b-0：CaptureOneBridgeError / C1PreflightStatus / CaptureOneBridging
 // 已上移到 GatherProtocol（Protocol/C1.swift）；本文件只保留 AppleScript /
 // 子进程实现与静态 shared 注册，并声明对协议的能力面 conformance。
+//
+// P1 §3.10.2/§3.10.3（本波新增，均不改变既有成员语义）：
+//   · selectVariants(paths:)  —— 在 C1 中选中给定照片：AppleScript 单值 whose 匹配，
+//     失败回退 open -a（NSWorkspace.open 的等价物，**可能触发 C1 导入**，UI 必须标注）；
+//   · adjustmentHints(paths:) —— 读 XMP 里的 crs: 字段，提示"预览可能不含 C1 调整"。
 
 /// `shared` 的锁保护存储（Swift 6：`nonisolated` 全局可变状态非法 #MutableGlobalVariable）。
 /// `@unchecked Sendable` 的依据：唯一可变状态 `value` 只在 `lock` 临界区内读写。
@@ -48,6 +54,9 @@ private final class CaptureOneBridgeStorage: @unchecked Sendable {
         }
     }
 }
+
+// P1 §3.10.2/§3.10.3 的 DTO（C1SelectionOutcome / C1AdjustmentHint 等）声明在 GatherUI
+// 的 CullingViewModel+Writeback.swift（UI 端口），本文件只负责实现与脚本。
 
 public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     private static let sharedStorage = CaptureOneBridgeStorage()
@@ -83,6 +92,126 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         // C1 需要一个短暂窗口读取 XMP；只有脚本成功才写入 durable ack。
         try await Task.sleep(for: .milliseconds(500))
         try recordReloadAck(sessionId)
+    }
+
+    /// 在 Capture One 中选中给定照片（§3.10.2）。
+    ///
+    /// 顺序：
+    /// 1. 过滤非法/不存在的路径 → notFound（不 fallback：绝不因为"文件不在"而触发导入）；
+    /// 2. AppleScript 逐路径 `whose path is "<posix>"` 匹配后 select（AppleScript 没有
+    ///    `in {…}` 集合字面量，必须单值比较；路径按 AppleScript 字符串规则转义）；
+    /// 3. 脚本语法/字典不可用（C1 版本太老）或执行失败 → `open -a <app>`（等价
+    ///    NSWorkspace.open，**可能触发 C1 导入**），结果里 method 标明来源。
+    ///
+    /// 脚本成功但一条都没匹配（照片不在当前目录）：返回 appleScript + 全部 notFound，
+    /// **不** fallback —— 否则会把"不在当前目录"变成"导入一批新文件"。
+    public func selectVariants(paths: [String]) async throws -> C1SelectionOutcome {
+        var seen = Set<String>()
+        var requested: [String] = []
+        var notFound: [String] = []
+        for raw in paths {
+            let path = (raw as NSString).standardizingPath
+            guard path.hasPrefix("/") else {
+                notFound.append(raw)
+                continue
+            }
+            guard seen.insert(path).inserted else { continue }
+            if FileManager.default.fileExists(atPath: path) {
+                requested.append(path)
+            } else {
+                notFound.append(path)
+            }
+        }
+        guard !requested.isEmpty else {
+            return C1SelectionOutcome(
+                method: .appleScript, paths: [], notFound: notFound, appName: nil)
+        }
+
+        let appName = try await captureOneApplicationName()
+        do {
+            let output = try await runAppleScript(
+                Self.selectVariantsScript(appName: appName, paths: requested))
+            let flags = output
+                .split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            if flags.count == requested.count {
+                var selected: [String] = []
+                for (index, flag) in flags.enumerated() where flag == "1" {
+                    selected.append(requested[index])
+                }
+                notFound.append(contentsOf: requested.enumerated()
+                    .filter { flags[$0.offset] != "1" }
+                    .map { $0.element })
+                return C1SelectionOutcome(
+                    method: .appleScript, paths: selected,
+                    notFound: notFound, appName: appName)
+            }
+            // 输出形状不认识（脚本被旧版 C1 静默改写等）→ 走兜底。
+            return try await openInCaptureOne(
+                appName: appName, paths: requested, notFound: notFound,
+                reason: .scriptUnsupported)
+        } catch let error as CaptureOneBridgeError {
+            switch error {
+            case .notRunning, .notAuthorized, .noDocument, .timedOut:
+                // 应用状态问题不是脚本能力问题：原样抛出，让 UI 显示预检原因。
+                throw error
+            case .scriptFailed(let message):
+                let reason: C1SelectionFallbackReason = Self.looksLikeUnsupported(
+                    message: message) ? .scriptUnsupported
+                    : .scriptFailed(code: GatherErrorCode.C1_SCRIPT_FAILED.rawValue)
+                return try await openInCaptureOne(
+                    appName: appName, paths: requested, notFound: notFound, reason: reason)
+            }
+        } catch {
+            return try await openInCaptureOne(
+                appName: appName, paths: requested, notFound: notFound,
+                reason: .scriptFailed(code: GatherErrorCode.C1_SCRIPT_FAILED.rawValue))
+        }
+    }
+
+    /// 兜底：让 C1 打开这些文件（可能触发导入）。失败归一到 C1_SCRIPT_FAILED。
+    private func openInCaptureOne(
+        appName: String,
+        paths: [String],
+        notFound: [String],
+        reason: C1SelectionFallbackReason
+    ) async throws -> C1SelectionOutcome {
+        guard Self.isSafeApplicationName(appName) else {
+            throw CaptureOneBridgeError.scriptFailed("unsafe application name")
+        }
+        do {
+            _ = try await runProcess(
+                executable: Self.openExecutable,
+                arguments: ["-a", appName] + paths,
+                timeout: Self.openTimeout)
+        } catch let error as CaptureOneBridgeError {
+            throw error
+        } catch {
+            throw CaptureOneBridgeError.scriptFailed(String(describing: error))
+        }
+        return C1SelectionOutcome(
+            method: .workspace(reason: reason), paths: paths,
+            notFound: notFound, appName: appName)
+    }
+
+    /// 旧版 C1 的脚本错误（语法/字典不支持）与"真的执行失败"要分开提示。
+    static func looksLikeUnsupported(message: String) -> Bool {
+        let lowercased = message.lowercased()
+        return lowercased.contains("-2741")      // syntax error
+            || lowercased.contains("-2753")      // 术语/字典不可用
+            || lowercased.contains("expected")
+            || lowercased.contains("can't get")
+            || lowercased.contains("cannot get")
+            || lowercased.contains("not understood")
+    }
+
+    /// 读照片的 C1 调整提示（§3.10.3）：XMP 里存在 crs: 字段时，我们的预览不一定
+    /// 包含 C1 的色彩/裁剪/旋转 —— UI 必须明示，而不是让用户以为这些调整被静默忽略。
+    ///
+    /// 只读 sidecar 或 JPEG 头部（≤4MB）；不解析 .cos（私有格式），不碰 RAW 内部。
+    /// 永不抛错：读不到就当"没有 C1 调整"，提示只是可选增强信息。
+    public func adjustmentHints(paths: [String]) -> [C1AdjustmentHint] {
+        paths.map { C1AdjustmentReader.hint(photoPath: $0) }
     }
 
     public func checkHealth() async -> Result<String, CaptureOneBridgeError> {
@@ -291,6 +420,61 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         """
     }
 
+    /// 按路径逐个匹配后 select（§3.10.2）。
+    ///
+    /// 输出：每条路径一行 "1"/"0"，与 paths 同序（调用方据此算 notFound）。
+    /// 为什么单值比较：AppleScript 没有 `in {…}` 集合字面量，`whose path is X`
+    /// 只能一次一个值；这也是 TS 侧同款脚本的形状。
+    static func selectVariantsScript(appName: String, paths: [String]) -> String {
+        let literals = paths.map(appleScriptLiteral).joined(separator: ", ")
+        return """
+        tell application "\(appName)"
+          try
+            set targetDoc to current document
+            set report to ""
+            repeat with p in {\(literals)}
+              set matches to (every variant of targetDoc whose path is p)
+              if (count of matches) > 0 then
+                repeat with v in matches
+                  select v
+                end repeat
+                set report to report & "1" & linefeed
+              else
+                set report to report & "0" & linefeed
+              end if
+            end repeat
+            return report
+          on error theErr
+            return "error:" & (theErr as text)
+          end try
+        end tell
+        """
+    }
+
+    /// 双引号 / 反斜杠用码点构造：避免在本文件里堆叠难读的连续转义。
+    private static let appleScriptQuote = String(decoding: [0x22] as [UInt8], as: UTF8.self)
+    private static let appleScriptBackslash = String(decoding: [0x5C] as [UInt8], as: UTF8.self)
+
+    /// AppleScript 字符串字面量转义：反斜杠与双引号，然后整体加引号。
+    /// 换行/回车会让脚本变成多行字面量（AppleScript 不允许），直接退化为空串。
+    static func appleScriptLiteral(_ value: String) -> String {
+        guard !value.unicodeScalars.contains(where: { $0.value == 0x0A || $0.value == 0x0D }) else {
+            return appleScriptQuote + appleScriptQuote
+        }
+        let escaped = value
+            .replacingOccurrences(
+                of: appleScriptBackslash,
+                with: appleScriptBackslash + appleScriptBackslash)
+            .replacingOccurrences(
+                of: appleScriptQuote,
+                with: appleScriptBackslash + appleScriptQuote)
+        return appleScriptQuote + escaped + appleScriptQuote
+    }
+
+    /// 兜底打开（NSWorkspace.open 的等价物：不引 AppKit、不跨 actor）。
+    static let openExecutable = "/usr/bin/open"
+    static let openTimeout: TimeInterval = 15
+
     private static func reloadMetadataScript(appName: String) -> String {
         """
         tell application "\(appName)"
@@ -301,6 +485,126 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
 }
 
 
+
+// MARK: - C1 调整提示（§3.10.3）
+
+/// 从 XMP 文本里读 crs: 属性（纯解析，无 I/O），以及 sidecar/JPEG 头的定位。
+public enum C1AdjustmentReader {
+    /// 单次读取上限：JPEG 头部 XMP 正常 < 1MB，4MB 只是防御。
+    public static let maxScanBytes = 4 << 20
+    /// 提示里最多列出的属性名个数。
+    public static let maxAttributeNames = 12
+
+    /// 读一张照片的调整提示；永不抛错。
+    public static func hint(photoPath: String, fileManager: FileManager = .default) -> C1AdjustmentHint {
+        let sidecar = TSPath.xmpSidecarPath(photoPath)
+        if fileManager.fileExists(atPath: sidecar), let text = readText(path: sidecar) {
+            return parse(text, photoPath: photoPath, xmpPath: sidecar)
+        }
+        // 内嵌 XMP：只对 JPEG 读头。RAW 的 XMP 在私有容器里，不做猜测解析。
+        let ext = (photoPath as NSString).pathExtension.lowercased()
+        guard ext == "jpg" || ext == "jpeg" else {
+            return .none(photoPath: photoPath)
+        }
+        guard let text = readText(path: photoPath) else {
+            return .none(photoPath: photoPath)
+        }
+        return parse(text, photoPath: photoPath, xmpPath: photoPath)
+    }
+
+    /// 纯函数：从 XMP 文本里抽 crs: 字段 → 提示。
+    public static func parse(
+        _ xmp: String,
+        photoPath: String,
+        xmpPath: String?
+    ) -> C1AdjustmentHint {
+        let attributes = crsAttributes(in: xmp)
+        guard !attributes.isEmpty else { return .none(photoPath: photoPath) }
+        let names = attributes.keys.sorted().prefix(maxAttributeNames)
+        return C1AdjustmentHint(
+            photoPath: photoPath,
+            xmpPath: xmpPath,
+            hasAdjustments: true,
+            angle: number(attributes["Angle"]),
+            cropRect: cropRect(attributes),
+            attributeNames: Array(names))
+    }
+
+    /// 扫描 name="value" 形式的 crs: 属性。
+    /// 手写扫描而不是正则：属性值可能含 XMP 的引号/转义，扫描器能精确停在下个引号。
+    public static func crsAttributes(in text: String) -> [String: String] {
+        var result: [String: String] = [:]
+        var searchStart = text.startIndex
+        while let range = text.range(of: "crs:", range: searchStart..<text.endIndex) {
+            var cursor = range.upperBound
+            var name = ""
+            while cursor < text.endIndex, isAttributeNameChar(text[cursor]) {
+                name.append(text[cursor])
+                cursor = text.index(after: cursor)
+            }
+            if !name.isEmpty, cursor < text.endIndex, text[cursor].asciiValue == 0x3D {
+                cursor = text.index(after: cursor)
+                if cursor < text.endIndex, text[cursor].asciiValue == 0x22 {
+                    let valueStart = text.index(after: cursor)
+                    if let endQuote = text[valueStart...].firstIndex(where: { $0.asciiValue == 0x22 }) {
+                        result[name] = String(text[valueStart..<endQuote])
+                        searchStart = text.index(after: endQuote)
+                        continue
+                    }
+                }
+            }
+            searchStart = text.index(after: range.lowerBound)
+        }
+        return result
+    }
+
+    static func isAttributeNameChar(_ char: Character) -> Bool {
+        guard let value = char.asciiValue else { return false }
+        if value >= 0x30, value <= 0x39 { return true }    // 0-9
+        if value >= 0x41, value <= 0x5A { return true }    // A-Z
+        if value >= 0x61, value <= 0x7A { return true }    // a-z
+        return value == 0x5F || value == 0x2D || value == 0x2E  // _ - .
+    }
+
+    static func number(_ raw: String?) -> Double? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(trimmed), value.isFinite else { return nil }
+        return value
+    }
+
+    /// crs:CropTop/Left/Bottom/Right（0…1 归一化）。缺任一边或框为空 → nil。
+    static func cropRect(_ attributes: [String: String]) -> C1CropRect? {
+        guard let top = number(attributes["CropTop"]),
+              let left = number(attributes["CropLeft"]),
+              let bottom = number(attributes["CropBottom"]),
+              let right = number(attributes["CropRight"]) else { return nil }
+        let rect = C1CropRect(
+            top: clamp01(top), left: clamp01(left),
+            bottom: clamp01(bottom), right: clamp01(right))
+        return rect.isEmpty ? nil : rect
+    }
+
+    static func clamp01(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return max(0, min(1, value))
+    }
+
+    /// 读文件前 maxScanBytes 字节（sidecar 也走同一上限：防御超大文件）。
+    static func readText(path: String) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer {
+            do { try handle.close() } catch { }
+        }
+        do {
+            let data = try handle.read(upToCount: maxScanBytes) ?? Data()
+            guard !data.isEmpty else { return nil }
+            return String(decoding: data, as: UTF8.self)
+        } catch {
+            return nil
+        }
+    }
+}
 /// 管道排空缓冲（问题 7）：readabilityHandler 与 terminationHandler 都会写入，
 /// 用锁保护的引用盒子承载（Swift 6 不允许闭包捕获可变 var）。
 final class PipeDrainBuffer: @unchecked Sendable {

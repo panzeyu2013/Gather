@@ -31,10 +31,16 @@ public protocol CullingAPI: Sendable {
     func generateTriage(_ input: TriageGenerateInput) async throws -> TriageSummary
     /// P0 / T0：应用建议（只写 culling 决策，source=ai；绝不自动写 XMP）。
     func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult
+    /// P1：当前照片的 crs 裁剪框（只读；无 sidecar/无裁剪 → nil）。
+    func adjustmentHint(photoId: String) async throws -> CropFrame?
+    /// P1：技术质量建议的阈值校准报告（只读；样本不足时 isApplicable=false）。
+    func triageCalibration(_ query: TriageCalibrationQuery) async throws -> TriageCalibrationSnapshot
+    /// P1：应用三个置信度阈值（写设置；不动策略版本字符串）。
+    func applyTriageCalibration(_ input: Confirmed<TriageCalibrationApplyInput>) async throws -> TriageCalibrationThresholdSnapshot
     /// W1：单张照片的模型级初审信号（未分析 = nil，不是全 0）。
     func modelReview(_ photoId: String) async throws -> ModelReviewResult?
     /// W3：导入客户校样（selection.json）→ 勾选项标记为 keep（source=imported）。
-    func importClientSelection(_ input: Confirmed<ClientSelectionImportInput>) async throws -> ClientSelectionImportResult
+    func importClientSelection(_ input: Confirmed<ClientSelectionImportInput>) async throws -> ClientSelectionImportReport
     /// P1 / D：把已淘汰的照片移到 <sessionRoot>/_rejects（只移动、不删除）。
     /// P0 / A1：混合批次按张过滤（返回 skipped），并按逻辑资产展开到全部变体。
     func moveRejected(_ input: Confirmed<CullingMoveRejectedInput>) async throws -> CullingMoveRejectedResult
@@ -52,4 +58,27 @@ public protocol CullingAPI: Sendable {
     func cleanup(_ input: Confirmed<SessionReference>) async throws -> CleanupResult
     func finalizeSync(_ input: Confirmed<SessionReference>) async throws -> MetadataSyncSummary
     func confirmSync(_ sessionId: String) async throws -> Bool
+}
+
+public extension CullingAPI {
+    /// 未接线（Preview/测试替身）：没有裁剪数据 → nil（不画标记）。
+    func adjustmentHint(photoId: String) async throws -> CropFrame? {
+        _ = photoId
+        return nil
+    }
+
+    /// 未接线（Preview/测试替身）：显式失败，不伪造校准结果。
+    func triageCalibration(_ query: TriageCalibrationQuery) async throws -> TriageCalibrationSnapshot {
+        _ = query
+        throw GatherError.invalidParameter(
+            field: "triageCalibration", reason: "calibration API not wired")
+    }
+
+    func applyTriageCalibration(
+        _ input: Confirmed<TriageCalibrationApplyInput>
+    ) async throws -> TriageCalibrationThresholdSnapshot {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "applyTriageCalibration", reason: "calibration API not wired")
+    }
 }

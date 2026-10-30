@@ -297,8 +297,8 @@ private actor StubCullingAPI: CullingAPI {
 
     func importClientSelection(
         _ input: Confirmed<ClientSelectionImportInput>
-    ) async throws -> ClientSelectionImportResult {
-        ClientSelectionImportResult(picked: 0, applied: 0, skipped: 0)
+    ) async throws -> ClientSelectionImportReport {
+        ClientSelectionImportReport(picked: 0, applied: 0, skipped: 0)
     }
 
     func confirmSync(_ sessionId: String) async throws -> Bool {

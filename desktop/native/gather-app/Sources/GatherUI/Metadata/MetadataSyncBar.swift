@@ -1,0 +1,198 @@
+// desktop/native/gather-app/Sources/GatherUI/Metadata/MetadataSyncBar.swift
+// P1 下一波 §3.1.5：元数据写回的"同步与备份"状态条。
+//
+// 读数只有一个来源：MetadataAPI.syncState（metadata/template 两个模块合并后的
+// 交付计数 + 备份体积 + 逐文件行）。动作只有两个：
+// - 确认同步：只在"C1 待重载"（requiresReloadAck && 有 written）时出现，
+//   reload 成功后自动确认，按钮随之消失；
+// - 结束同步：确认 sheet 写明"删除 N 份备份，XMP 保留"，绝不 restore。
+//
+// 失败可见：结束后协议返回的 state.notices（XMP_CONFIRM_INCOMPLETE / XMP_FINALIZE_*）
+// 逐条展示（第一条 + 其余计数），不是静默 0 条。
+//
+// 本视图不持有业务状态机、不缓存跨会话数据：切换 sessionId 即重新拉取。
+import SwiftUI
+import GatherProtocol
+
+struct MetadataSyncBar: View {
+    let sessionId: String
+    let api: any MetadataAPI
+
+    @Environment(\.languageStore) private var languageStore
+    private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+
+    @State private var state: MetadataDeliveryState?
+    @State private var isBusy = false
+    @State private var errorText: String?
+    @State private var resultText: String?
+    @State private var showFinalizeConfirm = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+            HStack(spacing: GatherMetrics.Space.s) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(GatherFont.label)
+                    .foregroundStyle(.secondary)
+                Text(l10n("同步与备份"))
+                    .font(GatherFont.label)
+                Text(summaryText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if awaitingReloadAck {
+                    Text(l10n("待 C1 重载"))
+                        .font(.caption)
+                        .foregroundStyle(GatherTheme.warningText)
+                }
+                if awaitingReloadAck {
+                    Button(l10n("确认同步")) { Task { await confirm() } }
+                        .controlSize(.small)
+                        .disabled(isBusy)
+                        .help(l10n("元数据已写盘，但 Capture One 还没加载；在 C1 中执行 Load Metadata 后确认同步"))
+                }
+                if (state?.synced ?? 0) > 0 {
+                    Button(l10n("结束同步")) { showFinalizeConfirm = true }
+                        .controlSize(.small)
+                        .disabled(isBusy)
+                        .help(l10n("删除本次写回的备份与交付记录；XMP 文件保留，不会还原"))
+                }
+                Button {
+                    Task { await refresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .disabled(isBusy)
+                .help(l10n("刷新同步状态"))
+                .accessibilityLabel(l10n("刷新同步状态"))
+            }
+            if let errorText {
+                Text(errorText)
+                    .font(.caption)
+                    .foregroundStyle(GatherTheme.errorText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let resultText {
+                Text(resultText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, GatherMetrics.Space.m)
+        .padding(.vertical, GatherMetrics.Space.s)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(GatherTheme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(GatherTheme.hairline, lineWidth: 1)
+        )
+        .task(id: sessionId) { await refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
+            // 写回/确认/收尾都会广播 c1-sync-status：订阅中的会话立即重拉。
+            guard let changed = notification.object as? String, changed == sessionId else { return }
+            Task { await refresh() }
+        }
+        .confirmationDialog(
+            l10n("结束同步？"),
+            isPresented: $showFinalizeConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(l10n("结束并删除备份"), role: .destructive) { Task { await finalize() } }
+            Button(l10n("取消"), role: .cancel) {}
+        } message: {
+            Text(l10n.format(
+                "将删除 %lld 份备份（%@），XMP 文件保留；其它模块仍在用的共享文件会留到最后一次结束。",
+                state?.backupCount ?? 0,
+                backupText))
+        }
+    }
+
+    // MARK: - 派生显示
+
+    private var summaryText: String {
+        guard let state else { return l10n("读取中…") }
+        return l10n.format(
+            "待写回 %lld · 待确认 %lld · 可结束 %lld · 备份 %@",
+            state.pending,
+            state.written,
+            state.synced,
+            backupText)
+    }
+
+    private var backupText: String {
+        let bytes = state?.backupBytes ?? 0
+        guard bytes > 0 else { return l10n("0 KB") }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    /// 只在"C1 待重载"时出现：门禁生效 + 仍有已写盘未确认的行。
+    private var awaitingReloadAck: Bool {
+        guard let state else { return false }
+        return state.requiresReloadAck && state.written > 0
+    }
+
+    // MARK: - 动作
+
+    private func refresh() async {
+        do {
+            let fetched = try await api.syncState(sessionId)
+            state = fetched
+            errorText = nil
+            // syncState 通常没有 notices；保留展示以防服务端把上一轮失败带回来。
+            if let first = fetched.notices.first {
+                resultText = noticeText(fetched.notices, first: first)
+            }
+        } catch {
+            errorText = APIErrorPresentation.message(for: error, with: l10n)
+        }
+    }
+
+    private func confirm() async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let reference = try SessionReference(sessionId: sessionId)
+            let updated = try await api.confirmSync(Confirmed(reference, source: .userDialog))
+            state = updated
+            errorText = nil
+            resultText = l10n("已确认同步")
+        } catch {
+            errorText = APIErrorPresentation.message(for: error, with: l10n)
+        }
+    }
+
+    private func finalize() async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let reference = try SessionReference(sessionId: sessionId)
+            let updated = try await api.finalizeSync(Confirmed(reference, source: .userDialog))
+            state = updated
+            errorText = nil
+            if let first = updated.notices.first {
+                // 失败/跳过必须逐条可见（§3.1.5），不能显示"成功 0 条"。
+                resultText = noticeText(updated.notices, first: first)
+            } else if updated.synced == 0 && updated.written == 0 {
+                resultText = l10n("已结束同步（XMP 保留）")
+            } else {
+                resultText = l10n.format(
+                    "仍有 %lld 个文件未结束（共享文件或待确认项），稍后可重试。",
+                    updated.synced + updated.written)
+            }
+        } catch {
+            errorText = APIErrorPresentation.message(for: error, with: l10n)
+        }
+    }
+
+    /// notices 逐条可读：第一条 + 其余计数（避免长列表撑爆状态条）。
+    private func noticeText(_ notices: [String], first: String) -> String {
+        guard notices.count > 1 else { return first }
+        return l10n.format("%@（另有 %lld 条）", first, notices.count - 1)
+    }
+}

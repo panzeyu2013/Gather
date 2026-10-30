@@ -512,6 +512,11 @@ public final class CullingViewModel: PageVisibility {
             guard requestID == syncStatusRequestID else { return }
             applySyncStatus(status.summary)
             reloadAcked = status.reloadAckedAt != nil
+            // P1：写回批次收敛后交给自动 reload 协调器（debounce/串行/抑制在协调器内）。
+            if status.summary.written > 0,
+               let roundTrip = captureOne as? any C1RoundTripReloading {
+                roundTrip.noteDeliveryStateChanged(sessionId: sessionId)
+            }
         } catch {
             guard requestID == syncStatusRequestID else { return }
             failure = CommandError(error)

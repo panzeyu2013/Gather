@@ -81,6 +81,34 @@ public struct GalleryVariantData: Codable, Equatable, Sendable {
     }
 }
 
+public extension GalleryPhotoData {
+    /// PhotoAPI.page 的行投影 → 网格行（字段逐项对应，metadata/result 不参与渲染）。
+    init(_ row: PhotoData) {
+        self.init(
+            id: row.id,
+            sessionId: row.sessionId,
+            filepath: row.filepath,
+            filename: row.filename,
+            checksum: row.checksum,
+            hasExistingXmp: row.hasExistingXmp,
+            faceCount: row.faceCount,
+            width: row.width,
+            height: row.height,
+            status: row.status,
+            variantCount: row.variantCount ?? row.variants?.count ?? 0,
+            variants: (row.variants ?? []).map { variant in
+                GalleryVariantData(
+                    photoId: variant.photoId,
+                    filepath: variant.filepath,
+                    filename: variant.filename,
+                    role: variant.role)
+            },
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            assetId: row.assetId)
+    }
+}
+
 /// 数据访问抽象：ViewModel 依赖协议，测试可注入 stub（错误态）或
 /// GatherHost 的 async 数据适配器（临时 SQLite + typed API）。
 /// Swift 6 迁移：协议继承 Sendable（Live 实现只持有不可变的各域 API），使
@@ -261,8 +289,27 @@ public final class GalleryViewModel: PageVisibility {
     public var search = ""
     /// 客户端过滤（对齐 TS FILTER_OPTIONS）。
     public var filter: GalleryFilter = .all
+    /// P1：已加载范围的客户端排序（不改变服务端游标/数据集）。
+    public var sortMode: GallerySortMode = .importOrder
     /// RAW/JPEG 变体展开（对齐 TS expandVariants toggle）。
     public var expandVariants = false
+    // MARK: - P1 下一波 §3.7：服务端筛选（facet / 规则 / 保存查询）
+
+    /// facet 面板数据（服务端按"排除自身维度"算出来的桶）。
+    public internal(set) var facetGroups: [PhotoFacetGroup] = []
+    /// 已选 facet 维（dimension → value；"" = 未选）。
+    public internal(set) var facetSelection: [String: String] = [:]
+    /// keyword 维的下钻节点（nil = 顶级）。点选关键词即下钻，"上级"胶囊回退。
+    public internal(set) var keywordFacetNode: String?
+    /// 规则编辑器的条件（与 facet / 4 档 / 搜索串合成一个 AND 组）。
+    public internal(set) var rules = FilterGroup(logic: .and, conditions: [])
+    /// 当前应用的保存查询名（菜单显示"已应用：xxx"；手动改条件即清空）。
+    public internal(set) var appliedSearchName: String?
+    /// 保存查询列表（全局 + 本会话，按 updated_at 倒序）。
+    public internal(set) var savedSearches: [SavedSearchData] = []
+    /// 已提交的 facet / 规则快照（取页与 facet 都只认已提交值，防抖草稿不参与）。
+    var committedFacetSelection: [String: String] = [:]
+    var committedRules = FilterGroup(logic: .and, conditions: [])
     /// pages 变更代数（D-3 性能审计：派生数组记忆化的失效依据）。
     ///
     /// 旧实现 loadedPhotos/filteredPhotos 是纯计算属性：GalleryView 有 9 处读取，

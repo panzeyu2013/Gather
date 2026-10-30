@@ -344,7 +344,8 @@ struct CullingInspector: View {
                         CullingTriageCard(
                             viewModel: viewModel,
                             layoutMode: $layoutMode,
-                            isBusy: isBusy
+                            isBusy: isBusy,
+                            calibration: triageCalibrationBridge
                         )
                     }
                 } else {
@@ -445,6 +446,9 @@ struct CullingInspector: View {
                         Text(l10n.format("标记 %lld", summary.labeled))
                     }
                 }
+
+                // P1：metadata/template 写回的确认/结束/备份回收（无写回时显示 0）。
+                MetadataSyncBar(sessionId: viewModel.sessionId, api: viewModel.metadataAPI)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(GatherMetrics.Space.l)
@@ -501,6 +505,46 @@ struct CullingInspector: View {
     }
 
     /// 先加载完整组、生成影响面，再交给统一确认弹窗（不直接执行）。
+    /// P1：校准面板的宿主适配（UI 不 import Application；DTO 在协议层）。
+    private var triageCalibrationBridge: TriageCalibrationBridge {
+        let api = viewModel.cullingAPI
+        let sessionId = viewModel.sessionId
+        return TriageCalibrationBridge(
+            load: {
+                let snapshot = try await api.triageCalibration(
+                    TriageCalibrationQuery(sessionId: sessionId))
+                return TriageCalibrationPanelModel(
+                    samples: snapshot.samples,
+                    minSamples: snapshot.minSamples,
+                    buckets: snapshot.buckets.map {
+                        TriageCalibrationPanelModel.Bucket(
+                            lowerBound: $0.lowerBound, upperBound: $0.upperBound,
+                            samples: $0.samples, keepSuggestions: $0.keepSuggestions,
+                            agreedKeep: $0.agreedKeep)
+                    },
+                    currentKeep: snapshot.current.keep,
+                    currentReject: snapshot.current.reject,
+                    currentMinExecutable: snapshot.current.minExecutable,
+                    currentKeepPrecision: snapshot.currentKeepPrecision,
+                    suggestions: snapshot.suggestions.map {
+                        TriageCalibrationPanelModel.Suggestion(
+                            target: $0.target, confidence: $0.confidence,
+                            samples: $0.samples, keep: $0.keep,
+                            reject: $0.reject, review: $0.review)
+                    })
+            },
+            apply: { suggestion in
+                let applied = try await api.applyTriageCalibration(
+                    Confirmed(
+                        TriageCalibrationApplyInput(
+                            keep: suggestion.confidence,
+                            reject: suggestion.confidence,
+                            minExecutable: suggestion.confidence),
+                        source: .userDialog))
+                return (applied.keep, applied.reject, applied.minExecutable)
+            })
+    }
+
     private func prepareGroupDecision(groupId: String, keepPhotoIds: [String]) async {
         guard let plan = await viewModel.prepareGroupDecision(
             groupId: groupId, keepPhotoIds: keepPhotoIds

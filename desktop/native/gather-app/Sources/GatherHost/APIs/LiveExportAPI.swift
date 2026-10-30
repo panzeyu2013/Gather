@@ -102,7 +102,8 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
             password: password, remoteFolder: payload.remoteFolder)
         let result = try await publisher.publish(
             localPath: payload.localPath, configuration: configuration,
-            includePrefixes: payload.includePrefixes, onProgress: onProgress)
+            includePrefixes: payload.includePrefixes, share: payload.share,
+            onProgress: onProgress)
         return WebDAVPublishSummary(
             uploaded: result.uploaded,
             failed: result.failed.map { WebDAVPublishFailureInfo(path: $0.path, reason: $0.reason) },

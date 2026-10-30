@@ -157,6 +157,8 @@ public final class MetadataService: @unchecked Sendable {
     private let origins: MetadataKeywordOriginRepo?
     /// 写目标解析（sidecar / 内嵌）：信息面板必须显示**真实写入位置**，不能恒说 sidecar。
     private let writeTarget: (@Sendable (String) -> MetadataTarget)?
+    /// P1：缓存更新后的关键词索引同步（失败只记日志，不影响元数据结果）。
+    private let keywordIndex: (@Sendable (String) -> Void)?
 
     public init(
         metadataCacheRepo: any MetadataRepository,
@@ -171,7 +173,8 @@ public final class MetadataService: @unchecked Sendable {
         dimensions: (any ImageDimensionsProvider)? = nil,
         embeddedReader: (any EmbeddedXMPReader)? = nil,
         origins: MetadataKeywordOriginRepo? = nil,
-        writeTarget: (@Sendable (String) -> MetadataTarget)? = nil
+        writeTarget: (@Sendable (String) -> MetadataTarget)? = nil,
+        keywordIndex: (@Sendable (String) -> Void)? = nil
     ) {
         self.metadataCacheRepo = metadataCacheRepo
         self.xmp = xmp
@@ -186,6 +189,7 @@ public final class MetadataService: @unchecked Sendable {
         self.embeddedReader = embeddedReader
         self.origins = origins
         self.writeTarget = writeTarget
+        self.keywordIndex = keywordIndex
     }
 
     // MARK: - TS 顶层函数
@@ -237,6 +241,11 @@ public final class MetadataService: @unchecked Sendable {
 
     /// TS: normalizeKeywordList —— 镜像 EmbeddedWriter 对 exifr 关键词列表的归一化
     /// （单值到达为标量）。
+    ///
+    /// P1 下一波 §3.6.3：走 KeywordPath（层级路径 "A|B"）——
+    /// - 段 trim + NFC + 丢空段（"A||B" → "A|B"）：**非法段丢弃而非整词丢弃**；
+    /// - 按 foldedKey 去重（dc:subject 与 lr:hierarchicalSubject 合并后的同义重复）；
+    /// - 写回时仍然只吐 [String]（wire 不变，delivery_items.keywords 不用迁移）。
     public static func normalizeKeywordList(_ value: JSONValue?) -> [String]? {
         let strings: [String]
         switch value {
@@ -257,7 +266,19 @@ public final class MetadataService: @unchecked Sendable {
                 strings = []
             }
         }
-        return strings.isEmpty ? nil : strings
+        let normalized = KeywordCodec.normalized(strings)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    /// P1 下一波 §3.6.2：把两套列表（dc:subject 与 lr:hierarchicalSubject）合成一份
+    /// 有序去重结果——**同一层**的合并，不做跨层救援。
+    ///
+    /// 为什么不在 readEffectiveAttributes 里做"内嵌 ∪ sidecar"的并集：
+    /// 用户清空 sidecar 关键词后，内嵌里可能还留着旧 dc:subject；并集会把它复活
+    /// （已知缺陷类型："sidecar 清空被内嵌值复活"）。层级合并只发生在同一份文档
+    /// 的两套列表之间，那个位置不存在"哪个来源更权威"的问题。
+    public static func mergeKeywordSources(flat: [String], hierarchical: [String]) -> [String] {
+        KeywordCodec.merge(flat: flat, hierarchical: hierarchical).map(\.serialized)
     }
 
     // MARK: - 有效属性合成
@@ -837,6 +858,10 @@ public final class MetadataService: @unchecked Sendable {
                     for entry in pendingUpserts {
                         try metadataCacheRepo.upsert(photoId: entry.photoId, sessionId: entry.sessionId, data: entry.input)
                     }
+                }
+                // 缓存落地后再同步关键词索引：facet 与词库计数立即反映新词。
+                for entry in pendingUpserts {
+                    keywordIndex?(entry.photoId)
                 }
             }
         }

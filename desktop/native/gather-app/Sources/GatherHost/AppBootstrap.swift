@@ -200,6 +200,8 @@ package final class AppBootstrap {
         // Cut 3 / 3b-3（E-04）：注册页面解码端口（RAWDecoder 在 GatherAnalysis，
         // GatherUI 只能经 ImageDecoderPort 拿到；重复注册按后者生效）。
         ImageDecodingRegistry.install(RAWImageDecoder())
+        // P1：直方图/合焦/AF 的纯函数端口（页面只经 GatherUI 注册表读取）。
+        PreviewAnalysisRegistry.install(PreviewAnalysisAdapter())
         // R7（refactor）：导入路径规则与 C1 同步状态判定已下沉 GatherProtocol，
         // UI 直调纯函数，不再有端口/registry/Host 适配器。
         // B0：文件日志 sink（启动早期安装，Database.open 的失败也能落盘）。
@@ -318,6 +320,8 @@ package final class AppBootstrap {
         _ = try await Task.detached(priority: .userInitiated) {
             try runtime.start(replayPendingDeliveries: replayPendingDeliveries)
         }.value
+        // P1：后台维护（元数据备份 GC + 关键词回填），不阻塞启动。
+        scheduleBackgroundMaintenance(composition: composition)
         // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
         GatherEventCenter.shared.wire(jobEvents: runtime.jobService)
         await AppImport.prepareNativeEmbeddingRerun(
@@ -350,13 +354,25 @@ package final class AppBootstrap {
             try runtime.recordReloadAck(sessionId: sessionId)
         })
         CaptureOneBridge.shared = captureOneBridge
+        // P1：自动 reload 协调器（手动/自动共用串行队列；C1 未运行时 preflight 会跳过）。
+        let c1RoundTrip = C1RoundTripCoordinator(
+            bridge: captureOneBridge,
+            syncStatus: { try await appServices.culling.syncStatus($0) },
+            settings: {
+                C1AutoReloadSettings(
+                    enabled: composition.settingsService.get(
+                        "c1_auto_reload", defaultValue: "1") == "1")
+            },
+            extras: C1RoundTripExtras(
+                select: { try await captureOneBridge.selectVariants(paths: $0) },
+                hints: { captureOneBridge.adjustmentHints(paths: $0) }))
 
         wire(
             delegate: delegate,
             composition: composition,
             sessionAPI: appServices.session,
             runtime: runtime,
-            captureOneBridge: captureOneBridge,
+            captureOneBridge: c1RoundTrip,
             // Cut 4 / 4b-3：语言唯一来源随装配交给 Delegate（导入面板
             // 没有 environment，只能在动作发生时读同一个 store）。
             languageStore: languageStore
@@ -375,6 +391,7 @@ package final class AppBootstrap {
             navigation: appServices.navigation,
             metadata: appServices.metadata,
             photo: appServices.photo,
+            album: appServices.album,
             quality: appServices.quality,
             face: appServices.face,
             similarity: appServices.similarity,
@@ -437,12 +454,43 @@ package final class AppBootstrap {
     /// Delegate 回调接线：菜单/C1/deep-link 与退出停机都落到同一
     /// composition/runtime。必须在发布 `scene` 之前完成（与拆分前顺序一致），
     /// 否则场景出现后再触发 C1 导入会误报 GATHER_BOOTSTRAPPING。
+    /// P1：元数据保留期 GC（启动 30s 后一次 + 24h 周期）与关键词索引回填（断点续跑）。
+    private static func scheduleBackgroundMaintenance(composition: AppComposition) {
+        let db = composition.db
+        let coordinator = composition.deliveryCoordinator
+        let settings = composition.settingsService
+        Task.detached(priority: .utility) {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            let retention = MetadataRetentionService(
+                connection: db, coordinator: coordinator)
+            while !Task.isCancelled {
+                let policy = MetadataRetentionPolicy.fromSettings { key, value in
+                    settings.get(key, defaultValue: value)
+                }
+                _ = await retention.run(policy: policy)
+                do { try await Task.sleep(for: .seconds(86_400)) } catch { return }
+            }
+        }
+        Task.detached(priority: .utility) {
+            let sync = KeywordIndexSync(connection: db)
+            var cursor: String?
+            while !Task.isCancelled {
+                let step: KeywordBackfillStep
+                do { step = try sync.backfillStep(after: cursor, batchSize: 5_000) }
+                catch { break }
+                guard !step.isDone else { break }
+                cursor = step.nextCursor
+                await Task.yield()
+            }
+        }
+    }
+
     private static func wire(
         delegate: GatherAppDelegate?,
         composition: AppComposition,
         sessionAPI: any SessionAPI,
         runtime: AppRuntime,
-        captureOneBridge: CaptureOneBridge,
+        captureOneBridge: any CaptureOneBridging,
         languageStore: LanguageStore
     ) {
         guard let delegate else { return }
