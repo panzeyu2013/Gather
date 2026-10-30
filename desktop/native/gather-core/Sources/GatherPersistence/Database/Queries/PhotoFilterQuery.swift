@@ -226,6 +226,43 @@ public final class PhotoFilterQuery {
     }
 
     /// TS: countGlobally。
+    /// 图库“全选”专用：一次 CTE 取代表行 id，最多 20k。
+    /// 与 filterGlobally 同源（同 WHERE/同 preferred 代表行），只去掉跨会话 rollup。
+    public func filterGloballyIDs(
+        criteria: FilterGroup,
+        sessionId: String,
+        limit: Int
+    ) throws -> [String] {
+        let clause = try buildWhereClause(criteria)
+        let sql = """
+            WITH matching AS (
+              SELECT p.rowid AS photo_rowid,
+                     COALESCE(NULLIF(p.asset_id, ''), p.id) AS asset_key
+              FROM photos p
+              LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id
+              WHERE (\(clause.sql.isEmpty ? "1=1" : clause.sql))
+                AND p.session_id = ?
+                AND \(PhotoVisibility.visiblePredicate())
+            ), ranked AS (
+              SELECT matching.asset_key, matching.photo_rowid,
+                     ROW_NUMBER() OVER (PARTITION BY matching.asset_key
+                       ORDER BY \(PhotoRepo.preferredRowOrderSQL(alias: "p"))) AS preference_rank
+              FROM matching JOIN photos p ON p.rowid = matching.photo_rowid
+            ), representatives AS (
+              SELECT asset_key, photo_rowid FROM ranked WHERE preference_rank = 1
+            )
+            SELECT p.id AS photo_id
+            FROM representatives JOIN photos p ON p.rowid = representatives.photo_rowid
+            ORDER BY p.rowid
+            LIMIT ?
+            """
+        var params = clause.params
+        params.append(.text(sessionId))
+        params.append(.int(Int64(max(1, min(20_000, limit)))))
+        let rows = try connection.prepare(sql).query(params)
+        return rows.compactMap { $0[0].textValue }
+    }
+
     public func countGlobally(criteria: FilterGroup, sessionId: String? = nil) throws -> Int {
         let clause = try buildWhereClause(criteria)
         let membershipFilter = membershipSql(sessionId)
@@ -706,6 +743,12 @@ public protocol PhotoFilterQuerying {
         offset: Int?,
         sessionId: String?
     ) throws -> [GlobalPhotoResult]
+    /// 只取代表行 photo id（一次 CTE，最多 20k），供图库全选。
+    func filterGloballyIDs(
+        criteria: FilterGroup,
+        sessionId: String,
+        limit: Int
+    ) throws -> [String]
     func countGlobally(criteria: FilterGroup, sessionId: String?) throws -> Int
     func countPhotos(sessionId: String, criteria: FilterGroup) throws -> Int
     func suggest(_ sessionId: String, keyword: String) throws -> [FilterSuggestion]

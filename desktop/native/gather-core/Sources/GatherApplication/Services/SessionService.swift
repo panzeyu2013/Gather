@@ -219,25 +219,32 @@ public final class SessionService {
     }
 
     /// P1 / D：会话内已有照片的校验和（摄取去重）。只取已回填的行。
-    public func photoChecksums(sessionId: String) throws -> [String: String] {
+    /// - Parameter matchingSizes: 非空时只对文件大小命中的未回填照片现算哈希；
+    ///   避免一次摄取把整库未回填照片全部读一遍。
+    public func photoChecksums(
+        sessionId: String, matchingSizes: Set<Int>? = nil
+    ) throws -> [String: String] {
         var result: [String: String] = [:]
         for row in try photoRepo.getBySessionProjection(sessionId: sessionId) {
             if !row.checksum.isEmpty {
                 result[row.checksum] = row.id
             } else {
+                let attrs: [FileAttributeKey: Any]
+                do {
+                    attrs = try FileManager.default.attributesOfItem(atPath: row.filepath)
+                } catch {
+                    attrs = [:]
+                }
+                let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+                if let matchingSizes, !matchingSizes.isEmpty, !matchingSizes.contains(size) {
+                    continue
+                }
                 // 懒索引默认不回填 checksum；摄取去重要对存量照片现算一次，
                 // 否则重复摄取同一批卡会再复制一份。算完立即回写：下次摄取
                 // 直接读 checksum，不再对整库逐张 SHA-256。
                 do {
                     let sum = try FileHasher.sha256File(row.filepath)
                     result[sum] = row.id
-                    let attrs: [FileAttributeKey: Any]
-                    do {
-                        attrs = try FileManager.default.attributesOfItem(atPath: row.filepath)
-                    } catch {
-                        attrs = [:]
-                    }
-                    let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
                     let mtimeMs = (attrs[.modificationDate] as? Date)
                         .map { $0.timeIntervalSince1970 * 1000 } ?? 0
                     do {

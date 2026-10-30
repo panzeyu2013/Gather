@@ -1294,4 +1294,30 @@ struct APIMetadataTests {
             }?.code == .INVALID_PARAM
         )
     }
+
+    @Test("模板 apply 必须有预览令牌；缺失/过期均拒绝")
+    func templateApplyRequiresPreviewToken() async throws {
+        let fixture = try MetadataAPIFixture()
+        defer { fixture.cleanup() }
+        let photoId = try #require(fixture.photoIds.first)
+        let template = try await fixture.api.saveTemplate(
+            MetadataTemplateSaveInput(
+                id: nil, name: "preview-token", fields: DescriptiveMetadata(title: "t")))
+        let base = try MetadataTemplateApplyInput(
+            templateId: template.id, photoIds: [photoId])
+
+        let missing = await asyncGatherError {
+            try await fixture.api.applyTemplate(Confirmed(base, source: .test))
+        }
+        #expect(missing?.code == .METADATA_PREVIEW_STALE)
+
+        let stale = await asyncGatherError {
+            try await fixture.api.applyTemplate(Confirmed(
+                try MetadataTemplateApplyInput(
+                    templateId: template.id, photoIds: [photoId],
+                    expectedPreviewToken: "deadbeef"),
+                source: .test))
+        }
+        #expect(stale?.code == .METADATA_PREVIEW_STALE)
+    }
 }

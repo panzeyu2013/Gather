@@ -25,6 +25,14 @@
 - schema 44/386/72/65、user_version=1；协议 344 类型/1985 声明；错误码 198；en 1849 键
 - `git diff --check` 干净；diff 171 个已跟踪文件 + 15 个新文件，+4437/−633
 
+## 第二轮残留修复（2026-10-30）
+
+- 新增预览令牌：相似度 `expectedPreviewToken`（结果 stats + 组员 + 交付项）与元数据模板 `expectedPreviewToken`（模板字段 + 照片集 + policy），服务端复算；新增 `METADATA_PREVIEW_STALE`。
+- 摄取失败 DTO 增加 `code/retryable`，新增 `INGEST_CHECKSUM_MISMATCH` / `INGEST_DESTINATION_EXISTS` / `INGEST_PATH_INVALID` / `INGEST_TRANSFER_FAILED`。
+- `PhotoAPI.select` 改为一次 CTE（20k），不再 500/页循环；摄取去重按源文件 size 预筛未回填 checksum。
+- 交付 notice 增加 success/info/warning 语义色，预检增加忙碌态与按钮禁用。
+- 错误码 209 / en 1855；Protocol 基线按 `--allow-growth` 从 1985 → 1990（5 个新码），已记账。
+
 ## 残余
 
 1. **P1（设计层）**：相似度/元数据写回无 `expectedPreviewToken` 与服务端复算，`METADATA_PREVIEW_STALE` 未落地；重聚类/并发分析后旧预览仍可能写旧关键词/字段。

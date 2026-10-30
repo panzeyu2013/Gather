@@ -116,7 +116,8 @@ extension SimilarityViewModel {
             let input = try SimilarityWritebackInput(
                 sessionId: sessionId,
                 itemIds: ids,
-                threshold: writebackThreshold
+                threshold: writebackThreshold,
+                expectedPreviewToken: preview.previewToken
             )
             let nextResult = try await similarity.writeback(Confirmed(input, source: .userDialog))
             writebackResult = nextResult

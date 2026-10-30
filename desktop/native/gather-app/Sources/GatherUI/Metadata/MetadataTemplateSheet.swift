@@ -280,7 +280,8 @@ struct MetadataTemplateSheet: View {
         do {
             let result = try await viewModel.metadataAPI.applyTemplate(
                 Confirmed(try MetadataTemplateApplyInput(
-                    templateId: id, photoIds: targetPhotoIds, policy: policy),
+                    templateId: id, photoIds: targetPhotoIds, policy: policy,
+                    expectedPreviewToken: preview?.previewToken),
                     source: .userDialog))
             outcome = result
             // P1：失败原因必须可见。JPEG 内嵌字段无法清空时只显示"失败 N 张"，

@@ -48,7 +48,9 @@ struct ExportDeliverySection: View {
                         Task { await viewModel.cancelDelivery() }
                     }
                 }
-                Button(viewModel.isDelivering ? l10n("正在交付…") : l10n("开始整套交付")) {
+                Button(viewModel.isDelivering
+                       ? l10n("正在交付…")
+                       : viewModel.isPreflighting ? l10n("正在预检…") : l10n("开始整套交付")) {
                     Task {
                         if let input = await viewModel.prepareDeliveryInput() {
                             let preflight = await viewModel.deliveryPreflight(for: input)
@@ -59,7 +61,8 @@ struct ExportDeliverySection: View {
                 }
                 .gatherPrimaryActionButton()
                 // 交付与单张导出共用会话级取消：运行期间互斥，避免互相误杀。
-                .disabled(viewModel.isDelivering || viewModel.isExporting || viewModel.deliveryRecipes.isEmpty)
+                .disabled(viewModel.isDelivering || viewModel.isExporting
+                          || viewModel.isPreflighting || viewModel.deliveryRecipes.isEmpty)
                 .sheet(item: $pendingDelivery) { pending in
                     DeliveryConfirmSheet(input: pending.input, preflight: pending.preflight) { input in
                         // 确认分支：Confirmed 只在这里构造（D-011）。

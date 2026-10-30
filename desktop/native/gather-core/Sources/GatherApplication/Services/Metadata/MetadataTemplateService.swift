@@ -9,11 +9,20 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 
-public enum MetadataTemplateServiceError: Error, Equatable, CustomStringConvertible {
+public enum MetadataTemplateServiceError: Error, Equatable, CustomStringConvertible, CodedError {
     case templateNotFound(String)
     case batchNotFound(String)
     case batchAlreadyUndone(String)
     case batchTypeMismatch(String)
+
+    public var code: GatherErrorCode {
+        switch self {
+        case .templateNotFound: .TEMPLATE_NOT_FOUND
+        case .batchNotFound: .TEMPLATE_BATCH_NOT_FOUND
+        case .batchAlreadyUndone: .TEMPLATE_BATCH_ALREADY_UNDONE
+        case .batchTypeMismatch: .TEMPLATE_BATCH_TYPE_MISMATCH
+        }
+    }
 
     public var description: String {
         switch self {

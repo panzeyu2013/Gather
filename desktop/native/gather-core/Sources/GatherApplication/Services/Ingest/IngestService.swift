@@ -143,9 +143,14 @@ public struct IngestOptions: Equatable, Sendable {
 public struct IngestFailure: Equatable, Sendable {
     public var sourcePath: String
     public var message: String
-    public init(sourcePath: String, message: String) {
+    /// 稳定错误码（GatherErrorCode.rawValue）；空串 = 未编码错误。
+    public var code: String
+    public var retryable: Bool
+    public init(sourcePath: String, message: String, code: String = "", retryable: Bool = true) {
         self.sourcePath = sourcePath
         self.message = message
+        self.code = code
+        self.retryable = retryable
     }
 }
 
@@ -254,6 +259,28 @@ public final class IngestService: @unchecked Sendable {
             result.date = attributes?[.modificationDate] as? Date
         }
         return result
+    }
+
+    /// 摄取去重的 size 预筛：列出本次源文件的大小集合（目录递归同 plan）。
+    /// 只 stat，不读内容；用于避免对整库未回填照片逐张 SHA-256。
+    public func sourceSizes(sourcePaths: [String]) -> Set<Int> {
+        var sizes = Set<Int>()
+        for source in sourcePaths {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: source, isDirectory: &isDirectory) else { continue }
+            let files = isDirectory.boolValue ? enumerateFiles(under: source) : [source]
+            for file in files {
+                do {
+                    let attrs = try fileManager.attributesOfItem(atPath: file)
+                    if let size = (attrs[.size] as? NSNumber)?.intValue {
+                        sizes.insert(size)
+                    }
+                } catch {
+                    continue
+                }
+            }
+        }
+        return sizes
     }
 
     /// 计划：扫描源目录（不递归子目录之外的东西，不碰库）。
@@ -528,7 +555,18 @@ public final class IngestService: @unchecked Sendable {
                     message += "；回滚失败（文件可能留在目的地，需人工确认）："
                         + rollbackErrors.joined(separator: " | ")
                 }
-                failed.append(IngestFailure(sourcePath: item.sourcePath, message: message))
+                let code = (error as? any CodedError)?.code.rawValue
+                    ?? GatherErrorCode.INGEST_TRANSFER_FAILED.rawValue
+                let retryable: Bool
+                switch error {
+                case IngestError.destinationExists, IngestError.outsideDestinationRoot:
+                    retryable = false
+                default:
+                    retryable = true
+                }
+                failed.append(IngestFailure(
+                    sourcePath: item.sourcePath, message: message,
+                    code: code, retryable: retryable))
             }
             onProgress(copied.count + skipped.count + failed.count, plan.items.count)
         }
@@ -563,7 +601,10 @@ public final class IngestService: @unchecked Sendable {
                 } catch {
                     failed.append(IngestFailure(
                         sourcePath: dest,
-                        message: "第二目的地补拷失败：\(error)"))
+                        message: "第二目的地补拷失败：\(error)",
+                        code: (error as? any CodedError)?.code.rawValue
+                            ?? GatherErrorCode.INGEST_TRANSFER_FAILED.rawValue,
+                        retryable: true))
                 }
             }
         }
@@ -645,10 +686,18 @@ public final class IngestService: @unchecked Sendable {
         return (secondRoot as NSString).appendingPathComponent(relative)
     }
 
-    public enum IngestError: Error, Equatable, CustomStringConvertible {
+    public enum IngestError: Error, Equatable, CustomStringConvertible, CodedError {
         case checksumMismatch(String)
         case destinationExists(String)
         case outsideDestinationRoot(String)
+        public var code: GatherErrorCode {
+            switch self {
+            case .checksumMismatch: .INGEST_CHECKSUM_MISMATCH
+            case .destinationExists: .INGEST_DESTINATION_EXISTS
+            case .outsideDestinationRoot: .INGEST_PATH_INVALID
+            }
+        }
+
         public var description: String {
             switch self {
             case .checksumMismatch(let path): "校验失败（复制后内容不一致）：\(path)"

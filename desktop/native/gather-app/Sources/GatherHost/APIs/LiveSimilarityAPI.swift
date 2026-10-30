@@ -35,6 +35,7 @@
 // 执行器；本文件不再持有 WritebackService，也不解析落库 module 常量。
 
 import Foundation
+import CryptoKit
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
@@ -143,6 +144,48 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
 
     // MARK: - 预览 / 写回
 
+    private struct SimilarityTokenItem: Encodable {
+        let id: Int?
+        let xmpPath: String
+        let keywords: [String]
+        let attributes: WritebackAttributes?
+    }
+
+    private struct SimilarityTokenIdentity: Encodable {
+        let sessionId: String
+        let threshold: Int?
+        let stats: SimilarityResultStats
+        let groups: [String]
+        let items: [SimilarityTokenItem]
+    }
+
+    /// 预览身份：当前结果（stats + 组员）+ 本次交付项 + 阈值。
+    /// 重聚类/换组/改关键词后令牌变化；不依赖条目顺序或时间。
+    private static func previewToken(
+        sessionId: String,
+        threshold: Int?,
+        result: SimilarityResult,
+        items: [WritebackItem]
+    ) -> String {
+        let groups = result.groups.map { group in
+            "\(group.id):" + group.images.map(\.path).sorted().joined(separator: ",")
+        }.sorted()
+        let tokenItems = items.map { item in
+            SimilarityTokenItem(
+                id: item.id,
+                xmpPath: item.xmpPath,
+                keywords: item.keywords.sorted(),
+                attributes: item.attributes)
+        }.sorted { ($0.xmpPath, $0.id ?? -1) < ($1.xmpPath, $1.id ?? -1) }
+        let identity = SimilarityTokenIdentity(
+            sessionId: sessionId, threshold: threshold,
+            stats: result.stats, groups: groups, items: tokenItems)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = (try? encoder.encode(identity)) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     public func previewWriteback(
         _ input: SimilarityPreviewWritebackInput
     ) async throws -> WritebackPreview {
@@ -178,7 +221,10 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
         return WritebackPreview(
             items: selectedItems,
             totalCount: selectedItems.count,
-            affectedPhotos: plan.affectedPaths.count
+            affectedPhotos: plan.affectedPaths.count,
+            previewToken: Self.previewToken(
+                sessionId: input.sessionId, threshold: input.threshold,
+                result: result, items: selectedItems)
         )
     }
 
@@ -196,8 +242,9 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
     ) async throws -> WritebackResult {
         let payload = input.value
         return try await mapAsync {
-            if let threshold = payload.threshold,
-               try !similarityService.hasResult(sessionId: payload.sessionId, threshold: threshold) {
+            guard let result = try similarityService.getResult(
+                sessionId: payload.sessionId, threshold: payload.threshold
+            ) else {
                 throw GatherError(code: .SIM_THRESHOLD_NO_RESULTS)
             }
             let idSet = Set(payload.itemIds)
@@ -205,6 +252,13 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
                 .writebackItems(sessionId: payload.sessionId, status: "pending")
                 .filter { item in item.id.map { idSet.contains($0) } ?? false }
             guard pendingItems.count == idSet.count else {
+                throw GatherError(code: .SIM_PREVIEW_STALE)
+            }
+            // 预览后结果代/关键词变化 → 令牌不一致，禁止按旧项写盘。
+            guard let expected = payload.expectedPreviewToken,
+                  expected == Self.previewToken(
+                    sessionId: payload.sessionId, threshold: payload.threshold,
+                    result: result, items: pendingItems) else {
                 throw GatherError(code: .SIM_PREVIEW_STALE)
             }
             return try await similarityService.writeback(

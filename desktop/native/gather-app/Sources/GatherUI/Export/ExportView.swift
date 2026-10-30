@@ -65,7 +65,12 @@ public struct ExportView: View {
                     .padding(.top, 12)
             }
             if let notice = viewModel.notice {
-                NativeBanner(text: l10n.resolve(notice), color: GatherTheme.success)
+                let noticeColor: Color = switch viewModel.noticeKind {
+                case .success: GatherTheme.success
+                case .info: .secondary
+                case .warning: GatherTheme.warningText
+                }
+                NativeBanner(text: l10n.resolve(notice), color: noticeColor)
                     .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                     .padding(.top, 12)
             }

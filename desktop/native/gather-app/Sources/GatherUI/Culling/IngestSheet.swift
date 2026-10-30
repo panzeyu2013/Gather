@@ -118,7 +118,9 @@ struct IngestSheet: View {
                         .foregroundStyle(.orange)
                 }
                 if let failure = result.failed.first {
-                    Text(CommandErrorText.resolve(CommandError(apiText: failure.message), with: l10n))
+                    let failureError = CommandError(
+                        apiText: failure.code ?? "", diagnostic: failure.message)
+                    Text(CommandErrorText.resolve(failureError, with: l10n))
                         .font(.caption)
                         .foregroundStyle(.red)
                 }

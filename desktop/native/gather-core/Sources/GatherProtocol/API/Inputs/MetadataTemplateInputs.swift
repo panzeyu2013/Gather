@@ -75,15 +75,23 @@ public struct MetadataTemplateApplyInput: Decodable, Sendable, Equatable {
     public let templateId: String
     public let photoIds: [String]
     public let policy: MetadataConflictPolicy
+    /// 预览令牌；有照片的 apply 必须携带，服务端按当前模板/照片集复算。
+    public let expectedPreviewToken: String?
     /// P2：单批上限。批次快照要整体写进 settings（保留最近 20 批），
     /// 无上限时一次 2 万张会把单键写成几十 MB。
     public static let maxPhotoIds = 2_000
 
-    public init(templateId: String, photoIds: [String], policy: MetadataConflictPolicy = .keepExternal) throws {
+    public init(
+        templateId: String,
+        photoIds: [String],
+        policy: MetadataConflictPolicy = .keepExternal,
+        expectedPreviewToken: String? = nil
+    ) throws {
         self.templateId = try APIValidation.nonBlank(templateId, field: "templateId", maxLength: 128)
         self.photoIds = try APIValidation.nonEmpty(
             photoIds, field: "photoIds", maxCount: Self.maxPhotoIds)
         self.policy = policy
+        self.expectedPreviewToken = expectedPreviewToken
     }
 
     public init(from decoder: Decoder) throws {
@@ -91,11 +99,15 @@ public struct MetadataTemplateApplyInput: Decodable, Sendable, Equatable {
         try self.init(
             templateId: try container.decode(String.self, forKey: .templateId),
             photoIds: try container.decode([String].self, forKey: .photoIds),
-            policy: try container.decodeIfPresent(MetadataConflictPolicy.self, forKey: .policy) ?? .keepExternal
+            policy: try container.decodeIfPresent(MetadataConflictPolicy.self, forKey: .policy) ?? .keepExternal,
+            expectedPreviewToken: try container.decodeIfPresent(
+                String.self, forKey: .expectedPreviewToken)
         )
     }
 
-    private enum CodingKeys: String, CodingKey { case templateId, photoIds, policy }
+    private enum CodingKeys: String, CodingKey {
+        case templateId, photoIds, policy, expectedPreviewToken
+    }
 }
 
 public struct MetadataTemplateUndoInput: Decodable, Sendable, Equatable {
@@ -153,8 +165,13 @@ public struct MetadataTemplatePreviewResult: Codable, Equatable, Sendable {
     public var changedFields: Int
     public var conflictFields: Int
     public var photos: [MetadataPhotoPreview]
-    public init(templateId: String, templateName: String, totalPhotos: Int, changedPhotos: Int,
-                changedFields: Int, conflictFields: Int, photos: [MetadataPhotoPreview]) {
+    /// 预览身份；apply 时服务端按当前模板/照片集复算。
+    public var previewToken: String?
+    public init(
+        templateId: String, templateName: String, totalPhotos: Int, changedPhotos: Int,
+        changedFields: Int, conflictFields: Int, photos: [MetadataPhotoPreview],
+        previewToken: String? = nil
+    ) {
         self.templateId = templateId
         self.templateName = templateName
         self.totalPhotos = totalPhotos
@@ -162,6 +179,7 @@ public struct MetadataTemplatePreviewResult: Codable, Equatable, Sendable {
         self.changedFields = changedFields
         self.conflictFields = conflictFields
         self.photos = photos
+        self.previewToken = previewToken
     }
 }
 
@@ -188,9 +206,17 @@ public struct MetadataBatchSummary: Codable, Equatable, Sendable {
 public struct MetadataApplyFailureDTO: Codable, Equatable, Sendable {
     public var photoId: String
     public var message: String
-    public init(photoId: String, message: String) {
+    /// 稳定错误码（摄取失败等场景）；nil/空 = 只有散文。
+    public var code: String?
+    public var retryable: Bool?
+    public init(
+        photoId: String, message: String,
+        code: String? = nil, retryable: Bool? = nil
+    ) {
         self.photoId = photoId
         self.message = message
+        self.code = code
+        self.retryable = retryable
     }
 }
 

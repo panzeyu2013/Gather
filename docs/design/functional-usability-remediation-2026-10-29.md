@@ -1109,7 +1109,7 @@ JobCreateParams.metadataScan 增加可选 scopeKind：
 ### 验证
 
 - `./scripts/test.sh all`（`--disable-sandbox`）：core / app 全量用例通过（用例数随分支变化，以脚本输出为准）。
-- 13 个门禁全绿；en 键数 1,849、错误码 198（docs/README/ROADMAP/DEVELOPMENT 已同步）。
+- 13 个门禁全绿；en 键数 1,862、错误码 209（docs/README/ROADMAP/DEVELOPMENT 已同步）。
 - Protocol 公开面按 `--allow-growth` 更新基线：344 类型 / 1,985 声明（P1 API + P2 selected/resetGroup/photo select + P3 includeFailed）；据此记账。
 - 尚未做 GUI 实机验收：查看器焦点、三布局视觉、IngestSheet 嵌套面板。
 
@@ -1150,7 +1150,7 @@ JobCreateParams.metadataScan 增加可选 scopeKind：
 ### 验证
 
 - app / core 全量用例通过（用例数见 `scripts/test.sh` 输出）。
-- 13 门禁全绿；en 键数 1,849。
+- 13 门禁全绿；en 键数 1,862。
 - 未做 GUI 实机验收：交付确认、图库键盘、混合态、筛选 chip、结果展开。
 
 ## 15. P3 实施进度（2026-10-29，第一批）
@@ -1175,7 +1175,7 @@ JobCreateParams.metadataScan 增加可选 scopeKind：
 ### 验证
 
 - app / core 全量用例通过（用例数见 `scripts/test.sh` 输出）。
-- 12 个既有硬门禁 + 新增 `check-warnings.sh` 全绿（共 13）；en 键数 1,849。
+- 12 个既有硬门禁 + 新增 `check-warnings.sh` 全绿（共 13）；en 键数 1,862。
 - 未做 GUI 实机验收：清理失败记录、模型下载入口、报表错误提示、设置面板异步化。
 
 ---

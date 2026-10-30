@@ -274,6 +274,13 @@ extension ExportViewModel {
     /// P2-1：逐配方跑一次 export.preview，汇总文件数/体积/空间/可执行性问题。
     /// 预览失败不阻断确认，但会在 sheet 中列出失败配方。
     func deliveryPreflight(for input: OutputRunInput) async -> DeliveryPreflightSummary {
+        guard !isPreflighting else {
+            return DeliveryPreflightSummary(
+                recipeCount: input.recipes.count, totalFiles: 0, totalSizeBytes: 0,
+                freeSpaceBytes: -1, issueCount: 0, failedRecipeNames: [])
+        }
+        isPreflighting = true
+        defer { isPreflighting = false }
         var totalFiles = 0
         var totalSize = 0
         var freeSpace = -1
@@ -325,12 +332,15 @@ extension ExportViewModel {
         deliverySummary = nil
         errorMessage = nil
         defer { isDelivering = false }
+        notice = nil
+        noticeKind = .success
         do {
             deliverySummary = try await exportAPI.runRecipes(input)
         } catch {
             // 取消不是失败：partial manifest 已由服务端写出，成片就在交付目录里。
             if Self.isCancellation(error) {
                 notice = LocalizedText("交付已取消；已写出的成片仍在交付目录中")
+                noticeKind = .info
             } else {
                 errorMessage = CommandError(error)
             }

@@ -119,25 +119,10 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         }
         let criteria = FilterGroup(logic: .and, conditions: conditions)
         let limit = query.limit ?? 20_000
-        // PhotoFilterQuery 的通用分页把单次 limit 钳到 500；全选需要 20k，
-        // 因此按 500 一页累积，避免协议声明与实现不一致。
-        var ids: [String] = []
-        var offset = 0
-        while ids.count < limit {
-            let pageLimit = min(500, limit - ids.count)
-            let page = try mapFilterError {
-                try filterEngine.filterGlobally(
-                    criteria: criteria,
-                    sortBy: nil,
-                    sortOrder: nil,
-                    limit: pageLimit,
-                    offset: offset,
-                    sessionId: query.sessionId
-                )
-            }
-            ids.append(contentsOf: page.map(\.photoId))
-            if page.count < pageLimit { break }
-            offset += page.count
+        // 一次 CTE 取代表行 id（旧实现按 500/页循环，20k=41 次全量扫描）。
+        let ids = try mapFilterError {
+            try filterEngine.filterGloballyIDs(
+                criteria: criteria, sessionId: query.sessionId, limit: limit)
         }
         let total = try mapFilterError {
             try filterEngine.countGlobally(criteria: criteria, sessionId: query.sessionId)

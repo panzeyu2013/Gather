@@ -67,7 +67,8 @@ extension DuplicateServiceError {
         // 两个可本地化的协议码；groupNotFound/memberNotFound 为普通 Error。
         case .scanBusy: .DUPLICATE_SCAN_BUSY
         case .thresholdInvalid: .DUP_THRESHOLD_INVALID
-        case .groupNotFound, .memberNotFound: nil
+        case .groupNotFound: .DUP_GROUP_NOT_FOUND
+        case .memberNotFound: .DUP_MEMBER_NOT_FOUND
         }
     }
 }

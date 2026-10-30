@@ -630,14 +630,23 @@ struct APISimilarityTests {
     func writebackThroughConfirmed() async throws {
         let fixture = try FaceSimilarityFixture()
         try fixture.seedSimilarityResult(threshold: 16)
-        let item = try fixture.seedPendingWritebackItem()
+        let preview = try await fixture.similarityAPI.previewWriteback(
+            SimilarityPreviewWritebackInput(
+                sessionId: fixture.sessionId,
+                assignments: [SimilarityKeywordAssignment(groupId: 1, keywords: ["beach"])],
+                threshold: 16
+            )
+        )
+        let itemID = try #require(preview.items.first?.id)
+        let token = try #require(preview.previewToken)
 
         let result = try await fixture.similarityAPI.writeback(
             Confirmed(
                 SimilarityWritebackInput(
                     sessionId: fixture.sessionId,
-                    itemIds: [item.id],
-                    threshold: 16
+                    itemIds: [itemID],
+                    threshold: 16,
+                    expectedPreviewToken: token
                 ),
                 source: .test
             )
@@ -645,6 +654,34 @@ struct APISimilarityTests {
         #expect(result.written == 1)
         #expect(result.failed == 0)
         // S5c-2b-3b-2a：execute 直接写盘；旧 flushSession 端口已删除。
+    }
+
+    @Test("writeback：预览令牌不符拒绝（旧结果/旧关键词不可写盘）")
+    func writebackRejectsStalePreviewToken() async throws {
+        let fixture = try FaceSimilarityFixture()
+        try fixture.seedSimilarityResult(threshold: 16)
+        let preview = try await fixture.similarityAPI.previewWriteback(
+            SimilarityPreviewWritebackInput(
+                sessionId: fixture.sessionId,
+                assignments: [SimilarityKeywordAssignment(groupId: 1, keywords: ["beach"])],
+                threshold: 16
+            )
+        )
+        let itemID = try #require(preview.items.first?.id)
+        let stale = await apiGatherError {
+            try await fixture.similarityAPI.writeback(
+                Confirmed(
+                    SimilarityWritebackInput(
+                        sessionId: fixture.sessionId,
+                        itemIds: [itemID],
+                        threshold: 16,
+                        expectedPreviewToken: "deadbeef"
+                    ),
+                    source: .test
+                )
+            )
+        }
+        #expect(stale?.code == .SIM_PREVIEW_STALE)
     }
 
     @Test("preview：result→plan→SimilarityService.previewWriteback/persistKeywords，交付项落库")

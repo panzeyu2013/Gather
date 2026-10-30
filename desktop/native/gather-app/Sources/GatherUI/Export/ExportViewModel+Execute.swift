@@ -59,6 +59,7 @@ extension ExportViewModel {
     /// 确认弹窗取消：写可见文案（不静默 return），不发命令。
     public func reportExportCancelled() {
         notice = LocalizedText("已取消导出")
+        noticeKind = .info
         fieldError = nil
     }
 

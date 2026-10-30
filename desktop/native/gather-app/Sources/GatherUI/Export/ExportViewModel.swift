@@ -46,6 +46,11 @@ public final class ExportViewModel: PageVisibility {
     public internal(set) var isExporting = false
     public internal(set) var errorMessage: CommandError?
     public internal(set) var notice: LocalizedText?
+    public enum NoticeKind { case success, info, warning }
+    /// notice 的语义色；取消/部分成功不再冒充成功色。
+    public internal(set) var noticeKind: NoticeKind = .success
+    /// 交付预检进行中：按钮禁用，避免重复点击叠预检/sheet。
+    public internal(set) var isPreflighting = false
     // 实时导出进度（events.job-progress 驱动）。
     public internal(set) var exportProgress: (current: Int, total: Int)?
     // W3：整套交付（多配方 + 联系表）的状态。

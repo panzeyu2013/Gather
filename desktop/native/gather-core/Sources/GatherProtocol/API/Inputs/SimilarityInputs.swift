@@ -138,8 +138,15 @@ public struct SimilarityWritebackInput: Decodable, Sendable, Equatable {
     public let sessionId: String
     public let itemIds: [Int]
     public let threshold: Int?
+    /// 预览令牌；非空 itemIds 必须携带，服务端按当前结果/交付项复算。
+    public let expectedPreviewToken: String?
 
-    public init(sessionId: String, itemIds: [Int], threshold: Int? = nil) throws {
+    public init(
+        sessionId: String,
+        itemIds: [Int],
+        threshold: Int? = nil,
+        expectedPreviewToken: String? = nil
+    ) throws {
         self.sessionId = try APIValidation.nonBlank(sessionId, field: "sessionId", maxLength: 128)
         guard !itemIds.isEmpty else {
             throw GatherError(code: .SIM_PREVIEW_REQUIRED, params: ["field": "itemIds"])
@@ -149,6 +156,7 @@ public struct SimilarityWritebackInput: Decodable, Sendable, Equatable {
             _ = try APIValidation.integerInRange(threshold, field: "threshold", 0...64)
         }
         self.threshold = threshold
+        self.expectedPreviewToken = expectedPreviewToken
     }
 
     public init(from decoder: Decoder) throws {
@@ -156,11 +164,13 @@ public struct SimilarityWritebackInput: Decodable, Sendable, Equatable {
         try self.init(
             sessionId: try container.decode(String.self, forKey: .sessionId),
             itemIds: try container.decode([Int].self, forKey: .itemIds),
-            threshold: try container.decodeIfPresent(Int.self, forKey: .threshold)
+            threshold: try container.decodeIfPresent(Int.self, forKey: .threshold),
+            expectedPreviewToken: try container.decodeIfPresent(
+                String.self, forKey: .expectedPreviewToken)
         )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, itemIds, threshold
+        case sessionId, itemIds, threshold, expectedPreviewToken
     }
 }

@@ -55,6 +55,7 @@
 // DBError.message 若本身就是错误码同样还原为 GatherError。
 
 import Foundation
+import CryptoKit
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
@@ -229,6 +230,38 @@ public final class LiveMetadataAPI: MetadataAPI {
         try map { try templateStore.delete(id: input.value.templateId) }
     }
 
+    private struct TemplatePreviewIdentity: Encodable {
+        let templateId: String
+        let name: String
+        let fields: DescriptiveMetadata
+        let photoIds: [String]
+        let policy: MetadataConflictPolicy
+    }
+
+    /// 预览身份：模板内容 + 照片集 + 冲突策略；apply 时按当前状态复算。
+    /// 不依赖预览条目顺序（photoIds 排序）或时间。
+    private static func previewToken(
+        template: MetadataTemplate,
+        photoIds: [String],
+        policy: MetadataConflictPolicy
+    ) -> String {
+        let identity = TemplatePreviewIdentity(
+            templateId: template.id,
+            name: template.name,
+            fields: template.fields,
+            photoIds: photoIds.sorted(),
+            policy: policy)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data: Data
+        do {
+            data = try encoder.encode(identity)
+        } catch {
+            data = Data()
+        }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     public func previewTemplate(_ input: MetadataTemplatePreviewInput) async throws -> MetadataTemplatePreviewResult {
         try await mapAsync {
             guard let template = templateStore.get(id: input.templateId) else {
@@ -259,13 +292,23 @@ public final class LiveMetadataAPI: MetadataAPI {
                 changedPhotos: preview.changedPhotos,
                 changedFields: preview.changedFields,
                 conflictFields: preview.conflictFields,
-                photos: photoPreviews
+                photos: photoPreviews,
+                previewToken: Self.previewToken(
+                    template: template, photoIds: input.photoIds, policy: input.policy)
             )
         }
     }
 
     public func applyTemplate(_ input: Confirmed<MetadataTemplateApplyInput>) async throws -> MetadataTemplateApplyOutcome {
         let payload = input.value
+        guard let template = templateStore.get(id: payload.templateId) else {
+            throw MetadataTemplateServiceError.templateNotFound(payload.templateId)
+        }
+        guard let expected = payload.expectedPreviewToken,
+              expected == Self.previewToken(
+                template: template, photoIds: payload.photoIds, policy: payload.policy) else {
+            throw GatherError(code: .METADATA_PREVIEW_STALE)
+        }
         let result = try await templateService.apply(
             templateId: payload.templateId,
             photoIds: payload.photoIds,

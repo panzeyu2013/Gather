@@ -586,9 +586,10 @@
 "暂无关联照片" = "No linked photos";
 "删除人物？" = "Delete this person?";
 "合并到…" = "Merge Into…";
+"%@（%lld 张）" = "%@ (%lld photos)";
 "把此人物合并到另一个人物" = "Merge this person into another person";
 "合并人物？" = "Merge People?";
-"将把「%@」合并到「%@」，源人物的绑定会转移并删除；此操作不可撤销。" = "Merge “%@” into “%@”; the source person's bindings move over and the source is deleted. This cannot be undone.";
+"将把「%@」（%lld 张）合并到「%@」（%lld 张），源人物的绑定会转移并删除；此操作不可撤销。" = "Merge “%@” (%lld photos) into “%@” (%lld photos); the source person's bindings move over and the source is deleted. This cannot be undone.";
 "已合并人物" = "People merged";
 "合并失败" = "Merge failed";
 "移除此照片" = "Remove This Photo";
@@ -1003,6 +1004,10 @@
 "无效的界面语言，必须是“zh-CN”或“en”" = "Invalid interface language; it must be “zh-CN” or “en”";
 "照片没有已索引的资源文件" = "The photo has no indexed asset file";
 "工作区没有来源目录" = "The workspace has no source directory";
+"摄取校验失败（复制后内容不一致）" = "Ingest checksum mismatch (content changed after copy)";
+"摄取目标已存在，拒绝覆盖" = "The ingest destination already exists; refusing to overwrite";
+"摄取目标不在目的地根目录下" = "The ingest destination is outside the destination root";
+"摄取文件复制失败" = "Failed to copy the ingest file";
 "关联候选不存在" = "The link candidate does not exist";
 "资源文件未关联到逻辑照片" = "The asset file is not linked to a logical photo";
 "照片资产迁移不完整，请先重新索引" = "The photo asset migration is incomplete; reindex first";
@@ -1017,6 +1022,13 @@
 "关键词操作无效（仅支持追加/替换/移除）" = "Invalid keyword operation (only append/replace/remove are supported)";
 "元数据修改内容为空" = "The metadata patch is empty";
 "没有可更新的元数据字段" = "There are no metadata fields to update";
+"元数据预览已过期（模板或照片集在预览后发生变化）。请重新预览后再应用。" = "The metadata preview is stale (template or photo set changed after preview). Preview again before applying.";
+"元数据模板不存在" = "The metadata template does not exist";
+"模板批次不存在" = "The template batch does not exist";
+"模板批次已撤销" = "The template batch has already been undone";
+"批次类型不是模板套用" = "The batch is not a template apply batch";
+"重复组不存在或没有成员" = "The duplicate group does not exist or has no members";
+"重复组成员不存在" = "The duplicate group member does not exist";
 "未知的筛选字段：{{field}}" = "Unknown filter field: {{field}}";
 "智能相册不存在" = "Smart album not found";
 "人物不存在" = "Person not found";
@@ -1905,6 +1917,7 @@
 "包含联系表" = "Include contact sheet";
 "正在交付…" = "Delivering…";
 "开始整套交付" = "Start full delivery";
+"正在预检…" = "Preflighting…";
 "配方名" = "Recipe name";
 "含联系表" = "With contact sheet";
 "删除配方" = "Delete recipe";

@@ -371,6 +371,8 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case DUP_RESOLVE_MEMBER_CONFIRM_REQUIRED
     /// 视觉阈值非法（§4.2 P2）：必须是 0...64 的整数。
     case DUP_THRESHOLD_INVALID
+    case DUP_GROUP_NOT_FOUND
+    case DUP_MEMBER_NOT_FOUND
     case DUPLICATE_SCAN_BUSY
     case METADATA_RESOLVE_ORPHAN_CONFIRM_REQUIRED
     case METADATA_KEYWORDS_INVALID
@@ -380,9 +382,21 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case METADATA_KEYWORDS_OP_INVALID
     case METADATA_PATCH_EMPTY
     case METADATA_MUTATION_EMPTY
+    /// 模板预览之后模板字段/照片集/policy 发生变化（apply 前复算令牌）。
+    case METADATA_PREVIEW_STALE
+    // Metadata 模板批次
+    case TEMPLATE_NOT_FOUND
+    case TEMPLATE_BATCH_NOT_FOUND
+    case TEMPLATE_BATCH_ALREADY_UNDONE
+    case TEMPLATE_BATCH_TYPE_MISMATCH
     case SETTINGS_LANGUAGE_INVALID
     case QUALITY_NO_ASSET_FILE
     case INDEX_SESSION_NO_SOURCE
+    // 摄取失败
+    case INGEST_CHECKSUM_MISMATCH
+    case INGEST_DESTINATION_EXISTS
+    case INGEST_PATH_INVALID
+    case INGEST_TRANSFER_FAILED
     case ASSET_LINK_CANDIDATE_NOT_FOUND
     case ASSET_FILE_NOT_LINKED
     case ASSET_MIGRATION_INCOMPLETE

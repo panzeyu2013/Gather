@@ -83,7 +83,10 @@ struct SessionIngestRunner {
 
         var existing: [String: String] = [:]
         do {
-            existing = try sessionService.photoChecksums(sessionId: payload.sessionId)
+            let sourceSizes = ingestService.sourceSizes(sourcePaths: payload.sourcePaths)
+            existing = try sessionService.photoChecksums(
+                sessionId: payload.sessionId,
+                matchingSizes: sourceSizes.isEmpty ? nil : sourceSizes)
         } catch {
             GatherLogger.log("ingest checksum lookup failed: \(error)", level: .warn)
         }
@@ -127,7 +130,10 @@ struct SessionIngestRunner {
             skipped: result.skipped,
             unreadable: result.unreadable,
             failed: result.failed.map {
-                MetadataApplyFailureDTO(photoId: $0.sourcePath, message: $0.message)
+                MetadataApplyFailureDTO(
+                    photoId: $0.sourcePath, message: $0.message,
+                    code: $0.code.isEmpty ? nil : $0.code,
+                    retryable: $0.retryable)
             }
         )
         // 取消发生在复制/登记之后：文件已经安全落地并登记，再把 Job 收成 cancelled。

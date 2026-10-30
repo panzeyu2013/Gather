@@ -110,6 +110,16 @@ public final class FilterEngine {
         }
     }
 
+    /// 图库全选：一次 CTE 取代表行 id（最多 20k）。
+    public func filterGloballyIDs(
+        criteria: FilterGroup, sessionId: String, limit: Int = 20_000
+    ) throws -> [String] {
+        try translated {
+            try query.filterGloballyIDs(
+                criteria: criteria, sessionId: sessionId, limit: limit)
+        }
+    }
+
     /// TS: countGlobally。
     public func countGlobally(criteria: FilterGroup, sessionId: String? = nil) throws -> Int {
         try translated { try query.countGlobally(criteria: criteria, sessionId: sessionId) }

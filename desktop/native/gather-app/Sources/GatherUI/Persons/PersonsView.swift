@@ -350,7 +350,9 @@ private struct PersonDetailView: View {
                 if viewModel.persons.count > 1 {
                     Menu(l10n("合并到…")) {
                         ForEach(viewModel.persons.filter { $0.id != person.id }, id: \.id) { target in
-                            Button(target.name) { pendingMergeTarget = target }
+                            Button(l10n.format("%@（%lld 张）", target.name, target.photoCount)) {
+                                pendingMergeTarget = target
+                            }
                         }
                     }
                     .menuStyle(.borderlessButton)
@@ -506,8 +508,9 @@ private struct PersonDetailView: View {
             Button(l10n("取消"), role: .cancel) { pendingMergeTarget = nil }
         } message: {
             Text(l10n.format(
-                "将把「%@」合并到「%@」，源人物的绑定会转移并删除；此操作不可撤销。",
-                person.name, pendingMergeTarget?.name ?? ""))
+                "将把「%@」（%lld 张）合并到「%@」（%lld 张），源人物的绑定会转移并删除；此操作不可撤销。",
+                person.name, person.photoCount,
+                pendingMergeTarget?.name ?? "", pendingMergeTarget?.photoCount ?? 0))
         }
         .confirmationDialog(
             l10n("移除此照片？"),

@@ -359,8 +359,8 @@ struct APIDuplicateTests {
         #expect(byPhoto["p1"]?.resolution == "keep_one")
     }
 
-    @Test("resolve/resolveMember：不存在的 id 保留域错误（无协议码）")
-    func resolveMissingIdsKeepsDomainError() async throws {
+    @Test("resolve/resolveMember：不存在的 id 映射为 DUP_* 协议码")
+    func resolveMissingIdsMapsProtocolCode() async throws {
         let fixture = try DuplicateQualityFixture()
 
         let groupError = await asyncError {
@@ -371,7 +371,7 @@ struct APIDuplicateTests {
                 )
             )
         }
-        #expect((groupError as? DuplicateServiceError) == .groupNotFound(9999))
+        #expect((groupError as? GatherError)?.code == .DUP_GROUP_NOT_FOUND)
 
         let memberError = await asyncError {
             try await fixture.duplicateAPI.resolveMember(
@@ -381,7 +381,7 @@ struct APIDuplicateTests {
                 )
             )
         }
-        #expect((memberError as? DuplicateServiceError) == .memberNotFound(9999))
+        #expect((memberError as? GatherError)?.code == .DUP_MEMBER_NOT_FOUND)
     }
 }
 
