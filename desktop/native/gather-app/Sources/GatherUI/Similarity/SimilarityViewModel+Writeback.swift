@@ -25,6 +25,7 @@ extension SimilarityViewModel {
     /// TS: canPreview（assignments > 0 && keywords > 0 && !busy）。
     public var canPreviewWriteback: Bool {
         !selectedGroupIds.isEmpty && !parsedWritebackKeywords.isEmpty && !isSyncBusy
+            && !isAnalyzing && !isReclustering
     }
 
     /// 关键词/选择变化 → 清空旧预览、旧写回结果与同步状态视图（TS effect：
@@ -93,6 +94,10 @@ extension SimilarityViewModel {
     /// 用户确认后执行写回（sim.writeback 是 confirmed 门控的破坏性命令；
     /// `confirmed` 只能由确认弹窗传入 true，旧实现恒 true 已删除）。
     public func executeKeywordWriteback(confirmed: Bool) async {
+        guard !isAnalyzing, !isReclustering else {
+            actionError = CommandError.localized("相似度分析/聚类进行中，暂不能写回")
+            return
+        }
         guard confirmed else {
             notice = SimilarityNotice("未确认，已取消写入")
             return
@@ -133,6 +138,10 @@ extension SimilarityViewModel {
 
     /// 重试失败项（sim.retry_failed_writeback 同为 confirmed 门控）。
     public func retryKeywordWriteback(confirmed: Bool) async {
+        guard !isAnalyzing, !isReclustering else {
+            actionError = CommandError.localized("相似度分析/聚类进行中，暂不能写回")
+            return
+        }
         guard confirmed else {
             notice = SimilarityNotice("未确认，已取消重试")
             return

@@ -104,7 +104,10 @@ private struct AppRuntimeFixture {
             assetRepo: assetRepo,
             imagePreloadService: ImagePreloadService(),
             exportService: ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db),
-            outputService: OutputService(exportService: ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db))
+            outputService: OutputService(exportService: ExportService(photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)),
+            sessionService: SessionService(
+                sessionRepo: sessionRepo, photoRepo: photoRepo, faceRepo: faceRepo,
+                connection: db, dimensionsProvider: { _ in (width: 100, height: 100) })
         )
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))
         self.db = db

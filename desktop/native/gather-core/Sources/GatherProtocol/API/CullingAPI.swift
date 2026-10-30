@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/CullingAPI.swift
-// Cut 1 / 阶段 1A：挑片域协议（21 个方法；P0 / A1 追加 selection）。
+// Cut 1 / 阶段 1A：挑片域协议（24 个方法；P0 / A1 追加 selection，P1-7 追加 updateSelection）。
 //
 // 职责：挑片分页/历史栈/单张与批量决策/分组/摘要/同步状态/写回与清理。
 // 对应命令（19 条）：culling.list_page / history / apply_history / update /
@@ -22,6 +22,8 @@ public protocol CullingAPI: Sendable {
     func applyHistory(_ input: CullingApplyHistoryInput) async throws -> [CullingUpdateResult]
     func update(_ input: CullingUpdateInput) async throws -> CullingUpdateResult
     func batchUpdate(_ input: CullingBatchUpdateInput) async throws -> [CullingUpdateResult]
+    /// P1-7：按 scope/filters 重算选择、校验 hash，再按 10k 分块更新。
+    func updateSelection(_ input: CullingSelectionUpdateInput) async throws -> CullingSelectionUpdateResult
     func decideGroup(_ input: CullingDecideGroupInput) async throws -> [CullingUpdateResult]
     func groups(_ sessionId: String) async throws -> [CullingGroup]
     func summary(_ sessionId: String) async throws -> CullingSummary

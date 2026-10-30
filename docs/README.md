@@ -23,7 +23,7 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 
 ## 架构一句话
 
-**SwiftUI 页面 → 16 个域 API（134 个类型化方法，`AppServices` 注入）→ 8 个
+**SwiftUI 页面 → 16 个域 API（140 个类型化方法，`AppServices` 注入）→ 8 个
 SwiftPM target**：`GatherProtocol`（值类型/协议/错误码）、`GatherPersistence`
 （SchemaCurrent/Database/仓储）、`GatherDelivery`（交付引擎）、`GatherAnalysis`
 （聚类/人脸/图像）、`GatherApplication`（服务与任务）、`GatherUI`（页面/状态层）、
@@ -37,10 +37,10 @@ Cut 1 已删除 118 条字符串命令与 `SessionCommandRouter` / `CommandRoute
 `NativeCommandClient`；历史命令映射见 [api-migration-map.md](archive/cuts/api-migration-map.md)。
 
 > 当前基线（2026-10-29 tests 合入后采样）：8 个功能 target、Schema **44 表 / 386 列 / 72 索引 / 65 外键（user_version=1）**、
-> core **1,443 tests / 216 suites**、app **762 tests / 89 suites**（两包都用 `scripts/test.sh` 并行；app 并行的 NSWindow/KVO SIGSEGV 已于 2026-10-29 修复，排查单例时用 `--no-parallel`）、
-> en 1,748 键 / zh 9 占位键；无 Router、无字符串命令。
+> core / app 全量测试通过（用例数随分支变化，以 `scripts/test.sh` 输出为准；本地并行、CI 串行，见 [test-runtime-audit.md](test-runtime-audit.md)）、
+> en 1,849 键 / zh 9 占位键；无 Router、无字符串命令。
 > 只有当前 schema 可打开；旧迁移链已删除，旧版本/未知形态默认 fail-closed，仅显式重置策略才归档重建。
-> **12 个** `check-*.sh` 门禁全绿（strict 可用者带 `--strict`，另有 test-catalog `--self-test` 负例）；
+> **13 个** `check-*.sh` 门禁全绿（strict 可用者带 `--strict`，另有 test-catalog `--self-test` 负例；P3-5 增加 `check-warnings.sh`）；
 > ratchet **60/255/0/0/0**（较 54/228：新增摄取/模板/IPTC/交付代码带来的 +6/+27，
 > 其中 2 处 `@unchecked Sendable` 已收敛为编译器校验的 `Sendable`；口径见
 > [design/p1/iptc-progress.md](design/p1/iptc-progress.md)）。
@@ -113,6 +113,7 @@ SwiftUI 应用，不需要 JavaScript 工具链；设置 `CODESIGN_IDENTITY` 后
 - [开发与贡献指南](DEVELOPMENT.md)：构建/测试、类型化 API 契约、本地化体系、HIG 约定
 - [测试体系审计与优化](test-runtime-audit.md)：并行拆分、耗时/CPU/RSS、覆盖率与重叠审计（2026-10-29）
 - [设计系统与页面配方](design/appearance-interaction.md)：token 角色、页面骨架、组件规则与 ratchet
+- [功能与易用性整改设计](design/functional-usability-remediation-2026-10-29.md)：P1/P2/P3 分批设计、进度与验证（2026-10-29）
 - [架构决策记录](ADR.md)：ADR-001~020 既有决策 + 性能决议与遗留方案（ADR-021~029，
   含未接线资产删除裁决 ADR-028 与人脸管线 ADR-029）
 - [Cut 1 完成报告](archive/cuts/cut1-completion-report.md)：118→16 协议/110 方法、Router 删除、

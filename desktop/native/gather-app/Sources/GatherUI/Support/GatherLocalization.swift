@@ -208,10 +208,12 @@ public enum GatherLocalization {
     "NAV_MERGE_TYPE_MISMATCH": "只有同类型的分组才能合并",
     "SESSION_SOURCE_NOT_DIR": "所选路径不是目录",
     "SESSION_SOURCE_ROOT_FORBIDDEN": "文件系统根目录不能作为照片来源",
+    "SESSION_SOURCE_EXCLUDES_PHOTOS": "所选根目录不包含工作区内的全部照片（{{count}} 张在根外）。请选择包含全部照片的上级目录。",
     "SESSION_NOT_FOUND": "工作区不存在",
     "SESSION_IDS_REQUIRED": "未提供工作区 ID",
     "CULLING_PHOTO_NOT_IN_SESSION": "照片不属于当前工作区",
     "CULLING_REVISION_CONFLICT": "挑片版本冲突：期望 {{expected}}，当前 {{current}}",
+    "CULLING_SELECTION_CHANGED": "选择已变化（筛选/范围/组员被修改），本次未写入任何照片。请重新全选后再试。",
     "CULLING_PATCH_INVALID": "挑片更新内容不能为空",
     "CULLING_INVALID_SCOPE": "无效的挑片范围",
     "CULLING_FINALIZE_CONFIRM_REQUIRED": "结束 XMP 同步前需要明确确认",
@@ -230,6 +232,7 @@ public enum GatherLocalization {
     "FKW_ROLE_NAME_EMPTY": "角色名称不能为空",
     "FKW_KEYWORDS_INVALID": "关键词必须是字符串数组",
     "FKW_ITEMS_INVALID": "写入项无效",
+    "FKW_PREVIEW_STALE": "写回预览已过期（绑定或关键词在预览后发生变化）。请重新生成预览后再写回。",
     "SIM_ANALYSIS_RUNNING": "相似度分析已在进行中",
     "SIM_NO_PHOTOS": "当前工作区没有照片",
     "SIM_NO_HASH_DATA": "没有可用于聚类的哈希数据",
@@ -350,6 +353,10 @@ public enum GatherLocalization {
         get { appLanguageStorage.current }
         set { appLanguageStorage.current = newValue }
     }
+
+    /// 系统语言（不读已被 ui_language 覆盖的 appLanguage）。
+    /// 恢复默认语言写回空串时用它，而不是用“当前语言”自我覆盖。
+    public static var systemLanguage: String { detectSystemLanguage() }
 
     /// 显式设置界面语言（对齐 effectiveAppLocale：仅接受 zh-CN/en，
     /// 其余回退系统检测）。

@@ -159,6 +159,11 @@ extension SettingsView {
                 .textSelection(.enabled)
 
             HStack(spacing: 8) {
+                Button(l10n("下载人脸模型")) {
+                    pendingModelInstall = PendingModelInstall(
+                        modelDir: model.modelResourcesDir)
+                }
+                .disabled(viewModel.isDownloading)
                 Button(l10n("打开模型文件夹")) {
                     viewModel.openModelDirectory()
                 }

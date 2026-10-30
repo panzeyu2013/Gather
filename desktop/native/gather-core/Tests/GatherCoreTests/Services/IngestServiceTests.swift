@@ -59,6 +59,24 @@ struct IngestServiceTests {
         #expect(plan.items[1].destPath.hasSuffix("b-002.CR3"))
     }
 
+    @Test("计划：直接传入单文件不被自身去重掉（P1-3）")
+    func planAcceptsDirectFilePath() async throws {
+        let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload-a"])
+        let dest = try makeDestination()
+        defer {
+            try? FileManager.default.removeItem(atPath: source)
+            try? FileManager.default.removeItem(atPath: dest)
+        }
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let file = (source as NSString).appendingPathComponent("a.CR3")
+        let plan = try await service.plan(
+            sourcePaths: [file],
+            options: IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
+        )
+        #expect(plan.items.count == 1, "直接文件路径必须进入计划，不能被 seenSources 自去重")
+        #expect(plan.items[0].sourcePath == file)
+    }
+
     @Test("执行：复制 + 校验 + 第二目的地都成功")
     func executeCopiesAndVerifies() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload-a"])
@@ -80,6 +98,57 @@ struct IngestServiceTests {
         let copied = try String(contentsOfFile: result.copied[0], encoding: .utf8)
         #expect(copied == "payload-a")
         #expect(result.registeredDirectories.count == 1)
+    }
+
+    @Test("目标已存在且内容一致：计划单列 alreadyPresent，执行不复制但要登记")
+    func existingDestinationIsAlreadyPresent() async throws {
+        let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload-a"])
+        let dest = try makeDestination()
+        defer {
+            [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let expected = (dest as NSString).appendingPathComponent("a.CR3")
+        try Data("payload-a".utf8).write(to: URL(fileURLWithPath: expected))
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
+        let plan = try await service.plan(sourcePaths: [source], options: options)
+
+        #expect(plan.items.isEmpty, "同内容目标不得再次复制")
+        #expect(plan.alreadyPresent == [expected],
+                "已落地文件必须单列给登记阶段，不能只进 skipped")
+        let result = service.execute(plan, options: options)
+        #expect(result.copied.isEmpty)
+        #expect(result.alreadyPresent == [expected])
+        #expect(result.registeredDirectories == [dest])
+    }
+
+    @Test("alreadyPresent 主副本已在时：第二目的地缺失必须补拷")
+    func alreadyPresentBackfillsSecondDestination() async throws {
+        let source = try makeSource(["a.CR3"], contents: ["a.CR3": "payload-a"])
+        let dest = try makeDestination()
+        let second = try makeDestination()
+        defer {
+            [source, dest, second].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let expected = (dest as NSString).appendingPathComponent("a.CR3")
+        try Data("payload-a".utf8).write(to: URL(fileURLWithPath: expected))
+        let expectedSidecar = (dest as NSString).appendingPathComponent("a.xmp")
+        try Data("<xmp/>".utf8).write(to: URL(fileURLWithPath: expectedSidecar))
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(
+            destinationRoot: dest, renameTemplate: "{orig}.{ext}",
+            secondDestinationRoot: second)
+        let plan = try await service.plan(sourcePaths: [source], options: options)
+        let result = service.execute(plan, options: options)
+
+        #expect(result.failed.isEmpty)
+        #expect(result.copied.isEmpty)
+        #expect(result.alreadyPresent == [expected])
+        #expect(result.secondCopied.count == 1, "第二目的地必须补拷")
+        #expect(FileManager.default.fileExists(atPath: result.secondCopied[0]))
+        let secondSidecar = (second as NSString).appendingPathComponent("a.xmp")
+        #expect(FileManager.default.fileExists(atPath: secondSidecar),
+                "第二目的地必须补拷 sidecar")
     }
 
     @Test("模板里的 ../ 不得把文件写到目的地根目录之外")
@@ -414,7 +483,7 @@ struct IngestServiceTests {
         #expect(try String(contentsOfFile: existing, encoding: .utf8) == "old")
     }
 
-    @Test("目标是同内容 → 计划阶段直接跳过（幂等重跑）")
+    @Test("目标是同内容 → 计划阶段不复制但单列 alreadyPresent（幂等重跑可登记）")
     func identicalDestinationIsSkipped() async throws {
         let source = try makeSource(["a.CR3"], contents: ["a.CR3": "same"])
         let dest = try makeDestination()
@@ -431,7 +500,8 @@ struct IngestServiceTests {
             options: IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
         )
         #expect(plan.items.isEmpty)
-        #expect(plan.skipped.count == 1)
+        #expect(plan.skipped.isEmpty, "同内容目标不是“跳过源”，而是已落地目标")
+        #expect(plan.alreadyPresent == [existing])
     }
 
     // MARK: - P0 / C1：日期与相机来自 EXIF

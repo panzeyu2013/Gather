@@ -20,7 +20,22 @@ extension ExportService {
         reportType: String,
         format: String? = nil
     ) throws -> ReportData {
-        let requested = format == "md" ? ReportFormat.md : ReportFormat.csv
+        let requested: ReportFormat
+        switch format {
+        case nil, "csv":
+            requested = .csv
+        case "md":
+            requested = .md
+        default:
+            throw GatherError(
+                code: .EXPORT_PARAMS_INVALID,
+                params: ["field": "format", "value": format ?? ""])
+        }
+        guard ["session_summary", "person", "keyword"].contains(reportType) else {
+            throw GatherError(
+                code: .EXPORT_PARAMS_INVALID,
+                params: ["field": "reportType", "value": reportType])
+        }
         switch reportType {
         case "session_summary":
             let rows = try photoRepo.reportRows(sessionId: sessionId)

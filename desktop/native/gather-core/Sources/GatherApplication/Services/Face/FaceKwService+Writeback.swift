@@ -19,12 +19,14 @@ extension FaceKwService {
         let clusters = try faceRepo.getClusters(sessionId, includeMembers: true)
         let additions = Self.buildFaceKeywordAdditions(clusters)
         let boundPhotoIds = Set(additions.keys)
-        return try await writebackProvider.preview(
+        var preview = try await writebackProvider.preview(
             sessionId: sessionId,
             options: options,
             boundPhotoIds: boundPhotoIds,
             additions: additions
         )
+        preview.previewToken = FacePreviewToken.make(sessionId: sessionId, clusters: clusters)
+        return preview
     }
 
     /// TS: face-kw.ipc.ts fkw.writeback。
@@ -36,13 +38,27 @@ extension FaceKwService {
     public func writeback(
         sessionId: String,
         confirmed: Bool,
-        items: [FaceKwWritebackItem]?
+        items: [FaceKwWritebackItem]?,
+        expectedPreviewToken: String? = nil
     ) async throws -> FaceKwWritebackResult {
         guard confirmed else { throw FaceKwServiceError.writebackConfirmRequired }
         guard let writebackProvider else { throw FaceKwServiceError.writebackProviderMissing }
+        // P1-4：预览之后绑定/关键词变化 → 拒绝，禁止按旧 items 写回。
+        if let expectedPreviewToken {
+            let clusters = try faceRepo.getClusters(sessionId, includeMembers: true)
+            let current = FacePreviewToken.make(sessionId: sessionId, clusters: clusters)
+            guard current == expectedPreviewToken else {
+                throw FaceKwServiceError.previewStale
+            }
+        }
         // TS 的 FKW_ITEMS_INVALID（Array.isArray 校验）属 JSON 契约层职责；
         // Swift 参数类型已强约束（nil 等价 TS 的 `params.items ?? []`）。
         let resolved = items ?? []
+        // P1-4：有写回项就必须带预览令牌。否则“省略令牌”等于绕过过期校验，
+        // 把旧 items 写回 XMP——服务端不变量不能依赖调用方自觉。
+        if !resolved.isEmpty, expectedPreviewToken == nil {
+            throw FaceKwServiceError.previewStale
+        }
         let result = try await writebackProvider.execute(sessionId: sessionId, items: resolved)
         let mirrorErrors = mirrorWritebackOutcome(
             sessionId: sessionId, items: resolved, result: result

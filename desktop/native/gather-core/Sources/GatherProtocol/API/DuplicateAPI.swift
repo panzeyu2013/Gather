@@ -15,4 +15,6 @@ public protocol DuplicateAPI: Sendable {
     func groups(_ sessionId: String) async throws -> [DuplicateGroup]
     func resolve(_ input: Confirmed<DuplicateResolveInput>) async throws -> Bool
     func resolveMember(_ input: Confirmed<DuplicateResolveMemberInput>) async throws -> Bool
+    /// 组级“恢复未处理”：清空组 resolution、全部成员恢复保留。
+    func resetGroup(_ input: Confirmed<DuplicateResetGroupInput>) async throws -> Bool
 }

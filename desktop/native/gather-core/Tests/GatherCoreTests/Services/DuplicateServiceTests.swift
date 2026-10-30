@@ -865,6 +865,43 @@ struct DuplicateResolveTests {
         #expect(statuses == ["ready", "pending"])
     }
 
+    @Test("P2-8：逐张改回保留后组级 resolution 重算为 keep_all")
+    func memberChangeResyncsGroupResolution() async throws {
+        let harness = try makeDuplicateHarness()
+        let result = try await scanExactPair(harness)
+        let group = result.exactGroups[0]
+        try harness.service.resolveGroup(groupId: group.id, resolution: .keepOne)
+        #expect(try harness.service.getGroups(sessionId: harness.sessionId)[0].resolution
+                == "keep_one")
+
+        let rejected = try #require(
+            harness.service.getGroups(sessionId: harness.sessionId)[0].members
+                .first { !$0.isKept })
+        try harness.service.resolveMember(memberId: rejected.id, isKept: true)
+
+        #expect(try harness.service.getGroups(sessionId: harness.sessionId)[0].resolution
+                == "keep_all", "成员全部保留后组徽标必须是 keep_all")
+    }
+
+    @Test("P2-8：resetGroup 清空组/成员处置并恢复照片状态")
+    func resetGroupClearsResolutionAndKeepsMembers() async throws {
+        let harness = try makeDuplicateHarness()
+        let result = try await scanExactPair(harness)
+        let group = result.exactGroups[0]
+        try harness.service.resolveGroup(groupId: group.id, resolution: .keepOne)
+
+        try harness.service.resetGroup(groupId: group.id)
+
+        let stored = try harness.service.getGroups(sessionId: harness.sessionId)[0]
+        #expect(stored.resolution == nil)
+        #expect(stored.members.allSatisfy { $0.isKept })
+        #expect(stored.members.allSatisfy { $0.resolution == nil })
+        let statuses = try harness.db.prepare(
+            "SELECT status FROM photos WHERE session_id = ? ORDER BY id"
+        ).query([.text(harness.sessionId)]).map { $0[0].textValue ?? "" }
+        #expect(statuses == ["ready", "ready"], "恢复未处理后不得继续被导出排除")
+    }
+
     @Test("resolve_member：成员不存在抛错")
     func resolveMemberMissingMemberThrows() throws {
         let db = try makeTestDB()

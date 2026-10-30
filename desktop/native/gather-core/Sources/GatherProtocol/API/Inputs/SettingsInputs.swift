@@ -66,6 +66,64 @@ public struct SettingsSetInput: Decodable, Sendable, Equatable {
     }
 }
 
+/// P1-5：分级 reset 的选择。默认只重置偏好，不触碰用户内容与界面语言。
+public struct SettingsResetInput: Codable, Sendable, Equatable {
+    public let resetPreferences: Bool
+    public let resetUserContent: Bool
+    public let resetLanguage: Bool
+
+    public init(
+        resetPreferences: Bool = true,
+        resetUserContent: Bool = false,
+        resetLanguage: Bool = false
+    ) {
+        self.resetPreferences = resetPreferences
+        self.resetUserContent = resetUserContent
+        self.resetLanguage = resetLanguage
+    }
+}
+
+/// P1-5：reset 影响面预览。计数来自当前设置值，不读 secret。
+public struct SettingsResetImpact: Codable, Equatable, Sendable, Identifiable {
+    public let preferenceCount: Int
+    public let templateCount: Int
+    public let batchCount: Int
+    public let recipeCount: Int
+
+    public var id: String {
+        "\(preferenceCount):\(templateCount):\(batchCount):\(recipeCount)"
+    }
+
+    public init(
+        preferenceCount: Int,
+        templateCount: Int,
+        batchCount: Int,
+        recipeCount: Int
+    ) {
+        self.preferenceCount = preferenceCount
+        self.templateCount = templateCount
+        self.batchCount = batchCount
+        self.recipeCount = recipeCount
+    }
+}
+
+/// P1-5：reset 的执行结果；values 与 settings.reset 旧返回值一致。
+public struct SettingsResetResult: Codable, Equatable, Sendable {
+    public let values: [String: String]
+    public let resetKeys: [String]
+    public let preservedKeys: [String]
+
+    public init(
+        values: [String: String],
+        resetKeys: [String],
+        preservedKeys: [String]
+    ) {
+        self.values = values
+        self.resetKeys = resetKeys
+        self.preservedKeys = preservedKeys
+    }
+}
+
 /// settings.set_language 的语言白名单。
 public enum InterfaceLanguage: String, Codable, CaseIterable, Sendable, Equatable {
     case zhCN = "zh-CN"

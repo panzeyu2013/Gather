@@ -38,6 +38,10 @@ private struct B8SettingsState {
     var setInputs: [SettingsSetInput] = []
     var getKeys: [SettingsKey] = []
     var resetCalls = 0
+    var resetInputs: [SettingsResetInput] = []
+    var previewResetCalls = 0
+    var previewResetResult = SettingsResetImpact(
+        preferenceCount: 0, templateCount: 0, batchCount: 0, recipeCount: 0)
     var languageInputs: [InterfaceLanguage] = []
     var mlStatusCalls = 0
 }
@@ -78,6 +82,12 @@ final class B8SettingsAPIStub: SettingsAPI, @unchecked Sendable {
     var setInputs: [SettingsSetInput] { box.lock.withLock { box.setInputs } }
     var getKeys: [SettingsKey] { box.lock.withLock { box.getKeys } }
     var resetCalls: Int { box.lock.withLock { box.resetCalls } }
+    var resetInputs: [SettingsResetInput] { box.lock.withLock { box.resetInputs } }
+    var previewResetCalls: Int { box.lock.withLock { box.previewResetCalls } }
+    var previewResetResult: SettingsResetImpact {
+        get { box.lock.withLock { box.previewResetResult } }
+        set { box.lock.withLock { box.previewResetResult = newValue } }
+    }
     var languageInputs: [InterfaceLanguage] { box.lock.withLock { box.languageInputs } }
     var mlStatusCalls: Int { box.lock.withLock { box.mlStatusCalls } }
 
@@ -116,6 +126,28 @@ final class B8SettingsAPIStub: SettingsAPI, @unchecked Sendable {
         return box.lock.withLock {
             box.values = [:]
             return box.values
+        }
+    }
+
+    func previewReset() async throws -> SettingsResetImpact {
+        box.lock.withLock {
+            box.previewResetCalls += 1
+            return box.previewResetResult
+        }
+    }
+
+    func reset(_ input: Confirmed<SettingsResetInput>) async throws -> SettingsResetResult {
+        let error: (any Error)? = box.lock.withLock {
+            box.resetCalls += 1
+            box.resetInputs.append(input.value)
+            return box.resetError
+        }
+        if let error { throw error }
+        return box.lock.withLock {
+            SettingsResetResult(
+                values: box.values,
+                resetKeys: [],
+                preservedKeys: Array(box.values.keys).sorted())
         }
     }
 

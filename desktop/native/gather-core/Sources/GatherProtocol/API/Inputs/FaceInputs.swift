@@ -226,21 +226,29 @@ public struct FacePreviewInput: Decodable, Sendable, Equatable {
 public struct FaceWritebackInput: Decodable, Sendable, Equatable {
     public let sessionId: String
     public let items: [WritebackItem]
+    /// P1-4：预览身份；有值时服务端复算绑定指纹，不一致拒绝写入。
+    public let expectedPreviewToken: String?
 
-    public init(sessionId: String, items: [WritebackItem] = []) throws {
+    public init(
+        sessionId: String,
+        items: [WritebackItem] = [],
+        expectedPreviewToken: String? = nil
+    ) throws {
         self.sessionId = try APIValidation.nonBlank(sessionId, field: "sessionId", maxLength: 128)
         self.items = items
+        self.expectedPreviewToken = expectedPreviewToken
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
             sessionId: try container.decode(String.self, forKey: .sessionId),
-            items: try container.decodeIfPresent([WritebackItem].self, forKey: .items) ?? []
+            items: try container.decodeIfPresent([WritebackItem].self, forKey: .items) ?? [],
+            expectedPreviewToken: try container.decodeIfPresent(String.self, forKey: .expectedPreviewToken)
         )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, items
+        case sessionId, items, expectedPreviewToken
     }
 }

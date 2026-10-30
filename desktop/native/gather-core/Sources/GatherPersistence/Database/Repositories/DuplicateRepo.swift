@@ -166,7 +166,10 @@ public final class DuplicateRepo {
             "UPDATE duplicate_groups SET resolution = ? WHERE id = ?"
         )
         for row in rows {
-            _ = try statement.run([.text(row.resolution), .int(Int64(row.groupId))])
+            _ = try statement.run([
+                row.resolution.map(DBValue.text) ?? .null,
+                .int(Int64(row.groupId)),
+            ])
         }
     }
 
@@ -207,7 +210,27 @@ public final class DuplicateRepo {
             ])
     }
 
-    /// resolveMember 的读回（UPDATE 之后取 photo_id；nil = 成员不存在）。
+    /// P2-8：恢复未处理——组 resolution 置 NULL，成员全部恢复保留、resolution 置 NULL。
+    public func resetGroup(groupId: Int) throws -> Bool {
+        let exists = try connection.prepare(
+            "SELECT 1 FROM duplicate_groups WHERE id = ?"
+        ).get([.int(Int64(groupId))]) != nil
+        guard exists else { return false }
+        _ = try connection.prepare(
+            "UPDATE duplicate_group_members SET is_kept = 1, resolution = NULL WHERE group_id = ?"
+        ).run([.int(Int64(groupId))])
+        _ = try connection.prepare(
+            "UPDATE duplicate_groups SET resolution = NULL WHERE id = ?"
+        ).run([.int(Int64(groupId))])
+        return true
+    }
+
+    public func getMemberGroupId(memberId: Int) throws -> Int? {
+        try connection.prepare(
+            "SELECT group_id FROM duplicate_group_members WHERE id = ?"
+        ).get([.int(Int64(memberId))])?[0].intValue.map(Int.init)
+    }
+
     public func getMemberPhotoId(memberId: Int) throws -> String? {
         try connection.prepare(
             "SELECT photo_id FROM duplicate_group_members WHERE id = ?"
@@ -261,6 +284,9 @@ public final class DuplicateRepo {
         _ = try connection.prepare("""
             UPDATE photos
             SET status = CASE
+              -- P2-11：missing（源文件丢失）不是重复组能判定的状态，保持原值；
+              -- pending 是“尚未处理”的过渡态，重复决策后应正常落到 ready/removed。
+              WHEN status = 'missing' THEN status
               WHEN EXISTS (
                 SELECT 1
                 FROM duplicate_group_members dgm

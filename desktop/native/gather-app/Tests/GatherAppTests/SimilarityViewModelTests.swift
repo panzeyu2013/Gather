@@ -432,6 +432,27 @@ struct SimilarityViewModelTests {
         #expect(api.writebackInputs[0].value.threshold == 10)
     }
 
+    @Test("P2-9：分析/聚类进行中禁用写回预览与执行")
+    func writebackDisabledWhileAnalyzing() async {
+        let (viewModel, api, _) = makeStubVM()
+        api.resultValue = b8SimilarityResult()
+        await viewModel.load()
+        viewModel.toggleGroupSelection(1)
+        viewModel.writebackKeywords = "旅行"
+
+        viewModel.isAnalyzing = true
+        #expect(!viewModel.canPreviewWriteback)
+        await viewModel.executeKeywordWriteback(confirmed: true)
+        #expect(api.writebackInputs.isEmpty, "分析中不得写回")
+        #expect(viewModel.actionError != nil)
+
+        viewModel.isAnalyzing = false
+        viewModel.isReclustering = true
+        #expect(!viewModel.canPreviewWriteback)
+        await viewModel.executeKeywordWriteback(confirmed: true)
+        #expect(api.writebackInputs.isEmpty, "聚类中不得写回")
+    }
+
     // 取消文案：notice 只存 key + 动作名（LocalizedText），渲染期一起解析，
     // 切语言后不会留下旧语言的片段（Cut 4 / 4b-2c）。
     @Test func cancellationNoticeResolvesAtRenderTime() {

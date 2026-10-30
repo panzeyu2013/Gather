@@ -346,15 +346,26 @@ package struct DashboardView: View {
     private var jobsSection: some View {
         Section {
             jobsBody
-            if viewModel.hasClearableJobs {
+            // P2-3：只剩失败/中断任务时也必须能清理（旧条件只统计 succeeded）。
+            if viewModel.hasClearableJobs || viewModel.hasFailedJobs {
                 HStack {
                     Spacer(minLength: 0)
-                    Button(l10n("清理已完成")) {
-                        Task { await viewModel.clearCompletedJobs() }
+                    if viewModel.hasFailedJobs {
+                        Button(l10n("清理失败记录")) {
+                            Task { await viewModel.clearCompletedJobs(includeFailed: true) }
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .help(l10n("同时清理已完成、失败、中断和取消的任务记录；阶段证据保留"))
                     }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help(l10n("清理已完成"))
+                    if viewModel.hasClearableJobs {
+                        Button(l10n("清理已完成")) {
+                            Task { await viewModel.clearCompletedJobs() }
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .help(l10n("清理已完成"))
+                    }
                 }
                 .padding(.top, 2)
             }

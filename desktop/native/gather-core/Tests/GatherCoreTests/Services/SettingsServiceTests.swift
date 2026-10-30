@@ -103,6 +103,90 @@ struct SettingsServiceTests {
         #expect(try harness.repo.get(key: "thumbnail_size")?.value == "1024")
     }
 
+    // P1-5：reset 只重置偏好，不删除用户内容（模板/配方/批次历史/备份目录）。
+    @Test func resetPreservesUserContentKeys() throws {
+        let harness = try makeHarness()
+        try harness.service.set("metadata.templates", value: "[\"t1\"]")
+        try harness.service.set("metadata.applyBatches", value: "[\"b1\"]")
+        try harness.service.set("output.recipes", value: "[\"r1\"]")
+        try harness.service.set("backup_dir", value: "/tmp/gather-backups")
+        try harness.service.set("thumbnail_size", value: "2048")
+
+        try harness.service.reset()
+
+        #expect(harness.service.get("metadata.templates") == "[\"t1\"]")
+        #expect(harness.service.get("metadata.applyBatches") == "[\"b1\"]")
+        #expect(harness.service.get("output.recipes") == "[\"r1\"]")
+        #expect(harness.service.get("backup_dir") == "/tmp/gather-backups")
+        #expect(harness.service.get("thumbnail_size") == "1024",
+                "偏好仍必须恢复默认")
+    }
+
+    @Test("previewReset 统计模板/批次/配方与偏好数量")
+    func previewResetCountsUserContent() throws {
+        let harness = try makeHarness()
+        try harness.service.set("metadata.templates", value: "[{\"id\":\"t1\"},{\"id\":\"t2\"}]")
+        try harness.service.set("metadata.applyBatches", value: "[{\"id\":\"b1\"}]")
+        try harness.service.set("output.recipes", value: "[{\"id\":\"r1\"},{\"id\":\"r2\"},{\"id\":\"r3\"}]")
+        let impact = harness.service.previewReset()
+        #expect(impact.templateCount == 2)
+        #expect(impact.batchCount == 1)
+        #expect(impact.recipeCount == 3)
+        #expect(impact.preferenceCount > 0)
+    }
+
+    @Test("分级 reset：偏好/用户内容/语言互不越界")
+    func scopedResetSeparatesScopes() throws {
+        let harness = try makeHarness()
+        try harness.service.set("thumbnail_size", value: "2048")
+        try harness.service.set("metadata.templates", value: "[\"t1\"]")
+        try harness.service.set("ui_language", value: "en")
+        try harness.service.set("watch.lastEventIDs", value: "{\"s1\":42}")
+
+        // 只重置偏好：模板/语言/运行时游标保留（运行时游标按设计总是清理）。
+        let pref = try harness.service.reset(input: SettingsResetInput(
+            resetPreferences: true, resetUserContent: false, resetLanguage: false))
+        #expect(harness.service.get("thumbnail_size") == "1024")
+        #expect(harness.service.get("metadata.templates") == "[\"t1\"]")
+        #expect(harness.service.get("ui_language") == "en")
+        #expect(harness.service.get("watch.lastEventIDs") == "{}")
+        #expect(pref.preservedKeys.contains("metadata.templates"))
+        #expect(pref.resetKeys.contains("thumbnail_size"))
+
+        // 只清用户内容 + 语言：偏好保持当前值（已是默认，先改回非默认验证）。
+        try harness.service.set("thumbnail_size", value: "4096")
+        _ = try harness.service.reset(input: SettingsResetInput(
+            resetPreferences: false, resetUserContent: true, resetLanguage: true))
+        #expect(harness.service.get("metadata.templates") == "[]")
+        #expect(harness.service.get("ui_language") == "")
+        #expect(harness.service.get("thumbnail_size") == "4096",
+                "未勾选偏好时不得重置偏好")
+    }
+
+    @Test("reset scope 穷尽：每个 known key 恰属偏好/用户内容/运行时/语言之一")
+    func resetScopeCoverage() throws {
+        let keys = SettingsService.knownSettingKeys
+        let user = SettingsService.userContentKeysPreservedOnReset
+        let runtime = SettingsService.runtimeKeysResetAlways
+        let language = SettingsService.languageKey
+        #expect(user.isSubset(of: keys), "用户内容键必须都在默认值表里")
+        #expect(runtime.isSubset(of: keys), "运行时键必须都在默认值表里")
+        #expect(keys.contains(language))
+        var explicitCount = 0
+        for key in keys {
+            // 每个 known key 必须有显式分类；新增键漏登记会直接 nil 失败。
+            let scope = SettingsService.resetScope(for: key)
+            #expect(scope != nil, "键 \(key) 没有 reset scope")
+            if scope == .userContent || scope == .runtime || scope == .language {
+                explicitCount += 1
+            }
+        }
+        #expect(explicitCount == user.count + runtime.count + 1,
+                "显式 scope 集合不能有重叠")
+        #expect(SettingsService.resetScope(for: "unknown.key") == nil,
+                "未知键不得静默落到偏好 scope")
+    }
+
     // TS: 默认值表规模与关键值对齐；删除 14 个无消费者的旧 Node 缓存/C1/防抖键后为 49，
     // 之后随 P0/P1 迭代增补至 52；2026-10-27 增加 metadata.applyBatches.corrupt
     // （仅作批次 JSON 解析失败的留证，无 UI 消费者）→ 53；2026-10-28 增加

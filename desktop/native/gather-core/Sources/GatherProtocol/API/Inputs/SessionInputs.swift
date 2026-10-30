@@ -116,6 +116,29 @@ public struct SessionAddPhotosInput: Decodable, Sendable, Equatable {
 }
 
 /// 只携带 sessionId 的破坏性/会话级操作载荷（culling/face/sim 的确认入口复用）。
+/// P1-3：为历史空根工作区设置/修复工作区根目录。
+public struct SessionSetSourceRootInput: Decodable, Sendable, Equatable {
+    public let sessionId: String
+    public let sourceRoot: String
+
+    public init(sessionId: String, sourceRoot: String) throws {
+        self.sessionId = try APIValidation.nonBlank(sessionId, field: "sessionId", maxLength: 128)
+        self.sourceRoot = try APIValidation.path(sourceRoot, field: "sourceRoot")
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            sessionId: try container.decode(String.self, forKey: .sessionId),
+            sourceRoot: try container.decode(String.self, forKey: .sourceRoot)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId, sourceRoot
+    }
+}
+
 public struct SessionReference: Decodable, Sendable, Equatable {
     public let sessionId: String
 

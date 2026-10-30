@@ -22,6 +22,8 @@ public enum ExportRangeIntent: Equatable, Sendable {
     case picks
     /// 通用入口（工具栏页签直接进入）：默认工作区全部照片，由用户显式选择。
     case allPhotos
+    /// P2-1：图库/挑片带选择进入；空数组按通用入口处理。
+    case selected([String])
 }
 
 @MainActor
@@ -57,6 +59,8 @@ public final class ExportViewModel: PageVisibility {
     var persistTask: Task<Void, Never>?
     /// 配方落盘的串行链尾：保证「删了配方」不会被更早的快照覆盖回来。
     var persistWriteTask: Task<Void, Never>?
+    /// settings 变化后的原地重读任务（P0：作废缓存但绝不清空数组）。
+    var recipeReloadTask: Task<Void, Never>?
     public internal(set) var clientSelectionImport: ClientSelectionImportResult?
     public internal(set) var isImportingSelection = false
     public internal(set) var webDAVPublish: WebDAVPublishSummary?
@@ -92,6 +96,8 @@ public final class ExportViewModel: PageVisibility {
     /// 因此默认「工作区全部照片」，由界面把两个范围与张数摆在一起让用户显式选择；
     /// 从控制中心「挑片已完成」进入时页面会突出保留片范围（见 ExportRangeSection）。
     public var scope: ExportScope = .session
+    /// .selected 范围的照片 ID；从图库/挑片批量动作带入。
+    public internal(set) var selectedPhotoIds: [String] = []
     public var quality = "85"
     public var maxDimension = ""
     public var includeXmp = true
@@ -141,9 +147,25 @@ public final class ExportViewModel: PageVisibility {
     ///   · 先前经过页签进过导出页，不会让之后的「去导出」失效；
     ///   · 后续从页签进入（意图为 nil）不会重复套用上一次的意图；
     ///   · 用户手动改过范围后再点「去导出」，仍然按这次点击的意图走。
+    /// P1：从页签直接进入导出页时，上一次“导出所选”的范围不能跨次残留。
+    public func clearTransientSelectedScope() {
+        guard scope == .selected else { return }
+        selectedPhotoIds = []
+        scope = .session
+    }
+
     public func applyRangeIntent(_ intent: ExportRangeIntent?) {
-        guard intent == .picks else { return }
-        scope = .filtered
+        switch intent {
+        case .picks:
+            scope = .filtered
+        case .allPhotos:
+            scope = .session
+        case .selected(let ids):
+            selectedPhotoIds = ids
+            scope = ids.isEmpty ? .session : .selected
+        case nil:
+            return
+        }
     }
 
     public var destinationIsEmpty: Bool {

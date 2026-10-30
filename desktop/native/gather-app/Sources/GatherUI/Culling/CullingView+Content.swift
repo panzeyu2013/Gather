@@ -32,12 +32,16 @@ extension CullingView {
                         CullingToolbar(
                             viewModel: viewModel,
                             isBusy: isBusy,
-                            layoutMode: layoutBinding
+                            layoutMode: layoutBinding,
+                            pendingAction: $pendingAction
                         )
                         emptyGuide(
                             title: l10n("当前范围没有照片"),
                             systemImage: "photo.on.rectangle.angled",
-                            message: l10n("切换到「全部照片」或清除筛选条件。")
+                            message: l10n("切换到「全部照片」或清除筛选条件。"),
+                            actionTitle: viewModel.filterState.isActive ? l10n("清除筛选") : nil,
+                            action: viewModel.filterState.isActive
+                                ? { Task { await viewModel.resetFilters() } } : nil
                         )
                     }
                 } else {
@@ -117,11 +121,21 @@ extension CullingView {
         }
     }
 
-    private func emptyGuide(title: String, systemImage: String, message: String) -> some View {
+    private func emptyGuide(
+        title: String,
+        systemImage: String,
+        message: String,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
         ContentUnavailableView {
             Label(title, systemImage: systemImage)
         } description: {
             Text(message)
+        } actions: {
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+            }
         }
         .padding(.vertical, 48)
         // 空态自己撑满剩余区域并居中；GatherSessionPage 的 topLeading 只负责

@@ -38,7 +38,7 @@ struct PreviewDashboardProvider: DashboardDataProvider {
         throw PreviewAPIError.unavailable("dashboard.retryJob")
     }
 
-    func clearCompletedJobs() async throws -> Int {
+    func clearCompletedJobs(includeFailed: Bool) async throws -> Int {
         throw PreviewAPIError.unavailable("dashboard.clearCompletedJobs")
     }
 }

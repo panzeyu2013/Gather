@@ -14,8 +14,12 @@ extension ExportViewModel {
         let watermarkKey = (watermarkEnabled && transformsAllowed)
             ? "w:\(watermarkText):\(watermarkPosition.rawValue):\(watermarkOpacity):\(watermarkFontSize)"
             : "w:-"
+        let selectedKey = scope == .selected
+            ? selectedPhotoIds.sorted().joined(separator: ",")
+            : "-"
         return [
             scope.rawValue,
+            selectedKey,
             variantPolicy.rawValue,
             format.rawValue,
             destinationKey,

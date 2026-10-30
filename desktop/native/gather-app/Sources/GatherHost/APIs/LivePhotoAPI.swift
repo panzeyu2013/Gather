@@ -102,6 +102,52 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         return PhotoSearchResult(photos: photos, total: total)
     }
 
+    public func select(_ query: PhotoSelectionQuery) async throws -> PhotoSelectionIds {
+        var conditions: [FilterCondition] = []
+        switch query.filter {
+        case .all:
+            break
+        case .hasFace:
+            conditions.append(.rule(FilterRule(field: "has_face", operator: .eq, value: .bool(true))))
+        case .noFace:
+            conditions.append(.rule(FilterRule(field: "has_face", operator: .eq, value: .bool(false))))
+        case .offline:
+            conditions.append(.rule(FilterRule(field: "status", operator: .eq, value: .string("missing"))))
+        }
+        if let search = query.search, !search.isEmpty {
+            conditions.append(.rule(FilterRule(field: "filename", operator: .contains, value: .string(search))))
+        }
+        let criteria = FilterGroup(logic: .and, conditions: conditions)
+        let limit = query.limit ?? 20_000
+        // PhotoFilterQuery 的通用分页把单次 limit 钳到 500；全选需要 20k，
+        // 因此按 500 一页累积，避免协议声明与实现不一致。
+        var ids: [String] = []
+        var offset = 0
+        while ids.count < limit {
+            let pageLimit = min(500, limit - ids.count)
+            let page = try mapFilterError {
+                try filterEngine.filterGlobally(
+                    criteria: criteria,
+                    sortBy: nil,
+                    sortOrder: nil,
+                    limit: pageLimit,
+                    offset: offset,
+                    sessionId: query.sessionId
+                )
+            }
+            ids.append(contentsOf: page.map(\.photoId))
+            if page.count < pageLimit { break }
+            offset += page.count
+        }
+        let total = try mapFilterError {
+            try filterEngine.countGlobally(criteria: criteria, sessionId: query.sessionId)
+        }
+        let digest = SHA256.hash(Data(ids.sorted().joined(separator: "\n").utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return PhotoSelectionIds(ids: ids, idsHash: digest, truncated: total > ids.count)
+    }
+
     public func suggestions(_ query: PhotoSuggestionQuery) async throws -> [FilterSuggestion] {
         try mapFilterError {
             try filterEngine.suggest(query.sessionId, keyword: query.keyword)

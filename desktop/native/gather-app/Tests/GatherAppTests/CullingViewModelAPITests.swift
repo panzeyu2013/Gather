@@ -79,15 +79,21 @@ private func vmState(
 private func vmAsset(
     _ id: String,
     revision: Int = 1,
-    pickState: PickState = .unreviewed
+    pickState: PickState = .unreviewed,
+    rating: Double = 0,
+    colorLabel: CaptureOneColorLabel = .none,
+    similarityGroupId: String? = nil
 ) -> CullingAsset {
     CullingAsset(
         photo: vmPhoto(id),
-        state: vmState(id, revision: revision, pickState: pickState),
+        state: vmState(
+            id, revision: revision, pickState: pickState,
+            rating: rating, colorLabel: colorLabel),
         xmpPath: "/shoot/\(id).xmp",
         syncStatus: .clean,
         people: [],
         keywords: [],
+        similarityGroupId: similarityGroupId,
         linkedVariantCount: 1,
         faceBboxes: []
     )
@@ -109,6 +115,7 @@ private actor StubCullingAPI: CullingAPI {
     var historyResult: [CullingHistoryOperation] = []
     var updateResult = CullingUpdateResult(states: [], xmpPath: "", syncStatus: .clean)
     var batchUpdateResults: [CullingUpdateResult] = []
+    var updateSelectionResult = CullingSelectionUpdateResult(requested: 0, applied: 0)
     var applyHistoryResults: [CullingUpdateResult] = []
     var decideGroupResults: [CullingUpdateResult] = []
     var writebackResult = WritebackResult(
@@ -130,6 +137,7 @@ private actor StubCullingAPI: CullingAPI {
     private(set) var historyQueries: [CullingHistoryQuery] = []
     private(set) var updateInputs: [CullingUpdateInput] = []
     private(set) var batchUpdateInputs: [CullingBatchUpdateInput] = []
+    private(set) var updateSelectionInputs: [CullingSelectionUpdateInput] = []
     private(set) var applyHistoryInputs: [CullingApplyHistoryInput] = []
     private(set) var decideGroupInputs: [CullingDecideGroupInput] = []
     private(set) var resetInputs: [Confirmed<CullingResetInput>] = []
@@ -145,6 +153,10 @@ private actor StubCullingAPI: CullingAPI {
     private(set) var triageGenerateCalls = 0
 
     func setPage(_ value: CullingPage) { pageResult = value }
+    func setUpdateSelectionResult(_ value: CullingSelectionUpdateResult) {
+        updateSelectionResult = value
+    }
+    func setGroups(_ value: [CullingGroup]) { groupsResult = value }
     func setSummary(_ value: CullingSummary) { summaryResult = value }
     func setSyncStatus(_ value: CullingSyncStatus) { syncStatusResult = value }
     func setHistory(_ value: [CullingHistoryOperation]) { historyResult = value }
@@ -193,6 +205,13 @@ private actor StubCullingAPI: CullingAPI {
     func batchUpdate(_ input: CullingBatchUpdateInput) async throws -> [CullingUpdateResult] {
         batchUpdateInputs.append(input)
         return batchUpdateResults
+    }
+
+    func updateSelection(
+        _ input: CullingSelectionUpdateInput
+    ) async throws -> CullingSelectionUpdateResult {
+        updateSelectionInputs.append(input)
+        return updateSelectionResult
     }
 
     func decideGroup(_ input: CullingDecideGroupInput) async throws -> [CullingUpdateResult] {
@@ -479,6 +498,54 @@ struct CullingViewModelAPITests {
         #expect(vm.undoOperation?.id == 11)
         #expect(vm.undoOperation?.entries.count == 2)
         #expect(vm.page?.assets.filter { $0.state.pickState == .rejected }.count == 2)
+    }
+
+    @Test("跨页批量：提交完整选择集，不再与当前页求交（P1-7）")
+    func batchUpdateSubmitsCrossPageSelection() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1"), vmAsset("p2")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        // p3 是第 2 页（未加载）；用户通过服务端全选后它仍在选择集里。
+        vm.selectedPhotoIds = ["p1", "p2", "p3"]
+        await api.setBatchUpdateResults([
+            CullingUpdateResult(
+                states: [
+                    vmState("p1", revision: 2, pickState: .rejected),
+                    vmState("p2", revision: 2, pickState: .rejected),
+                    vmState("p3", revision: 2, pickState: .rejected),
+                ],
+                xmpPath: "/shoot/p1.xmp", syncStatus: .pending, historyOperationId: 12)
+        ])
+
+        await vm.batchUpdate(patch: CullingUpdatePatch(pickState: .rejected))
+
+        let inputs = await api.batchUpdateInputs
+        #expect(inputs.count == 1)
+        #expect(inputs.first?.photoIds == ["p1", "p2", "p3"],
+                "跨页选择必须整份提交；不得静默截成当前页")
+    }
+
+    @Test("P1：单击后连续按 P 写到下一张（自动前进同步选择集）")
+    func autoAdvanceMovesSelectionWithDecision() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1"), vmAsset("p2")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        vm.selectCurrent("p1")
+        await vm.commit(patch: CullingUpdatePatch(pickState: .picked))
+        #expect(vm.currentPhotoId == "p2")
+        #expect(vm.selectedPhotoIds == ["p2"], "自动前进必须把选择集一起移到下一张")
+
+        await vm.commit(patch: CullingUpdatePatch(pickState: .picked))
+        let photoIds = await api.updateInputs.map(\.photoId)
+        #expect(photoIds == ["p1", "p2"], "第二次 P 必须写到 p2，而不是重写 p1")
     }
 
     @Test("undo：applyHistory 带 direction=undo，操作标记 undone 且 redo 可用")
@@ -772,6 +839,32 @@ struct CullingViewModelAPITests {
         #expect(vm.errorMessage != nil)
     }
 
+    @Test("P2-5：批量冲突按同一策略逐项应用")
+    func resolveAllConflictsUsesOneStrategy() async throws {
+        let api = StubCullingAPI()
+        let metadata = B6bMetadataAPIStub()
+        metadata.conflicts = [
+            b6bConflict(xmpPath: "/shoot/a.xmp"),
+            b6bConflict(xmpPath: "/shoot/b.xmp"),
+        ]
+        await api.setPage(vmPage([vmAsset("p1")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: metadata, jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        #expect(await waitUntilAsync { vm.conflicts.count == 2 })
+
+        await vm.resolveAllConflicts(choice: .useRemote, confirmed: true)
+
+        #expect(metadata.resolveConflictInputs.count == 2)
+        #expect(metadata.resolveConflictInputs.allSatisfy {
+            $0.value.choices == [.rating: .useRemote]
+        })
+        #expect(vm.notice != nil)
+        #expect(vm.errorMessage == nil)
+    }
+
     @Test("B6b：空 choices（保留 Gather 并结清）归一化为逐字段 keep_local")
     func emptyChoicesSettleAsKeepLocal() throws {
         let conflict = b6bConflict()
@@ -947,6 +1040,200 @@ struct CullingViewModelAPITests {
         let queries = await api.selectionQueries
         #expect(queries.first?.sessionId == "s1")
         #expect(queries.first?.scope == .all)
+    }
+
+    @Test("跨页全选：commit 先确认，确认后走 updateSelection（P1-7）")
+    func crossPageCommitConfirmsThenUsesSelectionAPI() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1"), vmAsset("p2")]))
+        await api.setSelection(CullingSelectionIds(
+            ids: ["p1", "p2", "p3"], idsHash: "hash-3"))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        await vm.selectAllInScope()
+
+        await vm.commit(patch: CullingUpdatePatch(pickState: .rejected))
+        #expect(vm.pendingCrossPageBatch != nil, "跨页选择必须先确认")
+        #expect(await api.updateSelectionInputs.isEmpty, "确认前不得写入")
+
+        await api.setUpdateSelectionResult(CullingSelectionUpdateResult(
+            requested: 3,
+            applied: 3,
+            states: [
+                vmState("p1", revision: 2, pickState: .rejected),
+                vmState("p2", revision: 2, pickState: .rejected),
+            ]))
+        let plan = try #require(vm.pendingCrossPageBatch)
+        await vm.performCrossPageBatch(plan, onlyVisible: false)
+
+        let input = try #require(await api.updateSelectionInputs.last)
+        #expect(input.expectedIdsHash == "hash-3")
+        #expect(input.expectedCount == 3)
+        #expect(input.patch.pickState == .rejected)
+        #expect(vm.page?.assets.first(where: { $0.photo.id == "p1" })?.state.pickState == .rejected,
+                "updateSelection 返回的 states 必须就地回显")
+    }
+
+    @Test("P2-4：离开“按筛选”范围清空 filters，避免检查器残留 N 项筛选")
+    func leavingFilteredScopeClearsFilters() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        await vm.setFilterState { $0.rating = 5 }
+        #expect(vm.scopeMode == .filtered)
+        #expect(vm.filterState.isActive)
+        #expect(vm.activeFilterCount == 1)
+
+        await vm.setScope(.all)
+        #expect(vm.scopeMode == .all)
+        #expect(!vm.filterState.isActive, "离开筛选范围后必须有可清除的空状态")
+        #expect(vm.activeFilterCount == 0)
+    }
+
+    @Test("P2-3：多选星级/色标显示混合态，单选显示统一值")
+    func selectionSummaryShowsMixedValues() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([
+            vmAsset("p1", rating: 5, colorLabel: .red),
+            vmAsset("p2", rating: 3, colorLabel: .blue),
+        ]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        vm.selectedPhotoIds = ["p1", "p2"]
+        let mixed = try #require(vm.selectionSummary)
+        #expect(mixed.hasMixedRating)
+        #expect(mixed.hasMixedColorLabel)
+        #expect(mixed.rating == nil)
+        #expect(mixed.colorLabel == nil)
+
+        vm.selectCurrent("p1")
+        let single = try #require(vm.selectionSummary)
+        #expect(!single.hasMixedRating)
+        #expect(single.rating == 5)
+        #expect(single.colorLabel == .red)
+    }
+
+    @Test("P2-3：对比优先显式选中的 2/4 张，否则当前 ± 相邻")
+    func comparisonUsesSelectionOrNeighbors() {
+        let assets = (1...5).map { vmAsset("p\($0)") }
+        let current = assets[2]
+
+        let selected = CullingComparison.assets(
+            current: current, assets: assets,
+            selectedIds: ["p1", "p3"], compareCount: 2)
+        #expect(selected.map(\.photo.id) == ["p1", "p3"])
+
+        let pair = CullingComparison.assets(
+            current: current, assets: assets,
+            selectedIds: [], compareCount: 2)
+        #expect(pair.map(\.photo.id) == ["p3", "p4"],
+                "无显式选择时必须从当前照片取相邻，而不是列表开头")
+
+        let four = CullingComparison.assets(
+            current: current, assets: assets,
+            selectedIds: [], compareCount: 4)
+        #expect(four.count == 4)
+        #expect(four.contains { $0.photo.id == current.photo.id })
+        #expect(four.map(\.photo.id) == ["p2", "p3", "p4", "p5"])
+    }
+
+    @Test("普通点击当前照片：清空旧多选，P/X 只作用于当前（P1-6）")
+    func selectCurrentClearsMultiSelection() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1"), vmAsset("p2"), vmAsset("p3")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        vm.toggleSelection("p1")
+        vm.toggleSelection("p2")
+        #expect(vm.selectedPhotoIds == ["p1", "p2"])
+
+        vm.selectCurrent("p3")
+        #expect(vm.currentPhotoId == "p3")
+        #expect(vm.selectedPhotoIds == ["p3"],
+                "普通点击必须收敛为单选，否则后续 P/X 会写进旧选择")
+    }
+
+    @Test("胶片条 Shift：从当前到目标做范围选择，并把当前移到目标")
+    func selectRangeFromCurrentUsesCurrentAnchor() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1"), vmAsset("p2"), vmAsset("p3")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        vm.selectCurrent("p1")
+        vm.selectRangeFromCurrent(to: "p3")
+        #expect(vm.selectedPhotoIds == ["p1", "p2", "p3"])
+        #expect(vm.currentPhotoId == "p3")
+    }
+
+    @Test("连续 Shift：锚点保持，第二次范围不丢第一段")
+    func repeatedShiftKeepsAnchor() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1"), vmAsset("p2"), vmAsset("p3")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        vm.selectCurrent("p1")
+        vm.selectRangeFromCurrent(to: "p3")
+        #expect(vm.selectedPhotoIds == ["p1", "p2", "p3"])
+        vm.selectRangeFromCurrent(to: "p2")
+        #expect(vm.selectedPhotoIds == ["p1", "p2"],
+                "锚点仍是 p1；第二次 Shift 不能变成从 p3 到 p2")
+    }
+
+    @Test("相似组决策：按完整组员数生成影响面，不只看已加载页（P1-8）")
+    func prepareGroupDecisionUsesFullGroup() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([
+            vmAsset("p1", similarityGroupId: "g1"),
+            vmAsset("p2", similarityGroupId: "g1"),
+        ]))
+        await api.setGroups([
+            CullingGroup(
+                groupId: "g1", groupIndex: 0,
+                images: [
+                    CullingImage(photoId: "p1", filepath: "/shoot/p1.jpg", filename: "p1.jpg", decision: .pending),
+                    CullingImage(photoId: "p2", filepath: "/shoot/p2.jpg", filename: "p2.jpg", decision: .pending),
+                    CullingImage(photoId: "p3", filepath: "/shoot/p3.jpg", filename: "p3.jpg", decision: .pending),
+                ],
+                keepCount: 0, rejectCount: 0, pendingCount: 3
+            )
+        ])
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+
+        let plan = try #require(await vm.prepareGroupDecision(
+            groupId: "g1", keepPhotoIds: ["p1"]))
+        #expect(plan.totalCount == 3, "必须显示完整组员数，而不是已加载的 2 张")
+        #expect(plan.visibleCount == 2)
+        #expect(plan.keepPhotoIds == ["p1"])
+        #expect(plan.sampleRejectedNames == ["p2.jpg", "p3.jpg"])
+
+        await vm.performGroupDecision(plan)
+        let inputs = await api.decideGroupInputs
+        #expect(inputs.count == 1)
+        #expect(inputs.first?.groupId == "g1")
+        #expect(inputs.first?.keepPhotoIds == ["p1"])
     }
 
     @Test("triage undo 入口：以 undoAvailable 为准，不因 written 为空而丢弃批次")

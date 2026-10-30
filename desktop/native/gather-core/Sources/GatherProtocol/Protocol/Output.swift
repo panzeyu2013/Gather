@@ -101,6 +101,8 @@ public struct OutputContactSheetOptions: Codable, Equatable, Sendable {
 public struct OutputRunInput: Codable, Equatable, Sendable {
     public var sessionId: String
     public var scope: ExportScope
+    /// .selected 时必填；逐配方透传给 ExportOptions。
+    public var selectedPhotoIds: [String]?
     public var destinationRoot: String
     public var recipes: [OutputRecipe]
     /// nil = 不生成联系表（配方里勾了 contactSheet 才生成）。
@@ -111,6 +113,7 @@ public struct OutputRunInput: Codable, Equatable, Sendable {
     public init(
         sessionId: String,
         scope: ExportScope = .session,
+        selectedPhotoIds: [String]? = nil,
         destinationRoot: String,
         recipes: [OutputRecipe],
         contactSheet: OutputContactSheetOptions? = nil,
@@ -118,6 +121,7 @@ public struct OutputRunInput: Codable, Equatable, Sendable {
     ) {
         self.sessionId = sessionId
         self.scope = scope
+        self.selectedPhotoIds = selectedPhotoIds
         self.destinationRoot = destinationRoot
         self.recipes = recipes
         self.contactSheet = contactSheet

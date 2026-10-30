@@ -1160,7 +1160,10 @@ struct FaceKwWritebackTests {
         let result = try await harness.service.preview(
             sessionId: harness.sessionId, options: FaceKwWritebackOptions(createAlbums: true))
 
-        #expect(result == writeback.previewResult)
+        #expect(result.items == writeback.previewResult.items)
+        #expect(result.totalCount == writeback.previewResult.totalCount)
+        #expect(result.affectedPhotos == writeback.previewResult.affectedPhotos)
+        #expect(result.previewToken != nil, "preview 必须带可复算的绑定指纹")
         let args = writeback.previewArgs
         #expect(args?.boundPhotoIds == ["photo-1"])
         #expect(args?.additions == ["photo-1": ["Alice", "kw1", "kw2"]])
@@ -1186,10 +1189,49 @@ struct FaceKwWritebackTests {
         #expect(result == writeback.executeResult)
         #expect(writeback.executedItems.isEmpty)
 
+        // 有 items 就必须带预览令牌（P1-4：省略令牌 = 绕过过期校验）。
+        let preview = try await harness.service.preview(sessionId: harness.sessionId, options: nil)
+        let token = try #require(preview.previewToken)
+        // 省略令牌 = 绕过过期校验：有 items 时必须拒绝。
+        await #expect(throws: FaceKwServiceError.previewStale) {
+            _ = try await harness.service.writeback(
+                sessionId: harness.sessionId, confirmed: true, items: [item])
+        }
         _ = try await harness.service.writeback(
-            sessionId: harness.sessionId, confirmed: true, items: [item])
+            sessionId: harness.sessionId, confirmed: true, items: [item],
+            expectedPreviewToken: token)
         #expect(writeback.executedItems.count == 1)
         #expect(writeback.executedItems[0].photoId == "photo-1")
+    }
+
+    @Test("fkw.writeback rejects a preview token after bindings change")
+    func writebackRejectsStalePreviewToken() async throws {
+        let writeback = FakeWritebackProvider()
+        writeback.previewResult = FaceKwWritebackPreview(items: [], totalCount: 1, affectedPhotos: 1)
+        let harness = try makeFaceKwHarness(writeback: writeback)
+        try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
+                        members: [(photoId: "photo-1", bbox: [1, 2, 3, 4], confidence: 0.9)])
+        try bind(harness, clusterId: 1, roleName: "Alice", keywords: ["kw1"])
+
+        let preview = try await harness.service.preview(
+            sessionId: harness.sessionId, options: nil)
+        let token = try #require(preview.previewToken)
+
+        // 绑定未变：token 可通过。
+        _ = try await harness.service.writeback(
+            sessionId: harness.sessionId, confirmed: true, items: [],
+            expectedPreviewToken: token)
+
+        // 绑定变化：同一 token 必须被拒绝，且不执行写回。
+        _ = try await harness.service.unbind(
+            sessionId: harness.sessionId, clusterId: 1, confirmed: true)
+        let before = writeback.executedItems.count
+        await #expect(throws: FaceKwServiceError.previewStale) {
+            _ = try await harness.service.writeback(
+                sessionId: harness.sessionId, confirmed: true, items: [],
+                expectedPreviewToken: token)
+        }
+        #expect(writeback.executedItems.count == before, "stale token 不得触发写回")
     }
 
     @Test("fkw.confirm_sync routes to the delivery coordinator")
@@ -1272,10 +1314,12 @@ struct FaceKwWritebackTests {
         let delivery = FakeFaceKwDelivery()
         let harness = try makeFaceKwHarness(writeback: writeback, delivery: delivery)
 
+        let preview = try await harness.service.preview(sessionId: harness.sessionId, options: nil)
         let result = try await harness.service.writeback(
             sessionId: harness.sessionId,
             confirmed: true,
-            items: [makeWritebackItem(photoId: "photo-1", id: 9)]
+            items: [makeWritebackItem(photoId: "photo-1", id: 9)],
+            expectedPreviewToken: try #require(preview.previewToken)
         )
 
         #expect(result.errors.isEmpty)

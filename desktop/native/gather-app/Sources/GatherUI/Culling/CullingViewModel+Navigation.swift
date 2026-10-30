@@ -94,6 +94,48 @@ extension CullingViewModel {
         await splitNavigation(beforePhotoId: current)
     }
 
+    /// P1-8：先加载完整组员，生成“保留 K / 淘汰 N-K”的影响面快照。
+    /// UI 必须在确认弹窗里展示这个快照，而不是只数当前页已加载的成员。
+    func prepareGroupDecision(
+        groupId: String,
+        keepPhotoIds: [String]
+    ) async -> CullingGroupDecisionPlan? {
+        await refreshSimilarityGroups()
+        guard let group = similarityGroups.first(where: { $0.groupId == groupId }) else {
+            errorMessage = CommandError.localized("相似组已变化，请刷新后重试")
+            return nil
+        }
+        let validIds = Set(group.images.map(\.photoId))
+        var keep: [String] = []
+        for id in keepPhotoIds where validIds.contains(id) && !keep.contains(id) {
+            keep.append(id)
+        }
+        guard !keep.isEmpty, keep.count < group.images.count else {
+            errorMessage = CommandError.localized(
+                "请选择当前相似度组中 1 至 %lld 张照片",
+                params: ["\(max(1, group.images.count - 1))"]
+            )
+            return nil
+        }
+        let keepSet = Set(keep)
+        let visibleIds = Set(page?.assets
+            .filter { $0.similarityGroupId == groupId }
+            .map(\.photo.id) ?? [])
+        let rejected = group.images.filter { !keepSet.contains($0.photoId) }
+        return CullingGroupDecisionPlan(
+            groupId: group.groupId,
+            keepPhotoIds: keep,
+            totalCount: group.images.count,
+            visibleCount: visibleIds.count,
+            sampleRejectedNames: Array(rejected.prefix(3).map(\.filename))
+        )
+    }
+
+    /// 确认弹窗的确认分支：真正执行整组决策。
+    func performGroupDecision(_ plan: CullingGroupDecisionPlan) async {
+        await keepInGroupRejectRest(plan.groupId, keepPhotoIds: plan.keepPhotoIds)
+    }
+
     /// 对齐旧版 keepInGroupRejectRest 的工具列入口：按相似组 id 定位组并决策。
     public func keepInGroupRejectRest(_ groupId: String, keepPhotoIds: [String], shouldAdvance: Bool = true) async {
         var group = similarityGroups.first(where: { $0.groupId == groupId })

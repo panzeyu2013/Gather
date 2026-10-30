@@ -33,7 +33,8 @@ enum CompositionRuntime {
             assetRepo: core.assetRepo,
             imagePreloadService: core.imagePreloadService,
             exportService: core.exportService,
-            outputService: core.outputService
+            outputService: core.outputService,
+            sessionService: core.sessionService
         )
         return AppRuntime(
             db: core.db,

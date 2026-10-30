@@ -226,6 +226,27 @@ struct FaceKeywordingViewModelTests {
         #expect(face.unbindInputs.first?.value.clusterId == 7)
     }
 
+    @Test("绑定/解绑后旧写回预览失效（P1-4）")
+    func bindingChangeInvalidatesWritebackPreview() async {
+        let (vm, face, _) = makeStack(sessionId: "session-a")
+        vm.applyJobEvent(terminalEvent(sessionId: "session-a"))
+        #expect(vm.analysisDone)
+        face.previewValue = WritebackPreview(
+            items: [], totalCount: 0, affectedPhotos: 0
+        )
+        await vm.previewWriteback()
+        #expect(vm.preview != nil, "分析完成后应能生成预览")
+
+        vm.roleName = "张三"
+        await vm.bind(b8FaceCluster(id: 7, sessionId: "session-a"))
+        #expect(vm.preview == nil, "绑定变化后旧预览必须失效，不能按旧 items 写回")
+
+        await vm.previewWriteback()
+        #expect(vm.preview != nil)
+        await vm.unbind(b8FaceCluster(id: 7, sessionId: "session-a"), confirmed: true)
+        #expect(vm.preview == nil, "解绑变化后旧预览也必须失效")
+    }
+
     @Test("writeback 重试：未确认不发 API")
     func retryRequiresConfirmation() async {
         let (vm, face, _) = makeStack(sessionId: "session-a")

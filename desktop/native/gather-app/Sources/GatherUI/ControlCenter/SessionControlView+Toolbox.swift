@@ -16,8 +16,10 @@ extension SessionControlView {
                 .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 Button(l10n("扫描索引"), systemImage: "magnifyingglass") { Task { await viewModel.scanIndex() } }
-                    .disabled(viewModel.isWorking)
-                    .help(l10n("重新扫描工作区，让索引保持最新"))
+                    .disabled(viewModel.isWorking || viewModel.session?.sourcePath.isEmpty != false)
+                    .help(viewModel.session?.sourcePath.isEmpty != false
+                          ? l10n("请先设置工作区根目录")
+                          : l10n("重新扫描工作区，让索引保持最新"))
                 Button(l10n("分析质量"), systemImage: "wand.and.stars") { Task { await viewModel.analyzeQuality() } }
                     .disabled(viewModel.isWorking)
                     .help(l10n("为照片计算技术质量评分"))

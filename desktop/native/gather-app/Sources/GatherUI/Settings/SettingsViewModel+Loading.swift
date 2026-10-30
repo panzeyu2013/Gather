@@ -27,12 +27,18 @@ extension SettingsViewModel {
     private func applyLoadedSettings(values: [String: String], modelStatus: MLStatusData?) {
         self.values = values
         if let modelStatus { self.modelStatus = modelStatus }
-        language = values["ui_language"].flatMap { $0.isEmpty ? nil : $0 } ?? "zh-CN"
+        language = displayLanguage(from: values)
         backend = values["face_compute_units"] ?? "auto"
         edits = values
         seedSliderValues()
         reconcileDownloadPhaseWithModelStatus()
         errorMessage = nil
+    }
+
+    /// Picker 显示「当前生效语言」：空串（跟随系统）不能显示成“简体中文”。
+    private func displayLanguage(from values: [String: String]) -> String {
+        let stored = values["ui_language"] ?? ""
+        return stored.isEmpty ? languageStore.language.rawValue : stored
     }
 
     private func seedSliderValues() {
@@ -115,33 +121,52 @@ extension SettingsViewModel {
         NSWorkspace.shared.open(URL(fileURLWithPath: parent, isDirectory: true))
     }
 
-    /// 恢复默认（破坏性：模型路径、推理后端、缓存、写回参数等全部设置重置）。
-    /// `confirmed` 只能由确认弹窗传入 true；未确认不发命令。
-    public func reset(confirmed: Bool) {
-        guard confirmed else {
-            notice = LocalizedText("未确认，已取消恢复默认设置")
-            return
+    /// P1-5：读取影响面（模板/批次/配方计数）供 ResetImpactSheet 展示。
+    public func previewResetImpact() async -> SettingsResetImpact? {
+        do {
+            return try await settingsAPI.previewReset()
+        } catch {
+            errorMessage = CommandError(error)
+            return nil
         }
-        Task {
-            do {
-                let values = try await settingsAPI.reset()
-                self.applyResetSettings(values)
-                self.modelStatus = try? await settingsAPI.mlStatus()
-            } catch {
-                self.errorMessage = CommandError(error)
+    }
+
+    /// P1-5：分级 reset；未勾选的 scope 原样保留。
+    /// 破坏性入口只接收确认分支构造的 Confirmed，VM 不自行“补”确认。
+    public func reset(_ confirmed: Confirmed<SettingsResetInput>) async {
+        do {
+            let input = confirmed.value
+            let result = try await settingsAPI.reset(confirmed)
+            applyResetSettings(result.values)
+            if input.resetUserContent {
+                notice = LocalizedText("已恢复默认设置并清除所选用户内容")
             }
+            modelStatus = try? await settingsAPI.mlStatus()
+        } catch {
+            errorMessage = CommandError(error)
         }
     }
 
     private func applyResetSettings(_ values: [String: String]) {
         self.values = values
-        language = values["ui_language"].flatMap { $0.isEmpty ? nil : $0 } ?? "zh-CN"
+        // 空串 = 跟随系统语言：同步到系统语言，不能硬编码成简体中文
+        //（否则英文用户点一次「恢复默认」整窗立刻变中文，与“未勾选语言会保留”相反）。
+        let storedLanguage = values["ui_language"] ?? ""
+        if storedLanguage.isEmpty {
+            // 空串 = 跟随系统。不能用 GatherLocalization.appLanguage：它已经被
+            // 上一次显式切换覆盖成“当前语言”，set 同值会变成 no-op。
+            _ = languageStore.set(rawLanguage: GatherLocalization.systemLanguage)
+        } else {
+            _ = languageStore.set(rawLanguage: storedLanguage)
+        }
+        language = displayLanguage(from: values)
         backend = values["face_compute_units"] ?? "auto"
         edits = values
         seedSliderValues()
         notice = LocalizedText("设置已恢复默认值")
-        // 不广播 .settings：设置写入无常驻页消费者（各页在重新可见/加载时
-        // 自行读取最新设置值），发布只会留下无人订阅的死事件。
+        // P1：导出页缓存了 output.recipes；reset 删除用户内容后必须让它失效，
+        // 否则下一次交付会把旧配方写回 settings。
+        NotificationCenter.default.post(name: GatherAppNotification.settingsChanged, object: nil)
     }
 
     /// 取消破坏性动作：可见文案（不静默 return，也不发命令）。

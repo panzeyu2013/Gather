@@ -224,8 +224,14 @@ public final class GalleryViewModel: PageVisibility {
     public var isFetchingNextPage: Bool { fetchingGeneration != nil }
     public internal(set) var actionError: CommandError?
     public internal(set) var selectedIds: Set<String> = []
+    /// ⌘A 的服务端全范围选择：事件刷新不得把它裁回已加载页（P2-1）。
+    public internal(set) var isScopeSelection = false
+    /// 图库批量写入后的本地回显：list_page 行不含挑片状态，只能靠服务端返回的 states 叠加。
+    public internal(set) var batchCullingStates: [String: AssetCullingState] = [:]
     /// P1 / A3：只读元数据面板（选中单张时按需加载；不触发磁盘解析）。
     let metadataAPI: (any MetadataAPI)?
+    /// P2-2：服务端全选（⌘A）；nil = 预览/旧测试，退回已加载页。
+    let photoAPI: (any PhotoAPI)?
     public internal(set) var metadataDetail: PhotoMetadataDetail?
     private var metadataRequestID = 0
 
@@ -272,6 +278,7 @@ public final class GalleryViewModel: PageVisibility {
         provider: GalleryDataProvider,
         job: any JobAPI,
         metadata: (any MetadataAPI)? = nil,
+        photo: (any PhotoAPI)? = nil,
         debounceDelay: Duration = .milliseconds(300),
         // 默认值与 defaultActive/IdleStatusPollInterval 一致；public init 的默认
         // 参数不能引用 internal static，故此处写字面量（常量仅供测试引用）。
@@ -282,6 +289,7 @@ public final class GalleryViewModel: PageVisibility {
         self.provider = provider
         self.jobAPI = job
         self.metadataAPI = metadata
+        self.photoAPI = photo
         self.debounceDelay = debounceDelay
         self.activeStatusPollInterval = activeStatusPollInterval
         self.idleStatusPollInterval = idleStatusPollInterval

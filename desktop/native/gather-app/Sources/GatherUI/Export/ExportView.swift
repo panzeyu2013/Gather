@@ -101,6 +101,8 @@ public struct ExportView: View {
             // N05 / 4a-2c：入口意图取出即清（挑片成果 → 默认保留片）。
             if case let .exportRange(intent)? = workspace.take(.exportRange) {
                 viewModel.applyRangeIntent(intent)
+            } else {
+                viewModel.clearTransientSelectedScope()
             }
             await viewModel.refreshPlan()
         }
@@ -114,6 +116,9 @@ public struct ExportView: View {
         // 页面级可见性已交给 GatherSessionPage 的 onAppear/onDisappear。
         .onDisappear {
             planDebounceTask?.cancel()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.settingsChanged)) { _ in
+            viewModel.invalidateDeliveryRecipes()
         }
         .onChange(of: viewModel.planSignature) { _, _ in
             planDebounceTask?.cancel()
@@ -176,7 +181,8 @@ public struct ExportView: View {
                 }
                 // 唯一的 primary action，固定放尾侧（HIG Toolbars）。
                 .gatherPrimaryActionButton()
-                .disabled(viewModel.isExporting || viewModel.destinationIsEmpty)
+                // 交付与单张导出共用会话级取消：运行期间互斥，避免互相误杀。
+                .disabled(viewModel.isExporting || viewModel.isDelivering || viewModel.destinationIsEmpty)
                 // 对齐旧版 export.tsx:195：取消仅在导出进行中可用（预览期间禁用）。
                 // F06：改为只在导出进行中出现——禁用态常驻只会白白占掉工具栏预算。
                 if viewModel.isExporting {

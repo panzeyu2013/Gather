@@ -240,5 +240,36 @@ xcrun llvm-cov report desktop/native/gather-core/.build/debug/GatherCoreTests.xc
   -ignore-filename-regex='Tests/|\.build/'
 ```
 
+## 9. CI 假死复盘（2026-10-29）
+
+**现象**：`gather-core tests` 在 macos-26 runner 上用 `scripts/test.sh core`（并行）跑到
+「租约接线：execute 写盘时…」之后**整轮 21 分钟零输出**，直到人工取消。`◇ started` 1482 /
+`✔ passed` 1590，停摆瞬间有 **8 个用例在途**，横跨聚类 / 迁移 / schema / Vision / 写回，
+彼此没有共享夹具 —— 说明是进程级停摆，不是某条业务路径死锁。
+
+**根因**：`swift-testing --parallel` 是同进程并发（worker ≈ 核数），而本仓测试路径上有大量
+**阻塞型**同步点：`GatherLogger.log()` 在全局 `NSRecursiveLock` 内调用 sink（默认 `print` →
+stdout），`DBConnection` / `Database` / 读池也是 `NSRecursiveLock`。macOS runner 只有 3–4 vCPU，
+一旦若干 worker 线程同时阻塞在锁或 stdout 上，协作线程池被耗尽，没有线程能推进持锁任务。
+日志最后一行只是**最后被刷出来的那条**，不是原因。
+
+**本地复现**（10 核机器上套件 8s 跑完，所以要人为注入背压）：
+
+```bash
+./scripts/test.sh core 2>&1 | ( sleep 40; cat ) >/tmp/slow.log   # 40s 不读 stdout
+```
+
+整轮冻结 40s；跨套件的 3 个用例在 38.7–38.8s 集体超时；日志在一行中间被截断且没有 summary。
+
+**修复**（同批落地）：
+
+1. CI 回归串行（`swift test --no-parallel`）+ 输出落盘（避开 stdout 背压）+ `perl alarm`
+   20 分钟看门狗（挂死时打印 tail 并失败，不再静默等满 `timeout-minutes`）。
+2. `GatherLogger` 拆锁：`stateLock` 只做状态快照，`outputLock` 只串行化 sink 调用；
+   capture 测试改持 `outputLock`，慢 sink 不再阻塞状态读写。
+3. 并行入口只保留在 `scripts/test.sh`（本地）。若将来要在 CI 重新启用并行，前置条件是把
+   测试热路径上的阻塞型锁换掉（DB 锁改 actor / `Mutex`），否则同样的线程池耗尽会复发。
+
+---
 历史口径（Cut 0 的 994/298 与合并建议）见 [test-audit.md](test-audit.md)；日常命令与手工
 验收清单见 [DEVELOPMENT.md](DEVELOPMENT.md)。

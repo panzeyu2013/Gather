@@ -84,6 +84,12 @@ extension SessionControlViewModel {
     /// 任务列表轮询与全局事件中心承载），避免遗留 AsyncStream 观察者。
     /// R1 P1-3：scope/dedupeKey/checkpoint 全部由协议层工厂构造。
     private func startMetadataScanJob(message: LocalizedText) async {
+        // 无根会话的整树扫描必然失败；工具箱按钮已禁用，但索引失败行的“重试”
+        // 也走这里，必须同一门控。
+        guard let session, !session.sourcePath.isEmpty else {
+            errorMessage = CommandError.localized("请先设置工作区根目录")
+            return
+        }
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }

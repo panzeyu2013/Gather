@@ -59,6 +59,14 @@ extension DashboardViewModel {
         }
     }
 
+    /// P3-4：失败/中断/取消记录长期累积；允许用户显式清理。
+    var hasFailedJobs: Bool {
+        jobs.contains { job in
+            [.failed, .interrupted, .cancelled].contains(job.status)
+                && job.type != .metadataScan && job.type != .outputRun
+        }
+    }
+
     /// TS Jobs 页进度百分比（progressTotal > 0 时 Math.round）。
     static func progressPercent(of job: AnalysisJobData) -> Int {
         job.progressTotal > 0

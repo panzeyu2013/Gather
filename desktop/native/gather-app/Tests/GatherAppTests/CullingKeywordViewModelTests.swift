@@ -21,6 +21,9 @@ private final class KeywordPhotoAPIStub: PhotoAPI, @unchecked Sendable {
 
     func page(_ query: PhotoPageQuery) async throws -> PhotoPage { throw KeywordPhotoStubError.unavailable }
     func search(_ query: PhotoQuery) async throws -> PhotoSearchResult { throw KeywordPhotoStubError.unavailable }
+    func select(_ query: PhotoSelectionQuery) async throws -> PhotoSelectionIds {
+        throw KeywordPhotoStubError.unavailable
+    }
     func suggestions(_ query: PhotoSuggestionQuery) async throws -> [FilterSuggestion] {
         queries.append(query)
         if let suggestionError { throw suggestionError }

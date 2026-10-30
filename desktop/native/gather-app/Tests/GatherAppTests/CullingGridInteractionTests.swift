@@ -77,7 +77,7 @@ struct CullingGridInteractionTests {
         #expect(vm.currentPhotoId == "p2")
     }
 
-    @Test("筛选变化清空选择；commit 不提交不可见旧选择")
+    @Test("筛选变化清空选择；即使旧选择被塞回，也只提交该选择、不回退当前照片")
     func filterClearsHiddenSelection() async throws {
         let (vm, api) = makeCullingVMWithStub()
         vm.page = CullingPage(assets: [b8CullingAsset("p1"), b8CullingAsset("p2")], total: 2)
@@ -90,13 +90,20 @@ struct CullingGridInteractionTests {
         #expect(vm.selectedPhotoIds.isEmpty)
         #expect(vm.currentPhotoId == "p2")
 
-        // 旧选择若被某条路径重新塞回：可见交集为空时绝不回退到“当前照片”，
-        // 否则会把决策写到用户没选中的照片。
+        // 旧选择若被某条路径重新塞回：跨页写入必须先确认（p1 不在当前页），
+        // 绝不回退到“当前照片” p2，也不在确认前写库。
         vm.selectedPhotoIds = ["p1"]
         vm.currentPhotoId = "p2"
         await vm.commit(patch: CullingUpdatePatch(pickState: .picked))
         #expect(api.updateInputs.isEmpty)
-        #expect(vm.errorMessage != nil)
+        #expect(api.batchUpdateInputs.isEmpty)
+        let plan = try #require(vm.pendingCrossPageBatch)
+        #expect(plan.totalCount == 1)
+        #expect(plan.visibleCount == 0)
+
+        await vm.performCrossPageBatch(plan, onlyVisible: false)
+        #expect(api.batchUpdateInputs.last?.photoIds == ["p1"])
+        #expect(vm.errorMessage == nil)
     }
 
     @Test("从全部范围直接选相似组会强制加载 groups")
@@ -108,8 +115,8 @@ struct CullingGridInteractionTests {
         #expect(vm.selectedSimilarityGroupId == "g1")
     }
 
-    @Test("批量 commit 只提交当前页可见选择，不含隐藏旧选择")
-    func batchCommitUsesVisibleSelection() async throws {
+    @Test("批量 commit 提交完整选择集，跨页成员不被静默丢弃")
+    func batchCommitUsesFullSelection() async throws {
         let (vm, api) = makeCullingVMWithStub()
         vm.page = CullingPage(
             assets: [b8CullingAsset("p1"), b8CullingAsset("p2")], total: 2)
@@ -118,8 +125,12 @@ struct CullingGridInteractionTests {
         vm.currentPhotoId = "p1"
 
         await vm.commit(patch: CullingUpdatePatch(pickState: .picked))
+        // p3 不在已加载页 → 先确认；确认后提交完整选择集。
+        #expect(api.batchUpdateInputs.isEmpty)
+        let plan = try #require(vm.pendingCrossPageBatch)
+        await vm.performCrossPageBatch(plan, onlyVisible: false)
         let input = try #require(api.batchUpdateInputs.last)
-        #expect(input.photoIds == ["p1", "p2"])
+        #expect(input.photoIds == ["p1", "p2", "p3"])
     }
 
     @Test("方向键移动时同步单选，避免决策落到旧照片")

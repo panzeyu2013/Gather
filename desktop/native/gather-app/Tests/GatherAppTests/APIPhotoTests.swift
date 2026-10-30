@@ -403,4 +403,24 @@ struct APIPhotoTests {
         #expect(blankSession?.code == .INVALID_PARAM)
         #expect(blankSession?.params["field"] == "sessionId")
     }
+
+    @Test("P2-2：select 按搜索/状态返回 ID 集与 hash")
+    func selectReturnsIdsAndHash() async throws {
+        let fixture = try PhotoAPIFixture()
+        let sessionId = try fixture.makeSession()
+        try fixture.addPhotos(sessionId, ["/tmp/gather-p1.cr3", "/tmp/gather-p2.cr3"])
+        try fixture.db.prepare(
+            "UPDATE photos SET status = 'missing' WHERE filename = 'gather-p2.cr3'"
+        ).run([])
+
+        let byName = try await fixture.photoAPI.select(
+            PhotoSelectionQuery(sessionId: sessionId, search: "p1", limit: 10))
+        #expect(byName.ids.count == 1)
+        #expect(byName.idsHash.count == 64)
+        #expect(!byName.truncated)
+
+        let offline = try await fixture.photoAPI.select(
+            PhotoSelectionQuery(sessionId: sessionId, filter: .offline, limit: 10))
+        #expect(offline.ids.count == 1)
+    }
 }

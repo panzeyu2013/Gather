@@ -115,6 +115,10 @@ final class B8SessionAPIStub: SessionAPI, @unchecked Sendable {
         throw Self.unsupported("create")
     }
 
+    func setSourceRoot(_ input: Confirmed<SessionSetSourceRootInput>) async throws -> SessionData {
+        throw Self.unsupported("setSourceRoot")
+    }
+
     func update(_ input: SessionUpdateParams) async throws -> SessionData {
         throw Self.unsupported("update")
     }

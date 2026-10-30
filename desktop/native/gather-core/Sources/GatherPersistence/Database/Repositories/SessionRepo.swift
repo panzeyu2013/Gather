@@ -140,6 +140,14 @@ public final class SessionRepo {
         return changes > 0
     }
 
+    /// P1-3：只更新工作区根目录；不触发扫描。
+    public func updateSourcePath(id: String, path: String) throws -> Bool {
+        let changes = try connection.prepare(
+            "UPDATE sessions SET source_path = ?, updated_at = ? WHERE id = ?"
+        ).run([.text(path), .text(nowISOString()), .text(id)])
+        return changes > 0
+    }
+
     public func updateStatus(id: String, status: String) throws {
         _ = try connection.prepare("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?")
             .run([.text(status), .text(nowISOString()), .text(id)])

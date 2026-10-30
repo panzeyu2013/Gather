@@ -20,4 +20,8 @@ public enum GatherAppImportUserInfoKey {
     public static let sourceLabel = "sourceLabel"
     /// String：失败文件示例（前 3 个文件名、顿号连接）。
     public static let examples = "examples"
+    /// [String]：失败导入的原始文件列表，供“重试”复用。
+    public static let retryFiles = "retryFiles"
+    /// Bool：目录作用域导入（照片异步索引，addedCount 恒 0，不能据此判空目录）。
+    public static let directoryImport = "directoryImport"
 }

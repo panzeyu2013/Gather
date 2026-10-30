@@ -55,6 +55,18 @@ public final class LiveSettingsAPI: SettingsAPI, Sendable {
         return settingsService.getAll()
     }
 
+    public func previewReset() async throws -> SettingsResetImpact {
+        settingsService.previewReset()
+    }
+
+    public func reset(_ input: Confirmed<SettingsResetInput>) async throws -> SettingsResetResult {
+        do {
+            return try settingsService.reset(input: input.value)
+        } catch let error as SettingsError {
+            throw Self.gatherError(for: error)
+        }
+    }
+
     public func setLanguage(_ language: InterfaceLanguage) async throws -> InterfaceLanguage {
         do {
             try settingsService.set("ui_language", value: language.rawValue)

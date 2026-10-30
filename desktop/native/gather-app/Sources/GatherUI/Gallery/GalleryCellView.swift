@@ -10,11 +10,25 @@ struct GalleryCellView: View {
     let photo: GalleryPhotoData
     let isSelected: Bool
     var thumbnailSize: Int
+    /// 图库批量写入后的本地回显（list_page 行不含挑片状态）。
+    var cullingState: AssetCullingState?
 
     /// Cut 4 / 4b-2i：离线芯片 / RAW+JPEG 变体徽标与页面同一语言源
     ///（格子是独立 struct，必须自己从 environment 取；兜底 zhCN 与页面一致）。
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+
+    /// 批量写入后的可见回显：保留/淘汰/星级（色标留在检查器，避免角标过密）。
+    private var batchCullingChip: (text: String, icon: String, color: Color)? {
+        guard let state = cullingState else { return nil }
+        switch state.pickState {
+        case .rejected: return (l10n("淘汰"), "xmark.circle.fill", GatherTheme.error)
+        case .picked: return (l10n("保留"), "checkmark.circle.fill", GatherTheme.success)
+        case .unreviewed: break
+        }
+        if state.rating > 0 { return ("\(Int(state.rating))★", "star.fill", GatherTheme.accent) }
+        return nil
+    }
 
     /// TS: .cell:hover —— 悬停投影 + 提亮；选中态由系统选中色承担。
     @State private var isHovered = false
@@ -37,6 +51,10 @@ struct GalleryCellView: View {
                     }
                     if photo.variantCount > 1 {
                         PhotoOverlayChip(text: l10n.format("RAW+JPEG · %lld", photo.variantCount))
+                    }
+                    if let chip = batchCullingChip {
+                        PhotoOverlayChip(
+                            text: chip.text, systemImage: chip.icon, iconColor: chip.color)
                     }
                 }
                 Text(photo.filename)

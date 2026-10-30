@@ -26,6 +26,8 @@ public protocol SessionRepository {
     func deleteMany(ids: [String]) throws -> Int
     func deleteSimilarityDataBySession(sessionId: String) throws
     func updateName(id: String, name: String) throws -> Bool
+    /// P1-3：修复历史空根工作区；只改 source_path。
+    func updateSourcePath(id: String, path: String) throws -> Bool
     func updateStatus(id: String, status: String) throws
     func updatePhotoCount(id: String, count: Int) throws
     func getIndexSeq(id: String) throws -> Int

@@ -27,7 +27,22 @@ APP="$ROOT/desktop/native/gather-app"
 FLAGS=(${SWIFT_TEST_FLAGS:-})
 
 # 进程级状态的套件：只能串行，且与主批分开进程执行。
-CORE_SERIAL_FILTER='LoggerTests|TraceLoggingTests|LogFileSinkTests|ReadPoolTests'
+# P3-7：不再手工维护名单——扫描 core 测试里直接触碰进程级日志/慢事务阈值的
+# 文件，按文件名生成 filter，新增同类套件自动进入串行批。
+CORE_SERIAL_FILTER="$(grep -rlE 'GatherLogger|slowTransaction' \
+    "$CORE/Tests/GatherCoreTests" --include='*.swift' 2>/dev/null \
+    | sed 's#.*/##; s#\.swift$##' | sort -u | paste -sd'|' -)"
+if [ -z "$CORE_SERIAL_FILTER" ]; then
+    echo "test.sh: FAIL 未发现进程级状态套件（GatherLogger/slowTransaction），名单推导失效" >&2
+    exit 1
+fi
+# 文件名必须真的声明同名 suite/type，否则 --filter 会静默 0 命中。
+for name in ${CORE_SERIAL_FILTER//|/ }; do
+    if ! grep -rqE "(struct|final class|class) ${name}([ :{]|$)" "$CORE/Tests/GatherCoreTests"; then
+        echo "test.sh: FAIL 串行名单 ${name} 在测试目录找不到同名类型" >&2
+        exit 1
+    fi
+done
 
 usage() {
     sed -n '2,21p' "$0"

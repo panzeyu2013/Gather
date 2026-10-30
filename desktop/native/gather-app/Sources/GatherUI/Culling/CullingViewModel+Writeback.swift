@@ -279,6 +279,47 @@ extension CullingViewModel {
         return Dictionary(uniqueKeysWithValues: fields.map { ($0, MetadataConflictChoice.keepLocal) })
     }
 
+
+
+    /// P2-5：对当前全部冲突使用同一策略。单个失败不中断其余；完成后统一刷新。
+    public func resolveAllConflicts(
+        choice: MetadataConflictChoice,
+        confirmed: Bool
+    ) async {
+        guard confirmed else {
+            errorMessage = CommandError.localized("冲突裁决必须先经确认")
+            return
+        }
+        let targets = conflicts
+        guard !targets.isEmpty else { return }
+        var failed = 0
+        for conflict in targets {
+            do {
+                let input = try MetadataResolveConflictInput(
+                    sessionId: sessionId,
+                    xmpPath: conflict.xmpPath,
+                    choices: Self.apiChoices(
+                        for: conflict,
+                        choices: Dictionary(uniqueKeysWithValues: conflict.fields.map { ($0.field, choice) }))
+                )
+                _ = try await metadataAPI.resolveConflict(
+                    Confirmed(input, source: .userDialog))
+            } catch {
+                failed += 1
+            }
+        }
+        if failed == targets.count {
+            errorMessage = CommandError.localized("批量冲突裁决全部失败，请逐个重试")
+        } else {
+            errorMessage = nil
+            notice = CullingNotice(
+                "已批量处理 %lld 个冲突（失败 %lld）",
+                params: ["\(targets.count - failed)", "\(failed)"])
+        }
+        postMetadataChange()
+        await loadPage(reset: true)
+    }
+
     /// 逐字段选择一次应用（面板「应用选择」）。
     public func resolve(_ conflict: MetadataConflict, choice: MetadataConflictChoice, confirmed: Bool) async {
         await resolve(

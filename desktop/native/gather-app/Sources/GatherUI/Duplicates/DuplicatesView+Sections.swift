@@ -185,6 +185,7 @@ struct DuplicatesGroupCard: View {
     let viewModel: DuplicatesViewModel
     let onResolve: (PendingGroupResolution) -> Void
     let onSetMemberKept: (PendingMemberDecision) -> Void
+    var onReset: ((DuplicateGroup) -> Void)? = nil
     var onOpenPhoto: ((String) -> Void)? = nil
 
     var body: some View {
@@ -204,6 +205,7 @@ struct DuplicatesGroupCard: View {
             onSetMemberKept: { member, isKept in
                 onSetMemberKept(PendingMemberDecision(member: member, isKept: isKept))
             },
+            onReset: onReset,
             onOpenPhoto: onOpenPhoto
         )
     }

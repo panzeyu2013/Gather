@@ -2,8 +2,49 @@
 // Cut 4 / 4c-2d：搜索防抖提交与过滤/变体切换（原 GalleryViewModel.swift 548-603 行）。
 // 纯搬移：有效查询没变即 no-op、退出搜索保留首页、选择集随查询收敛均逐字保留。
 import Foundation
+import GatherProtocol
 
 extension GalleryViewModel {
+    /// P2-2：⌘A 走服务端全选；无 PhotoAPI（预览/旧测试）时退回已加载页。
+    public func selectAllInScope() async {
+        guard let photoAPI else {
+            selectAll(filteredPhotos.map(\.id))
+            return
+        }
+        // 与网格一致：读已提交查询（不是 300ms 防抖中的草稿），并用代数
+        // 防止 await 期间换筛选/搜索后把旧 20k 回填到新视图。
+        let generation = fetchGeneration
+        let committedSearch = committedSearch.trimmingCharacters(in: .whitespaces)
+        let filter: PhotoSelectionFilter
+        switch committedFilter {
+        case .all: filter = .all
+        case .hasFace: filter = .hasFace
+        case .noFace: filter = .noFace
+        case .offline: filter = .offline
+        }
+        do {
+            let result = try await photoAPI.select(
+                PhotoSelectionQuery(
+                    sessionId: sessionId,
+                    search: committedSearch.isEmpty ? nil : committedSearch,
+                    filter: filter,
+                    limit: 20_000))
+            guard generation == fetchGeneration else { return }
+            selectedIds = Set(result.ids)
+            isScopeSelection = true
+            if result.truncated {
+                GatherToastCenter.shared.show(
+                    type: .info,
+                    message: String(
+                        format: GatherLocalization.l("已选中前 %lld 张（超出单次上限，请缩小筛选范围）"),
+                        result.ids.count))
+            }
+        } catch {
+            guard generation == fetchGeneration else { return }
+            actionError = CommandError(error)
+        }
+    }
+
 
     // MARK: 变更提交
 

@@ -16,6 +16,7 @@ struct DuplicatesGroupCardView: View {
     let viewModel: DuplicatesViewModel
     let onResolve: (DuplicateGroup, DupResolution) -> Void
     let onSetMemberKept: (DuplicateGroupMember, Bool) -> Void
+    var onReset: ((DuplicateGroup) -> Void)? = nil
     /// 打开成员照片（第三轮审计 E）：成员卡原先只有「保留/丢弃」，
     /// 用户看不到照片本体，无法判断该保留哪一张。
     var onOpenPhoto: ((String) -> Void)? = nil
@@ -43,6 +44,12 @@ struct DuplicatesGroupCardView: View {
                 Menu(l10n("处理")) {
                     Button(l10n("保留最佳")) { onResolve(group, .keepOne) }
                     Button(l10n("保留全部")) { onResolve(group, .keepAll) }
+                    if let onReset,
+                       group.resolution != nil
+                        || group.members.contains(where: { !$0.isKept || $0.resolution != nil }) {
+                        Divider()
+                        Button(l10n("恢复未处理")) { onReset(group) }
+                    }
                 }
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {

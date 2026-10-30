@@ -548,6 +548,17 @@ public final class DuplicateService: @unchecked Sendable {
         }
     }
 
+    /// P2-8：组级恢复未处理（resolution=NULL，全部成员恢复保留）。
+    public func resetGroup(groupId: Int) throws {
+        try transactions.transaction {
+            guard try duplicateRepo.resetGroup(groupId: groupId) else {
+                throw DuplicateServiceError.groupNotFound(groupId)
+            }
+            let members = try groupQuery.getVisibleMembers(groupId: groupId)
+            try duplicateRepo.recomputePhotoStatuses(members.map(\.photoId))
+        }
+    }
+
     /// TS: resolveMember —— 单成员保留/移除；resolution 只在未定（NULL）时写。
     public func resolveMember(memberId: Int, isKept: Bool) throws {
         try transactions.transaction {
@@ -558,6 +569,9 @@ public final class DuplicateService: @unchecked Sendable {
             )
             guard let photoId = try duplicateRepo.getMemberPhotoId(memberId: memberId) else {
                 throw DuplicateServiceError.memberNotFound(memberId)
+            }
+            if let groupId = try duplicateRepo.getMemberGroupId(memberId: memberId) {
+                try syncGroupResolutions(groupIds: [groupId])
             }
             try duplicateRepo.recomputePhotoStatuses([photoId])
         }
@@ -583,7 +597,8 @@ public final class DuplicateService: @unchecked Sendable {
             if keptCount == rows.count { resolution = "keep_all" }
             else if keptCount == 1 { resolution = "keep_one" }
             else { resolution = nil }
-            guard let resolution else { continue }
+            // 全部已决但保留数不是 1/全部（例如逐张改回保留）→ 清空组徽标，
+            // 不能把旧的 keep_one/keep_all 留在组行上。
             writes.append(DuplicateGroupResolutionWrite(groupId: groupId, resolution: resolution))
         }
         try duplicateRepo.setGroupResolutions(writes)

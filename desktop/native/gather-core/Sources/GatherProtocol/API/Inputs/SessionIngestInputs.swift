@@ -6,7 +6,7 @@
 // 因此 RAW/JPEG 配对、去重、校验和回填都不在这里重复实现。
 import Foundation
 
-public struct SessionIngestInput: Decodable, Sendable, Equatable {
+public struct SessionIngestInput: Codable, Sendable, Equatable {
     public let sessionId: String
     /// 源：单个文件或目录（目录只扫一层，不递归子目录）。
     public let sourcePaths: [String]

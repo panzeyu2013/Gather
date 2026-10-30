@@ -113,7 +113,10 @@ private struct ExecutorRegistryFixture {
             exportService: exportService,
             // 必须与 deps.exportService 同一实例：否则取消/runId 账本被拆成两份，
             // 测试永远暴露不了「取消没传到编排层」这类错配。
-            outputService: OutputService(exportService: exportService)
+            outputService: OutputService(exportService: exportService),
+            sessionService: SessionService(
+                sessionRepo: sessionRepo, photoRepo: photoRepo, faceRepo: faceRepo,
+                connection: db, dimensionsProvider: { _ in (width: 100, height: 100) })
         )
 
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))

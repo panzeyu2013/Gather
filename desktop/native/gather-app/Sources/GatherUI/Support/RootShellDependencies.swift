@@ -11,8 +11,9 @@
 import Foundation
 import GatherProtocol
 
-/// 菜单「导入文件夹」的用户选择结果：宿主负责 NSOpenPanel，UI 只做分支
-///（有可导入文件 → 导入；空目录 → 新建工作台表单）。
+/// 菜单「导入文件夹」的用户选择结果：宿主负责 NSOpenPanel。
+/// 当前菜单入口恒返回 .directory（目录导入必须落 sourcePath）；.files
+/// 只保留给显式多选文件的未来入口/Finder 拖入，不再由目录枚举派生。
 public enum ImportFolderSelection: Sendable {
     case cancelled
     case files([String])

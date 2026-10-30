@@ -314,6 +314,31 @@ public final class DuplicatesViewModel: PageVisibility {
         }
     }
 
+    /// P2-8：恢复未处理（组 resolution 清空、成员恢复保留）。
+    public func resetGroup(_ group: DuplicateGroup, confirmed: Bool) async {
+        guard confirmed else {
+            errorMessage = CommandError.localized("DUP_RESOLVE_CONFIRM_REQUIRED")
+            return
+        }
+        do {
+            let input = try DuplicateResetGroupInput(groupId: group.id)
+            _ = try await duplicate.resetGroup(Confirmed(input, source: .userDialog))
+            errorMessage = nil
+            notice = LocalizedText("已恢复重复组 #%lld 为未处理", params: ["\(group.id)"])
+            GatherEventCenter.postDomainChange(.duplicates, sessionId: sessionId)
+            guard let index = groups.firstIndex(where: { $0.id == group.id }) else { return }
+            groups[index].resolution = nil
+            groups[index].members = groups[index].members.map { member in
+                var patched = member
+                patched.isKept = true
+                patched.resolution = nil
+                return patched
+            }
+        } catch {
+            errorMessage = CommandError(error)
+        }
+    }
+
     /// 成员保留状态（用户确认后的目标状态；旧实现「无参翻转」在确认前就改变
     /// 语义，已删除）。`confirmed` 由确认弹窗传入。
     public func setMemberKept(_ member: DuplicateGroupMember, isKept: Bool, confirmed: Bool) async {
@@ -333,6 +358,17 @@ public final class DuplicatesViewModel: PageVisibility {
             groups[groupIndex].members[memberIndex].resolution = isKept
                 ? DupResolution.keepAll.rawValue
                 : DupResolution.keepOne.rawValue
+            // P2-8：组徽标与成员决策同源重算；全部已决时才写 keep_all/keep_one，
+            // 其余情况清空，避免“成员改回保留、徽标仍显示保留最佳”。
+            let members = groups[groupIndex].members
+            if members.allSatisfy({ $0.resolution != nil }) {
+                let kept = members.filter(\.isKept).count
+                groups[groupIndex].resolution = kept == members.count
+                    ? DupResolution.keepAll.rawValue
+                    : kept == 1 ? DupResolution.keepOne.rawValue : nil
+            } else {
+                groups[groupIndex].resolution = nil
+            }
         } catch {
             errorMessage = CommandError(error)
         }

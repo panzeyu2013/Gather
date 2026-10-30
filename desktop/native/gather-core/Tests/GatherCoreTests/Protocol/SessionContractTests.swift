@@ -164,9 +164,12 @@ struct SessionContractTests {
         // （JPEG_EMBEDDED_CLEAR_UNSUPPORTED，f8d1177b）→ 186；W3 整套交付/WebDAV 发布
         // 再补 9 个（OUTPUT_* ×5 + WEBDAV_* ×4：此前只有裸字符串，UI 一律退化成
         // 「发生未知错误」，a59a2fbc）→ 195。
+        // P1-3 setSourceRoot 再补 1 个根目录排除照片码（SESSION_SOURCE_EXCLUDES_PHOTOS）
+        // → 196；P1-4 再补 1 个预览过期码（FKW_PREVIEW_STALE）→ 197；P1-7 再补
+        // CULLING_SELECTION_CHANGED → 198。
         // 增删错误码时必须同步此断言、ErrorCodeContractTests 的清单与
         // GatherLocalization.errorMessages（缺一即被交叉契约测试挡下）。
-        #expect(GatherErrorCode.allCases.count == 195)
+        #expect(GatherErrorCode.allCases.count == 198)
     }
 
     @Test func gatherErrorCodeRawValueMatchesCaseName() {

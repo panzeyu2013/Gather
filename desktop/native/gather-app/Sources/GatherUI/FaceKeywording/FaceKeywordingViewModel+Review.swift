@@ -25,6 +25,7 @@ extension FaceKeywordingViewModel {
             publishChange(.faceKeywording, .persons)
             notice = FaceNotice("已绑定簇 #%lld", params: ["\(cluster.id)"])
             reviewActionError = nil
+            invalidateWritebackPreview()
             await reload()
         } catch {
             errorMessage = CommandError(error)
@@ -47,6 +48,7 @@ extension FaceKeywordingViewModel {
             publishChange(.faceKeywording, .persons)
             notice = FaceNotice("已解除簇 #%lld 的绑定", params: ["\(cluster.id)"])
             reviewActionError = nil
+            invalidateWritebackPreview()
             await reload()
         } catch {
             errorMessage = CommandError(error)
@@ -74,6 +76,7 @@ extension FaceKeywordingViewModel {
             notice = FaceNotice("已将簇 #%lld 合并到簇 #%lld", params: ["\(cluster.id)", "\(target)"])
             mergeTargetId = nil
             reviewActionError = nil
+            invalidateWritebackPreview()
             await reload()
             if let targetCluster = clusters.first(where: { $0.id == target }) {
                 select(targetCluster)

@@ -87,6 +87,28 @@ struct SettingsSaveSemanticsTests {
         #expect(settings.setInputs.isEmpty)
     }
 
+    @Test("分级 reset：预览计数 + 只传勾选 scope")
+    func scopedResetForwardsSelections() async {
+        let (viewModel, settings) = makeViewModel()
+        settings.previewResetResult = SettingsResetImpact(
+            preferenceCount: 12, templateCount: 2, batchCount: 1, recipeCount: 3)
+        settings.values = [
+            "metadata.templates": "[\"t1\"]",
+            "thumbnail_size": "2048",
+        ]
+
+        let impact = await viewModel.previewResetImpact()
+        #expect(impact == settings.previewResetResult)
+        #expect(settings.previewResetCalls == 1)
+
+        await viewModel.reset(Confirmed(
+            SettingsResetInput(
+                resetPreferences: true, resetUserContent: false, resetLanguage: false),
+            source: .test))
+        #expect(settings.resetInputs.last == SettingsResetInput(
+            resetPreferences: true, resetUserContent: false, resetLanguage: false))
+    }
+
     @Test("保存提示用人类标签，不暴露内部键")
     func noticeUsesHumanLabel() async {
         let (viewModel, settings) = makeViewModel()

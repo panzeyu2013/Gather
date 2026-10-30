@@ -493,7 +493,8 @@ struct APIFaceTests {
                             xmpPath: "/shoot/a.xmp", backupPath: "", xmpStatus: "pending",
                             errorMessage: "", attemptCount: 0, lastAttemptAt: ""
                         )
-                    ]
+                    ],
+                    expectedPreviewToken: preview.previewToken
                 ),
                 source: .test
             )

@@ -199,6 +199,44 @@ struct DuplicatesViewModelAPITests {
         #expect(patched?.resolution == "keep_one")
     }
 
+    @Test("P2-8：逐张改回保留后组徽标重算为 keep_all")
+    func memberChangeResyncsGroupResolution() async {
+        let duplicate = B5bDuplicateAPIStub()
+        let group = b5bDuplicateGroup(id: 7, photoIds: ["p1", "p2"])
+        duplicate.groups = [group]
+        let vm = DuplicatesViewModel(sessionId: "s1", duplicate: duplicate, jobs: B5bJobAPIStub())
+        await vm.load()
+        await vm.resolveGroup(group, resolution: .keepOne, confirmed: true)
+        #expect(vm.groups.first?.resolution == "keep_one")
+
+        if let rejected = vm.groups.first?.members.first(where: { !$0.isKept }) {
+            await vm.setMemberKept(rejected, isKept: true, confirmed: true)
+        }
+        #expect(vm.groups.first?.resolution == "keep_all",
+                "成员全部保留后组徽标必须是 keep_all")
+    }
+
+    @Test("P2-8：resetGroup 走 Confirmed，并清空组/成员处置")
+    func resetGroupClearsResolution() async {
+        let duplicate = B5bDuplicateAPIStub()
+        var group = b5bDuplicateGroup(id: 8, photoIds: ["p1", "p2"])
+        group.resolution = "keep_one"
+        group.members[0].resolution = "keep_one"
+        group.members[0].isKept = false
+        duplicate.groups = [group]
+        let vm = DuplicatesViewModel(sessionId: "s1", duplicate: duplicate, jobs: B5bJobAPIStub())
+        await vm.load()
+
+        await vm.resetGroup(group, confirmed: true)
+
+        #expect(duplicate.resetGroupInputs.count == 1)
+        #expect(duplicate.resetGroupInputs.first?.source == .userDialog)
+        #expect(duplicate.resetGroupInputs.first?.value.groupId == 8)
+        #expect(vm.groups.first?.resolution == nil)
+        #expect(vm.groups.first?.members.allSatisfy(\.isKept) == true)
+        #expect(vm.groups.first?.members.allSatisfy { $0.resolution == nil } == true)
+    }
+
     @Test("DuplicateServiceError（非 GatherError）经漏斗回落，原始诊断不上屏")
     func duplicateServiceErrorIsCompatible() async {
         let duplicate = B5bDuplicateAPIStub()

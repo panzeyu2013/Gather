@@ -329,7 +329,11 @@ struct PersonsViewModelTests {
         AppLanguageLock.withStableCopy {
             let error = viewModel.actionError
             #expect(error?.origin == .localValidation)
-            #expect(CommandErrorText.resolve(error!, with: L10n(language: .zhCN)) == GatherLocalization.l("未确认，已取消删除人物"))
+            // 期望值必须走同一条**显式语言**路径：GatherLocalization.l() 读进程级
+            // appLanguage，CI 的默认语言是英文，混用会让这条断言在英文环境下必挂
+            // （2026-10-29 CI 定位：run 40835001347 唯一失败项）。
+            let zh = L10n(language: .zhCN)
+            #expect(CommandErrorText.resolve(error!, with: zh) == zh("未确认，已取消删除人物"))
         }
         #expect(viewModel.selected?.id == "p1")
     }

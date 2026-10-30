@@ -23,11 +23,27 @@ struct IngestSheet: View {
     @State private var isRunning = false
     @State private var result: SessionIngestResult?
     @State private var errorText: String?
+    /// P1-3：会话没有 sourcePath 时先修根，不引导用户手选一个必败的目标目录。
+    @State private var rootMissing = false
+    @State private var progress: (current: Int, total: Int)?
+    @State private var progressTask: Task<Void, Never>?
+    @State private var cancelling = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(l10n("摄取到当前会话"))
                 .font(.headline)
+
+            if rootMissing {
+                HStack(spacing: GatherMetrics.Space.s) {
+                    Text(l10n("当前工作区没有根目录，无法确定摄取目标。"))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button(l10n("设置根目录…")) { chooseSessionRoot() }
+                        .controlSize(.small)
+                }
+            }
 
             LabeledContent(l10n("来源")) {
                 HStack {
@@ -67,6 +83,23 @@ struct IngestSheet: View {
 
             Toggle(l10n("复制后校验校验和"), isOn: $verifyChecksum)
 
+            if isRunning {
+                HStack(spacing: GatherMetrics.Space.s) {
+                    ProgressView().controlSize(.small)
+                    Text(progress.map { l10n.format("已复制 %lld/%lld", $0.current, $0.total) }
+                         ?? l10n("正在摄取…"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Spacer()
+                    Button(cancelling ? l10n("正在取消…") : l10n("取消摄取")) {
+                        Task { await cancelIngest() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(cancelling)
+                }
+            }
             if let errorText {
                 Text(errorText).font(.caption).foregroundStyle(.red)
             }
@@ -85,7 +118,7 @@ struct IngestSheet: View {
                         .foregroundStyle(.orange)
                 }
                 if let failure = result.failed.first {
-                    Text(failure.message)
+                    Text(CommandErrorText.resolve(CommandError(apiText: failure.message), with: l10n))
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
@@ -94,12 +127,15 @@ struct IngestSheet: View {
             HStack {
                 Spacer()
                 Button(l10n("取消")) { dismiss() }
+                    .disabled(isRunning)
                 Button(l10n("开始摄取")) { Task { await run() } }
-                    .disabled(isRunning || sources.isEmpty || destinationRoot.isEmpty)
+                    .disabled(isRunning || sources.isEmpty || destinationRoot.isEmpty || rootMissing)
             }
         }
         .padding(16)
         .frame(width: 520)
+        // 运行中禁止 Esc/点外部关闭：任务在后台继续但用户看不到进度会以为已取消。
+        .interactiveDismissDisabled(isRunning)
         .task {
             // 调用点没传会话目录时从会话记录补：目标必须在会话源目录内（API 会校验）。
             guard destinationRoot.isEmpty else { return }
@@ -114,11 +150,13 @@ struct IngestSheet: View {
                 if !session.sourcePath.isEmpty {
                     destinationRoot = (session.sourcePath as NSString)
                         .appendingPathComponent("_ingest")
+                    rootMissing = false
                 } else {
-                    errorText = l10n("无法确定会话目录，请手动选择目标文件夹")
+                    rootMissing = true
+                    errorText = l10n("当前工作区没有根目录，无法确定摄取目标。")
                 }
             } catch {
-                errorText = String(describing: error)
+                errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
             }
         }
     }
@@ -127,7 +165,14 @@ struct IngestSheet: View {
         isRunning = true
         errorText = nil
         result = nil
-        defer { isRunning = false }
+        progress = nil
+        startProgressPolling()
+        defer {
+            progressTask?.cancel()
+            progressTask = nil
+            isRunning = false
+            cancelling = false
+        }
         do {
             let input = try SessionIngestInput(
                 sessionId: viewModel.sessionId,
@@ -145,35 +190,118 @@ struct IngestSheet: View {
             result = outcome
             await viewModel.loadPage(reset: true)
         } catch {
-            errorText = String(describing: error)
+            if error is any JobCancellationMarker {
+                // 取消可能已登记部分照片：不报“未知错误”，并刷新列表让用户看到实况。
+                errorText = l10n("已取消摄取；取消前已登记的照片会保留")
+                await viewModel.loadPage(reset: true)
+            } else {
+                errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+            }
+        }
+    }
+
+    /// P1-3：摄取已 Job 化；取消按 session 找活跃 ingest.run 任务，不依赖局部 Task 句柄。
+    private func cancelIngest() async {
+        cancelling = true
+        defer { cancelling = false }
+        do {
+            guard let job = await activeIngestJob() else {
+                // 任务刚好结束/尚未入队：给可见反馈，不能“点了没反应”。
+                errorText = l10n("没有进行中的摄取任务")
+                return
+            }
+            _ = try await viewModel.jobAPI.cancel(job.id)
+        } catch {
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+        }
+    }
+
+    /// 当前会话活跃的 ingest 任务（摄取复用 checksum.backfill 载体，按 checkpoint 判定）。
+    private func activeIngestJob() async -> AnalysisJobData? {
+        let jobs: [AnalysisJobData]
+        do {
+            // isIngestRun 只读 dedupeKey；不需要 checkpoint（导出 job 可达 MB）。
+            jobs = try await viewModel.jobAPI.list(JobListFilter(includeCheckpoint: false))
+        } catch {
+            return nil
+        }
+        return jobs.first {
+            $0.isIngestRun
+                && $0.scopeId == viewModel.sessionId
+                && [.queued, .running, .cancelling].contains($0.status)
+        }
+    }
+
+    /// 复制阶段的服务端进度（1000 张以上必须能看到 N/M）。
+    private func startProgressPolling() {
+        progressTask?.cancel()
+        progressTask = Task { @MainActor in
+            while !Task.isCancelled {
+                if let job = await activeIngestJob(), job.progressTotal > 0 {
+                    let next = (current: job.progressCurrent, total: job.progressTotal)
+                    if progress?.current != next.current || progress?.total != next.total {
+                        progress = next
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    /// 没有根的会话：先修根（与「设置根目录…」同一 API），再回填目标目录。
+    private func chooseSessionRoot() {
+        guard let api = viewModel.sessionAPI else {
+            errorText = l10n("摄取未接线（缺少 session API）")
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                do {
+                    let session = try await api.setSourceRoot(
+                        Confirmed(try SessionSetSourceRootInput(
+                            sessionId: viewModel.sessionId, sourceRoot: url.path)))
+                    destinationRoot = (session.sourcePath as NSString)
+                        .appendingPathComponent("_ingest")
+                    rootMissing = false
+                    errorText = nil
+                } catch {
+                    errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+                }
+            }
         }
     }
 
     private func chooseSources() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = true
-        if panel.runModal() == .OK {
-            sources = panel.urls.map(\.path)
-        }
+        pickPaths(canChooseFiles: true, allowsMultiple: true) { sources = $0 }
     }
 
     private func chooseDestination() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        if panel.runModal() == .OK, let url = panel.url {
-            destinationRoot = url.path
-        }
+        pickPaths(canChooseFiles: false) { if let path = $0.first { destinationRoot = path } }
     }
 
     private func chooseSecondDestination() {
+        pickPaths(canChooseFiles: false) { if let path = $0.first { secondRoot = path } }
+    }
+
+    /// 三个选择面板共用：目录必选、文件可选；回调只在用户确认后执行。
+    private func pickPaths(
+        canChooseFiles: Bool,
+        allowsMultiple: Bool = false,
+        apply: @escaping ([String]) -> Void
+    ) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        if panel.runModal() == .OK, let url = panel.url {
-            secondRoot = url.path
+        panel.canChooseFiles = canChooseFiles
+        panel.allowsMultipleSelection = allowsMultiple
+        panel.begin { response in
+            guard response == .OK else { return }
+            let paths = panel.urls.map(\.path)
+            Task { @MainActor in apply(paths) }
         }
     }
 }

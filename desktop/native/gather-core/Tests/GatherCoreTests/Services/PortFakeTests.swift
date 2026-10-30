@@ -39,10 +39,13 @@ struct PortFakeSettingsServiceTests {
         #expect(repo.upserts[0].value == "4096")
         #expect(service.getNumber("thumbnail_size", defaultValue: 0) == 4096)
 
-        // 写：reset 经 repo.batchUpsert 一次写默认值全量。
+        // 写：reset 只经 repo.batchUpsert 写被重置的键（保留键不落盘，避免覆盖并发写）。
         try service.reset()
         #expect(repo.batches.count == 1)
-        #expect(repo.batches[0].count == SettingsService.getDefaults().count)
+        // 只断言“写了什么”，不复制实现公式：偏好键进写集，用户内容键不进。
+        #expect(repo.batches[0].contains { $0.key == "thumbnail_size" })
+        #expect(!repo.batches[0].contains { $0.key == "output.recipes" },
+                "用户内容键不得出现在 reset 写集里")
         #expect(service.get("thumbnail_size") == "1024")
         #expect(service.get("ui_language") == "")
     }

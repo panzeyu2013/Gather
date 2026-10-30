@@ -211,9 +211,10 @@ public struct DuplicateMemberState: Equatable, Sendable {
 /// 组级 resolution 写行（组成员全部已决时派生）。
 public struct DuplicateGroupResolutionWrite: Equatable, Sendable {
     public let groupId: Int
-    public let resolution: String
+    /// nil = 恢复未处理（成员仍可保留各自决策）。
+    public let resolution: String?
 
-    public init(groupId: Int, resolution: String) {
+    public init(groupId: Int, resolution: String?) {
         self.groupId = groupId
         self.resolution = resolution
     }
@@ -250,6 +251,8 @@ public protocol DuplicateRepository {
     func setMembersKeptAll(_ memberIds: [Int], resolution: String) throws
     func setMemberKept(_ rows: [DuplicateMemberKeptWrite], resolution: String) throws
     func setMemberResolutionIfUnset(memberId: Int, isKept: Bool, resolution: String) throws
+    func resetGroup(groupId: Int) throws -> Bool
+    func getMemberGroupId(memberId: Int) throws -> Int?
     func getMemberPhotoId(memberId: Int) throws -> String?
     // photos.status 三写者
     func markDiscarded(_ photoIds: [String]) throws

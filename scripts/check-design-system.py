@@ -80,6 +80,11 @@ def write_baseline(values: dict[str, int]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="GatherUI design-system ratchet")
     parser.add_argument("--update", action="store_true", help="write current values as baseline")
+    parser.add_argument(
+        "--allow-growth",
+        action="store_true",
+        help="with --update: allow metrics to increase (must be recorded in docs/reviews/)",
+    )
     parser.add_argument("--warn-only", action="store_true", help="report but exit 0")
     parser.add_argument("--strict", action="store_true", help="reserved; same failure rule")
     args = parser.parse_args()
@@ -90,6 +95,22 @@ def main() -> int:
 
     values = current_values()
     if args.update:
+        if not args.allow_growth and BASELINE.exists():
+            old = load_baseline()
+            grew = {
+                key: (old.get(key), value)
+                for key, value in values.items()
+                if old.get(key) is not None and value > old[key]
+            }
+            if grew:
+                for key, (base, current) in grew.items():
+                    print(f"  涨：{key} {base} -> {current}", file=sys.stderr)
+                print(
+                    "check-design-system: REFUSED — 基线膨胀必须显式批准；"
+                    "确需扩张时加 --allow-growth 并在 docs/reviews/ 记账。",
+                    file=sys.stderr,
+                )
+                return 1
         write_baseline(values)
         print(f"updated {BASELINE}")
         for key, value in values.items():

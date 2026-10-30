@@ -210,7 +210,8 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
             try await faceKwService.writeback(
                 sessionId: payload.sessionId,
                 confirmed: true,
-                items: items
+                items: items,
+                expectedPreviewToken: payload.expectedPreviewToken
             )
         }
         return Self.toWritebackResult(result)
@@ -304,7 +305,8 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
         WritebackPreview(
             items: preview.items.map(FaceKwWritebackBridge.toWritebackItem),
             totalCount: preview.totalCount,
-            affectedPhotos: preview.affectedPhotos
+            affectedPhotos: preview.affectedPhotos,
+            previewToken: preview.previewToken
         )
     }
 

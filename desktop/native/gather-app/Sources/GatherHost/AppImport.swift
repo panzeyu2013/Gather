@@ -78,6 +78,8 @@ enum AppImport {
             // P1（复审）：建库/加照片/入队走 typed API（nonisolated async，不在主线程）；
             // 入队失败由 LiveSessionAPI 补偿删除，不会留下“永远不会被扫描”的半成品。
             let result = try await sessionAPI.create(input)
+            // 任一目录作用域（单目录或目录+文件）都可能有异步索引，不能用 added==0 判空。
+            let directoryImport = normalized.contains(where: isDirectory)
             let failedFiles = result.failedFiles
             if !failedFiles.isEmpty {
                 GatherLogger.log("import skipped \(failedFiles.count) files", level: .warn)
@@ -95,10 +97,18 @@ enum AppImport {
                     GatherAppImportUserInfoKey.addedCount: result.added,
                     GatherAppImportUserInfoKey.sourceLabel: sourceLabel,
                     GatherAppImportUserInfoKey.examples: examples,
+                    GatherAppImportUserInfoKey.directoryImport: directoryImport,
                 ]
             )
         } catch {
             GatherLogger.log("native import failed: \(error)", level: .error)
+            // P1-2：失败必须可见。object 用 CommandError 搬运码/参数/诊断；
+            // RootView 渲染期按当前语言解析，不把英文诊断直接上屏。
+            NotificationCenter.default.post(
+                name: GatherAppNotification.importFailed,
+                object: CommandError(error),
+                userInfo: [GatherAppImportUserInfoKey.retryFiles: normalized]
+            )
         }
     }
 

@@ -70,7 +70,7 @@ private final class FactoryDashboardProviderStub: DashboardDataProvider, @unchec
 
     func retryJob(_ jobId: String) async throws -> Bool { false }
 
-    func clearCompletedJobs() async throws -> Int { 0 }
+    func clearCompletedJobs(includeFailed: Bool) async throws -> Int { 0 }
 }
 
 private struct FactoryPersonAPIStub: PersonAPI {
