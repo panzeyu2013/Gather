@@ -107,10 +107,12 @@ public struct NativeBanner: View {
                     onDismiss()
                 } label: {
                     Image(systemName: "xmark")
+                        .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
                 .help(l10n("关闭"))
+                .accessibilityLabel(l10n("关闭"))
             }
         }
         .padding(.horizontal, 14)

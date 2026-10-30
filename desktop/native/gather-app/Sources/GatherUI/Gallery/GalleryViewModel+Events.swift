@@ -42,6 +42,10 @@ extension GalleryViewModel {
         // 与 reload / 切变体 / 在途取页并发时互相覆盖（旧快照覆盖新数据集、游标链跳跃），
         // 也让 locatePendingPhoto 的「行数增长」判据失效 → 误报「未找到」。
         // 现在绑定代数并在写入前校验；循环内改用可取消的让出，使旧刷新真的能被打断。
+        // 自增代数：在途的 loadMoreIfNeeded/fetchNextPage（哨兵/预取）不归 fetchTask
+        // 管，只 cancel fetchTask 拦不住——旧游标页会在整份替换之后 append 回来，
+        // 造成重复行与游标链回退（R1 F3）。自增后旧请求的 guard 失效、整份丢弃。
+        fetchGeneration += 1
         let generation = fetchGeneration
         fetchTask?.cancel()
         var nextPages: [[GalleryPhotoData]] = []

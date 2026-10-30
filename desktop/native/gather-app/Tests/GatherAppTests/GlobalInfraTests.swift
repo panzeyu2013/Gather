@@ -1,6 +1,7 @@
 // UI 对齐修复轮（§十一 11.11）：全局设施的单元测试。
 // 覆盖 L10n 关键路径（B03：7 个旧 GatherLocalization 出口已删）、GatherEventCenter
 // 终态判定与 GatherToast 自动消失/手动关闭。
+import AppKit
 import Foundation
 import Testing
 import GatherProtocol
@@ -247,6 +248,26 @@ struct GatherToastTests {
     }
 
     @MainActor
+    @Test("错误类自动消失窗口延长到 15s，其余类型用注入值")
+    func errorToastGetsLongerWindow() {
+        let center = GatherToastCenter(autoDismissDelay: .milliseconds(50))
+        #expect(center.autoDismissDelay(for: .success) == .milliseconds(50))
+        #expect(center.autoDismissDelay(for: .error) == .seconds(15))
+    }
+
+    @MainActor
+    @Test("堆叠上限 3 条，超出丢最旧")
+    func stackingCappedAtThree() {
+        let center = freshCenter()
+        for index in 0..<5 {
+            center.show(type: .info, message: "m\(index)")
+        }
+        #expect(center.toasts.count == 3)
+        #expect(center.toasts.map(\.message) == ["m4", "m3", "m2"])
+        for toast in center.toasts { center.dismiss(id: toast.id) }
+    }
+
+    @MainActor
     @Test("show 入列且到达注入的自动消失时长后移除")
     func autoDismiss() async throws {
         // 注入 50ms 而非等满生产默认的 5s：被测行为（到期后自动移除）不变，
@@ -284,5 +305,24 @@ struct GatherToastTests {
         center.show(type: .success, message: "s")
         #expect(center.toasts.map(\.type) == [.success, .warning])
         for toast in center.toasts { center.dismiss(id: toast.id) }
+    }
+}
+
+@Suite("PhotoThumbnailCache 刷新代", .serialized)
+struct PhotoThumbnailCacheEpochTests {
+    @Test("invalidateAll 推进缓存代：旧键失效，同 path+size 生成新键")
+    func invalidateAllBumpsEpoch() {
+        let oldKey = PhotoThumbnailCache.key(
+            path: "/tmp/gather-thumb-epoch.jpg", size: 256, preview: false)
+        let image = NSImage(size: NSSize(width: 4, height: 4))
+        PhotoThumbnailCache.setImage(image, for: oldKey)
+        #expect(PhotoThumbnailCache.image(for: oldKey) != nil)
+
+        PhotoThumbnailCache.invalidateAll()
+
+        #expect(PhotoThumbnailCache.image(for: oldKey) == nil)
+        let newKey = PhotoThumbnailCache.key(
+            path: "/tmp/gather-thumb-epoch.jpg", size: 256, preview: false)
+        #expect(newKey != oldKey, "刷新后必须生成新键，.task(id:) 才会重启")
     }
 }

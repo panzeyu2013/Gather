@@ -19,6 +19,14 @@ final class GalleryLayoutCache {
         key = ""
         rows = []
     }
+
+    /// 某个 filtered 下标落在哪一行；缓存为空（首帧/筛选刚变更）返回 nil。
+    func rowIndex(containing index: Int) -> Int? {
+        guard !rows.isEmpty else { return nil }
+        return rows.firstIndex { row in
+            row.items.contains { $0.index == index }
+        }
+    }
 }
 
 extension GalleryView {

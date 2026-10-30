@@ -15,12 +15,19 @@ extension SimilarityViewModel {
     func adoptResult(_ newResult: SimilarityResult, syncThreshold: Bool) {
         guard syncThreshold else { return }
         resultRequestID += 1
-        let previousGroupIds = Set(result?.groups.map(\.id) ?? [])
         let newGroupIds = Set(newResult.groups.map(\.id))
-        // 同一批分组（回页、切页签回来、同参数重进）不该清掉用户刚勾的选择：
+        // 「同一份结果的回页」判定不能只比 group id：同 id 但成员或写回参数变了时，
+        // 保留的旧预览/旧 preview token 会在写入时被服务端 SIM_PREVIEW_STALE 拒绝，
+        // 且没有重生成入口（R2 F2）。分组内容 + 影响写回的三项参数都一致才保留。
+        let sameBrowsingScope = result.map { previous in
+            previous.groups == newResult.groups
+                && previous.stats.threshold == newResult.stats.threshold
+                && previous.stats.minGroupSize == newResult.stats.minGroupSize
+                && previous.stats.groupingMode == newResult.stats.groupingMode
+        } ?? false
         // 之前每次 adoptResult 无条件清空，导致「确认同步/清理」的唯一入口消失，
-        // 而界面还在指引用户去点（D-P1-1）。只有分组集合真的变了才重置。
-        let keepsBrowseState = !previousGroupIds.isEmpty && previousGroupIds == newGroupIds
+        // 而界面还在指引用户去点（D-P1-1）。只有结果真的变了才重置。
+        let keepsBrowseState = !newGroupIds.isEmpty && sameBrowsingScope
         result = newResult
         if keepsBrowseState {
             selectedGroupIds.formIntersection(newGroupIds)

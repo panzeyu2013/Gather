@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// 统一空态 / 无结果态：系统 `ContentUnavailableView` 的薄包装。
+/// 统一空态 / 无结果态。
 ///
-/// 之前 `GatherCommonViews` 里的自定义空态有 0 个调用点，页面直接用了 31 个
-/// `ContentUnavailableView`。这里保留系统外观，只统一初始化和占位布局。
+/// 2026-10-30 起**不再**是 `ContentUnavailableView` 的薄包装：系统空态读起来像
+/// 报错页（灰图标 + 系统排版）。改为品牌色细线图标 + 标题 + 说明 + 主动作，
+/// 仍居中、仍用系统字号，只把语气从“错误提示”换成“邀请”。
 public struct GatherEmptyState: View {
     public let icon: String
     public let title: String
@@ -46,6 +47,7 @@ public struct GatherEmptyState: View {
             VStack(spacing: GatherMetrics.Space.xs) {
                 Text(title)
                     .font(GatherFont.sectionTitle)
+                    .accessibilityAddTraits(.isHeader)
                 if let message {
                     Text(message)
                         .font(GatherFont.secondary)

@@ -127,6 +127,34 @@ struct SimilarityViewModelTests {
         #expect(viewModel.groupingMode == .global)
     }
 
+    // 回页/切页签回来：结果未变时保留勾选与展开（D-P1-1 的回归钉）。
+    @Test func reloadWithSameGroupsKeepsBrowseState() async {
+        let (viewModel, api, _) = makeStubVM()
+        api.resultValue = b8SimilarityResult(totalGroups: 2)
+        await viewModel.load()
+        viewModel.toggleGroupSelection(1)
+        viewModel.expandedGroupIds = [2]
+        #expect(viewModel.selectedGroupIds == [1])
+
+        api.resultValue = b8SimilarityResult(totalGroups: 2)
+        await viewModel.load()
+        #expect(viewModel.selectedGroupIds == [1], "同一份结果回页不得清掉用户勾选")
+        #expect(viewModel.expandedGroupIds == [2])
+    }
+
+    // 预计算档：结果指纹记服务端产出参数，与草稿不一致时必须提示过期（D-P1-2）。
+    @Test func precomputedResultRecordsServerParams() async {
+        let (viewModel, api, _) = makeStubVM()
+        viewModel.minGroupSize = 5
+        api.resultValue = b8SimilarityResult(
+            threshold: 8, minGroupSize: 4, groupingMode: .global, precomputed: true
+        )
+        await viewModel.load()
+        #expect(viewModel.threshold == 8)
+        #expect(viewModel.minGroupSize == 5, "预计算档不覆盖草稿（既有语义）")
+        #expect(viewModel.isResultStale, "草稿 5 ≠ 结果 4，必须提示结果来自旧参数")
+    }
+
     @Test func loadFailureSetsErrorPhase() async throws {
         let (viewModel, api, _) = makeStubVM()
         api.resultError = NSError(
@@ -256,8 +284,8 @@ struct SimilarityViewModelTests {
 
     // ── 重新聚类 ──
 
-    // recluster：新结果采纳（参数同步 + 清空选择）。
-    @Test func reclusterAdoptsNewResultAndClearsSelection() async {
+    // recluster：新结果采纳（参数同步 + 分组集合变化时清空选择）。
+    @Test func reclusterAdoptsNewResultAndClearsSelectionWhenGroupsChange() async {
         let (viewModel, api, _) = makeStubVM()
         api.resultValue = b8SimilarityResult()
         await viewModel.load()
@@ -673,7 +701,8 @@ struct SimilarityViewModelTests {
         await viewModel.load()
         viewModel.expandedGroupIds = [1]
         api.resultValue = b8SimilarityResult(totalGroups: 4, threshold: 10)
-        await viewModel.load()
+        // 显式结果刷新（分析完成/主动重查）；回页 load() 已改为不覆盖当前结果。
+        await viewModel.refreshResult()
         #expect(viewModel.expandedGroupIds.isEmpty, "新结果不得沿用旧展开态")
     }
 

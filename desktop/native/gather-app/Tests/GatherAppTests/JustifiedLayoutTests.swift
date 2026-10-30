@@ -170,6 +170,32 @@ struct JustifiedLayoutTests {
     }
 
     // safeAspectRatio 单独对账（TS 逐分支）。
+    // 键盘游标滚动目标：filtered 下标 → 行号（GalleryLayoutCache 的纯函数部分）。
+    @Test func layoutCacheMapsItemIndexToRow() {
+        let cache = GalleryLayoutCache()
+
+        #expect(cache.rowIndex(containing: 0) == nil, "布局未算出时返回 nil")
+
+        cache.rows = [
+            JustifiedLayoutRow(
+                height: 200,
+                items: [
+                    JustifiedLayoutItem(index: 0, width: 100),
+                    JustifiedLayoutItem(index: 1, width: 100),
+                ],
+                justified: true),
+            JustifiedLayoutRow(
+                height: 200,
+                items: [JustifiedLayoutItem(index: 2, width: 200)],
+                justified: false),
+        ]
+
+        #expect(cache.rowIndex(containing: 0) == 0)
+        #expect(cache.rowIndex(containing: 1) == 0)
+        #expect(cache.rowIndex(containing: 2) == 1)
+        #expect(cache.rowIndex(containing: 3) == nil)
+    }
+
     @Test func safeAspectRatioBranches() {
         #expect(safeAspectRatio(GalleryAspectItem(width: 200, height: 100)) == 2)
         #expect(safeAspectRatio(GalleryAspectItem(width: 0, height: 100)) == 1)

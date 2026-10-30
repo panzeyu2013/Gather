@@ -344,8 +344,12 @@ extension CullingViewModel {
     /// 第二条请求携带过期 `expectedRevision` → 冲突横幅。这里先等上一拍落地，
     /// 再在执行前才取 `currentAsset`：自动前进已生效，第二拍自然作用于下一张。
     public func commit(patch: CullingUpdatePatch, shouldAdvance: Bool = true) async {
-        if let chain = commitChain { await chain.value }
+        // 先快照前驱、再把自己登记进链——顺序不能反。若「先 await 上一拍、后赋值」，
+        // 连按三拍时第二、三拍会同时挂在第一拍上，第一拍结束后两者各自建 Task
+        // 并发提交（R1 复评：仍带同一 expectedRevision 撞冲突）。
+        let previous = commitChain
         let task = Task { @MainActor [weak self] in
+            await previous?.value
             guard let self else { return }
             await self.performCommit(patch: patch, shouldAdvance: shouldAdvance)
         }

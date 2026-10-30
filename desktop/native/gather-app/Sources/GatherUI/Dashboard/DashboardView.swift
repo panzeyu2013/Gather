@@ -276,6 +276,13 @@ package struct DashboardView: View {
                 showBatchDeleteConfirm = true
             }
         }
+        // 键盘打开：双击 / 行尾「进入」之外的第三条路径（HCI 复审 item 5）。
+        // 多选时不猜目标，保持 .ignored。
+        .onKeyPress(.return) {
+            guard selectedIds.count == 1, let id = selectedIds.first else { return .ignored }
+            onOpenSession(id)
+            return .handled
+        }
     }
 
     // MARK: 工作区概览（SwiftUI 侧聚合，数据源 workspace.status）

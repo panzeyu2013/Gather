@@ -13,7 +13,12 @@ extension FaceKeywordingView {
             refreshTitle: l10n("刷新"),
             refreshHelp: l10n("刷新人脸簇"),
             refreshKeyboardShortcut: true,
-            onRefresh: { Task { await viewModel.reload() } }
+            onRefresh: {
+                Task {
+                    PhotoThumbnailCache.invalidateAll()
+                    await viewModel.reload()
+                }
+            }
         )
     }
 }

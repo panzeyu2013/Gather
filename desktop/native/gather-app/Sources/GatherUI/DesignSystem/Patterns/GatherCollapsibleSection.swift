@@ -55,12 +55,14 @@ package struct GatherCollapsibleSection<Content: View>: View {
                         .imageScale(.small)
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(expanded ? 0 : -90))
+                        .accessibilityHidden(true)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityAddTraits(expanded ? [.isSelected] : [])
-            .help(expanded ? l10n("收起") : l10n("展开"))
+            // 展开态是「值」不是「选中」：isSelected 会被读成“已选择”，语义错误。
+            .accessibilityValue(expanded ? l10n("已展开") : l10n("已折叠"))
+            .accessibilityHint(expanded ? l10n("收起") : l10n("展开"))
 
             if expanded {
                 content

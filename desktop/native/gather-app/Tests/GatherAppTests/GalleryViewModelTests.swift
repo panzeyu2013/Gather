@@ -963,6 +963,36 @@ struct GalleryViewModelTests {
         #expect(viewModel.phase == .loaded)
     }
 
+    // 主动刷新（工具栏/⌘R）：就地重取，不清选择、不切 loading（2026-10-30 交互整改）。
+    @Test func refreshPreservesSelectionInPlace() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.rows = (0..<10).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        viewModel.toggleSelection("p1")
+        #expect(viewModel.selectedIds == ["p1"])
+
+        stub.rows = (0..<12).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.refresh()
+
+        #expect(viewModel.phase == .loaded)
+        #expect(viewModel.selectedIds == ["p1"], "就地刷新不得清空选择")
+        #expect(viewModel.loadedPhotos.count == 12)
+    }
+
+    // 刷新必须推进取页代数：在途分页（哨兵/预取）不归 fetchTask 管，
+    // 只 cancel 拦不住旧游标响应 append 回来（R1 F3 的回归钉）。
+    @Test func refreshAdvancesFetchGeneration() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.rows = (0..<450).map { StubGalleryProvider.photo("p\($0)") }
+        await viewModel.load()
+        let before = viewModel.fetchGeneration
+
+        await viewModel.refreshOnEvent()
+
+        #expect(viewModel.fetchGeneration == before + 1, "刷新必须让旧代数的在途分页失效")
+        #expect(viewModel.loadedPhotos.count == 200)
+    }
+
     // 事件刷新同时刷新 workspaceStatus（索引头随之更新）与 session。
     @Test func eventRefreshUpdatesIndexStatus() async {
         let (viewModel, stub) = makeStubVM()

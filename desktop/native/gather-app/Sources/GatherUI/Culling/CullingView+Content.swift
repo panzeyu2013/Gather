@@ -14,7 +14,9 @@ extension CullingView {
                 NativeBanner(
                     text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
                     color: GatherTheme.error,
-                    onDismiss: { viewModel.errorMessage = nil }
+                    // 首载失败时 errorMessage 同时是"重试出口"的判据（page == nil 分支）：
+                    // 横幅关掉会把失败态变成永久「正在载入…」。有 page 才允许关。
+                    onDismiss: viewModel.page == nil ? nil : { viewModel.errorMessage = nil }
                 )
                 .transition(.opacity)
             }

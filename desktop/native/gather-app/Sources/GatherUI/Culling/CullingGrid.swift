@@ -105,6 +105,16 @@ enum CullingGridKeyMapper {
         if let rating = Int(lower), (0...5).contains(rating), lower.count == 1 {
             return .rating(rating)
         }
+        // 裸 6–9 = 红/黄/绿/蓝色标（与查看器同一口径；色标不自动前进）。
+        // 不能取 colorLabels 前缀：那套 ⌥ 列表 7/8/9 是橙/黄/绿。
+        if let digit = Int(lower), (6...9).contains(digit), lower.count == 1 {
+            switch digit {
+            case 6: return .color(.red)
+            case 7: return .color(.yellow)
+            case 8: return .color(.green)
+            default: return .color(.blue)
+            }
+        }
         switch lower {
         case "p": return .pick(.picked)
         case "x": return .pick(.rejected)
@@ -366,7 +376,12 @@ struct CullingGridView: View {
                 )
             }
         case .color(let label):
-            Task { await viewModel.commit(patch: CullingUpdatePatch(colorLabel: label)) }
+            // 色标是"就地标注"：与查看器 6–9 一致，不触发自动前进。
+            Task {
+                await viewModel.commit(
+                    patch: CullingUpdatePatch(colorLabel: label),
+                    shouldAdvance: false)
+            }
         case .keep:
             Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }
         case .previous:

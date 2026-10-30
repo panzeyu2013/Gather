@@ -70,7 +70,7 @@ struct CullingInfoBar: View {
             if let sync = viewModel.syncStatus {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(sync.failed + sync.conflict > 0 ? GatherTheme.error : GatherTheme.success)
+                        .fill(syncIndicatorColor(sync))
                         .frame(width: 5, height: 5)
                         .accessibilityHidden(true)
                     Text(syncStatusText(sync))
@@ -112,14 +112,26 @@ struct CullingInfoBar: View {
     /// 同一份 outbox 状态会得到相反结论。
     func syncStatusText(_ sync: MetadataSyncSummary) -> String {
         let hasCounts = sync.conflict + sync.failed + sync.pending + sync.writing + sync.written + sync.synced > 0
-        // 没有任何交付记录 = 还没写过，不要说成"已同步"（与状态胶囊同一口径）。
-        if sync.items.isEmpty && !hasCounts { return l10n("尚未写回") }
+        // 与状态胶囊同一口径：无交付记录时看 reload_acked_at——从未做过 →「尚未写回」；
+        // 做过又被清理（ack 仍在）→「XMP 已同步」。否则清理后两处会一绿一灰。
+        if sync.items.isEmpty && !hasCounts {
+            return viewModel.reloadAcked ? l10n("XMP 已同步") : l10n("尚未写回")
+        }
         if sync.conflict > 0 { return l10n.format("%lld 个 XMP 冲突", sync.conflict) }
         if sync.failed > 0 { return l10n.format("%lld 个 XMP 写入失败", sync.failed) }
         if sync.pending + sync.writing > 0 { return l10n.format("%lld 个 XMP 等待写入", sync.pending + sync.writing) }
         if sync.written > 0 { return l10n.format("%lld 个 XMP 已写入，等待 Capture One 加载", sync.written) }
         if sync.synced > 0 { return l10n.format("%lld 个 XMP 已确认加载", sync.synced) }
         return l10n("XMP 已同步")
+    }
+
+    /// 圆点颜色与文案同源：无记录且无 ack 用中性灰，别用绿点配「尚未写回」。
+    private func syncIndicatorColor(_ sync: MetadataSyncSummary) -> Color {
+        let hasCounts = sync.conflict + sync.failed + sync.pending + sync.writing + sync.written + sync.synced > 0
+        if sync.items.isEmpty && !hasCounts {
+            return viewModel.reloadAcked ? GatherTheme.success : Color.secondary
+        }
+        return sync.failed + sync.conflict > 0 ? GatherTheme.error : GatherTheme.success
     }
 
     /// 行内计数：语义色只做圆点，数字保持主文字色。

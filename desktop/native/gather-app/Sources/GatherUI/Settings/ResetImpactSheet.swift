@@ -67,8 +67,9 @@ struct ResetImpactSheet: View {
                 } label: {
                     Text(l10n("恢复默认"))
                 }
-                // 破坏性动作不接 Return：影响面 sheet 一旦把默认键绑到"确定"，
-                // 误按回车就会清空偏好（F-P1-4）。取消仍可由 Esc 触发。
+                // 破坏性动作不接裸 Return：误按回车会清空偏好（F-P1-4）。
+                // 用 ⌘↩ 保留键盘可达性（FKA 关闭时 Tab 到不了按钮，只有 Esc 可退）。
+                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!canConfirm)
             }
         }

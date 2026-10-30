@@ -198,7 +198,12 @@ public struct DuplicatesView: View {
                 refreshTitle: l10n("刷新"),
                 refreshHelp: l10n("刷新重复照片"),
                 refreshDisabled: viewModel.isLoading || viewModel.isScanning,
-                onRefresh: { Task { await viewModel.load() } }
+                onRefresh: {
+                    Task {
+                        PhotoThumbnailCache.invalidateAll()
+                        await viewModel.load()
+                    }
+                }
             )
         }
     }

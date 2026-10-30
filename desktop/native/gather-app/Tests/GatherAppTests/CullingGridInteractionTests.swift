@@ -43,6 +43,11 @@ struct CullingGridInteractionTests {
         #expect(CullingGridKeyMapper.action(characters: " ", command: false, option: false) == .keep)
         #expect(CullingGridKeyMapper.action(characters: "z", command: false, option: false) == nil)
         #expect(CullingGridKeyMapper.action(characters: "8", command: false, option: true) == nil)
+        // 裸 6–9 = 红/黄/绿/蓝（与查看器同一口径，不触发自动前进）。
+        #expect(CullingGridKeyMapper.action(characters: "6", command: false, option: false) == .color(.red))
+        #expect(CullingGridKeyMapper.action(characters: "7", command: false, option: false) == .color(.yellow))
+        #expect(CullingGridKeyMapper.action(characters: "8", command: false, option: false) == .color(.green))
+        #expect(CullingGridKeyMapper.action(characters: "9", command: false, option: false) == .color(.blue))
     }
 
     @Test("页大小约束在 50...1000")

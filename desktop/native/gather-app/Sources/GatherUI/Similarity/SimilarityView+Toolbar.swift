@@ -13,7 +13,13 @@ extension SimilarityView {
             refreshTitle: l10n("刷新"),
             refreshHelp: l10n("刷新"),
             refreshKeyboardShortcut: true,
-            onRefresh: { Task { await viewModel.load() } }
+            onRefresh: {
+                Task {
+                    // 与图库/挑片同一口径：主动刷新 = 允许重取被外部修改过的缩略图。
+                    PhotoThumbnailCache.invalidateAll()
+                    await viewModel.load()
+                }
+            }
         )
     }
 }

@@ -1,6 +1,6 @@
 // desktop/native/gather-app/Sources/GatherUI/Support/GatherToast.swift
 // 全局 Toast 通知系统，对齐 Electron 版 ToastStore/Toast/ToastContainer：
-// 4 类型（info/success/warning/error）、5s 自动消失、右上角堆叠、× 手动关闭。
+// 4 类型（info/success/warning/error）、5s 自动消失（error 15s）、右上角堆叠（≤3 条）、× 手动关闭。
 
 import AppKit
 import Foundation
@@ -72,6 +72,12 @@ public final class GatherToastCenter {
         self.autoDismissDelay = autoDismissDelay
     }
 
+    /// 分类自动消失时长。错误类可能承载唯一出口（如导入失败的「重试」），
+    /// 5s 内键盘/VoiceOver 用户来不及反应；给 15s。其余类型用注入值（生产 5s）。
+    func autoDismissDelay(for type: ToastType) -> Duration {
+        type == .error ? max(autoDismissDelay, .seconds(15)) : autoDismissDelay
+    }
+
     public func show(type: ToastType, message: String) {
         show(type: type, message: message, actionTitle: nil, action: nil)
     }
@@ -79,10 +85,19 @@ public final class GatherToastCenter {
     public func show(type: ToastType, message: String, actionTitle: String?, action: (() -> Void)?) {
         let item = ToastItem(type: type, message: message, actionTitle: actionTitle, action: action)
         toasts.insert(item, at: 0)
-        let element = NSAccessibilityElement()
-        element.setAccessibilityLabel(message)
-        NSAccessibility.post(element: element, notification: .announcementRequested)
-        let delay = autoDismissDelay
+        // 上限 3 条：突发错误曾把右上角叠满并挡住工具栏点击。超出丢最旧一条。
+        if toasts.count > 3 { toasts.removeLast(toasts.count - 3) }
+        // AppKit 的公告必须带 userInfo（文案 + 优先级）并发给 application element；
+        // 只 setAccessibilityLabel 再 post 一个空元素，VoiceOver 不会朗读。
+        NSAccessibility.post(
+            element: NSApp as Any,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: message,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ]
+        )
+        let delay = autoDismissDelay(for: type)
         Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }

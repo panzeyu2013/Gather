@@ -152,7 +152,11 @@ private actor StubCullingAPI: CullingAPI {
     private(set) var moveRejectedInputs: [Confirmed<CullingMoveRejectedInput>] = []
     private(set) var triageGenerateCalls = 0
 
+    /// 回归用：让 update 在返回前挂起，连拍才能真正重叠。
+    var updateDelay = Duration.zero
+
     func setPage(_ value: CullingPage) { pageResult = value }
+    func setUpdateDelay(_ value: Duration) { updateDelay = value }
     func setUpdateSelectionResult(_ value: CullingSelectionUpdateResult) {
         updateSelectionResult = value
     }
@@ -198,6 +202,7 @@ private actor StubCullingAPI: CullingAPI {
 
     func update(_ input: CullingUpdateInput) async throws -> CullingUpdateResult {
         updateInputs.append(input)
+        if updateDelay > .zero { try? await Task.sleep(for: updateDelay) }
         if let updateError { throw updateError }
         return updateResult
     }
@@ -435,6 +440,30 @@ struct CullingViewModelAPITests {
         #expect(vm.undoOperation?.id == 9)
         #expect(vm.undoOperation?.entries.first?.before.pickState == .unreviewed)
         #expect(vm.undoOperation?.entries.first?.after.pickState == .picked)
+    }
+
+    // R1 F1 回归：commit 的串行链必须线性排队。旧实现「先 await 前驱、后赋值」，
+    // 第三拍会与第二拍同时续行，两者带同一 expectedRevision 重复提交同一张照片。
+    @Test("连按三拍：commit 串行级联，逐张落到 p1/p2/p3")
+    func rapidCommitsSerializeAcrossPhotos() async {
+        let api = StubCullingAPI()
+        let navigation = StubNavigationAPI()
+        await api.setPage(vmPage([vmAsset("p1"), vmAsset("p2"), vmAsset("p3")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: navigation,
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        await api.setUpdateDelay(.milliseconds(40))
+
+        async let first: Void = vm.commit(patch: CullingUpdatePatch(pickState: .picked))
+        async let second: Void = vm.commit(patch: CullingUpdatePatch(pickState: .picked))
+        async let third: Void = vm.commit(patch: CullingUpdatePatch(pickState: .picked))
+        _ = await (first, second, third)
+
+        let ids = await api.updateInputs.map(\.photoId)
+        #expect(ids.count == 3)
+        #expect(Set(ids) == ["p1", "p2", "p3"], "三拍必须逐张前进；重复照片 = 过期 revision 冲突")
     }
 
     @Test("batchUpdate：选中集合进类型化输入，返回的历史操作只 prepend 一次")

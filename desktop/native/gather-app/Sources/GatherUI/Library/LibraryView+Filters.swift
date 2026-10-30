@@ -88,7 +88,10 @@ extension LibraryView {
             .disabled(viewModel.activeFilterCount == 0)
 
             Button {
-                Task { await viewModel.load() }
+                Task {
+                    PhotoThumbnailCache.invalidateAll()
+                    await viewModel.load()
+                }
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 12, weight: .medium))

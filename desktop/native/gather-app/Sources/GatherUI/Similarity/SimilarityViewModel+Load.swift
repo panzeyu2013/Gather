@@ -20,7 +20,11 @@ extension SimilarityViewModel {
         await Task.yield()
         do {
             if let result = try await similarity.result(SimilarityResultQuery(sessionId: sessionId)) {
-                adoptResult(result, syncThreshold: true)
+                // 回页只“补首屏”：VM 已持有结果（可能是预计算档视图）时，无参 getLatest
+                // 会把它换回主结果并重置草稿；已有结果就保留，变更交给事件/轮询（R2 F6）。
+                if self.result == nil {
+                    adoptResult(result, syncThreshold: true)
+                }
                 phase = .result
             } else {
                 phase = .idle

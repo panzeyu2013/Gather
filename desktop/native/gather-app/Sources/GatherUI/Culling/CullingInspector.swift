@@ -489,7 +489,11 @@ struct CullingInspector: View {
             },
             set: { value in
                 guard let value else { return }
-                Task { await viewModel.commit(patch: CullingUpdatePatch(colorLabel: value)) }
+                Task {
+                    await viewModel.commit(
+                        patch: CullingUpdatePatch(colorLabel: value),
+                        shouldAdvance: false)
+                }
             }
         )
     }

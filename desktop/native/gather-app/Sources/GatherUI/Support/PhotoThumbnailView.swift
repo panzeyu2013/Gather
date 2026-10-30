@@ -745,6 +745,9 @@ public struct PhotoDetailTileView: View {
 private final class PhotoThumbnailCacheBox: @unchecked Sendable {
     let cache: NSCache<NSString, NSImage>
     let lock = NSLock()
+    /// 缓存代：invalidateAll 时自增。内存键带代，视图的 .task(id: cacheKey) 才会
+    /// 重启并绕开「旧图仍在 NSCache 里、key 没变所以不重解」的死角。
+    var epoch = 0
 
     init() {
         // 审计 P1-性能：2048px preview ≈16MB/张，浏览 1 万张可致 GB 级内存。
@@ -760,7 +763,12 @@ private final class PhotoThumbnailCacheBox: @unchecked Sendable {
 public enum PhotoThumbnailCache {
     /// 缓存键的**唯一**生成处（显示与预取共用，防止两边漂移导致永不命中）。
     public static func key(path: String, size: Int, preview: Bool) -> String {
-        "\(preview ? "preview" : "thumb"):\(path)#\(size)"
+        // 代进键：主动刷新（invalidateAll）后同一 path+size 得到新键，驱动的
+        // .task(id:) 重启、在途解码的 key 校验也会失效——旧图不会再写回缓存。
+        box.lock.lock()
+        let epoch = box.epoch
+        box.lock.unlock()
+        return "\(preview ? "preview" : "thumb"):\(path)#\(size)#g\(epoch)"
     }
 
     private static let box = PhotoThumbnailCacheBox()
@@ -771,15 +779,18 @@ public enum PhotoThumbnailCache {
         return box.cache.object(forKey: key as NSString)
     }
 
-    /// 清空内存缩略图。
+    /// 清空内存缩略图（同时推进缓存代）。
     ///
-    /// 为什么需要：键里只有 path+size，没有 mtime。用户在 Capture One 里改了图，
-    /// 回 Gather 后内存缓存仍然命中旧图（磁盘缓存键含 mtime，但内存先返回）。
-    /// 由"用户主动刷新"触发——这是唯一不会误伤的时机（不按刷新就保持现状）。
+    /// 为什么需要：键里没有 mtime。用户在 Capture One 里改了图，回 Gather 后内存
+    /// 缓存仍然命中旧图（磁盘缓存键含 mtime，但内存先返回）。由"用户主动刷新"触发
+    /// ——这是唯一不会误伤的时机（不按刷新就保持现状）。
+    /// 必须同时自增 epoch：只 removeAllObjects 的话，已在屏的视图 key 不变、
+    /// `.task(id:)` 不会重启，用户看到的仍是旧图。
     public static func invalidateAll() {
         box.lock.lock()
         defer { box.lock.unlock() }
         box.cache.removeAllObjects()
+        box.epoch &+= 1
     }
 
     public static func setImage(_ image: NSImage, for key: String) {

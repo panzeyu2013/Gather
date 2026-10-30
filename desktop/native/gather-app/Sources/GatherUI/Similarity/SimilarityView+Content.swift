@@ -71,9 +71,13 @@ extension SimilarityView {
                     proxy.scrollTo(Self.groupsTopAnchor, anchor: .top)
                 }
             }
-            .onChange(of: viewModel.result) { _, _ in
-                // TS GroupGrid useEffect([result])：结果替换（recluster 完成 /
+            .onChange(of: viewModel.result) { old, new in
+                // TS GroupGrid useEffect([result])：结果**替换**（recluster 完成 /
                 // 阈值档采纳）时重置展开/滚动状态，旧展开不跨结果泄漏。
+                // 回页重新采纳同一批分组不算替换——否则 VM 刚保留的展开态又被这里清掉。
+                let oldIds = Set(old?.groups.map(\.id) ?? [])
+                let newIds = Set(new?.groups.map(\.id) ?? [])
+                guard oldIds != newIds else { return }
                 resetGroupDisclosure()
                 proxy.scrollTo(Self.groupsTopAnchor, anchor: .top)
             }

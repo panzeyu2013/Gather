@@ -345,12 +345,7 @@ extension GalleryView {
     /// 某个 filtered 下标落在哪一行（justified 网格的行由布局缓存给出）。
     /// 布局还没算出来（首帧/空网格）时返回 nil，滚动自然跳过。
     func rowIndex(containing index: Int) -> Int? {
-        guard !layoutCache.rows.isEmpty else { return nil }
-        for (rowIndex, row) in layoutCache.rows.enumerated()
-        where row.items.contains(where: { $0.index == index }) {
-            return rowIndex
-        }
-        return nil
+        layoutCache.rowIndex(containing: index)
     }
 
     func toggleGalleryCursor() {
