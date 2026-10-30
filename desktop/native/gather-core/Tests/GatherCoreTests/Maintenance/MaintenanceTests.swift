@@ -43,7 +43,7 @@ struct MaintenanceTests {
 
         #expect(record.verified)
         #expect(record.schemaVersion == SchemaCurrent.userVersion)
-        #expect(record.tableCount == 44)
+        #expect(record.tableCount == 55)
         #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("Backups").appendingPathComponent(record.fileName).path))
         let verification = try BackupVerifier.verify(path: dir.appendingPathComponent("Backups").appendingPathComponent(record.fileName).path)
         #expect(verification.sha256 == record.sha256)

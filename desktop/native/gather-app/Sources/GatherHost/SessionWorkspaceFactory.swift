@@ -133,7 +133,8 @@ package struct SessionWorkspaceFactory {
                 provider: deps.galleryProvider,
                 job: deps.job,
                 metadata: deps.metadata,
-                photo: deps.photo
+                photo: deps.photo,
+                album: deps.album
             ),
             similarity: SimilarityViewModel(
                 sessionId: sessionId,

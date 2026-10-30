@@ -698,9 +698,12 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
 
     func importClientSelection(
         _ input: Confirmed<ClientSelectionImportInput>
-    ) async throws -> ClientSelectionImportResult {
+    ) async throws -> ClientSelectionImportReport {
         try await delayIfNeeded()
-        return box.lock.withLock { box.clientSelectionResult }
+        let result = box.lock.withLock { box.clientSelectionResult }
+        return ClientSelectionImportReport(
+            picked: result.picked, applied: result.applied,
+            skipped: result.skipped, failed: result.failed)
     }
 
     func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult {

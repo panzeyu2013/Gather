@@ -150,7 +150,7 @@ struct PreviewCullingAPI: CullingAPI {
 
     func importClientSelection(
         _ input: Confirmed<ClientSelectionImportInput>
-    ) async throws -> ClientSelectionImportResult {
+    ) async throws -> ClientSelectionImportReport {
         throw PreviewAPIError.unavailable("culling.import_client_selection")
     }
 

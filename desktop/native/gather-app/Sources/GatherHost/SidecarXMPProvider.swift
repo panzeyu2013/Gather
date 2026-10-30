@@ -105,20 +105,33 @@ public final class SidecarXMPProvider: XMPProvider {
     /// 写入器以验证写后校验路径。生产构造不传即 nil；校验本身不可关闭。
     private let writeTransform: (@Sendable (String) -> String)?
 
-    public init(writeTransform: (@Sendable (String) -> String)? = nil) {
+    /// P1 下一波 §3.6.2：dc:subject 写叶子（默认）还是完整路径。
+    ///
+    /// 由组合根从设置键 keyword_dc_style 注入；缺省 leaf 保证"没接线时行为不变"。
+    /// lr:hierarchicalSubject 不受此开关影响（永远只写含层级的路径）。
+    private let dcSubjectStyle: KeywordDCSubjectStyle
+
+    public init(
+        writeTransform: (@Sendable (String) -> String)? = nil,
+        dcSubjectStyle: KeywordDCSubjectStyle = .leaf
+    ) {
         self.writeTransform = writeTransform
+        self.dcSubjectStyle = dcSubjectStyle
     }
 
     // MARK: - XMPProvider（读取）
 
+    /// 合并读：dc:subject（扁平）+ lr:hierarchicalSubject（层级）去重后的路径列表。
     public func readKeywords(photoPath: String) async throws -> [String] {
-        try readSidecar(photoPath).keywords
+        try readSidecar(photoPath).mergedKeywords
     }
 
     public func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
         let parsed = try readSidecar(photoPath)
+        // P1 下一波 §3.6.2：两套列表合并去重（层级优先，叶子重复不重复计数）。
+        let keywords = parsed.mergedKeywords
         return MetadataWriteAttributes(
-            keywords: parsed.keywords.isEmpty ? nil : parsed.keywords,
+            keywords: keywords.isEmpty ? nil : keywords,
             rating: parsed.rating,
             label: parsed.resolvedLabel,
             dateTaken: parsed.dateTaken,
@@ -159,7 +172,9 @@ public final class SidecarXMPProvider: XMPProvider {
         } else {
             document = Self.emptyXmpDoc
         }
-        var patched = try Self.patchDocument(document, attributes: attributes, xmpPath: xmpPath)
+        var patched = try Self.patchDocument(
+            document, attributes: attributes, xmpPath: xmpPath,
+            dcSubjectStyle: dcSubjectStyle)
         if let writeTransform { patched = writeTransform(patched) }
         // 补丁产物必须是良构 XML：宁可失败也绝不把损坏文档写盘。
         do {
@@ -172,7 +187,9 @@ public final class SidecarXMPProvider: XMPProvider {
         try Self.writeAtomic(xmpPath: xmpPath, content: patched)
         // 写后校验：重新从盘上读取，目标字段必须真的生效。
         let actual = try await readAttributes(photoPath: photoPath)
-        try Self.verify(xmpPath: xmpPath, expected: attributes, actual: actual)
+        try Self.verify(
+            xmpPath: xmpPath, expected: attributes, actual: actual,
+            dcSubjectStyle: dcSubjectStyle)
     }
 
     // MARK: - XMPProvider（备份 / 恢复 / 存在性 / 删除）
@@ -238,7 +255,10 @@ public final class SidecarXMPProvider: XMPProvider {
 
     /// XML 元素文本收集（对齐 TS extractKeywords/extractXmpAttributes 的取值）。
     fileprivate struct ParsedSidecar {
+        /// dc:subject（扁平列表，可能已含 "A|B" 路径）。
         var keywords: [String] = []
+        /// lr:hierarchicalSubject（只应该有含层级的路径）。
+        var hierarchicalKeywords: [String] = []
         var rating: Double?
         var label: String?
         var urgency: Double?
@@ -249,6 +269,12 @@ public final class SidecarXMPProvider: XMPProvider {
         var descriptive = DescriptiveMetadata()
         /// P1 / E：私有命名空间信号（gather:Triage）。
         var triageSignal: String?
+
+        /// 两套列表合并去重后的读取结果（层级优先、叶子重复不重复计数）。
+        var mergedKeywords: [String] {
+            KeywordCodec.merge(flat: keywords, hierarchical: hierarchicalKeywords)
+                .map(\.serialized)
+        }
 
         /// TS: CAPTURE_ONE_URGENCY_LABEL（urgency → color label）。
         var resolvedLabel: String? {
@@ -302,7 +328,8 @@ public final class SidecarXMPProvider: XMPProvider {
 
     // MARK: - 新建 sidecar 的骨架文档
 
-    /// 最小 XMP 骨架：xmpmeta / rdf:RDF / rdf:Description 与三个命名空间齐全。
+    /// 最小 XMP 骨架：xmpmeta / rdf:RDF / rdf:Description 与四个命名空间齐全
+    /// （lr 是 P1 下一波新增的层级关键词命名空间，缺省也能由 injectNamespaces 补上）。
     private static let emptyXmpDoc = """
     <?xml version="1.0" encoding="UTF-8"?>
     <x:xmpmeta xmlns:x="adobe:ns:meta/">
@@ -322,7 +349,11 @@ private final class SidecarXMLDelegate: NSObject, XMLParserDelegate {
         "exif:DateTimeOriginal", "exif:GPSLatitude", "exif:GPSLongitude",
     ]
 
-    private var subjectDepth = 0
+    /// 当前正在读取的关键词列表归属（dc:subject / lr:hierarchicalSubject）。
+    /// 两套列表结构相同（rdf:Bag + rdf:li），用层标记区分，避免两次解析。
+    private enum KeywordLayer { case flat, hierarchical }
+
+    private var keywordLayer: KeywordLayer?
     private var listDepth = 0
     private var currentElement: String?
     private var currentText = ""
@@ -342,11 +373,15 @@ private final class SidecarXMLDelegate: NSObject, XMLParserDelegate {
         }
         switch name {
         case "dc:subject":
-            subjectDepth += 1
+            keywordLayer = .flat
+        case "lr:hierarchicalSubject":
+            // P1 下一波 §3.6.3：Lightroom 层级关键词（ImageIO 不回传未知命名空间，
+            // 必须自己解析；内嵌读侧同理，见 Embedded/XMPPacketReader.swift）。
+            keywordLayer = .hierarchical
         case "rdf:Bag", "rdf:Seq":
-            if subjectDepth > 0 { listDepth += 1 }
+            if keywordLayer != nil { listDepth += 1 }
         default:
-            if subjectDepth > 0 && listDepth > 0 && name == "rdf:li" {
+            if keywordLayer != nil && listDepth > 0 && name == "rdf:li" {
                 currentElement = "rdf:li"
                 currentText = ""
             } else if Self.elementNames.contains(name) {
@@ -367,7 +402,8 @@ private final class SidecarXMLDelegate: NSObject, XMLParserDelegate {
         qualifiedName qName: String?
     ) {
         let name = qName ?? elementName
-        if name == "dc:subject" { subjectDepth = max(0, subjectDepth - 1) }
+        let layer = keywordLayer
+        if name == "dc:subject" || name == "lr:hierarchicalSubject" { keywordLayer = nil }
         if name == "rdf:Bag" || name == "rdf:Seq" { listDepth = max(0, listDepth - 1) }
         let element = currentElement
         let text = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -375,7 +411,12 @@ private final class SidecarXMLDelegate: NSObject, XMLParserDelegate {
         currentText = ""
         switch element {
         case "rdf:li":
-            if !text.isEmpty { result.keywords.append(text) }
+            if !text.isEmpty {
+                switch layer {
+                case .hierarchical: result.hierarchicalKeywords.append(text)
+                case .flat, .none: result.keywords.append(text)
+                }
+            }
         case "xmp:Rating":
             if let parsed = Double(text) { result.rating = parsed }
         case "xmp:Label":

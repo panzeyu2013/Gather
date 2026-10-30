@@ -199,11 +199,21 @@ public struct DeliveryFinalizeSummary: Sendable, Equatable {
     public let skippedCount: Int
     /// 可重试的失败（文件/DB/intent 写入），对应 intent 被保留。
     public let errors: [String]
+    /// P1 下一波 §3.1.3：只删了**本模块** item、交付行与备份仍保留的数量
+    /// （共享文件上还有其它模块的 item）。不是失败：errors 里没有它，
+    /// 但"结束了却还在"必须让调用方看得见。
+    public let retainedCount: Int
 
-    public init(deletedCount: Int, skippedCount: Int, errors: [String]) {
+    public init(
+        deletedCount: Int,
+        skippedCount: Int,
+        errors: [String],
+        retainedCount: Int = 0
+    ) {
         self.deletedCount = deletedCount
         self.skippedCount = skippedCount
         self.errors = errors
+        self.retainedCount = retainedCount
     }
 }
 

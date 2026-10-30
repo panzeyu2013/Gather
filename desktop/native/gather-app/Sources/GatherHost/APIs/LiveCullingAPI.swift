@@ -52,6 +52,10 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     private let fileLock: XMPFileLock?
     /// W1：模型级初审信号（检查器卡片按需读取；nil = 未接线，返回 nil）。
     private let modelReviewRepo: ModelReviewRepo?
+    /// P1 下一波：校样反馈 v2（picks + rating/label/comment）；nil = 旧 picks 路径。
+    private let proofFeedback: ProofFeedbackService?
+    /// P1：技术质量建议阈值校准；nil = 未接线（API 显式报 INVALID_PARAM）。
+    private let calibration: TriageCalibrationService?
 
     /// @unchecked Sendable 依据：两个依赖都是构造后不再变更的 let；CullingService
     /// 的可变状态（会话级更新上下文缓存、Repo 缓存）由 DBConnection 的递归锁与
@@ -63,7 +67,9 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         photoRepo: (any PhotoRepository)? = nil,
         relocateAfterMove: ((String, String, String, Bool) throws -> Void)? = nil,
         fileLock: XMPFileLock? = nil,
-        modelReviewRepo: ModelReviewRepo? = nil
+        modelReviewRepo: ModelReviewRepo? = nil,
+        proofFeedback: ProofFeedbackService? = nil,
+        calibration: TriageCalibrationService? = nil
     ) {
         self.cullingService = cullingService
         self.triageService = triageService
@@ -72,6 +78,8 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         self.relocateAfterMove = relocateAfterMove
         self.fileLock = fileLock
         self.modelReviewRepo = modelReviewRepo
+        self.proofFeedback = proofFeedback
+        self.calibration = calibration
     }
 
     // MARK: - P1 / D：淘汰移动
@@ -296,27 +304,42 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
 
     public func importClientSelection(
         _ input: Confirmed<ClientSelectionImportInput>
-    ) async throws -> ClientSelectionImportResult {
+    ) async throws -> ClientSelectionImportReport {
         let payload = input.value
         let sessionId = try LiveAPIInput.requireSessionId(payload.sessionId)
-        let ids = try map {
-            try ClientSelectionParser.pickedPhotoIds(from: Data(payload.json.utf8))
-        }
-        let outcome = try await Task.detached(priority: .userInitiated) {
-            try self.map {
-                try self.cullingService.applyImportedPicks(
-                    sessionId: sessionId, photoIds: ids)
+        let data = Data(payload.json.utf8)
+
+        let report: ClientSelectionImportReport
+        if proofFeedback != nil {
+            report = try await Task.detached(priority: .userInitiated) {
+                try self.map {
+                    // 服务非 Sendable：经 self 的 let 引用访问，不捕获成局部变量跨线程。
+                    try self.proofFeedback!.import(
+                        sessionId: sessionId, data: data)
+                }
+            }.value
+        } else {
+            // 未接线：保持 v1 勾选语义（评分/色标/评论不应用）。
+            let ids = try map {
+                try ClientSelectionParser.pickedPhotoIds(from: data)
             }
-        }.value
+            let outcome = try await Task.detached(priority: .userInitiated) {
+                try self.map {
+                    try self.cullingService.applyImportedPicks(
+                        sessionId: sessionId, photoIds: ids)
+                }
+            }.value
+            let applied = outcome.results.count
+            report = ClientSelectionImportReport(
+                picked: ids.count,
+                applied: applied,
+                skipped: max(0, ids.count - applied - outcome.failed),
+                failed: outcome.failed)
+        }
         try await mapAsync {
             try await self.cullingService.flushQueuedMetadata(sessionId: sessionId)
         }
-        let applied = outcome.results.count
-        return ClientSelectionImportResult(
-            picked: ids.count,
-            applied: applied,
-            skipped: max(0, ids.count - applied - outcome.failed),
-            failed: outcome.failed)
+        return report
     }
 
     public func applyTriage(_ input: Confirmed<TriageApplyInput>) async throws -> TriageApplyResult {
@@ -325,6 +348,89 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                 try self.triageService.apply(input)
             }
         }.value
+    }
+
+
+    public func proofComments(sessionId: String) async throws -> [String: String] {
+        guard let proofFeedback else { return [:] }
+        return try map { try proofFeedback.comments(sessionId: sessionId) }
+    }
+
+    public func adjustmentHint(photoId: String) async throws -> CropFrame? {
+        guard let photoRepo,
+              let photo = try photoRepo.getLookupByIds([photoId]).first else { return nil }
+        guard let bridge = CaptureOneBridge.shared,
+              let hint = bridge.adjustmentHints(paths: [photo.filepath]).first,
+              let rect = hint.cropRect else { return nil }
+        return CropFrame(
+            left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
+            angle: hint.angle ?? 0)
+    }
+
+    public func triageCalibration(
+        _ query: TriageCalibrationQuery
+    ) async throws -> TriageCalibrationSnapshot {
+        guard let calibration else {
+            throw GatherError.invalidParameter(
+                field: "triageCalibration", reason: "calibration service not wired")
+        }
+        let report = try await Task.detached(priority: .utility) {
+            try self.map { try calibration.report(sessionId: query.sessionId) }
+        }.value
+        return Self.snapshot(from: report)
+    }
+
+    public func applyTriageCalibration(
+        _ input: Confirmed<TriageCalibrationApplyInput>
+    ) async throws -> TriageCalibrationThresholdSnapshot {
+        guard let calibration else {
+            throw GatherError.invalidParameter(
+                field: "applyTriageCalibration", reason: "calibration service not wired")
+        }
+        let value = input.value
+        let applied = try await Task.detached(priority: .utility) {
+            try self.map {
+                try calibration.applyThresholds(
+                    keep: value.keep, reject: value.reject,
+                    minExecutable: value.minExecutable)
+            }
+        }.value
+        return TriageCalibrationThresholdSnapshot(
+            keep: applied.keep, reject: applied.reject,
+            minExecutable: applied.minExecutable)
+    }
+
+    private static func snapshot(
+        from report: TriageCalibrationReport
+    ) -> TriageCalibrationSnapshot {
+        TriageCalibrationSnapshot(
+            sessionId: report.sessionId,
+            samples: report.samples,
+            minSamples: report.minSamples,
+            buckets: report.buckets.map {
+                TriageCalibrationBucketSnapshot(
+                    lowerBound: $0.lowerBound, upperBound: $0.upperBound,
+                    samples: $0.samples, keepSuggestions: $0.keepSuggestions,
+                    agreedKeep: $0.agreedKeep)
+            },
+            current: TriageCalibrationThresholdSnapshot(
+                keep: report.current.keep, reject: report.current.reject,
+                minExecutable: report.current.minExecutable),
+            currentKeepPrecision: report.currentKeepPrecision,
+            currentRejectPrecision: report.currentRejectPrecision,
+            suggestions: report.suggestions.map {
+                TriageCalibrationSuggestionSnapshot(
+                    target: $0.target, confidence: $0.confidence,
+                    samples: $0.samples, keepPrecision: $0.keepPrecision,
+                    rejectPrecision: $0.rejectPrecision,
+                    keep: $0.keep, reject: $0.reject, review: $0.review)
+            },
+            byCamera: report.byCamera.map {
+                TriageCalibrationCameraSnapshot(
+                    cameraModel: $0.cameraModel, samples: $0.samples,
+                    keepPrecision: $0.keepPrecision)
+            },
+            generatedAt: report.generatedAt)
     }
 
     public func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus {
@@ -366,6 +472,9 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             )
         }
         try await mapAsync { try await cullingService.flushQueuedMetadata(sessionId: input.sessionId) }
+        recordManualFeedback(
+            sessionId: input.sessionId, photoIds: [input.photoId],
+            pickState: input.patch.pickState)
         return result
     }
 
@@ -378,6 +487,9 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             )
         }
         try await mapAsync { try await cullingService.flushQueuedMetadata(sessionId: input.sessionId) }
+        recordManualFeedback(
+            sessionId: input.sessionId, photoIds: input.photoIds,
+            pickState: input.patch.pickState)
         return result
     }
 
@@ -470,6 +582,28 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     }
 
     // MARK: - 校验与错误映射
+
+    /// 人工改选 → triage_feedback（校准样本）。失败只记日志，不影响决策提交。
+    private func recordManualFeedback(
+        sessionId: String, photoIds: [String], pickState: PickState?
+    ) {
+        guard let pickState else { return }
+        let decision: CullingDecisionValue
+        switch pickState {
+        case .picked: decision = .keep
+        case .rejected: decision = .reject
+        case .unreviewed: decision = .pending
+        }
+        for photoId in Set(photoIds) {
+            do {
+                _ = try triageService.recordManualDecision(
+                    sessionId: sessionId, photoId: photoId, decision: decision)
+            } catch {
+                GatherLogger.log(
+                    "triage feedback record failed: \(error)", level: .debug)
+            }
+        }
+    }
 
     private func map<T>(_ body: () throws -> T) throws -> T {
         do {

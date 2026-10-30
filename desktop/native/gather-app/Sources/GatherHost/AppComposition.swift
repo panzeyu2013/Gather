@@ -58,6 +58,8 @@ public struct AppComposition {
     var metadataMutationService: MetadataMutationService { core.metadataMutationService }
     var writebackService: WritebackService { core.writebackService }
     var smartAlbumRepo: SmartAlbumRepo { core.smartAlbumRepo }
+    var curationService: CurationService { core.curationService }
+    var metadataDeliveryService: MetadataDeliveryService { core.metadataDeliveryService }
     var cullingService: CullingService { core.cullingService }
     /// P0 / T0：技术质量初筛服务（LiveCullingAPI 注入）。
     var triageService: TriageService { core.triageService }

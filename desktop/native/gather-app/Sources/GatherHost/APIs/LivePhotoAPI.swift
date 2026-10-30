@@ -42,7 +42,13 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
     private let settingsService: SettingsService
     private let jobAPI: any JobAPI
     /// P1 / C：facet 计数（与 filter 引擎同库；nil = 未接线，返回空面板）。
+    /// P1 下一波起它还持有公开的过滤分页入口（filterQuery），网格的 criteria
+    /// 分页与 facet 计数因此共用同一条 WHERE。
     private let facetQuery: FacetQuery?
+    /// P1 下一波 §3.7.3：保存查询（nil = 未接线，列表空、写入显式失败）。
+    private let savedSearchRepo: SavedSearchRepo?
+    /// P1：语义检索（nil = 未接线，返回空结果 + 明确原因）。
+    private let semanticIndex: SemanticIndex?
 
     /// @unchecked Sendable 依据：全部依赖均为构造后不可变的 let；Repo/Service 的
     /// 可变状态由 DBConnection 的递归锁或各服务自己的锁保护（同组合根约定）。
@@ -54,7 +60,9 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         imagePreloadService: ImagePreloadService,
         settingsService: SettingsService,
         jobAPI: any JobAPI,
-        facetQuery: FacetQuery? = nil
+        facetQuery: FacetQuery? = nil,
+        savedSearchRepo: SavedSearchRepo? = nil,
+        semanticIndex: SemanticIndex? = nil
     ) {
         self.photoRepo = photoRepo
         self.assetRepo = assetRepo
@@ -64,17 +72,40 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         self.settingsService = settingsService
         self.jobAPI = jobAPI
         self.facetQuery = facetQuery
+        self.savedSearchRepo = savedSearchRepo
+        self.semanticIndex = semanticIndex
         self.pathPolicy = LivePhotoPathPolicy(photoRepo: photoRepo)
     }
 
     // MARK: - PhotoAPI
 
     public func page(_ query: PhotoPageQuery) async throws -> PhotoPage {
-        let page = try photoRepo.getAssetPage(
-            sessionId: query.sessionId,
-            afterFirstRowid: query.afterFirstRowid,
-            limit: query.limit
-        )
+        // §3.7.1：带 criteria 时走 PhotoFilterQuery 的同一条 WHERE + rowid 游标；
+        // 无 criteria 保持原样（PhotoRepo.getAssetPage），两条路径的行序与游标语义一致。
+        let page: (rows: [PhotoPageRow], cursor: Int64?)
+        if query.hasCriteria {
+            guard let facetQuery else {
+                // 未接线时不能静默返回未筛选的页：UI 会显示"筛选生效"但列的是全部照片。
+                throw GatherError.invalidParameter(
+                    field: "criteria",
+                    reason: "server-side filtering is not available in this build")
+            }
+            do {
+                page = try facetQuery.filterQuery.assetPage(
+                    sessionId: query.sessionId,
+                    criteria: query.criteria,
+                    afterFirstRowid: query.afterFirstRowid,
+                    limit: query.limit,
+                    descending: query.isDescending)
+            } catch let error as PhotoFilterQueryError {
+                throw Self.mappedFilterError(error)
+            }
+        } else {
+            page = try photoRepo.getAssetPage(
+                sessionId: query.sessionId,
+                afterFirstRowid: query.afterFirstRowid,
+                limit: query.limit)
+        }
         return PhotoPage(
             rows: assemblePhotoRows(
                 page.rows,
@@ -133,6 +164,103 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         return PhotoSelectionIds(ids: ids, idsHash: digest, truncated: total > ids.count)
     }
 
+    // MARK: - 保存查询（§3.7.3）
+
+    public func savedSearches(_ query: SavedSearchesQuery) async throws -> [SavedSearchData] {
+        guard let savedSearchRepo else { return [] }
+        do {
+            return try savedSearchRepo.list(sessionId: query.sessionId).map(Self.savedSearchData)
+        } catch let error as SavedSearchRepoError {
+            throw Self.mappedSavedSearchError(error)
+        }
+    }
+
+    public func saveSearch(_ input: SaveSearchInput) async throws -> SavedSearchData {
+        guard let savedSearchRepo else {
+            throw GatherError.invalidParameter(
+                field: "name", reason: "saved searches are not available in this build")
+        }
+        do {
+            // 上限只挡"新增"：同名覆盖在 UI 里是"更新这个查询"，不该被容量限制拒绝。
+            let existing = try savedSearchRepo
+                .list(sessionId: input.sessionId)
+                .first { $0.name == input.name && $0.sessionId == input.sessionId }
+            if existing == nil {
+                let limit = Self.savedSearchLimit(settingsService)
+                if try savedSearchRepo.count() >= limit {
+                    throw GatherError.invalidParameter(
+                        field: "name",
+                        reason: "saved search limit reached (\(limit))")
+                }
+            }
+            return Self.savedSearchData(
+                try savedSearchRepo.upsert(
+                    name: input.name,
+                    sessionId: input.sessionId,
+                    criteria: input.criteria))
+        } catch let error as SavedSearchRepoError {
+            throw Self.mappedSavedSearchError(error)
+        }
+    }
+
+    public func deleteSavedSearch(_ input: DeleteSavedSearchInput) async throws {
+        guard let savedSearchRepo else {
+            throw GatherError.invalidParameter(
+                field: "id", reason: "saved searches are not available in this build")
+        }
+        if try savedSearchRepo.delete(id: input.id) { return }
+        // 不存在不能静默成功：UI 的"删除"会留下幽灵行。
+        throw GatherError.invalidParameter(
+            field: "id", reason: "saved search not found: \(input.id)")
+    }
+
+    public func count(_ input: SearchCountInput) async throws -> Int {
+        try mapFilterError {
+            try filterEngine.countGlobally(
+                criteria: input.criteria, sessionId: input.sessionId)
+        }
+    }
+
+
+    public func semanticSearch(
+        _ query: SemanticSearchQuery
+    ) async throws -> SemanticSearchOutcomeSnapshot {
+        guard let semanticIndex else {
+            return SemanticSearchOutcomeSnapshot(
+                sessionId: query.sessionId, method: "unavailable", hits: [],
+                scanned: 0, skipped: 0, unavailableReason: "语义索引未接线")
+        }
+        if let photoId = query.photoId, !photoId.isEmpty {
+            let outcome = try mapFilterError {
+                try semanticIndex.similar(
+                    to: photoId, sessionId: query.sessionId,
+                    limit: query.limit, minSimilarity: query.minSimilarity)
+            }
+            return Self.semanticSnapshot(outcome)
+        }
+        let outcome = try mapFilterError {
+            try semanticIndex.search(
+                sessionId: query.sessionId, labels: query.labels, limit: query.limit)
+        }
+        return Self.semanticSnapshot(outcome)
+    }
+
+    private static func semanticSnapshot(
+        _ outcome: SemanticSearchOutcome
+    ) -> SemanticSearchOutcomeSnapshot {
+        SemanticSearchOutcomeSnapshot(
+            sessionId: outcome.sessionId,
+            method: outcome.method.rawValue,
+            hits: outcome.hits.map {
+                SemanticSearchHitSnapshot(
+                    photoId: $0.photoId, similarity: $0.similarity,
+                    labels: $0.labels.map(\.label),
+                    matchedLabels: $0.matchedLabels)
+            },
+            scanned: outcome.scanned, skipped: outcome.skipped,
+            unavailableReason: outcome.unavailableReason)
+    }
+
     public func suggestions(_ query: PhotoSuggestionQuery) async throws -> [FilterSuggestion] {
         try mapFilterError {
             try filterEngine.suggest(query.sessionId, keyword: query.keyword)
@@ -151,7 +279,8 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
                     sessionId: input.sessionId,
                     criteria: input.criteria,
                     dimension: dimension,
-                    limit: input.limit
+                    limit: input.limit,
+                    keywordPrefix: input.keywordPrefix
                 )
                 return PhotoFacetGroup(
                     dimension: dimension.rawValue,
@@ -317,6 +446,47 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         if rounded < 64 { return 64 }
         if rounded > 8192 { return 8192 }
         return Int(rounded)
+    }
+
+    /// 保存查询上限（设置键 gallery_saved_search_limit；异常值钳到 1...1000）。
+    static func savedSearchLimit(_ settings: SettingsService) -> Int {
+        let raw = settings.getNumber("gallery_saved_search_limit", defaultValue: 50)
+        guard raw.isFinite else { return 50 }
+        let rounded = Int(raw.rounded())
+        if rounded < 1 { return 1 }
+        if rounded > 1_000 { return 1_000 }
+        return rounded
+    }
+
+    static func savedSearchData(_ row: SavedSearchRow) -> SavedSearchData {
+        SavedSearchData(
+            id: row.id,
+            name: row.name,
+            sessionId: row.sessionId,
+            criteria: row.criteria,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt)
+    }
+
+    /// PhotoFilterQuery 的 SQL 生成错误 → API 边界错误码（与 FilterEngine 同一映射）。
+    static func mappedFilterError(_ error: PhotoFilterQueryError) -> GatherError {
+        switch error {
+        case .fieldUnknown(let field):
+            GatherError(code: .FILTER_FIELD_UNKNOWN, params: ["field": field])
+        case .unsupportedOperatorForField(let field, let op):
+            GatherError.invalidParameter(
+                field: "criteria", reason: "unsupported operator \(op) for \(field)")
+        }
+    }
+
+    /// 保存查询的存量/输入错误：不新增全局码，用既有的 FILTER_CRITERIA_INVALID / INVALID_PARAM。
+    static func mappedSavedSearchError(_ error: SavedSearchRepoError) -> GatherError {
+        switch error {
+        case .corruptedCriteria(let id):
+            GatherError(code: .FILTER_CRITERIA_INVALID, params: ["id": id])
+        case .notFound(let id):
+            GatherError.invalidParameter(field: "id", reason: "not found: \(id)")
+        }
     }
 
     /// FilterEngine 的字段未知错误带参数（FILTER_FIELD_UNKNOWN::field）；API 边界

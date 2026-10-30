@@ -10,14 +10,28 @@ import CoreGraphics
 import CoreText
 import ImageIO
 import GatherAnalysis
+import GatherProtocol
 
+/// 联系表单张。展示字段走共享模型 DeliveryPresentationItem（与画廊同一份），
+/// 同时保留 path / caption 两个只读兼容入口 —— 既有调用点与测试一字不改。
 public struct ContactSheetItem: Equatable, Sendable {
-    public let path: String
-    public let caption: String
+    public var presentation: DeliveryPresentationItem
+    /// 第一行文字（已由 CaptionFormatter 渲染；旧调用点直接给文件名）。
+    public var caption: String
 
+    /// 成片路径（只读兼容属性）。
+    public var path: String { presentation.filePath }
+
+    /// 兼容旧调用点：只有路径 + caption，没有任何元数据（渲染与升级前一致）。
     public init(path: String, caption: String) {
-        self.path = path
+        self.presentation = DeliveryPresentationItem(
+            photoId: "", filePath: path, filename: (path as NSString).lastPathComponent)
         self.caption = caption
+    }
+
+    public init(presentation: DeliveryPresentationItem, caption: String? = nil) {
+        self.presentation = presentation
+        self.caption = caption ?? presentation.filename
     }
 }
 
@@ -28,10 +42,17 @@ public struct ContactSheetOptions: Equatable, Sendable {
     public var margin: CGFloat
     public var headerHeight: CGFloat
     public var footerHeight: CGFloat
+    /// 一行文字的基准高度（默认 18 = 升级前的值）。多行由 fields 追加。
     public var captionHeight: CGFloat
     public var title: String
     public var subtitle: String
     public var footerText: String
+    /// 要绘制的展示字段；默认 [.filename] = 与升级前完全一致的版式。
+    public var fields: ContactSheetFields
+    /// 色标圆点开关（还要 fields 含 .label）。
+    public var showLabelChip: Bool
+    /// 取舍边框开关（还要 fields 含 .pick）。
+    public var showPickBorder: Bool
 
     public init(
         pageSize: CGSize = CGSize(width: 595, height: 842),  // A4 @ 72dpi
@@ -43,7 +64,10 @@ public struct ContactSheetOptions: Equatable, Sendable {
         captionHeight: CGFloat = 18,
         title: String = "",
         subtitle: String = "",
-        footerText: String = ""
+        footerText: String = "",
+        fields: ContactSheetFields = .legacy,
+        showLabelChip: Bool = true,
+        showPickBorder: Bool = true
     ) {
         self.pageSize = pageSize
         self.columns = max(1, columns)
@@ -55,6 +79,19 @@ public struct ContactSheetOptions: Equatable, Sendable {
         self.title = title
         self.subtitle = subtitle
         self.footerText = footerText
+        self.fields = fields
+        self.showLabelChip = showLabelChip
+        self.showPickBorder = showPickBorder
+    }
+
+    /// caption 区的行数：1（文字）+ 徽标行（星/色标/取舍）+ 关键词行。
+    public var captionRows: Int {
+        1 + (fields.needsBadgeRow ? 1 : 0) + (fields.needsKeywordRow ? 1 : 0)
+    }
+
+    /// 实际占位高度：默认字段 = 18（与升级前一致）；两行 30；三行 42。
+    public var resolvedCaptionHeight: CGFloat {
+        captionHeight + CGFloat(captionRows - 1) * 12
     }
 }
 
@@ -156,18 +193,19 @@ public enum ContactSheetRenderer {
                 let topY = options.pageSize.height - options.margin - options.headerHeight
                     - CGFloat(row) * (cellHeight + 8)
                 let cell = CGRect(x: originX, y: topY - cellHeight, width: cellWidth, height: cellHeight)
+                // caption 区高度由 fields 决定：默认一路 18（升级前一致），
+                // 有星条/关键词时变 30/42，避免文字压在图上。
+                let captionSpace = options.resolvedCaptionHeight
                 let imageRect = CGRect(
-                    x: cell.minX, y: cell.minY + options.captionHeight,
-                    width: cell.width, height: cell.height - options.captionHeight)
+                    x: cell.minX, y: cell.minY + captionSpace,
+                    width: cell.width, height: max(1, cell.height - captionSpace))
                 if !drawThumbnail(items[itemIndex].path, in: imageRect, context: context) {
                     failed += 1
                     drawPlaceholder(imageRect, context: context)
                 }
-                drawText(
-                    items[itemIndex].caption, in: context,
-                    at: CGPoint(x: cell.minX, y: cell.minY + 4),
-                    fontSize: 8, color: CGColor(gray: 0.25, alpha: 1),
-                    maxWidth: cell.width)
+                drawCaption(
+                    item: items[itemIndex], options: options,
+                    cell: cell, imageRect: imageRect, context: context)
             }
             drawFooter(context: context, options: options, pageIndex: pageIndex, pageCount: pages.count)
             context.endPDFPage()
@@ -240,6 +278,87 @@ public enum ContactSheetRenderer {
                 at: CGPoint(x: options.pageSize.width - options.margin - 40, y: y),
                 fontSize: 8, color: CGColor(gray: 0.45, alpha: 1), maxWidth: 40)
         }
+    }
+
+    /// caption 区：第一行文字 + 可选徽标行（星/色标/取舍）+ 可选关键词行。
+    ///
+    /// 所有额外绘制都由 fields 开关：默认 fields=[.filename] 时本函数只画一行文字，
+    /// PDF 内容流与升级前逐字节一致。
+    private static func drawCaption(
+        item: ContactSheetItem,
+        options: ContactSheetOptions,
+        cell: CGRect,
+        imageRect: CGRect,
+        context: CGContext
+    ) {
+        let presentation = item.presentation
+        drawText(
+            item.caption, in: context,
+            at: CGPoint(x: cell.minX, y: cell.minY + 4),
+            fontSize: 8, color: CGColor(gray: 0.25, alpha: 1),
+            maxWidth: cell.width)
+
+        let badgeBaseline = cell.minY + 16
+        if options.fields.needsBadgeRow {
+            var cursorX = cell.minX
+            if options.fields.contains(.rating), presentation.rating > 0 {
+                let stars = presentation.ratingStars
+                drawText(
+                    stars, in: context, at: CGPoint(x: cursorX, y: badgeBaseline),
+                    fontSize: 9, color: CGColor(gray: 0.2, alpha: 1), maxWidth: cell.width)
+                cursorX += approxWidth(stars, fontSize: 9) + 5
+            }
+            if options.showLabelChip, options.fields.contains(.label),
+               let label = presentation.effectiveLabel,
+               let rgb = ColorLabelPalette.rgb(for: label),
+               cell.width > 60 {
+                // 色点固定贴在右侧，避免依赖字体度量计算星条宽度。
+                let dotSize: CGFloat = 8
+                let dotRect = CGRect(
+                    x: cell.maxX - dotSize, y: badgeBaseline + 1,
+                    width: dotSize, height: dotSize)
+                context.setFillColor(CGColor(red: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1))
+                context.fillEllipse(in: dotRect)
+                drawText(
+                    label, in: context,
+                    at: CGPoint(x: cell.maxX - dotSize - 4 - approxWidth(label, fontSize: 7),
+                                y: badgeBaseline),
+                    fontSize: 7, color: CGColor(gray: 0.35, alpha: 1),
+                    maxWidth: max(1, cell.width / 2))
+            }
+            if options.fields.contains(.triage), let verdict = presentation.triageVerdict {
+                let text = "AI " + verdict.rawValue
+                drawText(
+                    text, in: context,
+                    at: CGPoint(x: cursorX + 6, y: badgeBaseline),
+                    fontSize: 7, color: CGColor(gray: 0.5, alpha: 1),
+                    maxWidth: max(1, cell.width - (cursorX - cell.minX) - 40))
+            }
+            if options.showPickBorder, options.fields.contains(.pick),
+               presentation.pick != .unreviewed {
+                let color: CGColor = presentation.pick == .picked
+                    ? CGColor(red: 0.25, green: 0.65, blue: 0.30, alpha: 1)
+                    : CGColor(red: 0.65, green: 0.35, blue: 0.35, alpha: 1)
+                context.setStrokeColor(color)
+                context.setLineWidth(1.5)
+                context.stroke(imageRect)
+            }
+        }
+        if options.fields.needsKeywordRow, !presentation.keywords.isEmpty {
+            // 关键词行在徽标行上方；没有徽标行时紧贴文字行。
+            let keywordBaseline = options.fields.needsBadgeRow
+                ? cell.minY + 28 : cell.minY + 16
+            drawText(
+                presentation.keywords.joined(separator: ", "), in: context,
+                at: CGPoint(x: cell.minX, y: keywordBaseline),
+                fontSize: 7, color: CGColor(gray: 0.45, alpha: 1),
+                maxWidth: cell.width)
+        }
+    }
+
+    /// 粗略文字宽度（只用于排版定位与截断，与 truncate 同一经验系数）。
+    static func approxWidth(_ text: String, fontSize: CGFloat) -> CGFloat {
+        CGFloat(text.count) * fontSize * 0.55
     }
 
     private static func drawThumbnail(_ path: String, in rect: CGRect, context: CGContext) -> Bool {

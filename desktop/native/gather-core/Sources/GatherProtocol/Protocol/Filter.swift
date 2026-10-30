@@ -296,3 +296,42 @@ public extension FilterGroup {
         }
     }
 }
+
+// MARK: - P1 下一波：keyword 维的字段名常量（只新增常量，不改既有语义）
+
+/// FilterRule.field 的字面量唯一来源。
+///
+/// 为什么需要常量：facet 的"同维剔除"是按**字段名**删除规则的
+/// （`FilterGroup.removing(field:)`），而 facet 维度名（camera/keyword…）与字段名
+/// （camera_model/keyword_path…）不同名。两边各写一份字面量迟早漂移：选了
+/// keyword 维之后 facet 仍按自己筛选自证，计数与网格对不上。
+///
+/// 约定：
+/// - `keyword_path` 是**层级关键词**维度（photo_keywords 索引，支持 `starts_with` 下钻）；
+/// - `keywords` 保留为扁平 JSON 列的文本检索（旧规则/搜索串继续可用），不改语义。
+public enum FilterFields {
+    /// 层级关键词路径（"A|B"）。facet 维度 `keyword` 对应的字段。
+    public static let keywordPath = "keyword_path"
+    /// 扁平关键词列表（photo_metadata_cache.keywords）。
+    public static let keywords = "keywords"
+
+    public static let cameraModel = "camera_model"
+    public static let lensModel = "lens_model"
+    public static let iso = "iso"
+    public static let dateTaken = "date_taken"
+    public static let label = "label"
+}
+
+public extension FilterRule {
+    /// facet 点击生成的层级关键词规则。
+    ///
+    /// - `drilldown == true`：`starts_with`——命中该节点自身与全部子孙路径
+    ///   （点 "A" 应该同时看到 A 与 A|B 的照片）；
+    /// - `drilldown == false`：`eq`——只要该节点本身（叶子多选）。
+    static func keywordPath(_ path: String, drilldown: Bool = true) -> FilterRule {
+        FilterRule(
+            field: FilterFields.keywordPath,
+            operator: drilldown ? .startsWith : .eq,
+            value: .string(path))
+    }
+}

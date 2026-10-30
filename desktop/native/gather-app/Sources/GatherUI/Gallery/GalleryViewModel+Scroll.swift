@@ -2,7 +2,9 @@
 // Cut 4 / 4c-2d：滚动分页、链式拉满、目标照片定位与取页（原 GalleryViewModel.swift
 // 712-881 行）。纯搬移：D05「无进展即终止」、D08 四种定位结果与在途代数守卫不变；
 // chainFetchIfActive / fetchNextPage 改 internal（+Load/+Filter/+Events 调用）。
+// P1 下一波：criteria 分页走 PhotoAPI.page(PhotoPageQuery)，因此需要 GatherProtocol。
 import Foundation
+import GatherProtocol
 
 extension GalleryViewModel {
 
@@ -150,12 +152,25 @@ extension GalleryViewModel {
             // TS Gallery.tsx:69-71 —— limit 由 searchActive 决定（搜索态 1000
             // 减短链式拉取的往返次数，非搜索态 200）。
             let limit = searchActive ? Self.chainFetchLimit : Self.pageSize
-                let result = try await provider.photoPage(
-                sessionId: sessionId,
-                afterFirstRowid: cursor,
-                limit: limit,
-                expandVariants: committedExpandVariants
-            )
+            let result: (rows: [GalleryPhotoData], cursor: Int64?)
+            if let criteria = activeCriteria, let photoAPI {
+                // P1 下一波 §3.7.1：criteria 走服务端（PhotoFilterQuery 的同一条 WHERE +
+                // rowid 游标），客户端不再二次过滤；游标语义与 provider 路径完全一致。
+                let page = try await photoAPI.page(try PhotoPageQuery(
+                    sessionId: sessionId,
+                    limit: limit,
+                    afterFirstRowid: cursor,
+                    expandVariants: committedExpandVariants,
+                    criteria: criteria))
+                result = (page.rows.map(GalleryPhotoData.init), page.cursor)
+            } else {
+                result = try await provider.photoPage(
+                    sessionId: sessionId,
+                    afterFirstRowid: cursor,
+                    limit: limit,
+                    expandVariants: committedExpandVariants
+                )
+            }
             guard generation == fetchGeneration else { return false }
             pages.append(result.rows)
             pagesGeneration += 1

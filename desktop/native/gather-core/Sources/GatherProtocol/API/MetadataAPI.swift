@@ -12,6 +12,13 @@
 // - resolveConflict/resolveOrphan/applyKeywords/retryKeywordWriteback 使用 Confirmed<T>；
 // - tags 的类型在解码期失败，不再把非对象当空对象（G6）；
 // - XMP 冲突/孤儿的领域判定与 XMP_* 码由 MetadataSyncCoordinator 负责。
+//
+// P1 下一波 §3.1（本文件追加）：metadata/template 写回的**生命周期**入口
+// （syncState / confirmSync / finalizeSync）。三者返回同一份派生状态
+// MetadataDeliveryState（类型定义在 Protocol/MetadataDelivery.swift），
+// "同步与备份"状态条只读它，不自己数行。
+// 三个方法都有协议扩展的默认实现：PreviewAPIs 与各测试替身实现 MetadataAPI
+// 时不必为新增能力补桩，未接线的地方也不会在编译期炸掉。
 
 import Foundation
 
@@ -63,4 +70,105 @@ public protocol MetadataAPI: Sendable {
     func preview(_ input: MetadataPreviewInput) async throws -> WritebackPreview
     func applyKeywords(_ input: Confirmed<MetadataKeywordApplyInput>) async throws -> MetadataKeywordApplyResult
     func retryKeywordWriteback(_ input: Confirmed<SessionReference>) async throws -> MetadataKeywordApplyResult
+
+    // MARK: - P1 下一波 3.1：写回生命周期（确认 → 结束 → 备份回收）
+
+    /// 只读状态：本会话 metadata/template 两个模块的交付计数、备份体积与逐文件行。
+    /// 不写库、不碰文件内容（备份体积只读目录项元数据）。
+    func syncState(_ sessionId: String) async throws -> MetadataDeliveryState
+
+    /// 确认同步：对 '.metadata' 与 '.template' 各 confirm 一次（同一交付的 items
+    /// 会被第一次确认全翻 synced，第二次是幂等）。门禁与 culling 同源：
+    /// - 仍有 pending/writing/failed/conflict → XMP_CONFIRM_INCOMPLETE；
+    /// - C1 在本机启用且本会话未 reload-ack → XMP_CONFIRM_REQUIRES_SYNC。
+    func confirmSync(_ input: Confirmed<SessionReference>) async throws -> MetadataDeliveryState
+
+    /// 结束同步：**只做 drop**（保留 XMP、删行/备份），绝不 restore。
+    /// 共享文件只删本模块 synced item；仍有其它模块 item 时保留行与备份
+    /// （留给最后一个模块收尾）；本模块仍有未确认 item 时按 XMP_CONFIRM_INCOMPLETE 跳过。
+    func finalizeSync(_ input: Confirmed<SessionReference>) async throws -> MetadataDeliveryState
+
+    /// 备份统计（设置页维护；count/bytes/oldestDays）。
+    func backupStats() async throws -> MetadataBackupSummary
+
+    /// 立即回收已确认交付的行与备份（XMP 保留；ignoreReloadAck 由用户显式确认）。
+    func cleanupRetention(_ input: Confirmed<MetadataCleanupInput>) async throws -> MetadataCleanupSummary
+}
+
+// MARK: - 默认实现（未接线 / 测试替身）
+
+public extension MetadataAPI {
+    /// 未接线时显式失败（INVALID_PARAM）：不返回可被误读成"已同步"的空状态。
+    /// 状态类型见 Protocol/MetadataDelivery.swift（与生产实现同一形状）。
+    func syncState(_ sessionId: String) async throws -> MetadataDeliveryState {
+        _ = sessionId
+        throw GatherError.invalidParameter(
+            field: "syncState", reason: "metadata lifecycle API not wired")
+    }
+
+    /// 未接线时显式失败（INVALID_PARAM）：静默"成功但什么都没做"会让状态条骗人。
+    func confirmSync(_ input: Confirmed<SessionReference>) async throws -> MetadataDeliveryState {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "confirmSync", reason: "metadata lifecycle API not wired")
+    }
+
+    func finalizeSync(_ input: Confirmed<SessionReference>) async throws -> MetadataDeliveryState {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "finalizeSync", reason: "metadata lifecycle API not wired")
+    }
+
+    func backupStats() async throws -> MetadataBackupSummary {
+        throw GatherError.invalidParameter(
+            field: "backupStats", reason: "metadata maintenance API not wired")
+    }
+
+    func cleanupRetention(
+        _ input: Confirmed<MetadataCleanupInput>
+    ) async throws -> MetadataCleanupSummary {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "cleanupRetention", reason: "metadata maintenance API not wired")
+    }
+}
+
+// MARK: - 备份统计 / 手动回收（设置页维护）
+
+public struct MetadataBackupSummary: Codable, Equatable, Sendable {
+    public var count: Int
+    public var bytes: Int64
+    public var oldestDays: Int?
+
+    public init(count: Int = 0, bytes: Int64 = 0, oldestDays: Int? = nil) {
+        self.count = count
+        self.bytes = bytes
+        self.oldestDays = oldestDays
+    }
+}
+
+public struct MetadataCleanupInput: Codable, Equatable, Sendable {
+    /// 立即回收已确认交付的行与备份；XMP 永远保留。
+    public var sessionId: String
+    /// true = 忽略 C1 reload-ack 门禁（用户显式点“立即清理”）。
+    public var ignoreReloadAck: Bool
+
+    public init(sessionId: String, ignoreReloadAck: Bool = true) {
+        self.sessionId = sessionId
+        self.ignoreReloadAck = ignoreReloadAck
+    }
+}
+
+public struct MetadataCleanupSummary: Codable, Equatable, Sendable {
+    public var deleted: Int
+    public var retained: Int
+    public var skipped: Int
+    public var errors: [String]
+
+    public init(deleted: Int = 0, retained: Int = 0, skipped: Int = 0, errors: [String] = []) {
+        self.deleted = deleted
+        self.retained = retained
+        self.skipped = skipped
+        self.errors = errors
+    }
 }

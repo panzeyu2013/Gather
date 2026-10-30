@@ -19,19 +19,24 @@ public struct OutputGalleryOptions: Codable, Equatable, Sendable {
     public var footer: String
     public var thumbnailMaxDimension: Int
     public var largeMaxDimension: Int
+    /// 画廊页要叠加展示的字段（星条/色标点）。data.json 始终带全部元数据，
+    /// 这里只决定 index.html 画什么。默认星条 + 色标 + 取舍边框。
+    public var fields: ContactSheetFields
 
     public init(
         title: String = "",
         subtitle: String = "",
         footer: String = "",
         thumbnailMaxDimension: Int = 480,
-        largeMaxDimension: Int = 1600
+        largeMaxDimension: Int = 1600,
+        fields: ContactSheetFields = [.rating, .label, .pick]
     ) {
         self.title = title
         self.subtitle = subtitle
         self.footer = footer
         self.thumbnailMaxDimension = thumbnailMaxDimension
         self.largeMaxDimension = largeMaxDimension
+        self.fields = fields
     }
 }
 
@@ -82,19 +87,36 @@ public struct OutputContactSheetOptions: Codable, Equatable, Sendable {
     public var footer: String
     public var columns: Int
     public var rows: Int
+    /// 每张要画的展示字段。默认只文件名 —— 老配方/老测试的 PDF 逐字节不变。
+    public var fields: ContactSheetFields
+    /// caption 模板（{filename} {title} {rating} {label} {keywords} {date} …）。
+    /// 未知占位符原样保留；默认 "{filename}" 与升级前 caption 同值。
+    public var captionTemplate: String
+    /// 色标圆点开关（还要 fields 含 .label 才画）。
+    public var showLabelChip: Bool
+    /// 取舍边框开关（还要 fields 含 .pick 才画）。
+    public var showPickBorder: Bool
 
     public init(
         title: String = "",
         subtitle: String = "",
         footer: String = "",
         columns: Int = 4,
-        rows: Int = 5
+        rows: Int = 5,
+        fields: ContactSheetFields = .legacy,
+        captionTemplate: String = CaptionFormatter.defaultTemplate,
+        showLabelChip: Bool = true,
+        showPickBorder: Bool = true
     ) {
         self.title = title
         self.subtitle = subtitle
         self.footer = footer
         self.columns = max(1, columns)
         self.rows = max(1, rows)
+        self.fields = fields
+        self.captionTemplate = captionTemplate
+        self.showLabelChip = showLabelChip
+        self.showPickBorder = showPickBorder
     }
 }
 
@@ -191,6 +213,9 @@ public struct OutputRecipeResult: Codable, Equatable, Sendable {
     public var gallerySkipped: Int?
     /// 本次实际交付的成品（manifest 审计用；缺省 = 旧数据）。
     public var files: [OutputFileEntry]?
+    /// 联系表/画廊里元数据缺失（无 photo_metadata_cache 行）的张数：
+    /// 只降级为空字段，不影响交付结果。
+    public var metadataMissing: Int?
     public var errors: [String]
 
     public init(
@@ -206,6 +231,7 @@ public struct OutputRecipeResult: Codable, Equatable, Sendable {
         galleryItems: Int? = nil,
         gallerySkipped: Int? = nil,
         files: [OutputFileEntry]? = nil,
+        metadataMissing: Int? = nil,
         errors: [String] = []
     ) {
         self.recipeId = recipeId
@@ -220,6 +246,7 @@ public struct OutputRecipeResult: Codable, Equatable, Sendable {
         self.galleryItems = galleryItems
         self.gallerySkipped = gallerySkipped
         self.files = files
+        self.metadataMissing = metadataMissing
         self.errors = errors
     }
 }
@@ -264,19 +291,25 @@ public struct WebDAVPublishInput: Codable, Equatable, Sendable {
     public var baseURL: String
     public var username: String
     public var remoteFolder: String
-    /// 只上传这些相对前缀下的文件（nil = 整个目录）。用于避免把历史 manifest、
-    /// 旧联系表或用户放在交付根里的无关文件一并发布。
+    /// 发布白名单（相对前缀）。**必填语义**：nil/空不再等于"上传整个目录"——
+    /// 上层必须给出精确产物清单；发布器拿不到白名单时只按交付产物收窄
+    /// （manifest / 联系表 / 画廊入口 / thumbs），绝不把成片目录或无关文件传上去。
     public var includePrefixes: [String]?
+    /// 分享策略：allowDownload=false 只传 thumbs + 校样页（不传 large/成片）。
+    /// nil = 保守默认（不允许下载大图）。
+    public var share: OutputShareOptions?
 
     public init(
         localPath: String, baseURL: String, username: String, remoteFolder: String,
-        includePrefixes: [String]? = nil
+        includePrefixes: [String]? = nil,
+        share: OutputShareOptions? = nil
     ) {
         self.localPath = localPath
         self.baseURL = baseURL
         self.username = username
         self.remoteFolder = remoteFolder
         self.includePrefixes = includePrefixes
+        self.share = share
     }
 }
 

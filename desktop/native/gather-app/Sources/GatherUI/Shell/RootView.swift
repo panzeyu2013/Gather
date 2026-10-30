@@ -118,6 +118,9 @@ package struct RootView: View {
                 // 4a-3b-2b：会话页/全局页从 environment 取语言源（不再读
                 // GatherLocalization.appLanguage 进程全局）。设置页另有显式注入。
                 .environment(\.languageStore, languageStore)
+                .environment(
+                    \.curationServices,
+                    CurationServices(album: deps.album, duplicate: deps.duplicate))
                 // 4a-3a：语言切换走 Observation（外壳文案读
                 // LanguageStore.l10n），不再 .id 重建整棵 detail 子树。
                 // 窗口标题：会话页（控制中心/人脸/重复/挑片/导出）用会话名，

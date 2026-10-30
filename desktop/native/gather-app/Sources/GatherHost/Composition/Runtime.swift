@@ -27,6 +27,9 @@ enum CompositionRuntime {
                 settingsService.get("triage_model_review", defaultValue: "1") == "1"
                     && settingsService.get("triage_policy", defaultValue: "triage-v2") == "triage-v2"
             },
+            triageAutoGenerateEnabled: {
+                settingsService.get("triage_auto_generate", defaultValue: "0") == "1"
+            },
             indexerService: core.indexerService,
             metadataService: core.metadataService,
             photoRepo: core.photoRepo,

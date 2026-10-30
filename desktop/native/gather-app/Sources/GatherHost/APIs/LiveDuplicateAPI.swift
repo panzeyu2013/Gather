@@ -41,13 +41,56 @@ import GatherApplication
 public final class LiveDuplicateAPI: DuplicateAPI {
     private let duplicateService: DuplicateService
     private let jobService: JobService
+    /// 跨工作区重复（§3.8.3）：只读扫描 + 内存缓存都在 CurationService。
+    private let curation: CurationService
 
-    /// Sendable 由协议继承显式声明，且类为 final、两个依赖都是构造后不再
+    /// Sendable 由协议继承显式声明，且类为 final、三个依赖都是构造后不再
     /// 变更的 Sendable let（DuplicateService 的单飞状态由内部 NSLock 串行化，
-    /// JobService 的任务表同样由内部锁保护），故无需 @unchecked；此点由编译器检查。
-    public init(duplicateService: DuplicateService, jobService: JobService) {
+    /// JobService 的任务表同样由内部锁保护；CurationService 是 struct），
+    /// 故无需 @unchecked；此点由编译器检查。
+    public init(
+        duplicateService: DuplicateService,
+        jobService: JobService,
+        curation: CurationService
+    ) {
         self.duplicateService = duplicateService
         self.jobService = jobService
+        self.curation = curation
+    }
+
+    // MARK: - 跨工作区重复（只读）
+
+    /// 跨工作区重复/相似扫描。
+    ///
+    /// 为什么放到 detached 任务：扫描是"全库 checksum 分组 + 逐桶汉明比较"，
+    /// 20 个会话 × 2k 张在毫秒级，但 50k 张级别会把调用线程占住几百毫秒；
+    /// 用 utility 优先级 + 取消句柄，UI 取消时能在阶段边界退出（不写缓存）。
+    ///
+    /// 语义：**只读**。不做跨工作区删除（§3.8.3 明确记录），也不改 photos.status。
+    public func globalDuplicates(
+        _ input: GlobalDuplicateScanInput
+    ) async throws -> GlobalDuplicateScanResult {
+        guard (0...14).contains(input.visualThreshold) else {
+            throw GatherError.invalidParameter(
+                field: "visualThreshold", reason: "must be 0...14"
+            )
+        }
+        guard (1...500).contains(input.maxGroupCount) else {
+            throw GatherError.invalidParameter(
+                field: "maxGroupCount", reason: "must be 1...500"
+            )
+        }
+        let curation = self.curation
+        let handle = Task.detached(priority: .utility) {
+            try curation.scanGlobalDuplicates(input, isCancelled: { Task.isCancelled })
+        }
+        // 调用方取消（切页/关面板）→ 取消后台任务；任务在阶段边界检查后抛
+        // CancellationError，不把半成品写进缓存。
+        return try await withTaskCancellationHandler {
+            try await handle.value
+        } onCancel: {
+            handle.cancel()
+        }
     }
 
     // MARK: - 扫描

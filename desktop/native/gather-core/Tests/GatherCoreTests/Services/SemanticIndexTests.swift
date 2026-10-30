@@ -1,0 +1,229 @@
+// desktop/native/gather-core/Tests/GatherCoreTests/Services/SemanticIndexTests.swift
+// P1 §3.11.5：feature print 编解码 + 余弦检索 + 标签匹配 + 场景分组。
+import Foundation
+import Testing
+@testable import GatherProtocol
+@testable import GatherPersistence
+@testable import GatherApplication
+
+/// 内存语义存储（不碰库：检索逻辑是纯计算 + 一次读）。
+private final class FakeSemanticsStore: PhotoSemanticsStore {
+    var rows: [String: PhotoSemanticsRow] = [:]
+
+    func upsert(_ inserts: [PhotoSemanticsInsert]) throws {
+        for insert in inserts {
+            rows[insert.photoId] = PhotoSemanticsRow(
+                photoId: insert.photoId,
+                sessionId: insert.sessionId,
+                labelsJson: insert.labelsJson,
+                feature: insert.feature,
+                featureDim: insert.featureDim,
+                modelVersion: insert.modelVersion,
+                computedAt: insert.computedAt)
+        }
+    }
+
+    func load(photoId: String) throws -> PhotoSemanticsRow? { rows[photoId] }
+
+    func loadRows(sessionId: String, limit: Int) throws -> [PhotoSemanticsRow] {
+        let filtered = rows.values
+            .filter { $0.sessionId == sessionId }
+            .sorted { $0.photoId < $1.photoId }
+        guard limit > 0 else { return filtered }
+        return Array(filtered.prefix(limit))
+    }
+
+    func loadRows(sessionId: String, photoIds: [String]) throws -> [PhotoSemanticsRow] {
+        photoIds.compactMap { rows[$0] }.filter { $0.sessionId == sessionId }
+    }
+
+    func indexedPhotoIds(sessionId: String) throws -> Set<String> {
+        Set(rows.values.filter { $0.sessionId == sessionId }.map(\.photoId))
+    }
+
+    func count(sessionId: String) throws -> Int {
+        rows.values.filter { $0.sessionId == sessionId }.count
+    }
+
+    func deleteSession(_ sessionId: String) throws -> Int {
+        let ids = rows.values.filter { $0.sessionId == sessionId }.map(\.photoId)
+        for id in ids { rows.removeValue(forKey: id) }
+        return ids.count
+    }
+
+    func deleteAll() throws -> Int {
+        let count = rows.count
+        rows.removeAll()
+        return count
+    }
+}
+
+/// 造一条语义行：feature 走真实 Float16 编码路径（不做快捷假设）。
+private func row(
+    photoId: String,
+    sessionId: String = "s1",
+    vector: [Float],
+    labels: [SemanticLabel] = []
+) -> PhotoSemanticsRow {
+    PhotoSemanticsRow(
+        photoId: photoId,
+        sessionId: sessionId,
+        labelsJson: SemanticIndex.encodeLabels(labels),
+        feature: SemanticFeatureCodec.encode(vector),
+        featureDim: vector.count,
+        modelVersion: ImageSemanticsExtractor.modelVersion,
+        computedAt: "2026-10-30T00:00:00.000Z")
+}
+
+@Suite("SemanticFeatureCodec")
+struct SemanticFeatureCodecTests {
+    @Test("Float16 往返误差小于 0.1%")
+    func roundTrip() {
+        let values: [Float] = [0, 0.5, -0.25, 1.0, 3.75, -8.5]
+        let encoded = SemanticFeatureCodec.encode(values)
+        #expect(encoded.count == values.count * 2)
+        let decoded = SemanticFeatureCodec.decode(encoded, dimension: values.count)
+        #expect(decoded.count == values.count)
+        for (original, restored) in zip(values, decoded) {
+            #expect(abs(Double(original - restored)) <= max(0.005, abs(Double(original)) * 0.001))
+        }
+    }
+
+    @Test("维度不符/空数据 → 空数组（不猜）")
+    func rejectsMalformedBlob() {
+        let encoded = SemanticFeatureCodec.encode([1, 2, 3])
+        #expect(SemanticFeatureCodec.decode(encoded, dimension: 4).isEmpty)
+        #expect(SemanticFeatureCodec.decode(nil, dimension: 3).isEmpty)
+        #expect(SemanticFeatureCodec.decode(Data([0x01]), dimension: 0).isEmpty)
+    }
+}
+
+@Suite("SemanticIndex 余弦/标签")
+struct SemanticIndexSearchTests {
+    @Test("同图不同尺寸：余弦 > 0.95")
+    func similarImages() throws {
+        let store = FakeSemanticsStore()
+        // 同一张图的两次特征：加了极小扰动（Float16 量化级别）。
+        let base: [Float] = (0..<64).map { Float($0 % 7) / 7 }
+        let near = base.enumerated().map { index, value in
+            index % 5 == 0 ? value + 0.001 : value
+        }
+        let far: [Float] = (0..<64).map { _ in 0.25 }
+        try store.upsert([
+            PhotoSemanticsInsert(
+                photoId: "a", sessionId: "s1", labelsJson: SemanticIndex.encodeLabels([]),
+                feature: SemanticFeatureCodec.encode(base), featureDim: base.count,
+                modelVersion: ImageSemanticsExtractor.modelVersion, computedAt: "t"),
+            PhotoSemanticsInsert(
+                photoId: "b", sessionId: "s1", labelsJson: SemanticIndex.encodeLabels([]),
+                feature: SemanticFeatureCodec.encode(near), featureDim: near.count,
+                modelVersion: ImageSemanticsExtractor.modelVersion, computedAt: "t"),
+            PhotoSemanticsInsert(
+                photoId: "c", sessionId: "s1", labelsJson: SemanticIndex.encodeLabels([]),
+                feature: SemanticFeatureCodec.encode(far), featureDim: far.count,
+                modelVersion: ImageSemanticsExtractor.modelVersion, computedAt: "t"),
+        ])
+        let index = SemanticIndex(store: store)
+        let outcome = try index.similar(to: "a", sessionId: "s1", limit: 10, minSimilarity: 0.95)
+        #expect(outcome.method == .featurePrint)
+        #expect(outcome.hits.map(\.photoId) == ["b"])
+        let similarity = outcome.hits.first?.similarity ?? 0
+        #expect(similarity > 0.95)
+        #expect(similarity <= 1.0)
+    }
+
+    @Test("维度不一致的行被跳过，不参与比较")
+    func skipsMismatchedDimensions() throws {
+        let store = FakeSemanticsStore()
+        let vector: [Float] = [1, 0, 0, 0]
+        try store.upsert([
+            PhotoSemanticsInsert(
+                photoId: "a", sessionId: "s1", labelsJson: "[]",
+                feature: SemanticFeatureCodec.encode(vector), featureDim: 4,
+                modelVersion: "m", computedAt: "t"),
+            PhotoSemanticsInsert(
+                photoId: "b", sessionId: "s1", labelsJson: "[]",
+                feature: SemanticFeatureCodec.encode([1, 0, 0]), featureDim: 3,
+                modelVersion: "m", computedAt: "t"),
+        ])
+        let index = SemanticIndex(store: store)
+        let outcome = try index.similar(to: "a", sessionId: "s1", limit: 10, minSimilarity: 0.5)
+        #expect(outcome.skipped == 1)
+        #expect(outcome.hits.isEmpty)
+    }
+
+    @Test("没有向量时给出原因而不是抛错")
+    func unavailableReason() throws {
+        let store = FakeSemanticsStore()
+        let index = SemanticIndex(store: store)
+        let outcome = try index.similar(to: "missing", sessionId: "s1")
+        #expect(outcome.hits.isEmpty)
+        #expect(outcome.unavailableReason != nil)
+    }
+
+    @Test("标签文本匹配：包含匹配 + Jaccard 门槛")
+    func labelSearch() throws {
+        let store = FakeSemanticsStore()
+        let vector: [Float] = [1, 1, 1, 1]
+        try store.upsert([
+            PhotoSemanticsInsert(
+                photoId: "wedding1", sessionId: "s1",
+                labelsJson: SemanticIndex.encodeLabels([
+                    SemanticLabel(label: "wedding", confidence: 0.8),
+                    SemanticLabel(label: "indoor", confidence: 0.4),
+                ]),
+                feature: SemanticFeatureCodec.encode(vector), featureDim: 4,
+                modelVersion: "m", computedAt: "t"),
+            PhotoSemanticsInsert(
+                photoId: "beach1", sessionId: "s1",
+                labelsJson: SemanticIndex.encodeLabels([
+                    SemanticLabel(label: "beach", confidence: 0.9),
+                ]),
+                feature: SemanticFeatureCodec.encode(vector), featureDim: 4,
+                modelVersion: "m", computedAt: "t"),
+        ])
+        let index = SemanticIndex(store: store)
+        let outcome = try index.search(sessionId: "s1", labels: ["Wedding"], limit: 10)
+        #expect(outcome.method == .labels)
+        #expect(outcome.hits.map(\.photoId) == ["wedding1"])
+        #expect(outcome.hits.first?.matchedLabels == ["wedding"])
+        #expect(outcome.hits.first?.similarity == nil)
+        let empty = try index.search(sessionId: "s1", labels: ["  "], limit: 10)
+        #expect(empty.hits.isEmpty)
+        #expect(empty.unavailableReason != nil)
+    }
+
+    @Test("场景分组：标签 Jaccard 与 embedding 两条依据")
+    func sceneGroups() {
+        let wedding = SemanticVector(
+            photoId: "w1", labels: [
+                SemanticLabel(label: "wedding", confidence: 0.9),
+                SemanticLabel(label: "indoor", confidence: 0.7),
+            ], vector: [1, 0, 0], modelVersion: "m")
+        let wedding2 = SemanticVector(
+            photoId: "w2", labels: [
+                SemanticLabel(label: "wedding", confidence: 0.8),
+                SemanticLabel(label: "indoor", confidence: 0.6),
+            ], vector: [0, 1, 0], modelVersion: "m")
+        let sameScene = SemanticVector(
+            photoId: "w3", labels: [], vector: [1, 0, 0], modelVersion: "m")
+        let other = SemanticVector(
+            photoId: "b1", labels: [SemanticLabel(label: "beach", confidence: 0.9)],
+            vector: [0, 0, 1], modelVersion: "m")
+        let groups = SemanticIndex.cluster([wedding, wedding2, sameScene, other])
+        #expect(groups.count == 1)
+        #expect(groups.first?.photoIds == ["w1", "w2", "w3"])
+        #expect(groups.first?.labels.contains("wedding") == true)
+    }
+
+    @Test("余弦：零向量/长度不符返回 -1（不可比，不是 0）")
+    func cosineEdgeCases() {
+        #expect(SemanticIndex.cosine([1, 0], [0, 1]) == 0)
+        #expect(abs(SemanticIndex.cosine([2, 0], [5, 0]) - 1) < 0.0001)
+        #expect(SemanticIndex.cosine([0, 0], [1, 0]) == -1)
+        #expect(SemanticIndex.cosine([1, 0], [1, 0, 0]) == -1)
+        #expect(SemanticIndex.jaccard([], []) == 0)
+        #expect(SemanticIndex.jaccard(["a"], ["a"]) == 1)
+        #expect(abs(SemanticIndex.jaccard(["a", "b"], ["b", "c"]) - 1.0 / 3.0) < 0.0001)
+    }
+}

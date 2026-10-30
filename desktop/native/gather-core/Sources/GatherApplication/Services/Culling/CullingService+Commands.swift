@@ -390,8 +390,8 @@ extension CullingService {
     public func applyImportedPicks(
         sessionId: String,
         photoIds: [String]
-    ) throws -> (results: [CullingUpdateResult], failed: Int) {
-        guard !photoIds.isEmpty else { return ([], 0) }
+    ) throws -> (results: [CullingUpdateResult], failed: Int, appliedPhotoIds: [String]) {
+        guard !photoIds.isEmpty else { return ([], 0, []) }
         let baseContext = try getUpdateContext(sessionId: sessionId)
         // 整批共用一个历史缓冲区：几百张勾选合并成一条操作（撤销一次回退整批），
         // 与 batchUpdate 同一套 sink 语义。
@@ -405,6 +405,7 @@ extension CullingService {
             historySink: historySink)
         var results: [CullingUpdateResult] = []
         var failed = 0
+        var appliedPhotoIds: [String] = []
         for photoId in photoIds {
             guard let photo = context.photoById[photoId] else { continue }
             let existing = try cullingDecisionRepo.getDecision(
@@ -437,6 +438,7 @@ extension CullingService {
                     context: context,
                     preloadedDecision: existing,
                     source: .imported))
+                appliedPhotoIds.append(photoId)
             } catch is CullingServiceError {
                 // 并发冲突/非法状态属于「这一张没成」：计入失败并继续，不吞 DB 错误
                 //（持久化失败仍会以 DatabaseError 上抛，此时已应用项已有历史可审计）。
@@ -448,7 +450,7 @@ extension CullingService {
             _ = try cullingHistoryRepo.append(
                 sessionId: sessionId, entries: historySink.entries)
         }
-        return (results, failed)
+        return (results, failed, appliedPhotoIds)
     }
 
     /// P1-9：把本次 update/batchUpdate/applyHistory 入队的 metadata 意图立即写盘。

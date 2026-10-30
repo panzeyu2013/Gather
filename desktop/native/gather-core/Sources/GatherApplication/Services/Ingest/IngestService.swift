@@ -179,8 +179,6 @@ public struct IngestResult: Equatable, Sendable {
     }
 }
 
-// MARK: - 服务
-
 /// 单张源文件的拍摄元数据（摄取重命名模板的输入）。
 public struct IngestCaptureMetadata: Equatable, Sendable {
     /// EXIF DateTimeOriginal（缺失时回退文件 mtime；仍缺失则由调用方用 now()）。
@@ -430,7 +428,9 @@ public final class IngestService: @unchecked Sendable {
 
         for item in plan.items {
             // P1-3：Job 取消时在文件边界停下，已完成的文件保持已落地/可登记状态。
-            if shouldCancel() { break }
+            if shouldCancel() {
+                break
+            }
             if item.conflict {
                 skipped.append(item.sourcePath)
                 onProgress(copied.count + skipped.count + failed.count, plan.items.count)
@@ -608,10 +608,13 @@ public final class IngestService: @unchecked Sendable {
                 }
             }
         }
-        return IngestResult(
+        let result = IngestResult(
             copied: copied, skipped: skipped + plan.skipped,
             unreadable: plan.unreadable, secondCopied: secondCopied, failed: failed,
             alreadyPresent: plan.alreadyPresent)
+        // 自动初审的唯一触发点在 Host 的 ExecutorRegistry（ingest 完整收尾后入队），
+        // 本服务只负责复制/登记，不持有 job/会话依赖。
+        return result
     }
 
     /// 单文件落地：临时文件 → 校验 → 原子 rename。

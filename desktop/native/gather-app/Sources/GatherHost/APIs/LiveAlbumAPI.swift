@@ -15,6 +15,14 @@
 //
 // WP4b：同步核心（createSync/listSync/…）已删除；协议方法直接实现同一套
 // repo/filter 调用，Library 的 async 端口由 GatherHost 的 provider 适配。
+//
+// P1 下一波 §3.8（2026-10-30）：手动集合与堆栈挂在本 API（不新增协议域）。
+// 业务规则（名称约束、一照一堆栈、位置步长与重排、错误码）全在
+// CurationService；本文件只做 API 边界的三件事：
+//   1. 入参形态校验（非空白 / 长度上限 / 数组规模），失败 INVALID_PARAM；
+//   2. 破坏性入口只收 Confirmed<T>（D-011：调用点标记而非密码学门禁）；
+//   3. CurationError → GatherError 时**保留 params**（field / reason / 容器 id），
+//      否则 INVALID_PARAM 上屏会丢掉具体字段名。
 
 import Foundation
 import GatherProtocol
@@ -25,12 +33,19 @@ import GatherApplication
 public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
     private let albumRepo: SmartAlbumRepo
     private let filterEngine: FilterEngine
+    /// 策展容器（集合 / 堆栈）的业务编排；组合根注入同一实例。
+    private let curation: CurationService
 
-    /// @unchecked Sendable 依据：albumRepo/filterEngine 均为构造后不可变的 let，
+    /// @unchecked Sendable 依据：三个依赖均为构造后不可变的 let，
     /// 底层连接由 DBConnection 的递归锁串行化。
-    public init(albumRepo: SmartAlbumRepo, filterEngine: FilterEngine) {
+    public init(
+        albumRepo: SmartAlbumRepo,
+        filterEngine: FilterEngine,
+        curation: CurationService
+    ) {
         self.albumRepo = albumRepo
         self.filterEngine = filterEngine
+        self.curation = curation
     }
 
     // MARK: - AlbumAPI
@@ -194,5 +209,234 @@ public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
         }
         if error is DecodingError { return "INVALID_PARAMS" }
         return String(describing: error)
+    }
+
+    // MARK: - 集合（§3.8.1）
+
+    public func collections(_ sessionId: String) async throws -> [CollectionSummary] {
+        let id = try requireId(sessionId, field: "sessionId")
+        return try mapCuration { try curation.listCollections(sessionId: id) }
+    }
+
+    public func collectionItems(_ collectionId: String) async throws -> [CollectionMember] {
+        let id = try requireId(collectionId, field: "collectionId")
+        return try mapCuration { try curation.collectionItems(collectionId: id) }
+    }
+
+    public func createCollection(_ input: CollectionCreateInput) async throws -> CollectionSummary {
+        let sessionId = try requireId(input.sessionId, field: "sessionId")
+        let name = try requireNonBlank(input.name, field: "name", maxLength: CurationNaming.maxLength)
+        return try mapCuration {
+            try curation.createCollection(
+                CollectionCreateInput(sessionId: sessionId, name: name)
+            )
+        }
+    }
+
+    public func renameCollection(_ input: CollectionRenameInput) async throws {
+        let collectionId = try requireId(input.collectionId, field: "collectionId")
+        let name = try requireNonBlank(input.name, field: "name", maxLength: CurationNaming.maxLength)
+        try mapCuration {
+            try curation.renameCollection(
+                CollectionRenameInput(collectionId: collectionId, name: name)
+            )
+        }
+    }
+
+    public func deleteCollection(_ input: Confirmed<CollectionDeleteInput>) async throws {
+        let collectionId = try requireId(input.value.collectionId, field: "collectionId")
+        try mapCuration { try curation.deleteCollection(id: collectionId) }
+    }
+
+    public func addCollectionItems(_ input: CollectionItemsInput) async throws -> Int {
+        let collectionId = try requireId(input.collectionId, field: "collectionId")
+        let photoIds = try requirePhotoIds(input.photoIds)
+        return try mapCuration {
+            try curation.addCollectionItems(
+                CollectionItemsInput(collectionId: collectionId, photoIds: photoIds)
+            )
+        }
+    }
+
+    public func removeCollectionItems(_ input: CollectionItemsInput) async throws -> Int {
+        let collectionId = try requireId(input.collectionId, field: "collectionId")
+        let photoIds = try requirePhotoIds(input.photoIds)
+        return try mapCuration {
+            try curation.removeCollectionItems(
+                CollectionItemsInput(collectionId: collectionId, photoIds: photoIds)
+            )
+        }
+    }
+
+    public func reorderCollectionItems(_ input: CollectionReorderInput) async throws {
+        let collectionId = try requireId(input.collectionId, field: "collectionId")
+        let photoIds = try requirePhotoIds(input.photoIds)
+        try mapCuration {
+            try curation.reorderCollectionItems(
+                CollectionReorderInput(collectionId: collectionId, photoIds: photoIds)
+            )
+        }
+    }
+
+    public func moveCollectionItem(_ input: CollectionMoveInput) async throws {
+        let collectionId = try requireId(input.collectionId, field: "collectionId")
+        let photoId = try requireId(input.photoId, field: "photoId")
+        let after = try input.afterPhotoId.map { try requireId($0, field: "afterPhotoId") }
+        let before = try input.beforePhotoId.map { try requireId($0, field: "beforePhotoId") }
+        try mapCuration {
+            try curation.moveCollectionItem(
+                CollectionMoveInput(
+                    collectionId: collectionId,
+                    photoId: photoId,
+                    afterPhotoId: after,
+                    beforePhotoId: before
+                )
+            )
+        }
+    }
+
+    // MARK: - 堆栈（§3.8.2）
+
+    public func stacks(_ sessionId: String) async throws -> [StackSummary] {
+        let id = try requireId(sessionId, field: "sessionId")
+        return try mapCuration { try curation.listStacks(sessionId: id) }
+    }
+
+    public func stackMembers(_ stackId: String) async throws -> [CollectionMember] {
+        let id = try requireId(stackId, field: "stackId")
+        return try mapCuration { try curation.stackMembers(stackId: id) }
+    }
+
+    public func stackFolds(_ sessionId: String) async throws -> [StackFold] {
+        let id = try requireId(sessionId, field: "sessionId")
+        return try mapCuration { try curation.stackFolds(sessionId: id) }
+    }
+
+    public func createStack(_ input: StackCreateInput) async throws -> StackSummary {
+        let sessionId = try requireId(input.sessionId, field: "sessionId")
+        let photoIds = try requirePhotoIds(input.photoIds)
+        let cover = try input.coverPhotoId.map { try requireId($0, field: "coverPhotoId") }
+        let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name.count <= CurationNaming.maxLength else {
+            throw GatherError.invalidParameter(
+                field: "name",
+                reason: "length must be at most \(CurationNaming.maxLength)"
+            )
+        }
+        return try mapCuration {
+            try curation.createStack(
+                StackCreateInput(
+                    sessionId: sessionId, name: name, photoIds: photoIds,
+                    coverPhotoId: cover)
+            )
+        }
+    }
+
+    public func updateStack(_ input: StackUpdateInput) async throws {
+        let stackId = try requireId(input.stackId, field: "stackId")
+        let name = try input.name.map {
+            try requireNonBlank($0, field: "name", maxLength: CurationNaming.maxLength)
+        }
+        let cover = try input.coverPhotoId.map { try requireId($0, field: "coverPhotoId") }
+        try mapCuration {
+            try curation.updateStack(
+                StackUpdateInput(
+                    stackId: stackId,
+                    name: name,
+                    coverPhotoId: cover,
+                    clearCover: input.clearCover
+                )
+            )
+        }
+    }
+
+    public func deleteStack(_ input: Confirmed<StackDeleteInput>) async throws {
+        let stackId = try requireId(input.value.stackId, field: "stackId")
+        try mapCuration { try curation.deleteStack(id: stackId) }
+    }
+
+    public func addStackMembers(_ input: StackMembersInput) async throws -> Int {
+        let stackId = try requireId(input.stackId, field: "stackId")
+        let photoIds = try requirePhotoIds(input.photoIds)
+        return try mapCuration {
+            try curation.addStackMembers(
+                StackMembersInput(stackId: stackId, photoIds: photoIds)
+            )
+        }
+    }
+
+    public func removeStackMembers(_ input: StackMembersInput) async throws -> Int {
+        let stackId = try requireId(input.stackId, field: "stackId")
+        let photoIds = try requirePhotoIds(input.photoIds)
+        return try mapCuration {
+            try curation.removeStackMembers(
+                StackMembersInput(stackId: stackId, photoIds: photoIds)
+            )
+        }
+    }
+
+    // MARK: - 策展入参校验
+
+    /// id 类入参：非空白 + 长度上限 128（与 LiveAPIInput.requireSessionId 同口径）。
+    private func requireId(_ value: String, field: String) throws -> String {
+        guard value.count <= 128 else {
+            throw GatherError.invalidParameter(field: field, reason: "length must be at most 128")
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GatherError.invalidParameter(field: field, reason: "must not be blank")
+        }
+        return trimmed
+    }
+
+    /// 照片 id 数组：去空、去重、上限 5000（一次拖拽/粘贴的合理上界），空数组拒绝。
+    private func requirePhotoIds(_ values: [String]) throws -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        ordered.reserveCapacity(values.count)
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            guard trimmed.count <= 128 else {
+                throw GatherError.invalidParameter(
+                    field: "photoIds", reason: "each id length must be at most 128"
+                )
+            }
+            if seen.insert(trimmed).inserted { ordered.append(trimmed) }
+        }
+        guard !ordered.isEmpty else {
+            throw GatherError.invalidParameter(field: "photoIds", reason: "must not be empty")
+        }
+        guard ordered.count <= 5000 else {
+            throw GatherError.invalidParameter(
+                field: "photoIds", reason: "length must be at most 5000"
+            )
+        }
+        return ordered
+    }
+
+    /// CurationError → GatherError 时保留 params（field / reason / 容器 id）；
+    /// 其余错误走通用收敛（GatherError 直传、CodedError 取码、否则原样抛）。
+    private func mapCuration<T>(_ body: () throws -> T) throws -> T {
+        try LiveAPIErrorMapping.mapCuration(body)
+    }
+}
+
+// MARK: - 策展错误收敛
+
+extension LiveAPIErrorMapping {
+    /// CurationError → GatherError 时保留 params。
+    ///
+    /// 通用 map 只从 "CODE: 散文" 里取 detail，会丢掉 field / reason /
+    /// collectionId——INVALID_PARAM 上屏就成了「参数无效（），用户不知道该改哪」。
+    /// 其余错误仍走通用收敛（GatherError 直传、CodedError 取码、否则原样抛）。
+    static func mapCuration<T>(_ body: () throws -> T) throws -> T {
+        do {
+            return try body()
+        } catch let curation as CurationError {
+            throw GatherError(code: curation.code, params: curation.params)
+        } catch {
+            throw translateDomain(error) { _ in nil }
+        }
     }
 }

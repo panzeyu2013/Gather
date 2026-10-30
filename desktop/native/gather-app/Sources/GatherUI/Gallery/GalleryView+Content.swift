@@ -64,6 +64,8 @@ extension GalleryView {
                 clearLabel: l10n("清除搜索")
             )
             .frame(minWidth: 180, maxWidth: 320)
+            // P1 下一波 §3.7.3：保存/恢复查询（搜索框右侧菜单）。
+            savedSearchMenu
             Spacer(minLength: 0)
         }
         .padding(.horizontal, GatherMetrics.Layout.pageGutter)

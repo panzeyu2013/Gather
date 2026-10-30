@@ -165,7 +165,8 @@ enum IPTCIIMMapping {
     static func updates(for descriptive: DescriptiveMetadata?, keywords: [String]?) -> [IIMKey: [String]] {
         var updates: [IIMKey: [String]] = [:]
         if let keywords {
-            updates[.keywords] = keywords
+            // IIM 2:25 没有层级：只写叶子，避免把 "A|B" 当成单字关键词。
+            updates[.keywords] = keywords.map { KeywordPath($0)?.leaf ?? $0 }
         }
         guard let descriptive else { return updates }
         for field in descriptive.explicitlySetFields {

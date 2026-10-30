@@ -12,6 +12,8 @@ struct GalleryCellView: View {
     var thumbnailSize: Int
     /// 图库批量写入后的本地回显（list_page 行不含挑片状态）。
     var cullingState: AssetCullingState?
+    /// 堆栈成员数（>1 显示徽标；0/1 不显示）。
+    var stackCount: Int = 0
 
     /// Cut 4 / 4b-2i：离线芯片 / RAW+JPEG 变体徽标与页面同一语言源
     ///（格子是独立 struct，必须自己从 environment 取；兜底 zhCN 与页面一致）。
@@ -97,6 +99,16 @@ struct GalleryCellView: View {
                     lineWidth: isSelected ? 2 : 1
                 )
         )
+        .overlay(alignment: .topTrailing) {
+            if stackCount > 1 {
+                PhotoOverlayChip(
+                    text: l10n.format("%lld 个", stackCount),
+                    systemImage: "square.stack.3d.up.fill"
+                )
+                .padding(GatherMetrics.Space.xs)
+                .accessibilityLabel(l10n.format("堆栈 %lld 张", stackCount))
+            }
+        }
         .contentShape(Rectangle())
         // 悬停：抬起一层，与选中描边区分。
         .shadow(color: isHovered ? GatherTheme.shadowCard : Color.clear, radius: 8, y: 2)

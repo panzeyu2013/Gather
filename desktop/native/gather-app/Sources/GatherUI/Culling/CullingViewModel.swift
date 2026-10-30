@@ -299,6 +299,8 @@ public final class CullingViewModel: PageVisibility {
     var loadGeneration = 0
     /// refreshSyncStatus 的 latest-wins 代数（事件风暴下只落最后一次）。
     private var syncStatusRequestID = 0
+    /// 上次已通知自动 reload 的 written 计数（避免每次刷新重复触发同一批）。
+    private var lastAutoReloadWritten: Int?
     var refreshTask: Task<Void, Never>?
 
     /// 生产装配（RootView）：挑片 / 导航 / 元数据 / 任务 / 画质全部走
@@ -515,6 +517,14 @@ public final class CullingViewModel: PageVisibility {
             guard requestID == syncStatusRequestID else { return }
             applySyncStatus(status.summary)
             reloadAcked = status.reloadAckedAt != nil
+            // P1：写回批次收敛后交给自动 reload 协调器（debounce/串行/抑制在协调器内）。
+            // 同一 written 计数只通知一次：确认前的普通刷新/页面出现不重复触发 reload。
+            let written = status.summary.written
+            if written > 0, written != lastAutoReloadWritten,
+               let roundTrip = captureOne as? any C1RoundTripReloading {
+                roundTrip.noteDeliveryStateChanged(sessionId: sessionId)
+            }
+            lastAutoReloadWritten = written
         } catch {
             guard requestID == syncStatusRequestID else { return }
             failure = CommandError(error)

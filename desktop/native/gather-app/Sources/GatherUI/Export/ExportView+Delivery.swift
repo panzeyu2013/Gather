@@ -10,11 +10,21 @@ struct PendingDeliveryConfirmation: Identifiable {
     let preflight: DeliveryPreflightSummary
 }
 
+/// 校样导入结果（sheet item 包装：报告本身不带 id）。
+struct PendingProofImport: Identifiable {
+    let id = UUID()
+    let report: ClientSelectionImportReport
+}
+
 struct ExportDeliverySection: View {
     let viewModel: ExportViewModel
     @Environment(\.languageStore) private var languageStore
     @State private var showWebDAV = false
     @State private var pendingDelivery: PendingDeliveryConfirmation?
+    /// 校样导入结果（v2：勾选 + 评分/色标 + 评论 + 冲突）。
+    @State private var pendingProofImport: PendingProofImport?
+    /// 最近一次导入报告（sheet 关闭后摘要行仍要能显示；不随 sheet 消失）。
+    @State private var lastImportReport: ClientSelectionImportReport?
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
@@ -93,21 +103,26 @@ struct ExportDeliverySection: View {
             if viewModel.cullingAPI != nil {
                 HStack(spacing: GatherMetrics.Space.s) {
                     Button(viewModel.isImportingSelection
-                           ? l10n("正在导入…") : l10n("导入客户选择…")) {
+                           ? l10n("正在导入…") : l10n("导入客户反馈…")) {
                         importSelection()
                     }
                     .disabled(viewModel.isImportingSelection)
-                    if let imported = viewModel.clientSelectionImport {
-                        let text = imported.failed > 0
-                            ? l10n.format("已导入 %lld 张（跳过 %lld，失败 %lld）",
-                                         imported.applied, imported.skipped, imported.failed)
-                            : l10n.format("已导入 %lld 张（跳过 %lld）",
-                                         imported.applied, imported.skipped)
-                        Text(text)
+                    if let report = lastImportReport {
+                        Text(Self.importSummaryText(report, with: l10n))
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(report.failed > 0 || !report.conflicts.isEmpty
+                                ? GatherTheme.errorText : GatherTheme.secondaryText)
+                    } else if let imported = viewModel.clientSelectionImport {
+                        // 兼容：本轮之前导入过（没有完整报告）时仍显示 v1 摘要。
+                        Text(l10n.format("已导入 %lld 张（跳过 %lld，失败 %lld）",
+                                         imported.applied, imported.skipped, imported.failed))
                             .font(GatherFont.secondary)
                             .foregroundStyle(imported.failed > 0
                                 ? GatherTheme.errorText : GatherTheme.secondaryText)
                     }
+                }
+                .sheet(item: $pendingProofImport) { pending in
+                    ProofImportResultSheet(report: pending.report)
                 }
             }
             if let summary = viewModel.deliverySummary {
@@ -125,7 +140,8 @@ struct ExportDeliverySection: View {
                     }
                 }
                 .sheet(isPresented: $showWebDAV) {
-                    // 发布整个 run 根目录（含所有配方 + manifest + 画廊），而不是只发第一个配方。
+                    // 只发布本次交付的**精确产物**（白名单必填）：manifest + 各配方成品 +
+                    // 联系表 + 画廊目录。allowDownload 由面板决定是否再加 large/成片。
                     WebDAVPublishSheet(
                         viewModel: viewModel,
                         localPath: URL(fileURLWithPath: summary.manifestPath)
@@ -216,31 +232,49 @@ struct ExportDeliverySection: View {
                     (try? Data(contentsOf: url)).flatMap { String(data: $0, encoding: .utf8) }
                 }.value
                 guard let json else { return }
-                await viewModel.importClientSelection(json: json)
+                if let report = await viewModel.importClientSelection(json: json) {
+                    lastImportReport = report
+                    pendingProofImport = PendingProofImport(report: report)
+                }
             }
         }
     }
 
-    /// 只发布本次交付的**精确产物**（manifest.files）+ 画廊目录（缩略图/大图不在
-    /// files 清单里）。旧 summary 没有 files 或配方落在 run 根时退回整目录。
-    static func publishPrefixes(for summary: OutputRunSummary) -> [String]? {
+    /// 本次交付的发布白名单（精确产物；**永不返回 nil**）。
+    ///
+    /// 旧实现"拿不准就返回 nil"，而 nil 等于「上传整个 run 根目录」——历史 manifest、
+    /// 成片目录、用户放在交付根里的杂物会一起上服务器。现在的规则：
+    /// - 每张成品按 manifest.files 精确列出（含联系表）；
+    /// - 画廊只给目录前缀（thumbs/large/html/css/js/data.json 全在里面）；
+    /// - manifest 自己也在白名单里（客户/审计能看到交付了什么）；
+    /// - 落不到 run 根下的配方**直接跳过**，绝不退化成整根目录；
+    /// - 结果为空 = 上层禁用发布按钮（面板里给原因），而不是"发整个目录"。
+    static func publishPrefixes(for summary: OutputRunSummary) -> [String] {
         let root = URL(fileURLWithPath: summary.manifestPath)
             .deletingLastPathComponent().standardizedFileURL.path
-        // manifest 含本机绝对路径（recipe.destination / contactSheetPath），只用于本地审计，
-        // 不进发布白名单：客户在服务器上不该看到摄影师的本机目录结构。
         var paths: Set<String> = []
+        let manifestName = URL(fileURLWithPath: summary.manifestPath).lastPathComponent
+        if !manifestName.isEmpty { paths.insert(manifestName) }
         for recipe in summary.recipes {
             let destination = URL(fileURLWithPath: recipe.destination).standardizedFileURL.path
-            if destination == root { return nil }
-            guard destination.hasPrefix(root + "/") else { return nil }
-            let relDestination = String(destination.dropFirst(root.count + 1))
-            guard let files = recipe.files else { return nil }
-            for file in files {
-                paths.insert(relDestination + "/" + file.name)
+            let prefix: String
+            if destination == root {
+                prefix = ""
+            } else if destination.hasPrefix(root + "/") {
+                prefix = String(destination.dropFirst(root.count + 1))
+            } else {
+                // 配方写到 run 根之外：不猜，跳过（宁少传不误传）。
+                continue
+            }
+            for file in recipe.files ?? [] {
+                paths.insert(prefix.isEmpty ? file.name : prefix + "/" + file.name)
             }
             if let gallery = recipe.galleryPath {
-                let galleryDir = URL(fileURLWithPath: gallery).deletingLastPathComponent().path
-                if galleryDir.hasPrefix(root + "/") {
+                let galleryDir = URL(fileURLWithPath: gallery)
+                    .deletingLastPathComponent().standardizedFileURL.path
+                if galleryDir == root {
+                    paths.insert("gallery")
+                } else if galleryDir.hasPrefix(root + "/") {
                     paths.insert(String(galleryDir.dropFirst(root.count + 1)))
                 }
             }
@@ -311,5 +345,125 @@ struct ExportDeliverySection: View {
         let rest = raw[raw.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         guard !rest.isEmpty else { return file }
         return file + "：" + l10n.errorText(rest)
+    }
+}
+
+/// 校样导入摘要（单行；徽标与 sheet 共用同一口径）。
+extension ExportDeliverySection {
+    static func importSummaryText(
+        _ report: ClientSelectionImportReport, with l10n: L10n
+    ) -> String {
+        if report.alreadyImported {
+            return l10n("这份反馈之前已导入过，未做任何修改")
+        }
+        var parts: [String] = [
+            l10n.format("已导入 %lld 张（跳过 %lld，失败 %lld）",
+                        report.applied, report.skipped, report.failed),
+        ]
+        if report.ratingApplied > 0 {
+            parts.append(l10n.format("评分 %lld", report.ratingApplied))
+        }
+        if report.labelApplied > 0 {
+            parts.append(l10n.format("色标 %lld", report.labelApplied))
+        }
+        if report.comments > 0 {
+            parts.append(l10n.format("评论 %lld", report.comments))
+        }
+        if !report.conflicts.isEmpty {
+            parts.append(l10n.format("冲突 %lld", report.conflicts.count))
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// 客户校样导入结果：勾选数、评分/色标/评论数、冲突列表（本地值 → 客户值）。
+///
+/// 冲突默认保留本地（客户值只有在"客户提交更新"时才自动采用）；这里逐条只读展示，
+/// "用客户值"需要单张写回 API（本波未接线，见交付报告）。
+struct ProofImportResultSheet: View {
+    let report: ClientSelectionImportReport
+    @Environment(\.languageStore) private var languageStore
+    @Environment(\.dismiss) private var dismiss
+    private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
+            Text(l10n("客户反馈导入结果")).font(GatherFont.sectionTitle)
+            if report.alreadyImported {
+                Text(l10n("这份反馈之前已导入过，未做任何修改。"))
+                    .foregroundStyle(.secondary)
+            } else {
+                summaryRow(l10n("勾选"), report.applied)
+                summaryRow(l10n("评分"), report.ratingApplied)
+                summaryRow(l10n("色标"), report.labelApplied)
+                summaryRow(l10n("评论"), report.comments)
+                summaryRow(l10n("跳过"), report.skipped)
+                if report.failed > 0 {
+                    summaryRow(l10n("失败"), report.failed)
+                        .foregroundStyle(GatherTheme.errorText)
+                }
+                if report.conflicts.isEmpty {
+                    Text(l10n("没有与本地值冲突的项。"))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(l10n.format("保留本地的冲突项（%lld）", report.conflicts.count))
+                        .font(GatherFont.labelRegular)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+                            ForEach(report.conflicts, id: \.photoId) { conflict in
+                                conflictRow(conflict)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 220)
+                    Text(l10n("冲突默认保留本地值；客户值可在检查器里逐张确认。"))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Spacer()
+                Button(l10n("完成")) { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .gatherPrimaryActionButton()
+            }
+        }
+        .padding(GatherMetrics.Space.l)
+        .frame(minWidth: 420)
+    }
+
+    private func summaryRow(_ title: String, _ value: Int) -> some View {
+        HStack(spacing: GatherMetrics.Space.s) {
+            Text(title).font(GatherFont.secondary).foregroundStyle(.secondary)
+            Text(String(value)).font(GatherFont.secondary).monospacedDigit()
+        }
+    }
+
+    private func conflictRow(_ conflict: ProofFeedbackConflict) -> some View {
+        HStack(spacing: GatherMetrics.Space.s) {
+            Text(conflict.photoId)
+                .font(GatherFont.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            Text(localText(conflict)).font(GatherFont.secondary)
+            Text("→").foregroundStyle(.secondary)
+            Text(clientText(conflict)).font(GatherFont.secondary)
+        }
+    }
+
+    private func localText(_ conflict: ProofFeedbackConflict) -> String {
+        var parts: [String] = []
+        if conflict.localRating > 0 { parts.append(String(conflict.localRating) + "★") }
+        if !conflict.localLabel.isEmpty { parts.append(conflict.localLabel) }
+        return parts.isEmpty ? l10n("未设置") : parts.joined(separator: " ")
+    }
+
+    private func clientText(_ conflict: ProofFeedbackConflict) -> String {
+        var parts: [String] = []
+        if let rating = conflict.clientRating, rating > 0 { parts.append(String(rating) + "★") }
+        if let label = conflict.clientLabel, !label.isEmpty { parts.append(label) }
+        return parts.isEmpty ? l10n("未设置") : parts.joined(separator: " ")
     }
 }

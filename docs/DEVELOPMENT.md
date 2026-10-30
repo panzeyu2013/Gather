@@ -136,7 +136,7 @@ GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication（服务编排；交付在 GatherDelivery）
   ├── GatherPersistence：SQLite WAL + SchemaCurrent
-  │     （44 表 / 386 列 / 72 索引 / 65 外键，user_version=1）
+  │     （55 表 / 449 列 / 84 索引 / 81 外键，user_version=1）
   ├── GatherAnalysis：图像读取、Vision 人脸、RAW/ImageIO 解码
   ├── JobService（可恢复任务：executor + checkpoint + dedupeKey）
   └── DeliveryCoordinator：deliveries 写回（重试 / 冲突 / 重启恢复）

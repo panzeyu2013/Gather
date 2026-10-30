@@ -11,7 +11,7 @@ SwiftUI（GatherUI）→ AppServices（16 个域 API / 140 个类型化方法）
 （AppComposition / AppRuntime / Live*API）→ GatherApplication（服务与 JobService）；
 交付在 GatherDelivery，持久层是 GatherPersistence，图像/人脸在 GatherAnalysis。
 
-- SQLite（WAL）单一当前 schema：`SchemaCurrent` 44 表 / 386 列 / 72 索引 / 65 外键，
+- SQLite（WAL）单一当前 schema：`SchemaCurrent` 55 表 / 449 列 / 84 索引 / 81 外键，
   `user_version=1`。旧版本/未知形态默认 fail closed，只有显式重置才归档重建。
 - 无 Node.js、Electron、浏览器渲染层或本地 HTTP 服务。
 
@@ -38,8 +38,8 @@ SwiftUI（GatherUI）→ AppServices（16 个域 API / 140 个类型化方法）
 ## 当前基线（2026-10-30 交互整改后采样，以脚本输出为准）
 
 - 8 个功能 target（含测试/工具共 16 个）。
-- gather-core 1,459 tests / 217 suites；gather-app 805 tests / 91 suites。
-- 12 个 `check-*.sh` 门禁（2026-10-30 移除 `check-docs.sh`）；en 1,865 键。
+- gather-core 1,609 tests / 239 suites；gather-app 829 tests / 93 suites。
+- 12 个 `check-*.sh` 门禁（2026-10-30 移除 `check-docs.sh`）；en 2,015 键 / zh 9 占位键。
 
 ## 文档
 

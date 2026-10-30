@@ -141,6 +141,69 @@ public final class PhotoFilterQuery {
         return try rows.map(rowToPhotoRow)
     }
 
+    /// P1 下一波 §3.7.1：带 criteria 的资产分页（photo.list_page 的游标语义）。
+    ///
+    /// 与 `PhotoRepo.getAssetPage` 的关系：
+    /// - 同一套"按逻辑资产分组、游标 = 上一页最后一个资产组的首行 rowid"；
+    /// - 差别只有一个 AND：资产必须**至少有一行**满足 criteria（代表行的挑选仍在
+    ///   API 装配层按 RAW/JPEG 角色做，所以这里返回组内全部行）；
+    /// - 排序只支持导入顺序（rowid）正/逆序：PhotoPage.cursor 是 Int64，
+    ///   按 date_taken/rating 排序需要 (排序值, rowid) 复合游标才能跨页不重复，
+    ///   那种查询走 PhotoAPI.search 的 offset 分页。
+    public func assetPage(
+        sessionId: String,
+        criteria: FilterGroup?,
+        afterFirstRowid: Int64?,
+        limit: Int,
+        descending: Bool = false
+    ) throws -> (rows: [PhotoPageRow], cursor: Int64?) {
+        let clause = try buildWhereClause(criteria ?? FilterGroup(logic: .and, conditions: []))
+        let predicate = clause.sql.isEmpty ? "1=1" : clause.sql
+        let direction = descending ? "DESC" : "ASC"
+        let comparison = descending ? "<" : ">"
+        let cursorValue = afterFirstRowid ?? (descending ? Int64.max : 0)
+        let groups = try connection.prepare("""
+            WITH matching AS (
+              SELECT p.rowid AS rowid,
+                     COALESCE(NULLIF(p.asset_id, ''), p.id) AS gid
+              FROM photos p
+              LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
+              WHERE p.session_id = ? AND (\(predicate))
+                AND \(PhotoVisibility.visiblePredicate(alias: "p"))
+            ),
+            asset_groups AS (
+              SELECT gid, MIN(rowid) AS first_rowid
+              FROM matching
+              GROUP BY gid
+              HAVING MIN(rowid) \(comparison) ?
+              ORDER BY MIN(rowid) \(direction)
+              LIMIT ?
+            )
+            SELECT gid, first_rowid FROM asset_groups ORDER BY first_rowid \(direction)
+            """).query(
+                [.text(sessionId)] + clause.params
+                    + [.int(cursorValue), .int(Int64(max(1, limit)))])
+        if groups.isEmpty { return ([], nil) }
+        let gids = groups.map { row in
+            (gid: row[0].textValue ?? "", firstRowid: row[1].intValue ?? 0)
+        }
+        var rows: [PhotoPageRow] = []
+        for chunkStart in stride(from: 0, to: gids.count, by: 800) {
+            let chunk = gids[chunkStart..<min(chunkStart + 800, gids.count)].map(\.gid)
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let chunkRows = try connection.prepare("""
+                SELECT \(PhotoRepo.photoPageColumns) FROM photos p
+                WHERE p.session_id = ?
+                  AND COALESCE(NULLIF(p.asset_id, ''), p.id) IN (\(placeholders))
+                  AND \(PhotoVisibility.visiblePredicate(alias: "p"))
+                ORDER BY p.rowid
+                """).query([.text(sessionId)] + chunk.map { .text($0) })
+            rows.append(contentsOf: try chunkRows.map { try PhotoPageRow(row: $0) })
+        }
+        // 排序方向一致：降序页的游标要回到组首，UI 只把它当不透明标记传回。
+        return (rows, gids[gids.count - 1].firstRowid)
+    }
+
     /// TS: filterGlobally —— 引擎内钳制 limit 1..500 / offset ≥0。
     public func filterGlobally(
         criteria: FilterGroup,
@@ -391,6 +454,10 @@ public final class PhotoFilterQuery {
             return try buildPersonCondition(operator: op, value: value)
         case "keywords":
             return try buildKeywordsCondition(operator: op, value: value)
+        case FilterFields.keywordPath:
+            // P1 下一波 §3.6.4：层级关键词走 photo_keywords 索引（不是 pmc.keywords JSON），
+            // 这样 facet 与网格用的是同一份行（starts_with 才能做下钻）。
+            return try buildKeywordPathCondition(operator: op, value: value)
         case "directory":
             if op != .eq && op != .startsWith {
                 throw PhotoFilterQueryError.unsupportedOperatorForField(field: field, op: op.rawValue)
@@ -568,6 +635,72 @@ public final class PhotoFilterQuery {
         }
     }
 
+    /// P1 下一波 §3.6.4：层级关键词（photo_keywords.keyword_path）。
+    ///
+    /// 语义要点：
+    /// - eq：命中该路径本身（叶子多选）；
+    /// - startsWith：命中该节点**及其子孙**（点 A 看到 A 与 A|B）。这样 facet 下钻
+    ///   与"点 A"生成的单条规则是同一件事，不需要在 UI 侧把父级规则叠加起来；
+    /// - contains：序列化路径的子串匹配（与旧的 keywords contains 同手感）；
+    /// - 路径一律先过 KeywordPath 归一（trim/NFC/丢空段），否则用户输入
+    ///   "A | B" 会与库里的 "A|B" 永远不相等。
+    private func buildKeywordPathCondition(
+        `operator`: FilterOperator, value: JSONValue
+    ) throws -> (sql: String, params: [DBValue]) {
+        let raw = stringValue(value).trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = KeywordPath.parse(raw)?.serialized ?? raw
+        func exists(_ condition: String, _ params: [DBValue]) -> (sql: String, params: [DBValue]) {
+            (
+                "EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND (\(condition)))",
+                params
+            )
+        }
+        let values = value.arrayElements?.compactMap { $0.stringValue } ?? [raw]
+        let normalizedValues = values.map { KeywordPath.parse($0)?.serialized ?? $0 }
+        switch `operator` {
+        case .eq:
+            return exists("pk.keyword_path = ?", [.text(path)])
+        case .neq:
+            return (
+                "NOT EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND pk.keyword_path = ?)",
+                [.text(path)])
+        case .startsWith:
+            return exists(
+                "pk.keyword_path = ? OR (pk.keyword_path >= ? AND pk.keyword_path < ?)",
+                [
+                    .text(path),
+                    .text(KeywordPathSQL.subtreeLowerBound(path)),
+                    .text(KeywordPathSQL.subtreeUpperBound(path)),
+                ])
+        case .contains:
+            return exists(
+                "pk.keyword_path LIKE '%' || ? || '%' ESCAPE '\\'",
+                [.text(escapeLike(path))])
+        case .in, .containsAny:
+            if normalizedValues.isEmpty { return (sql: "1=0", params: []) }
+            let unique = Array(Set(normalizedValues))
+            let placeholders = unique.map { _ in "?" }.joined(separator: ", ")
+            return exists(
+                "pk.keyword_path IN (\(placeholders))",
+                unique.sorted().map(DBValue.text))
+        case .containsAll:
+            if normalizedValues.isEmpty { return (sql: "1=0", params: []) }
+            let unique = Array(Set(normalizedValues))
+            let placeholders = unique.map { _ in "?" }.joined(separator: ", ")
+            return (
+                """
+                (SELECT COUNT(DISTINCT pk.keyword_path) FROM photo_keywords pk
+                 WHERE pk.photo_id = p.id AND pk.keyword_path IN (\(placeholders))) = ?
+                """,
+                unique.sorted().map(DBValue.text) + [.int(Int64(unique.count))])
+        case .exists:
+            return exists("1=1", [])
+        case .gt, .lt, .gte, .lte, .between:
+            // 路径没有大小语义：显式返回空集，而不是把字符串比较当"范围"用。
+            return (sql: "1=0", params: [])
+        }
+    }
+
     private func buildHasFaceCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [DBValue]) {
         let op = `operator`
         let existsSql = "EXISTS (SELECT 1 FROM face_observations fo WHERE fo.photo_id = p.id AND fo.session_id = p.session_id)"
@@ -727,6 +860,14 @@ extension JSONValue {
 
 public protocol PhotoFilterQuerying {
     func whereClause(_ group: FilterGroup) throws -> FilterWhereClause
+    /// P1 下一波：带 criteria 的资产游标分页（photo.list_page 的 criteria 分支）。
+    func assetPage(
+        sessionId: String,
+        criteria: FilterGroup?,
+        afterFirstRowid: Int64?,
+        limit: Int,
+        descending: Bool
+    ) throws -> (rows: [PhotoPageRow], cursor: Int64?)
     func filterPhotos(
         sessionId: String,
         criteria: FilterGroup,

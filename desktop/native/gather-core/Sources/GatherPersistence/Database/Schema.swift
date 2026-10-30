@@ -1,7 +1,7 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Schema.swift
 // 旧迁移链素材（SCHEMA_SQL / INDEX_SQL）已删除。
 //
-// 唯一 DDL 真相源是 SchemaCurrent.swift（44 表一次成型）。
+// 唯一 DDL 真相源是 SchemaCurrent.swift（55 表一次成型）。
 // 本文件只保留两处**仍被引用**的常量：
 //   1) activeAnalysisJobStatusSQLList —— AnalysisJobRepo 的部分唯一索引 WHERE 子句
 //      字面量（SQLite 部分索引匹配是语法级的，必须与 DDL 逐字一致）；

@@ -28,6 +28,8 @@ struct ExecutorRegistryDependencies {
     let modelReviewService: ModelReviewService
     /// triage_model_review 设置（false 时 quality job 只跑技术质量）。
     let modelReviewEnabled: @Sendable () -> Bool
+    /// triage_auto_generate：导入完成后自动接 metadata.scan → quality.score。
+    let triageAutoGenerateEnabled: @Sendable () -> Bool
     let indexerService: IndexerService
     let metadataService: MetadataService
     let photoRepo: PhotoRepo
@@ -74,6 +76,7 @@ enum ExecutorRegistry {
         let qualityService = deps.qualityService
         let modelReviewService = deps.modelReviewService
         let modelReviewEnabled = deps.modelReviewEnabled
+        let triageAutoGenerateEnabled = deps.triageAutoGenerateEnabled
         let indexerService = deps.indexerService
         let metadataService = deps.metadataService
         let photoRepo = deps.photoRepo
@@ -219,6 +222,21 @@ enum ExecutorRegistry {
                 ))
                 _ = try await metadataService.getMetadata(photoIds: photoIds)
                 _ = try assetRepo.reconcileRawJpegLinks(job.scopeId)
+                // P1：导入触发的扫描把新照片接给 quality.score（技术质量 + 模型信号）。
+                if job.checkpoint["autoQuality"]?.boolValue == true, !photoIds.isEmpty {
+                    do {
+                        _ = try jobService.create(JobCreateParams(
+                            type: .qualityScore,
+                            scopeType: "session",
+                            scopeId: job.scopeId,
+                            dedupeKey: "quality.score:\(job.scopeId):auto-triage:\(Self.idsFingerprint(photoIds))",
+                            checkpoint: ["photoIds": .array(photoIds.map(JSONValue.string))]
+                        ))
+                    } catch {
+                        GatherLogger.log(
+                            "auto-triage quality enqueue failed: \(error)", level: .warn)
+                    }
+                }
                 // 合并而不是整块替换：checkpoint 里的 requestedPaths 是
                 // SessionDirectoryMonitor 判定"窄 job 是否覆盖本次目录"的唯一依据；
                 // 写 result 时丢掉它会让运行中的窄 job 被误判为全树扫描，
@@ -248,7 +266,31 @@ enum ExecutorRegistry {
                 if job.checkpoint["operation"]?.stringValue == "ingest" {
                     let payload = try SessionIngestRunner.decode(job.checkpoint)
                     let runner = SessionIngestRunner(sessionService: sessionService)
-                    return try await runner.run(payload, context: context)
+                    let result = try await runner.run(payload, context: context)
+                    // P1：导入收尾后自动初审（默认关；用户开 triage_auto_generate）。
+                    // 取消/全部跳过不触发；扫描只针对本会话，quality 只跑新登记的照片。
+                    if !context.signal.aborted,
+                       triageAutoGenerateEnabled(),
+                       result.registered > 0 {
+                        do {
+                            _ = try jobService.create(JobCreateParams(
+                                type: .metadataScan,
+                                scopeType: "session",
+                                scopeId: job.scopeId,
+                                dedupeKey: "metadata.scan:\(job.scopeId):auto-triage:\(UUID().uuidString)",
+                                // 显式空数组：清掉上次终态继承的 requestedPaths，
+                                // 否则新导入的照片会被旧窄范围漏掉（空=全树）。
+                                checkpoint: [
+                                    "autoQuality": .bool(true),
+                                    "requestedPaths": .array([]),
+                                ]
+                            ))
+                        } catch {
+                            GatherLogger.log(
+                                "auto-triage scan enqueue failed: \(error)", level: .warn)
+                        }
+                    }
+                    return result
                 }
                 let result = try await indexerService.backfillChecksums(
                     sessionId: job.scopeId,
@@ -463,6 +505,17 @@ enum ExecutorRegistry {
 
     /// JSONValue → Codable（JSONDecoder 往返；解码失败为契约漂移，抛原始错误）。
     /// 与原路由私有 decodeJSON（原 3100-3102 行）逐字同义。
+    /// 稳定短指纹（FNV-1a 64）：auto-triage 的 dedupeKey 只区分 photoIds 集合，
+    /// 不把完整 ID 列表塞进 dedupe_key。
+    static func idsFingerprint(_ photoIds: [String]) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in photoIds.sorted().joined(separator: "\u{1F}").utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return String(hash, radix: 16)
+    }
+
     private static func decodeJSON<T: Decodable>(_ type: T.Type, from value: JSONValue) throws -> T {
         try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
     }

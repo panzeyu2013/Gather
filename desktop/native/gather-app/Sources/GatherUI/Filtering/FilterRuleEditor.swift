@@ -1,8 +1,11 @@
-// desktop/native/gather-app/Sources/GatherUI/Library/FilterRuleEditor.swift
+// desktop/native/gather-app/Sources/GatherUI/Filtering/FilterRuleEditor.swift
 // P1 / C：规则编辑器（AND/OR + between/in）。
 //
 // 直接编辑 FilterGroup（不发明第二套筛选 DSL）：编辑器产出的就是引擎吃的结构，
-// 保存智能相册时也能原样回填。
+// 保存智能相册 / 保存查询时也能原样回填。
+//
+// P1 下一波 §3.7.2：从 Library/ 移到共享的 Filtering/（Library 与 Gallery 共用同一份），
+// 类型名与调用点签名逐字未变（同模块移动），因此 Library 的调用点无需修改。
 import SwiftUI
 import GatherProtocol
 
@@ -30,6 +33,9 @@ enum FilterFieldCatalog {
         .init(id: "location", label: "地点", kind: .text),
         .init(id: "person_in_image", label: "画面人物", kind: .list),
         .init(id: "keywords", label: "关键词", kind: .list),
+        // P1 下一波 §3.6.4：层级关键词路径（photo_keywords）。
+        // starts_with = 命中该节点及其子孙（facet 下钻等价规则）。
+        .init(id: "keyword_path", label: "关键词层级", kind: .text),
         .init(id: "rating", label: "星级", kind: .number),
         .init(id: "label", label: "色标", kind: .text),
         .init(id: "camera_model", label: "相机", kind: .text),

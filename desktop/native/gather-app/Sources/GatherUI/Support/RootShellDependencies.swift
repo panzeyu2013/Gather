@@ -29,6 +29,8 @@ public struct RootShellDependencies {
     public let metadata: any MetadataAPI
     /// P0/K0：关键词自动补全；可选，预览/测试壳可为 nil（面板退化为本地建议）。
     public let photo: (any PhotoAPI)?
+    /// P1：集合/堆栈/跨工作区重复（AlbumAPI/DuplicateAPI 已带默认实现）。
+    public let album: (any AlbumAPI)?
     public let quality: any QualityAPI
     public let face: any FaceAPI
     public let similarity: any SimilarityAPI
@@ -54,6 +56,7 @@ public struct RootShellDependencies {
         navigation: any NavigationAPI,
         metadata: any MetadataAPI,
         photo: (any PhotoAPI)? = nil,
+        album: (any AlbumAPI)? = nil,
         quality: any QualityAPI,
         face: any FaceAPI,
         similarity: any SimilarityAPI,
@@ -75,6 +78,7 @@ public struct RootShellDependencies {
         self.navigation = navigation
         self.metadata = metadata
         self.photo = photo
+        self.album = album
         self.quality = quality
         self.face = face
         self.similarity = similarity

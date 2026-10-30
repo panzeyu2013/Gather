@@ -61,6 +61,18 @@ struct CullingWorkbenchViewer: View {
     /// （网格布局挂的是 CullingGridView，两者互斥，不会互抢）。
     @FocusState private var viewerFocused: Bool
 
+    // MARK: P1 下一波 §3.9：挑片可视化叠加层
+    //
+    // 三个 @State 分工：overlayState 是开关/参考槽的**纯值状态机**（快捷键不
+    // 在此硬编码，见 ViewerOverlays 的 toggle 方法），histogram/focusMask 是
+    // 宿主分析端口的返回结果。像素来源只有一处：查看器自己已经显示的预览
+    // 位图（PhotoThumbnailCache），不为直方图/合焦图再解一次文件。
+    @State private var overlayState = CullingViewerOverlayState()
+    @State private var histogram: PreviewHistogram?
+    @State private var focusMask: FocusMask?
+    /// crs:Crop* 只读裁剪框（nil = 无 sidecar/无裁剪，不画标记）。
+    @State private var cropFrame: CropFrame?
+
     /// 当前已加载列表（viewModel.page 变化经 @Observable 自动回流）。
     private var assets: [CullingAsset] {
         viewModel.page?.assets ?? []
@@ -138,6 +150,44 @@ struct CullingWorkbenchViewer: View {
                 .keyboardShortcut("=", modifiers: .command)
                 .help(l10n("放大（⌘=）"))
                 .accessibilityLabel(l10n("放大"))
+
+                Divider().frame(height: 12)
+
+                // §3.9 叠加层开关：不绑定裸键（键位表在 Interaction/，
+                // 与现有 P/X/U/0-5 冲突风险由后续键位表统一分配）。
+                Button { toggleHistogram() } label: {
+                    Image(systemName: "chart.bar.xaxis")
+                }
+                .help(l10n("直方图（基于预览）"))
+                .accessibilityLabel(l10n("直方图"))
+                Button { toggleFocusMask() } label: {
+                    Image(systemName: "scope")
+                }
+                .help(l10n("合焦提示"))
+                .accessibilityLabel(l10n("合焦提示"))
+                Button { toggleCropFrame() } label: {
+                    Image(systemName: "crop")
+                }
+                .help(l10n("裁剪标记（只读）"))
+                .accessibilityLabel(l10n("裁剪标记"))
+                Button { toggleReference() } label: {
+                    Image(systemName: "rectangle.on.rectangle")
+                }
+                .help(l10n("设为参考 / 取消参考"))
+                .accessibilityLabel(l10n("参考对比"))
+                if overlayState.hasReference {
+                    Menu {
+                        Button(l10n("切换对比模式")) { overlayState.cycleReferenceMode() }
+                        Button(l10n("交换参考")) { overlayState.swapReference() }
+                        Toggle(isOn: $overlayState.showFullFrame) {
+                            Text(l10n("全图显示"))
+                        }
+                    } label: {
+                        Image(systemName: "rectangle.split.2x1")
+                    }
+                    .help(l10n("对比模式"))
+                    .accessibilityLabel(l10n("对比模式"))
+                }
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
@@ -245,6 +295,50 @@ struct CullingWorkbenchViewer: View {
         // 可见区域细节层：缩放或平移停止 150ms 后重算「可见矩形」，只重解那一块。
         .onChange(of: scale) { _, _ in scheduleDetailTileUpdate() }
         .onChange(of: offset) { _, _ in scheduleDetailTileUpdate() }
+        // P1 下一波 §3.9：直方图（右下角，160×80）。
+        .overlay(alignment: .bottomTrailing) {
+            if overlayState.histogramVisible {
+                ViewerHistogramOverlay(
+                    histogram: histogram,
+                    showsChannels: overlayState.histogramChannels,
+                    onToggleChannels: { overlayState.toggleHistogramChannels() }
+                )
+                .padding(GatherMetrics.Space.m)
+            }
+        }
+        // 参考对比指示（左上角）：参考照片不在当前页也仍可加载（按需取预览）。
+        .overlay(alignment: .topLeading) {
+            if overlayState.hasReference {
+                HStack(spacing: GatherMetrics.Space.xs) {
+                    Image(systemName: "rectangle.on.rectangle")
+                    Text(l10n.format("参考：%@", overlayState.referenceFilename ?? ""))
+                    Text(l10n(overlayState.referenceMode.labelKey))
+                        .foregroundStyle(GatherTheme.viewerTextSecondary)
+                }
+                .font(GatherFont.label)
+                .foregroundStyle(GatherTheme.viewerTextPrimary)
+                .padding(.horizontal, GatherMetrics.Space.xs)
+                .padding(.vertical, GatherMetrics.Space.xxs)
+                .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.85)))
+                .padding(GatherMetrics.Space.s)
+            }
+        }
+        // 叠加层随照片/开关变化重算；.task(id:) 自动取消上一次（切页即取消）。
+        .task(id: analysisKey) {
+            await refreshPreviewAnalysis()
+        }
+        .task(id: viewModel.currentPhotoId) {
+            cropFrame = nil
+            guard let photoId = viewModel.currentPhotoId else { return }
+            do {
+                let frame = try await viewModel.cullingAPI.adjustmentHint(photoId: photoId)
+                guard !Task.isCancelled, viewModel.currentPhotoId == photoId else { return }
+                cropFrame = frame
+            } catch {
+                guard !Task.isCancelled, viewModel.currentPhotoId == photoId else { return }
+                cropFrame = nil
+            }
+        }
     }
 
     /// 对比单元格：黑底 + 缩放/平移手势 + 底部字幕条 + 徽标 + hover 主色描边 + 双击复位。
@@ -281,6 +375,17 @@ struct CullingWorkbenchViewer: View {
             // 对比模式按格数收窄解码预算：4 格各解 8192px 会瞬时吃掉约 1GB。
             // 细节贴片与 onUnavailable 的整图高档位兜底必须共用同一个预算。
             let detailBudget = PhotoDetailTier.budget(forVisibleCells: max(1, compareCount))
+            let referenceAsset = overlayState.referencePhotoId.flatMap { id in
+                assets.first(where: { $0.photo.id == id })
+            }
+            // 叠加层坐标系：与 .fit 图像 + scaleEffect/offset 完全一致，而不是单元格矩形。
+            let imageRect = Self.displayedImageRect(
+                imageSize: CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height)),
+                cellSize: cellGeometry.size,
+                zoom: effectiveZoom,
+                offset: CGSize(
+                    width: offset.width + alignOffset.width,
+                    height: offset.height + alignOffset.height))
             ZStack(alignment: .bottom) {
                 // 整图适配（对齐旧版 .viewerImage object-fit: contain）：窄容器
                 // 时整体缩放而非裁切，缩放级作用于完整画面。
@@ -302,6 +407,31 @@ struct CullingWorkbenchViewer: View {
                     .scaleEffect(effectiveZoom)
                     .offset(x: offset.width + alignOffset.width, y: offset.height + alignOffset.height)
                     .allowsHitTesting(false)
+                // 并排对比：右半格显示参考图，左半格保留当前图（分割线可拖动时用 overlay 版本）。
+                if overlayState.hasReference,
+                   overlayState.referenceMode == .sideBySide,
+                   let referenceAsset,
+                   referenceAsset.photo.id != asset.photo.id {
+                    HStack(spacing: CGFloat.zero) {
+                        Color.clear
+                        PhotoThumbnailView(
+                            path: referenceAsset.photo.filepath,
+                            size: 1024,
+                            preview: true,
+                            contentMode: .fit,
+                            placeholderSurface: GatherTheme.viewerSurface,
+                            placeholderTextColor: GatherTheme.viewerTextSecondary
+                        )
+                        .frame(width: cellGeometry.size.width / 2)
+                        .clipped()
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .fill(GatherTheme.viewerTextPrimary.opacity(0.6))
+                                .frame(width: 1)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
                 // 可见区域细节层：按同一套几何算出「真正可见的图像矩形」，
                 // 只解码这一块（detailTileState 由缩放/平移变化去抖驱动）。
                 // A-6 残余（第二轮验证）：detailTileState 是整页唯一状态，其几何来自
@@ -332,6 +462,41 @@ struct CullingWorkbenchViewer: View {
                     .frame(width: max(0, tile.viewRect.width), height: max(0, tile.viewRect.height))
                     .position(x: tile.viewRect.midX, y: tile.viewRect.midY)
                     .allowsHitTesting(false)
+                }
+                // §3.9 叠加层：只画在当前格（非当前格套用当前照片的掩膜会错位）。
+                if cell.asset.photo.id == currentAsset?.photo.id {
+                    if overlayState.focusMaskVisible, let focusMask, !focusMask.isEmpty {
+                        ViewerFocusMaskOverlay(mask: focusMask)
+                            .frame(width: imageRect.width, height: imageRect.height)
+                            .position(x: imageRect.midX, y: imageRect.midY)
+                    }
+                    if overlayState.cropVisible, let crop = currentCrop {
+                        ViewerCropOverlay(
+                            crop: crop,
+                            showFullFrame: overlayState.showFullFrame
+                        )
+                        .frame(width: imageRect.width, height: imageRect.height)
+                        .position(x: imageRect.midX, y: imageRect.midY)
+                    }
+                    if let afPoint = currentAFPoint() {
+                        ViewerAFPointOverlay(point: afPoint) {
+                            focus(on: afPoint, cellSize: cellGeometry.size)
+                        }
+                        .frame(width: imageRect.width, height: imageRect.height)
+                        .position(x: imageRect.midX, y: imageRect.midY)
+                    }
+                    if overlayState.hasReference,
+                       overlayState.referencePhotoId != cell.asset.photo.id,
+                       overlayState.referenceMode != .sideBySide {
+                        ViewerReferenceOverlay(
+                            state: overlayState,
+                            cellSize: cellGeometry.size,
+                            onSplitChange: { x, width in
+                                overlayState.updateSplit(dragX: x, viewWidth: width)
+                            }
+                        )
+                        .allowsHitTesting(true)
+                    }
                 }
                 // 底部字幕条（文件名 / 来源 / 星级）。
                 HStack(spacing: 8) {
@@ -537,6 +702,21 @@ struct CullingWorkbenchViewer: View {
 
     /// 适配显示尺寸的最长边（pt）——与 contentMode .fit 的几何一致。
     /// 用于「区域解码不可用」时的整图高档位兜底（见 cellView 的 onUnavailable）。
+    /// .fit 图像在缩放/平移后的显示矩形（归一化叠加层映射的唯一几何源）。
+    static func displayedImageRect(
+        imageSize: CGSize, cellSize: CGSize, zoom: CGFloat, offset: CGSize
+    ) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              cellSize.width > 0, cellSize.height > 0 else { return .zero }
+        let fitScale = min(cellSize.width / imageSize.width, cellSize.height / imageSize.height)
+        let width = imageSize.width * fitScale * zoom
+        let height = imageSize.height * fitScale * zoom
+        return CGRect(
+            x: cellSize.width / 2 - width / 2 + offset.width,
+            y: cellSize.height / 2 - height / 2 + offset.height,
+            width: width, height: height)
+    }
+
     static func fitPoints(imageSize: CGSize, cellSize: CGSize) -> Double {
         guard imageSize.width > 0, imageSize.height > 0, cellSize.width > 0, cellSize.height > 0 else { return 0 }
         let fitScale = min(cellSize.width / imageSize.width, cellSize.height / imageSize.height)
@@ -586,6 +766,159 @@ struct CullingWorkbenchViewer: View {
         guard next != scale else { return }
         scale = next
         gestureScale = next
+    }
+    // MARK: - §3.9 叠加层：状态与调度
+
+    /// 预览分析的触发键：照片或开关一变就重算（.task(id:) 自动取消上一次）。
+    private var analysisKey: String {
+        "\(viewModel.currentPhotoId ?? "-")|\(overlayState.histogramVisible)|\(overlayState.focusMaskVisible)"
+    }
+
+    /// 重算直方图/合焦掩膜/AF 点。
+    ///
+    /// 像素来源：查看器自己已经显示的那张预览（PhotoThumbnailCache 里的 NSImage）。
+    /// 缓存未命中时最多等 6×150ms（图片解码是异步的），仍没有就保持空态——
+    /// 不为叠加层单独解码一张图（§3.9 开头"不新增解码"）。
+    private func refreshPreviewAnalysis() async {
+        guard overlayState.histogramVisible || overlayState.focusMaskVisible else {
+            histogram = nil
+            focusMask = nil
+            return
+        }
+        guard let asset = currentAsset else {
+            histogram = nil
+            focusMask = nil
+            return
+        }
+        guard let port = PreviewAnalysisRegistry.current() else {
+            // 宿主未注册分析端口：保持空态（叠加层自己会画"无数据"提示）。
+            histogram = nil
+            focusMask = nil
+            return
+        }
+        // 先清空上一张的叠加数据，避免取消/取不到预览时继续显示旧照片的直方图与合焦图。
+        histogram = nil
+        focusMask = nil
+        guard let image = await waitForPreviewImage(path: asset.photo.filepath) else { return }
+        guard !Task.isCancelled, viewModel.currentPhotoId == asset.photo.id else { return }
+        // 栅格化在主线程完成（NSImage 非 Sendable）；只有纯像素计算下放到后台。
+        let rasterized = PreviewPixelRasterizer.rgbaPixels(
+            from: image,
+            maxDimension: Self.analysisSampleDimension
+        )
+        guard let pixels = rasterized, pixels.isWellFormed else { return }
+        let wantsHistogram = overlayState.histogramVisible
+        let wantsFocus = overlayState.focusMaskVisible
+        let computed = await Task.detached(priority: .utility) {
+            () -> (PreviewHistogram?, FocusMask?) in
+            let histogramValue = wantsHistogram
+                ? port.histogram(pixels, bins: PreviewHistogram.defaultBins)
+                : nil
+            let mask = wantsFocus
+                ? port.focusMask(pixels, parameters: FocusMaskParameters())
+                : nil
+            return (histogramValue, mask)
+        }.value
+        guard !Task.isCancelled else { return }
+        histogram = computed.0
+        focusMask = computed.1
+    }
+
+    /// 分析用像素的长边上限（§3.9.2：1280）。与 PhotoDetailTier 无关，只用于降采样。
+    private static let analysisSampleDimension = 1280
+
+    /// 等查看器自己的预览进入内存缓存（不触发第二次解码）。
+    private func waitForPreviewImage(path: String) async -> NSImage? {
+        guard !path.isEmpty else { return nil }
+        let candidateSizes = [PhotoDetailTier.baseDimension, 2048, 1280, 1024, 512]
+        for attempt in 0..<6 {
+            for size in candidateSizes {
+                let key = PhotoThumbnailCache.key(path: path, size: size, preview: true)
+                if let image = PhotoThumbnailCache.image(for: key) { return image }
+            }
+            if attempt == 5 { break }
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+            } catch {
+                return nil
+            }
+            if Task.isCancelled { return nil }
+        }
+        return nil
+    }
+
+    /// 裁剪标记的数据源：CullingAPI.adjustmentHint 读 sidecar 的 crs:Crop*。
+    /// 无 sidecar/无裁剪 → nil（不画），绘制路径本身不变。
+    private var currentCrop: CropFrame? { cropFrame }
+
+    /// AF 点：camera_model 已透传；AF 索引仍无 ExifAux/MakerNote 数据源，
+    /// 机型表为空时只走"人脸中心"回退——设计里明确的降级路径，不伪造相机 AF。
+    private func currentAFPoint() -> AFPoint? {
+        guard let port = PreviewAnalysisRegistry.current(), let asset = currentAsset else {
+            return nil
+        }
+        let camera = asset.photo.metadata["camera_model"]?.stringValue ?? ""
+        return port.afPoint(faceBoxes: asset.faceBboxes, cameraModel: camera, afIndex: nil)
+    }
+
+    // MARK: 开关方法（供工具栏与后续键位表调用；本文件不硬编码裸键）
+
+    /// 直方图开关（键位表将来分配 H）。
+    func toggleHistogram() {
+        overlayState.toggleHistogram()
+    }
+
+    /// 合焦提示开关（键位表将来分配 F）。
+    func toggleFocusMask() {
+        overlayState.toggleFocusMask()
+    }
+
+    /// 裁剪标记开关（键位表将来分配 C/O 之外的位置；O 是"显示全图"）。
+    func toggleCropFrame() {
+        overlayState.toggleCropFrame()
+    }
+
+    /// "显示全图"（临时去掉裁剪蒙版）。
+    func toggleFullFrame() {
+        overlayState.toggleFullFrame()
+    }
+
+    /// 把当前照片设为参考 / 取消参考（R）。
+    func toggleReference() {
+        guard let asset = currentAsset else { return }
+        overlayState.toggleReference(
+            photoId: asset.photo.id,
+            filepath: asset.photo.filepath,
+            filename: asset.photo.filename
+        )
+    }
+
+    /// 参考对比模式循环（C：并排 → 分割 → 叠加）。
+    func cycleReferenceMode() {
+        overlayState.cycleReferenceMode()
+    }
+
+    /// 交换主/参考（\）。
+    func swapReference() {
+        overlayState.swapReference()
+    }
+
+    /// 点击 AF 框：以该点为中心、100% 查看（复用 FaceAlign 的坐标模型）。
+    private func focus(on point: AFPoint, cellSize: CGSize) {
+        guard let asset = currentAsset, cellSize.width > 0, cellSize.height > 0 else { return }
+        scale = 1
+        gestureScale = 1
+        offset = FaceAlign.offset(
+            imageSize: CGSize(
+                width: Double(asset.photo.width),
+                height: Double(asset.photo.height)
+            ),
+            cellSize: cellSize,
+            face: [point.x, point.y, 0, 0],
+            zoom: 1
+        )
+        dragStartOffset = offset
+        scheduleDetailTileUpdate()
     }
 }
 

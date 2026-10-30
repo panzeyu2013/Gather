@@ -35,6 +35,9 @@
 //   生产由 AppComposition 注入同一实例，缺省 .shared。
 // - C1 相关：本服务不直接触碰 Capture One（reload-ack 由宿主侧直接写
 //   sessions.reload_acked_at）。
+// - MetadataRewriteSessionFactory（可选） = 内嵌写回快路径（plan §3.2 / P1 下一波）：
+//   非 nil 时每个交付项先尝试 open()，成功则用会话的写前指纹/备份/读属性/写盘/
+//   写后校验替代 4 处重复读；返回 nil 或注入缺省时旧路径逐字节不变。
 //
 // 拆分（final-sweep-code P1-1 / 纯移动）：按角色拆到同级
 // WritebackService+{Execute,Recover,Converge,Helpers}.swift；本文件只留
@@ -78,6 +81,9 @@ public final class WritebackService: @unchecked Sendable {
     let leaseOwner: String
     /// 写目标解析（sidecar 或照片自身）；冲突指纹与恢复校验都按它取路径。
     let target: MetadataTargetResolver
+    /// 内嵌写回快路径（plan §3.2）：一次打开 + 两次顺序遍历替代 6–8 次整文件读。
+    /// nil（默认）= 全部走旧路径，行为逐字节不变；宿主按 embedded_fast_path 注入。
+    let rewriteSessions: (any MetadataRewriteSessionFactory)?
 
     public init(
         deliveryRepo: DeliveryRepo,
@@ -90,7 +96,8 @@ public final class WritebackService: @unchecked Sendable {
         delivery: DeliveryCoordinator? = nil,
         fileLock: XMPFileLock,
         target: MetadataTargetResolver = .sidecar,
-        eventSink: (@Sendable (String) -> Void)? = nil
+        eventSink: (@Sendable (String) -> Void)? = nil,
+        rewriteSessions: (any MetadataRewriteSessionFactory)? = nil
     ) {
         self.deliveryRepo = deliveryRepo
         self.stateWriter = DeliveryStateWriter(repo: deliveryRepo)
@@ -104,6 +111,7 @@ public final class WritebackService: @unchecked Sendable {
         self.fileLock = fileLock
         self.leaseOwner = "writeback-" + newUUIDString()
         self.target = target
+        self.rewriteSessions = rewriteSessions
         self.delivery = delivery ?? DeliveryCoordinator(
             connection: connection, xmp: xmp, fileLock: fileLock, target: target,
             eventSink: eventSink)

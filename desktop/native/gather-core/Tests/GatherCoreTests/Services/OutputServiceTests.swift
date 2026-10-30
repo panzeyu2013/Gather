@@ -170,9 +170,8 @@ struct OutputServiceTests {
             atPath: galleryDir.appendingPathComponent("thumbs/0001.jpg").path))
         #expect(FileManager.default.fileExists(
             atPath: galleryDir.appendingPathComponent("large/0001.jpg").path))
-        let entries = try JSONDecoder().decode(
-            [GalleryEntry].self,
-            from: Data(contentsOf: galleryDir.appendingPathComponent("data.json")))
+        let entries = try GalleryDataFile.load(
+            Data(contentsOf: galleryDir.appendingPathComponent("data.json"))).items
         #expect(entries.count == 2)
         // manifest 成品清单：两张成片 + gallery/index.html。
         let files = try #require(summary.recipes.first?.files)

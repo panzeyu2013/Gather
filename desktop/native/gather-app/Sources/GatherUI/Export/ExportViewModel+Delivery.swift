@@ -147,31 +147,49 @@ extension ExportViewModel {
         }
     }
 
-    /// 导入客户校样（selection.json 原文）：勾选项写成 imported 决策。
-    public func importClientSelection(json: String) async {
-        guard let cullingAPI, !isImportingSelection else { return }
+    /// 导入客户校样（selection.json 原文，v1/v2 都认）：
+    /// 勾选写成 imported 决策，星级/色标按设置入队，评论只落库。
+    /// - Returns: 完整导入报告（含冲突/评论数），供调用方弹结果 sheet；失败返回 nil。
+    @discardableResult
+    public func importClientSelection(json: String) async -> ClientSelectionImportReport? {
+        guard let cullingAPI, !isImportingSelection else { return nil }
         isImportingSelection = true
         clientSelectionImport = nil
         errorMessage = nil
         defer { isImportingSelection = false }
         do {
-            clientSelectionImport = try await cullingAPI.importClientSelection(
+            let report = try await cullingAPI.importClientSelection(
                 Confirmed(ClientSelectionImportInput(sessionId: sessionId, json: json)))
+            // 旧徽标仍用 v1 形态（picked/applied/skipped/failed），既有文案不变。
+            clientSelectionImport = report.selection
+            return report
         } catch {
             errorMessage = CommandError(error)
+            return nil
         }
     }
 
     /// 发布到 WebDAV：先存凭据（Keychain），再上传目录。
+    ///
+    /// 白名单**必填**：空列表说明上层没能从 manifest 推出产物清单，此时宁可不发布，
+    /// 也绝不"回退成整目录上传"（会把历史 manifest、成片目录、用户杂物一起传上去）。
+    /// allowDownload = false 时只传缩略图与校样页（大图/成片不上传）。
     public func publishToWebDAV(
         localPath: String,
         baseURL: String,
         username: String,
         password: String,
         remoteFolder: String,
-        includePrefixes: [String]? = nil
+        includePrefixes: [String],
+        allowDownload: Bool
     ) async {
         guard !isPublishing else { return }
+        guard !includePrefixes.isEmpty else {
+            // 上一轮的残留结果必须清掉，否则面板会显示上一次的"发布成功"。
+            webDAVPublish = nil
+            errorMessage = CommandError.localized("无法确定发布清单，已取消发布")
+            return
+        }
         isPublishing = true
         webDAVPublish = nil
         publishProgress = nil
@@ -191,7 +209,9 @@ extension ExportViewModel {
                 Confirmed(WebDAVPublishInput(
                     localPath: localPath, baseURL: baseURL,
                     username: username, remoteFolder: remoteFolder,
-                    includePrefixes: includePrefixes)),
+                    includePrefixes: includePrefixes,
+                    share: OutputShareOptions(
+                        allowDownload: allowDownload, remoteSubfolder: remoteFolder))),
                 // 外层闭包显式弱持有：内层 Task 的 [weak self] 与外层的强捕获不一致
                 // （#ImplicitStrongCapture），也避免发布流程被闭包延长 VM 生命周期。
                 onProgress: { [weak self] done, total in

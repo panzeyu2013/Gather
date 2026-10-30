@@ -2,7 +2,7 @@
 // Cut 2 / B-1：Database facade 的行为门禁（D-035）。
 //
 // 覆盖四件事（WP6b）：
-//   1. `:memory:` 打开即当前 schema v1（44 表 / user_version = 1；唯一版本，一次成型）；
+//   1. `:memory:` 打开即当前 schema v1（55 表 / user_version = 1；唯一版本，一次成型）；
 //   2. 文件库新建 → 关闭 → 重开数据保留（v1 幂等）；
 //   3. 版本不符（user_version != 当前）默认 fail-closed（不改名、不动文件，显式 reset 才归档重建）；
 //      user_version=99 的
@@ -21,7 +21,7 @@ import Testing
 // MARK: - 期望值 / 公共辅助
 
 /// 当前 schema（v1）的用户表数量（逐表列数由 SchemaCurrentTests 钉死）。
-private let expectedCurrentTableCount = 44
+private let expectedCurrentTableCount = 55
 
 private struct TestError: Error {}
 
@@ -107,7 +107,7 @@ struct DatabaseFacadeTests {
 
     // MARK: 1. 内存库
 
-    @Test(":memory:：open 直接建 schema v1（44 表 / user_version = 1）")
+    @Test(":memory:：open 直接建 schema v1（55 表 / user_version = 1）")
     func memoryOpenBuildsCurrentSchema() throws {
         let database = try Database.open(at: Database.inMemoryPath)
         defer { database.close() }
@@ -117,7 +117,7 @@ struct DatabaseFacadeTests {
         #expect(database.outcome == .created(SchemaCurrent.userVersion))
 
         let tables = try database.read { try userTables($0) }
-        #expect(tables.count == expectedCurrentTableCount, "当前 schema 必须是 44 张表，实际 \(tables.count)：\(tables)")
+        #expect(tables.count == expectedCurrentTableCount, "当前 schema 必须是 55 张表，实际 \(tables.count)：\(tables)")
         #expect(tables.contains("sessions"))
         #expect(tables.contains("delivery_intents"))
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaCurrent.userVersion)
@@ -179,7 +179,7 @@ struct DatabaseFacadeTests {
         )
         defer { database.close() }
 
-        // 新库必须是干净的 v1：版本 1、44 表、旧表不存在（WAL 残留不得复辟旧页）。
+        // 新库必须是干净的 v1：版本 1、55 表、旧表不存在（WAL 残留不得复辟旧页）。
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaCurrent.userVersion)
         let tables = try database.read { try userTables($0) }
         #expect(tables.count == expectedCurrentTableCount)
@@ -422,7 +422,7 @@ struct DatabaseFacadeTests {
 
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaCurrent.userVersion)
         #expect(try database.read { try userTables($0).count } == expectedCurrentTableCount)
-        #expect(try database.read { try userColumnCount($0) } == 386, "重置后必须是当前 386 列")
+        #expect(try database.read { try userColumnCount($0) } == 449, "重置后必须是当前 449 列")
         let columns = try database.read { try columnNames($0, table: "similarity_cluster_meta") }
         #expect(columns.isSuperset(of: ["algorithm_version", "input_signature", "state_digest"]),
                 "重置后必须带 Cut 5 三列，实际 \(columns.sorted())")
@@ -460,7 +460,7 @@ struct DatabaseFacadeTests {
         let database = try Database.open(at: path)
         defer { database.close() }
         #expect(database.outcome == .opened(SchemaCurrent.userVersion))
-        #expect(try database.read { try userColumnCount($0) } == 386)
+        #expect(try database.read { try userColumnCount($0) } == 449)
         #expect(try database.read {
             try $0.prepare("SELECT COUNT(*) FROM sessions WHERE id = ?").get([.text("keep-me")])?[0].intValue
         } == 1, "重开必须保留数据")
@@ -488,7 +488,7 @@ struct DatabaseFacadeTests {
         defer { database.close() }
 
         #expect(try database.read { try scalarInt($0, "PRAGMA user_version") } == SchemaCurrent.userVersion)
-        #expect(try database.read { try userColumnCount($0) } == 386)
+        #expect(try database.read { try userColumnCount($0) } == 449)
         #expect(try database.read { try scalarInt($0, "SELECT COUNT(*) FROM sessions") } == 0)
         let copies = try incompatibleCopies(in: directory)
         let copiedMains = copies.filter { !$0.hasSuffix("-wal") && !$0.hasSuffix("-shm") }

@@ -114,6 +114,18 @@ public final class SettingsService: @unchecked Sendable {
             "backup_retention": "5",
             "backup_auto": "off",
             "diagnostics_include_paths": "0",
+
+            // P1 下一波：元数据生命周期 / 写盘 / 关键词 / 检索 / 校样 / 语义
+            "metadata_backup_retention_days": "7",
+            "metadata_sync_auto_confirm": "1",
+            "metadata_sync_auto_finalize": "0",
+            "embedded_fast_path": "1",
+            "keyword_dc_style": "leaf",
+            "gallery_saved_search_limit": "50",
+            "proof_feedback_apply_rating": "0",
+            "c1_auto_reload": "1",
+            "triage_calibration_min_samples": "50",
+            "semantic_index_enabled": "0",
         ]
     }
 
@@ -263,6 +275,16 @@ public final class SettingsService: @unchecked Sendable {
         "triage_model_review",
         "triage_policy",
         "triage_reject_confidence_min",
+        "metadata_backup_retention_days",
+        "metadata_sync_auto_confirm",
+        "metadata_sync_auto_finalize",
+        "embedded_fast_path",
+        "keyword_dc_style",
+        "gallery_saved_search_limit",
+        "proof_feedback_apply_rating",
+        "c1_auto_reload",
+        "triage_calibration_min_samples",
+        "semantic_index_enabled",
     ]
 
     /// 每个 known key 恰好落到一个 scope；未知键返回 nil（不静默按偏好处理）。

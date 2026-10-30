@@ -3,6 +3,7 @@
 // 纯搬移：reload 自己递增代数的 D04 修复与「首页被拒不再假空态」兜底不变；
 // reload 改 internal（+Filter/+Scroll 也调用）。
 import Foundation
+import GatherProtocol
 
 extension GalleryViewModel {
 
@@ -25,6 +26,61 @@ extension GalleryViewModel {
         loadTask = nil
     }
 
+
+    /// 堆栈折叠索引（AlbumAPI 未接线/失败时保持空索引，不影响网格）。
+    func refreshStackFolds() async {
+        guard let albumAPI else {
+            stackFolds = StackFoldIndex()
+            stackFoldVersion &+= 1
+            return
+        }
+        do {
+            let folds = try await albumAPI.stackFolds(sessionId)
+            stackFolds = StackFoldIndex(folds: folds)
+            stackFoldVersion &+= 1
+            filteredCache = nil
+        } catch {
+            GatherLogger.log("stack folds load failed: \(error)", level: .debug)
+        }
+    }
+
+
+    /// 集合列表（加入集合菜单用）；失败静默为空，不阻塞网格。
+    func refreshCollections() async {
+        guard let albumAPI else {
+            collections = []
+            return
+        }
+        do {
+            collections = try await albumAPI.collections(sessionId)
+        } catch {
+            GatherLogger.log("collections load failed: \(error)", level: .debug)
+        }
+    }
+
+    /// 把照片加入集合；成功后留在当前页并刷新集合菜单数据。
+    func addToCollection(_ collectionId: String, photoIds: [String]) async {
+        guard let albumAPI, !photoIds.isEmpty else { return }
+        do {
+            _ = try await albumAPI.addCollectionItems(
+                CollectionItemsInput(collectionId: collectionId, photoIds: photoIds))
+        } catch {
+            actionError = CommandError(error)
+        }
+    }
+
+    /// 把当前选择（至少 2 张）建堆栈，随后刷新折叠索引。
+    func createStack(photoIds: [String]) async {
+        guard let albumAPI, photoIds.count >= 2 else { return }
+        do {
+            _ = try await albumAPI.createStack(
+                StackCreateInput(sessionId: sessionId, photoIds: photoIds))
+            await refreshStackFolds()
+        } catch {
+            actionError = CommandError(error)
+        }
+    }
+
     private func performLoad() async {
         phase = .loading
         do {
@@ -34,6 +90,8 @@ extension GalleryViewModel {
         }
         // B8.2a：thumbnail_size 经 SettingsAPI.get（async）。
         thumbnailSize = await provider.thumbnailSize()
+        await refreshStackFolds()
+        await refreshCollections()
         await refreshWorkspaceStatus()
         await reload()
     }
@@ -98,6 +156,8 @@ extension GalleryViewModel {
         pageCursors = []
         committedSearch = search.trimmingCharacters(in: .whitespaces)
         committedFilter = filter
+        committedFacetSelection = facetSelection
+        committedRules = rules
         committedExpandVariants = expandVariants
         searchActiveWas = false
         phase = .loading
@@ -116,5 +176,7 @@ extension GalleryViewModel {
         // 兜底：仅在本轮没有在途请求时收尾（有在途请求时由它自己写 phase）。
         // 旧实现无条件兜底：首页被拒时会把「空数据集」标成 loaded，用户看到假空态。
         if phase == .loading, fetchingGeneration == nil { phase = .loaded }
+        // facet 与网格同源：每次重载后按同一 criteria 重算面板（未接线 PhotoAPI 时为空）。
+        await refreshFacets()
     }
 }

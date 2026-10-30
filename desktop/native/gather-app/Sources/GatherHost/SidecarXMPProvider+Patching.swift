@@ -13,6 +13,8 @@ extension SidecarXMPProvider {
     private static let newline = String(UnicodeScalar(10)!)
 
     private static let dcNamespace = "http://purl.org/dc/elements/1.1/"
+    /// P1 下一波 §3.6.3：Lightroom 层级关键词命名空间（lr:hierarchicalSubject）。
+    static let lrNamespace = "http://ns.adobe.com/lightroom/1.0/"
     private static let xmpNamespace = "http://ns.adobe.com/xap/1.0/"
     private static let photoshopNamespace = "http://ns.adobe.com/photoshop/1.0/"
     private static let rdfNamespace = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -21,14 +23,27 @@ extension SidecarXMPProvider {
     static func verify(
         xmpPath: String,
         expected: MetadataWriteAttributes,
-        actual: MetadataWriteAttributes
+        actual: MetadataWriteAttributes,
+        dcSubjectStyle: KeywordDCSubjectStyle = .leaf
     ) throws {
         if let keywords = expected.keywords {
+            // P1 下一波 §3.6.3：两套列表（dc:subject + lr:hierarchicalSubject）一起校验。
+            // 期望值不是 wire 列表本身，而是**它写盘后的两份列表**（叶子展开是合法的：
+            // 写 "A|B" 之后 dc 里是 "B"、lr 里是 "A|B"，读回合并后是 ["A|B","B"]）。
+            // 用集合比较既容忍 Bag 顺序，又能抓住"lr 没写进去"或"清空只清了一套"。
+            let encoded = KeywordCodec.encoded(keywords, style: dcSubjectStyle)
+            // 期望值必须用**读侧同一套合并**算：leaf 风格下 dc 里的叶子会被并回
+            // 层级路径（KeywordCodec.merge），直接比对原始 dc+lr 会把合法写入判成失败。
+            let expectedKeys = Set(
+                KeywordCodec.merge(flat: encoded.dc, hierarchical: encoded.hierarchical)
+                    .map(\.serialized).map(KeywordNormalizer.fold))
             let actualKeywords = actual.keywords ?? []
-            if actualKeywords != keywords {
+            let actualKeys = Set(actualKeywords.map(KeywordNormalizer.fold))
+            if actualKeys != expectedKeys {
                 throw SidecarXMPError.verificationFailed(
                     xmpPath: xmpPath, field: .keywords,
-                    expected: describeList(keywords), actual: describeList(actualKeywords))
+                    expected: describeList(expectedKeys.sorted()),
+                    actual: describeList(actualKeys.sorted()))
             }
         }
         if let rating = expected.rating {
@@ -102,11 +117,17 @@ extension SidecarXMPProvider {
         "[" + values.joined(separator: ",") + "]"
     }
 
-    /// 对原始文档文本做四字段补丁（其余内容逐字节保留）。insert-or-replace。
+    /// 对原始文档文本做补丁（其余内容逐字节保留）。insert-or-replace。
+    ///
+    /// 关键词写**两套**（P1 下一波 §3.6.3）：
+    /// - dc:subject：按 keyword_dc_style 写叶子（默认）或完整路径；
+    /// - lr:hierarchicalSubject：只写含层级的路径（Lightroom/Bridge 靠它建层级）。
+    /// 平铺词**不写** lr（写进去会被当成一级路径，造成重复与假层级）。
     static func patchDocument(
         _ xml: String,
         attributes: MetadataWriteAttributes,
-        xmpPath: String
+        xmpPath: String,
+        dcSubjectStyle: KeywordDCSubjectStyle = .leaf
     ) throws -> String {
         // 前缀归一化：外部工具把已知命名空间绑到别名前缀时，下面的"按 qname 查找/替换"
         // 会找不到既有元素并插入第二个同属性元素（XMP 重复属性）。先统一成规范前缀；
@@ -119,13 +140,21 @@ extension SidecarXMPProvider {
         if let keywords = attributes.keywords {
             prefixes.append(("dc", dcNamespace))
             prefixes.append(("rdf", rdfNamespace))
+            prefixes.append(("lr", lrNamespace))
+            let encoded = KeywordCodec.encoded(keywords, style: dcSubjectStyle)
             // 关键词是结构值，属性形式非法；先清掉任何属性形式残留。
             parts.openTag = removeAttribute(parts.openTag, name: "dc:subject")
-            let element = subjectElement(keywords)
-            if let replaced = replaceElement(parts.inner, name: "dc:subject", with: element) {
-                parts.inner = replaced
-            } else {
-                insertions.append(element)
+            parts.openTag = removeAttribute(parts.openTag, name: "lr:hierarchicalSubject")
+            for (qname, values) in [
+                ("dc:subject", encoded.dc),
+                ("lr:hierarchicalSubject", encoded.hierarchical),
+            ] {
+                let element = subjectElement(values, qname: qname)
+                if let replaced = replaceElement(parts.inner, name: qname, with: element) {
+                    parts.inner = replaced
+                } else {
+                    insertions.append(element)
+                }
             }
         }
 
@@ -327,15 +356,17 @@ extension SidecarXMPProvider {
         return DescriptionParts(before: before, openTag: rawOpenTag, inner: inner, suffix: suffix)
     }
 
-    /// 关键词元素：dc:subject / rdf:Bag / rdf:li 列表。
-    private static func subjectElement(_ keywords: [String]) -> String {
+    /// 关键词元素：qname / rdf:Bag / rdf:li 列表（dc:subject 与 lr:hierarchicalSubject 同构）。
+    /// 空列表也写一个空 Bag："清空"必须是**写下去**的动作，否则外部工具里的旧值会残留。
+    private static func subjectElement(_ keywords: [String], qname: String = "dc:subject") -> String {
         guard !keywords.isEmpty else {
-            return "<dc:subject>" + newline + "  <rdf:Bag>" + newline + "  </rdf:Bag>" + newline + "</dc:subject>"
+            return "<" + qname + ">" + newline + "  <rdf:Bag>" + newline + "  </rdf:Bag>"
+                + newline + "</" + qname + ">"
         }
         let items = keywords.map { "    <rdf:li>" + xmlEscape($0) + "</rdf:li>" }
             .joined(separator: newline)
-        return "<dc:subject>" + newline + "  <rdf:Bag>" + newline + items + newline + "  </rdf:Bag>"
-            + newline + "</dc:subject>"
+        return "<" + qname + ">" + newline + "  <rdf:Bag>" + newline + items + newline
+            + "  </rdf:Bag>" + newline + "</" + qname + ">"
     }
 
     static func simpleElement(_ name: String, value: String) -> String {
