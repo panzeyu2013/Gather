@@ -1,9 +1,9 @@
 # 功能性与易用性三轮评审收口（features → main）
 
 - 日期：2026-10-30
-- 合并提交：`e3f1276d`；残留修复：`9420b867`（`fix(residual): 补齐预览令牌/错误码/摄取与导出残余`）
+- 合并提交：`e3f1276d`；残留修复：`9420b867`、`96f14acb`（`fix(residual): 补齐预览令牌/错误码/摄取与导出残余`）
 - 基线：features `c77c3a57` + 未提交整改工作树；主分支合并前为 `a2030b51`
-- 结果：features 工作树已快进到 main；备份 worktree / `.review` 已移除
+- 结果：features 分支已合入 main；备份 worktree / `.review` 已移除，当前仅 main worktree。
 
 ## 结论
 
