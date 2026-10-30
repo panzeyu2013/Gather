@@ -77,12 +77,17 @@ package struct DashboardView: View {
     package var body: some View {
         VStack(spacing: 0) {
             if let error = viewModel.actionError {
-                NativeBanner(text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)))
+                NativeBanner(
+                    text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
+                    onDismiss: { viewModel.actionError = nil }
+                )
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
+                    .transition(.opacity)
             }
             phaseContent
         }
+        .gatherAnimatePresence(viewModel.actionError != nil)
         // 页面 chrome：frame / 表面 / 标题 / 副标题统一由 GatherPage 骨架提供。
         .gatherPage(title: l10n("工作台"), subtitle: dashboardSubtitle)
         .toolbar { toolbarItems }

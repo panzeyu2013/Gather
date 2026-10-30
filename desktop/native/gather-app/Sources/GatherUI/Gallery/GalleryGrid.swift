@@ -31,36 +31,48 @@ extension GalleryView {
         GeometryReader { geometry in
             // 行区域实际内容宽度 = 全宽 − LazyVStack 水平 padding 24×2。
             let rows = layoutRows(filtered: filtered, width: max(1, geometry.size.width - 48))
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        rowView(row, filtered: filtered)
-                            .frame(height: row.height)
-                    }
-                    // TS 哨兵：滚近末尾触发下一页（键集游标）。
-                    Color.clear
-                        .frame(height: 1)
-                        .onAppear {
-                            Task { await viewModel.loadMoreIfNeeded() }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                            rowView(row, filtered: filtered)
+                                .frame(height: row.height)
+                                // 行 id：键盘游标移动时 scrollTo 的目标。
+                                .id(index)
                         }
+                        // TS 哨兵：滚近末尾触发下一页（键集游标）。
+                        Color.clear
+                            .frame(height: 1)
+                            .onAppear {
+                                Task { await viewModel.loadMoreIfNeeded() }
+                            }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 16)
-            }
-            .focusable()
-            .focused($galleryGridFocused)
-            .onAppear { galleryGridFocused = true }
-            .onKeyPress(.leftArrow) { moveGalleryCursor(by: -1); return .handled }
-            .onKeyPress(.rightArrow) { moveGalleryCursor(by: 1); return .handled }
-            .onKeyPress(.upArrow) { moveGalleryCursor(by: -1); return .handled }
-            .onKeyPress(.downArrow) { moveGalleryCursor(by: 1); return .handled }
-            .onKeyPress(.space) { toggleGalleryCursor(); return .handled }
-            .onKeyPress(.return) { openGalleryCursor(); return .handled }
-            .onKeyPress(.escape) { viewModel.clearSelection(); return .handled }
-            .onKeyPress("a", phases: .down) { press in
-                guard press.modifiers.contains(.command) else { return .ignored }
-                Task { await viewModel.selectAllInScope() }
-                return .handled
+                .focusable()
+                .focused($galleryGridFocused)
+                .onAppear { galleryGridFocused = true }
+                .onKeyPress(.leftArrow) { moveGalleryCursor(by: -1); return .handled }
+                .onKeyPress(.rightArrow) { moveGalleryCursor(by: 1); return .handled }
+                .onKeyPress(.upArrow) { moveGalleryCursor(by: -1); return .handled }
+                .onKeyPress(.downArrow) { moveGalleryCursor(by: 1); return .handled }
+                .onKeyPress(.space) { toggleGalleryCursor(); return .handled }
+                .onKeyPress(.return) { openGalleryCursor(); return .handled }
+                .onKeyPress(.escape) { viewModel.clearSelection(); return .handled }
+                .onKeyPress("a", phases: .down) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    Task { await viewModel.selectAllInScope() }
+                    return .handled
+                }
+                // 键盘游标跟随：方向键把选中项移出视口后，"盲选"会让人失去方向感。
+                // 只在游标变化时滚动，不干扰鼠标/触控板滚动。
+                .onChange(of: galleryScrollTarget) { _, target in
+                    guard let target else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: GatherMetrics.Motion.standard)) {
+                        proxy.scrollTo(target, anchor: .center)
+                    }
+                }
             }
         }
     }

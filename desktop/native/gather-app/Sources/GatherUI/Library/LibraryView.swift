@@ -107,9 +107,13 @@ package struct LibraryView: View {
     package var body: some View {
         VStack(spacing: 0) {
             if let error = viewModel.actionError {
-                NativeBanner(text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)))
+                NativeBanner(
+                    text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
+                    onDismiss: { viewModel.actionError = nil }
+                )
                     .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                     .padding(.top, 12)
+                    .transition(.opacity)
             }
             // 空库且无筛选时，筛选条 / 状态条不占首屏：只留一个整页空态。
             if showsBrowseChrome {
@@ -119,6 +123,7 @@ package struct LibraryView: View {
             }
             content
         }
+        .gatherAnimatePresence(viewModel.actionError != nil)
         // 页面 chrome：frame / 表面 / 标题 / 副标题统一由 GatherPage 骨架提供。
         .gatherPage(title: l10n("全局图库"), subtitle: browseSubtitle)
         // 文件名搜索：内容区搜索框（不用 .searchable toolbar 形态）。

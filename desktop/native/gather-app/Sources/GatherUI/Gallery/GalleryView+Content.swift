@@ -15,10 +15,12 @@ extension GalleryView {
                 // 旧版裸红字 → 原生提示条（图标 + 语义色底）。
                 NativeBanner(
                     text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
-                    color: GatherTheme.error
+                    color: GatherTheme.error,
+                    onDismiss: { viewModel.actionError = nil }
                 )
                 .padding(.horizontal, GatherMetrics.Layout.pageGutter)
                 .padding(.top, 12)
+                .transition(.opacity)
             }
             searchRow
             indexHeaderRow
@@ -27,6 +29,8 @@ extension GalleryView {
             }
             content
         }
+        // 横幅淡入淡出：错误出现时不再把整页内容硬顶下去。
+        .gatherAnimatePresence(viewModel.actionError != nil)
         .confirmationDialog(
             l10n("确认批量操作？"),
             isPresented: Binding(
@@ -334,6 +338,19 @@ extension GalleryView {
         keyboardCursorId = id
         viewModel.clearSelection()
         viewModel.toggleSelection(id)
+        // 游标移出视口 = 看不见的选中项。把目标行交给网格滚过去。
+        galleryScrollTarget = rowIndex(containing: next)
+    }
+
+    /// 某个 filtered 下标落在哪一行（justified 网格的行由布局缓存给出）。
+    /// 布局还没算出来（首帧/空网格）时返回 nil，滚动自然跳过。
+    func rowIndex(containing index: Int) -> Int? {
+        guard !layoutCache.rows.isEmpty else { return nil }
+        for (rowIndex, row) in layoutCache.rows.enumerated()
+        where row.items.contains(where: { $0.index == index }) {
+            return rowIndex
+        }
+        return nil
     }
 
     func toggleGalleryCursor() {

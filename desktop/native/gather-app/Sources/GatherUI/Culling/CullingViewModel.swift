@@ -135,6 +135,9 @@ public final class CullingViewModel: PageVisibility {
     public internal(set) var keywordSuggestions: [String] = []
     /// 目标集关键词索引缓存（selection + pageVersion 失效），避免每帧 O(资产×词)。
     @ObservationIgnored var keywordTargetIndexCache: KeywordTargetIndex?
+    /// 决策提交的串行链（L1 核心循环）：挑片是 2–3 拍/秒的工作流，并发提交会在
+    /// 同一张照片上带着过期 `expectedRevision` 撞冲突。见 `commit(patch:shouldAdvance:)`。
+    @ObservationIgnored var commitChain: Task<Void, Never>?
     public internal(set) var isKeywordBusy = false
     public internal(set) var keywordError: CommandError?
     public internal(set) var keywordPreview: WritebackPreview?

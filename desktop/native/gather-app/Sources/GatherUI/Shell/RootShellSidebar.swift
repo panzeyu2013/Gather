@@ -130,6 +130,7 @@ extension RootView {
                     .foregroundStyle(.tertiary)
             }
         }
+        .frame(minHeight: 34, alignment: .leading)
         .help(sidebarSessionHelp(session))
     }
 
@@ -143,11 +144,13 @@ extension RootView {
         Label(title, systemImage: systemImage)
             .lineLimit(1)
             .truncationMode(.tail)
+            .frame(minHeight: 24, alignment: .leading)
     }
 
     /// 全局条目：交给系统 List 的选中态；不要给整行上品牌色。
     private func sidebarLabel(_ title: String, systemImage: String) -> some View {
         Label(title, systemImage: systemImage)
+            .frame(minHeight: 24, alignment: .leading)
     }
 
     private var sidebarSelectionBinding: Binding<SidebarItem?> {

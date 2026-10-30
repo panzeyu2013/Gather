@@ -112,7 +112,8 @@ struct CullingInfoBar: View {
     /// 同一份 outbox 状态会得到相反结论。
     func syncStatusText(_ sync: MetadataSyncSummary) -> String {
         let hasCounts = sync.conflict + sync.failed + sync.pending + sync.writing + sync.written + sync.synced > 0
-        if sync.items.isEmpty && !hasCounts { return l10n("XMP 已同步") }
+        // 没有任何交付记录 = 还没写过，不要说成"已同步"（与状态胶囊同一口径）。
+        if sync.items.isEmpty && !hasCounts { return l10n("尚未写回") }
         if sync.conflict > 0 { return l10n.format("%lld 个 XMP 冲突", sync.conflict) }
         if sync.failed > 0 { return l10n.format("%lld 个 XMP 写入失败", sync.failed) }
         if sync.pending + sync.writing > 0 { return l10n.format("%lld 个 XMP 等待写入", sync.pending + sync.writing) }

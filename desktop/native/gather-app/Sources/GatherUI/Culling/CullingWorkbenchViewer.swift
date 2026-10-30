@@ -55,6 +55,11 @@ struct CullingWorkbenchViewer: View {
     /// 改为直接问代理视图「这个点在你 bounds 里吗」：位置由 AppKit 自己维护，
     /// 不产生任何布局反馈。
     @State private var viewerProxy: NSView?
+    /// 初始焦点（L1 交互整改）：P/X/U、0–9、←/→ 都挂在本视图的 `.onKeyPress` 上，
+    /// 而 `.onKeyPress` 只对持有焦点的视图生效。旧实现没有任何聚焦请求——用户
+    /// 进页面后必须先点一下照片，裸键才"活过来"。这里在查看器出现时主动取焦点
+    /// （网格布局挂的是 CullingGridView，两者互斥，不会互抢）。
+    @FocusState private var viewerFocused: Bool
 
     /// 当前已加载列表（viewModel.page 变化经 @Observable 自动回流）。
     private var assets: [CullingAsset] {
@@ -146,7 +151,9 @@ struct CullingWorkbenchViewer: View {
         }
         // 空格 = 保留当前照片（裸键不该占用系统快捷键，交给聚焦查看器的 onKeyPress）。
         .focusable()
+        .focused($viewerFocused)
         .focusEffectDisabled()
+        .onAppear { viewerFocused = true }
         // 裸键（空格 / P / X / U / 0–5）统一挂在这里。
         //
         // 这些键原先注册在检查器里的按钮上，检查器一旦折叠就全部失效——
@@ -191,6 +198,22 @@ struct CullingWorkbenchViewer: View {
             case "0", "1", "2", "3", "4", "5":
                 guard let value = Int(press.characters) else { return .ignored }
                 Task { await viewModel.commit(patch: CullingUpdatePatch(rating: Double(value))) }
+                return .handled
+            case "6", "7", "8", "9":
+                // 对齐 Lightroom：6–9 = 红 / 黄 / 绿 / 蓝色标（橙/粉/紫只留在检查器菜单）。
+                // 色标是"就地标注"，不触发自动前进（与星级刻意不同）。
+                let label: CaptureOneColorLabel
+                switch press.characters {
+                case "6": label = .red
+                case "7": label = .yellow
+                case "8": label = .green
+                default: label = .blue
+                }
+                Task {
+                    await viewModel.commit(
+                        patch: CullingUpdatePatch(colorLabel: label),
+                        shouldAdvance: false)
+                }
                 return .handled
             default:
                 return .ignored

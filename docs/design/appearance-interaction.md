@@ -73,7 +73,9 @@ Text("12847")
 ### 间距 / 圆角 / 阴影
 
 - 间距优先 `GatherMetrics.Space`：4/8/12/16/24/32/48；2/6 仅用于紧凑 inline。
-- 圆角优先 `GatherTheme.Radius`：6（缩略图）/ 8（小面板）/ 12（卡片）/ 16（tile）/ 24（hero）。
+- 圆角优先 `GatherTheme.Radius`：6（小控件）/ 8（照片媒体面 `media`、小面板）/ 12（卡片）/ 16（tile）/ 24（hero）。
+  照片缩略图统一用 `Radius.media`：浏览 / 挑片网格 / 全局图库三处必须同一个圆角，
+  否则同一张照片在三个页面里像三个产品。
 - 阴影用 `gatherCard(elevated:)` 或 `GatherElevation`（规划中）统一，不要手写
   `.shadow(color: .black.opacity(...), radius: ..., y: ...)`。
 - 尺寸预算用 `GatherChromeMetrics`：窗口 860×560、侧栏 180/220/260、检查器 220/220/360/400

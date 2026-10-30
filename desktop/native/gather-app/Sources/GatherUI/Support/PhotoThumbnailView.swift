@@ -771,6 +771,17 @@ public enum PhotoThumbnailCache {
         return box.cache.object(forKey: key as NSString)
     }
 
+    /// 清空内存缩略图。
+    ///
+    /// 为什么需要：键里只有 path+size，没有 mtime。用户在 Capture One 里改了图，
+    /// 回 Gather 后内存缓存仍然命中旧图（磁盘缓存键含 mtime，但内存先返回）。
+    /// 由"用户主动刷新"触发——这是唯一不会误伤的时机（不按刷新就保持现状）。
+    public static func invalidateAll() {
+        box.lock.lock()
+        defer { box.lock.unlock() }
+        box.cache.removeAllObjects()
+    }
+
     public static func setImage(_ image: NSImage, for key: String) {
         box.lock.lock()
         defer { box.lock.unlock() }

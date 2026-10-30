@@ -76,6 +76,9 @@ package struct GalleryView: View {
     /// P2-2：网格键盘焦点与当前键盘游标。
     @FocusState var galleryGridFocused: Bool
     @State var keyboardCursorId: String?
+    /// 键盘游标要滚进视野的行号（-1/ nil = 不滚动）。由 moveGalleryCursor 写入，
+    /// GalleryGrid 的 ScrollViewReader 消费后不再回写，避免循环。
+    @State var galleryScrollTarget: Int?
     /// P2-2：图库批量动作先确认（与挑片页同口径），避免误点改 2 万张。
     @State var pendingGalleryBatch: PendingGalleryBatch?
     /// 网格行布局缓存（避免 ScrollView 滚动时反复重算 justified 布局）。

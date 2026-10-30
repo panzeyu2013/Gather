@@ -133,7 +133,9 @@ public struct SessionControlView: View {
                     sourceRootBanner
                 }
                 ScrollView {
-                    if viewModel.isLoading {
+                    // 只有"还没有任何快照"时才整页转圈：索引活跃期 3s 一轮，
+                    // 每轮替换内容会把滚动位置和阅读上下文一起清掉（E-P1-1）。
+                    if viewModel.isLoading && viewModel.session == nil {
                         ProgressView(l10n("加载中…"))
                             .controlSize(.small)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)

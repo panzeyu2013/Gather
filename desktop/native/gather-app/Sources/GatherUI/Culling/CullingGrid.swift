@@ -470,9 +470,9 @@ private struct CullingGridCell: View {
             }
             .padding(GatherMetrics.Space.s)
         }
-        .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.media, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous)
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.media, style: .continuous)
                 .strokeBorder(
                     isSelected ? GatherTheme.selection : (isCurrent ? GatherTheme.accent.opacity(0.7) : .clear),
                     lineWidth: isSelected ? 2 : 1.5

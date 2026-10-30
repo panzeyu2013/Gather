@@ -38,6 +38,20 @@ extension GalleryViewModel {
         await reload()
     }
 
+    /// 用户主动刷新（工具栏按钮 / ⌘R）：**就地重取**，保留已选照片与网格滚动。
+    ///
+    /// 与 `load()` 的分工（对齐浏览器/访达的"刷新 vs 强制重载"）：
+    /// - 有内容时走 `refreshOnEvent()`：整份换 pages、不切 `phase = .loading`、
+    ///   不发 `clearSelectionForNewQuery()`，选择集只按"仍存在"收敛；
+    /// - 首屏还没成功过 / 处于 failed 时退回 `load()`，保证"刷新"仍能救命。
+    public func refresh() async {
+        if pages.isEmpty || phase.error != nil {
+            await load()
+            return
+        }
+        await refreshOnEvent()
+    }
+
     /// 首载激活（R4 P1-4）：只由页面首次可见触发（setVisible(true)，来源是
     /// GatherSessionPage 的 onAppear → workspace.setPageVisible(.gallery, true)）。
     ///

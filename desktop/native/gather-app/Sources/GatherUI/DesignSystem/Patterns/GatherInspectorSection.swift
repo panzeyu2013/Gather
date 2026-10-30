@@ -48,6 +48,8 @@ package struct GatherInspectorSection<Content: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .gatherCard(cornerRadius: GatherTheme.Radius.card, elevated: false)
+        // 检查器卡片的 padding 比常规卡片小一档（16 → 12）：220pt 列宽下，
+        // 标签列固定 84pt，多出来的 8pt 直接还给值列，元数据不再频繁折行。
+        .gatherCard(cornerRadius: GatherTheme.Radius.card, padding: 12, elevated: false)
     }
 }

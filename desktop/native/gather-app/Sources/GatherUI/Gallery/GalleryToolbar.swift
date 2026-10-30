@@ -13,7 +13,14 @@ extension GalleryView {
             refreshTitle: l10n("刷新"),
             refreshHelp: l10n("刷新"),
             refreshKeyboardShortcut: true,
-            onRefresh: { Task { await viewModel.load() } },
+            // 刷新=就地重取（保选择/保滚动）。整页重载只在首屏失败时由 VM 内部回退。
+            // 同时丢掉内存缩略图：用户按刷新往往就是因为外部（C1）改过图。
+            onRefresh: {
+                Task {
+                    PhotoThumbnailCache.invalidateAll()
+                    await viewModel.refresh()
+                }
+            },
             showsSettings: true,
             settingsTitle: l10n("设置"),
             settingsHelp: l10n("设置")

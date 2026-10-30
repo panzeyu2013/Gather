@@ -124,6 +124,8 @@ public struct NativeBanner: View {
             RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
                 .strokeBorder(color.opacity(0.28), lineWidth: 1)
         )
-        .accessibilityElement(children: .combine)
+        // .contain 而不是 .combine：combine 会把「关闭」按钮并进文本元素，
+        // VoiceOver 既读不到也点不到（错误横幅因此变成不可关的死条）。
+        .accessibilityElement(children: .contain)
     }
 }
