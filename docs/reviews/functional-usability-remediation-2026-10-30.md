@@ -1,13 +1,13 @@
 # 功能性与易用性三轮评审收口（features → main）
 
 - 日期：2026-10-30
-- 合并提交：`e3f1276d`（`merge: 合入功能性与易用性整改（三轮评审收口）`）
+- 合并提交：`e3f1276d`；残留修复：`9420b867`（`fix(residual): 补齐预览令牌/错误码/摄取与导出残余`）
 - 基线：features `c77c3a57` + 未提交整改工作树；主分支合并前为 `a2030b51`
-- 结果：features 工作树已快进到 `e3f1276d`，备份 worktree / `.review` 已移除
+- 结果：features 工作树已快进到 main；备份 worktree / `.review` 已移除
 
 ## 结论
 
-三轮 12 路子评审（6+4+2）完成评审与修复。第一轮 9 个 P1 用户路径闭合；第二轮修掉 3 个 P1（⇧ 锚点、根修复监听单入口、alreadyPresent 第二目的地）；第三轮无 P0，保留 1 项设计层 P1：相似度/元数据写回无服务端预览令牌（仅人脸 token 链闭合）。其余为 P2 / GUI 未验收。
+三轮 12 路子评审（6+4+2）完成评审与修复。第一轮 9 个 P1 用户路径闭合；第二轮修掉 3 个 P1（⇧ 锚点、根修复监听单入口、alreadyPresent 第二目的地）；第三轮无 P0。残留修复已补相似度与元数据模板的 preview token / METADATA_PREVIEW_STALE。当前无已知 P1；剩余为 P2（inline/triage 直接写回、FSEvents 在途旧根竞态、人物多 dialog）与 GUI 未验收。
 
 ## 主要修复
 
@@ -20,10 +20,10 @@
 ## 验证（合并后 main）
 
 - core：`1459 tests / 217 suites`，exit 0（`swift test --no-parallel`）
-- app：`794 tests / 90 suites`，exit 0（`swift test --no-parallel`）
+- app：`796 tests / 90 suites`，exit 0（`swift test --no-parallel`）
 - 门禁：13/13 exit 0（12 个既有 + `check-warnings.sh`）
-- schema 44/386/72/65、user_version=1；协议 344 类型/1985 声明；错误码 198；en 1849 键
-- `git diff --check` 干净；diff 171 个已跟踪文件 + 15 个新文件，+4437/−633
+- schema 44/386/72/65、user_version=1；协议 344 类型/1990 声明；错误码 209；en 1862 键
+- `git diff --check` 干净；残留修复 36 个文件，+467/−82
 
 ## 第二轮残留修复（2026-10-30）
 
@@ -31,10 +31,10 @@
 - 摄取失败 DTO 增加 `code/retryable`，新增 `INGEST_CHECKSUM_MISMATCH` / `INGEST_DESTINATION_EXISTS` / `INGEST_PATH_INVALID` / `INGEST_TRANSFER_FAILED`。
 - `PhotoAPI.select` 改为一次 CTE（20k），不再 500/页循环；摄取去重按源文件 size 预筛未回填 checksum。
 - 交付 notice 增加 success/info/warning 语义色，预检增加忙碌态与按钮禁用。
-- 错误码 209 / en 1855；Protocol 基线按 `--allow-growth` 从 1985 → 1990（5 个新码），已记账。
+- 错误码 209 / en 1862；Protocol 基线按 `--allow-growth` 从 1985 → 1990（5 个新码），已记账。
 
 ## 残余
 
-1. **P1（设计层）**：相似度/元数据写回无 `expectedPreviewToken` 与服务端复算，`METADATA_PREVIEW_STALE` 未落地；重聚类/并发分析后旧预览仍可能写旧关键词/字段。
-2. **P2**：`TEMPLATE_*` / `DUP_*` 错误码与域映射仍缺；摄取失败 DTO 无 code/retryable；`PhotoAPI.select` 仍 500/页循环；摄取去重未按 size/mtime 预筛。
-3. **P2/未验收**：交付 notice 无 severity、预检无忙碌态；人物多 dialog 同节点；FSEvents stop→start 在途旧根竞态；焦点/三布局/符号链接根/GUI 未实机。
+1. **P2**：元数据 inline apply / triage writeback 是直接写回，没有 preview 阶段；若未来要求“预览→提交”同 token，需要补对应输入。
+2. **P2**：人物合并/移除仍是同一 body 链上的多个 `.confirmationDialog`，存在宿主抢占风险；FSEvents `stop→start` 在途旧根竞态窗口仍在。
+3. **未验收**：GUI 焦点、三布局、符号链接根、FSEvents、20k 批量体感未实机；x86_64/签名/公证未覆盖。
