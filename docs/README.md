@@ -50,6 +50,7 @@ SwiftUI（GatherUI）→ AppServices（16 个域 API / 172 个类型化方法）
 | [ROADMAP.md](ROADMAP.md) | 路线图与当前状态 |
 | [delivery-lock-order.md](delivery-lock-order.md) | 锁顺序 |
 | [test-runtime-audit.md](test-runtime-audit.md) | 测试体系审计 |
+| [validation/2026-10-31-plan.md](validation/2026-10-31-plan.md) | 发布前验证执行方案（V0–V8）与台账 |
 | [cleanup-backlog.md](cleanup-backlog.md) | 清理台账（门禁输入） |
 | [design/appearance-interaction.md](design/appearance-interaction.md) | 设计系统与页面配方 |
 | [design/functional-usability-remediation-2026-10-29.md](design/functional-usability-remediation-2026-10-29.md) | 功能与易用性整改 |

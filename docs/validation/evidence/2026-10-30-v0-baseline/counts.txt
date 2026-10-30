@@ -1,0 +1,5 @@
+✔ Test run with 1598 tests in 236 suites passed after 1.247 seconds.
+✔ Test run with 25 tests in 4 suites passed after 0.178 seconds.
+✔ Test run with 857 tests in 98 suites passed after 4.619 seconds.
+schema ok: tables=55 columns=451 indexes=86 fks=81 user_version=1 foreign_key_violations=0
+gates_passed= 12

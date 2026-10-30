@@ -1,0 +1,3014 @@
+{
+  "generated_at": "2026-10-30T15:35:49.932240+00:00",
+  "counts": {
+    "A-full": 30,
+    "B-iptc": 20,
+    "C-xmp": 20,
+    "D-unicode": 10,
+    "E-large": 10,
+    "F-bare": 10
+  },
+  "icc": true,
+  "files": [
+    {
+      "name": "A-full-001.jpg",
+      "category": "A-full",
+      "bytes": 29658,
+      "sha256": "5142befa1298eb52c60037fb89aef20c1fb0852431193201c187b3702b11d620",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 1",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-002.jpg",
+      "category": "A-full",
+      "bytes": 29658,
+      "sha256": "94e09188e84fdb778d5572f807508e7de5ce6660f95f6fcb630579100be1c83a",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 2",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-003.jpg",
+      "category": "A-full",
+      "bytes": 29658,
+      "sha256": "60bd56fe62d4d8f3333baf324f857785c1588d7ac5c1e55ed55817597006a469",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 3",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-004.jpg",
+      "category": "A-full",
+      "bytes": 29658,
+      "sha256": "9598610334141e6cc548413e81f489406844e8c5bb4dbeffc1607deb5e35229c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 4",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-005.jpg",
+      "category": "A-full",
+      "bytes": 29658,
+      "sha256": "7c032beb8994b2cb3030c524726d44269209b80f3c86c4a93c4952d8502ca938",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 5",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-006.jpg",
+      "category": "A-full",
+      "bytes": 29658,
+      "sha256": "e7b9e05b82096f20ab4d127e5f277d2ba5d53742a473f9404f1d780a9419d439",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 6",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-007.jpg",
+      "category": "A-full",
+      "bytes": 29658,
+      "sha256": "cc3e39e4a90ad2b3c73ff9ee10c335ad720604bb011a087db5e01322792947e2",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 7",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-008.jpg",
+      "category": "A-full",
+      "bytes": 29658,
+      "sha256": "d68eded173962af1f6735e02126d6687a990490591c6165938e490b9b1b8c504",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 8",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-009.jpg",
+      "category": "A-full",
+      "bytes": 29658,
+      "sha256": "93f0056f78b540bed78383f7bb1c3c7058e01939f93082d067751f1257ff97bc",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 9",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-010.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "82d2e7fc9b19dd78b3111f60d0c51797e9715a05bef883e17a7cc53573ce89ca",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 10",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-011.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "c8e6393c442e98355c86c85dfe1643c8b99c4e644f26b3a7e14762acf243b826",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 11",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-012.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "d2ceb5403cb98c5d2ac23eb87c8e0ee59a1fe8a02cd4d0a2916def3b89edb88d",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 12",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-013.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "48e0315b3550ecd1e9bf4111bdf442dd272f043e44cf580f96d9a4e95acb747c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 13",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-014.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "feb0877c16dfd6bbf9328bcba8dfda1acf1cdf041d385a44a4bebe0771d74a1d",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 14",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-015.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "e57124767ff7e5a30feac736ecfe2d267fbffd02aa6fa6db518d1d34e5c9635b",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 15",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-016.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "51c7522801e59c91b568cf785532a45fdaa2d5e976ef00fc6d810a7473f25374",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 16",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-017.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "c761afe5f969aa78056cb305a00ade5da5f8abe1ac72601401711ed48b17a098",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 17",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-018.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "a2d3224365ff4bc232b069843c733066d2bfdba0a509a75a444590855d8849fe",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 18",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-019.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "c68f0d886104bca7e3b1ac15b92c98307bbeba31a0b368586a37f1abfedb9031",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 19",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-020.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "c2031241dc8503c526f935b72ac8e3c100ad21c9ac72f9f30b21a8249cf7c2a5",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 20",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-021.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "27f7ccad70d9de8af7217cc5e400bb3aa6938db48c621da345b81792fbd34527",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 21",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-022.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "67fbc88422c3c114c2c107d4645a5436308fa89efa81323af392c1d9afca418f",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 22",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-023.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "4ca4c865c648a90e97498e6a1bcb8474a73ee835c5cdf952d69d125e8875e77c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 23",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-024.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "3ce52d868a0ead1145275bbd6571803b0421f46daba7a063db235190c92586e0",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 24",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-025.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "aa988748cfce07390b038294843b69d9d18a16cb75a3e39b623dbbf779fc54ed",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 25",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-026.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "e1d5302808669748ad787b570d3e1db6facc97d1fe7c0da4f6aeda496366b651",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 26",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-027.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "542c70ff391da844a11b3017daf9649ca62d10b6c5ea00e547a9aad3fd8aa755",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 27",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-028.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "4b34b327cc8c52189ab6026df71448c90f63fe843d898e1f23a27bc245aeb3a0",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 28",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-029.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "84e3d635dec05029bbb592ee7031143b824742f695656e88dc3436b2cc6c5a05",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 29",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "A-full-030.jpg",
+      "category": "A-full",
+      "bytes": 29661,
+      "sha256": "2ce791e456d9113253f93639205144562efdaea4f39e98347c492f6238822557",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 30",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-001.jpg",
+      "category": "B-iptc",
+      "bytes": 28243,
+      "sha256": "e3af60a6082e3ec1b900a6caea675c78efa22a5b47cd1b02a582d84233edcaa3",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 1",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-002.jpg",
+      "category": "B-iptc",
+      "bytes": 28243,
+      "sha256": "6d2bef44467b58c596d7f127285b3234dc5f35554e7fd40f250eaed70ebc0a7b",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 2",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-003.jpg",
+      "category": "B-iptc",
+      "bytes": 28243,
+      "sha256": "ea623699e7a1c80f1f75b1fd095738d2c9737743b213e3bc8e8a00fa90016763",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 3",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-004.jpg",
+      "category": "B-iptc",
+      "bytes": 28243,
+      "sha256": "da088b69bddc617a6f16feefc7ac1325f3bdaa5debae4f172b4cefdaab9e1c0f",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 4",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-005.jpg",
+      "category": "B-iptc",
+      "bytes": 28243,
+      "sha256": "1a3548f6993ad1fb910de85e45c51b18dc45d4c0f83e5e91147b21e6c9eeb806",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 5",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-006.jpg",
+      "category": "B-iptc",
+      "bytes": 28243,
+      "sha256": "04e22073402647a83e1975778ccb4278fedadea1f363c37645cb8782bc74478d",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 6",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-007.jpg",
+      "category": "B-iptc",
+      "bytes": 28243,
+      "sha256": "50a48775b97873cc3541d97ef162671d15d1227ba2013f518a154b0f7e86e092",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 7",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-008.jpg",
+      "category": "B-iptc",
+      "bytes": 28243,
+      "sha256": "051812aeb5c5863100d93d4470c46112700b1a4c1b6bbbf8741e08e6d1b46762",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 8",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-009.jpg",
+      "category": "B-iptc",
+      "bytes": 28243,
+      "sha256": "33b4246cc98cfda63acbca4524cdc33f3d53d99f0b0d29fd4d75a8382bd843af",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 9",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-010.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "fcfa1ee602a67e8cf29103f0ab57b57cde7418fb50e330e2f7c4e9ae4fb0b3eb",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 10",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-011.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "cc30d423b3b77cf242bdc1ba81ce5df5b9a40eb5b516f79e6e75f2d45ffd8607",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 11",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-012.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "44b799486f1d6e306bb5c4f0b78f38c9fc5752d95a01601805e98f6edf624555",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 12",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-013.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "163f286ed2b07797bb1d693d38185a3a26b9c37a58e57e91109ecf10339f3b62",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 13",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-014.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "f6ae291eef8095160c6b20b46f728e99290b450cb6f839b754631e3ad742cacd",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 14",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-015.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "15354253af30908c0dca6c55d706a03bcb9c657c5ea6707778162fe9feb534b3",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 15",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-016.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "ee048842801944cc666968907c7c7319f94eeeb2cc303cbb69ca40624324b690",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 16",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-017.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "0cb61dbbc06e762c8fae8cc93f102fd32a81808cb4add7579690fd58a1b79294",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 17",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-018.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "e9452fab945c7a4e15eb16c1d7123152e658ebc5d398e8b39887d9ecf10d88c1",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 18",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-019.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "d491992a0fb29ea6d926446ad623d51051e3ba9657a498afeeabbf6be47787f7",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 19",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "B-iptc-020.jpg",
+      "category": "B-iptc",
+      "bytes": 28245,
+      "sha256": "b4443b5112276f792281d194684d0dfd3b81b611ee6c8d25d21c31fb10bb555a",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "Gather Validation 20",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-001.jpg",
+      "category": "C-xmp",
+      "bytes": 29382,
+      "sha256": "fedecaaaa48eff7fbc2acaa20f1901d91ba2bab6ce255a98069f7a4bba73318a",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 1",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-002.jpg",
+      "category": "C-xmp",
+      "bytes": 29382,
+      "sha256": "146522a6430b0b3bfc146bc29eba815a48442ce215d029e79e2253b5a76eaa5f",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 2",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-003.jpg",
+      "category": "C-xmp",
+      "bytes": 29382,
+      "sha256": "26db4d64c85deb069e3d4bf030ba07c97dc3dad59cbe42e6a3e42b2e77d4cf8e",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 3",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-004.jpg",
+      "category": "C-xmp",
+      "bytes": 29382,
+      "sha256": "691e6a63e52acb180add84f9ca855e00cb7aeaeaa187bf58e6e57cb17171a6ad",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 4",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-005.jpg",
+      "category": "C-xmp",
+      "bytes": 29382,
+      "sha256": "81a4a546adfeee7ea9a674c90b247a743e637f391fe24c445ed4267fab5c6ca7",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 5",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-006.jpg",
+      "category": "C-xmp",
+      "bytes": 29382,
+      "sha256": "40e549b72606b2fea5b22f82445b69bb7569412a147d713af14a1392f2630ca3",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 6",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-007.jpg",
+      "category": "C-xmp",
+      "bytes": 29382,
+      "sha256": "f8593e83cb78a73d9149c57c5c8005f0a2da0969af7a4a7b98e162dec8e18f10",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 7",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-008.jpg",
+      "category": "C-xmp",
+      "bytes": 29382,
+      "sha256": "50bd6f550a7a78920eefa9bc3a2115d8dcd1800657b854b25424f67583b7bea7",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 8",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-009.jpg",
+      "category": "C-xmp",
+      "bytes": 29382,
+      "sha256": "3d06fa2f34198c401e6b2711f097119e7d3dcf1b69a9f6d526ce7c8be159b0e6",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 9",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-010.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "8380a6b86c5744c067c63ac874cf88aacad278fcdf43835490f6c3d15f658ded",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 10",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-011.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "491d01518cad79326500f7ed84d9c543d593b1c4e34c9807634654632e6d23fa",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 11",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-012.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "e1b1c0490aa098a1b4be51b01f79471ec902e29ae94d8931cc92a9f3971847c2",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 12",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-013.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "2b1d398277bc3e9377118700b69bde5d5f06a09f55e4e3ec40c20d2e2a157e37",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 13",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-014.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "a5c85a8026ebd25b3baf752055ca836c7c1a3f7f28a553d1eaa465431909c3b3",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 14",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-015.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "c87ee343d8e67358d7c3296409a7b68d7b6791d88bd55273b113001189b4fced",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 15",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-016.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "ff3e929ac791c3873781ebd52b2eeadad369f423ec875c68291f3502fda62895",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 16",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-017.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "f1e3fc16c8ceb205287f84658f25e4ce8e3d9236e0fb03d3e88b9c7ce587b4ef",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 17",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-018.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "0558364a694c4a232ce4f0f4f3cd5f5dd06a4534ee04078c67373d07986c7e26",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 18",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-019.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "98a56bd76dfb08fb54b7acf5b105522f765e227fa93febe593d9a07be73a96a7",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 19",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "C-xmp-020.jpg",
+      "category": "C-xmp",
+      "bytes": 29383,
+      "sha256": "f1ba04dc6930506059341b23364fd7a57a3a6999d7a6e9e0c52bd201d130280c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 20",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-001.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-002.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-003.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-004.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-005.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-006.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-007.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-008.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-009.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "D-unicode-010.jpg",
+      "category": "D-unicode",
+      "bytes": 29685,
+      "sha256": "07252f20dd33e7649a9b14db80874664145772d98389d58ffa7861f4cc122f6c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": true,
+      "iptc_chunks": 1,
+      "expected": {
+        "title": "日本語タイトル",
+        "caption": "中文说明：海港夜景，客户 A。",
+        "keywords": [
+          "夜景",
+          "港湾",
+          "クライアント"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "上海",
+        "country": "中国",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "E-large-001.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "73aaf4c45d04f9b24c243a51664f252ce6bac3b5be603a4d79b50889867b9447",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 1",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "E-large-002.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "393b98cfd628775fd49d015bdc151722ac456f8e594ae7a4c3114c5e87cf4bfe",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 2",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "E-large-003.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "77b08222ac75af801ae896a612093a91d2765c2547d2eb6310ff7878047ec9cf",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 3",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "E-large-004.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "d7bd1070c5ed6cde7cc0d87c21b60232555a2f12a80167038521a7d136257b15",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 4",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "E-large-005.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "4f371449b2fc43270259587a58ce079bbc8a8f045bbc82019d88554e064356ca",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 5",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "E-large-006.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "e2b705286ed122071d291f74eaddd9f1a48ea1715ddc467ff6f10391e3ed9e12",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 6",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "E-large-007.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "cc5cf63fe15656e1729130f6e1cde4e58bd628a164c8f393da5fa7009dd77047",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 7",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "E-large-008.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "c260afe9d946ba8d2589ba4c7072ae65519aab646dd467edacccd191ab2d01ba",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 8",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "E-large-009.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "1e3060b571c18a23cbd4252b07a1cb66a264d444e7a75d62421f33c520fc7699",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 9",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "E-large-010.jpg",
+      "category": "E-large",
+      "bytes": 113245,
+      "sha256": "6f7164ed3312747c61307391d9da5d605ddb22d818986128582e36145f281c8c",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 2,
+      "expected": {
+        "title": "Gather Validation 10",
+        "caption": "Large IPTC: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": "非标准大 IIM 拆分：ImageIO 只读其中一段、App 读首段；仅作负向样本，不作互操作基线"
+    },
+    {
+      "name": "F-bare-001.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 1",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "F-bare-002.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 2",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "F-bare-003.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 3",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "F-bare-004.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 4",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "F-bare-005.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 5",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "F-bare-006.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 6",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "F-bare-007.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 7",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "F-bare-008.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 8",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "F-bare-009.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 9",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "name": "F-bare-010.jpg",
+      "category": "F-bare",
+      "bytes": 27767,
+      "sha256": "7c16a9027f423565cba4387e44f19d79c4794a62d13a4a4d657853e20ff454e4",
+      "scan_sha256": "8d1273a23a0cfad2ecf18e2aac7db958e362d9638acbac12f238d12d1268685a",
+      "xmp": false,
+      "iptc_chunks": 0,
+      "expected": {
+        "title": "Gather Validation 10",
+        "caption": "Fixture for writeback and interop checks.",
+        "keywords": [
+          "harbor",
+          "night",
+          "客户A"
+        ],
+        "copyright": "Copyright 2026 Gather",
+        "byline": "Gather QA",
+        "credit": "Gather",
+        "source": "fixture",
+        "headline": "Harbor at night",
+        "city": "Shanghai",
+        "country": "China",
+        "hierarchical": [
+          "Places|Shanghai",
+          "Clients|A"
+        ]
+      },
+      "note": ""
+    }
+  ]
+}

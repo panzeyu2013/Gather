@@ -1,0 +1,4 @@
+A-full-001.jpg       xmp=1 app13=1 icc=1 ok=True
+A-full-002.jpg       xmp=1 app13=1 icc=1 ok=True
+
+PASS: 100 fixtures verified
