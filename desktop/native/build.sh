@@ -427,15 +427,19 @@ plugin_has_arch() {
 
 if [[ -d "$PLUGIN_SDK" && -f "$PLUGIN_DIR/Makefile" ]]; then
   PLUGIN_BUILT_ARCHS=()
-  PLUGIN_SLICES_DIR="$OUTPUT_DIR/.gather-plugin-slices"
-  rm -rf "$PLUGIN_SLICES_DIR"
-  mkdir -p "$PLUGIN_SLICES_DIR"
+  # 构建中间物统一放仓库 .build/：release/ 只留产物。旧实现把 TMPDIR 与模块缓存
+  # 放在 OUTPUT_DIR，每打一次包就在发布目录留下 ~270MB 的模块缓存（进程结束不清理）。
+  PLUGIN_SLICES_DIR="$ROOT_DIR/.build/gather-plugin-slices"
+  PLUGIN_TMP="$ROOT_DIR/.build/gather-plugin-tmp"
+  PLUGIN_MODULE_CACHE="$ROOT_DIR/.build/gather-plugin-module-cache"
+  rm -rf "$PLUGIN_SLICES_DIR" "$PLUGIN_TMP"
+  # 旧版本残留在 OUTPUT_DIR 的同名目录：迁移时顺手清掉，避免 release/ 继续变胖。
+  rm -rf "$OUTPUT_DIR/.gather-plugin-slices" "$OUTPUT_DIR/.gather-plugin-tmp" \
+         "$OUTPUT_DIR/.gather-plugin-module-cache"
+  mkdir -p "$PLUGIN_SLICES_DIR" "$PLUGIN_TMP" "$PLUGIN_MODULE_CACHE"
   # 插件用 swiftc 直接编译，模块缓存默认落在系统临时目录；受限环境（CI 容器/
   # 本机沙箱）可能不可写，导致跨架构切片静默复用上一架构的产物。把 TMPDIR 与
-  # CLANG_MODULE_CACHE_PATH 固定到输出目录，保证每个切片真的重编译。
-  PLUGIN_TMP="$OUTPUT_DIR/.gather-plugin-tmp"
-  PLUGIN_MODULE_CACHE="$OUTPUT_DIR/.gather-plugin-module-cache"
-  mkdir -p "$PLUGIN_TMP" "$PLUGIN_MODULE_CACHE"
+  # CLANG_MODULE_CACHE_PATH 固定到 .build/ 下，保证每个切片真的重编译且可复用。
   # 清掉旧架构戳，强制每个切片都按当前源码重编译（Makefile 在切架构时也会清，
   # 这里显式做一次，避免复用旧产物）。
   rm -f "$PLUGIN_BUNDLE"/.arch-*

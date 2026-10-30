@@ -4,6 +4,7 @@ import Foundation
 import ImageIO
 import Testing
 import UniformTypeIdentifiers
+import GatherTestSupport
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherAnalysis
@@ -42,8 +43,7 @@ struct ImageMetadataProvidersTests {
 
     @Test("真实 JPEG：dateTaken/cameraModel/GPS 必须解析出非空值")
     func parsesRealJpeg() async throws {
-        let dir = NSTemporaryDirectory() + "gather-exif-" + UUID().uuidString
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let dir = try makeTempDir(prefix: "gather-exif")
         let path = dir + "/shot.jpg"
         try makeJPEG(at: path, exifDate: "2024:05:01 10:20:30", model: "X-T5")
 
@@ -69,8 +69,7 @@ struct ImageMetadataProvidersTests {
 
     @Test("内嵌 XMP：rating/label 走消费端契约读出（无 sidecar 也不丢星级/色标）")
     func parsesEmbeddedXMPAttributes() async throws {
-        let dir = NSTemporaryDirectory() + "gather-xmp-" + UUID().uuidString
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let dir = try makeTempDir(prefix: "gather-xmp")
         let path = dir + "/xmp.jpg"
         let url = URL(fileURLWithPath: path)
         let destination = try #require(CGImageDestinationCreateWithURL(
@@ -101,8 +100,7 @@ struct ImageMetadataProvidersTests {
     /// "Optional(<CGImageMetadataTag 0x…> dc:[0] = alpha)" 伪关键词并被缓存/写回。
     @Test("内嵌 XMP/IPTC 关键词：数组元素必须解包为真实字符串（不得产出标签伪值）")
     func parsesEmbeddedKeywordArrays() async throws {
-        let dir = NSTemporaryDirectory() + "gather-kw-" + UUID().uuidString
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let dir = try makeTempDir(prefix: "gather-kw")
 
         // (1) 内嵌 XMP dc:subject（ImageIO 把数组元素返回为 CGImageMetadataTag）。
         let xmpPath = dir + "/xmp-kw.jpg"
@@ -175,8 +173,7 @@ struct ImageMetadataProvidersTests {
 
     @Test("内嵌 IPTC：真实 JPEG 的 caption/版权/作者可读（Bridge 写入形态）")
     func readsRealJpegIPTCDescriptive() async throws {
-        let dir = NSTemporaryDirectory() + "gather-iptc-" + UUID().uuidString
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let dir = try makeTempDir(prefix: "gather-iptc")
         let path = dir + "/bridge.jpg"
         try writeJPEG(at: path, iptc: [
             kCGImagePropertyIPTCCaptionAbstract: "桥上的说明",
@@ -232,8 +229,7 @@ struct ImageMetadataProvidersTests {
     /// 变异守卫：GPS ref === 'S'/'W' 必须取负（南纬/西经），且曝光 >= 1 秒保持秒数字。
     @Test("南/西半球 GPS 符号与曝光时间边界：1s 保持数字、0.004s 归一为 1/250")
     func parsesSouthernWesternGPSAndExposureBoundary() async throws {
-        let dir = NSTemporaryDirectory() + "gather-gps-" + UUID().uuidString
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let dir = try makeTempDir(prefix: "gather-gps")
         let provider = ImageIOExifProvider()
 
         // 悉尼经纬度（南纬/西经）：ref 不是装饰，符号必须为负。

@@ -183,12 +183,17 @@ private func runRow(_ db: DBConnection, _ sessionId: String) throws -> DBRow? {
     ).get([.text(sessionId)])
 }
 
-private let analysisSignatureForDefaults = FaceKwService.makeAnalysisSignature(
-    detectorPath: "det.onnx", encoderPath: "enc.onnx",
-    primaryDetectionSize: 640, secondaryDetectionSize: 128,
-    confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 512,
-    previewMaxDimension: 2048, embeddingSpec: try! FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature
-)
+/// 默认签名：**必须惰性**。文件级 `let` 会在测试二进制加载时求值，从而加载内置
+/// SFace（37MB CoreML 包）——哪怕本次只跑一个无关用例；修复前实测每次
+/// `swift test` 都会因此产生一份 37MB 的临时编译产物。
+private enum DefaultSignatures {
+    static let analysisSignatureForDefaults = FaceKwService.makeAnalysisSignature(
+        detectorPath: "det.onnx", encoderPath: "enc.onnx",
+        primaryDetectionSize: 640, secondaryDetectionSize: 128,
+        confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 512,
+        previewMaxDimension: 2048, embeddingSpec: try! FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature
+    )
+}
 
 // MARK: - 参数校验（TS: face-parameters.test.ts）
 
@@ -268,7 +273,7 @@ struct FaceKwObservationRetentionTests {
         #expect(observations[0].bboxH == 40)
         #expect(observations[0].confidence == 0.95)
         let state = try harness.faceRepo.getAnalysisStates(harness.sessionId)
-        #expect(state["photo-1"]?.analysisSignature == analysisSignatureForDefaults)
+        #expect(state["photo-1"]?.analysisSignature == DefaultSignatures.analysisSignatureForDefaults)
         // 终态真相源是 analysis_runs（sessions.analysis_status 无人写）。
         #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "ok")
     }
@@ -348,7 +353,7 @@ struct FaceKwAnalyzeFlowTests {
         try harness.faceRepo.upsertAnalysisState(
             sessionId: harness.sessionId, photoId: "photo-1",
             sourceFileSize: stat.size, sourceFileMtimeMs: stat.mtimeMs,
-            analysisSignature: analysisSignatureForDefaults)
+            analysisSignature: DefaultSignatures.analysisSignatureForDefaults)
         // 聚类签名（缓存键）含质量门槛与二遍阈值：用生产同一构造函数，避免格式漂移导致
         // 该用例悄悄退化为"重聚类"（本测试断言的是缓存快路径）。
         let seededClusterOptions = FaceKwService.clusterOptions(from: { _, defaultValue in defaultValue })
@@ -1662,7 +1667,7 @@ struct FaceAlgorithmWiringTests {
         #expect(signature("vision-v1") != signature("vision-v2"))
         // 生产走 FaceEncoder.embeddingSpec；测试里的默认签名常量必须与之一致，
         // 否则"缓存快路径"用例会悄悄退化成重推理。
-        #expect(signature(try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature) == analysisSignatureForDefaults)
+        #expect(signature(try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature) == DefaultSignatures.analysisSignatureForDefaults)
     }
 }
 

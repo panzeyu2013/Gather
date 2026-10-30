@@ -24,7 +24,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CORE="$ROOT/desktop/native/gather-core"
 APP="$ROOT/desktop/native/gather-app"
+# 模型编译缓存：默认位置是 ~/Library/Caches（沙箱/CI 里可能只读，也不该让测试污染
+# 用户缓存）。测试统一落到仓库 .build/，跨运行复用——同一份权重只编译一次，
+# 之后各进程只读，避免每次运行往系统临时目录写 37MB。
+export GATHER_MODEL_CACHE_DIR="${GATHER_MODEL_CACHE_DIR:-$ROOT/.build/gather-model-cache}"
 FLAGS=(${SWIFT_TEST_FLAGS:-})
+
+# 进程级兜底（2026-10-30）：进程内的 TempHygiene(atexit) 覆盖不到两种情况——
+# ① SIGKILL / Ctrl-C 时 atexit 不执行；② 个别子系统（如 DeliveryReplayClaims 的
+# gather-replay-*.lock 跨进程 rendezvous）用完不一定删，一次全量会留 1-2 个
+# 0 字节文件。这里用“运行开始标记 + mtime 更新”在退出时清掉本次运行新增的临时
+# 条目；`gather-models-*` 归 app 的 ModelInstaller 所有（下载包/解压目录），不在此列。
+TEST_TEMP_MARK="$(mktemp "${TMPDIR:-/tmp}/.gather-test-run.XXXXXX")"
+cleanup_test_temp() {
+    local root
+    for root in "${TMPDIR:-/tmp}" "$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"; do
+        [[ -n "$root" && -d "$root" ]] || continue
+        find "$root" -maxdepth 1 \( -name 'gather-*' -o -name 'SFace_*' \) \
+            -not -name 'gather-models-*' -newer "$TEST_TEMP_MARK" -print0 2>/dev/null \
+            | xargs -0 rm -rf 2>/dev/null || true
+    done
+    rm -f "$TEST_TEMP_MARK"
+}
+trap cleanup_test_temp EXIT
 
 # 进程级状态的套件：只能串行，且与主批分开进程执行。
 # P3-7：不再手工维护名单——扫描 core 测试里直接触碰进程级日志/慢事务阈值的

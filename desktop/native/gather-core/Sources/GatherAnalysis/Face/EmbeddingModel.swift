@@ -373,10 +373,23 @@ public enum FaceEmbeddingFingerprint {
 /// 支持 .mlmodel（运行时编译）与 .mlmodelc（已编译）；要求 112×112 **图像输入**、
 /// 单张人脸向量输出；推理在 Vision 的 VNCoreMLRequest 中执行（自动处理图像缩放）。
 ///
-/// 已知边界（无真实模型可验证，首次接入必须人工确认）：`MLModel.compileModel(at:)`
-/// 把 .mlmodel 编译到系统临时目录并保留（不做删除：MLModel 可能惰性映射该目录），
-/// 因此每次进程首次加载会重新编译一次（大模型需数秒）；模型实例本身按文件指纹缓存，
-/// 批内不会重复加载。若将来接入的模型要求非 112 边长输入，需同时扩模板与设置。
+/// 加载策略（2026-10-30，目标是**不重复写盘**）：
+///   · `.mlmodelc`：直接 `MLModel(contentsOf:)`，只读、零写入；
+///   · `.mlmodel/.mlpackage`：先查**持久编译缓存**
+///     `~/Library/Caches/Gather/FaceModels/<name>-<内容指纹>-<OS 主.次>-<arch>.mlmodelc`
+///     （可用 `GATHER_MODEL_CACHE_DIR` 覆盖，测试/CI 指到可写目录）。命中则只读；
+///     未命中才 `MLModel.compileModel` 一次并把产物搬进缓存。之后每次运行（app/测试/
+///     benchmark）都只读，不再往 $DARWIN_USER_TEMP 复制 37MB；
+///   · 缓存目录不可写时退回「编译到临时目录 + 模型建好立即删除」，不留残留。
+///
+/// 为什么不是「纯内存」：CoreML 没有同步的 in-memory 模型入口——`MLModelAsset`
+/// （macOS 15+ 的 `specification:blobMapping:`）只有异步 `MLModel.load(asset:)`；在
+/// Swift Testing 的并发池里用信号量桥接，实测 79 个用例启动后整批停摆（30s 级超时），
+/// 不能作为默认路径。持久缓存把「每次加载都编译 37MB」变成「每个 model + OS + arch
+/// 只编译一次、之后只读」；如果将来要求彻底零写盘，可在构建期预编译 `.mlmodelc`
+/// 随包分发（代价是编译产物与 OS 版本耦合）。
+/// 模型实例本身按文件指纹缓存，批内不会重复加载。若将来接入的模型要求非 112 边长输入，
+/// 需同时扩模板与设置。
 /// `@unchecked Sendable` 依据：存储属性只有 `spec`（值类型，不可变）与 `model`（MLModel，
 /// 加载后不可变，CoreML 支持多线程并发 prediction）；每次 `embed` 都新建
 /// VNCoreMLRequest/VNImageRequestHandler，不共享可变状态，故无需加锁。
@@ -393,26 +406,34 @@ public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
         guard fileManager.fileExists(atPath: modelURL.path) else {
             throw FaceEmbeddingError.modelNotFound(modelURL.path)
         }
-        let compiledURL: URL
-        switch modelURL.pathExtension {
-        case "mlmodelc":
-            compiledURL = modelURL
-        case "mlmodel", "mlpackage":
-            do {
-                compiledURL = try MLModel.compileModel(at: modelURL)
-            } catch {
-                throw FaceEmbeddingError.modelLoadFailed("\(error)")
-            }
-        default:
-            throw FaceEmbeddingError.unsupportedModelFormat(modelURL.pathExtension)
-        }
         let configuration = MLModelConfiguration()
         configuration.computeUnits = computeUnits == "cpu" ? .cpuOnly : .all
+        // 内容指纹覆盖包内**所有**文件（含 weights/weight.bin 等权重文件）——只哈希
+        // model.mlmodel 会让"同架构换权重重导"逃过 analysis_signature（阻断项 1）。
+        // 先算：它同时是编译缓存的键。
+        let hash = FaceEmbeddingFingerprint.contentFingerprint(of: modelURL)
+        guard !hash.isEmpty else {
+            throw FaceEmbeddingError.modelLoadFailed("无法读取模型文件（指纹为空）：\(modelURL.path)")
+        }
+        // 若编译产物没能进持久缓存，它就是本次调用独有的临时拷贝：模型建好后（含后续
+        // 校验抛错）即可删除，不留 37MB 目录。
+        var compiledTemp: URL?
+        defer {
+            if let compiledTemp {
+                do { try FileManager.default.removeItem(at: compiledTemp) } catch {}
+            }
+        }
         let model: MLModel
-        do {
-            model = try MLModel(contentsOf: compiledURL, configuration: configuration)
-        } catch {
-            throw FaceEmbeddingError.modelLoadFailed("\(error)")
+        switch modelURL.pathExtension {
+        case "mlmodelc":
+            do { model = try MLModel(contentsOf: modelURL, configuration: configuration) }
+            catch { throw FaceEmbeddingError.modelLoadFailed("\(error)") }
+        case "mlmodel", "mlpackage":
+            model = try Self.loadCompiledModel(
+                from: modelURL, fingerprint: hash, configuration: configuration,
+                leftover: &compiledTemp)
+        default:
+            throw FaceEmbeddingError.unsupportedModelFormat(modelURL.pathExtension)
         }
         let imageInputs = model.modelDescription.inputDescriptionsByName.values.filter { $0.type == .image }
         guard imageInputs.count == 1, model.modelDescription.inputDescriptionsByName.count == 1,
@@ -425,12 +446,6 @@ public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
         guard let dimension = FaceEmbeddingShapeValidator.singleDimension(of: selected.shape) else {
             throw FaceEmbeddingError.invalidOutputShape(selected.shape)
         }
-        // 内容指纹覆盖包内**所有**文件（含 weights/weight.bin 等权重文件）——只哈希
-        // model.mlmodel 会让"同架构换权重重导"逃过 analysis_signature（阻断项 1）。
-        let hash = FaceEmbeddingFingerprint.contentFingerprint(of: modelURL)
-        guard !hash.isEmpty else {
-            throw FaceEmbeddingError.modelLoadFailed("无法读取模型文件（指纹为空）：\(modelURL.path)")
-        }
         let name = modelURL.deletingPathExtension().lastPathComponent
         self.spec = .coreML(
             modelId: name,
@@ -442,6 +457,82 @@ public struct CoreMLFaceEmbedder: FaceEmbeddingProvider, @unchecked Sendable {
         self.model = model
         do { self.visionModel = try VNCoreMLModel(for: model) }
         catch { throw FaceEmbeddingError.modelLoadFailed("\(error)") }
+    }
+
+    /// 编译产物缓存路径：内容指纹 + OS 主/次版本，跨进程/跨测试运行复用。
+    /// 默认 `~/Library/Caches/Gather/FaceModels`；`GATHER_MODEL_CACHE_DIR` 可覆盖
+    /// （测试/CI 指到可写目录，避免 ~/Library 只读时退化）。
+    private static func compiledModelCacheURL(for source: URL, fingerprint: String) -> URL? {
+        let fileManager = FileManager.default
+        let base: URL
+        if let override = ProcessInfo.processInfo.environment["GATHER_MODEL_CACHE_DIR"],
+           !override.isEmpty {
+            base = URL(fileURLWithPath: (override as NSString).expandingTildeInPath,
+                       isDirectory: true)
+        } else if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            base = caches.appendingPathComponent("Gather/FaceModels", isDirectory: true)
+        } else {
+            return nil
+        }
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        #if arch(arm64)
+        let architecture = "arm64"
+        #elseif arch(x86_64)
+        let architecture = "x86_64"
+        #else
+        let architecture = "unknown"
+        #endif
+        let stem = source.deletingPathExtension().lastPathComponent
+        let name = "\(stem)-\(fingerprint)-\(version.majorVersion).\(version.minorVersion)-\(architecture).mlmodelc"
+        return base.appendingPathComponent(name, isDirectory: true)
+    }
+
+    /// 命中缓存则只读加载；否则编译一次、加载后把产物搬进缓存。
+    /// 缓存目录不可写时把临时目录写进 `leftover`，由 init 的 defer 删除。
+    private static func loadCompiledModel(
+        from source: URL,
+        fingerprint: String,
+        configuration: MLModelConfiguration,
+        leftover: inout URL?
+    ) throws -> MLModel {
+        let fileManager = FileManager.default
+        if let cacheURL = compiledModelCacheURL(for: source, fingerprint: fingerprint),
+           fileManager.fileExists(atPath: cacheURL.path) {
+            do { return try MLModel(contentsOf: cacheURL, configuration: configuration) }
+            catch {
+                // 缓存损坏/与当前 OS 不兼容：删掉重编译（下面的 install 会覆盖）。
+                do { try fileManager.removeItem(at: cacheURL) } catch {}
+            }
+        }
+        let compiled: URL
+        do { compiled = try MLModel.compileModel(at: source) }
+        catch { throw FaceEmbeddingError.modelLoadFailed("\(error)") }
+        let model: MLModel
+        do { model = try MLModel(contentsOf: compiled, configuration: configuration) }
+        catch { throw FaceEmbeddingError.modelLoadFailed("\(error)") }
+        if let cacheURL = compiledModelCacheURL(for: source, fingerprint: fingerprint),
+           installCompiledModel(compiled, at: cacheURL) {
+            leftover = nil
+        } else {
+            leftover = compiled
+        }
+        return model
+    }
+
+    /// 把编译产物搬进缓存；失败返回 false（调用方保留临时目录并在 init 结束时删除）。
+    private static func installCompiledModel(_ compiled: URL, at destination: URL) -> Bool {
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: destination.path) {
+                do { try fileManager.removeItem(at: destination) } catch {}
+            }
+            try fileManager.moveItem(at: compiled, to: destination)
+            return true
+        } catch {
+            return false
+        }
     }
 
     public func embed(alignedFace: CGImage) throws -> [Double] {

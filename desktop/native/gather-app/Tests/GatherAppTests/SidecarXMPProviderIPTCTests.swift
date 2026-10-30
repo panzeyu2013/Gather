@@ -7,6 +7,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherApplication
+import GatherTestSupport
 @testable import GatherUI
 @testable import GatherHost
 
@@ -14,6 +15,7 @@ private func makeTempDir() throws -> String {
     let dir = FileManager.default.temporaryDirectory
         .appendingPathComponent("gather-iptc-" + UUID().uuidString, isDirectory: true).path
     try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    TempHygiene.track(path: dir)
     return dir
 }
 

@@ -91,11 +91,13 @@ public func insertAsset(_ db: DBConnection, id: String, status: String = "active
     """).run([.text(id), .text(status)])
 }
 
-/// 创建临时目录（测试结束由调用方删除）。
-public func makeTempDir() throws -> String {
+/// 创建临时目录：登记到 TempHygiene，进程退出时统一删除（调用方仍可 defer 提前删，
+/// 遗留的中断路径由 atexit 兜底）。
+public func makeTempDir(prefix: String = "gather-repo-tests") throws -> String {
     let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-repo-tests-\(UUID().uuidString)")
+        .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    TempHygiene.track(dir)
     return dir.path
 }
 
