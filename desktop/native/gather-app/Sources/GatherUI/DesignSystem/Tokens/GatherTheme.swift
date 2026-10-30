@@ -133,6 +133,11 @@ public enum GatherTheme {
     public enum Radius {
         /// 缩略图 / 小控件。
         public static let thumbnail: CGFloat = 6
+        /// 照片媒体面（浏览 / 挑片网格 / 全局图库的缩略图）。
+        ///
+        /// 三处原本各用各的（12 / 6 / 6）：同一张照片在三个页面里圆角不同，
+        /// 视觉上像三个产品。统一到 8——比"小控件"柔一档，仍明显小于卡片。
+        public static let media: CGFloat = 8
         /// 卡片 / 分组容器 / 大缩略图。
         public static let card: CGFloat = 12
         /// 功能块 / 首屏 tile。

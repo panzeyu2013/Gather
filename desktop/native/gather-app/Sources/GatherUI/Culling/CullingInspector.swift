@@ -39,8 +39,12 @@ struct CullingInspector: View {
                 // + 星级 + 颜色。系统 bordered 按钮 + 裸键 .keyboardShortcut（取代手绘卡片描边）。
                 GatherInspectorSection(l10n("当前照片")) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(viewModel.selectedPhotoIds.isEmpty ? l10n("当前照片") : l10n.format("批量 %lld 张", viewModel.selectedPhotoIds.count))
-                            .controlLabelStyle()
+                        // 默认不再重复分区标题「当前照片」：只在真多选时补一行
+                        // 「批量 N 张」，单选由标题本身表达（B-P2 / 单选也不该写"批量 1 张"）。
+                        if viewModel.selectedPhotoIds.count > 1 {
+                            Text(l10n.format("批量 %lld 张", viewModel.selectedPhotoIds.count))
+                                .controlLabelStyle()
+                        }
                         VStack(spacing: 6) {
                             decisionButton(icon: "checkmark", iconColor: GatherTheme.success, title: l10n("保留"), shortcut: "P", key: "p") {
                                 Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }
@@ -181,7 +185,7 @@ struct CullingInspector: View {
                 }
 
                 // P0 / B2：单张元数据直接编辑（写说明/版权不必再建模板）。
-                GatherInspectorSection(l10n("元数据")) {
+                GatherCollapsibleSection(l10n("元数据"), initiallyExpanded: false) {
                     Button(l10n("编辑元数据…")) { activeSheet = .editor }
                         .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity)
@@ -190,7 +194,7 @@ struct CullingInspector: View {
                 }
 
                 // P1 / B2：模板批量套用入口（选中集或当前照片）。
-                GatherInspectorSection(l10n("元数据模板")) {
+                GatherCollapsibleSection(l10n("元数据模板"), initiallyExpanded: false) {
                     Button(l10n("套用模板…")) { activeSheet = .templates }
                         .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity)
@@ -203,7 +207,7 @@ struct CullingInspector: View {
                 }
 
                 // P1 / D：摄取入口（复制/重命名/校验 → 登记进当前会话）。
-                GatherInspectorSection(l10n("导入")) {
+                GatherCollapsibleSection(l10n("导入"), initiallyExpanded: false) {
                     Button(l10n("摄取照片…")) { activeSheet = .ingest }
                         .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity)
@@ -211,7 +215,7 @@ struct CullingInspector: View {
                 }
 
                 // P1 / E：把技术建议写成 rating（只写空值）+ 私有命名空间，可回溯。
-                GatherInspectorSection(l10n("技术建议写回")) {
+                GatherCollapsibleSection(l10n("技术建议写回"), initiallyExpanded: false) {
                     VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
                         // P0 / A2：星级策略显式可选（默认保持 3/1，不偷偷改用户现状）。
                         Picker(l10n("建议星级"), selection: Binding(
@@ -569,7 +573,7 @@ private struct DecisionButtonView: View {
                 Text(title)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(shortcut)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, minHeight: 24)

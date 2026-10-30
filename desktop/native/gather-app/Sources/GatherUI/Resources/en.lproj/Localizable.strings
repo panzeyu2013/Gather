@@ -1,3 +1,8 @@
+/* DesignSystem · 折叠分区 / 同步状态（2026-10-30） */
+"展开" = "Expand";
+"尚未写回" = "Not written yet";
+"还没有写回记录；挑片完成后用「同步…」写入 XMP" = "No writeback yet. Use Sync… after culling to write XMP.";
+
 /* Settings/SettingsView.swift */
 "语言已保存" = "Language saved";
 "推理后端已保存" = "Inference backend saved";

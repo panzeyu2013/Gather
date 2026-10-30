@@ -87,9 +87,9 @@ struct GalleryCellView: View {
             }
         }
         // 照片单元：统一卡片圆角；选中用品牌色描边，hover 用 hairline。
-        .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.media, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.media, style: .continuous)
                 .strokeBorder(
                     isSelected
                         ? GatherTheme.selection

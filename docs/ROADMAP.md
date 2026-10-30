@@ -31,10 +31,10 @@
 - **D（已完成）**：SQLite 持久化 + angular LSH（`Face/VectorIndex.swift`）；
   HNSW 已随 Cut 5 删除，召回由对账门禁覆盖。
 
-## 三、当前状态（2026-10-29 采样）
+## 三、当前状态（2026-10-30 交互整改后采样）
 
 - 8 个功能 target；16 域 API / 140 方法；SQLite 单一 schema（44 表 / 386 列 /
-  user_version=1）；core 1,459 tests / 217 suites、app 794 / 90。
+  user_version=1）；core 1,459 tests / 217 suites、app 796 / 90。
 - 已完成：原生迁移、分页、阈值多档、任务化、Vision 人脸、聚类/向量对账、
   写回可靠性、本地化、主题与无障碍。
 - 未接通：真实人脸质量门（外部标注集）、C1 人工 Load-Metadata 矩阵（发布前）。

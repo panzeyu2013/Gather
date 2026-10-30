@@ -236,17 +236,11 @@ private struct MaintenanceSettingsSection: View {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
+    /// 备份时间：跟随**界面语言**，不是系统 locale（F-P2：切英文后仍显示中文日期）。
+    /// 同时复用共享的解析/格式化缓存（旧实现每次新建 ISO8601DateFormatter）。
     private func dateText(_ iso: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = formatter.date(from: iso) ?? {
-            formatter.formatOptions = [.withInternetDateTime]
-            return formatter.date(from: iso)
-        }()
-        if let date {
-            return DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)
-        }
-        return iso
+        guard let date = parseISO8601Date(iso) else { return iso }
+        return DisplayDateFormatters.shared.mediumShort(date, locale: l10n.locale)
     }
 
     // MARK: - 面板

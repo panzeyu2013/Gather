@@ -123,7 +123,9 @@ public struct ToastView: View {
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: center.toasts.map(\.id))
             .padding(16)
-            .allowsHitTesting(false)
+            // 命中测试：容器**不能**关闭（祖先 false 会把子按钮一起关掉，子节点
+            // 再写 allowsHitTesting(true) 也救不回来）。改为让纯展示的图标/文字
+            // 不参与命中，按钮各自接收点击。
             .accessibilityElement(children: .contain)
         }
     }
@@ -142,10 +144,12 @@ private struct ToastRow: View {
             Image(systemName: toast.type.iconName)
                 .foregroundStyle(toast.type.color)
                 .accessibilityHidden(true)
+                .allowsHitTesting(false)
             Text(toast.message)
                 .font(GatherFont.body)
                 .lineLimit(3)
                 .frame(maxWidth: 360, alignment: .leading)
+                .allowsHitTesting(false)
             if let actionTitle = toast.actionTitle, let action = toast.action {
                 Button(actionTitle) {
                     action()
@@ -153,7 +157,6 @@ private struct ToastRow: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .allowsHitTesting(true)
             }
             Button(action: onDismiss) {
                 Label(l10n("关闭"), systemImage: "xmark")
@@ -161,7 +164,6 @@ private struct ToastRow: View {
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
-            .allowsHitTesting(true)
             .help(l10n("关闭"))
         }
         .padding(.horizontal, 14)

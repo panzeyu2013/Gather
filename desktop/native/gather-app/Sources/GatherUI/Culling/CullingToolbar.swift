@@ -32,7 +32,9 @@ struct CullingToolbar: View {
     }
 
     private var fullToolbar: some View {
-        HStack(spacing: 10) {
+        // 10 → 12：动作条是每次进页都会看见的"第一层"，控件之间留一点空气，
+        // 比把 7 个控件挤成一条更像 macOS 应用而不是仪表盘。
+        HStack(spacing: 12) {
             undoRedoButtons
 
             Divider().frame(height: 18)
@@ -211,7 +213,7 @@ struct CullingToolbar: View {
                 .frame(width: 150)
                 HStack(spacing: 6) {
                     Text("\(qualityProgressPercent(job))% \(l10n.progressPhaseText(job.progressMessage))")
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Button(l10n("取消")) {

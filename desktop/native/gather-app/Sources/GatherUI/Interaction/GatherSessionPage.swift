@@ -113,7 +113,11 @@ struct GatherSessionTabStrip: View {
             // inspector（min 220）展开后 860 窗口会触发 AppKit 约束循环。
             // GeometryReader 的最小宽度是 0：窄窗按实际宽度选 menu，宽窗选标签条。
             GeometryReader { proxy in
-                if proxy.size.width >= 620 {
+                // 阈值按**标签条自身需要**定，而不是拍一个宽数：中文 7 段 ≈354pt、
+                // 英文 ≈535pt（A 组实测）。620 会让 860 最小窗（内容区 680、
+                // 扣页签行内距后 ≈614）在中文下也永远退化成下拉菜单；按语言取阈值
+                // 才能既不裁切英文、又让中文在最小窗里保住七个页签。
+                if proxy.size.width >= (l10n.isChinese ? 430 : 560) {
                     tabBar
                         .fixedSize()
                 } else {
@@ -226,7 +230,9 @@ private struct SessionTabButton: View {
                 Text(title)
                     .font(GatherFont.labelRegular)
                     .fontWeight(isSelected ? .semibold : .regular)
-                    .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                    // 选中态不只靠 8% 亮度差：提高对比度模式下那点差异会消失。
+                    // 品牌色只染文字，底色仍是中性片（与侧栏/工具栏的克制一致）。
+                    .foregroundStyle(isSelected ? GatherTheme.accent : Color.secondary)
             }
             .accessibilityHidden(true)
             .padding(.horizontal, 10)
@@ -239,7 +245,7 @@ private struct SessionTabButton: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .strokeBorder(
-                                isSelected ? GatherTheme.hairline : Color.clear,
+                                isSelected ? GatherTheme.accent.opacity(0.45) : Color.clear,
                                 lineWidth: 0.5
                             )
                     )

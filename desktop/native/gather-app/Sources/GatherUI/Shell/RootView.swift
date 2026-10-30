@@ -55,7 +55,8 @@ package struct RootView: View {
     /// 由外壳暂存而不是 DashboardView 自己订阅通知：条件构建下页面的 @State
     /// 随目的地切换销毁，跨页触发的请求必须由外壳代收（F02 / ⌘N 竞态）。
     @State var newWorkspaceRequest: NewWorkspaceRequest?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 减少动态：外壳（RootShellDetail 的页面切换过渡）与页签条共用。
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
     /// 打开原生设置窗口（macOS 14+ 的公开 API；showSettingsWindow: 是
     /// SwiftUI 私有 selector，不在 AppKit SDK 里，不能依赖）。
     @Environment(\.openSettings) var openSettings

@@ -35,11 +35,11 @@ SwiftUI（GatherUI）→ AppServices（16 个域 API / 140 个类型化方法）
 - 测试入口：`./scripts/test.sh core|app`（或 `all`）。
 - 完整 `.app` 只在发布/打包时构建：`./desktop/native/build.sh`。
 
-## 当前基线（2026-10-29 采样，以脚本输出为准）
+## 当前基线（2026-10-30 交互整改后采样，以脚本输出为准）
 
 - 8 个功能 target（含测试/工具共 16 个）。
-- gather-core 1,459 tests / 217 suites；gather-app 794 tests / 90 suites。
-- 12 个 `check-*.sh` 门禁（2026-10-30 移除 `check-docs.sh`）；en 1,862 键。
+- gather-core 1,459 tests / 217 suites；gather-app 796 tests / 90 suites。
+- 12 个 `check-*.sh` 门禁（2026-10-30 移除 `check-docs.sh`）；en 1,865 键。
 
 ## 文档
 

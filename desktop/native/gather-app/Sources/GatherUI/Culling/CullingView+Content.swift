@@ -13,11 +13,14 @@ extension CullingView {
             if let error = viewModel.errorMessage {
                 NativeBanner(
                     text: l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
-                    color: GatherTheme.error
+                    color: GatherTheme.error,
+                    onDismiss: { viewModel.errorMessage = nil }
                 )
+                .transition(.opacity)
             }
             if let notice = viewModel.notice {
                 NativeBanner(text: notice.resolve(with: l10n), color: GatherTheme.success)
+                    .transition(.opacity)
             }
             if viewModel.sessionId.isEmpty {
                 emptyGuide(
@@ -74,6 +77,7 @@ extension CullingView {
                 }
             }
         }
+        .gatherAnimatePresence(viewModel.errorMessage != nil || viewModel.notice != nil)
         .task {
             // G0：布局决定首页大小（网格 200，其余 500）；在首次加载前静默设置。
             viewModel.applyPageLimit(layoutMode == .grid ? 200 : 500)

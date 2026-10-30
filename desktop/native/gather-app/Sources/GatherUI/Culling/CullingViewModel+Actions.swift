@@ -339,7 +339,21 @@ extension CullingViewModel {
 
     /// TS commitTargets（Culling.tsx:828-906）：快捷键/工具栏决策作用于选中集，
     /// 无选中时作用于当前照片；U 待定不前进，其余决策按自动前进开关前进。
+    ///
+    /// **串行化**（2026-10-30 交互整改）：连按 P/X 时旧实现会并发提交同一张照片，
+    /// 第二条请求携带过期 `expectedRevision` → 冲突横幅。这里先等上一拍落地，
+    /// 再在执行前才取 `currentAsset`：自动前进已生效，第二拍自然作用于下一张。
     public func commit(patch: CullingUpdatePatch, shouldAdvance: Bool = true) async {
+        if let chain = commitChain { await chain.value }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performCommit(patch: patch, shouldAdvance: shouldAdvance)
+        }
+        commitChain = task
+        await task.value
+    }
+
+    private func performCommit(patch: CullingUpdatePatch, shouldAdvance: Bool) async {
         guard !isLoading else { return }
         guard !selectedPhotoIds.isEmpty else {
             guard let asset = currentAsset else { return }

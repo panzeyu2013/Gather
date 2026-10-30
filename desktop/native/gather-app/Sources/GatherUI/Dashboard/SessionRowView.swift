@@ -31,6 +31,9 @@ struct SessionRowView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
+        // macOS 最基本的"打开"手势：双击行。行尾「进入」按钮仍然保留
+        // （可发现性），右键菜单仍提供显式项。
+        .onTapGesture(count: 2, perform: onOpen)
         .contextMenu {
             Button(l10n("打开"), action: onOpen)
             Button(l10n("删除"), role: .destructive, action: onDelete)

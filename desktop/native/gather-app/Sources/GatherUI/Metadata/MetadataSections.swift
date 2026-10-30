@@ -29,7 +29,7 @@ struct MetadataSections: View {
                 iptcGroup(MetadataDisplay.iptcExtensionFields, detail.descriptive)
             }
             GatherInspectorSection(l10n("文件")) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     row(l10n("文件名"), detail.filename)
                     row(l10n("路径"), detail.filepath)
                     // 内嵌模式下「写目标」是照片本身：显示成 sidecar 会让用户以为没写进去。
@@ -37,7 +37,7 @@ struct MetadataSections: View {
                         detail.hasXMP ? detail.xmpPath : l10n("无（尚未写入 XMP）"))
                     if selectionCount > 1 {
                         Text(l10n("已选多张，仅显示主文件"))
-                            .font(.caption)
+                            .font(GatherFont.secondary)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -45,7 +45,7 @@ struct MetadataSections: View {
         } else {
             GatherInspectorSection(l10n("拍摄参数")) {
                 Text(l10n("尚未选择照片"))
-                    .font(.caption)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
         }
@@ -55,19 +55,19 @@ struct MetadataSections: View {
     private func iptcGroup(_ fields: [DescriptiveField], _ descriptive: DescriptiveMetadata) -> some View {
         let rows = MetadataDisplay.fieldRows(fields, descriptive, l10n: { l10n($0) })
         let filled = rows.filter(\.isFilled).count
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 6) {
             Text(l10n.format("%lld / %lld 已填写", filled, fields.count))
-                .font(.caption2)
+                .font(GatherFont.label)
                 .foregroundStyle(.secondary)
             ForEach(rows, id: \.label) { metadataRow($0) }
         }
     }
 
     private func rows(_ rows: [MetadataDisplayRow]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             if rows.isEmpty {
                 Text(l10n("尚未解析"))
-                    .font(.caption)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(rows, id: \.label) { metadataRow($0) }
@@ -84,11 +84,11 @@ struct MetadataSections: View {
     private func row(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
-                .font(.caption)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
                 .frame(width: 84, alignment: .leading)
             Text(value)
-                .font(.caption)
+                .font(GatherFont.secondary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

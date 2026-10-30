@@ -132,7 +132,13 @@ public struct CullingView: View {
                 refreshTitle: l10n("刷新"),
                 refreshHelp: l10n("重新载入挑片工作台"),
                 refreshDisabled: viewModel.isLoading,
-                onRefresh: { Task { await viewModel.load() } }
+                onRefresh: {
+                    Task {
+                        // 与图库同一口径：主动刷新 = 允许重取被外部修改过的缩略图。
+                        PhotoThumbnailCache.invalidateAll()
+                        await viewModel.load()
+                    }
+                }
             )
         }
         // Bridge / Capture One 式：图片保持居中，选项面板交给系统 .inspector

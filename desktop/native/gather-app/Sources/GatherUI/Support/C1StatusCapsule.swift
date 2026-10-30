@@ -222,7 +222,7 @@ struct C1StatusCapsule: View {
                 // 显式 primary：borderless 按钮在工具栏里会继承品牌 tint，
                 // 状态词变成棕色（与错误/警告色混淆）。语义只留在状态点上。
                 Text(visual.label)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.primary)
                 if queue > 0 {
                     Text(queue, format: .number)
@@ -294,6 +294,12 @@ struct C1StatusCapsule: View {
         }
         if sync.synced > 0 {
             return (GatherTheme.success, GatherTheme.success, l10n("已同步可清理"), l10n("已同步且可安全清理备份"))
+        }
+        // 从未写回：不要亮绿灯。把"什么都没发生"显示成绿色"已同步"，是本次审计里
+        // 最容易被误读的状态（B-P1-8）。用中性点 + 一句下一步。
+        // 清理备份后交付记录也会被删，这里用 reloadedAt 兜底区分"做过又清掉"。
+        if sync.items.isEmpty, state?.reloadedAt == nil {
+            return (.secondary, .secondary, l10n("尚未写回"), l10n("还没有写回记录；挑片完成后用「同步…」写入 XMP"))
         }
         return (GatherTheme.success, GatherTheme.success, l10n("已同步"), l10n("元数据已同步"))
     }

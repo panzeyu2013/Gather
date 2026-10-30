@@ -18,12 +18,16 @@ struct LibraryCardView: View {
     /// 卡片与静态文案 helper 不再读进程级语言。
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 悬停反馈：网格卡片在 macOS 上"没有反应该"会显得是死的。
+    /// 用 4% 主色叠底而不是缩放/阴影，避免滚动时整片闪动。
+    @State private var hovered = false
 
     /// TS 卡片本体：整项即按钮；不再自绘卡底/描边/悬停阴影，
     /// 缩略图 + 说明文字直接排在窗口底色上（与「照片」App 网格一致）。
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 thumbnail
                 Text(photo.filename)
                     .font(GatherFont.bodyStrong)
@@ -41,11 +45,20 @@ struct LibraryCardView: View {
                         .lineLimit(1)
                 }
             }
-            .padding(8)
+            .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: GatherTheme.Radius.media, style: .continuous)
+                    .fill(hovered ? Color.primary.opacity(GatherMetrics.Opacity.hover) : Color.clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : .easeOut(duration: GatherMetrics.Motion.hover)) {
+                hovered = hovering
+            }
+        }
         .contextMenu {
             Button(l10n("打开照片"), action: onOpen)
             Button(l10n("打开所在工作区"), action: onOpenSession)
@@ -83,7 +96,7 @@ struct LibraryCardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .frame(height: 110)
                 .background(GatherTheme.contentBackground)
-                .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.media, style: .continuous))
             if photo.status == "missing" {
                 // 角标压在缩略图上：材质底 + 主文字色（不再用红底白字，深色模式对比不足）。
                 PhotoOverlayChip(
