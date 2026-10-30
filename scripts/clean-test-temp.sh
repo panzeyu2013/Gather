@@ -27,8 +27,8 @@ DARWIN_TMP="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo "$TMP_ROOT")"
 summarize() {
     local label="$1"; shift
     local count size
-    count="$(find "$@" -maxdepth 1 \( -name 'gather-*' -o -name 'SFace*' \) 2>/dev/null | wc -l | tr -d ' ')"
-    size="$(find "$@" -maxdepth 1 \( -name 'gather-*' -o -name 'SFace*' \) -print0 2>/dev/null \
+    count="$(find "$@" -maxdepth 1 \( -name 'gather-*' -o -name 'SFace*' \) ! -name 'gather-models-*' 2>/dev/null | wc -l | tr -d ' ')"
+    size="$(find "$@" -maxdepth 1 \( -name 'gather-*' -o -name 'SFace*' \) ! -name 'gather-models-*' -print0 2>/dev/null \
         | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {printf "%.1f", s/1024}')"
     echo "  $label: ${count} 项 / ${size:-0} MB"
 }
@@ -45,7 +45,9 @@ fi
 
 for root in "$TMP_ROOT" "$DARWIN_TMP"; do
     [[ -d "$root" ]] || continue
-    find "$root" -maxdepth 1 -mtime +1 \( -name 'gather-*' -o -name 'SFace*' \) -print0 2>/dev/null \
+    # gather-models-* 归 app 的 ModelInstaller 所有（下载包/解压目录），不在此列。
+    find "$root" -maxdepth 1 -mtime +1 \( -name 'gather-*' -o -name 'SFace*' \) \
+        ! -name 'gather-models-*' -print0 2>/dev/null \
         | xargs -0 rm -rf 2>/dev/null || true
 done
 echo

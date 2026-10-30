@@ -339,12 +339,15 @@ fi
 #    契约测试与回归 +7/+1）。见 docs/reviews/{feat-merge,sidecar-merge,final-review}-2026-10-2*.md。
 #    2026-10-29 tests 合入：+10/+1（ModelReviewRepo 5 / ModelReviewService 编排 5，
 #    覆盖此前 0%/10.6% 的模型初审落库与缓存路径）→ 2205/242。
-BASELINE_TEST_DECL=2205
-BASELINE_SUITE_DECL=242
+#    2026-10-30 interaction 合并 + 评审补测：+9/+1（commit 串行化/refresh 代/keep/
+#    invalidateAll/rowIndex/Toast/布局缓存）→ 2264/249；同时修正 @Suite 计数正则
+#    （此前漏掉裸 @Suite 与 @MainActor @Suite，少计 4 个）。
+BASELINE_TEST_DECL=2264
+BASELINE_SUITE_DECL=249
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
-suite_decl=$(grep -rhE '^[[:space:]]*@Suite([[:space:]]|\()' \
+suite_decl=$(grep -rhE '^[[:space:]]*(@[A-Za-z_]+[[:space:]]+)*@Suite([[:space:](]|$)' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
 ratchet_bad=0
@@ -361,7 +364,9 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 # 7) 断言 ratchet：只数声明拦不住"删真用例、补空壳用例"。断言数（#expect / #require）
 #    才是"检查了多少事"的代理指标——把真用例删掉换成空函数，断言数会掉。
 #    2026-10-29 tests 合入 +40（同上 10 例）。
-BASELINE_ASSERT=10244
+#    2026-10-30 interaction 合并 + 评审补测：+265（含 @Suite 计数修正后的 4 个套件、
+#    commit 串行化/refresh 代/keep/invalidateAll/rowIndex/Toast/布局缓存回归）。
+BASELINE_ASSERT=10509
 assert_n=$(grep -rhoE '#(expect|require)\(' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
