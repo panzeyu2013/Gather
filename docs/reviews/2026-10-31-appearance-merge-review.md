@@ -63,18 +63,32 @@ merge 在文件层面是干净的真并集（71 个 appearance 文件逐一等�
 | P2-7 | `docs/validation/2026-10-31-plan.md` | 注记写「2026-10-31 采样」而表头是「2026-10-30 冻结点」，且只提 app 数字 | 改为「已整体被取代」并列出 core/app/ratchet 的新旧值 |
 | P2-8 | `docs/README.md` | 合并时删掉了分支原有的「（@Test/@Suite 声明数）」注记，239 vs 282 两套套件口径无解释 | 明确「运行时口径」与「`@Suite` 声明口径」并说明差额来源 |
 
-## 4. 残余（未修，已确认存在）
+## 4. 残余
 
-1. **`errorFill` 的 1.4.11 边界**：白字对比度 6.54/10.58/9.30 达标，但填充对深色 surface 只有 2.19:1
-   （高对比深色 1.83:1），低于非文本对比 3:1。要满足得加深色描边或换色，属视觉决策，需截图验收；
-   本次只保证「白字 on errorFill」并把它写进 `GatherTheme.errorFill` 注释。
-2. **`check-test-catalog.sh` 的断言计数不剥注释**：`AsyncWait.swift:47-48` 注释里的 `#expect(` 也计入，
-   ratchet 数字系统性偏高。修它会整体下调基线并重算历史链条，本次不动，留作独立任务。
-3. **`ThemeContrastTests` 只测「白字 on 填充」**：没覆盖 `errorFill` 作为文字色、或与 `errorText` 同屏的组合；
-   `errorFill` 浅/深同值，测试也无法证明深色分支真的被解析到（只能靠 `dynamic` 的单测间接证明）。
-4. **`onAccent` 无生产调用点**：prominent 按钮只设 tint 不设前景色，白字来自系统样式；该常量目前只被测试使用。
-5. **未做实机验收**：没有截图、没有 VoiceOver、没有在 macOS 26 上看过 `.glass` 合成效果。
-   本台账里「tint 只染标签、不染 bezel」来自 SwiftUI 行为推断与仓库内既有注释，**未经渲染确认**。
+第一轮遗留 5 条，第二轮（`2026-10-31` 残留收口提交）全部处理，见下表。新增的未覆盖项如实列出。
+
+| 原残余 | 处置 |
+|---|---|
+| `errorFill` 1.4.11 边界（深色 2.19:1 / 高对比深色 1.83:1） | **已修**：深色态改 `#DE2B2B`、高对比深色同值，四态同时满足「白字 ≥4.5」与「对 canvas/surface ≥3」。取值被两条约束夹在窄窗口里，注释里写明了为什么不能再暗/再亮；`ThemeContrastTests` 新增 `assertFillBoundary` 守住 |
+| `check-test-catalog.sh` 不剥注释 | **已修**：计数改成先做词法遮罩（行注释 / 可嵌套块注释 / 字符串原样保留）再数；实测去掉注释内 2 条 `#expect(`（源码 11,500 → 11,498），`@Test`/`@Suite` 不变；`--self-test` 仍绿 |
+| `ThemeContrastTests` 覆盖不足 | **已修**：补 1.4.11 边界断言与「浅/深必须不同值」的假绿守卫；新增 `ButtonRenderTests` 用 `ImageRenderer` 离屏渲染真实按钮做像素断言 |
+| `onAccent` 无生产调用点 | **已修**：`GatherButtonModifier` 的 primary / destructiveProminent 显式 `.foregroundStyle(onAccent)`，渲染采样断言按钮里确实有近白标签像素 |
+| 未做实机验收 | **部分关闭**：渲染采样替代了「看截图」，覆盖填充色、白字、secondary 无色化；仍**没有**真机 VoiceOver 与 macOS 26 的 `.glass` 合成验收 |
+
+仍未覆盖（本轮新增，诚实列出）：
+
+1. **`.borderless` 系列（tertiary / tertiaryDanger / gatherIconButton）无法像素验收**：
+   `ImageRenderer` 对 `.borderless` 按钮不喷真实标签色——同一控件加不加 `tint` / `foregroundStyle`
+   渲染结果逐像素相同（实测）。因此这三类只做「`tint` + `foregroundStyle` 双写」+ 文档约定，
+   不做像素断言；要验只能真机截图。
+2. **深色态渲染没进自动测试**：`ImageRenderer` 的 `cgImage` 不跟随
+   `NSAppearance.performAsCurrentDrawingAppearance`，渲染恒为浅色态。深色态的正确性目前由
+   `ThemeContrastTests` 的 token 解析（真实走 `NSColor` dynamic provider）保证，不是像素保证。
+3. **`accentFill` 有同类 1.4.11 缺口**：品牌主 CTA 在深色态对 surface 只有 2.52:1（高对比深色 1.90:1，
+   对 canvas 分别是 3.03 / 2.28）。它是品牌色，
+   改它等于改产品观感，需要视觉验收，本轮不动；`errorFill` 的取值既然能同时满足两条约束，
+   后续可按同样窗口重估 accent。
+4. **VoiceOver / 焦点顺序 / 键盘可达**未做自动化，仍是真机项。
 
 ## 5. 复验命令与结果
 

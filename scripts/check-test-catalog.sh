@@ -359,14 +359,96 @@ fi
 #    2026-10-31 自动命名测试：+8/+1（SessionNameAutoFill 状态机）→ 2492/282。
 #    2026-10-31 合并后审核补测：门禁加正/负样本与遮罩用例（+2）、自动命名补初始目录/
 #    同目录/空名/空白名（+4）→ 2498/282。
-BASELINE_TEST_DECL=2498
-BASELINE_SUITE_DECL=282
-test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
-  desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
-  --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
-suite_decl=$(grep -rhE '^[[:space:]]*(@[A-Za-z_]+[[:space:]]+)*@Suite([[:space:](]|$)' \
-  desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
-  --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
+#    2026-10-31 残留收口：errorFill 补 1.4.11 边界用例（+1）→ 2499/282；同一改动把
+#    计数从「grep 原文」改成「先剥注释再数」，@Test/@Suite 无变化，断言 -2（注释里的
+#    #expect( 不再计入，AsyncWait.swift 的说明性注释原本虚增 2 条）。
+#    2026-10-31 渲染采样：新增 ButtonRenderTests（3 例 + 1 个套件，把「按钮真的用了
+#    哪个 token」从文档承诺变成像素证据）→ 2502/283。
+BASELINE_TEST_DECL=2502
+BASELINE_SUITE_DECL=283
+# 计数前先剥注释：注释里的 `#expect(` / `@Test` 不是真声明（例如 AsyncWait.swift 的
+# 说明性注释），旧实现直接 grep 源码文本，ratchet 数字系统性偏高。词法遮罩保留字符串
+# 原样，否则 "https://…" 里的 // 会被当成行注释截断本行、连带漏数后面的断言。
+# 扫描根固定为两个包的 Tests（不受 --self-test 的 CTC_TEST_ROOTS_OVERRIDE 影响，
+# 否则自测子进程里 ratchet 会拿临时夹具的数字去比全仓基线）。
+read -r test_decl suite_decl assert_n < <(python3 - <<'PY'
+import re
+from pathlib import Path
+
+DIRS = [Path('desktop/native/gather-core/Tests'), Path('desktop/native/gather-app/Tests')]
+
+
+def mask_comments(text):
+    out = list(text)
+    n = len(text)
+    i = 0
+    while i < n:
+        c = text[i]
+        if c == '"':
+            # 三引号多行字符串 / 普通字符串（含转义）：原样跳过，内容保留。
+            if text.startswith('"""', i):
+                j = text.find('"""', i + 3)
+                i = n if j < 0 else j + 3
+                continue
+            j = i + 1
+            while j < n:
+                if text[j] == '\\':
+                    j += 2
+                    continue
+                if text[j] == '"' or text[j] == '\n':
+                    j += 1
+                    break
+                j += 1
+            i = j
+            continue
+        if text.startswith('//', i):
+            j = text.find('\n', i)
+            if j < 0:
+                j = n
+            for k in range(i, j):
+                out[k] = ' '
+            i = j
+            continue
+        if text.startswith('/*', i):
+            depth = 0
+            j = i
+            while j < n:
+                if text.startswith('/*', j):
+                    depth += 1
+                    j += 2
+                    continue
+                if text.startswith('*/', j):
+                    depth -= 1
+                    j += 2
+                    if depth == 0:
+                        break
+                    continue
+                j += 1
+            for k in range(i, min(j, n)):
+                if out[k] != '\n':
+                    out[k] = ' '
+            i = j
+            continue
+        i += 1
+    return ''.join(out)
+
+
+chunks = []
+for base in DIRS:
+    for path in sorted(base.rglob('*.swift')):
+        chunks.append(mask_comments(path.read_text(encoding='utf-8', errors='replace')))
+blob = '\n'.join(chunks)
+print(
+    len(re.findall(r'^[ \t]*@Test([ \t]|\()', blob, re.M)),
+    len(re.findall(r'^[ \t]*(?:@[A-Za-z_]+[ \t]+)*@Suite([ \t(]|$)', blob, re.M)),
+    len(re.findall(r'#(?:expect|require)\(', blob)),
+)
+PY
+)
+if [ -z "${test_decl:-}" ] || [ -z "${suite_decl:-}" ] || [ -z "${assert_n:-}" ]; then
+  echo "check-test-catalog: FAIL 计数脚本没有输出（python3 可用？）" >&2
+  exit 1
+fi
 ratchet_bad=0
 if [ "${test_decl:-0}" -lt "$BASELINE_TEST_DECL" ]; then
   echo "FAIL @Test 声明数回落：${test_decl} < baseline ${BASELINE_TEST_DECL}（删用例必须显式下调 baseline 并记账）" >&2
@@ -393,10 +475,10 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 #    2026-10-31 按钮语义化：+4（门禁 3 断言 + errorFill 高对比 1 断言）→ 11460。
 #    2026-10-31 自动命名测试：+14（8 用例断言）→ 11474（相对 11459 净 +15：+18−3 死代码）。
 #    2026-10-31 合并后审核补测：+24（门禁正/负样本、遮罩回归、自动命名 4 例）→ 11498。
-BASELINE_ASSERT=11498
-assert_n=$(grep -rhoE '#(expect|require)\(' \
-  desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
-  --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
+#    2026-10-31 残留收口：errorFill 边界断言 +2（源码 11,500）− 注释内 2 条（剥注释后不计数）
+#    → 11498，与上一轮持平；基线仍按剥注释口径钉死。
+#    2026-10-31 渲染采样：+11（3 例的像素断言）→ 11509。
+BASELINE_ASSERT=11509
 if [ "$assert_n" -lt "$BASELINE_ASSERT" ]; then
   echo "FAIL 断言数回落：$assert_n < baseline $BASELINE_ASSERT（删断言/换空壳用例必须显式下调并记账）" >&2
   ratchet_bad=1

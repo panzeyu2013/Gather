@@ -31,13 +31,23 @@ public enum GatherTheme {
         highContrastDark: "#8A3E1F"
     )
 
-    /// 危险确认按钮的填充色：与白字对比度 >= 4.5:1（深色模式同样成立）。
+    /// 危险确认按钮的填充色。
+    ///
+    /// 两条约束同时成立（四态都校验，见 ThemeContrastTests）：
+    /// 1. 白字 on 填充 >= 4.5:1；
+    /// 2. 填充 vs 相邻背景（canvas / surface 取较差者）>= 3:1——WCAG 1.4.11 要求
+    ///    用来识别控件的视觉信息对相邻色至少 3:1，纯靠"深红填充 + 白字"在深色
+    ///    卡片上只有 2.19:1，按钮边界会糊掉。
+    ///
+    /// 两条约束把取值夹在一个窄窗口里：深色态必须比浅色态更亮（#DE2B2B），
+    /// 再暗就掉到 3:1 以下、再亮就掉到白字 4.5:1 以下。高对比深色用同一值——
+    /// 它的额外对比由系统加重的描边/字重承担，再提亮会突破白字下限。
     /// 不用 systemRed 做填充 + 白字：systemRed 在 13pt 白字下只有约 3.5:1。
     public static let errorFill = dynamic(
         light: "#B3261E",
-        dark: "#B3261E",
+        dark: "#DE2B2B",
         highContrastLight: "#7A1A14",
-        highContrastDark: "#8A1C16"
+        highContrastDark: "#DE2B2B"
     )
 
     /// 填充品牌色上的文字色。

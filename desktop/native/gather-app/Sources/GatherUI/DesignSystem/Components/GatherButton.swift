@@ -108,6 +108,9 @@ private struct GatherButtonModifier: ViewModifier {
             content
                 .buttonStyle(.borderedProminent)
                 .tint(GatherTheme.accentFill)
+                // 前景色显式钉在 onAccent：不让系统按 tint 亮度自己挑标签色，
+                // 这样 ThemeContrastTests 校核的「白字 on 填充」就是真实上屏的颜色。
+                .foregroundStyle(GatherTheme.onAccent)
                 .controlSize(size.controlSize)
 
         case .secondary:
@@ -118,25 +121,31 @@ private struct GatherButtonModifier: ViewModifier {
         case .tertiary:
             content
                 .buttonStyle(.borderless)
+                // tint 管系统对 borderless 文本按钮的配色，foregroundStyle 兜住
+                // 「样式不认 tint」的实现差异——两者成对写，别只留一个。
                 .tint(GatherTheme.accent)
+                .foregroundStyle(GatherTheme.accent)
                 .controlSize(size.controlSize)
 
         case .tertiaryDanger:
             content
                 .buttonStyle(.borderless)
                 .tint(GatherTheme.errorText)
+                .foregroundStyle(GatherTheme.errorText)
                 .controlSize(size.controlSize)
 
         case .destructive:
             content
                 .buttonStyle(.bordered)
                 .tint(GatherTheme.errorText)
+                .foregroundStyle(GatherTheme.errorText)
                 .controlSize(size.controlSize)
 
         case .destructiveProminent:
             content
                 .buttonStyle(.borderedProminent)
                 .tint(GatherTheme.errorFill)
+                .foregroundStyle(GatherTheme.onAccent)
                 .controlSize(size.controlSize)
         }
     }

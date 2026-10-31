@@ -146,6 +146,7 @@ GatherEmptyState(
 - 错误上下文里的行内动作（错误行「重试」）：`.gatherButton(.tertiaryDanger, size: .small)`。
 - 页面级危险动作：`.gatherButton(.destructive)`（系统描边 + 红色标签，**不是**红色描边）；自定义确认 sheet 的不可逆主按钮才用 `.destructiveProminent`（errorFill 填充 + 白字；alert/confirmationDialog 内仍交系统 role）。
 - 图标按钮：`.gatherIconButton()`（默认 `.regular`，命中区 24pt 保底）或系统 `.borderless`；照片卡 / tab 命中区仍用 `.plain`。
+- 标签色：`prominent` 系列由 `.tint()` + `.foregroundStyle(onAccent)` 双写；`tertiary` / `tertiaryDanger` / `destructive` 由 `.tint()` + `.foregroundStyle(对应 *Text 色)` 双写。**不要只写 tint**——不同 buttonStyle 对 tint 的处理不一致，只写 tint 会出现"文字没变色"的静默失败。
 - 自绘 chip / 状态胶囊（FacetBar、C1StatusCapsule、筛选胶囊）是命中区，不套 `gatherButton`；不要用它们承载普通 CTA。
 - 恒暗媒体查看器（Lightbox）的 chrome：`.gatherViewerButton()`（默认 `.regular`，plain + viewer 文字色 + 显式禁用态）；不要用 primary/secondary。
 - 窗口 toolbar / 浮层等功能层：`.gatherFunctionalPrimaryButton()` / `.gatherFunctionalSecondaryButton()`（保留系统玻璃）。
@@ -220,9 +221,13 @@ GatherSessionPage(page: .culling, workspace: workspace, subtitle: l10n("挑片�
 用包内绝对/相对路径；不要先 `cd` 进包再调 `./scripts/...`）。
 
 ```bash
-# 页面按钮不得直写系统样式（语义角色门禁，含正则正/负样本自检）
+# 按钮三件套：语义角色门禁（含正则正/负样本自检）+ 渲染采样 + 对比度
+#   ButtonStylePolicyTests  —— 页面不得直写系统样式
+#   ButtonRenderTests        —— 离屏渲染采样：prominent 填充必须等于对应 token、
+#                               secondary 不得带品牌色、标签对比度达标
+#   ThemeContrastTests       —— 文字 4.5:1 与控件边界 3:1（1.4.11）
 swift test --package-path desktop/native/gather-app --no-parallel \
-  --filter ButtonStylePolicyTests \
+  --filter 'ButtonStylePolicyTests|ButtonRenderTests|ThemeContrastTests' \
   --disable-sandbox \
   --cache-path desktop/native/gather-app/.build/shared-cache \
   --scratch-path desktop/native/gather-app/.build/scratch

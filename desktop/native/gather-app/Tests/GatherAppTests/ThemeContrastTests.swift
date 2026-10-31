@@ -59,6 +59,27 @@ struct ThemeContrastTests {
         }
     }
 
+    /// 非文本对比（WCAG 1.4.11）：控件填充 / 描边对相邻背景至少 3:1，
+    /// 否则"填充是否可辨认"取决于色相直觉，不同外观下会糊进背景。
+    private func assertFillBoundary(
+        _ fill: Color,
+        name: String,
+        appearances: [NSAppearance.Name] = [
+            .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+        ]
+    ) {
+        for appearance in appearances {
+            let value = resolved(fill, in: appearance)
+            for (label, background) in [("canvas", GatherTheme.canvas), ("surface", GatherTheme.surface)] {
+                let ratio = contrast(value, resolved(background, in: appearance))
+                #expect(
+                    ratio >= 3.0,
+                    "(name) 对 (label) 在 (appearance.rawValue) 下只有 (ratio)，低于 3:1（1.4.11 控件边界）"
+                )
+            }
+        }
+    }
+
     @Test("动态色确实随外观解析（防止测试假绿）")
     func dynamicColorsResolve() {
         let light = resolved(GatherTheme.canvas, in: .aqua)
@@ -86,10 +107,22 @@ struct ThemeContrastTests {
     func destructiveFillIsReadable() {
         for appearance in [NSAppearance.Name.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua] {
             let fill = resolved(GatherTheme.errorFill, in: appearance)
+            // 这正是 GatherButton 给 prominent 角色钉的前景色（见 GatherButtonModifier），
+            // 所以这条断言校核的是真实上屏的颜色组合，不是"理论上白字没问题"。
             let onFill = resolved(GatherTheme.onAccent, in: appearance)
             let ratio = contrast(fill, onFill)
             #expect(ratio >= 4.5, "errorFill/onAccent 在 \(appearance.rawValue) 下对比度 \(ratio)")
         }
+        // 浅色与深色必须是两个不同取值：同值说明 dynamic 分支没解析到，
+        // 下面的白字断言在深色态就是假绿。
+        let light = resolved(GatherTheme.errorFill, in: .aqua)
+        let dark = resolved(GatherTheme.errorFill, in: .darkAqua)
+        #expect(contrast(light, dark) > 1.1, "errorFill 在浅/深外观下几乎相同，动态色分支可能失效")
+    }
+
+    @Test("危险确认按钮填充对相邻背景达到 3:1（1.4.11 控件边界）")
+    func destructiveFillHasBoundaryContrast() {
+        assertFillBoundary(GatherTheme.errorFill, name: "errorFill")
     }
 
     @Test("语义状态文字变体在浅色/深色下均达到 4.5:1")

@@ -38,8 +38,8 @@ SwiftUI（GatherUI）→ AppServices（16 个域 API / 172 个类型化方法）
 ## 当前基线（2026-10-31 appearance 合并后采样，以脚本输出为准）
 
 - 8 个功能 target（含测试/工具共 16 个）。
-- gather-core 1,623 tests / 239 suites；gather-app 875 tests / 101 suites（`./scripts/test.sh` 运行时口径）。
-  `check-test-catalog.sh` 的 ratchet 用 `@Suite` **声明**口径（core 181 + app 101 = 282）；core 还有
+- gather-core 1,623 tests / 239 suites；gather-app 879 tests / 102 suites（`./scripts/test.sh` 运行时口径）。
+  `check-test-catalog.sh` 的 ratchet 用 `@Suite` **声明**口径（core 181 + app 102 = 283）；core 还有
   一批只有 `@Test` 没有 `@Suite` 的测试文件，运行时每个算一个隐式套件，这就是 239 与 181 的差额。
 - 12 个 `check-*.sh` 门禁（2026-10-30 移除 `check-docs.sh`）；en 2,020 键 / zh 9 占位键。
 
