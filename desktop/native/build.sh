@@ -168,17 +168,17 @@ rm -f "$OUTPUT_DIR/Gather.zip" "$OUTPUT_DIR/Gather.zip.sha256"
 # 部署目标已是 26.0，探测失败时默认值仍满足 SDK>=26；这里记录来源，
 # release 模式在探测失败时 fail closed（无法记录真实 SDK 属环境异常）。
 if [[ -z "${GATHER_SDK_VERSION:-}" ]]; then
-  SDK_VERSION="$(xcrun --show-sdk-version 2>/dev/null || true)"
+  SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || true)"
   if [[ -n "$SDK_VERSION" ]]; then
     export GATHER_SDK_VERSION="$SDK_VERSION"
     SDK_VERSION_SOURCE="xcrun"
   else
     SDK_VERSION_SOURCE="Package.swift default (26.0)"
     if [[ "$RELEASE_MODE" == "1" ]]; then
-      echo "release mode requires xcrun --show-sdk-version to record the real SDK (Liquid Glass needs >= 26)" >&2
+      echo "release mode requires xcrun --sdk macosx --show-sdk-version to record the real SDK (Liquid Glass needs >= 26)" >&2
       exit 1
     fi
-    echo "warning: xcrun --show-sdk-version unavailable; Package.swift default SDK 26.0 applies" >&2
+    echo "warning: xcrun --sdk macosx --show-sdk-version unavailable; Package.swift default SDK 26.0 applies" >&2
   fi
 else
   SDK_VERSION_SOURCE="GATHER_SDK_VERSION"
