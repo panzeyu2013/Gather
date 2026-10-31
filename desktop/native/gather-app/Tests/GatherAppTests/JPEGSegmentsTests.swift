@@ -8,6 +8,7 @@ import Testing
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import GatherProtocol
 @testable import GatherHost
 
 private func makeJPEG(width: Int = 32, height: Int = 32, iptc: [String: Any]? = nil) throws -> Data {
@@ -147,6 +148,34 @@ struct JPEGSegmentsTests {
         #expect(reparsed.photoshopIRBPayloads.count == 1, "合并后只写一个 APP13")
         let survivors = try PhotoshopIRBList.parse(try #require(reparsed.photoshopIRB))
         #expect(Set(survivors.map(\.resourceID)) == Set([0x0404, 0x0425, 0x0409]))
+    }
+
+    @Test("多个 0x0404 IIM：写回显式失败，不静默只改首段")
+    func multipleIIMResourcesFailClosed() throws {
+        let base = try makeJPEG(iptc: sampleIPTC())
+        let document = try JPEGDocument(data: base)
+        let baseResources = try PhotoshopIRBList.parse(try #require(document.photoshopIRB))
+        let iim = try #require(baseResources.first { $0.resourceID == PhotoshopIRB.iptcNAA }?.data)
+        let extra = makeAPP13([(PhotoshopIRB.iptcNAA, iim)])
+        let original = try injectAPP13(extra, into: base)
+        let before = try JPEGDocument(data: original)
+        #expect(before.photoshopIRBPayloads.count == 2, "夹具必须有两个 APP13")
+        #expect(before.photoshopIRBPayloads.compactMap { payload in
+            (try? PhotoshopIRBList.parse(payload))?.filter {
+                $0.resourceID == PhotoshopIRB.iptcNAA
+            }.count
+        }.reduce(0, +) == 2, "夹具必须有两个 0x0404 IIM")
+
+        do {
+            _ = try JPEGMetadataWriter.rewritten(
+                data: original,
+                attributes: MetadataWriteAttributes(
+                    descriptive: DescriptiveMetadata(caption: "new")),
+                target: "IMG_0001.jpg")
+            Issue.record("多个 IIM 资源必须显式失败，不能只改首段")
+        } catch let error as EmbeddedJPEGError {
+            #expect(error.code == "EMBEDDED_LAYOUT_UNSUPPORTED")
+        }
     }
 
     @Test("资源区超 64KB：按资源边界拆成多个 APP13，回读资源一个不少")

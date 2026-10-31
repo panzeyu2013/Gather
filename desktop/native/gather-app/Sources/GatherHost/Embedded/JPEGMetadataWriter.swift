@@ -141,6 +141,15 @@ enum JPEGMetadataWriter {
                 }
             }
             if var merged = resources {
+                // 多个 0x0404 IIM 只可能是外部工具的大 IPTC 拆分。读侧
+                // （XMPPacketReader / ImageIO / Bridge）都只认其中一段；如果这里只改首段、
+                // 保留其余段，会写出"Gather 看到新值、Bridge 看到旧值"的双真相。
+                // 宁可显式拒绝，也不静默做部分更新。
+                let iimCount = merged.filter { $0.resourceID == PhotoshopIRB.iptcNAA }.count
+                guard iimCount <= 1 else {
+                    throw EmbeddedJPEGError.layoutUnsupported(
+                        "multiple IPTC IIM resources (\(iimCount)); refusing partial rewrite")
+                }
                 let iptcIndex = merged.firstIndex { $0.resourceID == PhotoshopIRB.iptcNAA }
                 let existingIIM: IPTCIIM
                 if let iptcIndex {
