@@ -74,7 +74,7 @@ struct FilterRuleEditor: View {
                 .frame(maxWidth: 200)
                 Spacer(minLength: 0)
                 Button(l10n("添加条件")) { appendRule() }
-                    .buttonStyle(.borderless)
+                    .gatherButton(.tertiary, size: .small)
             }
 
             if group.conditions.isEmpty {

@@ -353,8 +353,11 @@ fi
 #    2026-10-31 V1 预演：+1（多个 0x0404 IIM 写回必须显式失败，不得只改首段）→ 2481/279。
 #    2026-10-31 universal 修复：+1（Float16 手写编解码逐位一致）→ 2482/279。
 #    2026-10-31 C1 检测：+1/+1（C1 16 版本化 bundle id + 标准路径兜底）→ 2483/280。
-BASELINE_TEST_DECL=2483
-BASELINE_SUITE_DECL=280
+#    2026-10-31 按钮语义化：+2/+1（ButtonStylePolicy 门禁 + errorFill 高对比断言）→ 2485/281；
+#    2026-10-31 自动命名测试：+8/+1（SessionNameAutoFill 状态机）→ 2493/282；
+#    断言合计 +18 → 11477。
+BASELINE_TEST_DECL=2493
+BASELINE_SUITE_DECL=282
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
@@ -383,7 +386,9 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 #    2026-10-31 V1 预演：+5（同上 1 例）。
 #    2026-10-31 universal 修复：+2（同上 1 例）。
 #    2026-10-31 C1 检测：+3（同上 1 例）。
-BASELINE_ASSERT=11459
+#    2026-10-31 按钮语义化：+4（门禁 3 断言 + errorFill 高对比 1 断言）→ 11463。
+#    2026-10-31 自动命名测试：+14（8 用例断言）→ 11477。
+BASELINE_ASSERT=11477
 assert_n=$(grep -rhoE '#(expect|require)\(' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')

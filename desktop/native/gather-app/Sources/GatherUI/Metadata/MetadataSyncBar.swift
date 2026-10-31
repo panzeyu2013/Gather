@@ -46,13 +46,14 @@ struct MetadataSyncBar: View {
                 }
                 if awaitingReloadAck {
                     Button(l10n("确认同步")) { Task { await confirm() } }
-                        .controlSize(.small)
+                        // 与 Face/Similarity 的 C1 结清动作保持同一层级：流程收尾，不是页面主 CTA。
+                        .gatherButton(.secondary, size: .small)
                         .disabled(isBusy)
                         .help(l10n("元数据已写盘，但 Capture One 还没加载；在 C1 中执行 Load Metadata 后确认同步"))
                 }
                 if (state?.synced ?? 0) > 0 {
                     Button(l10n("结束同步")) { showFinalizeConfirm = true }
-                        .controlSize(.small)
+                        .gatherButton(.destructive, size: .small)
                         .disabled(isBusy)
                         .help(l10n("删除本次写回的备份与交付记录；XMP 文件保留，不会还原"))
                 }

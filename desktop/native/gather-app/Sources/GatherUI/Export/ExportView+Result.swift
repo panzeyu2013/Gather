@@ -30,20 +30,23 @@ struct ExportResultSection: View {
                            : l10n.format("查看全部 %lld 条错误", result.errors.count)) {
                         showAllErrors.toggle()
                     }
-                    .buttonStyle(.borderless)
+                    .gatherButton(.tertiary, size: .small)
                 }
                 HStack(spacing: GatherMetrics.Space.s) {
                     Button(l10n("生成 CSV 报告")) {
                         Task { await viewModel.generateReport(format: .csv) }
                     }
+                    .gatherButton(.tertiary, size: .small)
                     Button(l10n("生成 Markdown 报告")) {
                         Task { await viewModel.generateReport(format: .md) }
                     }
+                    .gatherButton(.tertiary, size: .small)
                     if !viewModel.destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Button(l10n("在 Finder 中显示")) {
                             NSWorkspace.shared.open(
                                 URL(fileURLWithPath: viewModel.destination))
                         }
+                        .gatherButton(.tertiary, size: .small)
                     }
                 }
                 if let report = viewModel.report {

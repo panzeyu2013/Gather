@@ -58,12 +58,13 @@ extension SimilarityView {
                 Button(l10n("预览")) {
                     Task { await viewModel.previewKeywordWriteback() }
                 }
+                .gatherButton(.tertiary)
                 .disabled(!viewModel.canPreviewWriteback)
                 // 写回：busy 时禁用并显示处理中文案。
                 Button(viewModel.isSyncBusy ? l10n("处理中…") : l10n("写入 XMP")) {
                     Task { await requestWritebackConfirmation() }
                 }
-                .buttonStyle(.bordered)
+                .gatherButton(.secondary)
                 .disabled(!viewModel.canPreviewWriteback)
             }
             Text(l10n("写入后在 Capture One 中选择这些照片，执行「图像 → 加载元数据」；确认关键词已进入目录后，再点击「确认同步」和「清理」。"))
@@ -172,18 +173,21 @@ extension SimilarityView {
                             paths: result.failedItems.map { $0.xmpPath.isEmpty ? $0.photoPath : $0.xmpPath }
                         )
                     }
+                    .gatherButton(.tertiary)
                     .disabled(viewModel.isSyncBusy)
                 }
                 // 确认同步：仅 c1Read + 已写入 + ack（或 safeToCleanup）可用。
                 Button(l10n("确认同步")) {
                     pendingConfirmSync = PendingSimilarityConfirmSync()
                 }
+                .gatherButton(.secondary)
                 .disabled(viewModel.isSyncBusy || !controls.canConfirmSync)
                 .help(controls.confirmHint.map { l10n.resolve($0) } ?? "")
                 // 清理：仅 safeToCleanup 可用。
                 Button(l10n("清理"), role: .destructive) {
                     pendingCleanup = PendingSimilarityCleanup(writtenCount: viewModel.syncView?.written ?? 0)
                 }
+                .gatherButton(.destructive)
                 .disabled(viewModel.isSyncBusy || !controls.canCleanup)
                 .help(controls.cleanupHint.map { l10n.resolve($0) } ?? "")
             }
@@ -192,6 +196,7 @@ extension SimilarityView {
                 Button(l10n("在 Capture One 中加载元数据")) {
                     Task { await viewModel.loadMetadataInCaptureOne() }
                 }
+                .gatherButton(.secondary)
                 .disabled(viewModel.isSyncBusy || !controls.canLoadMetadata)
                 .help(controls.loadHint.map { l10n.resolve($0) } ?? "")
                 Text(controls.canLoadMetadata

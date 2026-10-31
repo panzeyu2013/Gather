@@ -132,11 +132,11 @@ extension GalleryView {
                     // P0 / B2：从图库直接编辑当前照片（写说明/版权不必回挑片页）。
                     GatherInspectorSection(l10n("元数据")) {
                         Button(l10n("编辑元数据…")) { inspectorSheet = .metadata }
-                            .buttonStyle(.bordered)
+                            .gatherButton(.secondary)
                             .frame(maxWidth: .infinity)
                             .disabled(viewModel.metadataAPI == nil)
                         Button(l10n("查找相似照片…")) { inspectorSheet = .semantic }
-                            .buttonStyle(.bordered)
+                            .gatherButton(.secondary)
                             .frame(maxWidth: .infinity)
                             .disabled(viewModel.photoAPI == nil)
                     }

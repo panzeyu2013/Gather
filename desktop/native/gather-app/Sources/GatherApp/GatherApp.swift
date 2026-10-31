@@ -73,7 +73,7 @@ struct GatherApp: App {
                         Button(l10n("重试")) {
                             Task { await start() }
                         }
-                        .gatherPrimaryActionButton()
+                        .gatherButton(.primary)
                     }
                     .frame(minWidth: 520, minHeight: 380)
                 } else {

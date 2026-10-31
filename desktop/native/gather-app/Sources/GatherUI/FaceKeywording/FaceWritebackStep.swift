@@ -26,6 +26,7 @@ extension FaceKeywordingView {
             if viewModel.preview != nil { xmpPreview }
             HStack(spacing: 9) {
                 Button(l10n("生成预览"), systemImage: "eye") { Task { await viewModel.previewWriteback() } }
+                    .gatherButton(.secondary)
                     .disabled(!viewModel.analysisDone)
                     .help(l10n("列出将写入的 XMP 项，不写盘"))
                 // 确认写回：分析完成后恒可用；无预览时自动补一次预览再写回
@@ -33,7 +34,7 @@ extension FaceKeywordingView {
                 Button(l10n("确认写回"), systemImage: "square.and.arrow.down") {
                     Task { await requestWritebackConfirmation() }
                 }
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary)
                 .disabled(!viewModel.canWriteback)
                 .help(l10n("确认后写入 XMP 附属文件；不修改原始照片"))
             }
@@ -218,13 +219,16 @@ extension FaceKeywordingView {
                             paths: result.failedItems.map { $0.xmpPath.isEmpty ? $0.photoPath : $0.xmpPath }
                         )
                     }
+                    .gatherButton(.tertiary, size: .small)
                     .disabled(viewModel.isWritingBack)
                     .help(l10n.format("重新写入 %lld 个失败项", result.failedItems.count))
                 }
                 Button(l10n("Capture One 重新加载")) { Task { await viewModel.reloadCaptureOne() } }
+                    .gatherButton(.tertiary, size: .small)
                     .disabled(viewModel.isWritingBack)
                     .help(l10n("让 Capture One 重新读取已写入的元数据"))
                 Button(l10n("确认同步")) { pendingConfirmSync = PendingFaceConfirmSync() }
+                    .gatherButton(.secondary, size: .small)
                     .disabled(viewModel.isWritingBack)
                     .help(l10n("结清本次写回，之后才可清理备份"))
                 if viewModel.isSyncConfirmed {
@@ -233,6 +237,7 @@ extension FaceKeywordingView {
                     } label: {
                         Text(l10n("清理备份"))
                     }
+                    .gatherButton(.destructive, size: .small)
                     .disabled(viewModel.isWritingBack)
                     .help(l10n("删除本次写回生成的 XMP 备份文件"))
                 }

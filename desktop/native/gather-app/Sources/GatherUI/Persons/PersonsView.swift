@@ -151,6 +151,7 @@ package struct PersonsView: View {
                 Button(l10n("重试")) {
                     Task { await viewModel.load() }
                 }
+                .gatherButton(.primary)
                 .help(l10n("重新读取人脸库"))
             }
         case .loaded:
@@ -186,8 +187,7 @@ package struct PersonsView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button(l10n("新建人物")) { showCreate = true }
-                .controlSize(.large)
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary, size: .large)
         }
         .padding(.horizontal, 40)
         .padding(.vertical, 36)
@@ -386,6 +386,7 @@ private struct PersonDetailView: View {
                                 }
                             }
                         }
+                        .gatherButton(.primary)
                         .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
@@ -408,6 +409,7 @@ private struct PersonDetailView: View {
                                 onReview(target.sessionId)
                             }
                         }
+                        .gatherButton(.secondary)
                         .help(l10n.format("在该工作区的人脸审核页按角色「%@」复核", person.name))
                     }
                 }
@@ -469,6 +471,7 @@ private struct PersonDetailView: View {
                         } label: {
                             Text(l10n("删除人物"))
                         }
+                        .gatherButton(.destructive)
                         .help(l10n("删除该人物及其人脸绑定数据"))
                     }
                 }
@@ -646,7 +649,9 @@ private struct CreatePersonSheet: View {
             HStack {
                 Spacer()
                 Button(l10n("取消"), role: .cancel) { dismiss() }
+                    .gatherButton(.secondary)
                 Button(l10n("创建")) { submit() }
+                    .gatherButton(.primary)
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

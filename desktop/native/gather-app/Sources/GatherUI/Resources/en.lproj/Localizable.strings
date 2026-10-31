@@ -523,7 +523,7 @@
 "创建后会立即启动照片索引；索引进度和失败重试可在任务中心查看。" = "Indexing starts immediately after creation; progress and failed retries can be tracked in the Task Center.";
 "请选择包含照片的文件夹" = "Choose a folder that contains photos";
 "文件夹位置" = "Folder Location";
-"选择文件夹" = "Choose Folder";
+"请填写工作区名称" = "Enter a workspace name";
 "Capture One 连接预检" = "Capture One Connection Check";
 "正在检查 Capture One 连接…" = "Checking the Capture One connection…";
 "预检通过：导入时读取 Capture One 当前选中的照片。" = "Check passed: import reads the photos currently selected in Capture One.";
@@ -1509,6 +1509,7 @@
 "小脸" = "Small Face";
 "模型不兼容" = "Incompatible Model";
 "未选择" = "Not Selected";
+"未选择文件夹" = "No folder selected";
 "确认拆分所选成员？" = "Split the selected members?";
 "拆分为新簇" = "Split into New Cluster";
 "拆分簇 #%lld" = "Split cluster #%lld";

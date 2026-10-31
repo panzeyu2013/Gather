@@ -30,8 +30,7 @@ struct DuplicatesLoadingIndicator: View {
                 Button(l10n("取消"), systemImage: "stop.fill") {
                     Task { await viewModel.cancelScan() }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .gatherButton(.secondary, size: .small)
             } else {
                 Text(l10n("加载中…"))
                     .font(GatherFont.secondary)
@@ -89,7 +88,7 @@ struct DuplicatesScanControls: View {
                 Button(viewModel.isScanning ? l10n("扫描中…") : l10n("开始扫描"), systemImage: "magnifyingglass") {
                     Task { await viewModel.scan() }
                 }
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary)
                 .disabled(viewModel.isScanning)
                 if !viewModel.isScanning, let preset = viewModel.activePreset {
                     Text(l10n.format("当前档位：%@", preset.label(with: l10n)))
@@ -153,6 +152,7 @@ struct DuplicatesEmptyState: View {
                 Text(CommandErrorText.resolve(error, with: l10n))
             } actions: {
                 Button(l10n("重试")) { Task { await viewModel.load() } }
+                    .gatherButton(.primary)
                     .disabled(viewModel.isLoading)
             }
         } else if viewModel.scanResult == nil {

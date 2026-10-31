@@ -88,9 +88,7 @@ struct CullingInfoBar: View {
                     .lineLimit(1)
                     .help(syncErrorText)
                 Button(l10n("重试")) { Task { await viewModel.load() } }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .tint(GatherTheme.errorText)
+                    .gatherButton(.tertiaryDanger, size: .small)
 
             }
             }

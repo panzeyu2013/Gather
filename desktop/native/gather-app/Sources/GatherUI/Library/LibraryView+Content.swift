@@ -80,7 +80,7 @@ extension LibraryView {
             Button(l10n("重试")) {
                 Task { await viewModel.load() }
             }
-            .gatherPrimaryActionButton()
+            .gatherButton(.primary)
         }
     }
 
@@ -105,11 +105,12 @@ extension LibraryView {
                 Button(l10n("导入文件夹")) {
                     NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
                 }
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary)
             } else {
                 Button(l10n("清除筛选")) {
                     viewModel.clearFilters()
                 }
+                .gatherButton(.secondary)
             }
         }
     }
@@ -138,6 +139,7 @@ extension LibraryView {
             Button(l10n("上一页")) {
                 viewModel.prevPage()
             }
+            .gatherButton(.secondary, size: .small)
             .disabled(viewModel.page == 0)
             Text("\(viewModel.page + 1) / \(max(1, Int(ceil(Double(viewModel.total) / Double(LibraryViewModel.pageSize)))))")
                 .font(.callout)
@@ -145,6 +147,7 @@ extension LibraryView {
             Button(l10n("下一页")) {
                 viewModel.nextPage()
             }
+            .gatherButton(.secondary, size: .small)
             .disabled(!viewModel.hasNextPage)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

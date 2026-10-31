@@ -46,6 +46,7 @@ struct MetadataBatchSheet: View {
                                         .foregroundStyle(.secondary)
                                 } else {
                                     Button(l10n("撤销")) { pendingUndo = batch }
+                                        .gatherButton(.tertiary, size: .small)
                                         .disabled(isBusy)
                                 }
                             }
@@ -63,6 +64,7 @@ struct MetadataBatchSheet: View {
             HStack {
                 Spacer()
                 Button(l10n("关闭")) { dismiss() }
+                    .gatherButton(.secondary)
             }
         }
         .padding(GatherMetrics.Space.l)

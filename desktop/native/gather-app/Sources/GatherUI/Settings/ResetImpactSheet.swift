@@ -60,6 +60,7 @@ struct ResetImpactSheet: View {
             HStack(spacing: GatherMetrics.Space.s) {
                 Spacer()
                 Button(l10n("取消")) { dismiss() }
+                    .gatherButton(.secondary)
                     .keyboardShortcut(.cancelAction)
                 Button(role: resetUserContent ? .destructive : nil) {
                     onConfirm(resetPreferences, resetUserContent, resetLanguage)
@@ -67,6 +68,7 @@ struct ResetImpactSheet: View {
                 } label: {
                     Text(l10n("恢复默认"))
                 }
+                .gatherButton(resetUserContent ? .destructiveProminent : .primary)
                 // 破坏性动作不接裸 Return：误按回车会清空偏好（F-P1-4）。
                 // 用 ⌘↩ 保留键盘可达性（FKA 关闭时 Tab 到不了按钮，只有 Esc 可退）。
                 .keyboardShortcut(.return, modifiers: .command)

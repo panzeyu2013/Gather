@@ -46,11 +46,12 @@ extension FaceKeywordingView {
                 if viewModel.analysisPhase == .running { analysisProgress }
                 HStack(spacing: GatherMetrics.Space.m) {
                     if viewModel.analysisPhase == .running {
-                        Button(role: .destructive) {
+                        Button {
                             Task { await viewModel.cancel() }
                         } label: {
                             Label(l10n("取消"), systemImage: "stop.fill")
                         }
+                        .gatherButton(.secondary)
                         .help(l10n("停止正在运行的人脸分析"))
                     } else if viewModel.analysisPhase == .done {
                         Button(l10n("仅重新聚类"), systemImage: "arrow.triangle.2.circlepath") {
@@ -61,13 +62,13 @@ extension FaceKeywordingView {
                                 boundClusterCount: impact.boundClusterCount
                             )
                         }
-                        .gatherPrimaryActionButton()
+                        .gatherButton(.primary)
                         .help(l10n("按当前参数重建全部人脸簇（会还原人工绑定）"))
                     } else {
                         Button(l10n("开始分析"), systemImage: "play.fill") {
                             Task { await viewModel.analyze() }
                         }
-                        .gatherPrimaryActionButton()
+                        .gatherButton(.primary)
                         .help(l10n("对新增照片运行人脸检测与聚类"))
                     }
                 }
@@ -92,8 +93,7 @@ extension FaceKeywordingView {
                     color: GatherTheme.warning
                 )
                 Button(l10n("前往设置")) { openSettings() }
-                    .gatherPrimaryActionButton()
-                    .controlSize(.small)
+                    .gatherButton(.secondary, size: .small)
                     .help(l10n("打开设置检查人脸模型"))
             }
         }

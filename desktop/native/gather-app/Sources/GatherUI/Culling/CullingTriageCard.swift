@@ -290,7 +290,7 @@ struct CullingTriageCard: View {
             Label(l10n("校准阈值"), systemImage: "slider.horizontal.3")
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
+        .gatherButton(.secondary)
         .disabled(busy)
         .help(calibration == nil
               ? l10n("校准未接线")
@@ -303,7 +303,7 @@ struct CullingTriageCard: View {
                 Label(l10n("应用建议"), systemImage: "checkmark.circle")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .gatherButton(.primary)
             .disabled(busy || !viewModel.canApplyTriage)
             .help(l10n("应用建议"))
 
@@ -314,7 +314,7 @@ struct CullingTriageCard: View {
                 Label(l10n("进入复核队列"), systemImage: "rectangle.grid.2x2")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .gatherButton(.secondary)
             // stale 时页面行被门控全部隐藏，进入队列只会得到空网格。
             .disabled(busy || summary.counts.review == 0 || summary.stale)
             .help(summary.stale ? l10n("建议已过期，请先重新生成") : l10n("复核队列"))
@@ -335,7 +335,7 @@ struct CullingTriageCard: View {
                 )
             }
         }
-        .buttonStyle(.bordered)
+        .gatherButton(.secondary)
         .disabled(busy || !viewModel.canGenerateTriage)
         .help(l10n("技术质量建议（Beta）"))
     }
@@ -369,12 +369,13 @@ struct CullingTriageCard: View {
             HStack {
                 Spacer()
                 Button(l10n("取消")) { showApplyConfirmation = false }
+                    .gatherButton(.secondary)
                     .keyboardShortcut(.cancelAction)
                 Button(l10n("确认应用")) {
                     showApplyConfirmation = false
                     Task { _ = await viewModel.applyTriage() }
                 }
-                .buttonStyle(.borderedProminent)
+                .gatherButton(.primary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(busy || !viewModel.canApplyTriage)
             }
@@ -417,6 +418,7 @@ struct CullingTriageCard: View {
             HStack {
                 Spacer()
                 Button(l10n("关闭")) { showCalibration = false }
+                    .gatherButton(.secondary)
                     .keyboardShortcut(.cancelAction)
             }
         }
@@ -501,7 +503,7 @@ struct CullingTriageCard: View {
                     Button(l10n("应用")) {
                         Task { await calibrationModel?.apply(suggestion, bridge: calibration) }
                     }
-                    .buttonStyle(.bordered)
+                    .gatherButton(.secondary, size: .small)
                     .disabled(calibrationModel?.canApply != true)
                 }
             }

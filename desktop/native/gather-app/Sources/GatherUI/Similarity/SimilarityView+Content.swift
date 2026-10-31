@@ -112,7 +112,7 @@ extension SimilarityView {
             Button(l10n("重试")) {
                 Task { await viewModel.load() }
             }
-            .gatherPrimaryActionButton()
+            .gatherButton(.primary)
         }
     }
 
@@ -169,7 +169,7 @@ extension SimilarityView {
                 Button(viewModel.isCanceling ? l10n("处理中…") : l10n("取消分析")) {
                     Task { await viewModel.cancelAnalysis() }
                 }
-                .buttonStyle(.bordered)
+                .gatherButton(.secondary)
                 .disabled(viewModel.isCanceling)
             }
         }
@@ -258,6 +258,7 @@ extension SimilarityView {
             Button(viewModel.isReclustering ? l10n("聚类中…") : l10n("重新聚类")) {
                 Task { await viewModel.recluster() }
             }
+            .gatherButton(.secondary)
             .disabled(viewModel.isReclustering || viewModel.isAnalyzing)
         }
     }

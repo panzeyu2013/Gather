@@ -16,6 +16,7 @@ extension SettingsView {
                        : l10n("重新检测")) {
                     Task { await viewModel.checkC1Health() }
                 }
+                .gatherButton(.secondary, size: .small)
                 .disabled(viewModel.c1Checking)
             }
 

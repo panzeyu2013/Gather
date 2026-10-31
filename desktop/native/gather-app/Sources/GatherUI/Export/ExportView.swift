@@ -176,6 +176,7 @@ public struct ExportView: View {
                     planDebounceTask?.cancel()
                     Task { await viewModel.previewExport() }
                 }
+                .gatherFunctionalSecondaryButton()
                 .disabled(viewModel.isWorking || viewModel.destinationIsEmpty)
                 .help(l10n("预览本次导出的文件清单与空间占用"))
                 // 对齐旧版 export.tsx:192：仅导出进行中禁用，预览不互斥（旧版可并发）。
@@ -185,7 +186,7 @@ public struct ExportView: View {
                     Task { pendingExport = await viewModel.exportConfirmation() }
                 }
                 // 唯一的 primary action，固定放尾侧（HIG Toolbars）。
-                .gatherPrimaryActionButton()
+                .gatherFunctionalPrimaryButton()
                 // 交付与单张导出共用会话级取消：运行期间互斥，避免互相误杀。
                 .disabled(viewModel.isExporting || viewModel.isDelivering || viewModel.destinationIsEmpty)
                 // 对齐旧版 export.tsx:195：取消仅在导出进行中可用（预览期间禁用）。
@@ -194,6 +195,7 @@ public struct ExportView: View {
                     Button(l10n("取消导出"), systemImage: "stop.circle") {
                         Task { await viewModel.cancelExport() }
                     }
+                    .gatherFunctionalSecondaryButton()
                     .help(l10n("取消正在进行的导出"))
                 }
             }

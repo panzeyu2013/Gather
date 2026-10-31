@@ -28,11 +28,11 @@ struct CullingConflictPanel: View {
                         Button(l10n("全部采用外部值")) {
                             pendingAction = .resolveAllConflicts(.useRemote)
                         }
-                        .buttonStyle(.bordered)
+                        .gatherButton(.secondary)
                         Button(l10n("全部保留 Gather")) {
                             pendingAction = .resolveAllConflicts(.keepLocal)
                         }
-                        .buttonStyle(.bordered)
+                        .gatherButton(.secondary)
                     }
                     .help(l10n("对当前全部冲突使用同一策略；逐项应用，失败项会保留"))
                 }
@@ -116,16 +116,19 @@ struct CullingConflictPanel: View {
                 Button(l10n("采用外部值")) {
                     pendingAction = .resolveConflict(conflict, choicesForConflict(conflict, .useRemote))
                 }
+                .gatherButton(.secondary)
                 .help(l10n("丢弃 Gather 待写入值，接受磁盘上的外部修改"))
                 Button(l10n("保留 Gather 并结清")) {
                     // 空 choices = 显式结清（coordinator 的第三条出口），字段为空时同样可达。
                     pendingAction = .resolveConflict(conflict, [:])
                 }
+                .gatherButton(.secondary)
                 .help(l10n("把 Gather 的值写回 XMP，以当前磁盘状态为新基线"))
                 if !conflict.fields.isEmpty {
                     Button(l10n("应用选择并继续写入")) {
                         pendingAction = .resolveConflict(conflict, selectedChoices(conflict))
                     }
+                    .gatherButton(.primary)
                 }
             }
         }
@@ -140,6 +143,7 @@ struct CullingConflictPanel: View {
                     .foregroundStyle(GatherTheme.errorText)
                 Spacer()
                 Button(l10n("重试失败项")) { pendingAction = .retryFailedWriteback }
+                    .gatherButton(.secondary, size: .small)
             }
             ForEach(Array(viewModel.failedSyncItems.prefix(3)), id: \.xmpPath) { item in
                 VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {

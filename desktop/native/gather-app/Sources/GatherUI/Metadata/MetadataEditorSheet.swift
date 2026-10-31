@@ -77,8 +77,10 @@ struct MetadataEditorSheet: View {
                 Button(l10n("取消")) {
                     if changedFieldCount > 0 { showDiscardConfirm = true } else { dismiss() }
                 }
+                .gatherButton(.secondary)
                 Button(l10n("应用")) { Task { await apply() } }
                     .keyboardShortcut(.defaultAction)
+                    .gatherButton(.primary)
                     .disabled(isBusy || isLoading || diskReadFailed || changedFieldCount == 0)
             }
         }

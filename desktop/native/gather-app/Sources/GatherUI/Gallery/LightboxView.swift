@@ -115,6 +115,7 @@ struct LightboxView: View {
                 .font(GatherFont.mono)
                 .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.75))
             Button(l10n("关闭"), action: onClose)
+                .gatherViewerButton()
                 .keyboardShortcut(.cancelAction)
                 .help(l10n("关闭"))
         }
@@ -224,6 +225,7 @@ struct LightboxView: View {
             } label: {
                 Image(systemName: "minus.magnifyingglass")
             }
+            .gatherViewerButton()
             .help(l10n("缩小"))
             .accessibilityLabel(l10n("缩小"))
             Text("\(Int(scale * 100))%")
@@ -235,17 +237,20 @@ struct LightboxView: View {
             } label: {
                 Image(systemName: "plus.magnifyingglass")
             }
+            .gatherViewerButton()
             .help(l10n("放大"))
             .accessibilityLabel(l10n("放大"))
             Button(l10n("重置")) {
                 resetTransform()
             }
+            .gatherViewerButton()
             .help(l10n("重置"))
             Button {
                 goPrevious()
             } label: {
                 Image(systemName: "chevron.left")
             }
+            .gatherViewerButton()
             .help(l10n("上一张"))
             .accessibilityLabel(l10n("上一张"))
             .disabled(currentIndex == 0)
@@ -254,6 +259,7 @@ struct LightboxView: View {
             } label: {
                 Image(systemName: "chevron.right")
             }
+            .gatherViewerButton()
             .help(l10n("下一张"))
             .accessibilityLabel(l10n("下一张"))
             .disabled(currentIndex == photos.count - 1)
@@ -275,6 +281,7 @@ struct LightboxView: View {
                 .font(GatherFont.cardTitle)
                 .foregroundStyle(GatherTheme.viewerTextPrimary)
             Button(l10n("关闭"), action: onClose)
+                .gatherViewerButton()
                 .keyboardShortcut(.cancelAction)
         }
         .padding(GatherMetrics.Space.xl)

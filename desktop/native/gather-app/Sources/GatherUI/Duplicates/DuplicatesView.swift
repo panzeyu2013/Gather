@@ -119,8 +119,7 @@ public struct DuplicatesView: View {
                                 Button(l10n.format("加载更多（还有 %lld 组）", viewModel.remainingGroupCount)) {
                                     viewModel.loadMoreGroups()
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+                                .gatherButton(.secondary, size: .small)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }

@@ -31,6 +31,15 @@ public enum GatherTheme {
         highContrastDark: "#8A3E1F"
     )
 
+    /// 危险确认按钮的填充色：与白字对比度 >= 4.5:1（深色模式同样成立）。
+    /// 不用 systemRed 做填充 + 白字：systemRed 在 13pt 白字下只有约 3.5:1。
+    public static let errorFill = dynamic(
+        light: "#B3261E",
+        dark: "#B3261E",
+        highContrastLight: "#7A1A14",
+        highContrastDark: "#8A1C16"
+    )
+
     /// 填充品牌色上的文字色。
     public static let onAccent = Color.white
 

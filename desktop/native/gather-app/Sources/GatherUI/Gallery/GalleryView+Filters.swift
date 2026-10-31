@@ -33,7 +33,7 @@ extension GalleryView {
                     viewModel.applyRules(FilterGroup(logic: .and, conditions: []))
                     viewModel.appliedSearchName = nil
                 }
-                .buttonStyle(.borderless)
+                .gatherButton(.tertiary)
                 .help(l10n("清除 facet、规则、搜索与四档筛选"))
             }
         }
@@ -46,7 +46,7 @@ extension GalleryView {
         } label: {
             Label(l10n("高级筛选规则…"), systemImage: "line.3.horizontal.decrease")
         }
-        .buttonStyle(.borderless)
+        .gatherButton(.tertiary)
         .disabled(viewModel.photoAPI == nil)
         .help(l10n("用 AND/OR 组合字段条件（与 facet、搜索同时生效）"))
     }
@@ -112,8 +112,10 @@ extension GalleryView {
             HStack {
                 Spacer(minLength: 0)
                 Button(l10n("取消")) { showSaveSearchPrompt = false }
+                    .gatherButton(.secondary)
                     .keyboardShortcut(.escape, modifiers: [])
                 Button(l10n("保存")) { commitSaveSearch() }
+                    .gatherButton(.primary)
                     .keyboardShortcut(.return, modifiers: [])
                     .disabled(
                         savedSearchName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -159,14 +161,16 @@ struct GalleryRuleEditorSheet: View {
                 Button(l10n("清空")) {
                     draft = FilterGroup(logic: .and, conditions: [])
                 }
-                .buttonStyle(.borderless)
+                .gatherButton(.tertiary)
                 Spacer(minLength: 0)
                 Button(l10n("取消")) { dismiss() }
+                    .gatherButton(.secondary)
                     .keyboardShortcut(.escape, modifiers: [])
                 Button(l10n("应用")) {
                     onApply(draft)
                     dismiss()
                 }
+                .gatherButton(.primary)
                 .keyboardShortcut(.return, modifiers: [])
             }
         }

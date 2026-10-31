@@ -35,8 +35,7 @@ extension SessionControlView {
                         Text(copy.text).font(GatherFont.secondary)
                     }
                     Button(l10n("重试")) { Task { await viewModel.retryIndex() } }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .gatherButton(.secondary, size: .small)
                         .help(l10n("重新排队索引扫描"))
                 case .count:
                     Text(copy.text).font(GatherFont.secondary).foregroundStyle(.secondary)

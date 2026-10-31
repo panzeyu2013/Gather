@@ -126,14 +126,12 @@ struct DashboardFirstRunView: View {
                     Label(l10n("导入文件夹"), systemImage: "folder")
                         .frame(minWidth: 108)
                 }
-                .controlSize(.large)
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary, size: .large)
 
                 Button(action: onCreateWorkspace) {
                     Label(l10n("新建工作区"), systemImage: "plus")
                 }
-                .controlSize(.large)
-                .gatherSecondaryActionButton()
+                .gatherButton(.secondary, size: .large)
             }
             .padding(.top, GatherMetrics.Space.xs)
         }
@@ -334,7 +332,7 @@ private struct DashboardQuickCard: View {
                         .font(GatherFont.secondaryStrong)
                         .foregroundStyle(GatherTheme.accent)
                 }
-                .buttonStyle(.borderless)
+                .gatherButton(.tertiary)
             }
         }
         .padding(GatherMetrics.Space.l)

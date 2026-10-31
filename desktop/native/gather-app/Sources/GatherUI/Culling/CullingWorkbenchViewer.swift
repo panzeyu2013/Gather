@@ -949,7 +949,7 @@ private struct WindowBridge: NSViewRepresentable {
 private struct ViewerZoomChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .glassEffect(.clear, in: .capsule)
+            .gatherFunctionalCapsule(clear: true)
             .padding(.leading, GatherMetrics.Space.m)
             .padding(.bottom, 40)
     }

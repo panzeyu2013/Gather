@@ -96,8 +96,10 @@ struct MetadataTemplateFieldsSheet: View {
                 Button(l10n("取消")) {
                     if isDirty { showDiscardConfirm = true } else { dismiss() }
                 }
+                .gatherButton(.secondary)
                 Button(l10n("保存")) { Task { await save() } }
                     .keyboardShortcut(.defaultAction)
+                    .gatherButton(.primary)
                     .disabled(isBusy)
             }
         }

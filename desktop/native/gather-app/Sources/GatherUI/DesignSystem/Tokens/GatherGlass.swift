@@ -21,6 +21,8 @@ import SwiftUI
 /// - **卡片、列表行、表单行、正文背景 → 一律标准材质**（`GatherTheme.contentBackground`），
 ///   这里不提供任何「把卡片变玻璃」的入口，避免被误用。
 /// - **只有浮在内容之上的功能层**（toast、查看器控制条、浮动选择栏）用玻璃。
+/// - 功能层按钮用 `gatherFunctionalPrimaryButton` / `gatherFunctionalSecondaryButton`；
+///   内容层按钮一律走 `GatherButton`，不要用 `.glass`。
 ///
 /// 唯一有据可循的例外是「瞬时交互控件」（滑杆/开关的滑块），那由系统自己处理。
 ///
@@ -45,16 +47,21 @@ extension View {
         glassEffect(clear ? .clear : .regular, in: .rect(cornerRadius: cornerRadius))
     }
 
-    /// 内容区的**主要动作**按钮：系统 glass 样式（Apple：「Instead of creating
-    /// buttons with custom Liquid Glass effects, you can adopt the look and feel of
-    /// the material with minimal code」）。
-    package func gatherPrimaryActionButton() -> some View {
+    /// 功能层胶囊表面：查看器缩放控件等浮在照片媒体上的小控件。
+    /// 与 `gatherFunctionalSurface` 一样，只用于浮层，不用于内容层卡片。
+    func gatherFunctionalCapsule(clear: Bool = true) -> some View {
+        glassEffect(clear ? .clear : .regular, in: .capsule)
+    }
+
+    /// 功能层主按钮：窗口 toolbar / 浮层内使用，保留系统 Liquid Glass。
+    /// 内容层不要用；内容层请用 `gatherButton(.primary)`。
+    package func gatherFunctionalPrimaryButton() -> some View {
         self.tint(GatherTheme.accentFill)
             .buttonStyle(.glassProminent)
     }
 
-    /// 内容区的**次要动作**按钮：系统 glass 样式。
-    package func gatherSecondaryActionButton() -> some View {
+    /// 功能层次按钮：窗口 toolbar / 浮层内使用。
+    package func gatherFunctionalSecondaryButton() -> some View {
         self.buttonStyle(.glass)
     }
 

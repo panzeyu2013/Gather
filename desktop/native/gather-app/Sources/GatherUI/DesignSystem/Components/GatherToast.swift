@@ -170,15 +170,13 @@ private struct ToastRow: View {
                     action()
                     onDismiss()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .gatherButton(.secondary, size: .small)
             }
             Button(action: onDismiss) {
                 Label(l10n("关闭"), systemImage: "xmark")
                     .labelStyle(.iconOnly)
             }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
+            .gatherIconButton(size: .small)
             .help(l10n("关闭"))
         }
         .padding(.horizontal, 14)

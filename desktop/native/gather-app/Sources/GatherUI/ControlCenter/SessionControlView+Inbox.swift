@@ -53,7 +53,7 @@ extension SessionControlView {
             }
             Spacer()
             Button(item.actionLabel) { perform(item.action) }
-                .buttonStyle(.bordered).controlSize(.small)
+                .gatherButton(.tertiary, size: .small)
         }
     }
 

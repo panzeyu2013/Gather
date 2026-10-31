@@ -56,9 +56,11 @@ private struct MaintenanceSettingsSection: View {
                         .gatherText(.secondary)
                     HStack(spacing: GatherMetrics.Space.m) {
                         Button(l10n("退出 Gather")) { NSApp.terminate(nil) }
+                            .gatherButton(.secondary)
                         Button(l10n("取消待恢复")) {
                             Task { await viewModel.cancelPendingRestore() }
                         }
+                        .gatherButton(.tertiary)
                         .disabled(busy)
                     }
                 }
@@ -72,8 +74,10 @@ private struct MaintenanceSettingsSection: View {
                             .truncationMode(.middle)
                             .foregroundStyle(.secondary)
                         Button(l10n("更改备份目录…")) { chooseBackupDirectory() }
+                            .gatherButton(.secondary, size: .small)
                             .disabled(busy)
                         Button(l10n("打开备份目录")) { openBackupDirectory() }
+                            .gatherButton(.tertiary, size: .small)
                             .disabled(viewModel.maintenanceBackupDirectory.isEmpty)
                     }
                 }
@@ -87,6 +91,7 @@ private struct MaintenanceSettingsSection: View {
                     Button(l10n("立即备份")) {
                         Task { await viewModel.backupNow() }
                     }
+                    .gatherButton(.secondary)
                     .disabled(busy)
                     if busy { ProgressView().controlSize(.small) }
                 }
@@ -150,6 +155,7 @@ private struct MaintenanceSettingsSection: View {
                             }
                             Spacer(minLength: 8)
                             Button(l10n("恢复")) { pendingRestore = record }
+                                .gatherButton(.destructive, size: .small)
                                 .disabled(busy)
                         }
                     }
@@ -166,6 +172,7 @@ private struct MaintenanceSettingsSection: View {
                 .disabled(busy)
 
                 Button(l10n("导出诊断包…")) { exportDiagnostics() }
+                    .gatherButton(.secondary)
                     .disabled(busy)
 
                 if let result = viewModel.lastDiagnostics {
