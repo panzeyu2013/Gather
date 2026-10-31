@@ -17,6 +17,13 @@ set -euo pipefail
 #                                        或 APPLE_ID + APPLE_TEAM_ID + APPLE_APP_PASSWORD）
 #   GATHER_RELEASE=1                     发布模式：版本/universal/签名/公证/插件
 #                                        任一缺失即 exit 1
+#   GATHER_SWIFT_FLAGS                   追加给 swift build 的额外参数（默认空）。
+#                                        受限环境下需要 --disable-sandbox：外层已经有
+#                                        沙箱（CI runner / 容器）时 SwiftPM 自带的
+#                                        sandbox-exec 会 apply 失败，构建直接报
+#                                        "sandbox_apply: Operation not permitted"。
+#                                        只做追加，脚本自己的 -c/--arch/--manifest-cache
+#                                        等参数不受影响。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -193,16 +200,24 @@ DEPENDENCY_CHECK=(--explicit-target-dependency-import-check error)
 # -platform_version（历史实测：只改 env 不重链）。release 组装必须
 # 关闭 manifest 缓存，保证本脚本探测到的 SDK 真正写进 Mach-O。
 APP_BUILD_FLAGS=("${DEPENDENCY_CHECK[@]}" --manifest-cache none)
+# 追加参数（见文件头 GATHER_SWIFT_FLAGS）：默认空数组，bash 3.2 下空数组展开要加守卫。
+EXTRA_FLAGS=()
+if [[ -n "${GATHER_SWIFT_FLAGS:-}" ]]; then
+  read -r -a EXTRA_FLAGS <<< "$GATHER_SWIFT_FLAGS"
+fi
 swift build --package-path "$CORE_PACKAGE" -c "$CONFIGURATION" \
-  ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} "${DEPENDENCY_CHECK[@]}"
+  ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} "${DEPENDENCY_CHECK[@]}" \
+  ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 swift build --package-path "$APP_PACKAGE" -c "$CONFIGURATION" \
-  ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} "${APP_BUILD_FLAGS[@]}"
+  ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} "${APP_BUILD_FLAGS[@]}" \
+  ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 
 # Use SwiftPM's own bin path: the legacy .build/<config> layout is replaced by
 # .build/out/Products/<Config> on newer toolchains (Xcode 16+/26/27), and
 # build configuration names are capitalized there.
 BIN_DIR="$(swift build --package-path "$APP_PACKAGE" -c "$CONFIGURATION" \
-  ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} "${APP_BUILD_FLAGS[@]}" --show-bin-path)"
+  ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} "${APP_BUILD_FLAGS[@]}" \
+  ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} --show-bin-path)"
 APP_EXECUTABLE="$BIN_DIR/gather-app"
 if [[ ! -x "$APP_EXECUTABLE" ]]; then
   echo "native executable not found at $APP_EXECUTABLE" >&2

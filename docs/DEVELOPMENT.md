@@ -101,6 +101,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh
 | `CODESIGN_IDENTITY` | Developer ID Application 身份；先签嵌套项再签主 bundle，`--timestamp` 是公证硬要求。 |
 | `GATHER_NOTARIZE=1` | `ditto` → `notarytool submit --wait` → `stapler` → `spctl`；凭据取 `GATHER_NOTARY_PROFILE` 或 Apple ID 三件套，缺省时本地 skip。 |
 | `GATHER_RELEASE=1` | 发布门：版本、universal、Developer ID、公证凭据、插件任一缺失即 exit 1。 |
+| `GATHER_SWIFT_FLAGS` | 追加给 `swift build` 的额外参数（默认空）。外层已有沙箱时（CI runner / 容器 / 受限桌面）需要 `--disable-sandbox`，否则 SwiftPM 自带的 `sandbox-exec` 会报 `sandbox_apply: Operation not permitted`。 |
 
 - `release/Gather.app/Contents/Resources/build-info.json` 记录 version / build /
   commit / dirty / archs / plugin / minos / sdk 等固定键序字段，不含时间戳。
