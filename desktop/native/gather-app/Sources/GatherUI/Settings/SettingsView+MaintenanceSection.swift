@@ -126,7 +126,7 @@ private struct MaintenanceSettingsSection: View {
                 if let error = viewModel.maintenanceError {
                     Label(l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)),
                           systemImage: "exclamationmark.triangle.fill")
-                        .gatherText(.secondary, color: GatherTheme.error)
+                        .gatherText(.secondary, color: GatherTheme.errorText)
                 }
                 if let notice = viewModel.maintenanceNotice {
                     Label(l10n.resolve(notice), systemImage: "checkmark.circle.fill")

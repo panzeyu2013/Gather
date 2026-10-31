@@ -90,7 +90,7 @@ struct CullingKeywordPanel: View {
             if let error = viewModel.keywordError {
                 Text(CommandErrorText.resolve(error, with: l10n))
                     .font(GatherFont.secondary)
-                    .foregroundStyle(GatherTheme.error)
+                    .foregroundStyle(GatherTheme.errorText)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }

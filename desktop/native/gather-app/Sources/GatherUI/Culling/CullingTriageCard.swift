@@ -34,7 +34,7 @@ struct CullingTriageCard: View {
             if let error = viewModel.triageError {
                 Text(CommandErrorText.resolve(error, with: l10n))
                     .font(GatherFont.secondary)
-                    .foregroundStyle(GatherTheme.error)
+                    .foregroundStyle(GatherTheme.errorText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -399,7 +399,7 @@ struct CullingTriageCard: View {
             if let error = calibrationModel?.error {
                 Text(CommandErrorText.resolve(error, with: l10n))
                     .font(GatherFont.secondary)
-                    .foregroundStyle(GatherTheme.error)
+                    .foregroundStyle(GatherTheme.errorText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 

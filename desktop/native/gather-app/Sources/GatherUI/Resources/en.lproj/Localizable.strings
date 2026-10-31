@@ -527,6 +527,7 @@
 "Capture One 连接预检" = "Capture One Connection Check";
 "正在检查 Capture One 连接…" = "Checking the Capture One connection…";
 "预检通过：导入时读取 Capture One 当前选中的照片。" = "Check passed: import reads the photos currently selected in Capture One.";
+"Capture One 预检未通过，请按上方提示处理后再创建。" = "The Capture One check did not pass. Follow the steps above before creating.";
 /* Sources/GatherUI/Dashboard/DashboardViewModel.swift */
 "可连接 Capture One（AppleScript）" = "Can Connect to Capture One (AppleScript)";
 "Capture One 正在运行" = "Capture One Is Running";

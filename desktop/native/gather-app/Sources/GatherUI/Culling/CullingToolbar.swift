@@ -149,7 +149,7 @@ struct CullingToolbar: View {
                 Image(systemName: "waveform.path.ecg")
             }
             .labelStyle(.iconOnly)
-            .gatherIconButton(size: .small)
+            .gatherIconButton()
             .disabled(viewModel.isQualityBusy)
             .help(viewModel.isQualityBusy ? l10n("质量分析中…") : l10n("分析技术质量"))
             .accessibilityLabel(l10n("分析技术质量"))
@@ -170,7 +170,7 @@ struct CullingToolbar: View {
                     Image(systemName: "xmark.circle")
                 }
                 .labelStyle(.iconOnly)
-                .gatherIconButton(size: .small)
+                .gatherIconButton()
                 .help(l10n("取消质量分析"))
                 .accessibilityLabel(l10n("取消质量分析"))
             }
@@ -185,7 +185,7 @@ struct CullingToolbar: View {
                 Image(systemName: "arrow.uturn.backward")
             }
             .labelStyle(.iconOnly)
-            .gatherIconButton(size: .small)
+            .gatherIconButton()
             .disabled(viewModel.undoOperation == nil || isBusy)
             .help(l10n("撤销（⌘Z）"))
             .accessibilityLabel(l10n("撤销"))
@@ -194,7 +194,7 @@ struct CullingToolbar: View {
                 Image(systemName: "arrow.uturn.forward")
             }
             .labelStyle(.iconOnly)
-            .gatherIconButton(size: .small)
+            .gatherIconButton()
             .disabled(viewModel.redoOperation == nil || isBusy)
             .help(l10n("重做（⇧⌘Z）"))
             .accessibilityLabel(l10n("重做"))

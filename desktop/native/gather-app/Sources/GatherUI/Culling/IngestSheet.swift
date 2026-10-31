@@ -53,7 +53,7 @@ struct IngestSheet: View {
                         .foregroundStyle(sources.isEmpty ? .secondary : .primary)
                     Spacer()
                     Button(l10n("选择…")) { chooseSources() }
-                        .gatherButton(.tertiary, size: .small)
+                        .gatherButton(.secondary, size: .small)
                         .accessibilityLabel(l10n("来源"))
                 }
             }
@@ -63,7 +63,7 @@ struct IngestSheet: View {
                     TextField(l10n("目标文件夹"), text: $destinationRoot)
                         .labelsHidden()
                     Button(l10n("选择…")) { chooseDestination() }
-                        .gatherButton(.tertiary, size: .small)
+                        .gatherButton(.secondary, size: .small)
                         .accessibilityLabel(l10n("目标文件夹"))
                 }
             }
@@ -82,7 +82,7 @@ struct IngestSheet: View {
                     TextField(l10n("可选"), text: $secondRoot)
                         .labelsHidden()
                     Button(l10n("选择…")) { chooseSecondDestination() }
-                        .gatherButton(.tertiary, size: .small)
+                        .gatherButton(.secondary, size: .small)
                         .accessibilityLabel(l10n("第二目的地"))
                 }
             }

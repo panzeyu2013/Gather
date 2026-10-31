@@ -151,8 +151,10 @@ struct DuplicatesEmptyState: View {
             } description: {
                 Text(CommandErrorText.resolve(error, with: l10n))
             } actions: {
+                // 失败态不是整页出口：上面的扫描卡（「开始扫描」= 本页唯一 primary）
+                // 仍在同一屏，重试只做局部恢复，按重试层级用 secondary。
                 Button(l10n("重试")) { Task { await viewModel.load() } }
-                    .gatherButton(.primary)
+                    .gatherButton(.secondary)
                     .disabled(viewModel.isLoading)
             }
         } else if viewModel.scanResult == nil {

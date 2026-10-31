@@ -39,7 +39,7 @@ struct ExportDeliverySection: View {
                     .textFieldStyle(.roundedBorder)
                     .labelsHidden()
                 Button(l10n("选择…")) { chooseDeliveryRoot() }
-                    .gatherButton(.tertiary, size: .small)
+                    .gatherButton(.secondary, size: .small)
             }
 
             ForEach(viewModel.deliveryRecipes) { recipe in

@@ -15,8 +15,9 @@ Modifiers/    gatherSurface / gatherText 等语义修饰符
 
 - Tokens 不 import 任何 Feature 类型；Components 不放业务逻辑；Patterns 不依赖 SessionStore / VM。
 - 页面不再直接写 `.font(.callout)`、`Color(hex:)`、手写 `.shadow`、`.background(.regularMaterial)`。
-- 内容层不使用 Liquid Glass；玻璃只用于 toast / 查看器控制条 / 浮动选择栏等浮层表面，不用于按钮填充（见 `GatherGlass`）。
-- 内容层按钮用 `.gatherButton(.primary/.secondary/.tertiary/.tertiaryDanger/.destructive/.destructiveProminent, size:)`；图标按钮用 `.gatherIconButton(size:)`；窗口 toolbar / 浮层用 `.gatherFunctionalPrimaryButton()` / `.gatherFunctionalSecondaryButton()`；Lightbox 用 `.gatherViewerButton(size:)`。页面不要直接写 `.bordered` / `.borderedProminent` / `.glass`。
+- 内容层不使用 Liquid Glass；玻璃只用于 toast / 查看器控制条 / 浮动选择栏等浮层表面，不用于**内容层**按钮填充（见 `GatherGlass`）。功能层按钮保留系统玻璃，但只能经 `gatherFunctional*` 使用，页面不要直接写 `.glass` / `.glassProminent`。
+- 内容层按钮用 `.gatherButton(.primary/.secondary/.tertiary/.tertiaryDanger/.destructive/.destructiveProminent, size:)`；图标按钮用 `.gatherIconButton()`（默认 `.regular`，24pt 命中区保底）；窗口 toolbar / 浮层用 `.gatherFunctionalPrimaryButton()` / `.gatherFunctionalSecondaryButton()`；Lightbox 用 `.gatherViewerButton()`（默认 `.regular`）。页面不要直接写 `.bordered` / `.borderedProminent` / `.glass` / `.glassProminent` / `.link`——`ButtonStylePolicyTests` 会红。
+- 唯一书写例外：toast 容器是玻璃，但 toast 内的文字动作仍用内容层 `gatherButton(.secondary, size: .small)`、关闭 icon 用 `gatherIconButton(size: .small)`（玻璃上再叠玻璃按钮会丢边界）。
 - 卡片用 `gatherCard`；页面背景用 `gatherSurface`；空态用 `GatherEmptyState`。
 - 检查器 / 筛选条的菜单用 `GatherMenuField`（检查器行用 `GatherMenuRow`）：
   自绘 26pt 字段 + 透明 `Menu` 命中层，不要直接使用 `.pickerStyle(.menu)` 的系统大灰块。

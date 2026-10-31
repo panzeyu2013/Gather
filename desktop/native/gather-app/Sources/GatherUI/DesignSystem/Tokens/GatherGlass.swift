@@ -21,8 +21,11 @@ import SwiftUI
 /// - **卡片、列表行、表单行、正文背景 → 一律标准材质**（`GatherTheme.contentBackground`），
 ///   这里不提供任何「把卡片变玻璃」的入口，避免被误用。
 /// - **只有浮在内容之上的功能层**（toast、查看器控制条、浮动选择栏）用玻璃。
-/// - 功能层按钮用 `gatherFunctionalPrimaryButton` / `gatherFunctionalSecondaryButton`；
+/// - 功能层按钮用 `gatherFunctionalPrimaryButton` / `gatherFunctionalSecondaryButton`
+///   （这两个 helper 本身是 `.glass/`.glassProminent`，属于"功能层可以用玻璃"的那一侧）；
 ///   内容层按钮一律走 `GatherButton`，不要用 `.glass`。
+/// - toast 是唯一的书写例外：容器是玻璃，但里面的文字动作/关闭图标仍用内容层
+///   `gatherButton` / `gatherIconButton`——玻璃上再叠玻璃按钮会丢失边界。
 ///
 /// 唯一有据可循的例外是「瞬时交互控件」（滑杆/开关的滑块），那由系统自己处理。
 ///

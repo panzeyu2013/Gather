@@ -141,22 +141,23 @@ GatherEmptyState(
 内容层按钮只声明角色，不直接写 `.bordered` / `.borderedProminent` / `.glass`：
 
 - 主 CTA：`.gatherButton(.primary)`；每个 section / view 最多 1–2 个（优先 1），需要尺寸时传 `size: .small/.large`。
-- 次 CTA：`.gatherButton(.secondary)`；用于成对的取消、返回、替代路径。
+- 次 CTA：`.gatherButton(.secondary)`；用于成对的取消、返回、替代路径，以及「路径字段旁的『选择…』」。不着品牌色（macOS 的 tint 只染标签，bezel 仍是系统灰；给取消按钮上品牌橙会与主 CTA 抢注意力）。
 - 行内/低优先级：`.gatherButton(.tertiary, size: .small)`。
 - 错误上下文里的行内动作（错误行「重试」）：`.gatherButton(.tertiaryDanger, size: .small)`。
-- 页面级危险动作：`.gatherButton(.destructive)`；自定义确认 sheet 的不可逆主按钮才用 `.destructiveProminent`（alert/confirmationDialog 内仍交系统 role）。
-- 图标按钮：`.gatherIconButton(size: .small)`（或系统 `.borderless`）；照片卡 / tab 命中区仍用 `.plain`。
+- 页面级危险动作：`.gatherButton(.destructive)`（系统描边 + 红色标签，**不是**红色描边）；自定义确认 sheet 的不可逆主按钮才用 `.destructiveProminent`（errorFill 填充 + 白字；alert/confirmationDialog 内仍交系统 role）。
+- 图标按钮：`.gatherIconButton()`（默认 `.regular`，命中区 24pt 保底）或系统 `.borderless`；照片卡 / tab 命中区仍用 `.plain`。
 - 自绘 chip / 状态胶囊（FacetBar、C1StatusCapsule、筛选胶囊）是命中区，不套 `gatherButton`；不要用它们承载普通 CTA。
-- 恒暗媒体查看器（Lightbox）的 chrome：`.gatherViewerButton(size: .small)`；不要用 primary/secondary。
+- 恒暗媒体查看器（Lightbox）的 chrome：`.gatherViewerButton()`（默认 `.regular`，plain + viewer 文字色 + 显式禁用态）；不要用 primary/secondary。
 - 窗口 toolbar / 浮层等功能层：`.gatherFunctionalPrimaryButton()` / `.gatherFunctionalSecondaryButton()`（保留系统玻璃）。
-- toast 的容器是功能层玻璃，但 toast 内的文字动作仍用内容层 `gatherButton`（玻璃上再叠玻璃按钮会丢失边界）；关闭 icon 用 `gatherIconButton`。
+- toast 的容器是功能层玻璃，但 toast 内的文字动作仍用内容层 `gatherButton(.secondary, size: .small)`（玻璃上再叠玻璃按钮会丢失边界）；关闭 icon 用 `gatherIconButton(size: .small)`。这是「内容层不用玻璃」的唯一书写例外。
 - alert / confirmationDialog 里的按钮交给系统 role，不要套内容层样式。
-- 内容层禁用 Liquid Glass；玻璃只用于 toast / 查看器控制条 / 浮动选择栏等浮层表面，不用于按钮填充。
+- 内容层禁用 Liquid Glass；玻璃只用于 toast / 查看器控制条 / 浮动选择栏等浮层表面，不用于**内容层**按钮填充。功能层按钮保留系统玻璃（`.glass` / `.glassProminent`）——这条只作用于 `gatherFunctional*`，页面不要直接写。
 
 尺寸策略：行内动作 `small`，表单/footer 动作 `regular`，hero `large`；同一按钮组不要混用尺寸。
-重试层级：整页失败态用 `primary`（整页唯一出口），行内/局部恢复用 `secondary` + `small`，错误行辅助重试用 `tertiaryDanger` + `small`。
+重试层级：整页失败态用 `primary`（整页唯一出口）；同一屏还有别的 primary（如重复页的「开始扫描」）时，失败态的重试降为 `secondary` + `small`；行内/局部恢复用 `secondary` + `small`；错误行辅助重试用 `tertiaryDanger` + `small`。
+同一行里若已有 `secondary` 主入口（如会话行的「进入」），行内恢复动作（「重试」）用 `tertiary` 让位；该行只有重试一个出口时用 `secondary`。
 `GatherButtonRole` 的映射见 `DesignSystem/Components/GatherButton.swift`：
-primary = 品牌实心，secondary = 描边，tertiary = 纯文字，destructive = 红色描边。
+primary = 品牌实心，secondary = 系统描边（无 tint），tertiary = 纯文字（品牌色），destructive = 系统描边 + 红色标签，destructiveProminent = errorFill 实心 + 白字。
 
 迁移取舍（2026-10-31）：人脸复核页 primary 归“绑定/更新绑定”，拆分所选降为 secondary；
 Export 页唯一 primary 是工具栏“开始导出”，整套交付为 secondary；C1“确认同步”统一为 secondary small；
@@ -215,10 +216,16 @@ GatherSessionPage(page: .culling, workspace: workspace, subtitle: l10n("挑片�
 
 ## 5. 门禁
 
+所有命令都在**仓库根目录**执行（`--package-path` 指定包，`--cache-path` / `--scratch-path`
+用包内绝对/相对路径；不要先 `cd` 进包再调 `./scripts/...`）。
+
 ```bash
-# 页面按钮不得直写系统样式（语义角色门禁）
-cd desktop/native/gather-app
-swift test --filter ButtonStylePolicyTests --disable-sandbox --cache-path ../.build/shared-cache
+# 页面按钮不得直写系统样式（语义角色门禁，含正则正/负样本自检）
+swift test --package-path desktop/native/gather-app --no-parallel \
+  --filter ButtonStylePolicyTests \
+  --disable-sandbox \
+  --cache-path desktop/native/gather-app/.build/shared-cache \
+  --scratch-path desktop/native/gather-app/.build/scratch
 
 # 只允许下降；增加会 exit 1
 ./scripts/check-design-system.sh
@@ -230,10 +237,12 @@ swift test --filter ButtonStylePolicyTests --disable-sandbox --cache-path ../.bu
 ./scripts/check-design-system.sh --warn-only
 
 # 对比度回归（浅/深/高对比）
-cd desktop/native/gather-app
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
-  swift test --filter ThemeContrastTests --no-parallel \
-  --disable-sandbox --cache-path ../.build/shared-cache --scratch-path ../.build/scratch
+  swift test --package-path desktop/native/gather-app --no-parallel \
+  --filter ThemeContrastTests \
+  --disable-sandbox \
+  --cache-path desktop/native/gather-app/.build/shared-cache \
+  --scratch-path desktop/native/gather-app/.build/scratch
 ```
 
 基线文件：`scripts/design-system-baseline.json`。

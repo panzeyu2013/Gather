@@ -45,7 +45,8 @@ struct ResetImpactSheet: View {
             if resetUserContent {
                 Text(l10n("用户内容一旦清除不可恢复。"))
                     .font(GatherFont.secondary)
-                    .foregroundStyle(GatherTheme.error)
+                    // 正文用 *Text 变体：GatherTheme.error（systemRed）在 13pt 正文只有 ~3.5:1。
+                    .foregroundStyle(GatherTheme.errorText)
                     .padding([.leading], GatherMetrics.Space.xl)
                 Toggle(l10n("我了解这些内容不可恢复"), isOn: $acknowledgeUserContent)
                     .toggleStyle(.checkbox)

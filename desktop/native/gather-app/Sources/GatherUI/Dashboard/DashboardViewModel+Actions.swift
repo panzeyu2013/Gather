@@ -47,7 +47,14 @@ extension DashboardViewModel {
         let status = await bridge.preflight()
         let preflightResult = C1PreflightResult.build(from: status)
         c1Preflight = .finished(preflightResult)
-        guard preflightResult.passed else { return nil }
+        guard preflightResult.passed else {
+            // 不能静默 return：sheet 里点「创建」后什么都不发生，用户以为按钮坏了。
+            // 引导文案与预检区块的横幅同源（guidance.build 在失败时必非 nil）。
+            createError = CommandError.localized(
+                preflightResult.guidance?.resolve(with: l10n)
+                    ?? "Capture One 预检未通过，请按上方提示处理后再创建。")
+            return nil
+        }
         do {
             let files = try await bridge.selectedPhotoPaths()
             if files.isEmpty {

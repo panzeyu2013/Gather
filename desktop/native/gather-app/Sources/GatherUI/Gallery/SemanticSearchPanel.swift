@@ -36,7 +36,7 @@ struct SemanticSearchPanel: View {
                     .frame(maxWidth: .infinity, minHeight: 120)
             } else if let errorText {
                 Text(errorText)
-                    .foregroundStyle(GatherTheme.error)
+                    .foregroundStyle(GatherTheme.errorText)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if let outcome {
                 if outcome.hits.isEmpty {

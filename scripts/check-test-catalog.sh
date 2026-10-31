@@ -356,9 +356,10 @@ fi
 #    2026-10-31 死代码清理：-1（删除 ImageDimensions 旧纯 Swift 实现的唯一对账用例；
 #    生产已由 ImageIODimensionsProvider 承接，该实现零生产引用）→ 2482/280。
 #    2026-10-31 按钮语义化：+2/+1（ButtonStylePolicy 门禁 + errorFill 高对比断言）→ 2484/281；
-#    2026-10-31 自动命名测试：+8/+1（SessionNameAutoFill 状态机）→ 2492/282；
-#    断言合计 +18 → 11474。
-BASELINE_TEST_DECL=2492
+#    2026-10-31 自动命名测试：+8/+1（SessionNameAutoFill 状态机）→ 2492/282。
+#    2026-10-31 合并后审核补测：门禁加正/负样本与遮罩用例（+2）、自动命名补初始目录/
+#    同目录/空名/空白名（+4）→ 2498/282。
+BASELINE_TEST_DECL=2498
 BASELINE_SUITE_DECL=282
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
@@ -390,8 +391,9 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 #    2026-10-31 C1 检测：+3（同上 1 例）。
 #    2026-10-31 死代码清理：-3（同上删除的对账用例内 3 条断言）。
 #    2026-10-31 按钮语义化：+4（门禁 3 断言 + errorFill 高对比 1 断言）→ 11460。
-#    2026-10-31 自动命名测试：+14（8 用例断言）→ 11474。
-BASELINE_ASSERT=11474
+#    2026-10-31 自动命名测试：+14（8 用例断言）→ 11474（相对 11459 净 +15：+18−3 死代码）。
+#    2026-10-31 合并后审核补测：+24（门禁正/负样本、遮罩回归、自动命名 4 例）→ 11498。
+BASELINE_ASSERT=11498
 assert_n=$(grep -rhoE '#(expect|require)\(' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
