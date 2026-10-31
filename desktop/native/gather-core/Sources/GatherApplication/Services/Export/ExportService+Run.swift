@@ -29,9 +29,6 @@ extension ExportService {
             self.sidecarBackup = sidecarBackup
         }
 
-        /// 已在目标目录留底的旧照片（同目录，保证同卷）。
-        var photoBackup: URL? { backup }
-
         /// 写 sidecar 前留底：目标 sidecar 已存在才复制。
         func backupSidecar() {
             let sidecar = destination.deletingPathExtension().appendingPathExtension("xmp")

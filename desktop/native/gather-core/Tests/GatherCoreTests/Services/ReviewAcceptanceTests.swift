@@ -42,7 +42,6 @@ struct FullScanProbeTests {
   let result = try service.execute(sessionId: sid, options: options, resume: NativeExportResumeState(destinations: ["p1":"sample.jpg"], completedPhotoIds: ["p1"]))
   #expect(result.exported == 1)
   let actual = try String(contentsOf: root.appendingPathComponent("dest/sample.xmp"), encoding: .utf8)
-  print("XMP resumed content=\(actual),exported=\(result.exported)")
   #expect(actual == "new")
  }
  @Test func newRunMustNotClearOtherRunCancellation() throws {
@@ -77,7 +76,6 @@ import Testing
   let service = SettingsService(repo: SettingsRepo(connection: db))
   try service.set("detect_input_size", value: "1e999")
   let value = service.getNumber("detect_input_size", defaultValue: 640)
-  print("detect_input_size=\(value)")
   #expect(value.isFinite)
  }
 }

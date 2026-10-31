@@ -28,10 +28,8 @@ enum GatherFont {
     static let labelRegular = Font.subheadline
     /// 统计数字。
     static let stat = Font.title2.weight(.semibold).monospacedDigit()
-    static let statCompact = Font.title3.weight(.semibold).monospacedDigit()
     /// 行内数字。
     static let mono = Font.callout.monospacedDigit()
-    static let monoBody = Font.body.monospacedDigit()
 }
 
 enum GatherMetrics {
@@ -50,15 +48,10 @@ enum GatherMetrics {
 
     enum Layout {
         static let pageGutter: CGFloat = 24
-        static let cardPadding: CGFloat = 16
-        static let rowGap: CGFloat = 8
-        static let sectionGap: CGFloat = 24
         static let maxReadingWidth: CGFloat = 1100
-        static let maxFormWidth: CGFloat = 760
     }
 
     enum Chrome {
-        static let tabStrip: CGFloat = 36
         static let infoBar: CGFloat = 32
         static let filmstripExpanded: CGFloat = 140
         static let filmstripCollapsed: CGFloat = 32

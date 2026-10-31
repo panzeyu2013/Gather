@@ -541,22 +541,4 @@ struct PreviewCaptureOne: CaptureOneBridging {
         "return \"Preview: \(appName)\""
     }
 }
-
-struct PreviewMaintenanceAPI: MaintenanceAPI {
-    func backup(_ input: MaintenanceBackupInput) async throws -> BackupRecord {
-        throw PreviewAPIError.unavailable("maintenance.backup")
-    }
-
-    func listBackups() async throws -> MaintenanceInventory {
-        MaintenanceInventory(backupDir: "", backups: [], lastRestore: nil, autoPaused: false)
-    }
-
-    func restore(_ input: Confirmed<RestoreBackupInput>) async throws -> RestoreReceipt {
-        throw PreviewAPIError.unavailable("maintenance.restore")
-    }
-
-    func exportDiagnostics(_ input: DiagnosticsExportInput) async throws -> DiagnosticsExportResult {
-        throw PreviewAPIError.unavailable("maintenance.export_diagnostics")
-    }
-}
 #endif

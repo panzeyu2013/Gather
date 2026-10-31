@@ -139,9 +139,6 @@ public struct C1RoundTripExtras: Sendable {
 
 @MainActor
 public final class C1RoundTripCoordinator: C1RoundTripReloading {
-    /// 生产 debounce（plan §3.10.1：1.5s）。
-    public static let defaultDebounceMilliseconds = 1_500
-
     /// C4：notSettled 的自动重试上限（每批）。按 debounce 1.5s 算约 7.5s 的收敛窗口，
     /// 再晚就交给下一次状态事件或手动 reload，不允许无限自旋。
     public static let maxSettleRetries = 5

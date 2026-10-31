@@ -86,11 +86,6 @@ public enum JSONValue: Codable, Equatable, Sendable {
 // 注意：stringValue/arrayValue 已有 RepositorySupport.swift 的重载（String
 // /[String] 语义），此处不重复定义。
 public extension JSONValue {
-    var isObject: Bool {
-        if case .object = self { return true }
-        return false
-    }
-
     var objectValue: [String: JSONValue]? {
         if case .object(let value) = self { return value }
         return nil

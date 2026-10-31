@@ -71,7 +71,7 @@ if [ "$batch_n" -gt 1 ]; then
   printf '%s\n' "$batch_hits" | sed 's/^/  - /'
   fail=1
 elif [ "$batch_n" -eq 1 ]; then
-  echo "ok   batchAsync 仅 1 份（旧实现，允许保留到对应 Cut）："
+  echo "ok   batchAsync 仅 1 份（唯一共享实现；多份即复制粘贴）："
   printf '%s\n' "$batch_hits" | sed 's/^/  - /'
 else
   echo "ok   batchAsync 已无副本"

@@ -269,18 +269,6 @@ public final class MetadataService: @unchecked Sendable {
         let normalized = KeywordCodec.normalized(strings)
         return normalized.isEmpty ? nil : normalized
     }
-
-    /// P1 下一波 §3.6.2：把两套列表（dc:subject 与 lr:hierarchicalSubject）合成一份
-    /// 有序去重结果——**同一层**的合并，不做跨层救援。
-    ///
-    /// 为什么不在 readEffectiveAttributes 里做"内嵌 ∪ sidecar"的并集：
-    /// 用户清空 sidecar 关键词后，内嵌里可能还留着旧 dc:subject；并集会把它复活
-    /// （已知缺陷类型："sidecar 清空被内嵌值复活"）。层级合并只发生在同一份文档
-    /// 的两套列表之间，那个位置不存在"哪个来源更权威"的问题。
-    public static func mergeKeywordSources(flat: [String], hierarchical: [String]) -> [String] {
-        KeywordCodec.merge(flat: flat, hierarchical: hierarchical).map(\.serialized)
-    }
-
     // MARK: - 有效属性合成
 
     /// TS: readEffectiveAttributes —— 内嵌读取 + sidecar 读取合并（后者覆盖前者）。

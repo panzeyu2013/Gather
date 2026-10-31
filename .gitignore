@@ -23,6 +23,12 @@ dist/
 *.coplugin
 release/
 
+# Xcode local build artifacts
+DerivedData/
+*.xcresult
+*.xcarchive
+*.dSYM
+
 # Native desktop build output
 node_modules/
 desktop/dist/
@@ -48,9 +54,6 @@ docs/reviews/*.tmp.md
 coverage/
 test-results/
 .mypy_cache/
-
-# Local-only native fixtures (ONNX models + RAW photos with faces).
-tests/fixtures/local/
 
 # 证书/签名材料（审计 P2-安全：防止密钥材料入库）。
 *.p12

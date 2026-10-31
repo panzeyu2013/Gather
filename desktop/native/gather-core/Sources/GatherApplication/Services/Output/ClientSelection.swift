@@ -15,51 +15,6 @@
 import Foundation
 import GatherProtocol
 
-/// v1 selection.json 的单项（保留公开类型：老调用方/测试仍在用）。
-public struct ClientSelectionPick: Codable, Equatable, Sendable {
-    public var id: String
-    public var name: String?
-    public var pick: Bool?
-
-    public init(id: String, name: String? = nil, pick: Bool? = nil) {
-        self.id = id
-        self.name = name
-        self.pick = pick
-    }
-}
-
-/// v1 selection.json 根（只用于兼容解码；v2 请用 ParsedClientSelection）。
-public struct ClientSelectionFile: Codable, Equatable, Sendable {
-    public var version: Int?
-    public var title: String?
-    public var picks: [ClientSelectionPick]
-
-    public init(version: Int? = 1, title: String? = nil, picks: [ClientSelectionPick]) {
-        self.version = version
-        self.title = title
-        self.picks = picks
-    }
-
-    private enum CodingKeys: String, CodingKey { case version, title, picks, items }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        version = try container.decodeIfPresent(Int.self, forKey: .version)
-        title = try container.decodeIfPresent(String.self, forKey: .title)
-        // v2 文件用 items；这里退化成只读 id/pick/name，保证老调用点不炸。
-        let legacy = try container.decodeIfPresent([ClientSelectionPick].self, forKey: .picks)
-        let modern = try container.decodeIfPresent([ClientSelectionPick].self, forKey: .items)
-        picks = legacy ?? modern ?? []
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(version, forKey: .version)
-        try container.encodeIfPresent(title, forKey: .title)
-        try container.encode(picks, forKey: .picks)
-    }
-}
-
 public enum ClientSelectionError: Error, Equatable, CustomStringConvertible {
     case invalidJSON(String)
     case unsupportedVersion(Int)
@@ -121,16 +76,6 @@ public struct ParsedClientSelection: Equatable, Sendable {
         self.pickedPhotoIds = pickedPhotoIds
         self.duplicateCount = duplicateCount
         self.invalidCount = invalidCount
-    }
-
-    /// 至少带一条"有内容"的反馈（pick / rating / label / comment 任一）。
-    public var hasFeedback: Bool {
-        items.contains { item in
-            item.pick == true
-                || (item.rating ?? 0) > 0
-                || !(item.label ?? "").isEmpty
-                || !(item.comment ?? "").isEmpty
-        }
     }
 }
 

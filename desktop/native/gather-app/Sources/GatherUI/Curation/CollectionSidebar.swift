@@ -36,9 +36,6 @@ public struct CurationServices: Sendable {
     }
 
     public static let unavailable = CurationServices()
-
-    public var hasCuration: Bool { album != nil }
-    public var hasCrossWorkspaceDuplicates: Bool { duplicate != nil }
 }
 
 private struct CurationServicesKey: EnvironmentKey {

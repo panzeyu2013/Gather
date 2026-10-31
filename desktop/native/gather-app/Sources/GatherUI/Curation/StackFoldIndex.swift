@@ -40,15 +40,6 @@ struct StackFoldIndex: Equatable {
         stackIdByPhoto[photoId].flatMap { foldByStack[$0] }
     }
 
-    /// 这张照片是它所在堆栈的**规范封面**（StackFold.displayCoverPhotoId）。
-    ///
-    /// 注意不等于"网格里当前代表整堆的那张"：封面被筛选掉/还没加载进来时，
-    /// 代表张会回退成该堆在输入里的首个成员（见 visiblePhotoIds）。
-    func isRepresentative(_ photoId: String) -> Bool {
-        guard let fold = fold(for: photoId) else { return false }
-        return fold.displayCoverPhotoId == photoId
-    }
-
     /// 徽标数字：成员总数（>1 才显示，1 张不显示徽标）。
     ///
     /// 口径保持在"这一堆一共几张"（折叠只影响展示，不是筛选）：成员被当前

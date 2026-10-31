@@ -81,12 +81,6 @@ public struct C1SelectionOutcome: Equatable, Sendable {
         self.notFound = notFound
         self.appName = appName
     }
-
-    /// UI 必须对此显示"可能触发导入"。
-    public var mayTriggerImport: Bool {
-        if case .workspace = method { return true }
-        return false
-    }
 }
 
 /// 归一化裁剪框（0…1，左上原点），来自 crs:CropTop/Left/Bottom/Right。
