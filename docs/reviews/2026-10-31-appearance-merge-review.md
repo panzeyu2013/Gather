@@ -90,7 +90,29 @@ merge 在文件层面是干净的真并集（71 个 appearance 文件逐一等�
    后续可按同样窗口重估 accent。
 4. **VoiceOver / 焦点顺序 / 键盘可达**未做自动化，仍是真机项。
 
-## 5. 复验命令与结果
+## 5. 重打包（2026-10-31）
+
+```bash
+CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-module-cache \
+GATHER_SWIFT_FLAGS="--disable-sandbox" \
+GATHER_ARCHS=universal GATHER_VERSION=3.0.0 GATHER_BUILD_NUMBER=607 \
+CODESIGN_IDENTITY="Developer ID Application: Zeyu Pan (QW6428Q67R)" \
+./desktop/native/build.sh
+```
+
+| 项 | 结果 |
+|---|---|
+| 产物 | `release/Gather.app`，121 MB |
+| 架构 | app 与 `GatherLink.coplugin` 均 `x86_64 arm64`（`lipo -info`） |
+| 版本 | 3.0.0 (607) |
+| 签名 | Developer ID Application: Zeyu Pan (QW6428Q67R)；`codesign --verify --deep --strict` 通过；Apple Events entitlement 在签名内 |
+| 公证 | **未做**（无凭据）；`spctl` 的 accepted 是 `security disabled` 下的结果，不能当验收 |
+| build-info | `commit` / `dirty:false` / archs / plugin / minos 26.0 / sdk 27.2 |
+| 新增 | `GATHER_SWIFT_FLAGS`：外层已有沙箱时 SwiftPM 自带的 `sandbox-exec` 会 `sandbox_apply: Operation not permitted`，脚本原先没有传 `--disable-sandbox` 的位置；该变量只追加参数，默认空、发布行为不变 |
+
+未做：干净机器安装、旧库兼容、真实 Gatekeeper（本机 security 关闭）、启动冒烟。
+
+## 6. 复验命令与结果
 
 ```bash
 # 1) 构建（两包）
