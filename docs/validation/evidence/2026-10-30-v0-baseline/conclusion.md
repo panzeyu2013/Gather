@@ -2,7 +2,7 @@
 
 - 代码冻结点：`b25077cf165970f21ed8839b1ca65ca677987249`（main）。
 - 修复：`08bf00b`（多 IIM 显式失败）、`32bb453`（universal Float16/插件）、`31fc9d8`（SDK 探测）、`ca577d9`（C1 16 检测）。
-- 当前基线：`322c186b`，`dirty=0`。
+- 当前基线：`ad2c7147`（最终复核，含全部验证修复与文档），`dirty=0`；`322c186b` 为代码等价基线。
 - 执行：`./scripts/validation/v0-baseline.sh`，14/14 步 exit 0。
 - 测试：core 1,599 / 236 + 串行 25 / 4 + app 859 / 99 = **2,483 tests / 339 runtime suites**。
 - test-catalog：`@Test 2483/2483 · @Suite 280/280 · 断言 11,459/11,459`，skip 站点 17（元数据缺失 0、过期 0）。
