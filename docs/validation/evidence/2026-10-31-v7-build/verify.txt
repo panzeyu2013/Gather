@@ -1,0 +1,40 @@
+== codesign
+--prepared:/Users/panzeyu2013/Desktop/code/develop/Gather/release/Gather.app/Contents/PlugIns/GatherLink.coplugin
+--validated:/Users/panzeyu2013/Desktop/code/develop/Gather/release/Gather.app/Contents/PlugIns/GatherLink.coplugin
+release/Gather.app: valid on disk
+release/Gather.app: satisfies its Designated Requirement
+EXIT:0
+Identifier=com.gather.desktop.native
+Authority=Developer ID Application: Zeyu Pan (QW6428Q67R)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+Timestamp=Oct 31, 2026 at 10:11:58
+TeamIdentifier=QW6428Q67R
+Runtime Version=27.2.0
+== entitlements
+Executable=/Users/panzeyu2013/Desktop/code/develop/Gather/release/Gather.app/Contents/MacOS/Gather
+warning: Specifying ':' in the path is deprecated and will not work in a future release
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.automation.apple-events</key><true/></dict></plist>
+== archs
+x86_64 arm64
+x86_64 arm64
+== version
+3.0.0-validation
+1
+== build-info
+{"version":"3.0.0-validation","build":"1","commit":"31fc9d8e","dirty":false,"archs":"x86_64 arm64","plugin":"x86_64 arm64","minos":"26.0","sdk_version":"27.2","sdk_version_declared":"27.2"}
+
+== lproj
+release/Gather.app/Contents/Resources/en.lproj
+release/Gather.app/Contents/Resources/zh-Hans.lproj
+== size
+121M	release/Gather.app
+== vtool
+    minos 26.0
+      sdk 27.2
+== spctl
+release/Gather.app: accepted
+source=Unnotarized Developer ID
+override=security disabled
+origin=Developer ID Application: Zeyu Pan (QW6428Q67R)
+EXIT:0
