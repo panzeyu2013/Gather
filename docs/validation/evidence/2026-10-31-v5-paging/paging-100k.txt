@@ -1,0 +1,4 @@
+PERF constraint=100k-sorted-pages captureP95=252.2ms ratingP95=195.3ms triageP95=192.3ms
+✔ Test "100k 逻辑资产：三种排序分页 p95" passed after 8.340 seconds.
+✔ Suite "Culling 100k 排序分页预演" passed after 8.341 seconds.
+✔ Test run with 1 test in 1 suite passed after 8.341 seconds.
