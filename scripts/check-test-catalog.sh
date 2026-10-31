@@ -352,8 +352,9 @@ fi
 #    重放 2 例、C1 往返 9 例 + 2 个新套件、保存查询搜索串 5 例 + 1 个新套件）→ 2480/279。
 #    2026-10-31 V1 预演：+1（多个 0x0404 IIM 写回必须显式失败，不得只改首段）→ 2481/279。
 #    2026-10-31 universal 修复：+1（Float16 手写编解码逐位一致）→ 2482/279。
-BASELINE_TEST_DECL=2482
-BASELINE_SUITE_DECL=279
+#    2026-10-31 C1 检测：+1/+1（C1 16 版本化 bundle id + 标准路径兜底）→ 2483/280。
+BASELINE_TEST_DECL=2483
+BASELINE_SUITE_DECL=280
 test_decl=$(grep -rhE '^[[:space:]]*@Test([[:space:]]|\()' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')
@@ -381,7 +382,8 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 #    2026-10-30 残余波：+107（同上新增用例）。
 #    2026-10-31 V1 预演：+5（同上 1 例）。
 #    2026-10-31 universal 修复：+2（同上 1 例）。
-BASELINE_ASSERT=11456
+#    2026-10-31 C1 检测：+3（同上 1 例）。
+BASELINE_ASSERT=11459
 assert_n=$(grep -rhoE '#(expect|require)\(' \
   desktop/native/gather-core/Tests desktop/native/gather-app/Tests \
   --include=*.swift 2>/dev/null | wc -l | tr -d ' ')

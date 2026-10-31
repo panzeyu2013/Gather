@@ -414,8 +414,24 @@ struct CompositionCore {
 /// 而门禁关心的是"装没装"；两种机制叠加也只能覆盖一半，不如 TTL 一种机制，
 /// 也就不需要长期持有 observer token 的静态存储。
 enum C1Installation {
-    /// 两个历史 bundle id（Capture One 21+ 用 com.captureone.*，更早是 Phase One 品牌）。
-    static let bundleIdentifiers = ["com.captureone.captureone", "com.phaseone.captureone"]
+    /// 已知 bundle id。Capture One 16 实机是 **com.captureone.captureone16**
+    /// （不是 com.captureone.captureone）；17 预期同形。更早的 21+ / Phase One 品牌保留。
+    static let bundleIdentifiers = [
+        "com.captureone.captureone15",
+        "com.captureone.captureone16",
+        "com.captureone.captureone17",
+        "com.captureone.captureone",
+        "com.phaseone.captureone",
+    ]
+
+    /// 标准安装路径兜底：未来版本换 bundle id 时，装在 /Applications 的 C1 仍能被识别。
+    /// 为什么不枚举所有 LaunchServices 应用：NSWorkspace 没有"按前缀找 bundle id"的 API，
+    /// 逐个版本号穷举会漏掉未来版本；路径兜底覆盖绝大多数安装。
+    static let fallbackApplicationPaths = [
+        "/Applications/Capture One.app",
+        "/Applications/Capture One 16.app",
+        "/Applications/Capture One 17.app",
+    ]
 
     /// 快照有效期（秒）：到期后先返回旧值，再后台重算。
     static let ttlSeconds: TimeInterval = 60
@@ -456,10 +472,16 @@ enum C1Installation {
 
     /// 真正的 LaunchServices 查询（本类型唯一的 IO 点，只在后台任务里跑）。
     /// internal：验收测试可直接断言，不必依赖跑测机器装没装 C1。
-    static func probeInstalled() -> Bool {
-        bundleIdentifiers.contains {
+    static func probeInstalled(
+        bundleIDExists: (String) -> Bool = {
             NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil
+        },
+        fileExists: (String) -> Bool = {
+            FileManager.default.fileExists(atPath: $0)
         }
+    ) -> Bool {
+        if bundleIdentifiers.contains(where: bundleIDExists) { return true }
+        return fallbackApplicationPaths.contains(where: fileExists)
     }
 
     private static func currentReading(now: TimeInterval) -> Reading {
