@@ -48,6 +48,10 @@ swbuild.tmp.*
 *.sqlite.incompatible-*
 docs/reviews/*.tmp.md
 
+# 本地一次性素材（模型软链 / 用户写真 RAW）：只存在于开发机，不得入库。
+# 2026-10-31 clean 分支按“死规则”删除后，开发机上仍有软链变成 untracked，故恢复。
+tests/fixtures/local/
+
 .env*
 *.log
 .coverage

@@ -496,7 +496,7 @@ grep -rn 'class LockedBox\|class AsyncGate' --include=*.swift desktop/native/*/T
 - 测试：core 1,598/235 + 25/4；app 859/99；合计 **2,482**（较清理前 -1 例，即删除的 ImageDimensions 对账用例）。
 - 12 道门禁全 exit 0：no-legacy / cleanup-ratchet / layering / protocol-surface / duplicate-symbols / test-catalog / select-star / preview-surface / coded-errors / backlog-evidence / design-system / warnings。
 - ratchet：unchecked_sendable 60 / try_optional 255 / services_prepare 0 / todo_fixme 0 / with_known_issue 0（未回升）；Protocol public 声明 2,433 = 收紧后的 baseline 2,433；find-unused-symbols --all 剩余候选仅 2 个 AppKit 委托方法（保留）。
-- 本地化键数不变（en 1,322 / zh 9）；本轮未新增 TODO/FIXME；新增 #if DEBUG 仅 4 处测试接缝守卫（发布包不编译）。
+- 本地化键数不变（en 2,018 键 / zh 9 占位键）；本轮未新增 TODO/FIXME；新增 #if DEBUG 仅 4 处测试接缝守卫（发布包不编译）。
 - 全 diff：51 文件 +105 −837（desktop 36 文件 +14 −794）。
 
 ---
