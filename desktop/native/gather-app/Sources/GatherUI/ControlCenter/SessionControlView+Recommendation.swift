@@ -44,7 +44,7 @@ extension SessionControlView {
                         Spacer()
                         if let action = view.action {
                             Button(view.actionLabel) { perform(action) }
-                                .gatherPrimaryActionButton().controlSize(.small)
+                                .gatherButton(.primary, size: .small)
                         }
                     }
                 }

@@ -68,6 +68,7 @@ extension CullingView {
                     Text(CommandErrorText.resolve(error, with: l10n))
                 } actions: {
                     Button(l10n("重试")) { Task { await viewModel.load() } }
+                        .gatherButton(.primary)
                 }
             } else {
                 HStack {
@@ -145,6 +146,7 @@ extension CullingView {
         } actions: {
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
+                    .gatherButton(.secondary)
             }
         }
         .padding(.vertical, GatherMetrics.Space.xxxl)

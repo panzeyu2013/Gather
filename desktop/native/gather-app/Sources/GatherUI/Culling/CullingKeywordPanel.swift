@@ -312,13 +312,14 @@ struct CullingKeywordPanel: View {
                     if viewModel.keywordPreview != nil { activeSheet = .preview }
                 }
             }
+            .gatherButton(.secondary)
             .disabled(disabled || !viewModel.keywordCanPreview)
 
             Button(l10n("确认写入")) {
                 activeSheet = .confirm
             }
+            .gatherButton(.primary)
             .disabled(disabled || !viewModel.keywordCanApply)
-            .buttonStyle(.borderedProminent)
         }
     }
 
@@ -338,6 +339,7 @@ struct CullingKeywordPanel: View {
                 Button(l10n("重试元数据写回")) {
                     Task { await viewModel.retryKeywordWriteback() }
                 }
+                .gatherButton(.secondary, size: .small)
                 .font(GatherFont.secondary)
                 .disabled(disabled)
             }
@@ -359,6 +361,7 @@ struct CullingKeywordPanel: View {
             HStack {
                 Spacer()
                 Button(l10n("取消")) { activeSheet = nil }
+                    .gatherButton(.secondary)
                     .keyboardShortcut(.cancelAction)
                 Button(l10n("确认写入")) {
                     Task {
@@ -366,6 +369,7 @@ struct CullingKeywordPanel: View {
                         if viewModel.keywordError == nil { activeSheet = nil }
                     }
                 }
+                .gatherButton(.primary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(disabled || !viewModel.keywordCanApply)
             }
@@ -479,11 +483,13 @@ struct CullingKeywordPanel: View {
             HStack {
                 Spacer()
                 Button(l10n("取消")) { activeSheet = nil }
+                    .gatherButton(.secondary)
                     .keyboardShortcut(.cancelAction)
                 Button(l10n("确认写入")) {
                     activeSheet = nil
                     Task { await viewModel.applyKeywordWriteback() }
                 }
+                .gatherButton(.primary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(disabled)
             }

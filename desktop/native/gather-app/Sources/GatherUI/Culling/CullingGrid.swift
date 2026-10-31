@@ -218,7 +218,7 @@ struct CullingGridView: View {
                                 Button(l10n("加载失败，重试")) {
                                     Task { await viewModel.loadMore() }
                                 }
-                                .buttonStyle(.bordered)
+                                .gatherButton(.secondary, size: .small)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, GatherMetrics.Space.s)
                             }

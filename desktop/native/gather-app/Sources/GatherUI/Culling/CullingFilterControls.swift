@@ -64,8 +64,7 @@ struct CullingFilterControls: View {
             Button(l10n("重置筛选")) {
                 Task { await viewModel.resetFilters() }
             }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
+            .gatherButton(.tertiary, size: .small)
 
             Divider()
 
@@ -80,8 +79,7 @@ struct CullingFilterControls: View {
                     .font(GatherFont.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .gatherButton(.secondary, size: .small)
             .disabled(viewModel.isNavigationBusy)
 
             Button {
@@ -91,8 +89,7 @@ struct CullingFilterControls: View {
                     .font(GatherFont.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .gatherButton(.secondary, size: .small)
             .disabled(viewModel.isNavigationBusy)
 
             if !viewModel.navigationGroups.isEmpty {
@@ -116,15 +113,13 @@ struct CullingFilterControls: View {
                 Button(l10n("从当前照片拆分")) {
                     Task { await viewModel.splitCurrentFromNavigationGroup() }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .gatherButton(.secondary, size: .small)
                 .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
 
                 Button(l10n("与前组合并")) {
                     Task { await viewModel.mergeCurrentWithPreviousSameType() }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .gatherButton(.secondary, size: .small)
                 .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
             }
         }

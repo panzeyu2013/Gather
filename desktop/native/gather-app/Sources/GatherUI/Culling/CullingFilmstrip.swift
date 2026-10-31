@@ -84,8 +84,7 @@ struct CullingFilmstrip: View {
                         Button(viewModel.isLoading ? l10n("加载中…") : l10n("加载更多")) {
                             Task { await viewModel.loadMore() }
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .gatherButton(.secondary, size: .small)
                         .disabled(viewModel.isLoading)
                         // 与缩略图等高的一格按钮，保持行尾出口。
                         .frame(width: 112, height: 100)

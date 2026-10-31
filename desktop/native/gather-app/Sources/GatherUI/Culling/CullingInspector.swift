@@ -189,7 +189,7 @@ struct CullingInspector: View {
                 // P0 / B2：单张元数据直接编辑（写说明/版权不必再建模板）。
                 GatherCollapsibleSection(l10n("元数据"), initiallyExpanded: false) {
                     Button(l10n("编辑元数据…")) { activeSheet = .editor }
-                        .buttonStyle(.bordered)
+                        .gatherButton(.secondary)
                         .frame(maxWidth: .infinity)
                         .disabled(isBusy || viewModel.currentAsset == nil)
                         .help(l10n("直接编辑当前照片的 IPTC 字段；空值清空附属文件字段，JPEG 内嵌字段需在 Bridge/Capture One 清空"))
@@ -198,12 +198,12 @@ struct CullingInspector: View {
                 // P1 / B2：模板批量套用入口（选中集或当前照片）。
                 GatherCollapsibleSection(l10n("元数据模板"), initiallyExpanded: false) {
                     Button(l10n("套用模板…")) { activeSheet = .templates }
-                        .buttonStyle(.bordered)
+                        .gatherButton(.secondary)
                         .frame(maxWidth: .infinity)
                         .disabled(isBusy || viewModel.currentAsset == nil)
                         .help(l10n("预览后把描述性元数据批量套用到选中的照片"))
                     Button(l10n("历史与撤销…")) { activeSheet = .batches }
-                        .buttonStyle(.bordered)
+                        .gatherButton(.secondary)
                         .frame(maxWidth: .infinity)
                         .help(l10n("查看最近套用/写回批次并撤销"))
                 }
@@ -211,7 +211,7 @@ struct CullingInspector: View {
                 // P1 / D：摄取入口（复制/重命名/校验 → 登记进当前会话）。
                 GatherCollapsibleSection(l10n("导入"), initiallyExpanded: false) {
                     Button(l10n("摄取照片…")) { activeSheet = .ingest }
-                        .buttonStyle(.bordered)
+                        .gatherButton(.secondary)
                         .frame(maxWidth: .infinity)
                         .help(l10n("从存储卡或文件夹复制照片到工作目录并登记"))
                 }
@@ -237,7 +237,7 @@ struct CullingInspector: View {
                                 showTriageWritebackConfirm = pendingTriageInput != nil
                             }
                         }
-                        .buttonStyle(.bordered)
+                        .gatherButton(.secondary)
                         .frame(maxWidth: .infinity)
                         .disabled(isBusy)
                         Text(l10n("只写空评级；已有星级与人工决策一律不动。"))
@@ -247,7 +247,7 @@ struct CullingInspector: View {
                             Button(l10n("撤销上次建议写回")) {
                                 showTriageUndoConfirm = true
                             }
-                            .buttonStyle(.bordered)
+                            .gatherButton(.secondary)
                             .frame(maxWidth: .infinity)
                             .disabled(isBusy)
                             // 挂在按钮自身上：同一视图叠两个 confirmationDialog 时
@@ -399,7 +399,7 @@ struct CullingInspector: View {
                                 )
                             }
                         }
-                        .buttonStyle(.bordered)
+                        .gatherButton(.secondary)
                         .frame(maxWidth: .infinity)
                         .disabled(isBusy)
 
@@ -412,7 +412,7 @@ struct CullingInspector: View {
                                     )
                                 }
                             }
-                            .buttonStyle(.bordered)
+                            .gatherButton(.secondary)
                             .frame(maxWidth: .infinity)
                             .disabled(!keepValid || isBusy)
                             .help(keepValid ? "" : l10n("按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"))
@@ -429,7 +429,7 @@ struct CullingInspector: View {
                         Text(l10n.format("已选 %lld 张", viewModel.selectedPhotoIds.count))
                             .controlLabelStyle()
                         Button(l10n("取消选择")) { viewModel.clearSelection() }
-                            .buttonStyle(.bordered)
+                            .gatherButton(.secondary)
                             .frame(maxWidth: .infinity)
 
                         // P1 / D：把淘汰件移出工作目录（只移动、不删除，可在 _rejects 找回）。
@@ -439,7 +439,7 @@ struct CullingInspector: View {
                             Label(l10n("淘汰移出到 _rejects"), systemImage: "arrow.up.bin")
                                 .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.bordered)
+                        .gatherButton(.destructive)
                         .disabled(isBusy)
                         .help(l10n("移到会话目录下的 _rejects 文件夹，不删除文件"))
                     }
@@ -654,7 +654,7 @@ private struct DecisionButtonView: View {
             .frame(maxWidth: .infinity, minHeight: 24)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.bordered)
+        .gatherButton(.secondary)
         .frame(maxWidth: .infinity)
         // 裸键由查看器的 onKeyPress 统一注册（见 CullingWorkbenchViewer），
         .disabled(isBusy)

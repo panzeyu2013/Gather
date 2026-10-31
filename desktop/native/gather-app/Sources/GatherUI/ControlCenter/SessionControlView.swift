@@ -72,8 +72,7 @@ public struct SessionControlView: View {
             }
             Spacer(minLength: 0)
             Button(l10n("设置根目录…")) { chooseSourceRoot() }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .gatherButton(.primary, size: .small)
                 .disabled(viewModel.isWorking)
         }
         .padding(GatherMetrics.Space.m)
@@ -172,6 +171,7 @@ public struct SessionControlView: View {
                             Button(l10n("刷新"), systemImage: "arrow.clockwise") {
                                 Task { await viewModel.load() }
                             }
+                            .gatherButton(.primary)
                             .help(l10n("重新读取工作区状态"))
                         }
                     }

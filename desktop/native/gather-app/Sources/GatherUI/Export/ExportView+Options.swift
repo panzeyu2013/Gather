@@ -135,6 +135,7 @@ struct ExportOptionsSection: View {
                             return true
                         }
                     Button(l10n("选择…")) { viewModel.chooseDestination(with: l10n) }
+                        .gatherButton(.tertiary, size: .small)
                 }
             }
             // 对齐旧版 export.folderHint 警告（TS L301-303）。

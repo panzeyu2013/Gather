@@ -39,8 +39,7 @@ struct SessionControlJobRow: View {
             }
             if [.failed, .interrupted, .cancelled].contains(job.status) {
                 Button(l10n("重试")) { onRetry() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .gatherButton(.secondary, size: .small)
                     .help(l10n("重新排队该任务"))
             }
         }

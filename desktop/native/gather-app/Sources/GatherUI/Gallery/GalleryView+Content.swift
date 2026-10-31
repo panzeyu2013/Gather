@@ -237,8 +237,7 @@ extension GalleryView {
             Button(l10n("重试")) {
                 Task { await viewModel.retryIndex() }
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .gatherButton(.secondary, size: .small)
         case .count:
             Text(copy.text)
                 .font(.callout)
@@ -261,7 +260,7 @@ extension GalleryView {
             Button(l10n("全选筛选结果")) {
                 Task { await viewModel.selectAllInScope() }
             }
-            .buttonStyle(.borderless)
+            .gatherButton(.tertiary, size: .small)
             .disabled(viewModel.filteredPhotos.isEmpty)
             .help(l10n("按当前搜索与筛选条件选择全部照片（最多 20,000 张）"))
             Menu(l10n("批量操作")) {
@@ -300,22 +299,22 @@ extension GalleryView {
                     viewModel.sessionId,
                     intent: .selected(Array(viewModel.selectedIds)))
             }
-            .buttonStyle(.borderless)
+            .gatherButton(.secondary, size: .small)
             .disabled(viewModel.selectedIds.isEmpty)
             Button(l10n("在灯箱中比较")) {
                 openSelectedInLightbox()
             }
-            .buttonStyle(.borderless)
+            .gatherButton(.tertiary, size: .small)
             .disabled(viewModel.selectedIds.isEmpty)
             Button(l10n("在 Finder 中显示")) {
                 revealSelectedInFinder()
             }
-            .buttonStyle(.borderless)
+            .gatherButton(.tertiary, size: .small)
             .disabled(viewModel.selectedIds.isEmpty)
             Button(l10n("取消选择")) {
                 viewModel.clearSelection()
             }
-            .buttonStyle(.borderless)
+            .gatherButton(.tertiary, size: .small)
             .disabled(viewModel.selectedIds.isEmpty)
             .keyboardShortcut(.escape, modifiers: [])
         }
@@ -461,7 +460,7 @@ extension GalleryView {
             Button(l10n("重试")) {
                 Task { await viewModel.load() }
             }
-            .gatherPrimaryActionButton()
+            .gatherButton(.primary)
         }
         .frame(maxWidth: 520)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -494,15 +493,17 @@ extension GalleryView {
                 // nil 会被静默丢弃，按钮点了没反应；现在只剩统一入口请求。
                 NotificationCenter.default.post(name: GatherAppNotification.importFolderRequest, object: nil)
             }
-            .gatherPrimaryActionButton()
+            .gatherButton(.primary)
             Button(l10n("前往控制中心")) {
                 // 会话页迁移：页签跳转走 environment 里的 navigator（新入口
                 // 优先 open(_:in:)）；没有 navigator（预览/布局测试）时无动作。
                 navigator?.open(.control, in: viewModel.sessionId)
             }
+            .gatherButton(.secondary)
             Button(l10n("刷新")) {
                 Task { await viewModel.load() }
             }
+            .gatherButton(.tertiary)
         }
         .frame(maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
     }
@@ -519,6 +520,7 @@ extension GalleryView {
                 viewModel.filter = .all
                 viewModel.filterOrVariantChanged()
             }
+            .gatherButton(.primary)
         }
         .frame(maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
     }

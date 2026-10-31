@@ -24,7 +24,7 @@ extension FaceKeywordingView {
                     Button(l10n("前往分析")) {
                         viewModel.setStep(.analyze)
                     }
-                    .gatherPrimaryActionButton()
+                    .gatherButton(.primary)
                     .help(l10n("切换到分析步骤"))
                 }
             } else {
@@ -76,7 +76,7 @@ extension FaceKeywordingView {
                     Button(l10n.format("加载更多（还有 %lld 组）", visibleClusters.count - visibleClusterCount)) {
                         visibleClusterCount += FaceKeywordingViewModel.clusterPageSize
                     }
-                    .buttonStyle(.bordered)
+                    .gatherButton(.secondary, size: .small)
                     .help(l10n("继续加载剩余的人脸簇"))
                     Spacer(minLength: 0)
                 }
@@ -194,7 +194,7 @@ extension FaceKeywordingView {
                     }
                     pendingSplit = PendingFaceSplit(cluster: cluster, members: selected)
                 }
-                .buttonStyle(.borderedProminent)
+                .gatherButton(.secondary)
                 .disabled(!viewModel.canSplit)
                 .help(splitHelp(cluster))
             }
@@ -252,7 +252,7 @@ extension FaceKeywordingView {
                     Button(l10n("显示全部成员")) {
                         Task { await viewModel.setIncludeOnlyReviewMembers(false) }
                     }
-                    .buttonStyle(.bordered)
+                    .gatherButton(.secondary, size: .small)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -275,7 +275,7 @@ extension FaceKeywordingView {
                     Button(l10n("加载更多成员")) {
                         Task { await viewModel.loadMoreReview() }
                     }
-                    .buttonStyle(.borderless)
+                    .gatherButton(.tertiary, size: .small)
                     .padding(EdgeInsets(top: GatherMetrics.Space.s, leading: 0, bottom: GatherMetrics.Space.s, trailing: 0))
                 }
             }
@@ -312,7 +312,7 @@ extension FaceKeywordingView {
                 Button(cluster.binding != nil ? l10n("更新绑定") : l10n("绑定")) {
                     Task { await viewModel.bind(cluster) }
                 }
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary)
                 .help(l10n("用角色名称与关键字绑定该簇"))
                 if cluster.binding != nil {
                     Button(role: .destructive) {
@@ -320,6 +320,7 @@ extension FaceKeywordingView {
                     } label: {
                         Text(l10n("解除绑定"))
                     }
+                    .gatherButton(.destructive)
                     .help(l10n("撤销该簇已写入的人脸关键词"))
                 }
             }
@@ -362,7 +363,7 @@ extension FaceKeywordingView {
                         }
                         pendingMerge = PendingFaceMerge(cluster: cluster, target: target)
                     }
-                    .buttonStyle(.bordered)
+                    .gatherButton(.secondary)
                     .disabled(viewModel.mergeTargetId == nil)
                     .help(l10n("把当前簇合并到选中的目标簇"))
                 }

@@ -139,11 +139,11 @@ struct SessionRowView: View {
             // TS retryScan：索引失败行显示「重试」，重新入队 metadata.scan。
             if deriveCardIndexKind(scanJob) == .failed {
                 Button(l10n("重试"), action: onRetryScan)
-                    .buttonStyle(.bordered)
+                    .gatherButton(.tertiary, size: .small)
                     .help(l10n.format("重试 %@", session.name))
             }
             Button(l10n("进入"), action: onOpen)
-                .buttonStyle(.bordered)
+                .gatherButton(.secondary, size: .small)
                 .help(l10n.format("打开 %@", session.name))
             Menu {
                 Button(l10n("删除"), role: .destructive, action: onDelete)

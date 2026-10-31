@@ -73,6 +73,7 @@ extension SettingsView {
                         .frame(minWidth: 160, maxWidth: isPathField ? 280 : 220)
                     if isPathField {
                         Button(l10n("选择…")) { pickingField = field }
+                            .gatherButton(.secondary, size: .small)
                     }
                 }
             case .number:

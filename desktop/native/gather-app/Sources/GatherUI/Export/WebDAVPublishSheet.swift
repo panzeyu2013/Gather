@@ -93,8 +93,10 @@ struct WebDAVPublishSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+                .gatherButton(.secondary)
                 if viewModel.isPublishing {
                     Button(l10n("停止发布")) { publishTask?.cancel() }
+                        .gatherButton(.secondary)
                 }
                 Button(viewModel.isPublishing ? l10n("正在发布…") : l10n("发布")) {
                     publishTask = Task {
@@ -108,7 +110,7 @@ struct WebDAVPublishSheet: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary)
                 .disabled(viewModel.isPublishing || !isURLValid || !hasAllowlist)
             }
         }

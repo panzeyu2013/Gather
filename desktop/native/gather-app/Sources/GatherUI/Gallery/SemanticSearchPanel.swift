@@ -29,7 +29,7 @@ struct SemanticSearchPanel: View {
                     .font(GatherFont.cardTitle)
                 Spacer()
                 Button(l10n("完成")) { dismiss() }
-                    .buttonStyle(.bordered)
+                    .gatherButton(.secondary)
             }
             if isLoading {
                 ProgressView()

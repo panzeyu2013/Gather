@@ -74,11 +74,21 @@ struct ThemeContrastTests {
 
     @Test("主 CTA 填充色与白字保持可读")
     func primaryActionFillIsReadable() {
-        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+        for appearance in [NSAppearance.Name.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua] {
             let fill = resolved(GatherTheme.accentFill, in: appearance)
             let onFill = resolved(GatherTheme.onAccent, in: appearance)
             let ratio = contrast(fill, onFill)
             #expect(ratio >= 4.5, "accentFill/onAccent 在 \(appearance.rawValue) 下对比度 \(ratio)")
+        }
+    }
+
+    @Test("危险确认按钮填充色与白字保持可读")
+    func destructiveFillIsReadable() {
+        for appearance in [NSAppearance.Name.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua] {
+            let fill = resolved(GatherTheme.errorFill, in: appearance)
+            let onFill = resolved(GatherTheme.onAccent, in: appearance)
+            let ratio = contrast(fill, onFill)
+            #expect(ratio >= 4.5, "errorFill/onAccent 在 \(appearance.rawValue) 下对比度 \(ratio)")
         }
     }
 

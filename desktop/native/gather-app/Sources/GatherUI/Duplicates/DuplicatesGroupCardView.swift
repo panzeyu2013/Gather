@@ -67,7 +67,7 @@ struct DuplicatesGroupCardView: View {
                     ) {
                         viewModel.toggleExpanded(group.id)
                     }
-                    .buttonStyle(.bordered)
+                    .gatherButton(.tertiary, size: .small)
                     Spacer()
                 }
             }
@@ -114,15 +114,13 @@ struct DuplicatesGroupCardView: View {
             HStack(spacing: GatherMetrics.Space.controlGap) {
                 if let onOpenPhoto {
                     Button(l10n("查看照片")) { onOpenPhoto(member.photoId) }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .gatherButton(.tertiary, size: .small)
                         .help(l10n("在图库中打开这张照片"))
                 }
                 Button(member.isKept ? l10n("丢弃") : l10n("保留")) {
                     onSetMemberKept(member, !member.isKept)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .gatherButton(.secondary, size: .small)
                 .help(member.isKept ? l10n("丢弃此照片") : l10n("保留此照片"))
             }
         }

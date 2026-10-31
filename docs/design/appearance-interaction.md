@@ -127,7 +127,7 @@ GatherEmptyState(
     message: l10n("导入一个文件夹后，这里会汇总所有工作区的照片。")
 ) {
     Button(l10n("导入文件夹")) { ... }
-        .gatherPrimaryActionButton()
+        .gatherButton(.primary)
 }
 ```
 
@@ -138,9 +138,29 @@ GatherEmptyState(
 
 ### 按钮
 
-- 主 CTA：`.gatherPrimaryActionButton()`（macOS 26+ glass，旧系统 borderedProminent）。
-- 次 CTA：`.gatherSecondaryActionButton()`。
-- 行内/工具按钮：`.buttonStyle(.borderless)` + `.controlSize(.small)`；不要自绘胶囊。
+内容层按钮只声明角色，不直接写 `.bordered` / `.borderedProminent` / `.glass`：
+
+- 主 CTA：`.gatherButton(.primary)`；每个 section / view 最多 1–2 个（优先 1），需要尺寸时传 `size: .small/.large`。
+- 次 CTA：`.gatherButton(.secondary)`；用于成对的取消、返回、替代路径。
+- 行内/低优先级：`.gatherButton(.tertiary, size: .small)`。
+- 错误上下文里的行内动作（错误行「重试」）：`.gatherButton(.tertiaryDanger, size: .small)`。
+- 页面级危险动作：`.gatherButton(.destructive)`；自定义确认 sheet 的不可逆主按钮才用 `.destructiveProminent`（alert/confirmationDialog 内仍交系统 role）。
+- 图标按钮：`.gatherIconButton(size: .small)`（或系统 `.borderless`）；照片卡 / tab 命中区仍用 `.plain`。
+- 自绘 chip / 状态胶囊（FacetBar、C1StatusCapsule、筛选胶囊）是命中区，不套 `gatherButton`；不要用它们承载普通 CTA。
+- 恒暗媒体查看器（Lightbox）的 chrome：`.gatherViewerButton(size: .small)`；不要用 primary/secondary。
+- 窗口 toolbar / 浮层等功能层：`.gatherFunctionalPrimaryButton()` / `.gatherFunctionalSecondaryButton()`（保留系统玻璃）。
+- toast 的容器是功能层玻璃，但 toast 内的文字动作仍用内容层 `gatherButton`（玻璃上再叠玻璃按钮会丢失边界）；关闭 icon 用 `gatherIconButton`。
+- alert / confirmationDialog 里的按钮交给系统 role，不要套内容层样式。
+- 内容层禁用 Liquid Glass；玻璃只用于 toast / 查看器控制条 / 浮动选择栏等浮层表面，不用于按钮填充。
+
+尺寸策略：行内动作 `small`，表单/footer 动作 `regular`，hero `large`；同一按钮组不要混用尺寸。
+重试层级：整页失败态用 `primary`（整页唯一出口），行内/局部恢复用 `secondary` + `small`，错误行辅助重试用 `tertiaryDanger` + `small`。
+`GatherButtonRole` 的映射见 `DesignSystem/Components/GatherButton.swift`：
+primary = 品牌实心，secondary = 描边，tertiary = 纯文字，destructive = 红色描边。
+
+迁移取舍（2026-10-31）：人脸复核页 primary 归“绑定/更新绑定”，拆分所选降为 secondary；
+Export 页唯一 primary 是工具栏“开始导出”，整套交付为 secondary；C1“确认同步”统一为 secondary small；
+“结束同步/清理备份”保留 destructive（确实删除备份与交付记录）。
 
 ---
 
@@ -148,7 +168,7 @@ GatherEmptyState(
 
 - ❌ 页面里直接 `.font(.callout)` / `.font(.system(size:))`：改用 `.gatherText(...)` 或 `GatherFont` 角色。
 - ❌ 页面里直接 `Color(hex:)` / `.background(.regularMaterial)`：用 `GatherTheme` / `gatherSurface`。
-- ❌ 内容层用 Liquid Glass：玻璃只用于 toast / 浮层 / 功能按钮。
+- ❌ 内容层用 Liquid Glass：玻璃只用于 toast / 浮层表面；按钮本身走 `gatherButton` 层级。
 - ❌ 在 `.inspector` 里用 `Form`：用 `ScrollView` + `gatherCard`（`GatherInspectorSection` 仍待落）。
 - ❌ 在页面里手写检查器宽度/页签高度：用 `GatherChromeMetrics`。
 - ❌ 为“统一”把 List 行内空态换成全屏 `GatherEmptyState`：会撑行高，属于布局改变。
@@ -196,6 +216,10 @@ GatherSessionPage(page: .culling, workspace: workspace, subtitle: l10n("挑片�
 ## 5. 门禁
 
 ```bash
+# 页面按钮不得直写系统样式（语义角色门禁）
+cd desktop/native/gather-app
+swift test --filter ButtonStylePolicyTests --disable-sandbox --cache-path ../.build/shared-cache
+
 # 只允许下降；增加会 exit 1
 ./scripts/check-design-system.sh
 
@@ -229,6 +253,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 | `refreshOnDomainEvents` / `refreshOnJobTerminal` | ✅ Phase 4 |
 | `GatherSessionToolbar` 共享工具栏 | ✅ P2（7 页迁移；Control/Face 改 @Bindable 修 SIGSEGV） |
 | `GatherInspectorSection` 共享检查器 | 下一阶段 |
+| 按钮语义层（`GatherButton` + 门禁） | ✅ 本轮：内容层角色化；toolbar/浮层用功能层 helper；Lightbox 用 viewer helper |
 | 删除 `Destination` / `SessionTab` 兼容层 | ✅ P2 |
 
 **迁移原则**：先组合层、后页面；先全局页、后会话页；先路由、后命令。

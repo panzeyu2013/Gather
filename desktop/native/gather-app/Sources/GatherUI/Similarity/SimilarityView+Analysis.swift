@@ -62,13 +62,13 @@ extension SimilarityView {
                 Button(viewModel.isAnalyzing ? l10n("处理中…") : l10n("开始分析")) {
                     viewModel.startAnalyze()
                 }
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary)
                 .disabled(viewModel.isAnalyzing)
                 if viewModel.result != nil {
                     Button(viewModel.isReclustering ? l10n("聚类中…") : l10n("重新聚类")) {
                         Task { await viewModel.recluster() }
                     }
-                    .buttonStyle(.bordered)
+                    .gatherButton(.secondary)
                     .disabled(viewModel.isReclustering || viewModel.isAnalyzing)
                 }
             }

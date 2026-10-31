@@ -184,10 +184,12 @@ public struct CollectionSidebar: View {
                 Spacer(minLength: 0)
                 Button(l10n("取消")) { showCreateSheet = false }
                     .keyboardShortcut(.cancelAction)
+                    .gatherButton(.secondary)
                 Button(l10n("创建")) {
                     Task { await createCollection() }
                 }
                 .keyboardShortcut(.defaultAction)
+                .gatherButton(.primary)
                 .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isWorking)
             }
         }

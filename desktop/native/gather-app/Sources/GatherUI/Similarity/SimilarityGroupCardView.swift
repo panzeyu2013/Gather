@@ -99,7 +99,7 @@ struct SimilarityGroupCardView: View {
                 Button(showAllMembers ? l10n("收起") : l10n.format("显示全部（共 %lld 张）", group.images.count)) {
                     onToggleShowAll()
                 }
-                .buttonStyle(.borderless)
+                .gatherButton(.tertiary, size: .small)
                 Spacer(minLength: 0)
             }
         }

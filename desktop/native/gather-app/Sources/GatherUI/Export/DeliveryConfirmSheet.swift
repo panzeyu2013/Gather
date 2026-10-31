@@ -82,12 +82,13 @@ struct DeliveryConfirmSheet: View {
                 Spacer()
                 Button(l10n("取消")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .gatherButton(.secondary)
                 Button(l10n("开始交付")) {
                     onConfirm(input)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary)
                 // P2-1：空间不足或所有配方预检失败时不放行（红字不是拦截）。
                 .disabled(!canStart)
             }

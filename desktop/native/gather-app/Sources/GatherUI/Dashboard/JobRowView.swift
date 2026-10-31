@@ -105,9 +105,11 @@ struct JobRowView: View {
         HStack(spacing: GatherMetrics.Space.s) {
             if job.status == .queued || job.status == .running {
                 Button(l10n("取消"), action: onCancel)
+                    .gatherButton(.tertiary, size: .small)
             }
             if job.status == .failed || job.status == .interrupted || job.status == .cancelled {
                 Button(l10n("重试"), action: onRetry)
+                    .gatherButton(.secondary, size: .small)
             }
         }
     }

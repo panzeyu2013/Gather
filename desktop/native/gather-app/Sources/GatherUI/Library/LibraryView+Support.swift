@@ -66,8 +66,7 @@ extension LibraryView {
                     albumName = ""
                     Task { await viewModel.createAlbum(name: name) }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .gatherButton(.secondary, size: .small)
                 .disabled(albumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isSupportBusy)
             }
             if viewModel.selectedAlbumId != nil {
@@ -75,12 +74,14 @@ extension LibraryView {
                     Button(l10n("用当前筛选更新")) {
                         Task { await viewModel.updateSelectedAlbum() }
                     }
+                    .gatherButton(.secondary, size: .small)
                     .disabled(viewModel.isSupportBusy)
                     Button(l10n("删除"), role: .destructive) {
                         pendingDeleteAlbum = viewModel.albums.first {
                             $0.id == viewModel.selectedAlbumId
                         }
                     }
+                    .gatherButton(.destructive, size: .small)
                     .disabled(viewModel.isSupportBusy)
                 }
             }
@@ -126,12 +127,14 @@ extension LibraryView {
                                 Button(l10n("接受")) {
                                     pendingAcceptCandidate = candidate
                                 }
+                                .gatherButton(.secondary, size: .small)
                                 .disabled(viewModel.isSupportBusy)
                             }
                             if candidate.status != .rejected {
                                 Button(candidate.status == .accepted ? l10n("拆分") : l10n("拒绝")) {
                                     pendingRejectCandidate = candidate
                                 }
+                                .gatherButton(.tertiary, size: .small)
                                 .disabled(viewModel.isSupportBusy)
                             }
                         }
@@ -217,16 +220,19 @@ extension LibraryView {
                                 Button(l10n("重试")) {
                                     Task { await viewModel.resolveOrphan(orphan, action: .retry, confirmed: true) }
                                 }
+                                .gatherButton(.tertiary, size: .small)
                                 .disabled(viewModel.isSupportBusy)
                             }
                             // 保留 XMP 不改写任何照片文件，按钮本身即用户决定。
                             Button(l10n("保留 XMP")) {
                                 Task { await viewModel.resolveOrphan(orphan, action: .keep, confirmed: true) }
                             }
+                            .gatherButton(.secondary, size: .small)
                             .disabled(viewModel.isSupportBusy)
                             Button(l10n("恢复原片"), role: .destructive) {
                                 pendingRestoreOrphan = orphan
                             }
+                            .gatherButton(.destructive, size: .small)
                             .disabled(viewModel.isSupportBusy)
                         }
                     }
@@ -277,6 +283,7 @@ extension LibraryView {
                                     }
                                 }
                             }
+                            .gatherButton(.secondary, size: .small)
                             .disabled(viewModel.isSupportBusy)
                         }
                     }

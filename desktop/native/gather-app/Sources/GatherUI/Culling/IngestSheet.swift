@@ -41,7 +41,7 @@ struct IngestSheet: View {
                         .foregroundStyle(.orange)
                     Spacer()
                     Button(l10n("设置根目录…")) { chooseSessionRoot() }
-                        .controlSize(.small)
+                        .gatherButton(.secondary, size: .small)
                 }
             }
 
@@ -53,6 +53,8 @@ struct IngestSheet: View {
                         .foregroundStyle(sources.isEmpty ? .secondary : .primary)
                     Spacer()
                     Button(l10n("选择…")) { chooseSources() }
+                        .gatherButton(.tertiary, size: .small)
+                        .accessibilityLabel(l10n("来源"))
                 }
             }
 
@@ -61,6 +63,8 @@ struct IngestSheet: View {
                     TextField(l10n("目标文件夹"), text: $destinationRoot)
                         .labelsHidden()
                     Button(l10n("选择…")) { chooseDestination() }
+                        .gatherButton(.tertiary, size: .small)
+                        .accessibilityLabel(l10n("目标文件夹"))
                 }
             }
 
@@ -78,6 +82,8 @@ struct IngestSheet: View {
                     TextField(l10n("可选"), text: $secondRoot)
                         .labelsHidden()
                     Button(l10n("选择…")) { chooseSecondDestination() }
+                        .gatherButton(.tertiary, size: .small)
+                        .accessibilityLabel(l10n("第二目的地"))
                 }
             }
 
@@ -95,8 +101,7 @@ struct IngestSheet: View {
                     Button(cancelling ? l10n("正在取消…") : l10n("取消摄取")) {
                         Task { await cancelIngest() }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .gatherButton(.secondary, size: .small)
                     .disabled(cancelling)
                 }
             }
@@ -129,8 +134,10 @@ struct IngestSheet: View {
             HStack {
                 Spacer()
                 Button(l10n("取消")) { dismiss() }
+                    .gatherButton(.secondary)
                     .disabled(isRunning)
                 Button(l10n("开始摄取")) { Task { await run() } }
+                    .gatherButton(.primary)
                     .disabled(isRunning || sources.isEmpty || destinationRoot.isEmpty || rootMissing)
             }
         }

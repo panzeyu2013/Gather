@@ -82,6 +82,7 @@ extension SettingsView {
                         Button(l10n("在访达中显示")) {
                             viewModel.openModelDirectory()
                         }
+                        .gatherButton(.tertiary, size: .small)
                     }
                 }
             } else {
@@ -137,7 +138,9 @@ extension SettingsView {
                 .frame(minWidth: 180, maxWidth: 280)
 
                 Button(l10n("选择…")) { pickingModelPathKey = key }
+                    .gatherButton(.secondary, size: .small)
                 Button(l10n("打开")) { viewModel.openModelPathDirectory(key: key) }
+                    .gatherButton(.tertiary, size: .small)
                     .help(l10n("在访达中显示该模型所在目录"))
             }
         }
@@ -163,13 +166,16 @@ extension SettingsView {
                     pendingModelInstall = PendingModelInstall(
                         modelDir: model.modelResourcesDir)
                 }
+                .gatherButton(.primary)
                 .disabled(viewModel.isDownloading)
                 Button(l10n("打开模型文件夹")) {
                     viewModel.openModelDirectory()
                 }
+                .gatherButton(.tertiary)
                 Button(l10n("使用内置 SFace")) {
                     viewModel.save(key: SettingsViewModel.faceEmbeddingModelSettingKey, value: "", with: l10n)
                 }
+                .gatherButton(.secondary)
             }
 
             switch viewModel.downloadPhase {

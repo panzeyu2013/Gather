@@ -60,8 +60,10 @@ struct MetadataTemplateSheet: View {
                 }
                 .disabled(isBusy)
                 Button(l10n("清空字段…")) { showClearEditor = true }
+                    .gatherButton(.secondary)
                     .disabled(selectedId == nil || editorFields == nil || isBusy)
                 Button(l10n("删除")) { showDeleteConfirm = true }
+                    .gatherButton(.destructive)
                     .disabled(selectedId == nil || isBusy)
             }
 
@@ -69,6 +71,7 @@ struct MetadataTemplateSheet: View {
                 TextField(l10n("新模板名称"), text: $name)
                     .labelsHidden()
                 Button(l10n("从当前照片保存为模板")) { Task { await saveFromCurrent() } }
+                    .gatherButton(.secondary)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isBusy)
             }
             Text(l10n.format("当前照片已填写 %lld 个描述性字段",
@@ -120,12 +123,15 @@ struct MetadataTemplateSheet: View {
 
             HStack {
                 Button(l10n("预览")) { Task { await runPreview() } }
+                    .gatherButton(.secondary)
                     .disabled(selectedTemplate == nil || targetPhotoIds.isEmpty || isBusy)
                 Button(l10n("应用到选中照片")) { Task { await runApply() } }
+                    .gatherButton(.primary)
                     .disabled(preview == nil || (preview?.changedFields ?? 0) == 0 || isBusy)
                 Spacer()
                 if let appliedBatchId {
                     Button(l10n("撤销此次套用")) { showUndoConfirm = true }
+                        .gatherButton(.tertiary)
                         .disabled(isBusy)
                         .confirmationDialog(
                             l10n("撤销这次写回？"),
@@ -141,6 +147,7 @@ struct MetadataTemplateSheet: View {
                         }
                 }
                 Button(l10n("关闭")) { dismiss() }
+                    .gatherButton(.secondary)
             }
         }
         .padding(GatherMetrics.Space.l)

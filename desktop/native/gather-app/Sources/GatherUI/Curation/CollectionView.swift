@@ -568,7 +568,7 @@ private struct CrossWorkspaceDuplicatesContent: View {
             Button(l10n("在访达显示")) {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: member.filepath)])
             }
-            .buttonStyle(.link)
+            .gatherButton(.tertiary, size: .small)
         }
     }
 }

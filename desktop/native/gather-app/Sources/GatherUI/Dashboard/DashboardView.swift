@@ -244,7 +244,7 @@ package struct DashboardView: View {
             Button(l10n("重试")) {
                 Task { await viewModel.loadAll() }
             }
-            .gatherPrimaryActionButton()
+            .gatherButton(.primary)
         }
     }
 
@@ -348,7 +348,7 @@ package struct DashboardView: View {
             Text(l10n("创建新的工作区以开始整理照片"))
         } actions: {
             Button(l10n("新建工作区")) { showNewSheet = true }
-                .gatherPrimaryActionButton()
+                .gatherButton(.primary)
         }
     }
 
@@ -366,16 +366,14 @@ package struct DashboardView: View {
                         Button(l10n("清理失败记录")) {
                             Task { await viewModel.clearCompletedJobs(includeFailed: true) }
                         }
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
+                        .gatherButton(.tertiary, size: .small)
                         .help(l10n("同时清理已完成、失败、中断和取消的任务记录；阶段证据保留"))
                     }
                     if viewModel.hasClearableJobs {
                         Button(l10n("清理已完成")) {
                             Task { await viewModel.clearCompletedJobs() }
                         }
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
+                        .gatherButton(.tertiary, size: .small)
                         .help(l10n("清理已完成"))
                     }
                 }
@@ -445,7 +443,7 @@ package struct DashboardView: View {
             Button(l10n("重试")) {
                 Task { await viewModel.refreshJobs() }
             }
-            .gatherPrimaryActionButton()
+            .gatherButton(.primary)
         }
     }
 

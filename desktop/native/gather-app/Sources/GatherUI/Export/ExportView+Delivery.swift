@@ -39,6 +39,7 @@ struct ExportDeliverySection: View {
                     .textFieldStyle(.roundedBorder)
                     .labelsHidden()
                 Button(l10n("选择…")) { chooseDeliveryRoot() }
+                    .gatherButton(.tertiary, size: .small)
             }
 
             ForEach(viewModel.deliveryRecipes) { recipe in
@@ -52,11 +53,13 @@ struct ExportDeliverySection: View {
                 set: { viewModel.deliveryIncludeGallery = $0 }))
             HStack(spacing: GatherMetrics.Space.s) {
                 Button(l10n("添加配方")) { viewModel.addDeliveryRecipe() }
+                    .gatherButton(.tertiary)
                 Spacer()
                 if viewModel.isDelivering {
                     Button(l10n("取消交付")) {
                         Task { await viewModel.cancelDelivery() }
                     }
+                    .gatherButton(.secondary)
                 }
                 Button(viewModel.isDelivering
                        ? l10n("正在交付…")
@@ -69,7 +72,9 @@ struct ExportDeliverySection: View {
                         }
                     }
                 }
-                .gatherPrimaryActionButton()
+                // 页面唯一 primary 在工具栏「开始导出」；整套交付是独立工作流，
+                // 用 secondary 让用户先选主路径，避免同页两个实心 CTA 竞争。
+                .gatherButton(.secondary)
                 // 交付与单张导出共用会话级取消：运行期间互斥，避免互相误杀。
                 .disabled(viewModel.isDelivering || viewModel.isExporting
                           || viewModel.isPreflighting || viewModel.deliveryRecipes.isEmpty)
@@ -106,6 +111,7 @@ struct ExportDeliverySection: View {
                            ? l10n("正在导入…") : l10n("导入客户反馈…")) {
                         importSelection()
                     }
+                    .gatherButton(.secondary, size: .small)
                     .disabled(viewModel.isImportingSelection)
                     if let report = lastImportReport {
                         Text(Self.importSummaryText(report, with: l10n))
@@ -129,6 +135,7 @@ struct ExportDeliverySection: View {
                 deliveryResult(summary)
                 HStack(spacing: GatherMetrics.Space.s) {
                     Button(l10n("发布到 WebDAV…")) { showWebDAV = true }
+                        .gatherButton(.secondary, size: .small)
                         .disabled(viewModel.isPublishing)
                     if let publish = viewModel.webDAVPublish {
                         Text(publish.isSuccess
@@ -304,20 +311,20 @@ struct ExportDeliverySection: View {
                         NSWorkspace.shared.activateFileViewerSelecting(
                             [URL(fileURLWithPath: recipe.destination)])
                     }
-                    .buttonStyle(.borderless)
+                    .gatherButton(.tertiary, size: .small)
                     if let sheet = recipe.contactSheetPath {
                         Button(l10n("打印联系表")) {
                             if !PrintSupport.printPDF(at: sheet, jobTitle: recipe.name) {
                                 viewModel.errorMessage = CommandError.localized("无法打开联系表 PDF")
                             }
                         }
-                        .buttonStyle(.borderless)
+                        .gatherButton(.tertiary, size: .small)
                     }
                     if let gallery = recipe.galleryPath {
                         Button(l10n("打开画廊")) {
                             NSWorkspace.shared.open(URL(fileURLWithPath: gallery))
                         }
-                        .buttonStyle(.borderless)
+                        .gatherButton(.tertiary, size: .small)
                     }
                 }
                 if let first = recipe.errors.first {
@@ -432,7 +439,7 @@ struct ProofImportResultSheet: View {
                 Spacer()
                 Button(l10n("完成")) { dismiss() }
                     .keyboardShortcut(.defaultAction)
-                    .gatherPrimaryActionButton()
+                    .gatherButton(.primary)
             }
         }
         .padding(GatherMetrics.Space.l)
