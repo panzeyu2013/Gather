@@ -26,10 +26,9 @@ import Testing
   try process.run(); process.waitUntilExit(); #expect(process.terminationStatus == 0)
   var failed = false
   do { try await ModelInstaller.install(url: zip, modelsDir: models.path) { _,_,_ in } }
-  catch { failed = true; print("modelInstall: error=\(error)") }
+  catch { failed = true }
   let first = try String(contentsOf: models.appendingPathComponent(order[0].value), encoding: .utf8)
   let second = try String(contentsOf: protected, encoding: .utf8)
-  print("modelInstall: failed=\(failed),first=\(first),second=\(second)")
   #expect(failed)
   #expect(first == "old-model")
   #expect(second == "old-model")

@@ -175,27 +175,6 @@ public struct ProofFeedbackRepo: Sendable {
         return rows.map { ProofFeedbackRow(row: $0) }
     }
 
-    /// 该会话已导入的批次数（COUNT(DISTINCT)，不经过限量列表）。
-    public func batchCount(sessionId: String) throws -> Int {
-        guard !sessionId.isEmpty else { return 0 }
-        return Int(try connection.prepare("""
-            SELECT COUNT(DISTINCT batch_id) FROM client_proof_feedback
-            WHERE session_id = ?
-            """).get([.text(sessionId)])?[0].intValue ?? 0)
-    }
-
-    /// 某张照片最近一条带评论的反馈（只读气泡）。
-    public func latestComment(sessionId: String, photoId: String) throws -> ProofFeedbackRow? {
-        let row = try connection.prepare("""
-            SELECT \(ProofFeedbackRow.columns)
-            FROM client_proof_feedback
-            WHERE session_id = ? AND photo_id = ? AND comment <> ''
-            ORDER BY imported_at DESC, id DESC
-            LIMIT 1
-            """).get([.text(sessionId), .text(photoId)])
-        return row.map { ProofFeedbackRow(row: $0) }
-    }
-
     /// 标记勾选已应用（字段级；只更新该字段为空的行，返回更新行数）。
     ///
     /// applied_at 仍作为"这张照片有任何字段被应用"的总标记一起写入：

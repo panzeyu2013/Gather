@@ -357,11 +357,6 @@ public final class ProofFeedbackService {
         return result
     }
 
-    /// 该会话已导入的批次数（UI 用：0 = 从没有客户反馈）。
-    public func importedBatches(sessionId: String) throws -> Int {
-        try repo.batchCount(sessionId: sessionId)
-    }
-
     // MARK: - 纯逻辑
 
     static func pickState(for item: ClientFeedbackItem) -> String {

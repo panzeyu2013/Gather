@@ -2,7 +2,7 @@
 
 > 2026-10-30：`check-docs.sh` 与 `docs/archive/` 已移除；文中历史路径仅作记录。
 > 依据：原 refactor 设计文档 §1 / §8 / §9（已清理，见 git 历史）。
-> 盘点日期：2026-10-21。仓库：`/Users/panzeyu2013/Desktop/code/develop/Gather`。
+> 盘点日期：2026-10-21。仓库：`~/Gather`。
 > 本文件只做**盘点**，不删除任何代码；删除动作在对应 Cut 内执行，且必须与本文件的验收命令一一对应。
 > 标记约定：**【已确认】** = 有源码/命令证据；**【疑似】** = 静态扫描结论，需运行期或人工确认；**【需验证】** = 需 `EXPLAIN QUERY PLAN` / 基准 / 手工操作确认。
 
@@ -182,7 +182,7 @@
 ## 3. 死表 / 死列 / 死索引审计（CL-14）
 
 ### 3.1 方法与口径
-- 44 张表取自 `Schema.swift` 的 `CREATE TABLE IF NOT EXISTS`，与 `docs/fixtures/schema.snapshot.json` 的 44 表逐一对应（集合一致）。
+- 44 张表取自 `Schema.swift` 的 `CREATE TABLE IF NOT EXISTS`，与当时的 `docs/fixtures/schema.snapshot.json` 的 44 表逐一对应（集合一致；该快照已删除，见 git 历史）。
 - "core 源引用" = 除 Schema/Migrations 外，Sources 中 SQL 字面量命中的次数；"测试" = core+app Tests 命中次数；app 写入次数极少（仅 photos 7、assets 13、writeback_items 2、persons 2）。
 - 表名/列名也会出现在 README/注释中，已排除；SQL 拼接（`\(Self.rawExtensions)`）会让计数偏低，故低计数先标【疑似】再人工核。
 
@@ -411,7 +411,7 @@
 ## 9. 复现命令
 
 ```bash
-cd /Users/panzeyu2013/Desktop/code/develop/Gather
+cd ~/Gather
 # 规模
 find desktop/native -path '*/.build' -prune -o -name '*.swift' -print | wc -l
 # 表/列/索引/外键
@@ -461,4 +461,44 @@ grep -rn 'class LockedBox\|class AsyncGate' --include=*.swift desktop/native/*/T
 
 ---
 
-*本文件由 Cut 0 盘点产出；任何删除动作前先在本表把对应项改为 `in-progress` 并写明目标 Cut 与 owner。*
+## 12. 死代码 / 一次性调试残留清理（2026-10-31）
+
+**口径**：某声明在全仓 Swift（Sources + Tests）中除声明行外零引用；或生产零引用且已有活替代实现（ADR-028 三条判据）。**保留** AppKit 委托 / NSView 重写等动态分发方法（applicationShouldTerminate、applicationSupportsSecureRestorableState、hitTest、Layout.placeSubviews 等），启发式扫描出的“零引用”不适用于它们。
+
+**第一轮删除（源码 22 文件，+0 −734 行；含 3 个整文件删除）**
+
+- 旧实现整文件：GatherAnalysis/Image/Dimensions.swift（186 行，fast-dimensions 纯 Swift 移植；生产自 ImageIO 化后已由 ImageIODimensionsProvider 承接）+ 对账测试（57 行/1 例/3 断言）+ dimensions-fixtures.json（209 行）。
+- 无引用 public DTO / helper：ClientSelectionPick、ClientSelectionFile（v1 兼容类型，解析器已用 ParsedClientSelection）；ClientSelectionImportReport.feedbackCount/summaryText；ParsedClientSelection.hasFeedback；DescriptiveContact.setMember；JSONValue.isObject；CullingService.FaceRow；ExportService.FileInstallToken.photoBackup。
+- 无引用仓储/服务方法：KeywordRepo.allSynonyms/keywordPaths/assetCounts；ProofFeedbackRepo.batchCount/latestComment；ProofFeedbackService.importedBatches；MetadataService.mergeKeywordSources；ModelReviewService.probeStat。
+- 重复常量：TriageWritebackPlanner.namespaceURI/namespaceProperty（与 XMPNamespaces.gatherTriage 同值，生产走后者）；TriageWritebackDecision.writesRating。
+- UI 死代码：C1RoundTripCoordinator.defaultDebounceMilliseconds；TriagePipelineProgress + triagePipelineProgress/triageConfidenceTier；C1SelectionOutcome.mayTriggerImport；CurationServices.hasCuration/hasCrossWorkspaceDuplicates；StackFoldIndex.isRepresentative；7 个无人引用的 DesignSystem token（statCompact/monoBody/cardPadding/rowGap/sectionGap/maxFormWidth/tabStrip）；PreviewMaintenanceAPI。
+- 门禁/台账：check-duplicate-symbols.sh 去掉“batchAsync 旧实现，允许保留到对应 Cut”的误导文案（它已是唯一共享实现）；check-test-catalog.sh 基线按“删用例必须显式下调”下调 2483→2482、断言 11459→11456；docs/protocol-surface-baseline.json 收紧 2437→2434 声明（Protocol 行 11,998→11,968）。
+
+**第二轮：5 个 subagent 深扫后追加（源码 +14 −60 行，另删 2 个死资源）**
+
+- 一次性调试输出：删除 DeepReviewAcceptanceTests（3 行）、ReviewAcceptanceTests（2 行）、DeepModelAcceptanceTests（2 行）中的无条件 print，并删除随之失效的局部变量/错误插值。
+- 仅测试引用 / 只写字段：CullingViewModel.setTriageAutoGenerate（测试改为直设 internal 属性）；RootShellToolbar.contentMinWidthBudget（重复 GatherChromeMetrics.contentMinWidth，测试改用 canonical 值）；OutputPresentationRow.triageConfidence（有写无读，SELECT 列同步收窄）；OutputShareOptions.encryptBundle（加密 DMG 未实现，plan 已注明）。
+- 重复 helper：NavigationService 本地 dirname（改用 TSPath.dirname）。
+- 发布面收口：CullingViewModel 两个 *ForTesting、GatherEventCenter.resetRevisionsForTesting、ThumbnailDiskCache.directoryOverride 加 #if DEBUG，发布包不再编译。
+- 死资源：desktop/resources/entitlements.mac.plist（Electron 期 sandbox/JIT 配置，与当前 Gather.entitlements 冲突且 0 引用）、desktop/resources/models/.gitkeep（运行时模型目录在 Application Support/models）。
+- 仓库卫生：scripts/convert-face-model.py 输出路径 GatherCore→GatherAnalysis；DEVELOPMENT 三处失效源码路径；docs/README、ROADMAP 测试数；CI 44→55 表注释；ledger V8 3→4 变体；.gitignore 删除根 tests/fixtures/local 死规则并补 Xcode 产物；evidence/backlog 中 /Users/<user> 绝对路径脱敏为 ~/Gather；p1-next 计划加“历史计划”横幅。
+
+**保留（经 subagent 复核）**
+
+- DebugLaunchOptions（58 行）/ PreviewSupport（12 文件/2,178 行）：DEBUG-only，仍服务 V6 截图验收与 14 个 #Preview；删除会跌破 preview 门禁。
+- 测试接缝：DeliveryStateMachine.isConfirmReady/shouldReopenForInput、ProofFeedbackRow.isApplied、StackFoldIndex.expandedPhotoIds、KeywordPath.ancestors/topSegment、C1RoundTripCoordinator.flushPendingReloads、DeliveryRepo.mark*ForTesting、Database.isInMemory/rawHandle；保留为行为规格或 @testable 隔离，删除收益为负。
+- Curation 的 fromLightroom/focusedFraction/synchronizedZoom：裁剪/AF/对照几何的唯一实现，虽当前仅测试调用，先保留待接线评估（不是一次性调试代码）。
+- 工具：scripts/find-unused-symbols.swift（本轮仍在用）、scripts/clean-test-temp.sh（手工残留清理）、scripts/validation/CullingPaging100kPerfTests.swift（V5 100k 证据，保留待 V5 收口）。
+
+**实测（2026-10-31，worktree clean）**
+
+- swift build core / app PASS；check-warnings core / app PASS；gather-schema verify：55 表 / 451 列 / 86 索引 / 81 外键 / user_version=1 / FK 违规 0。
+- 测试：core 1,598/235 + 25/4；app 859/99；合计 **2,482**（较清理前 -1 例，即删除的 ImageDimensions 对账用例）。
+- 12 道门禁全 exit 0：no-legacy / cleanup-ratchet / layering / protocol-surface / duplicate-symbols / test-catalog / select-star / preview-surface / coded-errors / backlog-evidence / design-system / warnings。
+- ratchet：unchecked_sendable 60 / try_optional 255 / services_prepare 0 / todo_fixme 0 / with_known_issue 0（未回升）；Protocol public 声明 2,433 = 收紧后的 baseline 2,433；find-unused-symbols --all 剩余候选仅 2 个 AppKit 委托方法（保留）。
+- 本地化键数不变（en 1,322 / zh 9）；本轮未新增 TODO/FIXME；新增 #if DEBUG 仅 4 处测试接缝守卫（发布包不编译）。
+- 全 diff：51 文件 +105 −837（desktop 36 文件 +14 −794）。
+
+---
+
+*本文件由 Cut 0 盘点产出；任何删除动作前先在本表把对应项改为 in-progress 并写明目标 Cut 与 owner。*

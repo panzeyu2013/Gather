@@ -24,16 +24,11 @@ public struct TriageWritebackDecision: Equatable, Sendable {
         self.keyword = keyword
         self.namespaceValue = namespaceValue
     }
-
-    public var writesRating: Bool { rating != nil }
 }
 
 public enum TriageWritebackPlanner {
     public static let keywordKeep = "Gather|AI|Keep"
     public static let keywordReject = "Gather|AI|Reject"
-    /// XMP 私有命名空间（宿主写入 SidecarXMPProvider 时使用）。
-    public static let namespaceURI = "https://gather.app/ns/triage/1.0/"
-    public static let namespaceProperty = "gather:Triage"
 
     /// - verdict: "keep" / "reject"（大小写不敏感）；其它值视为无建议。
     /// - currentRating: 现有星级（0 表示未评分）。

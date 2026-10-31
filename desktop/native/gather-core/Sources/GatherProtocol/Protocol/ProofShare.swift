@@ -61,19 +61,15 @@ public struct OutputShareOptions: Codable, Equatable, Sendable {
     public var allowDownload: Bool
     /// ISO-8601；advisory + 到期撤销 job。
     public var expiresAt: String?
-    /// 把整个 bundle 打成加密 DMG（密码存 Keychain）。
-    public var encryptBundle: Bool
     public var remoteSubfolder: String
 
     public init(
         allowDownload: Bool = false,
         expiresAt: String? = nil,
-        encryptBundle: Bool = false,
         remoteSubfolder: String = ""
     ) {
         self.allowDownload = allowDownload
         self.expiresAt = expiresAt
-        self.encryptBundle = encryptBundle
         self.remoteSubfolder = remoteSubfolder
     }
 }

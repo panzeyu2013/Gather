@@ -33,7 +33,6 @@ import GatherTestSupport
   let service = ExportService(photoRepo: PhotoRepo(connection: db), sessionRepo: SessionRepo(connection: db), connection: db)
   let options = ExportOptions(scope: .session, variantPolicy: .preferred, format: .original, naming: ExportNaming(pattern: "{original}"), includeXmp: true, destination: dest.path)
   let result = try service.execute(sessionId: sid, options: options, resume: NativeExportResumeState(destinations: ["p1":"photo.jpg"], completedPhotoIds: ["p1"]))
-  print("failedSidecar: failed=\(result.failed),priorPhotoExists=\(FileManager.default.fileExists(atPath: output.path))")
   #expect(result.failed == 1)
   #expect(FileManager.default.fileExists(atPath: output.path))
  }
@@ -43,11 +42,8 @@ import GatherTestSupport
   let statement = try db.prepare("INSERT INTO probe VALUES (1)")
   db.close(); try db.reopen(); try db.exec("CREATE TABLE probe (id INTEGER)")
   #expect(throws: DBError.self) { try statement.run([]) }
-  let count = try db.prepare("SELECT COUNT(*) FROM probe").get()?[0].intValue
-  print("reopen: newConnectionRowCount=\(count ?? -1)")
  }
  @Test func finiteOversizedFaceParameterMustBeRejected() throws {
-  print("finiteParameter: minPts=1e30,isFinite=\(Double(1e30).isFinite)")
   #expect(throws: FaceKwServiceError.self) { try validateFaceClusteringParameters(eps: 0.5, minPts: 1e30) }
  }
 }

@@ -411,24 +411,6 @@ public final class KeywordRepo: Sendable {
             .get([.text(path)])?[0].intValue ?? 0)
     }
 
-    /// 全部同义词（词库同义词展开/自动补全用；一次查询，不分批）。
-    public func allSynonyms() throws -> [(keywordPath: String, synonym: String)] {
-        try connection.prepare(
-            "SELECT keyword_path, synonym FROM keyword_synonyms ORDER BY keyword_path, synonym")
-            .query().compactMap { row in
-                guard let path = row[0].textValue, let synonym = row[1].textValue else { return nil }
-                return (path, synonym)
-            }
-    }
-
-    /// 同义词反查：synonym 命中（fold 相等）时返回其所属关键词路径。
-    public func keywordPaths(synonym: String) throws -> [String] {
-        let folded = KeywordNormalizer.fold(synonym)
-        return try allSynonyms()
-            .filter { KeywordNormalizer.fold($0.synonym) == folded }
-            .map(\.keywordPath)
-    }
-
     // MARK: - photo_keywords（增量索引）
 
     public func photoKeywordPaths(photoId: String) throws -> [String] {
@@ -516,28 +498,6 @@ public final class KeywordRepo: Sendable {
         return Int(try connection.prepare(
             "SELECT COUNT(*) AS n FROM photo_keywords WHERE keyword_path = ?")
             .get([.text(path)])?[0].intValue ?? 0)
-    }
-
-    /// 每个路径的成员数（按**逻辑资产**去重，与网格/facet 同口径）。
-    public func assetCounts(sessionId: String?) throws -> [String: Int] {
-        var sql = """
-            SELECT pk.keyword_path AS path,
-                   COUNT(DISTINCT COALESCE(NULLIF(p.asset_id, ''), p.id)) AS n
-            FROM photo_keywords pk JOIN photos p ON p.id = pk.photo_id
-            WHERE \(PhotoVisibility.visiblePredicate(alias: "p"))
-            """
-        var params: [DBValue] = []
-        if let sessionId {
-            sql += " AND p.session_id = ?"
-            params.append(.text(sessionId))
-        }
-        sql += " GROUP BY pk.keyword_path"
-        var result: [String: Int] = [:]
-        for row in try connection.prepare(sql).query(params) {
-            guard let path = row[0].textValue else { continue }
-            result[path] = Int(row[1].intValue ?? 0)
-        }
-        return result
     }
 
     // MARK: - 回填（photo_metadata_cache → photo_keywords）

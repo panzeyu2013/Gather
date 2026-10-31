@@ -51,7 +51,7 @@ struct LayoutBudgetTests {
     /// SplitViewChildController 不会拿到「大于可用宽度」的最小宽度。
     /// D-2（审计 5）：不再写死 680——直接引用外壳的尺寸定义，窗口/侧栏常量漂移时
     /// 这条预算会跟着变，不会「两边各改一半而测试仍绿」。
-    private static var contentMinWidthBudget: CGFloat { RootShellMetrics.contentMinWidthBudget }
+    private static var contentMinWidthBudget: CGFloat { GatherChromeMetrics.contentMinWidth }
 
     /// NSHostingView.fittingSize 就是 SwiftUI 交给 AppKit 约束系统的最小尺寸，
     /// 与 SplitViewChildController 询问的是同一份数据。

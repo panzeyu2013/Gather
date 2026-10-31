@@ -252,11 +252,6 @@ extension CullingService {
         sessionId: String,
         mode: LookupMode
     ) throws -> (facesByPhoto: [String: [[Double]]], analysisMaxByPhoto: [String: Double]) {
-        struct FaceRow {
-            let photoId: String
-            let bbox: [Double]
-            let analysisSignature: String
-        }
         let faceRows: [CullingFaceObservationRow] = mode == .session
             ? try richQuery.faceRows(sessionId: sessionId)
             : try richQuery.faceRows(sessionId: sessionId, photoIds: photos.map(\.id))

@@ -18,7 +18,6 @@ enum RootShellMetrics {
     static let sidebarIdealWidth = GatherChromeMetrics.sidebarIdealWidth
     static let sidebarMaxWidth = GatherChromeMetrics.sidebarMaxWidth
     /// 内容区（会话页 + 页签行）必须放得下的最小宽度。
-    static var contentMinWidthBudget: CGFloat { GatherChromeMetrics.contentMinWidth }
 }
 
 // MARK: - 外壳文案（4a-3a）

@@ -39,11 +39,13 @@ public enum ThumbnailDiskCache {
     /// 上限 512MB（与内存缓存同量级）；超限按修改时间从旧到新删除。
     static let maxBytes: Int64 = 512 * 1024 * 1024
 
+#if DEBUG
     /// 目录覆盖（测试注入临时目录，避免污染真实 Application Support）。
     public static var directoryOverride: URL? {
         get { state.lock.lock(); defer { state.lock.unlock() }; return state.overridden }
         set { state.lock.lock(); state.overridden = newValue; state.directory = nil; state.lock.unlock() }
     }
+#endif
 
     private static func directory() -> URL? {
         state.lock.lock()

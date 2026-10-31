@@ -20,7 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--onnx", type=pathlib.Path)
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path(
-        "desktop/native/gather-core/Sources/GatherCore/Resources/FaceModels"))
+        "desktop/native/gather-core/Sources/GatherAnalysis/Resources/FaceModels"))
     args = parser.parse_args()
     import coremltools as ct
     import numpy as np

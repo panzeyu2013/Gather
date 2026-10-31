@@ -23,7 +23,7 @@ Gather 是 macOS 26+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
   `private func xxxLocked(...)` 同步辅助方法。
 - 禁止用 `@preconcurrency import` / `nonisolated(unsafe)` 掩盖诊断；全局可变状态改为
   「锁盒子 + 计算属性」（参考 `GatherLocalization.appLanguage`、`CaptureOneBridge.shared`）。
-- 有界并发统一走 `batchAsync`（`Concurrent/BatchRunner.swift`），共享收集状态收进锁盒子
+- 有界并发统一走 `batchAsync`（`GatherPersistence/Support/BatchRunner.swift`），共享收集状态收进锁盒子
   （参考 `MetadataCollector`、`PhaseOneCollector`）。
 
 ## 目录结构
@@ -144,7 +144,7 @@ GatherApplication（服务编排；交付在 GatherDelivery）
 
 ### 页面与路由
 
-- `RootView`（`GatherHost/RootView.swift`）只保留依赖、`@State` 与 modifier 接线；
+- `RootView`（`GatherUI/Shell/RootView.swift`）只保留依赖、`@State` 与 modifier 接线；
   导航/侧栏/工具栏/详情/通知由 `RootShell*.swift` 拆分承载。页面按目的地**条件构建**，
   `NavigationSplitView` 负责侧栏材质与选中语义。
 - 会话页由 `GatherUI/Shell/SessionPageHost.swift` 按 `SessionPage` 分发 ViewModel；
@@ -198,7 +198,7 @@ GatherApplication（服务编排；交付在 GatherDelivery）
   `role: .destructive` + `confirmationDialog` 双确认，高频确认由 `Confirmed<T>` 承担。
 - 常驻隐藏页 `.accessibilityHidden(!isVisible)`；图标按钮补 `.accessibilityLabel`；
   动画跟随 `accessibilityReduceMotion` 降级。
-- 颜色/圆角/间距统一取 `Support/GatherTheme.swift`，卡片统一 `gatherCard()`，
+- 颜色/圆角/间距统一取 `GatherUI/DesignSystem/Tokens/GatherTheme.swift`，卡片统一 `gatherCard()`，
   禁止内联色值字面量。
 
 ## 门禁

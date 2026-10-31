@@ -288,9 +288,6 @@ public final class CullingViewModel: PageVisibility {
         }
     }
 
-    public func setTriageAutoGenerate(_ enabled: Bool) {
-        triageAutoGenerate = enabled
-    }
     /// 是否还有下一页：唯一凭据是 nextCursor。
     public var hasMore: Bool { page?.nextCursor != nil }
     public internal(set) var selectedSimilarityGroupId = ""
@@ -557,6 +554,7 @@ public final class CullingViewModel: PageVisibility {
         return summary.kept + summary.rejected
     }
 
+#if DEBUG
     /// 测试注入：直接设置同步摘要，绕开命令层（CullingSyncFlowTests 直测状态机推导）。
     func applySyncSummaryForTesting(_ summary: MetadataSyncSummary?) {
         syncStatus = summary
@@ -566,6 +564,7 @@ public final class CullingViewModel: PageVisibility {
     func applyQualityJobForTesting(_ job: AnalysisJobData?) {
         qualityJob = job
     }
+#endif
 
     /// TS: qualityApi.analyze + jobs.list 轮询。这里仅接入技术质量任务；
     /// 人脸推理质量按用户要求不作为本轮验收门。

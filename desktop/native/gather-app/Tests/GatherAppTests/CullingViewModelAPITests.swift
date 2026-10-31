@@ -784,7 +784,7 @@ struct CullingViewModelAPITests {
             metadata: B6bMetadataAPIStub(), jobs: jobs, quality: quality)
         vm.setVisible(true)
         vm.setTriageEnabled(true)
-        vm.setTriageAutoGenerate(true)
+        vm.triageAutoGenerate = true
 
         let task = Task { await vm.analyzeQuality() }
         await task.value

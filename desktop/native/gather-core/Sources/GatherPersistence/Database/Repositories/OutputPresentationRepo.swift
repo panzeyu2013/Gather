@@ -34,7 +34,6 @@ public struct OutputPresentationRow: Equatable, Sendable {
     /// culling_decisions.decision：keep/reject/pending（缺行 nil）。
     public let decision: String?
     public let triageVerdict: String?
-    public let triageConfidence: Double
     /// 是否有 photo_metadata_cache 行（false = 元数据缺失，用于 metadataMissing 计数）。
     public let hasMetadata: Bool
 
@@ -50,9 +49,8 @@ public struct OutputPresentationRow: Equatable, Sendable {
         pixelHeight = Int(row[6].intValue ?? 0)
         decision = row[7].textValue
         triageVerdict = row[8].textValue
-        triageConfidence = row[9].doubleValue ?? 0
-        hasMetadata = row[11].intValue != nil
-        let descriptive = OutputPresentationRow.decodeDescriptive(row[10].textValue ?? "{}")
+        hasMetadata = row[10].intValue != nil
+        let descriptive = OutputPresentationRow.decodeDescriptive(row[9].textValue ?? "{}")
         title = descriptive.title?.isEmpty == false ? descriptive.title : nil
         caption = descriptive.caption?.isEmpty == false ? descriptive.caption : nil
     }
@@ -70,7 +68,6 @@ public struct OutputPresentationRow: Equatable, Sendable {
         pixelHeight: Int = 0,
         decision: String? = nil,
         triageVerdict: String? = nil,
-        triageConfidence: Double = 0,
         hasMetadata: Bool = false
     ) {
         self.photoId = photoId
@@ -84,7 +81,6 @@ public struct OutputPresentationRow: Equatable, Sendable {
         self.pixelHeight = pixelHeight
         self.decision = decision
         self.triageVerdict = triageVerdict
-        self.triageConfidence = triageConfidence
         self.hasMetadata = hasMetadata
     }
 
@@ -145,7 +141,7 @@ public struct OutputPresentationRepo: Sendable {
                 SELECT p.id,
                        pmc.rating, pmc.label, pmc.keywords, pmc.date_taken,
                        pmc.width, pmc.height,
-                       cd.decision, t.verdict, t.confidence,
+                       cd.decision, t.verdict,
                        pmc.iptc_json, pmc.id
                 FROM photos p
                 LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id

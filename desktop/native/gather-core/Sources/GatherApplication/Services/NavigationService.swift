@@ -292,7 +292,7 @@ public final class NavigationService {
         for row in rows {
             let previous = current.last
             let gap = previous.map { (parseISODate(row.capturedAt) - parseISODate($0.capturedAt)) / 1000 } ?? 0
-            let directoryChanged = previous.map { dirname($0.filepath) != dirname(row.filepath) } ?? false
+            let directoryChanged = previous.map { TSPath.dirname($0.filepath) != TSPath.dirname(row.filepath) } ?? false
             let sameCamera = previous == nil || previous!.cameraModel.isEmpty || row.cameraModel.isEmpty
                 || previous!.cameraModel == row.cameraModel
             let previousSequence = previous.flatMap { filenameSequence($0.filename) }
@@ -451,11 +451,6 @@ func hammingDistance(_ left: String, _ right: String) -> Int? {
     if left.isEmpty || right.isEmpty || left.count != right.count { return nil }
     guard let a = UInt64(left, radix: 16), let b = UInt64(right, radix: 16) else { return nil }
     return (a ^ b).nonzeroBitCount
-}
-
-/// TS: path.dirname。
-func dirname(_ path: String) -> String {
-    (path as NSString).deletingLastPathComponent
 }
 
 /// TS: Date.parse(ISO string) → 毫秒时间戳。

@@ -391,13 +391,6 @@ public final class ModelReviewService: @unchecked Sendable {
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
-    static func probeStat(
-        _ provider: (String) throws -> (size: Int64, mtimeMs: Double),
-        _ path: String
-    ) -> (size: Int64, mtimeMs: Double)? {
-        do { return try provider(path) } catch { return nil }
-    }
-
     static func decodeCached(_ json: String) -> ModelReviewResult? {
         do {
             return try JSONDecoder().decode(ModelReviewResult.self, from: Data(json.utf8))

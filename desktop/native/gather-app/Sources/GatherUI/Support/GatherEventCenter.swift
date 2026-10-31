@@ -161,10 +161,12 @@ public final class GatherEventCenter {
         revisions.withLock { $0[domain] ?? 0 }
     }
 
-    /// 测试接缝：清空进程内序号（@testable 专用；生产不调用）。
+#if DEBUG
+    /// 测试接缝：清空进程内序号（@testable 专用；生产不编译）。
     nonisolated static func resetRevisionsForTesting() {
         revisions.withLock { $0.removeAll() }
     }
+#endif
 
     /// 进程内按域序号（OSAllocatedUnfairLock 是 Sendable，无需 @unchecked）。
     nonisolated private static let revisions =
