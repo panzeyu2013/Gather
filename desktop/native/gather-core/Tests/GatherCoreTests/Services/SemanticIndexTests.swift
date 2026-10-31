@@ -89,6 +89,47 @@ struct SemanticFeatureCodecTests {
         }
     }
 
+    #if arch(arm64)
+    @Test("手写 half 编解码与原生 Float16 逐位一致（arm64）")
+    func halfCodecMatchesNative() {
+        var decodeMismatches = 0
+        var firstDecode = ""
+        for bits in UInt16.min...UInt16.max {
+            let native = Float(Float16(bitPattern: bits))
+            let manual = SemanticFeatureCodec.float(fromHalf: bits)
+            let same = native.isNaN ? manual.isNaN : manual == native
+            if !same {
+                decodeMismatches += 1
+                if firstDecode.isEmpty {
+                    firstDecode = "\(bits): \(manual) != \(native)"
+                }
+            }
+        }
+        #expect(decodeMismatches == 0, "decode mismatches \(decodeMismatches): \(firstDecode)")
+
+        let samples: [Float] = [
+            0, -0.0, 0.5, -0.25, 1, 3.14159, 65504, 65520, -65520,
+            1e-8, -1e-8, .infinity, -.infinity, .nan,
+        ]
+        var encodeMismatches = 0
+        var firstEncode = ""
+        for value in samples {
+            let native = Float16(value).bitPattern
+            let manual = SemanticFeatureCodec.halfBits(from: value)
+            let same = value.isNaN
+                ? ((manual & 0x7C00) == 0x7C00 && (manual & 0x03FF) != 0)
+                : manual == native
+            if !same {
+                encodeMismatches += 1
+                if firstEncode.isEmpty {
+                    firstEncode = "\(value): \(manual) != \(native)"
+                }
+            }
+        }
+        #expect(encodeMismatches == 0, "encode mismatches \(encodeMismatches): \(firstEncode)")
+    }
+    #endif
+
     @Test("维度不符/空数据 → 空数组（不猜）")
     func rejectsMalformedBlob() {
         let encoded = SemanticFeatureCodec.encode([1, 2, 3])

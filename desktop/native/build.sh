@@ -438,14 +438,16 @@ if [[ -d "$PLUGIN_SDK" && -f "$PLUGIN_DIR/Makefile" ]]; then
          "$OUTPUT_DIR/.gather-plugin-module-cache"
   mkdir -p "$PLUGIN_SLICES_DIR" "$PLUGIN_TMP" "$PLUGIN_MODULE_CACHE"
   # 插件用 swiftc 直接编译，模块缓存默认落在系统临时目录；受限环境（CI 容器/
-  # 本机沙箱）可能不可写，导致跨架构切片静默复用上一架构的产物。把 TMPDIR 与
-  # CLANG_MODULE_CACHE_PATH 固定到 .build/ 下，保证每个切片真的重编译且可复用。
-  # 清掉旧架构戳，强制每个切片都按当前源码重编译（Makefile 在切架构时也会清，
-  # 这里显式做一次，避免复用旧产物）。
-  rm -f "$PLUGIN_BUNDLE"/.arch-*
+  # 本机沙箱）可能不可写，导致跨架构切片静默复用上一架构的产物。把 TMPDIR、
+  # CLANG_MODULE_CACHE_PATH 与 MODULE_CACHE_PATH 固定到 .build/ 下；
+  # swiftc 直编只认 -module-cache-path（Makefile 从 MODULE_CACHE_PATH 生成）。
+  # 清掉旧架构戳与旧二进制，强制每个切片都按当前源码重编译，失败时不会把
+  # 上一架构的二进制误当成本架构产物。
+  rm -f "$PLUGIN_BUNDLE"/.arch-* "$PLUGIN_BINARY"
   for arch in "${PLUGIN_ARCHS[@]}"; do
     if TMPDIR="$PLUGIN_TMP" CLANG_MODULE_CACHE_PATH="$PLUGIN_MODULE_CACHE" \
-        make -C "$PLUGIN_DIR" TARGET_ARCH="$arch" \
+        MODULE_CACHE_PATH="$PLUGIN_MODULE_CACHE" \
+        make -B -C "$PLUGIN_DIR" TARGET_ARCH="$arch" \
         TARGET="$arch-apple-macosx$PLUGIN_DEPLOYMENT_TARGET" all; then
       if [[ -f "$PLUGIN_BINARY" ]]; then
         SLICE_ARCHS="$(lipo -archs "$PLUGIN_BINARY")"

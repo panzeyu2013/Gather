@@ -9,6 +9,10 @@ TARGET := $(TARGET_ARCH)-apple-macosx26.0
 # Quote the framework path: the SDK directory name contains parentheses,
 # which otherwise break the generated shell command.
 SWIFT_FLAGS := -F "$(FRAMEWORK_PATH)" -framework CaptureOnePlugins -framework Cocoa -Xlinker -rpath -Xlinker "$(FRAMEWORK_PATH)"
+# swiftc 直编时 Clang 模块缓存默认落在 ~/Library/Caches 或 /var/folders；CI 容器/
+# 本机沙箱可能不可写，导致切片静默编译失败并复用上一架构的旧二进制。
+# build.sh 传 MODULE_CACHE_PATH，把缓存固定到仓库 .build/ 下。
+MODULE_CACHE_FLAGS := $(if $(MODULE_CACHE_PATH),-module-cache-path "$(MODULE_CACHE_PATH)")
 
 .PHONY: all clean install
 
@@ -25,7 +29,7 @@ $(PRODUCT)/.arch-$(TARGET_ARCH):
 
 $(PRODUCT)/Contents/MacOS/GatherLink: GatherLink/GatherLink.swift $(PRODUCT)/.arch-$(TARGET_ARCH)
 	@mkdir -p "$(PRODUCT)/Contents/MacOS"
-	swiftc $(SWIFT_FLAGS) \
+	swiftc $(SWIFT_FLAGS) $(MODULE_CACHE_FLAGS) \
 		-target $(TARGET) \
 		-o "$@" \
 		GatherLink/GatherLink.swift

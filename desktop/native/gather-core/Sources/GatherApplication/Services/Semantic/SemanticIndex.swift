@@ -72,11 +72,73 @@ public enum SemanticFailure: Error, Equatable, CustomStringConvertible, Sendable
 /// 为什么 Float16：~2048 维 × 4B = 8KB/张，20k 张 160MB；Float16 减半（~80MB），
 /// 而余弦相似度的判别力几乎不受影响（观测值量级 ±10，Float16 相对误差 ~1e-3）。
 public enum SemanticFeatureCodec {
+    /// Float32 → IEEE-754 half 位模式（round-to-nearest-even）。
+    ///
+    /// 为什么手写：x86_64 macOS 没有 `Float16`（`_Float16` 被标为 unavailable），
+    /// 但 universal 包的 Intel slice 必须能编译。手写实现与 arm64 原生往返逐位一致
+    /// （由 `halfCodecMatchesNative` 在 arm64 上对 65536 个位模式全量校验）。
+    static func halfBits(from value: Float) -> UInt16 {
+        let bits = value.bitPattern
+        let sign = UInt16((bits >> 16) & 0x8000)
+        let exponent = Int((bits >> 23) & 0xFF)
+        let mantissa = bits & 0x007F_FFFF
+        if exponent == 0xFF {
+            return sign | 0x7C00 | (mantissa == 0 ? 0 : 0x0200)
+        }
+        let halfExponent = exponent - 127 + 15
+        if halfExponent >= 0x1F { return sign | 0x7C00 }
+        if halfExponent <= 0 {
+            if halfExponent < -10 { return sign }
+            let extended = mantissa | 0x0080_0000
+            let shift = UInt32(14 - halfExponent)
+            var half = UInt16(truncatingIfNeeded: extended >> shift)
+            let roundBit = UInt32(1) << (shift - 1)
+            if (extended & roundBit) != 0,
+               ((extended & (roundBit - 1)) != 0 || (half & 1) == 1) {
+                half &+= 1
+            }
+            return sign | half
+        }
+        var half = sign | UInt16(halfExponent << 10)
+            | UInt16(truncatingIfNeeded: mantissa >> 13)
+        let roundBit = UInt32(1) << 12
+        if (mantissa & roundBit) != 0,
+           ((mantissa & (roundBit - 1)) != 0 || (half & 1) == 1) {
+            half &+= 1
+        }
+        return half
+    }
+
+    /// IEEE-754 half 位模式 → Float32（保留符号/指数/尾数；NaN 仍为 NaN）。
+    static func float(fromHalf bits: UInt16) -> Float {
+        let sign = UInt32(bits & 0x8000) << 16
+        let exponent = UInt32((bits >> 10) & 0x1F)
+        let fraction = UInt32(bits & 0x03FF)
+        if exponent == 0 {
+            if fraction == 0 { return Float(bitPattern: sign) }
+            var unbiased = -14
+            var normalized = fraction
+            while normalized & 0x0400 == 0 {
+                normalized <<= 1
+                unbiased -= 1
+            }
+            normalized &= 0x03FF
+            let exponentBits = UInt32(unbiased + 127) << 23
+            return Float(bitPattern: sign | exponentBits | (normalized << 13))
+        }
+        if exponent == 0x1F {
+            return Float(bitPattern: sign | 0x7F80_0000 | (fraction << 13))
+        }
+        // exponent 是 1...30 的 UInt32；减 15 可能下溢，先转 Int 再回 UInt32。
+        let exponentBits = UInt32(Int(exponent) - 15 + 127) << 23
+        return Float(bitPattern: sign | exponentBits | (fraction << 13))
+    }
+
     /// Float32 向量 → 小端 Float16 BLOB。
     public static func encode(_ values: [Float]) -> Data {
         var data = Data(capacity: values.count * 2)
         for value in values {
-            let bits = Float16(value).bitPattern
+            let bits = halfBits(from: value)
             data.append(UInt8(truncatingIfNeeded: bits))
             data.append(UInt8(truncatingIfNeeded: bits >> 8))
         }
@@ -97,7 +159,7 @@ public enum SemanticFeatureCodec {
             let low = UInt16(data[index])
             let high = UInt16(data[data.index(after: index)])
             let bits = low | (high << 8)
-            values.append(Float(Float16(bitPattern: bits)))
+            values.append(float(fromHalf: bits))
             index = data.index(index, offsetBy: 2)
         }
         return values
