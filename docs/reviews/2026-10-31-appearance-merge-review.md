@@ -95,3 +95,7 @@ bash scripts/check-test-catalog.sh --strict
 bash scripts/check-duplicate-symbols.sh --strict
 bash scripts/check-protocol-surface.sh --strict
 ```
+
+**冷构建终验**（`rm -rf desktop/native/gather-{core,app}/.build` 后重跑 1–3）：
+core 1,598/235 + 25/4（合计 1,623/239）、app 875/101，均 exit 0；12 道门禁全部 exit 0。
+本台账的数字都来自这条冷路径，不是增量构建的复用产物。
