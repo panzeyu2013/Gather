@@ -1,6 +1,4 @@
 == build tail
-/Users/panzeyu2013/Desktop/code/develop/Gather/release/Gather.app/Contents/PlugIns/GatherLink.coplugin: replacing existing signature
-/Users/panzeyu2013/Desktop/code/develop/Gather/release/Gather.app: replacing existing signature
 --prepared:/Users/panzeyu2013/Desktop/code/develop/Gather/release/Gather.app/Contents/PlugIns/GatherLink.coplugin
 --validated:/Users/panzeyu2013/Desktop/code/develop/Gather/release/Gather.app/Contents/PlugIns/GatherLink.coplugin
 /Users/panzeyu2013/Desktop/code/develop/Gather/release/Gather.app: valid on disk
@@ -13,5 +11,6 @@ assembled /Users/panzeyu2013/Desktop/code/develop/Gather/release/Gather.app
 EXIT:0
 
 == fixes
-32bb453 fix(build): Float16 codec + plugin x86_64
-31fc9d8 fix(build): SDK detection
+32bb453 Float16 codec + plugin x86_64
+31fc9d8 SDK detection
+ca577d9 C1 16 detection

@@ -1,0 +1,2 @@
+✔ Test run with 1624 tests in 240 suites passed after 10.871 seconds.
+CORE_EXIT:0

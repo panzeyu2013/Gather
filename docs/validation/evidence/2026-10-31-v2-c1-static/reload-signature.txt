@@ -1,0 +1,3 @@
+		<command name="reload metadata" code="Cap1rmet" description="Reload a variant's source file metadata.">
+			<direct-parameter description="A variant" type="variant"/>
+		</command>

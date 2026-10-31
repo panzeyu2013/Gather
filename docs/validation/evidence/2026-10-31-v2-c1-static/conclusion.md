@@ -11,6 +11,11 @@
 - 插件：`GatherLink.coplugin` 嵌入 release app，二进制 `x86_64 arm64`。
 - 证据：`versions.txt`、`sdef-matches.txt`（原始 XML 在 `.build/validation/logs/v2-c1-sdef.xml`）。
 
+## 静态风险（未实机）
+
+- reload metadata 的 sdef direct-parameter 是 variant；App 的 reloadMetadataScript 传的是 current document。AppleScript 可能在运行时抛类型错误（-1700），也可能被 C1 宽松接受。未实机验证前不改脚本；若确认失败，应改为对 selected variants / every variant of current document 逐个 reload。
+- 证据：reload-signature.txt。
+
 ## 未覆盖（需人工）
 
 - Apple Events/TCC 授权与实际 `osascript` 执行；
