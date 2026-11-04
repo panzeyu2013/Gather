@@ -679,25 +679,28 @@ app 798 全绿。这条结论也解释了为什么 CullingService 的 15 个依�
   纯静态搬迁零风险，可先验证口径（行数、测试计数、门禁读数）是否稳定。
 - 实测读数：core 1,699+25 / app 798 不变；14 道门禁全绿。
 
-## CullingService 拆分收尾（4 项计划任务，5 个提交）
 
-| # | 任务 | 提交 | 结果 |
-|---|---|---|---|
-| 1 | 装配独立 | `ee6cfefd` | `CullingServiceFactory`（public enum）；门面文件里仓储标识符命中 **0** |
-| 2 | 去掉 `@testable import GatherDelivery` | `16a6dfbb` | `DeliveryCleanupPayload` 加 public 入口（init 拆两个：public 只收 delivery/photoPath/module） |
-| 3 | S8 端口收紧 | `78a9bb20` + `903d2dbf` + `8890d174` | `flushMetadata` 并入 `MetadataMutationPort`（默认 no-op，11 个 conformer 零改动）；`settings`+`triageDisplayPolicy` 合成 `CullingDisplayHooks`；**15 → 13** |
-| 4 | 文档对账 | `a7cf9ee0` | 三个类型的真实位置 + **1 条改判**（`CullingUpdateContext` 不能降 internal，应做不透明句柄）+ 7 处越界行号 |
+## 四份评审的整改闭环（10 个提交）
 
-**过程中踩到的三个真问题（都已修正并记录）**
+评审分四面（拆分的正确性 / 前几波正确性 / 完整性 / 最优性与测试有效性），只读、各自独立出报告。
 
-1. **装配顺序**：`flush` 依赖 `writebackService` / `metadataDeliveryService`，二者在 `metadataMutationService`
-   之后构造 → 不能经 init 传入。`var` 方案被 Sendable 合成拒绝，`@unchecked` 盒子撞预算 60/60；
-   最终用 `OSAllocatedUnfairLock` 槽 + `public setFlush(_:)` 后置挂载。
-2. **`Int?` vs `Int`**：hooks 一开始返回 `Int?`，调用点被迫写 `- 0.0`，会让 `analysisMax` 可能为 0 →
-   `analysisScale=0` → 老数据人脸框全 clamp 成 1.0（调研点名的坑）。改回 `Int`，与 `settings.int(_:)` 一致。
-3. **`Sendable` 边界**：hooks 带 `triageDisplayPolicy`（捕获不可 Sendable 的 `TriageService`），
-   写成 `@Sendable` 会逼调用方硬包一层；改为非 Sendable 结构体（决策服务本身也不是 Sendable）。
+| 严重级 | 问题 | 处理 |
+|---|---|---|
+| P1 | 决策服务保留 writeback/delivery 两个零读取字段（依赖收窄只是名义） | `3619c54c` 删除 + Mirror 钉子 |
+| P1 | MetadataService 拆分残块（12 死字段 + 86 行死 helper），测试仍钉旧副本 | `761e9563` 删块 + 测试改指真实实现 |
+| P1 | R3 门禁漏检真实写路径（接收者 `(any AlbumAPI)?` 匹配不上、createCollection 未登记） | `0b32875d`+`12650ad2` |
+| P2 | 3 处页内写路径 origin 为 nil → 自触发二次整页刷新 | `442493cd` |
+| P2 | eq/neq 在空值上重叠 | `8f4debb3`（列级；资产级属分组模型语义，已注明） |
+| P2 | 4 项死代码 | `5b11c2b0` |
+| P2 | 2 条恒真断言 | `65130b08` |
+| P2 | layering 缺 Delivery/PreviewData；app 测试死依赖；Package 矛盾注释 | `f2966ebb` |
+| P2 | 25 处搬动文件首行旧路径 | `8a2289dd` |
+| P2 | cleanup-backlog / README / ledger 的行号与数字 | `69b80656` |
+| P2 | protocol-surface 只扫 Protocol，协议面外 32 个新 public 类型在扫描面外 | `1a97fa85` 模块级 ratchet |
 
-**最终读数**：core 1,701 / 250 suites、app 798 / 94 suites、14 道门禁全绿；
-`CullingDecisionService` 依赖 **11**（原记 13；评审发现 writeback / delivery 两个字段零读取，已删）、
-`CullingSyncService` **4**、门面 **2** 个字段。
+**一个方法论教训**：两次在门禁红时提交（`78a9bb20`、`0b32875d`），靠下一个提交补救。根因是提交
+脚本只收集退出码不中止；此后改为「任一门禁失败即 SKIP COMMIT」，本轮 10 个提交未再发生。
+
+**未闭环的一项（记录在案）**：eq/neq 在**资产级**不互补——图库「任一行命中即整组入选」，
+多行资产（RAW+JPEG）会分别命中两者。这是过滤模型的语义决策（改「所有行都满足」或把 eq/neq
+定义在首选行），不是列归一化能解决的；已撤掉会永远失败的断言并在代码注释写明限制。
