@@ -2,7 +2,7 @@
 // P2-6：仅文件系统的 DeliveryFilePort 从 GatherDelivery 生产面移入测试支持。
 //
 // 生产默认注入 XMPDeliveryFilePort（经 XMPProvider 原子替换 + 大小写 sidecar 解析）；
-// 该替身只被 DeliveryCoordinator 的测试接线与 CullingDecisionService 文件端口测试使用，
+// 该替身只被 DeliveryCoordinator 的测试接线与 CullingService 文件端口测试使用，
 // 因此不再作为 GatherDelivery 的 public API。
 //
 // 恢复 = 备份覆盖写回 photo.xmp（幂等），删除 = unlink。

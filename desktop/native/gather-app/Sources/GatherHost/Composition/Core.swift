@@ -58,7 +58,7 @@ struct CompositionCore {
     let smartAlbumRepo: SmartAlbumRepo
     /// P1：手动集合/堆栈/跨工作区重复（AlbumAPI/DuplicateAPI 共用）。
     let curationService: CurationService
-    let cullingService: CullingDecisionService
+    let cullingService: CullingService
     /// P0 / T0：技术质量初筛（只写建议与决策，不写 XMP）。
     let triageService: TriageService
     /// P0 / B0：备份/恢复/诊断。
@@ -249,9 +249,9 @@ struct CompositionCore {
                 settingsService.bool(.triageEnabled)
             },
             feedback: TriageFeedbackRepo(connection: db))
-        // 3.4 CullingDecisionService：写回执行器走 WritebackService（CullingWritebackPort），
+        // 3.4 CullingService：写回执行器走 WritebackService（CullingWritebackPort），
         // confirm/cleanup/syncStatus 走交付模型（不再注入旧 outbox 仓储）。
-        let cullingService = CullingDecisionService(
+        let cullingService = CullingService(
             photoRepo: photoRepo, cullingDecisionRepo: CullingDecisionRepo(connection: db),
             similarityResultRepo: similarityResultRepo,
             metadataCacheRepo: metadataCacheRepo,

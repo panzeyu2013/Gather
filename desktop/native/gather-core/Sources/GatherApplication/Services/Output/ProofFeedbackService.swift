@@ -49,9 +49,10 @@ public protocol ProofMetadataQueueing: AnyObject {
 
 /// 生产实现：CullingDecisionService.applyImportedPicks。
 public final class CullingProofPickApplier: ProofPickApplying {
-    private let service: CullingDecisionService
+    /// #6 S5：宿主持有的是门面（组合类型），proof 反馈只需要用它转发的公开面。
+    private let service: CullingService
 
-    public init(service: CullingDecisionService) {
+    public init(service: CullingService) {
         self.service = service
     }
 

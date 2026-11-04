@@ -260,7 +260,7 @@ extension FaceKwService {
 
 // MARK: - WP3b-2：Culling（分页/富查询/交付项/事务端口）
 
-extension CullingDecisionService {
+extension CullingService {
     public convenience init(
         photoRepo: PhotoRepo,
         cullingDecisionRepo: CullingDecisionRepo,

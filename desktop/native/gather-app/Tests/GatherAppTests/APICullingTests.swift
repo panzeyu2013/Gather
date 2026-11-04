@@ -7,7 +7,7 @@
 // - batchUpdate 的整批单事务结果；
 // - decideGroup 的“保留即拒绝其余”语义；
 // - 5 个破坏性入口的 Confirmed<T> 边界（reset / cleanup 的 confirmed 由实现
-//   固定为 true：若实现丢确认，CullingDecisionService 会抛 *_CONFIRM_REQUIRED）；
+//   固定为 true：若实现丢确认，CullingService 会抛 *_CONFIRM_REQUIRED）；
 // - writeback 只经 Confirmed<CullingWritebackInput> 进入写回端口。
 // 全部使用内存 SQLite + 迁移 + fake 端口，不触碰 XMP/文件系统；端口替身与
 // CullingServiceTests 同一口径（本包不能复用 gather-core 的测试文件）。
@@ -113,9 +113,9 @@ private struct CullingAPIFixture {
         let decisionRepo = CullingDecisionRepo(connection: db)
         let similarityRepo = SimilarityResultRepo(connection: db)
         let writeback = CullingTestWritebackPort()
-        // 生产装配只包装 旧命令面已有的 CullingDecisionService；测试里用同一构造器 +
+        // 生产装配只包装 旧命令面已有的 CullingService；测试里用同一构造器 +
         // fake 端口，断言 API 边界而不是服务内部。
-        let service = CullingDecisionService(
+        let service = CullingService(
             photoRepo: photoRepo,
             cullingDecisionRepo: decisionRepo,
             similarityResultRepo: similarityRepo,
@@ -443,7 +443,7 @@ struct APICullingTests {
 
         // 类型层面：CullingAPI.reset/cleanup/... 的形参只能是 Confirmed<T>，
         // 裸 confirmed: Bool 的调用点写不出来（D-011）；运行时：若实现把确认
-        // 丢掉（传 false），CullingDecisionService 会抛 *_CONFIRM_REQUIRED，本断言失败。
+        // 丢掉（传 false），CullingService 会抛 *_CONFIRM_REQUIRED，本断言失败。
         let reset = try await fixture.api.reset(
             Confirmed(CullingResetInput(sessionId: fixture.sessionId), source: .test)
         )
@@ -899,7 +899,7 @@ struct APICullingTests {
 
         let decisionRepo = CullingDecisionRepo(connection: db)
         let historyRepo = CullingHistoryRepo(connection: db)
-        let service = CullingDecisionService(
+        let service = CullingService(
             photoRepo: photoRepo,
             cullingDecisionRepo: decisionRepo,
             similarityResultRepo: SimilarityResultRepo(connection: db),
@@ -978,7 +978,7 @@ struct APICullingTests {
 
         let decisionRepo = CullingDecisionRepo(connection: db)
         let historyRepo = CullingHistoryRepo(connection: db)
-        let service = CullingDecisionService(
+        let service = CullingService(
             photoRepo: photoRepo,
             cullingDecisionRepo: decisionRepo,
             similarityResultRepo: SimilarityResultRepo(connection: db),

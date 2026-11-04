@@ -108,7 +108,7 @@ struct FeatureAPIs {
         LiveNavigationAPI(navigationService: composition.navigationService)
     }
 
-    /// 只包装组合根的 CullingDecisionService（会话级更新上下文缓存、写回端口都只有一份）。
+    /// 只包装组合根的 CullingService（会话级更新上下文缓存、写回端口都只有一份）。
     private static func makeCulling(_ composition: AppComposition) -> any CullingAPI {
         let settings = composition.settingsService
         return LiveCullingAPI(

@@ -1,117 +1,150 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/CullingDecisionService.swift
-// TS 源: desktop/src/main/services/culling/culling.service.ts（1902 行，逐字移植）
-// + culling.ipc.ts（387 行）的命令面（writeback/sync_status/flush/retry_sync/
-// finalize_sync/retry_failed_writeback/confirm_sync/cleanup 的确认校验与委托）。
+// desktop/native/gather-core/Sources/GatherApplication/Services/CullingService.swift
+// 挑片域的**组合门面**（#6 拆分 S5 第二阶段）。
 //
-// Culling 服务：资产列表（含 RAW/JPEG 变体折叠与 asset 分组分页）、decide
-// （星级/标签/关键词选择）、批量操作、summary、history/apply_history（undo/redo
-// 历史栈）、reset、写回协作。写回引擎不在此重写——经 CullingWritebackPort
-// （WritebackService 已移植接口）注入，测试可注入替身。
+// 为什么保留它：调用方（Host 的 LiveCullingAPI、6 处构造点、60+ 测试）只认识
+// `CullingService`。门面把决策服务与交付服务组在一起，公开面与拆分前**逐字一致**，
+// 因此拆分对调用方是零改动。
 //
-// S5c-2b-3b-2b-1：旧 MetadataSyncCoordinator 依赖已整段移除（CullingSyncPort
-// 协议/扩展删除）。syncStatus/flush/retry/finalize/confirm/cleanup 只走交付模型；
-// 同步态读 deliveries（交付行优先），手动 rating/label 的旧 outbox 队列不再读取。
-//
-// 注入点：
-// - CullingWritebackPort = TS WritebackService 的 culling.ipc.ts 用到的最小面
-//   （preview/persistAttributes/execute/retryFailed/getItems/confirmSync/cleanup）。
-//   文件写入仍由它执行（execute/retryFailed）；getItems 供交付镜像读取行状态。
-// - DeliveryModuleAdapter（module=.culling，WP2c 起直接注入）：
-//   confirm/cleanup/finalize、syncStatus 读模型、flush/retry 的 replay（engine）、
-//   writeback 结果镜像全部走它；交付适配器由组合根注入（本服务不持 connection）。
-// - MetadataMutationPort = TS MetadataMutationService（queuePhotoValues）。
-// - getNumber = TS SettingsService.getNumber（detect_input_size /
-//   face_preview_max_dimension 兜底，测试注入）。
-// - cullingHistoryRepo 与 TS 一样是可选依赖（老装配缺省时历史栈禁用）。
-//
-// 错误消息与 TS 逐字一致：CullingServiceError.description 即 TS `new Error(code)`
-// 的 message；CULLING_REVISION_CONFLICT 带 expected/current 插值参数。
-//
-// 缓存注记：TTL 缓存（sessionLookup/sessionUpdate）与 TS 同语义——主进程单线程
-// 同步 SQLite，Swift 侧服务实例同样按会话单线程使用，Map 无需加锁（与
-// SimilarityResultRepo 的 photoGroupMapCache 同款决策）。
-//
-// ── 挑片状态单一真相源（禁止双真相源）────────────────────────────────
-// 星级 / 色标：唯一真相源是 photo_metadata_cache（全应用范围的 XMP 投影）。
-//   读取（rowToState / list / listPage / getSummary）、写入（updateState /
-//   applyHistory）、reset、写回计划全部围绕它；culling_decisions.rating /
-//   color_label 只是同事务写下的镜像列，任何读取路径都不得读它们
-//   （见 CullingDecisionRepo 文件头注）。
-// 取舍（pick/reject/pending）：唯一真相源是 culling_decisions.decision。
-//
-// ── sidecar/xmp 路径口径（写回内核已冻结）────────────────────────────
-// 一切交付键、linkedByXmp 键统一走
-// DeliveryPath.sidecar(photo) = TSPath.xmpSidecarPath(ScanPath.canonical(photo))
-// （helper 名沿用旧 outbox 命名，但只做路径归一化，不读写旧表）。
-// 禁止裸拼 TSPath.xmpSidecarPath（符号链接/相对路径/已是 sidecar 三种输入下与内核键
-// 不一致，会查不到行或造出重复行）。
-
+// 门面自身不持有任何仓储：只有两个字段（decision / sync），也不吞异常、不改语义——
+// 每个方法都是一行转发。这条约束由 `CullingSplitContractTests` 的 Mirror 断言守住
+// （children == 2）。
 import Foundation
+import GatherProtocol
 import GatherPersistence
 import GatherDelivery
-import GatherProtocol
 
-/// TS: CullingDecisionService。
-public final class CullingDecisionService {
-    // MARK: - 常量（TS 文件头部）
+public final class CullingService {
+    let decision: CullingDecisionService
+    let sync: CullingSyncService
 
-    /// TS: PREFERRED_RAW_EXTENSIONS —— RAW 判定只用共享表
-    /// PhotoFileTypes.sortedRawExtensions（与 PhotoRepo.rawExtensions、
-    /// preferredRowOrderSQL 里 LIKE 链同源；唯一真相源在 GatherProtocol），
-    /// 本文件不另立扩展名表。
-    /// 内存态代表行选择为何不能直接调用 SQL 排序，见 assembleAssets 的注释。
-    static let preferredRawExtensions: Set<String> = Set(PhotoFileTypes.sortedRawExtensions)
+    public init(decision: CullingDecisionService, sync: CullingSyncService) {
+        self.decision = decision
+        self.sync = sync
+    }
+    public func getUpdateContext(sessionId: String) throws -> CullingUpdateContext {
+        try self.decision.getUpdateContext(sessionId: sessionId)
+    }
+    public func updateState(
+        sessionId: String,
+        photoId: String,
+        expectedRevision: Int,
+        patch: CullingUpdatePatch,
+        context: CullingUpdateContext? = nil,
+        preloadedDecision: CullingDecisionRow? = nil,
+        preloadedSyncStatus: MetadataSyncStatus? = nil,
+        preloadedDecisionRows: [String: CullingDecisionRow]? = nil,
+        preloadedCacheRows: [String: MetadataCacheRow]? = nil,
+        source: CullingDecisionSource = .manual
+    ) throws -> CullingUpdateResult {
+        try self.decision.updateState(sessionId: sessionId, photoId: photoId, expectedRevision: expectedRevision, patch: patch, context: context, preloadedDecision: preloadedDecision, preloadedSyncStatus: preloadedSyncStatus, preloadedDecisionRows: preloadedDecisionRows, preloadedCacheRows: preloadedCacheRows, source: source)
+    }
+    public func batchUpdate(
+        sessionId: String,
+        photoIds: [String],
+        patch: CullingUpdatePatch
+    ) throws -> [CullingUpdateResult] {
+        try self.decision.batchUpdate(sessionId: sessionId, photoIds: photoIds, patch: patch)
+    }
+    public func applyImportedPicks(
+        sessionId: String,
+        photoIds: [String]
+    ) throws -> (results: [CullingUpdateResult], failed: Int, appliedPhotoIds: [String]) {
+        try self.decision.applyImportedPicks(sessionId: sessionId, photoIds: photoIds)
+    }
+    public func flushQueuedMetadata(sessionId: String) async throws {
+        try await self.decision.flushQueuedMetadata(sessionId: sessionId)
+    }
+    public func applyHistory(
+        sessionId: String,
+        requestedEntries: [CullingHistoryApplyEntry],
+        historyOperationId: Int? = nil,
+        direction: CullingHistoryDirection? = nil,
+        source: CullingDecisionSource = .manual
+    ) throws -> [CullingUpdateResult] {
+        try self.decision.applyHistory(sessionId: sessionId, requestedEntries: requestedEntries, historyOperationId: historyOperationId, direction: direction, source: source)
+    }
+    public func decideSimilarityGroup(
+        sessionId: String,
+        groupId: String,
+        keepPhotoIds: [String]
+    ) throws -> [CullingUpdateResult] {
+        try self.decision.decideSimilarityGroup(sessionId: sessionId, groupId: groupId, keepPhotoIds: keepPhotoIds)
+    }
+    public func decide(sessionId: String, photoId: String, decision: CullingDecisionValue) throws {
+        try self.decision.decide(sessionId: sessionId, photoId: photoId, decision: decision)
+    }
+    public func batchDecide(sessionId: String, photoIds: [String], decision: CullingDecisionValue) throws {
+        try self.decision.batchDecide(sessionId: sessionId, photoIds: photoIds, decision: decision)
+    }
+    public func reset(sessionId: String, groupId: String? = nil) throws {
+        try self.decision.reset(sessionId: sessionId, groupId: groupId)
+    }
+    public func resetCommand(sessionId: String, groupId: String? = nil, confirmed: Bool) throws {
+        try self.decision.resetCommand(sessionId: sessionId, groupId: groupId, confirmed: confirmed)
+    }
+    public func syncStatus(sessionId: String) throws -> MetadataSyncSummary {
+        try self.sync.syncStatus(sessionId: sessionId)
+    }
+    public func flush(sessionId: String) async throws -> MetadataSyncSummary {
+        try await self.sync.flush(sessionId: sessionId)
+    }
+    public func retrySync(sessionId: String) async throws -> MetadataSyncSummary {
+        try await self.sync.retrySync(sessionId: sessionId)
+    }
+    public func finalizeSync(sessionId: String, confirmed: Bool) async throws -> MetadataSyncSummary {
+        try await self.sync.finalizeSync(sessionId: sessionId, confirmed: confirmed)
+    }
+    public func writeback(
+        sessionId: String,
+        target: CullingWritebackTarget,
+        confirmed: Bool
+    ) async throws -> WritebackResult {
+        try await self.sync.writeback(sessionId: sessionId, target: target, confirmed: confirmed)
+    }
+    public func retryFailedWriteback(sessionId: String, confirmed: Bool) async throws -> WritebackResult {
+        try await self.sync.retryFailedWriteback(sessionId: sessionId, confirmed: confirmed)
+    }
+    public func confirmSync(sessionId: String) async throws {
+        try await self.sync.confirmSync(sessionId: sessionId)
+    }
+    public func cleanup(sessionId: String, confirmed: Bool) async throws -> CleanupResult {
+        try await self.sync.cleanup(sessionId: sessionId, confirmed: confirmed)
+    }
+    public func listPage(_ query: CullingPageQuery) throws -> CullingPage {
+        try self.decision.listPage(query)
+    }
+    public func selectableIds(_ query: CullingSelectionQuery) throws -> CullingSelectionIds {
+        try self.decision.selectableIds(query)
+    }
+    public func list(
+        sessionId: String,
+        scope: CullingScope,
+        filters: CullingFilters? = nil,
+        requestedGroupId: String? = nil
+    ) throws -> [CullingAsset] {
+        try self.decision.list(sessionId: sessionId, scope: scope, filters: filters, requestedGroupId: requestedGroupId)
+    }
+    public func getGroups(sessionId: String) throws -> [CullingGroup] {
+        try self.decision.getGroups(sessionId: sessionId)
+    }
+    public func getDecisions(sessionId: String) throws -> [CullingDecisionLiteRow] {
+        try self.decision.getDecisions(sessionId: sessionId)
+    }
+    public func getHistory(sessionId: String, limit: Int = 100) throws -> [CullingHistoryOperation] {
+        try self.decision.getHistory(sessionId: sessionId, limit: limit)
+    }
+    public func getSummary(sessionId: String) throws -> CullingSummary {
+        try self.decision.getSummary(sessionId: sessionId)
+    }
+    public func updateSelection(
+        _ input: CullingSelectionUpdateInput
+    ) throws -> CullingSelectionUpdateResult {
+        try self.decision.updateSelection(input)
+    }
 
-    /// TS: LOOKUP_TTL_MS / LOOKUP_CACHE_MAX / UPDATE_TTL_MS / UPDATE_CACHE_MAX。
-    static let lookupTTLSeconds: TimeInterval = 5
-    static let lookupCacheMax = 8
-    static let updateTTLSeconds: TimeInterval = 5
-    static let updateCacheMax = 8
-
-    /// 续页 total 缓存：首页（cursor=nil）重算并写入，后续页直接复用。
-    /// 任何 filt/sort/scope 变化都会换 key；mutation 后的 reset 也走 cursor=nil 重算。
-    static let pageTotalTTLSeconds: TimeInterval = 30
-    static let pageTotalCacheMax = 16
-    var pageTotalCache: [String: (total: Int, at: Date)] = [:]
-
-    /// TS: culling.ipc.ts 的 limit 校验区间。
-    public static let pageLimitMax = 2_000
-    public static let batchMax = 10_000
-
-    // MARK: - 依赖
-
-    /// #6 S2：跨簇共享的两个端口（metadata_cache + 交付行）。
-    let core: CullingSharedCore
-    /// #6 S4：交付/写回编排。lazy 是因为构造它要把 self 当决策只读端口传进去，
-    /// 而 Swift 不允许在所有存储属性初始化前使用 self。CullingDecisionService 是单上下文使用的
-    /// 非 Sendable 类，lazy 的首次访问竞争与今日行为等价（都在同一 actor 上）。
-    private(set) lazy var sync: CullingSyncService = CullingSyncService(
-        core: core, writeback: writeback, delivery: delivery, decisions: self)
-
-    /// P1-1：仓储依赖一律走 Persistence 端口（any XxxRepository），具体 SQLite
-    /// Repo 只在组合根构造；测试可用 fake 替换。
-    let photoRepo: any PhotoRepository
-    let cullingDecisionRepo: any CullingDecisionRepository
-    let similarityResultRepo: any SimilarityRepository
-    /// WP3b-2：分页/计数/富查询 SQL 下沉到 Persistence（CullingPageQuery /
-    /// CullingReadQuery）；交付行读取与事务经端口。
-    let pageQuery: any CullingPageReading
-    let richQuery: any CullingRichReading
-    let transactions: any TransactionRunner
-    let metadataMutations: any MetadataMutationPort
-    let writeback: any CullingWritebackPort
-    /// 交付适配器（WP2c：module 固定 .culling）：confirm/cleanup/finalize/镜像/读模型。
-    let delivery: any DeliveryModuleAdapter
-    let cullingHistoryRepo: (any CullingHistoryRepository)?
-    /// 设置读取端口（#9）：检测尺寸/预览上限等读取统一走端口。
-    let settings: any SettingsReading
-    /// P0/T0：资产级建议展示策略（指纹/策略匹配 + 关闭态隐藏）。
-    /// nil = 兼容模式（不接 T0 的调用方/旧测试保持原有读行为）。
-    let triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)?
-    /// P1-9 延伸：rating/label 入队后的写盘执行器（nil = 只入队，兼容旧测试）。
-    let flushMetadata: ((String) async throws -> Void)?
-
-    public init(
+    /// 兼容 init（#6 S5 第二阶段临时）：与拆分前同签名，内部装配 decision + sync + 门面。
+    /// 6 处构造点因此零改动；S6 会把它挪到测试支持与组合根，门面只留 init(decision:sync:)。
+    public convenience init(
         photoRepo: any PhotoRepository,
         cullingDecisionRepo: any CullingDecisionRepository,
         similarityResultRepo: any SimilarityRepository,
@@ -128,33 +161,19 @@ public final class CullingDecisionService {
         flushMetadata: ((String) async throws -> Void)? = nil,
         delivery: any DeliveryModuleAdapter
     ) {
-        self.photoRepo = photoRepo
-        self.cullingDecisionRepo = cullingDecisionRepo
-        self.similarityResultRepo = similarityResultRepo
-        let sharedCore = CullingSharedCore(metadataCache: metadataCacheRepo, deliveryRows: deliveryItems)
-        self.core = sharedCore
-        self.pageQuery = pageQuery
-        self.richQuery = richQuery
-        self.transactions = transactions
-        self.metadataMutations = metadataMutations
-        self.writeback = writeback
-        self.cullingHistoryRepo = cullingHistoryRepo
-        self.settings = settings
-        self.triageDisplayPolicy = triageDisplayPolicy
-        self.flushMetadata = flushMetadata
-        // WP3b-2：不再按 connection 自建 coordinator（Application 不持 DBConnection）。
-        // 组合根注入交付适配器；测试经 ServiceConstructionTestSupport 的兼容 init 装配。
-        self.delivery = delivery
+        let decision = CullingDecisionService(
+            photoRepo: photoRepo, cullingDecisionRepo: cullingDecisionRepo,
+            similarityResultRepo: similarityResultRepo,
+            metadataCacheRepo: metadataCacheRepo, pageQuery: pageQuery,
+            richQuery: richQuery, deliveryItems: deliveryItems,
+            transactions: transactions, metadataMutations: metadataMutations,
+            writeback: writeback, cullingHistoryRepo: cullingHistoryRepo, settings: settings,
+            triageDisplayPolicy: triageDisplayPolicy, flushMetadata: flushMetadata,
+            delivery: delivery)
+        let sharedCore = CullingSharedCore(
+            metadataCache: metadataCacheRepo, deliveryRows: deliveryItems)
+        let sync = CullingSyncService(
+            core: sharedCore, writeback: writeback, delivery: delivery, decisions: decision)
+        self.init(decision: decision, sync: sync)
     }
-
-    // MARK: - 会话查找缓存（TS SessionLookupEntry / SessionUpdateEntry）
-
-    /// TS: sessionLookupCache —— 版本键控的会话查找条目（见 SessionLookupEntry）。
-    var sessionLookupCache: [String: SessionLookupEntry] = [:]
-    /// TS: sessionUpdateCache —— 会话级更新上下文（见 SessionUpdateEntry）。
-    var sessionUpdateCache: [String: SessionUpdateEntry] = [:]
 }
-
-/// #6 S5 第一阶段（临时）：改名期间用别名兜住所有外部引用，保证改名瞬间树仍可编译。
-/// 第二阶段建真正的 CullingService 门面时必须删掉本行（新门面会与别名重名）。
-public typealias CullingService = CullingDecisionService

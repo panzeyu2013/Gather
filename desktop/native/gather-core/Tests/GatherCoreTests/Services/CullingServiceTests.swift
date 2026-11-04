@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Services/CullingServiceTests.swift
-// CullingDecisionService 行为测试（3.4 Culling 模块，最大服务）。
+// CullingService 行为测试（3.4 Culling 模块，最大服务）。
 // TS 源: tests/unit/services/culling/*（culling-service.test.ts / culling-page.test.ts /
 // culling-asset-page.test.ts / culling-history-repository.test.ts，用例逐一对应）。
 //
@@ -22,7 +22,7 @@ import GatherTestSupport
 // MARK: - Fake 端口
 
 /// TS: MetadataMutationService 替身（queuePhotoValues 记录调用）。
-/// S5c-2b-3b-2b-1 起 CullingDecisionService 不再读旧 outbox，替身也不再写库。
+/// S5c-2b-3b-2b-1 起 CullingService 不再读旧 outbox，替身也不再写库。
 private final class FakeMutationPort: MetadataMutationPort, @unchecked Sendable {
     var queued: [(sessionId: String, photoId: String, values: [String: JSONValue], source: MetadataMutationSource, schedule: Bool)] = []
 
@@ -176,7 +176,7 @@ private final class FakeFingerprint: @unchecked Sendable {
 private struct CullingHarness {
     let db: DBConnection
     let sessionId: String
-    let service: CullingDecisionService
+    let service: CullingService
     let photoRepo: PhotoRepo
     let decisionRepo: CullingDecisionRepo
     let similarityRepo: SimilarityResultRepo
@@ -239,7 +239,7 @@ private func makeHarness(
         fingerprint: { [deliveryFingerprint] _ in deliveryFingerprint.current },
         resolvePhotoPath: { _, delivery in delivery.photoPath }
     )
-    let service = CullingDecisionService(
+    let service = CullingService(
         photoRepo: PhotoRepo(connection: db),
         cullingDecisionRepo: CullingDecisionRepo(connection: db),
         similarityResultRepo: SimilarityResultRepo(connection: db),
@@ -452,7 +452,7 @@ private func makeWritebackItem(
 
 // MARK: - decide 语义（TS culling-service.test.ts 单决策面 + culling.ipc.ts 形状）
 
-@Suite("CullingDecisionService decide 语义")
+@Suite("CullingService decide 语义")
 struct CullingDecideTests {
     @Test("decide keep → decision=keep, pickState=picked, revision=1，历史记录 fields=[pickState]")
     func decideKeep() throws {
@@ -507,7 +507,7 @@ struct CullingDecideTests {
         let queued = harness.mutations.queued[0]
         #expect(queued.photoId == "p1")
         #expect(queued.source == .culling)
-        // S5c-2b-3b-2a：CullingDecisionService 不再直连 sync 端口，排程随变更入队。
+        // S5c-2b-3b-2a：CullingService 不再直连 sync 端口，排程随变更入队。
         #expect(queued.schedule == true)
         #expect(queued.values["rating"] == .number(5))
         // 历史字段含 rating。
@@ -637,7 +637,7 @@ struct CullingDecideTests {
 
 // MARK: - 批量（TS culling-service.test.ts 批量面）
 
-@Suite("CullingDecisionService 批量决策")
+@Suite("CullingService 批量决策")
 struct CullingBatchTests {
     @Test("batchDecide 全部入组：upsert 顺序按输入序，组 id 来自相似度成员表")
     func batchDecideWritesGroupIds() throws {
@@ -795,7 +795,7 @@ struct CullingBatchTests {
 
 // MARK: - 历史栈 undo/redo（TS culling-history-repository.test.ts + apply_history 面）
 
-@Suite("CullingDecisionService 历史栈 undo/redo")
+@Suite("CullingService 历史栈 undo/redo")
 struct CullingHistoryTests {
     @Test("undo 恢复 before 快照并标记 undone；redo 恢复 after 快照")
     func undoThenRedo() throws {
@@ -846,7 +846,7 @@ struct CullingHistoryTests {
         #expect(try harness.cacheRepo.get("p1")?.rating == 0)
         #expect(try harness.cacheRepo.get("p1")?.label == "None")
         #expect(try harness.decision("p1")?.rating == 0)
-        // undo 再次入队 reverse 补丁；排程随入队（CullingDecisionService 不再直连 sync 端口）。
+        // undo 再次入队 reverse 补丁；排程随入队（CullingService 不再直连 sync 端口）。
         #expect(harness.mutations.queued.count == 2)
 
         _ = try harness.service.applyHistory(
@@ -1056,7 +1056,7 @@ struct CullingHistoryTests {
 
 // MARK: - summary / reset / groups
 
-@Suite("CullingDecisionService summary 与 reset")
+@Suite("CullingService summary 与 reset")
 struct CullingSummaryResetTests {
     @Test("getSummary 计数 kept/rejected/pending/rated/labeled + totalGroups（stats_json）")
     func summaryCounts() throws {
@@ -1246,7 +1246,7 @@ struct CullingSummaryResetTests {
 
 // MARK: - 写回协作（TS culling.ipc.ts 命令面，fake provider 记录调用）
 
-@Suite("CullingDecisionService 写回协作")
+@Suite("CullingService 写回协作")
 struct CullingWritebackTests {
     @Test("writeback 未确认抛 WRITEBACK_CONFIRM_REQUIRED")
     func writebackRequiresConfirm() async throws {
@@ -1421,7 +1421,7 @@ struct CullingWritebackTests {
 /// 而 finalize/writeback 仍在旧链路。用真实 coordinator + 真实 SQLite，只把
 /// 文件/指纹换成内存替身，验证：单事务确认、跨会话门禁、外改冲突、失败可重试、
 /// 模块过滤，以及「会话写回态由交付聚合派生」（不写已删的 sessions 列）。
-@Suite("CullingDecisionService 确认/清理（S5c-2a 交付模型）")
+@Suite("CullingService 确认/清理（S5c-2a 交付模型）")
 struct CullingDeliverySyncTests {
     @Test("confirmSync：单事务把 culling 交付/items 翻 synced，会话态由聚合派生")
     func confirmSyncUsesCoordinator() async throws {
@@ -1616,7 +1616,7 @@ struct CullingDeliverySyncTests {
 // MARK: - 资产分组分页（TS culling-asset-page.test.ts / culling-page.test.ts，
 // 真实 SQLite 语义对齐）
 
-@Suite("CullingDecisionService 资产分组分页")
+@Suite("CullingService 资产分组分页")
 struct CullingPaginationTests {
     @Test("RAW/JPEG 变体永不分页，total 计逻辑资产")
     func neverSplitsVariantsAcrossPages() throws {
@@ -1919,7 +1919,7 @@ struct CullingPaginationTests {
 
 // MARK: - 资产富化细节
 
-@Suite("CullingDecisionService 资产富化")
+@Suite("CullingService 资产富化")
 struct CullingEnrichmentTests {
     @Test("面孔归一化：归一化 bbox 保留，预览像素坐标换算并 clamp，按面积降序")
     func faceNormalization() throws {
@@ -2011,7 +2011,7 @@ struct CullingEnrichmentTests {
 
 }// MARK: - §4.1 回归：单一真相源 / 冲突下推 / 栈序（重写后的不变量）
 
-@Suite("CullingDecisionService 挑片状态单一真相源")
+@Suite("CullingService 挑片状态单一真相源")
 struct CullingSingleTruthSourceTests {
     @Test("决策行 rating/color_label 是镜像列：页面/筛选/summary 只认 cache")
     func mirrorColumnsAreNeverRead() throws {
@@ -2122,7 +2122,7 @@ struct CullingSingleTruthSourceTests {
     }
 }
 
-@Suite("CullingDecisionService 历史栈序唯一规则")
+@Suite("CullingService 历史栈序唯一规则")
 struct CullingHistoryStackRuleTests {
     private func applyRatings(_ harness: CullingHarness, count: Int) throws -> [Int] {
         try addPhoto(harness.db, id: "p1")
@@ -2223,7 +2223,7 @@ struct CullingHistoryStackRuleTests {
         }
     }
 }
-@Suite("CullingDecisionService 代表行规则（与图库/导出同源）")
+@Suite("CullingService 代表行规则（与图库/导出同源）")
 struct CullingRepresentativeRowRuleTests {
     @Test("JPEG 先入（rowid 更小）仍选 RAW：规则来自 PhotoRepo.preferredRowOrderSQL")
     func prefersRawOverSmallerRowid() throws {
@@ -2267,7 +2267,7 @@ struct CullingRepresentativeRowRuleTests {
 }
 // MARK: - 写回镜像 / 摘要 / finalize / reload 门禁（Cut 2 / S5c-2b-1）
 
-@Suite("CullingDecisionService 写回镜像与收尾（S5c-2b-1）")
+@Suite("CullingService 写回镜像与收尾（S5c-2b-1）")
 struct CullingDeliveryCut2Tests {
     @Test("writeback 镜像：delivery written + item/link + revision/base/backup 来自交付行")
     func writebackMirrorsWrittenItems() async throws {
@@ -2617,7 +2617,7 @@ struct CullingDeliveryCut2Tests {
 private let cullingServicePerfEnabled =
     ProcessInfo.processInfo.environment["GATHER_CULLING_PERF"] == "1"
 
-@Suite("CullingDecisionService 20k 分页性能")
+@Suite("CullingService 20k 分页性能")
 struct CullingServicePerfTests {
     // skip-owner: p0-perf
     // 到期：2027-06-30
@@ -2748,7 +2748,7 @@ struct CullingServicePerfTests {
 }
 
 /// 测试适配：旧调用点用 rowid 变量翻页；统一折成 CullingPageQuery。
-private extension CullingDecisionService {
+private extension CullingService {
     func listPage(
         sessionId: String,
         scope: CullingScope,
@@ -2839,7 +2839,7 @@ struct ClientSelectionManualTests {
     }
 }
 
-@Suite("CullingDecisionService 跨页选择 updateSelection")
+@Suite("CullingService 跨页选择 updateSelection")
 struct CullingSelectionUpdateTests {
     @Test("hash 不符：零写入并抛 CULLING_SELECTION_CHANGED")
     func hashMismatchWritesNothing() throws {
