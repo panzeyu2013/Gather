@@ -406,3 +406,18 @@
   ② `jpegEmbeddedClearFailure` 被测试直接调用（6 处），静态移到 writer 后测试要跟着改
      → 已改为 `MetadataAttributeWriter.jpegEmbeddedClearFailure`（internal static）。
 - MetadataService 累计：1,645 → **748 行（-897 / -55%）**。
+
+## #6 S5：MetadataKeywordWriter（关键词预览/delta/重试）—— #6 完成
+
+- `MetadataService.swift`：748 → **457 行**；新增
+  `Services/Metadata/MetadataKeywordWriter.swift`（380 行）。
+- 搬走 10 个成员：sessionId(forPhotoIds:) / KeywordPreviewOutcome / previewKeywords /
+  keywordPreview / applyKeywordDelta / retryKeywordWriteback / KeywordTarget /
+  readKeywordSnapshots / keywordTargets / emptyKeywordResult。
+- 硬约束原样保留：先全量预检（阻断即整体抛错、一行不入队）→ 入队 → **必须 flush**
+  （即便没有新入队）→ 回读回填；单一会话约束与属性写回的「多次 flush」是**有意不对称**。
+- 一个坑：搬来的方法体里有 `let xmp = self.xmp` / `let cache = ...` 这类同名局部，
+  所以字段一律带 Store 后缀（xmpStore / cacheStore），局部改名为 cachedRow。
+- **#6 总账**：`MetadataService` 1,645 → **457 行（-72%）**，拆成 6 个内聚类型：
+  MetadataAttributes(纯) / MetadataDiskReader / PhotoMetadataProjector /
+  MetadataExtractionService / MetadataAttributeWriter / MetadataKeywordWriter。
