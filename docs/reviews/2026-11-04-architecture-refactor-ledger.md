@@ -579,3 +579,27 @@
 - 探针用仓里已有的 `LockedBox`（`lock.withLock { probe.fired }`），不新增 `@unchecked
   Sendable`（cleanup 预算 60/60 已满）。
 - 现状 794 条 app 用例（+1）。
+
+## #6 desk 抽取复核：W1 不是「低风险」，方案需要修正
+
+动手前逐行读了 `CullingViewModel+Navigation.swift`（185 行 / 12 个方法），与调研的 W1
+「依赖单一（navigationAPI）、风险低」不完全一致——这个簇实际有 **5 类跨簇依赖**：
+
+| 依赖 | 用在哪 | 为什么绕不开 |
+|---|---|---|
+| `similarityGroups` + `refreshSimilarityGroups()` | `prepareGroupDecision`、`keepInGroupRejectRest` | 组决策要先拉相似组 |
+| `loadSimilarityGroupsIfNeeded(force:)` | `keepInGroupRejectRest` | 从「全部/筛选」直接按组决策时按需加载 |
+| `decideSimilarityGroup(_:keepPhotoIds:shouldAdvance:)` | `keepInGroupRejectRest` | 真正执行决策的是相似度簇 |
+| `page?.assets`（只读） | `prepareGroupDecision` 的可见计数 | 影响面快照要区分可见/总数 |
+| `currentPhotoId` + `selectCurrent(_:)` | `splitCurrentFromNavigationGroup`、`selectNavigationGroupAndJump` | 拆分定位与跳转都改选择 |
+
+结论：把这 12 个方法挪进 desk，要么带 5 个回调（desk 退化成薄壳，只是把 `self.` 换成
+`owner?.`），要么把相似度/选择也一起搬（那就变成 W6–W8 的风险区，调研已明确不建议）。
+**两条路都不划算**，所以 W1–W4 的 desk 抽取暂缓，改为只做「无跨簇依赖」的部分：
+
+- 已做：`+Triage` 的 5 个类型、`+Writeback` 的 7 个类型、6 个状态值类型（S1，420 行）；
+- 已做：3 个「public 但外部不可达」的方法降 private；
+- 待评估：`CullingService` 收窄（B–E）优先级上移——它是机械的依赖合并，不碰调用语义。
+
+这条复核修正了调研里「W1 风险低」的判断，理由是**静态依赖清单比行数更能预测拆分成本**：
+185 行但有 5 个跨簇出口，比 300 行但自洽的文件难拆得多。
