@@ -291,7 +291,9 @@ public enum MetadataAttributes {
     }
 
     /// Double 转关键词字符串（整数值不带 .0；NaN/Infinity 有稳定写法）。
-    static func keywordString(_ number: Double) -> String {
+    /// Double → 关键词字符串（整数值不带 .0；NaN/Infinity 有稳定写法）。
+    /// #6 复审起 public：Application 侧的 MetadataText 只委托到这里，禁止再抄一份。
+    public static func keywordString(_ number: Double) -> String {
         if number.isNaN { return "NaN" }
         if number.isInfinite { return number < 0 ? "-Infinity" : "Infinity" }
         if let integer = Int64(exactly: number) { return String(integer) }

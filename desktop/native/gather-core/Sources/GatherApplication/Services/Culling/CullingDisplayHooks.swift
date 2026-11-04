@@ -43,10 +43,4 @@ public struct CullingDisplayHooks {
             facePreviewMaxDimension: { reader.int(.facePreviewMaxDimension) })
     }
 
-    /// 从设置端口构造：每次调用都经 settings 现读（保持原有的实时语义）。
-    public static func live(settings: any SettingsReading) -> CullingDisplayHooks {
-        CullingDisplayHooks(
-            detectInputSize: { settings.int(.detectInputSize) },
-            facePreviewMaxDimension: { settings.int(.facePreviewMaxDimension) })
-    }
 }

@@ -18,8 +18,6 @@ func stringValue(_ value: JSONValue?) -> String? {
 /// NaN/±Infinity 同 JS 命名；非整数保留 Double 字符串形式（7.5 → "7.5"）。
 /// 关键词归一化（normalizeKeywordList）与 EXIF 标量字符串化（stringValue）共用同一口径。
 func keywordString(_ number: Double) -> String {
-    if number.isNaN { return "NaN" }
-    if number.isInfinite { return number < 0 ? "-Infinity" : "Infinity" }
-    if let integer = Int64(exactly: number) { return String(integer) }
-    return String(number)
+    // #6 复审：唯一实现在 GatherProtocol 里，这里只委托，避免两份实现慢慢分叉。
+    MetadataAttributes.keywordString(number)
 }

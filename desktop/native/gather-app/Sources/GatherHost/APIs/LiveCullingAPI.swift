@@ -152,15 +152,6 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         try map { try cullingService.selectableIds(query) }
     }
 
-    /// 文件搬移与写回/清理共用同一把按 xmpPath 的锁（未接线时退化为不加锁）。
-    private func withFileLock<T: Sendable>(
-        path: String,
-        _ body: @Sendable () throws -> T
-    ) async throws -> T {
-        guard let fileLock else { return try body() }
-        return try await fileLock.run(path: path) { try body() }
-    }
-
     // MARK: - 读
 
     public func page(_ query: CullingPageQuery) async throws -> CullingPage {

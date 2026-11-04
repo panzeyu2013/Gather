@@ -34,10 +34,10 @@ public enum CullingServiceFactory {
             transactions: transactions, metadataMutations: metadataMutations,
             cullingHistoryRepo: cullingHistoryRepo,
             hooks: hooks)
-        let sharedCore = CullingSharedCore(
-            metadataCache: metadataCacheRepo, deliveryRows: deliveryItems)
+        // 复用决策服务已构造的那份 core：两个服务共享同一个结构体实例，
+        // 将来 core 若加入状态（文件头明确警告不要加），也不会出现「各持一份、半写」的局面。
         let sync = CullingSyncService(
-            core: sharedCore, writeback: writeback, delivery: delivery, decisions: decision)
+            core: decision.core, writeback: writeback, delivery: delivery, decisions: decision)
         return CullingService(decision: decision, sync: sync)
     }
 }
