@@ -70,8 +70,10 @@ public enum CullingServiceError: Error, Equatable, CustomStringConvertible {
 /// TS: culling.ipc.ts 用到的 WritebackService 最小面（culling 写回四命令 +
 /// confirm/cleanup 协作）—— 宿主注入 WritebackService，测试注入替身。
 /// S5c-2b-1：execute/retryFailed 仍是文件写入执行器；getItems 重新被镜像路径使用
-/// （读取 written/failed 行状态）。confirmSync/cleanup 已不再被调用，
-/// S5c-2b-3 删除旧服务时收敛。
+/// （读取 written/failed 行状态）。
+///
+/// #6 收窄：confirmSync / cleanup 已从协议删除——全仓零调用（确认与清理统一走
+/// DeliveryModuleAdapter），留着只会让每个替身都要实现两个永不调用的方法。
 public protocol CullingWritebackPort {
     func preview(
         sessionId: String,
@@ -84,8 +86,6 @@ public protocol CullingWritebackPort {
     func execute(sessionId: String, module: String, items: [WritebackItem]) async throws -> WritebackResult
     func retryFailed(sessionId: String, module: String) async throws -> WritebackResult
     func getItems(sessionId: String, module: String, status: String?) throws -> [WritebackItem]
-    func confirmSync(sessionId: String, module: String) async throws
-    func cleanup(sessionId: String, module: String) async throws -> CleanupResult
 }
 
 extension WritebackService: CullingWritebackPort {}
