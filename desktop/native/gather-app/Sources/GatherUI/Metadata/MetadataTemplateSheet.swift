@@ -293,7 +293,9 @@ struct MetadataTemplateSheet: View {
                     source: .userDialog))
             outcome = result
             // #11：模板套用写的是 XMP，常驻页要立刻知道
-            GatherEventCenter.postDomainChange(.metadata, sessionId: nil)
+            // 本页动作：带 culling origin，避免挑片页再整页刷一次（sheet 自己会 reload）。
+            GatherEventCenter.postDomainChange(
+                .metadata, sessionId: nil, origin: CullingViewModel.changeOrigin)
             // P1：失败原因必须可见。JPEG 内嵌字段无法清空时只显示"失败 N 张"，
             // 用户会误以为清空完成；首条失败的码/参数由渲染期本地化。
             errorText = result.failed.first.map { failure in
@@ -318,7 +320,9 @@ struct MetadataTemplateSheet: View {
                 Confirmed(try MetadataTemplateUndoInput(batchId: batchId), source: .userDialog))
             outcome = result
             // #11：撤销同样是写盘
-            GatherEventCenter.postDomainChange(.metadata, sessionId: nil)
+            // 本页动作：带 culling origin，避免挑片页再整页刷一次（sheet 自己会 reload）。
+            GatherEventCenter.postDomainChange(
+                .metadata, sessionId: nil, origin: CullingViewModel.changeOrigin)
             // 部分失败时保留 batchId，表内可重试；批次仍是 undone=false。
             if result.failed.isEmpty {
                 appliedBatchId = nil
