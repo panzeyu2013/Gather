@@ -241,3 +241,16 @@
   属产品决策（改图库为 preferred-row 要动 4 处 SQL + facet），不在本轮范围。
 - 测试：`FilterSemanticsContractTests` 相应改为「已同集合」/「仅剩粒度差」；
   `PhotoFilterQueryTests` 的 SQL 形状断言改为按字段套用规范化表达式。
+
+## #2 S3（部分）：淘汰移出抽纯规划器
+
+- 阻塞点：整段 `moveRejected` 需要在 `XMPFileLock.run`（`@Sendable` 闭包）里捕获 `self`，
+  而它的依赖（`any PhotoRepository` 等）不是 Sendable，整段下沉会新增一处
+  `@unchecked Sendable`——当时预算正好 60/60。
+- 本轮解法：把**不需要锁、不需要写盘**的决策部分抽成纯函数
+  `RejectedMovePlanner.plan(requestedIds:candidates:rejectedIds:sessionSourcePath:explicitDestinationRoot:)`：
+  资产展开、skipped 归因、sharesSidecar 判定、目标目录安全校验。适配器只负责取数
+  （三处读）与锁内搬移。
+- 收益：这四条不变量第一次能在 core 侧单测（4 个用例，不需要 DB / 文件系统 / app target）。
+- 仍未解决：锁内搬移循环仍在适配器里（它才是需要 `@unchecked` 的部分）。要彻底下沉
+  需先决定路线：三仓储端口 Sendable 化 / 削减既有 @unchecked / 接受预算上涨。

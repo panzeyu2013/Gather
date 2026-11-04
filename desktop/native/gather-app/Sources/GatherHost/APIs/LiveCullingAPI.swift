@@ -101,96 +101,32 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         //    写到同资产全部变体），只移代表行会把另一半变体留在工作区且仍是已淘汰。
         // 2. **按张过滤而不是整批拒绝**：混进保留件/已移出件时返回 skipped，
         //    其余照常移出（旧实现 allSatisfy 失败 → 一张都动不了）。
-        let (targets, skipped, destination) = try map { () -> ([RejectedMoveItem], [CullingMoveRejectedSkip], String) in
+        // #2 S3：规划部分抽到 RejectedMovePlanner（纯函数，core 侧可单测）：
+        // 资产展开 / skipped 归因 / sharesSidecar / 目标目录安全校验都在那里。
+        let plan = try map { () -> RejectedMovePlanner.Plan in
             let rows = try photoRepo.getBySessionProjection(sessionId: payload.sessionId)
-            let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
-            var skipped: [CullingMoveRejectedSkip] = []
-            var skippedIds = Set<String>()
-            func skip(_ photoId: String, _ reason: String) {
-                guard skippedIds.insert(photoId).inserted else { return }
-                skipped.append(CullingMoveRejectedSkip(photoId: photoId, reason: reason))
-            }
-
-            var requested: [PhotoProjectionRow] = []
-            for photoId in payload.photoIds {
-                if let row = byId[photoId] { requested.append(row) } else { skip(photoId, "not_in_session") }
-            }
             let rejected = Set(
                 try cullingService.getDecisions(sessionId: payload.sessionId)
                     .filter { $0.decision == CullingDecisionValue.reject.rawValue }
                     .map(\.photoId))
-
-            // 资产展开：保持"请求顺序 → 资产内导入序"的确定性。
-            // 先建 assetId → 行 的索引：逐请求扫全会话行在 20k 上限下是 O(n×m)，
-            // 千张级移出会明显卡顿（P2）。
-            var rowsByAsset: [String: [PhotoProjectionRow]] = [:]
-            for row in rows {
-                guard let assetId = row.assetId, !assetId.isEmpty else { continue }
-                rowsByAsset[assetId, default: []].append(row)
-            }
-            var targetIds = Set<String>()
-            var orderedIds: [String] = []
-            func addTarget(_ photoId: String) {
-                if targetIds.insert(photoId).inserted { orderedIds.append(photoId) }
-            }
-            for row in requested {
-                if let assetId = row.assetId, !assetId.isEmpty {
-                    for variant in rowsByAsset[assetId] ?? [] { addTarget(variant.id) }
-                } else {
-                    addTarget(row.id)
-                }
-            }
-            var visibleByXmp: [String: [String]] = [:]
-            for row in rows where PhotoVisibility.isVisible(archivedAt: row.archivedAt) {
-                let key = TSPath.normalize(TSPath.xmpSidecarPath(row.filepath))
-                visibleByXmp[key, default: []].append(row.id)
-            }
-            // 先把“实际会移动”的行筛出来，再算 movingIds。资产展开会包含未淘汰的
-            // 兄弟；若把这些兄弟也算作 moving，sharesSidecar 会被误判为 false，
-            // 移出已淘汰变体时就会把共享 .xmp 从留下的兄弟身边搬走。
-            var movingRows: [(photoId: String, row: PhotoProjectionRow)] = []
-            for photoId in orderedIds {
-                guard let row = byId[photoId] else { continue }
-                if PhotoVisibility.isArchived(archivedAt: row.archivedAt) {
-                    skip(photoId, "already_archived"); continue
-                }
-                guard rejected.contains(photoId) else { skip(photoId, "not_rejected"); continue }
-                movingRows.append((photoId, row))
-            }
-            let movingIds = Set(movingRows.map { $0.photoId })
-            var items: [RejectedMoveItem] = []
-            for (photoId, row) in movingRows {
-                let key = TSPath.normalize(TSPath.xmpSidecarPath(row.filepath))
-                let siblingsRemain = (visibleByXmp[key] ?? []).contains { !movingIds.contains($0) }
-                items.append(RejectedMoveItem(
-                    photoId: photoId, filepath: row.filepath, sharesSidecar: siblingsRemain))
-            }
-
             let session = try sessionRepo?.get(id: payload.sessionId)
-            let root: String
-            if let explicit = payload.destinationRoot {
-                // 显式目标只接受会话根目录下的路径：防止把照片搬到任意目录。
-                let base = URL(fileURLWithPath: session?.sourcePath ?? "")
-                    .resolvingSymlinksInPath().path
-                let target = URL(fileURLWithPath: explicit)
-                    .resolvingSymlinksInPath().path
-                guard !base.isEmpty, target == base || target.hasPrefix(base + "/") else {
-                    throw GatherError.invalidParameter(
-                        field: "destinationRoot", reason: "must be inside the session source path")
-                }
-                root = explicit
-            } else if let sourcePath = session?.sourcePath, !sourcePath.isEmpty {
-                root = sourcePath
-            } else {
-                root = requested.first.map { ($0.filepath as NSString).deletingLastPathComponent } ?? ""
+            let candidates = rows.map {
+                RejectedMovePlanner.Candidate(
+                    photoId: $0.id, filepath: $0.filepath, assetId: $0.assetId,
+                    isArchived: PhotoVisibility.isArchived(archivedAt: $0.archivedAt))
             }
-            return (items, skipped, (root as NSString).appendingPathComponent(RejectedMover.folderName))
+            return try RejectedMovePlanner.plan(
+                requestedIds: payload.photoIds,
+                candidates: candidates,
+                rejectedIds: rejected,
+                sessionSourcePath: session?.sourcePath,
+                explicitDestinationRoot: payload.destinationRoot)
         }
 
         var moved: [String] = []
         var newPaths: [String] = []
         var failures: [MetadataApplyFailureDTO] = []
-        for item in targets {
+        for item in plan.items {
             let one: RejectedMoveResult
             do {
                 one = try await withFileLock(path: TSPath.xmpSidecarPath(item.filepath)) {
@@ -202,7 +138,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                             params: ["field": "photoRepo", "reason": "move_rejected 未接线"])
                     }
                     return RejectedMover(photoRepo: repo, relocate: self.relocateAfterMove)
-                        .move(items: [item], destinationRoot: destination)
+                        .move(items: [item], destinationRoot: plan.destination)
                 }
             } catch {
                 failures.append(MetadataApplyFailureDTO(
@@ -228,7 +164,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             }
         }
         return CullingMoveRejectedResult(
-            moved: moved, newPaths: newPaths, skipped: skipped, failed: failures)
+            moved: moved, newPaths: newPaths, skipped: plan.skipped, failed: failures)
     }
 
     /// P0 / A1：当前 scope/filters 下的完整选中集（代表行）。
