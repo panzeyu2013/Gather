@@ -297,3 +297,16 @@
 - 未做（后续步）：S1-S5（MetadataDiskReader / PhotoMetadataProjector / Extraction /
   AttributeWriter / KeywordWriter）与「三仓储端口 Sendable 化」前置；后者是解开
   #2 S3 锁内循环的关键。
+
+## #6 前置：两个仓储端口 Sendable 化（零预算）
+
+- `MetadataRepository` / `PhotoRepository` 协议加 `: Sendable`；
+  `PhotoRepo` / `MetadataKeywordOriginRepo` 声明 `Sendable`——它们各自只有一个
+  `let connection: DBConnection`（DBConnection 已是 @unchecked Sendable），
+  按「final class + 全 let + 全 Sendable 属性」隐式满足，**不需要新增 @unchecked**。
+- `MetadataCacheRepo` 早已是 Sendable，所以 MetadataRepository 是零成本。
+- 测试替身（PortFakePhotoRepo / PortFakeMetadataRepo）带可变记录器，只能 @unchecked；
+  它们位于 Tests，**不进** cleanup-ratchet 的计数范围（baseline scope 只扫 Sources）。
+- 意义：这一步同时解开两个死结——#6 的 S3/S4（Extraction/AttributeWriter 要存这些端口）
+  与 #2 S3 剩余的「锁内搬移循环」（需要捕获 `any PhotoRepository`）。
+- 门禁读数未变：unchecked 60 / try? 255 / prepare 0。

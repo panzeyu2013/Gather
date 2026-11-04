@@ -80,7 +80,9 @@ final class PortFakeSettingsRepo: SettingsRepository {
 
 // MARK: - Photo / Session / Asset
 
-final class PortFakePhotoRepo: PhotoRepository {
+// #6 S4 前置：PhotoRepository 加 Sendable 后，带可变记录器的替身只能 @unchecked
+// （测试串行执行；Tests 不进 cleanup-ratchet 的计数范围）。
+final class PortFakePhotoRepo: PhotoRepository, @unchecked Sendable {
     var projectionRows: [PhotoProjectionRow] = []
     var pageRows: [PhotoPageRow] = []
     var pendingChecksumCountValue = 0
@@ -188,7 +190,7 @@ final class PortFakeAssetRepo: AssetRepository {
 
 // MARK: - Metadata
 
-final class PortFakeMetadataRepo: MetadataRepository {
+final class PortFakeMetadataRepo: MetadataRepository, @unchecked Sendable {
     var batchRows: [MetadataCacheRow] = []
     private(set) var ratingUpdates: [String: Int64] = [:]
     private(set) var labelUpdates: [String: String] = [:]

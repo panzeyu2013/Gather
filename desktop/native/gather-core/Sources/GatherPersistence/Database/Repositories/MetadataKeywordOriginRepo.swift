@@ -3,7 +3,7 @@
 import Foundation
 
 /// metadata_keyword_origins 仓库（TS MetadataKeywordOriginRepository）。
-public final class MetadataKeywordOriginRepo {
+public final class MetadataKeywordOriginRepo: Sendable {
     private let connection: DBConnection
 
     public init(connection: DBConnection) {

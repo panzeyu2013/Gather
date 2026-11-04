@@ -3,7 +3,9 @@
 import Foundation
 import GatherProtocol
 
-public protocol MetadataRepository {
+/// #6 S3 前置：加 Sendable——MetadataExtractionService 是 Sendable 结构体，要把它存成字段。
+/// 唯一实现 MetadataCacheRepo 早已是 Sendable，零成本。
+public protocol MetadataRepository: Sendable {
     func upsert(photoId: String, sessionId: String, data: MetadataCacheInput) throws
     func get(_ photoId: String) throws -> MetadataCacheRow?
     func getBatch(_ photoIds: [String]) throws -> [MetadataCacheRow]

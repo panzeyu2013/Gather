@@ -149,7 +149,7 @@ public struct PhotoAddResult: Equatable, Sendable {
     public let ids: [String]
 }
 
-public final class PhotoRepo {
+public final class PhotoRepo: Sendable {
     /// TS: PHOTO_PAGE_COLUMNS（键集分页查询与 service 侧共享的列清单，需 p 别名）。
     public static let photoPageColumns = """
     p.rowid, p.id, p.session_id, p.filepath, p.filename, p.status,

@@ -28,7 +28,10 @@ public struct PhotoReportRow: Equatable, Sendable {
     }
 }
 
-public protocol PhotoRepository {
+/// #6 S4 前置：加 Sendable——MetadataAttributeWriter 是 Sendable 结构体。
+/// 唯一实现 PhotoRepo 只有 connection 一个存储属性（DBConnection 已是 @unchecked Sendable），
+/// 因此可以隐式满足，不需要新增 @unchecked 标注。
+public protocol PhotoRepository: Sendable {
     func getBySession(sessionId: String) throws -> [PhotoRow]
     func getBySessionProjection(sessionId: String) throws -> [PhotoProjectionRow]
     /// 物理行分页。默认 **visibleOnly = true**（面向用户的列表必须过滤归档件）；
