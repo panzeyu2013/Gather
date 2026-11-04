@@ -512,3 +512,15 @@
   还原 → rc=0。
 - 现状读数：叶子写函数 42 / 已发域 34 / 显式 none 8 / 缺口 0。
 - 接入 CI gates job 与 DEVELOPMENT.md 清单（第 14 道）。
+
+## 残留修复 4：#1 C5 第一步 —— 备份白名单上移 Protocol
+
+- `XMPBackupNaming`（GatherProtocol）新增 `controlledMarkers` 与 `isControlledName(_:)`，
+  成为「允许删除的白名单」的**唯一真相**；`DeliveryBackupPath` 的两个同名符号改为委托。
+- 目的：`GatherMetadataIO` 的写盘路由（`MetadataWriteRouter`）需要这份白名单做 removeFile
+  守卫，但它不该依赖 GatherDelivery。
+- **协议面增长（已记账）**：`public_declarations` 2441 → **2443**（+2）。类型数不变（411）。
+  已用 `--write-baseline --allow-growth` 更新 `docs/protocol-surface-baseline.json`。
+- 后续（C4）：`MetadataAttributes` + `MetadataParseSegments` 整体进 Protocol（预计
+  +2 类型 / +14 声明），再给 `MetadataWriteRouter` 注入 ImageIO 基线闭包，最后删死 import
+  并给 layering 加规则。

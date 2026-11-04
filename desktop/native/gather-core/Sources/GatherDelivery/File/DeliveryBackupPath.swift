@@ -83,9 +83,9 @@ public enum DeliveryBackupPath {
     /// 只生成 .gather-backup-，内嵌会话只生成 .gather-header-），把它留在"允许删除"
     /// 白名单里只会扩大误删面，已删除（P1-4）。将来真要落地归档，必须同时给出
     /// 生产者 + 锚定式判定（见 anchoredXMPPath），不能只加一个标记字符串。
-    public static let controlledMarkers = [
-        ".gather-backup-", ".gather-header-",
-    ]
+    /// #1 C5 起唯一真相在 `XMPBackupNaming.controlledMarkers`（Protocol），这里只转发：
+    /// 写盘路由（GatherMetadataIO）也要用同一份白名单，而它不该依赖 Delivery。
+    public static let controlledMarkers = XMPBackupNaming.controlledMarkers
 
     /// 是否属于"受控备份 / 归档名"。
     ///
@@ -95,8 +95,7 @@ public enum DeliveryBackupPath {
     ///
     /// 这是**允许删除**的白名单，不是路径合法性校验——后者仍走 `validate`。
     public static func isControlledName(_ path: String) -> Bool {
-        let name = ((path as NSString).lastPathComponent).lowercased()
-        return controlledMarkers.contains { name.contains($0) }
+        XMPBackupNaming.isControlledName(path)
     }
 
     /// 从受控备份名反推 `<xmp>` 并校验二者关系（锚定式孤儿判定，P1-4）。

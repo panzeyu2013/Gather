@@ -12,6 +12,20 @@ import Foundation
 public enum XMPBackupNaming {
     public static let marker = ".gather-backup-"
 
+    /// 受控名标记（**允许删除**的白名单，不是路径合法性校验）。
+    ///
+    /// 为什么放在 Protocol：#1 C5 要让 GatherMetadataIO 的写盘路由复用这份白名单，
+    /// 而它不该依赖 GatherDelivery。唯一真相在这里，DeliveryBackupPath 委托过来。
+    /// 注意 `.gather-backup-` 必须与上面的 marker 保持一致；内嵌会话的 header 标记
+    /// 由写盘侧产生。
+    public static let controlledMarkers = [".gather-backup-", ".gather-header-"]
+
+    /// 是否属于受控备份 / 归档名（只看最后一段路径，见 DeliveryBackupPath 的历史说明）。
+    public static func isControlledName(_ path: String) -> Bool {
+        let name = ((path as NSString).lastPathComponent).lowercased()
+        return controlledMarkers.contains { name.contains($0) }
+    }
+
     /// 备份名 = sidecar 完整文件名 + marker + 后缀（生成端使用）。
     public static func make(xmpPath: String, suffix: String) -> String {
         xmpPath + marker + suffix
