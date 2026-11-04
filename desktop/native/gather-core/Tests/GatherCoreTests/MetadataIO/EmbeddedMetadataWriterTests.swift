@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Tests/GatherAppTests/EmbeddedMetadataWriterTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/EmbeddedMetadataWriterTests.swift
 // JPEG 内嵌写盘：IIM/IRB 编解码、XMP+IIM 双写、清空、回读校验、头部备份还原。
 //
 // 夹具在测试内用 ImageIO 生成，不依赖仓库二进制文件。
@@ -10,7 +10,6 @@ import ImageIO
 import UniformTypeIdentifiers
 import GatherApplication
 import GatherProtocol
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 private func embeddedFixtureJPEG(iptc: [String: Any]? = nil) throws -> Data {

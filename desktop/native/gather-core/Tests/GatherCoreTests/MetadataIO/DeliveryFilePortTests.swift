@@ -1,11 +1,10 @@
-// desktop/native/gather-app/Tests/GatherAppTests/DeliveryFilePortTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/DeliveryFilePortTests.swift
 // 交付文件端口的删除守卫：只允许元数据载体与受控备份，绝不删照片原片。
 
 import Foundation
 import Testing
 import GatherDelivery
 import GatherProtocol
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 @Suite("交付文件端口（删除守卫）")

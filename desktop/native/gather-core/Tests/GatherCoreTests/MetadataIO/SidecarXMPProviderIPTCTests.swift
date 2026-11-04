@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Tests/GatherAppTests/SidecarXMPProviderIPTCTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/SidecarXMPProviderIPTCTests.swift
 // P1 / IPTC：表驱动补丁器的写入/读取/清空/保留/写后校验（宿主层直测）。
 
 import Foundation
@@ -8,8 +8,6 @@ import GatherPersistence
 import GatherAnalysis
 import GatherApplication
 import GatherTestSupport
-@testable import GatherUI
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 private func makeTempDir() throws -> String {

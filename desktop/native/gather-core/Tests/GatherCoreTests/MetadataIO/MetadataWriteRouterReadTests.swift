@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Tests/GatherAppTests/MetadataWriteRouterReadTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/MetadataWriteRouterReadTests.swift
 // P1-1 回归：内嵌读的基线必须来自 XMP，而不是 ImageIO。
 //
 // 为什么需要：`CGImageProperties` 不暴露 lr 命名空间，只用 ImageIO 当基线时
@@ -10,7 +10,6 @@
 import Foundation
 import Testing
 import GatherProtocol
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 // MARK: - 夹具

@@ -188,3 +188,16 @@
   「零引用」——实测 `MetadataTargetPolicy` 立刻假阳性，已修）。
 - 未做：C2 把 10 个 app 测试文件（2,715 行 / 87 用例）迁进 core；C3 加
   「delivered == 磁盘真写了」不变量套件。当前 app 测试仍覆盖这些实现。
+
+## #1 C2：10 个元数据 IO 测试迁回 core
+
+- `gather-app/Tests/GatherAppTests` → `gather-core/Tests/GatherCoreTests/MetadataIO/`：
+  SidecarXMPProviderTests / +IPTCTests / MetadataWriteRouterTests / +ReadTests /
+  EmbeddedRewriteSessionTests / EmbeddedMetadataWriterTests / JPEGSegmentsTests /
+  XMPPacketReaderTests / JPEGMetadataWritebackTests / DeliveryFilePortTests（87 个用例）。
+- 计数移位而非新增：core 1603 → **1690**（+87）、app 880 → **793**（-87），总数不变。
+- 两个文件（SidecarXMPProvider*Tests）原本 `@testable import GatherUI` 但零符号使用，
+  属死 import，迁移时一并删除——这也是它们能进 core 的前提（core 不能依赖 UI）。
+- `GatherCoreTests` 目标依赖补 `GatherMetadataIO`。
+- 未做：C3 的跨层不变量套件（`deliveries.status == written ⇒ 目标文件回读 == base_values`）。
+  它需要真实 DeliveryCoordinator + 交付行种子；当前由 87 个 IO 层用例覆盖实现细节。

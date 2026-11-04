@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Tests/GatherAppTests/MetadataWriteRouterTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/MetadataWriteRouterTests.swift
 // 写目标策略与路由：JPEG 内嵌 / sidecar / RAW 的选择，以及 backup→write→restore 闭环。
 
 import Foundation
@@ -8,7 +8,6 @@ import ImageIO
 import UniformTypeIdentifiers
 import GatherApplication
 import GatherProtocol
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 private func routerFixtureJPEG() throws -> Data {

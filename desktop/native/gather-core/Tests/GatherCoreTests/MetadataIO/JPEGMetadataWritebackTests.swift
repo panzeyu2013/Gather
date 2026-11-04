@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Tests/GatherAppTests/JPEGMetadataWritebackTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/JPEGMetadataWritebackTests.swift
 // P1 回归：JPEG 的"盘上值"= 内嵌 IPTC/XMP + sidecar。
 //
 // 两件事必须同时成立：
@@ -19,7 +19,6 @@ import GatherTestSupport
 @testable import GatherPersistence
 @testable import GatherDelivery
 @testable import GatherApplication
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 private func makeTempDir() throws -> String {

@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Tests/GatherAppTests/SidecarXMPProviderTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/SidecarXMPProviderTests.swift
 // SidecarXMPProvider 直测（该 provider 此前全仓零测试，R4 补齐）：
 // 空文档骨架 / 缺三元素插入 / 属性形式规整 / Urgency 兄弟元素 / 大写 .XMP 回退 /
 // 未知命名空间保留 / 写后校验失败的类型化错误 / 损坏文档 / 空写入不建文件 / 备份恢复。
@@ -9,8 +9,6 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherApplication
-@testable import GatherUI
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 // MARK: - 测试基建

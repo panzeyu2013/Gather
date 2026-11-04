@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Tests/GatherAppTests/XMPPacketReaderTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/XMPPacketReaderTests.swift
 // P1 下一波 §3.2.5：XMP 包（APP1）+ IPTC-IIM（APP13/0x0404）→ 属性，不调用 ImageIO。
 //
 // 钉死：属性形式与元素形式都读、rdf:Bag/Seq/Alt 形状、命名空间别名、结构（contact）、
@@ -8,7 +8,6 @@ import Foundation
 import Testing
 import GatherApplication
 import GatherProtocol
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 // MARK: - 夹具

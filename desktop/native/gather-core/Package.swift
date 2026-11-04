@@ -157,6 +157,8 @@ let package = Package(
             dependencies: [
                 "GatherProtocol", "GatherPersistence", "GatherDelivery", "GatherAnalysis",
                 "GatherApplication",
+                // #1 C2：元数据写盘（XMP/JPEG/IPTC）的测试从 app 迁回 core。
+                "GatherMetadataIO",
                 "GatherTestSupport",
                 "CSQLite",
             ],

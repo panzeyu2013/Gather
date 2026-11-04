@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Tests/GatherAppTests/JPEGSegmentsTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/JPEGSegmentsTests.swift
 // JPEG 段表：解析/重建的字节级不变量（原样重建相等、scan 哈希不变、超限显式失败）。
 //
 // 一律在测试内用 ImageIO 生成真实 JPEG（仓库不放二进制夹具），指纹只依赖生成器参数。
@@ -9,7 +9,6 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import GatherProtocol
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 private func makeJPEG(width: Int = 32, height: Int = 32, iptc: [String: Any]? = nil) throws -> Data {

@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Tests/GatherAppTests/EmbeddedRewriteSessionTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/MetadataIO/EmbeddedRewriteSessionTests.swift
 // P1 下一波 §3.2：内嵌写回"一次打开、顺序遍历"会话的验收测试。
 //
 // 钉死的四件事：
@@ -21,7 +21,6 @@ import GatherDelivery
 import GatherPersistence
 import GatherProtocol
 import GatherTestSupport
-@testable import GatherHost
 @testable import GatherMetadataIO
 
 // MARK: - 夹具
