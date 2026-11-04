@@ -25,7 +25,9 @@ enum DeliveryIntentAction: String, Equatable {
 
 /// cleanup / finalize intent 的 payload（回放只靠它 + delivery_intents.xmp_path，
 /// 不依赖父行存在）。
-struct DeliveryCleanupPayload: Equatable {
+/// #6 收尾：public 仅为了测试能构造 pending intent 夹具（回放格式本身仍是内部契约）。
+/// 生产代码只经 `DeliveryIntentRepo.prepare(...)` 生成它，外部不应自行拼装。
+public struct DeliveryCleanupPayload: Equatable, Sendable {
     let action: DeliveryIntentAction
     let deliveryId: Int64
     let revision: Int64
@@ -45,6 +47,11 @@ struct DeliveryCleanupPayload: Equatable {
     /// 旧 intent 没有该键 → nil：回放时退回“任何非 synced item 都阻断删除”的
     /// 保守判定（无法区分归属时宁可保留交付，也不静默删别人的输入）。
     let module: DeliveryModule?
+
+    /// 测试夹具用的公开入口：只覆盖 cleanup（action 是内部概念，不暴露）。
+    public init(delivery: DeliveryRow, photoPath: String, module: DeliveryModule? = nil) {
+        self.init(delivery: delivery, photoPath: photoPath, action: .cleanup, module: module)
+    }
 
     init(
         delivery: DeliveryRow,
@@ -85,7 +92,7 @@ struct DeliveryCleanupPayload: Equatable {
             .flatMap(DeliveryModule.init(rawValue:))
     }
 
-    var json: JSONValue {
+    public var json: JSONValue {
         .object([
             "op": .string(action.rawValue),
             "delivery_id": .int(deliveryId),

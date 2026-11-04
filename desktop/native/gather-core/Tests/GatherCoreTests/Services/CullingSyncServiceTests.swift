@@ -7,7 +7,7 @@ import Foundation
 import Testing
 import GatherProtocol
 import GatherPersistence
-@testable import GatherDelivery
+import GatherDelivery
 @testable import GatherApplication
 @testable import GatherMetadataIO
 import GatherTestSupport
