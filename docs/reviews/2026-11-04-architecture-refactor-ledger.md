@@ -628,3 +628,19 @@
   ③ `selectNavigationGroup` 对不存在的 id 不生效（防止越界选中）；
   ④ `mergeCurrentWithPreviousSameType` 在没有前一个同类组时报错且不选中任何组。
 - app 用例 794 → **798**（+4）。
+
+## 残留修复 11：SyncWriter 抽取尝试 → 放弃（结论：不可分离）
+
+按 `writeback` + `delivery` + `deliveryItems` 合并成 `CullingSyncWriter` 的方案试做了一遍
+（355 行方法体整体搬移 + 门面 8 个同名转发 + init 内构造，签名不变），编译时暴露真相：
+
+- `writeback()` 内部调用 `getDecisions(sessionId:)`（挑片决策仓储，属读取簇）；
+- 计划组装还要 `colorLabel` / 照片行 / 事务——共 **6 处对 CullingService 其他簇的回调**。
+
+也就是说 `CullingService+Delivery.swift` 不是「只依赖交付端口」的簇，它是**决策 + 照片 +
+交付三者的汇合点**。要拆开就得给 writer 注入 6 个回调（薄壳化，与 W1 一样的病），
+或者把决策/读取也搬进去（等于把整个服务重写）。
+
+**已完整回滚**（`git checkout` 两个文件 + 删除新文件），工作树干净、core 1699+25 /
+app 798 全绿。这条结论也解释了为什么 CullingService 的 15 个依赖减不下去：它不是
+「分文件不到位」，而是**编排职责本身就要看三方状态**。
