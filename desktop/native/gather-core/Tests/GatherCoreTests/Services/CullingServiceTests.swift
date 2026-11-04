@@ -248,7 +248,6 @@ private func makeHarness(
         metadataMutations: mutations,
         writeback: writeback,
         cullingHistoryRepo: history ? historyRepo : nil,
-        getNumber: { _, defaultValue in defaultValue },
         triageDisplayPolicy: triageDisplayPolicy,
         flushMetadata: flushMetadata,
         delivery: deliveryCoordinator.adapter(for: .culling)

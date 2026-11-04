@@ -217,9 +217,7 @@ private struct FaceSimilarityFixture {
             similarityResultRepo: similarityRepo,
             clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db,
-            getNumber: { key, defaultValue in
-                settingsService.getNumber(key, defaultValue: defaultValue)
-            },
+            settings: settingsService,
             writebackProvider: SimilarityWritebackBridge(writebackService: writebackService)
         )
 

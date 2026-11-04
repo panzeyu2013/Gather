@@ -145,7 +145,9 @@ extension IndexerService {
             let fileStatsSnapshot = fileStats
             try context?.throwIfCancelled()
             // 懒校验模式：新/变文件只记尺寸，checksum 交给后台 checksum.backfill。
-            let lazyChecksum = self.getSetting("lazy_checksum", "true") != "false"
+            // 方言保持原样（!= "false"，不是 == "1"）：存量库里的 "0"/"true"/"false"
+            // 都会走这条判断，归一化属于独立决策（会翻存量语义），本轮不动。
+            let lazyChecksum = self.settings.string(.lazyChecksum).lowercased() != "false"
             let results = try await batchAsync(filepaths, concurrency: Self.scanBatchConcurrency) { filepath -> BatchOutcome in
                 let normalized = ScanPath.canonical(filepath)
                 // stat 先行：目录列举与 stat 之间消失的文件不得进入 discoveredSet，

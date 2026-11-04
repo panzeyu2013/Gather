@@ -84,6 +84,12 @@ struct SettingsKeyTests {
         "c1_auto_reload": "1",
         "triage_calibration_min_samples": "50",
         "semantic_index_enabled": "0",
+        // #9 转正的幽灵键（此前不在默认表里，永远读调用点硬编码默认值）。
+        "import_concurrency": "8",
+        "asset_read_mode": "dual",
+        "similarity_cluster_convergence_interval": "10",
+        "similarity_decode_concurrency": "4",
+        "similarity_preview_max_dimension": "256",
     ]
 
     @Test("枚举键集合与历史默认值表完全一致")
@@ -119,7 +125,10 @@ struct SettingsKeyTests {
         #expect(empty.int(.dbCacheSizeMB) == 64)
         #expect(empty.double(.defaultEps) == 0.65)
         #expect(empty.bool(.triageEnabled) == false)
-        #expect(empty.bool(.lazyChecksum), "lazy_checksum 的 \"true\" 方言必须识别")
+        // bool 严格只认 "1"（仓里有测试钉住「非 1 视为关闭」）；"true"/"false" 方言的键
+        // （lazy_checksum）自己用 string 比较，不共用这个折叠。
+        #expect(empty.bool(.lazyChecksum) == false)
+        #expect(empty.string(.lazyChecksum) == "true")
 
         let broken = ClosureSettingsReader { key in
             switch key {
@@ -134,5 +143,6 @@ struct SettingsKeyTests {
         #expect(broken.int(.dbCacheSizeMB) == 64)
         #expect(broken.bool(.triageEnabled))
         #expect(!broken.bool(.lazyChecksum))
+        #expect(broken.string(.lazyChecksum) == "false")
     }
 }

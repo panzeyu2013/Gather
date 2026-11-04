@@ -116,9 +116,7 @@ struct CompositionCore {
                 (xmp as? MetadataWriteRouter)?.target(for: photoPath).kind ?? .sidecar
             })
         let metadataCacheRepo = MetadataCacheRepo(connection: db)
-        let assetResolver = PhotoAssetResolver(connection: db, getSetting: { key, defaultValue in
-            settingsService.get(key, defaultValue: defaultValue)
-        })
+        let assetResolver = PhotoAssetResolver(connection: db, settings: settingsService)
         let deliveryRepo = DeliveryRepo(connection: db)
         // 交付状态变化 → 宿主事件（旧 coordinator.start(eventSink:) 的等价物）：
         // 每次推进状态后广播 c1-sync-status，驱动 SimilarityView / C1StatusCapsule。
@@ -145,9 +143,7 @@ struct CompositionCore {
             c1Required: c1Required, eventSink: deliveryEventSink)
         let metadataDeliveryService = MetadataDeliveryService(
             connection: db, coordinator: deliveryCoordinator,
-            getSetting: { key, value in
-                settingsService.get(key, defaultValue: value)
-            })
+            settings: settingsService)
         let metadataMutationService = MetadataMutationService(
             deliveryRepo: deliveryRepo, xmp: xmp, assetResolver: assetResolver,
             target: targetResolver)
@@ -207,9 +203,7 @@ struct CompositionCore {
             hashes: SimilarityHashRepo(connection: db),
             analysisRuns: AnalysisRunRepo(connection: db),
             deliveryItems: deliveryRepo, transactions: db,
-            getNumber: { key, defaultValue in
-                settingsService.getNumber(key, defaultValue: defaultValue)
-            },
+            settings: settingsService,
             // 审计 P0-1：与 DuplicateService 共用同一 RAWDecoder 9x8 灰度管线。
             thumbnailProvider: { path, size in
                 RAWDecoder.pixels9x8(path: path, maxPixel: size)
@@ -232,12 +226,7 @@ struct CompositionCore {
             feedback: FaceFeedbackRepo(connection: db),
             analysisRuns: AnalysisRunRepo(connection: db),
             deliveryItems: deliveryRepo, transactions: db,
-            getNumber: { key, defaultValue in
-                settingsService.getNumber(key, defaultValue: defaultValue)
-            },
-            getString: { key, defaultValue in
-                settingsService.get(key, defaultValue: defaultValue)
-            },
+            settings: settingsService,
             writebackProvider: FaceKwWritebackBridge(writebackService: writebackService),
             delivery: deliveryCoordinator.adapter(for: .faceKeyword))
         let triageService = TriageService(
@@ -262,9 +251,7 @@ struct CompositionCore {
             deliveryItems: deliveryRepo, transactions: db,
             metadataMutations: metadataMutationService, writeback: writebackService,
             cullingHistoryRepo: CullingHistoryRepo(connection: db),
-            getNumber: { key, defaultValue in
-                settingsService.getNumber(key, defaultValue: defaultValue)
-            },
+            settings: settingsService,
             // T0 门控由 TriageService 单点产出：关闭即不展示，开启只展示指纹匹配行。
             triageDisplayPolicy: { sessionId in
                 guard let gate = try triageService.cachedGate(sessionId: sessionId) else {
@@ -343,9 +330,7 @@ struct CompositionCore {
             getDimensions: { path in
                 try RAWDecoder.getDimensions(path: path)
             },
-            getSetting: { key, defaultValue in
-                settingsService.get(key, defaultValue: defaultValue)
-            },
+            settings: settingsService,
             // 每批新插入的 photo id 交给元数据链路预热；失败不阻断索引主流程。
             warmMetadata: { photoIds in
                 guard !photoIds.isEmpty else { return }

@@ -41,15 +41,15 @@ public final class PhotoAssetResolver: @unchecked Sendable {
     private static let chunkSize = 800
 
     private let connection: DBConnection
-    /// TS: SettingsService.get(key, defaultValue)。
-    private let getSetting: (String, String) -> String
+    /// 设置读取端口（#9）：asset_read_mode 决定资产/旧路径的读口径。
+    private let settings: any SettingsReading
 
     public init(
         connection: DBConnection,
-        getSetting: @escaping (String, String) -> String = { _, defaultValue in defaultValue }
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil }
     ) {
         self.connection = connection
-        self.getSetting = getSetting
+        self.settings = settings
     }
 
     /// 单照片解析；照片不属于会话抛 CULLING_PHOTO_NOT_IN_SESSION，
@@ -58,7 +58,7 @@ public final class PhotoAssetResolver: @unchecked Sendable {
         guard let row = try queryOne(sessionId: sessionId, photoId: photoId) else {
             throw PhotoAssetResolverError.photoNotInSession
         }
-        let mode = getSetting("asset_read_mode", "dual")
+        let mode = settings.string(.assetReadMode)
         guard let resolved = buildResolved(row: row, mode: mode) else {
             throw PhotoAssetResolverError.migrationIncomplete
         }
@@ -70,7 +70,7 @@ public final class PhotoAssetResolver: @unchecked Sendable {
     public func resolveMany(sessionId: String, photoIds: [String]) throws -> [String: ResolvedPhotoAsset] {
         var resolved: [String: ResolvedPhotoAsset] = [:]
         if photoIds.isEmpty { return resolved }
-        let mode = getSetting("asset_read_mode", "dual")
+        let mode = settings.string(.assetReadMode)
         var seen = Set<String>()
         for chunkStart in stride(from: 0, to: photoIds.count, by: Self.chunkSize) {
             let chunk = Array(photoIds[chunkStart..<min(chunkStart + Self.chunkSize, photoIds.count)])

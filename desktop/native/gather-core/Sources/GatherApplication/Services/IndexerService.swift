@@ -87,8 +87,8 @@ public final class IndexerService: @unchecked Sendable {
     public typealias FileStat = (size: Int64, mtimeMs: Double, dev: Int64, ino: Int64, isFile: Bool)
     /// 图片尺寸提供者（TS: imageService.getDimensions）。
     public typealias DimensionsProvider = (String) throws -> (width: Int, height: Int)
-    /// 设置读取（TS: settings.get(key, defaultValue)）。
-    public typealias SettingReader = (String, String) -> String
+    /// 设置读取端口（#9）：原本是 (String, String) -> String 闭包别名。
+    public typealias SettingReader = any SettingsReading
 
     /// WP3b-2：扫描写路径/派生失效 SQL 下沉到 IndexerRepo；事务经 TransactionRunner。
     let indexer: any IndexerRepository
@@ -103,7 +103,7 @@ public final class IndexerService: @unchecked Sendable {
     /// 注入**，否则内容变化后人脸观察与 person_embeddings 不会失效。
     let faceRepo: (any FaceRepository)?
     let getDimensions: DimensionsProvider
-    let getSetting: SettingReader
+    let settings: SettingReader
     let warmMetadata: MetadataWarmup
 
     /// 测试接缝的共享可变状态：`_stat`/`_fileHasher` 由 `seamLock`（NSLock）保护，
@@ -156,7 +156,7 @@ public final class IndexerService: @unchecked Sendable {
         assetRepo: any AssetRepository,
         faceRepo: (any FaceRepository)? = nil,
         getDimensions: @escaping DimensionsProvider = IndexerService.defaultDimensions,
-        getSetting: @escaping SettingReader = { _, defaultValue in defaultValue },
+        settings: SettingReader = ClosureSettingsReader { _ in nil },
         warmMetadata: @escaping MetadataWarmup = { _ in }
     ) {
         self.indexer = indexer
@@ -166,7 +166,7 @@ public final class IndexerService: @unchecked Sendable {
         self.assetRepo = assetRepo
         self.faceRepo = faceRepo
         self.getDimensions = getDimensions
-        self.getSetting = getSetting
+        self.settings = settings
         self.warmMetadata = warmMetadata
     }
 
@@ -206,7 +206,7 @@ public final class IndexerService: @unchecked Sendable {
 
     /// TS: managedCacheRoots —— disk_cache_dir 设置优先，否则默认缓存目录。
     func managedCacheRoots() -> [String] {
-        let configured = getSetting("disk_cache_dir", "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let configured = settings.string(.diskCacheDir).trimmingCharacters(in: .whitespacesAndNewlines)
         if !configured.isEmpty { return [ScanPath.canonical(configured)] }
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             // Application Support/Gather/thumbnails（应用数据目录在

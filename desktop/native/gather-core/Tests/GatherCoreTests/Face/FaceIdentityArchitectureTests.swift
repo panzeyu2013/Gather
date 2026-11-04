@@ -87,7 +87,7 @@ struct FaceIdentityArchitectureTests {
         let before = try faces.getObservations(session.id).map(\.id)
         let service = FaceKwService(photoRepo: PhotoRepo(connection: db), sessionRepo: SessionRepo(connection: db),
             faceRepo: faces, personRepo: PersonRepo(connection: db), connection: db,
-            getNumber: { key, fallback in key == "face_decode_concurrency" ? 2 : fallback },
+            settings: ClosureSettingsReader { key in key == .faceDecodeConcurrency ? "2" : nil },
             decodeProvider: { _, _ in Data([1]) }, inferenceProvider: { images, _, _ in
                 images.enumerated().map { index, _ in
                     (index == 0 || cancellation) ? FaceInferenceItem(observations: [

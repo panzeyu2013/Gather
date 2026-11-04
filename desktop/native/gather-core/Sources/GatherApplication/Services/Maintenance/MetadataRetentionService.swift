@@ -81,12 +81,10 @@ public struct MetadataRetentionPolicy: Sendable, Equatable {
 
     /// 从设置读（metadata_backup_retention_days；0 = 关闭自动回收）。
     public static func fromSettings(
-        _ get: (String, String) -> String,
+        _ settings: any SettingsReading,
         ignoreReloadAck: Bool = false
     ) -> MetadataRetentionPolicy {
-        let raw = get(MetadataDeliveryService.retentionDaysKey, "7")
-        let parsed = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines))
-        let days = max(0, parsed ?? 7)
+        let days = max(0, settings.int(.metadataBackupRetentionDays))
         return MetadataRetentionPolicy(
             retentionDays: days,
             isEnabled: days > 0,

@@ -157,8 +157,8 @@ public final class SimilarityService {
     let analysisRuns: any AnalysisRunRepository
     private let deliveryItems: any DeliveryRepository
     let transactions: any TransactionRunner
-    /// TS: SettingsService.getNumber 注入。
-    let getNumber: (String, Double) -> Double
+    /// 设置读取端口（#9）：阈值/并发/收敛间隔等读取统一走端口。
+    let settings: any SettingsReading
     let thumbnailProvider: ThumbnailProvider
     let clusterProvider: ClusterProvider
     let multiClusterProvider: MultiClusterProvider
@@ -220,7 +220,7 @@ public final class SimilarityService {
         analysisRuns: any AnalysisRunRepository,
         deliveryItems: any DeliveryRepository,
         transactions: any TransactionRunner,
-        getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
         clusterProvider: @escaping ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
             // Cut 5 / 5b-2a：唯一实现——global 单趟图（result + state 同源），
@@ -247,7 +247,7 @@ public final class SimilarityService {
         self.analysisRuns = analysisRuns
         self.deliveryItems = deliveryItems
         self.transactions = transactions
-        self.getNumber = getNumber
+        self.settings = settings
         self.thumbnailProvider = thumbnailProvider
         self.clusterProvider = clusterProvider
         self.multiClusterProvider = multiClusterProvider

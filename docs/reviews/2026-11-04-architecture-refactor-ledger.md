@@ -45,3 +45,41 @@
   `PreviewFixtures.swift`/`PreviewAPIs.swift` 在 GatherPreviewData。
 - 未做：`.github` 与 build.sh 无改动（新 target 由 GatherUI 依赖自然进入构建图）；
   Release 下该模块为空（整目录 `#if DEBUG`）。
+
+## #9 铺开：8 个服务改用 SettingsReading（Step 2–3）
+
+- 生产闭包注入点 **9 → 0**：SessionService / SimilarityService / FaceKwService /
+  CullingService / IndexerService / ProofFeedbackService / MetadataDeliveryService /
+  MetadataRetentionService（静态工厂）/ PhotoAssetResolver（Persistence）全部改成
+  `settings: any SettingsReading`；组合根 7 处 + FeatureAPIs 1 处改为传
+  `SettingsService`（它已 conform 端口）。
+- 顺带删掉两个死字段：MetadataDeliveryService.connection / MetadataRetentionService.connection。
+- 5 个「幽灵键」转正（import_concurrency / asset_read_mode / similarity_* 三个）：
+  它们从此可写、可 reset、进 getAll；默认值取此前的调用点硬编码值。
+
+### 有意改变的行为（逐条列出，便于回溯）
+
+1. **embedding_dim 未设置时的默认值 512 → 128**。128 是 SFace manifest 的 dimension，
+   也是注册表原值；512 是调用点自带的历史默认值。它只进分析指纹（Vision 路径不用它），
+   所以代价是：**已分析过的会话会被判过期、重跑一次**。
+2. **import_concurrency 被写坏（NaN/inf/非数字）时回落 8**（旧行为是批大小变 0：
+   静默一张都不导入）。这条改了 SessionServiceTests 的一条断言（0 → 1）。
+3. **写坏的数值设置不再抛 SIM_THRESHOLD_INVALID，而是回落默认值 + 一行 warn 日志**。
+   理由：设置是数据不是 API 入参；用户手改库写坏一个值不该让整条分析链失败。
+   API 入参校验（rejectInvalid）不变。
+4. `bool()` 定为**严格 "1" 方言**（仓里已有测试钉住「非 1 视为关闭」）；
+   lazy_checksum 保持 `!= "false"`、metadata_sync_auto_confirm 保持 `== "0"`，
+   各自用 string 比较，不共用折叠。
+
+### 端口语义
+
+- `storedValue(for:) -> String?`：nil = 未设置（不折叠默认值）；
+- `string/double/int/bool` 扩展：未设置回落**键自带默认值**，非有限/不可解析回落并记 warn；
+- `ClosureSettingsReader`：测试与过渡期适配器（36 个注入点零改动地继续用）。
+
+### 测试
+
+- core 1602 + 25、app 880 全绿（用例数不变：本轮只迁移，不新增场景）；
+- 迁移中改写的断言 4 条（SessionService NaN 语义、SimilarityService corrupt 语义、
+  DefaultSignatures 的 embeddingDim、SettingsKeyTests 的 bool 方言），均在上面的
+  「有意改变的行为」里点名。

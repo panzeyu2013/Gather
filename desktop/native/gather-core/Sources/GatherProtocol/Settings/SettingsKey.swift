@@ -93,6 +93,18 @@ public enum SettingsKey: String, CaseIterable, Sendable, Hashable {
     case triageCalibrationMinSamples = "triage_calibration_min_samples"
     case semanticIndexEnabled = "semantic_index_enabled"
 
+    // MARK: - #9 转正：原先只读不写的「幽灵键」
+    //
+    // 这 5 个键此前不在默认值表里，于是 set() 必抛 unknownKey、UI 也改不了，
+    // 生产读到的永远是调用点硬编码的默认值——等于一个不可配置的常量。
+    // 转正后它们与其它键同权（可写、可 reset、进 getAll），
+    // 默认值取调用点此前的硬编码值（行为不变，只是从此真的可配置）。
+    case importConcurrency = "import_concurrency"
+    case assetReadMode = "asset_read_mode"
+    case similarityClusterConvergenceInterval = "similarity_cluster_convergence_interval"
+    case similarityDecodeConcurrency = "similarity_decode_concurrency"
+    case similarityPreviewMaxDimension = "similarity_preview_max_dimension"
+
     /// 缺省值：settings 表是 TEXT，默认值一律以字符串形态保存（与旧
     /// SettingsService.getDefaults() 逐字一致）。
     ///
@@ -168,6 +180,11 @@ public enum SettingsKey: String, CaseIterable, Sendable, Hashable {
         case .c1AutoReload: "1"
         case .triageCalibrationMinSamples: "50"
         case .semanticIndexEnabled: "0"
+        case .importConcurrency: "8"
+        case .assetReadMode: "dual"
+        case .similarityClusterConvergenceInterval: "10"
+        case .similarityDecodeConcurrency: "4"
+        case .similarityPreviewMaxDimension: "256"
         }
     }
 }

@@ -93,7 +93,7 @@ private func makeIncrementalHarness(settings: [String: Double] = [:]) throws -> 
         similarityResultRepo: SimilarityResultRepo(connection: db),
         clusterStateRepo: stateRepo,
         connection: db,
-        getNumber: { key, defaultValue in settings[key] ?? defaultValue },
+        settings: ClosureSettingsReader { key in settings[key.rawValue].map { String($0) } },
         thumbnailProvider: { _, _ in nil },
         clusterProvider: { entries, threshold, minGroupSize, mode, onProgress in
             counter.increment()

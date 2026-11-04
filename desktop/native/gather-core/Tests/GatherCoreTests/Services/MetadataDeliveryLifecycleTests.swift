@@ -47,6 +47,13 @@ private final class LifecycleSettingsBox: @unchecked Sendable {
         return values[key] ?? fallback
     }
 
+    /// #9：端口语义是「未设置 = nil」，不能折叠成空串（默认值由键决定）。
+    func stored(_ key: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return values[key]
+    }
+
     func set(_ key: String, _ value: String) {
         lock.lock()
         defer { lock.unlock() }
@@ -146,7 +153,7 @@ private func makeLifecycleFixture(
     let service = MetadataDeliveryService(
         connection: db,
         coordinator: coordinator,
-        getSetting: { key, fallback in box.get(key, fallback) }
+        settings: ClosureSettingsReader { key in box.stored(key.rawValue) }
     )
     // 会话：默认**没有** reload_acked_at（C1 待重载的初始态）。
     _ = try db.prepare("""

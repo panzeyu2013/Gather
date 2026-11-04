@@ -32,7 +32,13 @@ public extension SettingsReading {
     /// 非有限值必须回落：Swift 的 Int(Double.infinity) 是 trap 而不是抛错，
     /// 一个手改的 1e999 就能让分析链路崩溃（对抗验证 V2 实测 SIGTRAP）。
     func double(_ key: SettingsKey) -> Double {
-        guard let raw = storedValue(for: key), let parsed = Double(raw), parsed.isFinite else {
+        guard let raw = storedValue(for: key) else { return Double(key.defaultValue) ?? 0 }
+        guard let parsed = Double(raw), parsed.isFinite else {
+            // 不静默：存量值被手改/脚本写坏时必须留一行诊断，否则「设置不生效」
+            // 只能靠翻库定位。回落而不是抛错：设置是数据，不该让整条分析链失败。
+            GatherLogger.log(
+                "设置 \(key.rawValue) 的值非法（\(raw)），回落默认值 \(key.defaultValue)",
+                level: .warn)
             return Double(key.defaultValue) ?? 0
         }
         return parsed
@@ -43,13 +49,13 @@ public extension SettingsReading {
         double(key).safeInt(fallback: Int(key.defaultValue) ?? 0)
     }
 
-    /// 布尔读取：兼容两种历史方言（"1"/"0" 与 "true"/"false"）。
+    /// 布尔读取：**严格 "1" 方言**（其余一律 false）。
     ///
-    /// 两种方言是存量事实（triage_* 用 "1"，lazy_checksum 用 "true"），
-    /// 归一化属于独立决策（会翻存量库的语义），所以这里取并集而不是二选一。
+    /// 为什么不做 "true" 容错：仓里有明确测试（FaceIncrementalClusterTests）钉住
+    /// 「非 "1" 的写法视为关闭，避免 true/1 解析歧义」。需要 "true"/"false" 语义的
+    /// 键（lazy_checksum）自己用 string(_:) 比较，不共用这个折叠。
     func bool(_ key: SettingsKey) -> Bool {
-        let raw = (storedValue(for: key) ?? key.defaultValue).lowercased()
-        return raw == "1" || raw == "true"
+        (storedValue(for: key) ?? key.defaultValue) == "1"
     }
 }
 

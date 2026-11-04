@@ -22,7 +22,7 @@ extension SessionService {
         photoRepo: PhotoRepo,
         faceRepo: FaceRepo,
         connection: DBConnection,
-        getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         dimensionsProvider: @escaping (String) throws -> (width: Int, height: Int) = { _ in
             throw SessionServiceError.sourceNotDir
         },
@@ -38,7 +38,7 @@ extension SessionService {
             assetRepo: assetRepo,
             deliverySummary: DeliverySummaryQuery(connection: connection),
             transactions: connection,
-            getNumber: getNumber,
+            settings: settings,
             dimensionsProvider: dimensionsProvider
         )
     }
@@ -137,7 +137,7 @@ extension SimilarityService {
         similarityResultRepo: SimilarityResultRepo,
         clusterStateRepo: SimilarityClusterStateRepo,
         connection: DBConnection,
-        getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         thumbnailProvider: @escaping ThumbnailProvider = { _, _ in nil },
         clusterProvider: @escaping ClusterProvider = { entries, threshold, minGroupSize, mode, onProgress in
             // 与生产 init 的默认值逐字一致（Cut 5 / 5b-2a 唯一实现）。
@@ -165,7 +165,7 @@ extension SimilarityService {
             analysisRuns: AnalysisRunRepo(connection: connection),
             deliveryItems: DeliveryRepo(connection: connection),
             transactions: connection,
-            getNumber: getNumber,
+            settings: settings,
             thumbnailProvider: thumbnailProvider,
             clusterProvider: clusterProvider,
             multiClusterProvider: multiClusterProvider,
@@ -212,8 +212,7 @@ extension FaceKwService {
         faceRepo: FaceRepo,
         personRepo: PersonRepo,
         connection: DBConnection,
-        getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
-        getString: @escaping (String, String) -> String = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         decodeProvider: DecodeProvider? = nil,
         inferenceProvider: FaceInferenceProvider? = nil,
         clusterProvider: @escaping FaceClusterProvider = { entries, eps, minPts, options, onProgress, isCancelled in
@@ -240,8 +239,7 @@ extension FaceKwService {
             analysisRuns: AnalysisRunRepo(connection: connection),
             deliveryItems: DeliveryRepo(connection: connection),
             transactions: connection,
-            getNumber: getNumber,
-            getString: getString,
+            settings: settings,
             decodeProvider: decodeProvider,
             inferenceProvider: inferenceProvider,
             clusterProvider: clusterProvider,
@@ -272,7 +270,7 @@ extension CullingService {
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: CullingHistoryRepo? = nil,
-        getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
         flushMetadata: ((String) async throws -> Void)? = nil,
         fileLock: XMPFileLock? = nil,
@@ -290,7 +288,7 @@ extension CullingService {
             metadataMutations: metadataMutations,
             writeback: writeback,
             cullingHistoryRepo: cullingHistoryRepo,
-            getNumber: getNumber,
+            settings: settings,
             triageDisplayPolicy: triageDisplayPolicy,
             flushMetadata: flushMetadata,
             // 旧默认：宿主未注入时按同一 connection 自建 coordinator（行为不变）。
@@ -342,7 +340,7 @@ extension IndexerService {
         assetRepo: AssetRepo,
         faceRepo: FaceRepo? = nil,
         getDimensions: @escaping DimensionsProvider = IndexerService.defaultDimensions,
-        getSetting: @escaping SettingReader = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         warmMetadata: @escaping MetadataWarmup = { _ in }
     ) {
         self.init(
@@ -353,7 +351,7 @@ extension IndexerService {
             assetRepo: assetRepo,
             faceRepo: faceRepo,
             getDimensions: getDimensions,
-            getSetting: getSetting,
+            settings: settings,
             warmMetadata: warmMetadata
         )
     }

@@ -576,7 +576,7 @@ extension FaceKwService {
             retryMinSamples: options.retryMinSamples,
             // 歧义不猜：与 matchClustersAgainstLibrary 的 face_match_margin 同源同语义，
             // 冠军/亚军近似并列时宁可另立新簇，也不把脸塞进可能错误的人。
-            ambiguityMargin: max(0, getNumber("face_match_margin", 0.01)),
+            ambiguityMargin: max(0, settings.double(.faceMatchMargin)),
             onProgress: onProgress,
             isCancelled: cancelCheck)
         if signal?.aborted ?? false { throw JobCancelledError() }
@@ -702,9 +702,9 @@ extension FaceKwService {
     ///   "谁能带簇"，低质量脸仍会被吸收为边界点（见 FaceClusterer）。
     /// - `face_core_retry_min_samples`（默认 2）：二遍核心点阈值，用于恢复被严格首遍漏掉的
     ///   小簇；< 2 视为关闭——= 1 会让单张噪声脸各自成簇（PhotoPrism 的 retry 不产生单点簇）。
-    static func clusterOptions(from getNumber: (String, Double) -> Double) -> FaceClusterOptions {
-        let floor = min(max(getNumber("face_core_quality", 0.35), 0), 1)
-        let retry = getNumber("face_core_retry_min_samples", 2).safeInt(fallback: 2)
+    static func clusterOptions(from settings: any SettingsReading) -> FaceClusterOptions {
+        let floor = min(max(settings.double(.faceCoreQuality), 0), 1)
+        let retry = settings.int(.faceCoreRetryMinSamples)
         return FaceClusterOptions(coreQualityFloor: floor, retryMinSamples: retry >= 2 ? retry : nil)
     }
 
@@ -713,8 +713,8 @@ extension FaceKwService {
     /// 走增量路径保留已有簇 id 与用户绑定；首次分析、签名变化、recluster 命令与
     /// 全失败 run 仍走全量。用字符串而非 getNumber 判定：避免 "true"/"1" 两种写法
     /// 的解析歧义（键值由设置界面下拉写入，取值域就是 "1"/"0"）。
-    static func incrementalClusteringEnabled(_ getString: (String, String) -> String) -> Bool {
-        getString("face_incremental_clustering", "1") == "1"
+    static func incrementalClusteringEnabled(_ settings: any SettingsReading) -> Bool {
+        settings.bool(.faceIncrementalClustering)
     }
 
     /// 聚类签名（缓存键）：除 eps/minPts 外必须包含质量门槛与二遍阈值——

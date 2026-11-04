@@ -283,7 +283,7 @@ extension FaceKwService {
 
         let summaries = (try? personRepo.summaries(ids: Array(Set(usable.map(\.personId))))) ?? [:]
         let thresholds = summaries.mapValues(\.matchThreshold)
-        let margin = max(0, getNumber("face_match_margin", 0.01))
+        let margin = max(0, settings.double(.faceMatchMargin))
 
         // 簇循环只做内存过滤：已绑定跳过、rejected 集合、维度过滤。
         var queries: [FaceMatchCluster] = []

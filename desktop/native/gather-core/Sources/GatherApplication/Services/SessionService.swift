@@ -32,8 +32,9 @@ public struct SessionAddPhotoResult: Equatable, Sendable {
 }
 
 public final class SessionService {
-    /// TS: SettingsService.getNumber 注入（import_concurrency 用）。
-    private let getNumber: (String, Double) -> Double
+    /// 设置读取端口（#9）：import_concurrency 等读取统一走任何装 SettingsReading
+    /// 的实现，不再注入 (String, Double) -> Double 闭包。
+    private let settings: any SettingsReading
     /// TS: ImageService.getDimensions(filepath) → { width, height }，失败抛错。
     private let dimensionsProvider: (String) throws -> (width: Int, height: Int)
 
@@ -57,7 +58,7 @@ public final class SessionService {
         assetRepo: (any AssetRepository)? = nil,
         deliverySummary: any DeliverySummaryReading,
         transactions: any TransactionRunner,
-        getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         dimensionsProvider: @escaping (String) throws -> (width: Int, height: Int) = { _ in
             throw SessionServiceError.sourceNotDir
         }
@@ -70,7 +71,7 @@ public final class SessionService {
         self.jobRepo = jobRepo
         self.deliverySummary = deliverySummary
         self.transactions = transactions
-        self.getNumber = getNumber
+        self.settings = settings
         self.dimensionsProvider = dimensionsProvider
         self.assetRepo = assetRepo
     }
@@ -172,7 +173,7 @@ public final class SessionService {
 
         // TS: Math.floor(import_concurrency) 再钳制 1..32；NaN 时 TS 批大小为 NaN
         // → 循环零次执行。Int(NaN/∞) 会 fatalError 崩溃，必须先过滤再转换。
-        let configured = getNumber("import_concurrency", 8)
+        let configured = settings.double(.importConcurrency)
         let batchSize: Int
         if configured.isNaN || configured.isInfinite {
             batchSize = 0

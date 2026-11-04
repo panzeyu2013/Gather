@@ -196,7 +196,9 @@ struct SettingsServiceTests {
     // set 的键校验直接由此表派生，少一个键就意味着对应设置永远写不进去。
     @Test func defaultsMatchTS() {
         let defaults = SettingsService.getDefaults()
-        #expect(defaults.count == 68)
+        // #9：5 个幽灵键转正（import_concurrency / asset_read_mode / similarity_* 三个），
+        // 默认值取其此前的调用点硬编码值（行为不变，只是从此可写）。
+        #expect(defaults.count == 73)
         #expect(defaults["output.deliveryRoot"] == "")
         #expect(defaults["grid_default_sort"] == "import")
         #expect(defaults["grid_density"] == "m")

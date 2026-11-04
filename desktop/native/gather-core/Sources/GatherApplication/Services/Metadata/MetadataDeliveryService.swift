@@ -104,22 +104,21 @@ public struct MetadataDeliveryService: Sendable {
     /// 两个模块分别确认/结束，第二次调用是幂等）。
     public static let modules: [DeliveryModule] = [.metadata, .template]
 
-    private let connection: DBConnection
     private let lifecycle: MetadataLifecycleRepo
     private let coordinator: DeliveryCoordinator
-    private let getSetting: @Sendable (String, String) -> String
+    /// 设置读取端口（#9）：自动确认/自动结束开关。
+    private let settings: any SettingsReading
     private let now: @Sendable () -> Date
 
     public init(
         connection: DBConnection,
         coordinator: DeliveryCoordinator,
-        getSetting: @escaping @Sendable (String, String) -> String = { _, _ in "" },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.connection = connection
         self.lifecycle = MetadataLifecycleRepo(connection: connection)
         self.coordinator = coordinator
-        self.getSetting = getSetting
+        self.settings = settings
         self.now = now
     }
 
@@ -180,7 +179,7 @@ public struct MetadataDeliveryService: Sendable {
     /// 确认同步；若 metadata_sync_auto_finalize=1，再走一次 module finalize。
     public func confirmAndMaybeFinalize(sessionId: String) async throws -> MetadataDeliveryState {
         _ = try confirmSync(sessionId: sessionId)
-        if getSetting(Self.autoFinalizeKey, "0") == "1" {
+        if settings.bool(.metadataSyncAutoFinalize) {
             _ = try await finalizeSync(sessionId: sessionId)
         }
         return try state(sessionId: try requireSession(sessionId))
@@ -201,7 +200,8 @@ public struct MetadataDeliveryService: Sendable {
             return .failed(MetadataDeliveryError.invalidParameter(
                 "sessionId 不能为空").description)
         }
-        if getSetting(Self.autoConfirmKey, "1") == "0" {
+        // 方言保持 "!="：只有显式 "0" 才算关闭（"1"/其它值都算开启）。
+        if settings.string(.metadataSyncAutoConfirm) == "0" {
             return .disabled
         }
         let awaitingAck: Bool

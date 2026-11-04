@@ -85,7 +85,7 @@ private func makeFaceKwHarness(
     writeback: FaceWritebackProvider? = nil,
     delivery: (any DeliveryModuleAdapter)? = nil,
     settings: [String: Double] = [:],
-    settingsProvider: ((String, Double) -> Double)? = nil,
+    settingsProvider: (@Sendable (String, Double) -> Double)? = nil,
     stringSettings: [String: String] = [:]
 ) throws -> FaceKwHarness {
     let db = try makeTestDB()
@@ -104,14 +104,17 @@ private func makeFaceKwHarness(
         faceRepo: FaceRepo(connection: db),
         personRepo: PersonRepo(connection: db),
         connection: db,
-        getNumber: { key, defaultValue in
-            // settingsProvider 优先：供"同一次运行中改设置"的用例（见 FaceAlgorithmWiringTests）。
-            if let settingsProvider { return settingsProvider(key, defaultValue) }
-            return settings[key] ?? defaultValue
-        },
-        getString: { key, defaultValue in
-            // 字符串设置（模型路径/版本/增量开关）此前无法注入，导致"服务是否真的读设置"没有覆盖。
-            stringSettings[key] ?? defaultValue
+        settings: ClosureSettingsReader { key in
+            // 字典优先（显式注入按字符串值读），settingsProvider 只服务数值键：
+            // 它是 (String, Double) -> Double，套到 face_embedding_model_path 这类
+            // 字符串键上会把未设置读成 "0.0"（模型路径 → 加载失败）。
+            if let value = stringSettings[key.rawValue] { return value }
+            if let number = settings[key.rawValue] { return String(number) }
+            if Double(key.defaultValue) != nil, let settingsProvider {
+                let value = settingsProvider(key.rawValue, Double(key.defaultValue) ?? 0)
+                return value.isFinite ? String(value) : nil
+            }
+            return nil
         },
         decodeProvider: { _, _ in Data("jpeg".utf8) },
         inferenceProvider: inference ?? defaultFakeInference(),
@@ -183,6 +186,10 @@ private func runRow(_ db: DBConnection, _ sessionId: String) throws -> DBRow? {
     ).get([.text(sessionId)])
 }
 
+/// #9：embedding_dim 默认值统一到注册表（128 = SFace manifest 的 dimension）。
+/// 旧写法 512 是调用点自带的历史默认值；Vision 路径不用它，只进分析指纹，
+/// 因此指纹会变一次（未重新分析的会话会被判过期）。
+///
 /// 默认签名：**必须惰性**。文件级 `let` 会在测试二进制加载时求值，从而加载内置
 /// SFace（37MB CoreML 包）——哪怕本次只跑一个无关用例；修复前实测每次
 /// `swift test` 都会因此产生一份 37MB 的临时编译产物。
@@ -190,7 +197,7 @@ private enum DefaultSignatures {
     static let analysisSignatureForDefaults = FaceKwService.makeAnalysisSignature(
         detectorPath: "det.onnx", encoderPath: "enc.onnx",
         primaryDetectionSize: 640, secondaryDetectionSize: 128,
-        confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 512,
+        confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 128,
         previewMaxDimension: 2048, embeddingSpec: try! FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature
     )
 }
@@ -356,7 +363,7 @@ struct FaceKwAnalyzeFlowTests {
             analysisSignature: DefaultSignatures.analysisSignatureForDefaults)
         // 聚类签名（缓存键）含质量门槛与二遍阈值：用生产同一构造函数，避免格式漂移导致
         // 该用例悄悄退化为"重聚类"（本测试断言的是缓存快路径）。
-        let seededClusterOptions = FaceKwService.clusterOptions(from: { _, defaultValue in defaultValue })
+        let seededClusterOptions = FaceKwService.clusterOptions(from: ClosureSettingsReader { _ in nil })
         try harness.faceRepo.upsertClusterSignature(
             sessionId: harness.sessionId,
             signature: FaceKwService.clusterSignature(eps: 0.65, minPts: 2, options: seededClusterOptions))
@@ -1661,7 +1668,7 @@ struct FaceAlgorithmWiringTests {
             FaceKwService.makeAnalysisSignature(
                 detectorPath: "det.onnx", encoderPath: "enc.onnx",
                 primaryDetectionSize: 640, secondaryDetectionSize: 128,
-                confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 512,
+                confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 128,
                 previewMaxDimension: 2048, embeddingSpec: spec)
         }
         #expect(signature("vision-v1") != signature("vision-v2"))

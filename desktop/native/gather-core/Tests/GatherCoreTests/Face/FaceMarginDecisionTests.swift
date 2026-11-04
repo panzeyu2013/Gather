@@ -86,10 +86,9 @@ private func runProductionMargin(
         faceRepo: faceRepo,
         personRepo: personRepo,
         connection: db,
-        getNumber: { key, defaultValue in
-            key == "face_match_margin" ? margin : defaultValue
+        settings: ClosureSettingsReader { key in
+            key == .faceMatchMargin ? String(margin) : nil
         },
-        getString: { _, defaultValue in defaultValue },
         decodeProvider: { path, _ in Data(path.utf8) },
         inferenceProvider: { images, _, _ in
             images.map { data in

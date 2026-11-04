@@ -101,9 +101,8 @@ struct ProofFeedbackTests {
             repo: ProofFeedbackRepo(connection: db),
             picks: picks,
             metadata: queue,
-            getString: { key, defaultValue in
-                key == ProofFeedbackService.applyRatingSettingKey
-                    ? (applyRating ? "1" : "0") : defaultValue
+            settings: ClosureSettingsReader { key in
+                key == .proofFeedbackApplyRating ? (applyRating ? "1" : "0") : nil
             },
             now: { Date(timeIntervalSince1970: 1_760_000_000) })
         return (service, picks, queue)

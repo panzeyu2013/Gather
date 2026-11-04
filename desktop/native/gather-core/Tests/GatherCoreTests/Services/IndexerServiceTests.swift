@@ -46,10 +46,12 @@ private func makeHarness(
         assetRepo: AssetRepo(connection: db),
         faceRepo: FaceRepo(connection: db),
         getDimensions: getDimensions,
-        getSetting: { key, defaultValue in
-            if key == "lazy_checksum" { return lazyChecksum }
-            if key == "disk_cache_dir", let diskCacheDir { return diskCacheDir }
-            return defaultValue
+        settings: ClosureSettingsReader { key in
+            switch key {
+            case .lazyChecksum: return lazyChecksum
+            case .diskCacheDir: return diskCacheDir
+            default: return nil
+            }
         }
     )
     return IndexerHarness(db: db, indexer: indexer, sessionRepo: sessionRepo, sessionId: session.id)
@@ -338,8 +340,7 @@ struct CancelledScanIndexSeqTests {
                     throw JobCancelledError()
                 }
                 return (100, 80)
-            },
-            getSetting: { _, defaultValue in defaultValue }
+            }
         )
         let repo = AnalysisJobRepo(connection: db)
         let job = try repo.create(JobCreateParams(
@@ -783,7 +784,6 @@ struct IndexScanScopeTests {
             photoRepo: PhotoRepo(connection: db),
             assetRepo: AssetRepo(connection: db),
             getDimensions: { _ in (100, 80) },
-            getSetting: { _, defaultValue in defaultValue },
             warmMetadata: { ids in await recorder.record(ids) }
         )
 
@@ -1045,7 +1045,6 @@ struct IndexScanScopeTests {
             photoRepo: PhotoRepo(connection: db),
             assetRepo: AssetRepo(connection: db),
             getDimensions: { _ in (100, 80) },
-            getSetting: { _, defaultValue in defaultValue },
             warmMetadata: { ids in await recorder.record(ids) }
         )
 
@@ -1116,9 +1115,11 @@ struct IndexScanScopeTests {
             photoRepo: PhotoRepo(connection: db),
             assetRepo: AssetRepo(connection: db),
             getDimensions: { _ in (100, 80) },
-            getSetting: { key, defaultValue in
-                recorder.record(key, defaultValue)
-                return defaultValue
+            settings: ClosureSettingsReader { key in
+                // 记录「读了哪个键」以及该键的默认值（默认值现在只存在于枚举里，
+                // 与 SettingsKeyTests 的 oracle 同源）。
+                recorder.record(key.rawValue, key.defaultValue)
+                return nil
             }
         )
 

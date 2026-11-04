@@ -378,16 +378,19 @@ struct SessionServiceErrorCodeTests {
             photoRepo: PhotoRepo(connection: db),
             faceRepo: FaceRepo(connection: db),
             connection: db,
-            getNumber: { _, _ in .nan },
+            settings: ClosureSettingsReader { key in
+                key == .importConcurrency ? "nan" : nil
+            },
             dimensionsProvider: { _ in (100, 80) }
         )
         let session = try sessionRepo.create(name: "Add", source: "folder")
 
-        // TS：batchSize=NaN 时循环零批次执行，不崩溃、不报错。
+        // #9：非有限值不再让批大小变成 0（旧 TS 语义是「零次循环 = 静默丢弃」），
+        // 端口把它折叠成键默认值 8 —— 照片正常入库，不再无声丢数据。
         let result = try service.addPhotos(sessionId: session.id, filepaths: [photoA], source: "manual")
 
-        #expect(result.added == 0)
+        #expect(result.added == 1)
         #expect(result.failedFiles.isEmpty)
-        #expect(try sessionRepo.getIndexSeq(id: session.id) == 0)
+        #expect(try sessionRepo.getIndexSeq(id: session.id) == 1)
     }
 }

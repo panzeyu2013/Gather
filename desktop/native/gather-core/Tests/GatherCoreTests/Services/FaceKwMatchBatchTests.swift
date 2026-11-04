@@ -217,8 +217,8 @@ private func makeMatchBatchFixture(
     let service = FaceKwService(
         photoRepo: PhotoRepo(connection: db), sessionRepo: sessionRepo,
         faceRepo: faceRepo, personRepo: personRepo, connection: db,
-        getNumber: { key, defaultValue in
-            key == "face_match_margin" ? margin : defaultValue
+        settings: ClosureSettingsReader { key in
+            key == .faceMatchMargin ? String(margin) : nil
         })
     return MatchBatchFixture(
         db: db, service: service, faceRepo: faceRepo, personRepo: personRepo,

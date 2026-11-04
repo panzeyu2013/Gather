@@ -86,10 +86,8 @@ public final class FaceKwService {
     let analysisRuns: any AnalysisRunRepository
     let deliveryItems: any DeliveryRepository
     let transactions: any TransactionRunner
-    /// TS: SettingsService.getNumber 注入。
-    let getNumber: (String, Double) -> Double
-    /// TS: SettingsService.get 注入（onnx_provider 等字符串设置）。
-    let getString: (String, String) -> String
+    /// 设置读取端口（#9）：数值与字符串设置统一走端口（原本是两个闭包）。
+    let settings: any SettingsReading
     /// TS: imageService 注入。
     let decodeProvider: DecodeProvider?
     /// TS: FaceInferenceWorker 注入（默认走 FaceInferenceEngine）。
@@ -149,8 +147,7 @@ public final class FaceKwService {
         analysisRuns: any AnalysisRunRepository,
         deliveryItems: any DeliveryRepository,
         transactions: any TransactionRunner,
-        getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
-        getString: @escaping (String, String) -> String = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         decodeProvider: DecodeProvider? = nil,
         inferenceProvider: FaceInferenceProvider? = nil,
         clusterProvider: @escaping FaceClusterProvider = { entries, eps, minPts, options, onProgress, isCancelled in
@@ -174,8 +171,7 @@ public final class FaceKwService {
         self.analysisRuns = analysisRuns
         self.deliveryItems = deliveryItems
         self.transactions = transactions
-        self.getNumber = getNumber
-        self.getString = getString
+        self.settings = settings
         self.decodeProvider = decodeProvider
         self.inferenceProvider = inferenceProvider
         self.clusterProvider = clusterProvider

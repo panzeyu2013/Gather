@@ -17,8 +17,7 @@ private func makeFixture() throws -> (db: DBConnection, sessionId: String, faceR
         sessionRepo: sessions,
         faceRepo: faces,
         personRepo: PersonRepo(connection: db),
-        connection: db,
-        getNumber: { _, defaultValue in defaultValue }
+        connection: db
     )
     return (db, session.id, faces, service)
 }

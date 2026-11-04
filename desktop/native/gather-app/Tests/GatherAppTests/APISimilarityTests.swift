@@ -46,9 +46,7 @@ private struct SimilarityBehaviorFixture {
             similarityResultRepo: SimilarityResultRepo(connection: db),
             clusterStateRepo: SimilarityClusterStateRepo(connection: db),
             connection: db,
-            getNumber: { key, defaultValue in
-                settingsService.getNumber(key, defaultValue: defaultValue)
-            }
+            settings: settingsService
         )
         self.db = db
         self.sessionId = session.id

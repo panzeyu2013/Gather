@@ -21,10 +21,10 @@ extension FaceKwService {
         }
 
         let thresholds = FaceReviewEngine.Thresholds(
-            cohesionFloor: getNumber("face_review_cohesion_floor", 0.35),
-            madMultiplier: getNumber("face_review_relative_mad", 2.5),
-            minQuality: getNumber("face_review_min_quality", 0.35),
-            minFaceSize: getNumber("face_review_face_size_min", 48)
+            cohesionFloor: settings.double(.faceReviewCohesionFloor),
+            madMultiplier: settings.double(.faceReviewRelativeMAD),
+            minQuality: settings.double(.faceReviewMinQuality),
+            minFaceSize: settings.double(.faceReviewFaceSizeMin)
         )
         let cacheKey = Self.reviewCacheKey(
             input: input, thresholds: thresholds)

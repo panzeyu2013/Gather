@@ -20,7 +20,7 @@ import GatherProtocol
 /// 由 DBConnection 串行化。标注集中在状态所有者，LiveSettingsAPI 等调用方因此
 /// 可以保持普通 Sendable，不再各自 @unchecked。
 public final class SettingsService: @unchecked Sendable {
-    /// TS: getDefaults() —— 68 键默认值表。
+    /// TS: getDefaults() —— 73 键默认值表（68 注册键 + #9 转正的 5 个幽灵键）。
     ///
     /// #9：默认值不再在这里重复一份，而是从 SettingsKey（GatherProtocol）派生。
     /// 唯一真相是枚举的 defaultValue；新增键漏写默认值会编译失败（switch 穷尽）。
@@ -184,6 +184,12 @@ public final class SettingsService: @unchecked Sendable {
         "c1_auto_reload",
         "triage_calibration_min_samples",
         "semantic_index_enabled",
+        // #9 转正的 5 个键：算法/IO 参数，属于偏好（reset 会回到默认）。
+        "import_concurrency",
+        "asset_read_mode",
+        "similarity_cluster_convergence_interval",
+        "similarity_decode_concurrency",
+        "similarity_preview_max_dimension",
     ]
 
     /// 每个 known key 恰好落到一个 scope；未知键返回 nil（不静默按偏好处理）。

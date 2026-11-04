@@ -20,10 +20,10 @@ extension FaceKwService {
         minPts: Double? = nil,
         onProgress: ProgressHandler? = nil
     ) async throws -> FaceAnalysisResult {
-        let epsValue = eps ?? getNumber("default_eps", 0.65)
-        let minPtsValue = minPts ?? getNumber("default_min_samples", 2)
+        let epsValue = eps ?? settings.double(.defaultEps)
+        let minPtsValue = minPts ?? settings.double(.defaultMinSamples)
         try validateFaceClusteringParameters(eps: epsValue, minPts: minPtsValue)
-        let clusterOptions = Self.clusterOptions(from: getNumber)
+        let clusterOptions = Self.clusterOptions(from: settings)
         let signal = JobAbortSignal()
         try claimController(signal, for: sessionId)
 
@@ -56,8 +56,8 @@ extension FaceKwService {
 
             // TS 的 onnx_threads 用于 worker 线程预算分摊；Vision 无 ONNX
             // 线程池，该设置在此保留读取语义（见 FaceKwService.swift 文件头差异说明）但不消费。
-            let encoderInputSize = getNumber("encoder_input_size", 112).safeInt(fallback: 112)
-            let embeddingDim = getNumber("embedding_dim", 512).safeInt(fallback: 512)
+            let encoderInputSize = settings.int(.encoderInputSize)
+            let embeddingDim = settings.int(.embeddingDim)
             // 照片与 index_seq 快照共享一个读事务（design §8）。
             let snapshot: (photos: [PhotoProjectionRow], indexSeq: Int) = try transactions.transaction {
                 // P2：已移出工作区的照片不参与人脸聚类（与列表/导出/写回同口径）。
@@ -81,18 +81,18 @@ extension FaceKwService {
                 )
             )
 
-            let primaryDetectionSize = getNumber("detect_input_size", 640).safeInt(fallback: 640)
-            let secondaryDetectionSize = getNumber("detect_secondary_input_size", 128).safeInt(fallback: 128)
-            let confidenceThreshold = getNumber("detect_confidence", 0.5)
-            let previewMaxDimension = max(640, getNumber("face_preview_max_dimension", 2048).safeInt(fallback: 2048))
+            let primaryDetectionSize = settings.int(.detectInputSize)
+            let secondaryDetectionSize = settings.int(.detectSecondaryInputSize)
+            let confidenceThreshold = settings.double(.detectConfidence)
+            let previewMaxDimension = max(640, settings.int(.facePreviewMaxDimension))
             // 嵌入模型规格：空路径 = 随应用分发的 SFace；自定义模型必须可加载——
             // 配置错误在这里就失败，而不是把两种向量空间混进同一列（见 EmbeddingModel）。
             // 一次运行只创建**一个**嵌入实例，签名与推理共用（见 FaceInferenceEngine.init）：
             // 否则"签名算完后模型文件被替换"会让本次运行用 A 的签名标注 B 的向量。
             let embedder = try FaceEmbeddingModelFactory.make(
-                modelPath: getString(FaceEmbeddingModelFactory.modelPathSetting, ""),
-                modelVersion: getString(FaceEmbeddingModelFactory.modelVersionSetting, ""),
-                computeUnits: getString("face_compute_units", "auto")
+                modelPath: settings.string(.faceEmbeddingModelPath),
+                modelVersion: settings.string(.faceEmbeddingModelVersion),
+                computeUnits: settings.string(.faceComputeUnits)
             )
             let embeddingSpec = embedder.spec
             let analysisSignature = Self.makeAnalysisSignature(
@@ -217,18 +217,18 @@ extension FaceKwService {
                 return FaceAnalysisResult(status: "done", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
             }
 
-            let requestedWorkers = max(1, min(2, getNumber("face_inference_parallel_workers", 1).safeInt(fallback: 1)))
+            let requestedWorkers = max(1, min(2, settings.int(.faceInferenceParallelWorkers)))
             let inferenceConfig = FaceInferenceConfig(
                 confidenceThreshold: confidenceThreshold,
-                nmsThreshold: getNumber("nms_threshold", 0.4),
-                maxDetections: getNumber("max_detections", 100).safeInt(fallback: 100),
+                nmsThreshold: settings.double(.nmsThreshold),
+                maxDetections: settings.int(.maxDetections),
                 embeddingDim: embeddingDim,
                 primaryInputSize: primaryDetectionSize,
                 secondaryInputSize: secondaryDetectionSize,
                 encodeInputSize: encoderInputSize,
                 fallbackToOnnxEnabled: false,
-                faceEmbeddingModelPath: getString(FaceEmbeddingModelFactory.modelPathSetting, ""),
-                faceEmbeddingModelVersion: getString(FaceEmbeddingModelFactory.modelVersionSetting, "")
+                faceEmbeddingModelPath: settings.string(.faceEmbeddingModelPath),
+                faceEmbeddingModelVersion: settings.string(.faceEmbeddingModelVersion)
             )
             // 旧集群与角色绑定刻意保留到新结果就绪（TS 注释 270-272）：失败
             // 的推理不得摧毁用户已绑定的集群与角色名。
@@ -245,7 +245,7 @@ extension FaceKwService {
 
             onProgress?(0, totalPhotos, "face.detect")
 
-            let decodeWindow = max(1, min(8, getNumber("face_decode_concurrency", 4).safeInt(fallback: 4)))
+            let decodeWindow = max(1, min(8, settings.int(.faceDecodeConcurrency)))
 
             // TS: applyInferenceResult（替换旧观察只在推理成功之后；失败批次
             // 不得摧毁该照片先前有效的检测）。
@@ -423,7 +423,7 @@ extension FaceKwService {
             // 增量资格在 run 开始时的状态上判定（signatureMatches / hasClusters 取
             // 分析前的快照）：设置开启（face_incremental_clustering，默认 "1"）+ 聚类
             // 签名未变 + 库里已有簇 + 本次分析没有整体失败。recluster 命令恒走全量。
-            let incrementalEligible = Self.incrementalClusteringEnabled(getString)
+            let incrementalEligible = Self.incrementalClusteringEnabled(settings)
                 && signatureMatches && hasClusters && !analysisFailed
             if migratingModel && (detectionFailures > 0 || encodingFailures > 0) {
                 return FaceAnalysisResult(status: "failed", detectionFailures: detectionFailures, encodingFailures: encodingFailures)
@@ -481,7 +481,7 @@ extension FaceKwService {
                     .filter { PhotoVisibility.isVisible(archivedAt: $0.archivedAt) }),
              try sessionRepo.getIndexSeq(id: sessionId))
         }
-        let clusterOptions = Self.clusterOptions(from: getNumber)
+        let clusterOptions = Self.clusterOptions(from: settings)
         if signal.aborted { throw JobCancelledError() }
         // C 之前只采集一次人工反馈（同 analyze）。
         try captureManualIdentityFeedback(sessionId: sessionId)

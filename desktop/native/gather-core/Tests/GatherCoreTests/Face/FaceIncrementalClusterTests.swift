@@ -266,8 +266,7 @@ private func makeIncrementalFaceHarness(
         faceRepo: faceRepo,
         personRepo: personRepo,
         connection: db,
-        getNumber: { _, defaultValue in defaultValue },
-        getString: { key, defaultValue in settings[key] ?? defaultValue },
+        settings: ClosureSettingsReader { key in settings[key.rawValue] },
         decodeProvider: { path, _ in Data(path.utf8) },
         inferenceProvider: { images, _, _ in
             images.map { data in
@@ -386,7 +385,7 @@ struct FaceKwIncrementalServiceTests {
         try addFacePhoto(harness, id: "p2", vector: e0)
         _ = try await runAnalyze(harness, eps: 0.6)
         let idsBefore = try clusterSnapshots(harness).map(\.id)
-        let options = FaceKwService.clusterOptions(from: { _, defaultValue in defaultValue })
+        let options = FaceKwService.clusterOptions(from: ClosureSettingsReader { _ in nil })
         #expect(
             try harness.faceRepo.getClusterSignature(harness.sessionId)
                 == FaceKwService.clusterSignature(eps: 0.6, minPts: 2, options: options))

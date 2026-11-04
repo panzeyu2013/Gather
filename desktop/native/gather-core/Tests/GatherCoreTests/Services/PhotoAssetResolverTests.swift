@@ -37,7 +37,7 @@ private func seedPhoto(_ harness: ResolverHarness, id: String, sessionId: String
 private func makeResolver(_ harness: ResolverHarness) -> PhotoAssetResolver {
     PhotoAssetResolver(
         connection: harness.db,
-        getSetting: { key, defaultValue in harness.settings[key] ?? defaultValue }
+        settings: ClosureSettingsReader { key in harness.settings[key.rawValue] }
     )
 }
 

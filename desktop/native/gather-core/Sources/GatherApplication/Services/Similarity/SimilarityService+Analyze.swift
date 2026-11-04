@@ -23,8 +23,8 @@ extension SimilarityService {
     ) async throws {
         // 参数校验先于占用获取（TS 源在校验前注册占用，非法参数会永久泄漏占用；
         // 这里保留此前的有意修复）。
-        let thresholdValue = threshold ?? getNumber("default_threshold", 10)
-        let minGroupSizeValue = minGroupSize ?? getNumber("default_min_group_size", 2)
+        let thresholdValue = threshold ?? settings.double(.defaultThreshold)
+        let minGroupSizeValue = minGroupSize ?? settings.double(.defaultMinGroupSize)
         let groupingMode = groupingMode ?? .global
 
         try validateSimilarityParameters(threshold: thresholdValue, minGroupSize: minGroupSizeValue)
@@ -103,8 +103,8 @@ extension SimilarityService {
 
                 onProgress?(0, uncachedPhotos.count, "similarity.hash")
 
-                let decodeBatchSize = min(32, max(1, getNumber("similarity_decode_concurrency", 4).safeInt(fallback: 4)))
-                let previewMaxDimension = min(2048, max(64, getNumber("similarity_preview_max_dimension", 256).safeInt(fallback: 256)))
+                let decodeBatchSize = min(32, max(1, settings.int(.similarityDecodeConcurrency)))
+                let previewMaxDimension = min(2048, max(64, settings.int(.similarityPreviewMaxDimension)))
 
                 var offset = 0
                 while offset < uncachedPhotos.count {

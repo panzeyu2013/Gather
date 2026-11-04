@@ -102,7 +102,8 @@ public final class CullingService {
     /// 交付适配器（WP2c：module 固定 .culling）：confirm/cleanup/finalize/镜像/读模型。
     let delivery: any DeliveryModuleAdapter
     let cullingHistoryRepo: (any CullingHistoryRepository)?
-    let getNumber: (String, Double) -> Double
+    /// 设置读取端口（#9）：检测尺寸/预览上限等读取统一走端口。
+    let settings: any SettingsReading
     /// P0/T0：资产级建议展示策略（指纹/策略匹配 + 关闭态隐藏）。
     /// nil = 兼容模式（不接 T0 的调用方/旧测试保持原有读行为）。
     let triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)?
@@ -121,7 +122,7 @@ public final class CullingService {
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: (any CullingHistoryRepository)? = nil,
-        getNumber: @escaping (String, Double) -> Double = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
         flushMetadata: ((String) async throws -> Void)? = nil,
         delivery: any DeliveryModuleAdapter
@@ -137,7 +138,7 @@ public final class CullingService {
         self.metadataMutations = metadataMutations
         self.writeback = writeback
         self.cullingHistoryRepo = cullingHistoryRepo
-        self.getNumber = getNumber
+        self.settings = settings
         self.triageDisplayPolicy = triageDisplayPolicy
         self.flushMetadata = flushMetadata
         // WP3b-2：不再按 connection 自建 coordinator（Application 不持 DBConnection）。

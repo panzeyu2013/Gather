@@ -414,8 +414,8 @@ extension CullingService {
             let sourceHeight = max(1, photo.height)
             let analysisMax = lookup.analysisMaxByPhoto[photo.id]
                 ?? max(
-                    getNumber("detect_input_size", 640),
-                    getNumber("face_preview_max_dimension", 2048)
+                    Double(settings.int(.detectInputSize)),
+                    Double(settings.int(.facePreviewMaxDimension))
                 )
             let analysisScale = min(1, analysisMax / Double(max(sourceWidth, sourceHeight)))
             let analysisWidth = Double(sourceWidth) * analysisScale

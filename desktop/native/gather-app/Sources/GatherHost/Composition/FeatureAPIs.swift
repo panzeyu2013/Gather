@@ -129,9 +129,7 @@ struct FeatureAPIs {
                 picks: CullingProofPickApplier(service: composition.cullingService),
                 metadata: MetadataMutationProofQueue(
                     mutations: composition.metadataMutationService),
-                getString: { key, value in
-                    settings.get(key, defaultValue: value)
-                }),
+                settings: settings),
             calibration: TriageCalibrationService(
                 feedback: TriageFeedbackRepo(connection: composition.db),
                 settings: composition.settingsService)

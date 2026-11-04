@@ -106,7 +106,7 @@ private func makeHarness(
         similarityResultRepo: SimilarityResultRepo(connection: db),
         clusterStateRepo: SimilarityClusterStateRepo(connection: db),
         connection: db,
-        getNumber: { key, defaultValue in settings[key] ?? defaultValue },
+        settings: ClosureSettingsReader { key in settings[key.rawValue].map { String($0) } },
         thumbnailProvider: thumbnail,
         clusterProvider: cluster
     )
@@ -706,14 +706,18 @@ struct SimilarityServiceRobustnessTests {
         #expect(SimilarityServiceError.noHashRecluster.gatherCode == .SIM_NO_HASH_RECLUSTER)
     }
 
-    @Test("analyze rejects a corrupt settings value instead of crashing")
+    @Test("analyze：写坏的存量设置回落默认值（不崩溃、不误判 SIM_THRESHOLD_INVALID）")
     func analyzeSurvivesNanSettings() async throws {
         let harness = try makeHarness(settings: ["default_threshold": .nan])
 
-        // TS：Number.isInteger(NaN) === false → SIM_THRESHOLD_INVALID；Swift
-        // 同样抛错而非 Int(NaN) 崩溃。
-        await #expect(throws: SimilarityServiceError.thresholdInvalid) {
-            try await harness.service.analyze(sessionId: harness.sessionId)
+        // #9：设置是**数据**而不是 API 输入。写坏的数值回落键默认值（10）并留一行
+        // warn 日志；不再像旧实现那样把它当作「调用方给了非法阈值」抛
+        // SIM_THRESHOLD_INVALID —— 用户改库写坏一个值不该让整条分析链失败。
+        // （API 入参仍然严格校验，见 rejectInvalid(threshold:minGroupSize:) 契约。）
+        do {
+            _ = try await harness.service.analyze(sessionId: harness.sessionId)
+        } catch let error as SimilarityServiceError {
+            #expect(error != .thresholdInvalid, "写坏存量值必须回落默认，而不是报阈值非法")
         }
         // 占用已释放（controller 在 try 之前注册、校验失败不清理——TS 缺陷
         // 逐字保留？校验失败发生在 controller 注册之后，defer 尚未建立，

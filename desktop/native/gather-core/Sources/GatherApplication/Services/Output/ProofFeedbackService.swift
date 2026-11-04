@@ -130,20 +130,21 @@ public final class ProofFeedbackService {
     private let repo: ProofFeedbackRepo
     private let picks: (any ProofPickApplying)?
     private let metadata: (any ProofMetadataQueueing)?
-    private let getString: (String, String) -> String
+    /// 设置读取端口（#9）。
+    private let settings: any SettingsReading
     private let now: () -> Date
 
     public init(
         repo: ProofFeedbackRepo,
         picks: (any ProofPickApplying)? = nil,
         metadata: (any ProofMetadataQueueing)? = nil,
-        getString: @escaping (String, String) -> String = { _, defaultValue in defaultValue },
+        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         now: @escaping () -> Date = Date.init
     ) {
         self.repo = repo
         self.picks = picks
         self.metadata = metadata
-        self.getString = getString
+        self.settings = settings
         self.now = now
     }
 
@@ -173,7 +174,7 @@ public final class ProofFeedbackService {
         let submittedAt = parsed.submittedAt ?? ""
         // 评分/色标是否自动应用（设置关掉时只落库，不碰本地值）。提到短路之前：
         // "这条 batch 还有没有活要干"取决于这个开关。
-        let applyRating = getString(Self.applyRatingSettingKey, "0") == "1" && metadata != nil
+        let applyRating = settings.bool(.proofFeedbackApplyRating) && metadata != nil
 
         let allIds = parsed.items.map(\.photoId)
         let known = try repo.existingPhotoIds(

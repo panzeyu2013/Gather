@@ -134,7 +134,7 @@ extension SimilarityService {
             minGroupSize: minGroupSize,
             groupingMode: groupingMode.rawValue
         )
-        let convergenceInterval = max(1, getNumber("similarity_cluster_convergence_interval", 10).safeInt(fallback: 10))
+        let convergenceInterval = max(1, settings.int(.similarityClusterConvergenceInterval))
 
         if groupingMode == .global,
            let snapshot,

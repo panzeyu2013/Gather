@@ -72,7 +72,6 @@ struct PortFakeIndexerServiceTests {
             assetRepo: PortFakeAssetRepo(),
             faceRepo: nil,
             getDimensions: { _ in (100, 80) },
-            getSetting: { _, defaultValue in defaultValue },
             warmMetadata: { _ in }
         )
 
