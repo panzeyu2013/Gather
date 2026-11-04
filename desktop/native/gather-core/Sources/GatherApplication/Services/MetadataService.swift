@@ -88,49 +88,6 @@ public typealias MetadataPhotoLookup = PhotoLookupRow
 /// `@unchecked Sendable` 的依据：全部可变状态（`fingerprints`/`result`/
 /// `pendingUpserts`）只在 `lock`（NSLock）临界区内通过同步方法读写；
 /// 并发阶段结束后由调用方经 snapshot 一次性取走（此后无写者）。
-private final class MetadataCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var fingerprints: [String: (size: Int, value: String)] = [:]
-    private var result: [String: MetadataTags] = [:]
-    private var pendingUpserts: [(photoId: String, sessionId: String, input: MetadataCacheInput)] = []
-
-    func recordFingerprint(photoId: String, fingerprint: (size: Int, value: String)) {
-        lock.lock()
-        defer { lock.unlock() }
-        fingerprints[photoId] = fingerprint
-    }
-
-    func recordResult(photoId: String, tags: MetadataTags) {
-        lock.lock()
-        defer { lock.unlock() }
-        result[photoId] = tags
-    }
-
-    func recordExtraction(photoId: String, sessionId: String, tags: MetadataTags, cacheInput: MetadataCacheInput) {
-        lock.lock()
-        defer { lock.unlock() }
-        result[photoId] = tags
-        pendingUpserts.append((photoId, sessionId, cacheInput))
-    }
-
-    func snapshotFingerprints() -> [String: (size: Int, value: String)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return fingerprints
-    }
-
-    func snapshotPendingUpserts() -> [(photoId: String, sessionId: String, input: MetadataCacheInput)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return pendingUpserts
-    }
-
-    func snapshotResult() -> [String: MetadataTags] {
-        lock.lock()
-        defer { lock.unlock() }
-        return result
-    }
-}
 
 /// TS: MetadataService。
 /// 线程安全说明（Swift 6 `Sendable`）：本类无任何可变状态——全部存储属性
@@ -146,6 +103,8 @@ public final class MetadataService: @unchecked Sendable {
     private let reader: MetadataDiskReader
     /// #6 S2：只读元数据投影（不触发磁盘解析）。
     private let projector: PhotoMetadataProjector
+    /// #6 S3：元数据抽取（指纹检查 → 缓存/提取 → 单事务 upsert）。
+    private let extraction: MetadataExtractionService
     private let photoRepo: any PhotoRepository
     private let transactions: any TransactionRunner
     private let mutations: any MetadataMutationPort
@@ -185,6 +144,15 @@ public final class MetadataService: @unchecked Sendable {
         self.reader = MetadataDiskReader(xmp: xmp, exif: exif, embeddedReader: embeddedReader)
         self.projector = PhotoMetadataProjector(
             xmp: xmp, assetResolver: assetResolver, writeTarget: writeTarget)
+        self.extraction = MetadataExtractionService(
+            photos: photoRepo,
+            xmp: xmp,
+            cache: metadataCacheRepo,
+            transactions: transactions,
+            reader: MetadataDiskReader(xmp: xmp, exif: exif, embeddedReader: embeddedReader),
+            exif: exif,
+            dimensions: dimensions,
+            keywordIndex: keywordIndex)
         self.photoRepo = photoRepo
         self.transactions = transactions
         self.mutations = mutations
@@ -202,7 +170,8 @@ public final class MetadataService: @unchecked Sendable {
     // MARK: - TS 顶层函数
 
     /// TS: cacheRowToTags。
-    private func cacheRowToTags(_ row: MetadataCacheRow) -> MetadataTags {
+    // #6 S3 前置：两处缓存映射改为 static（它们不用 self），供抽取服务跨类型复用。
+    static func cacheRowToTags(_ row: MetadataCacheRow) -> MetadataTags {
         let keywords = row.keywords
         return MetadataTags(
             fileSize: row.fileSize.map { Int($0) },
@@ -225,7 +194,7 @@ public final class MetadataService: @unchecked Sendable {
     }
 
     /// TS: tagsToCacheInput。
-    private func tagsToCacheInput(_ tags: MetadataTags) -> MetadataCacheInput {
+    static func tagsToCacheInput(_ tags: MetadataTags) -> MetadataCacheInput {
         MetadataCacheInput(
             dateTaken: tags.dateTaken,
             cameraMake: tags.make,
@@ -325,189 +294,11 @@ public final class MetadataService: @unchecked Sendable {
         return projector.project(lookup, row: try metadataCacheRepo.get(photoId))
     }
 
-    /// TS: preserveValuesOnCorruptSidecar —— 损坏 sidecar 让 readAttributes 返回
-    /// 空对象；没有该守卫缓存会被空值覆盖，直到文件再次变更前有效值全失。
-    private func preserveValuesOnCorruptSidecar(
-        photoId: String,
-        filepath: String,
-        attributes: inout MetadataWriteAttributes
-    ) {
-        if !attributes.isEmpty { return }
-        if !xmp.fileExists(TSPath.xmpSidecarPath(filepath)) { return }
-        guard let previous = try? metadataCacheRepo.get(photoId) else { return }
-        let previousKeywords = previous.keywords
-        if !previousKeywords.isEmpty { attributes.keywords = previousKeywords }
-        if previous.rating != 0 { attributes.rating = Double(previous.rating) }
-        if previous.label != nil { attributes.label = previous.label }
-        // P1 / IPTC：损坏 sidecar 读不出 IPTC 时同样保留旧投影，避免一次坏文件清空面板。
-        let previousDescriptive = previous.descriptive
-        if !previousDescriptive.isEmpty { attributes.descriptive = previousDescriptive }
-    }
-
     // MARK: - 公开 API
 
-    /// TS: getMetadata —— 指纹失效检查 → 缓存命中 / 缺失提取（EXIF → sharp 兜底）
-    /// → 批量事务 upsert。
+    /// TS: getMetadata —— #6 S3 起由 MetadataExtractionService 承担。
     public func getMetadata(photoIds: [String]) async throws -> [String: MetadataTags] {
-        let allPhotos = try getPhotosByIds(photoIds)
-        let photoById = Dictionary(uniqueKeysWithValues: allPhotos.map { ($0.id, $0) })
-        // batchAsync 的 body 由多个 worker 并发调用：捕获的可变集合必须串行写入。
-        // Swift 的 Dictionary/Array 非线程安全，并发下标写/append 会内存损坏
-        // （实测 SIGSEGV 或静默丢行），故收集动作统一收进 MetadataCollector 的锁内。
-        let collector = MetadataCollector()
-        _ = try await batchAsync(allPhotos, concurrency: 16) { photo in
-            if let fingerprint = try? await MetadataFingerprint.cacheStalenessKey(photo.filepath) {
-                collector.recordFingerprint(photoId: photo.id, fingerprint: fingerprint)
-            }
-        }
-        let fingerprints = collector.snapshotFingerprints()
-        let cached = try metadataCacheRepo.getBatch(photoIds).filter { row in
-            guard let fingerprint = fingerprints[row.photoId] else { return false }
-            return row.fileSize == Int64(fingerprint.size) && row.fileMtime == fingerprint.value
-        }
-        let cachedIds = Set(cached.map(\.photoId))
-        let missingIds = photoIds.filter { !cachedIds.contains($0) }
-
-        for row in cached {
-            collector.recordResult(photoId: row.photoId, tags: cacheRowToTags(row))
-        }
-
-        if !missingIds.isEmpty {
-            let photos = missingIds.compactMap { photoById[$0] }
-            // upsert 在并发提取期间缓冲、结束后单事务落库（metadataCacheRepo.upsert
-            // 是裸语句无内部事务，包裹安全）；每照片 try/catch 隔离提取失败。
-            _ = try await batchAsync(photos, concurrency: 10) { photo in
-                do {
-                    var tags = MetadataTags()
-                    var cacheInput = MetadataCacheInput()
-                    let fingerprint = fingerprints[photo.id]
-
-                    if let exif = self.exif {
-                        // exifr 默认跳过 XMP；内嵌 reader 会重读整文件提取 —— JPEG
-                        // 会被解析两次。按内嵌 reader 的选项解析（xmp/iptc 开、分段
-                        // 输出），有效属性从这一次解析派生。
-                        let isJpeg = photo.filepath.lowercased().hasSuffix(".jpg")
-                            || photo.filepath.lowercased().hasSuffix(".jpeg")
-                        if let exifData = try await exif.parse(filePath: photo.filepath, isJpeg: isJpeg) {
-                            let ifd0 = exifData.ifd0
-                            let exifSegment = exifData.exif
-                            let gps = exifData.gps
-                            let make = ifd0?["Make"]?.stringValue ?? exifSegment?["Make"]?.stringValue
-                            let model = ifd0?["Model"]?.stringValue ?? exifSegment?["Model"]?.stringValue
-                            let widthValue = (ifd0?["ImageWidth"] ?? exifSegment?["ExifImageWidth"])?.numberValue.map { Int($0) }
-                            let heightValue = (ifd0?["ImageHeight"] ?? exifSegment?["ExifImageHeight"])?.numberValue.map { Int($0) }
-                            let isoValue = exifSegment?["ISO"]?.numberValue.map { Int($0) }
-                            tags = MetadataTags(
-                                width: widthValue,
-                                height: heightValue,
-                                make: make,
-                                model: model,
-                                lensModel: exifSegment?["LensModel"]?.stringValue,
-                                focalLength: exifSegment?["FocalLength"]?.numberValue,
-                                aperture: exifSegment?["FNumber"]?.numberValue,
-                                shutterSpeed: stringValue(exifSegment?["ExposureTime"]),
-                                iso: isoValue,
-                                dateTaken: stringValue(exifSegment?["DateTimeOriginal"]),
-                                rating: ifd0?["Rating"]?.numberValue,
-                                latitude: gps?["latitude"]?.numberValue,
-                                longitude: gps?["longitude"]?.numberValue
-                            )
-                            cacheInput = self.tagsToCacheInput(tags)
-                            cacheInput.fileSize = fingerprint.map { Int64($0.size) }
-                            cacheInput.fileMtime = fingerprint?.value
-
-                            var writerAttributes = try await self.reader.readEffectiveAttributesOnce(
-                                photoPath: photo.filepath,
-                                parsed: exifData,
-                                isJpeg: isJpeg
-                            )
-                            self.preserveValuesOnCorruptSidecar(
-                                photoId: photo.id,
-                                filepath: photo.filepath,
-                                attributes: &writerAttributes
-                            )
-                            if writerAttributes.keywords != nil {
-                                tags.keywords = writerAttributes.keywords
-                                cacheInput.keywords = writerAttributes.keywords
-                            }
-                            if writerAttributes.rating != nil {
-                                tags.rating = writerAttributes.rating
-                                cacheInput.rating = writerAttributes.rating.map { Int64($0) }
-                            }
-                            if writerAttributes.label != nil {
-                                tags.label = writerAttributes.label
-                                cacheInput.label = writerAttributes.label
-                            }
-                            // P1 / IPTC：空值也要投影（显式清空后缓存必须跟着变空，
-                            // 否则只读面板会一直显示已被删除的字段）。
-                            cacheInput.descriptive = writerAttributes.descriptive ?? DescriptiveMetadata()
-
-                            collector.recordExtraction(
-                                photoId: photo.id,
-                                sessionId: photo.sessionId,
-                                tags: tags,
-                                cacheInput: cacheInput
-                            )
-                            return
-                        }
-                    }
-
-                    // sharp 兜底：仅尺寸/文件大小/格式。
-                    let metadata = try await self.dimensions?.metadata(filePath: photo.filepath) ?? nil
-                    tags = MetadataTags(
-                        fileSize: metadata?.size,
-                        format: metadata?.format,
-                        width: metadata?.width,
-                        height: metadata?.height
-                    )
-                    cacheInput = MetadataCacheInput(
-                        width: metadata?.width.map { Int64($0) },
-                        height: metadata?.height.map { Int64($0) },
-                        fileSize: metadata?.size.map { Int64($0) } ?? fingerprint.map { Int64($0.size) },
-                        fileMtime: fingerprint?.value
-                    )
-
-                    var existingAttributes = try await self.reader.readEffectiveAttributes(photoPath: photo.filepath)
-                    self.preserveValuesOnCorruptSidecar(
-                        photoId: photo.id,
-                        filepath: photo.filepath,
-                        attributes: &existingAttributes
-                    )
-                    if existingAttributes.keywords != nil { tags.keywords = existingAttributes.keywords }
-                    if existingAttributes.rating != nil { tags.rating = existingAttributes.rating }
-                    if existingAttributes.label != nil { tags.label = existingAttributes.label }
-                    if existingAttributes.keywords != nil { cacheInput.keywords = existingAttributes.keywords }
-                    if existingAttributes.rating != nil { cacheInput.rating = existingAttributes.rating.map { Int64($0) } }
-                    if existingAttributes.label != nil { cacheInput.label = existingAttributes.label }
-                    cacheInput.descriptive = existingAttributes.descriptive ?? DescriptiveMetadata()
-
-                    collector.recordExtraction(
-                        photoId: photo.id,
-                        sessionId: photo.sessionId,
-                        tags: tags,
-                        cacheInput: cacheInput
-                    )
-                } catch {
-                    GatherLogger.log("Failed to extract metadata for \(photo.filepath): \(error)", level: .warn)
-                    collector.recordResult(photoId: photo.id, tags: MetadataTags())
-                }
-            }
-
-            let pendingUpserts = collector.snapshotPendingUpserts()
-            if !pendingUpserts.isEmpty {
-                try transactions.transaction {
-                    for entry in pendingUpserts {
-                        try metadataCacheRepo.upsert(photoId: entry.photoId, sessionId: entry.sessionId, data: entry.input)
-                    }
-                }
-                // 缓存落地后再同步关键词索引：facet 与词库计数立即反映新词。
-                for entry in pendingUpserts {
-                    keywordIndex?(entry.photoId)
-                }
-            }
-        }
-
-        return collector.snapshotResult()
+        try await extraction.extract(photoIds: photoIds)
     }
 
     // MARK: - K0 关键词预览 / delta 写回
@@ -1277,22 +1068,4 @@ public final class MetadataService: @unchecked Sendable {
             errors: [], failedItems: [], report: ""
         )
     }
-}
-
-/// TS: `value ? String(value) : undefined`（exif 段标量字符串化）。
-private func stringValue(_ value: JSONValue?) -> String? {
-    guard let value else { return nil }
-    if let string = value.stringValue { return string }
-    if let number = value.numberValue { return keywordString(number) }
-    return nil
-}
-
-/// TS: `String(item)` —— JS Number 字符串化语义：整数值不带小数点（7 → "7"，-0 → "0"），
-/// NaN/±Infinity 同 JS 命名；非整数保留 Double 字符串形式（7.5 → "7.5"）。
-/// 关键词归一化（normalizeKeywordList）与 EXIF 标量字符串化（stringValue）共用同一口径。
-private func keywordString(_ number: Double) -> String {
-    if number.isNaN { return "NaN" }
-    if number.isInfinite { return number < 0 ? "-Infinity" : "Infinity" }
-    if let integer = Int64(exactly: number) { return String(integer) }
-    return String(number)
 }

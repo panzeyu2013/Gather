@@ -376,3 +376,18 @@
 - 两个小坑：`MetadataPhotoLookup` 实为 `PhotoLookupRow`，字段是 `id` 不是 `photoId`；
   新文件需要 `import GatherPersistence`（`PhotoAssetResolver` / `MetadataCacheRow`）。
 - MetadataService 累计：1,645 → 1,298（**-347 行 / -21%**）。
+
+## #6 S3：MetadataExtractionService（元数据抽取）
+
+- `MetadataService.swift`：1,298 → **1,071 行**（-227）；新增
+  `Services/Metadata/MetadataExtractionService.swift`（223 行，`public struct: Sendable`）。
+- 搬走 `getMetadata`（163 行）+ `preserveValuesOnCorruptSidecar`（18 行）+
+  文件级 `MetadataCollector`（锁盒，用于并发收集）。
+- **两条硬约束原样保留**（写在类型头注释里）：
+  ① 全部 cache upsert 必须在同一个事务内，且必须在并发抽取全部结束之后；
+  ② `keywordIndex` 回调必须在事务提交之后（挪进事务闭包会读到未提交行）。
+- 三个隐藏前置（都在本轮内解决）：`cacheRowToTags`/`tagsToCacheInput` 是 private 实例
+  方法 → 转 `static`（它们不用 self）；`MetadataCollector` 是文件私有类 → 搬进新文件；
+  文件尾的 `stringValue`/`keywordString` 自由函数 → 抽成 `Metadata/MetadataText.swift`
+  供两处共用（保持 internal，避免涨协议公开面）。
+- MetadataService 累计：1,645 → **1,071 行（-574 / -35%）**。
