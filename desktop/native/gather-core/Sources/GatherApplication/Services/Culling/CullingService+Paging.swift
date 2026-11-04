@@ -114,7 +114,7 @@ extension CullingDecisionService {
     private func triageGate(
         sessionId: String
     ) throws -> (fingerprint: String, policyVersion: String)? {
-        guard let policy = try triageDisplayPolicy?(sessionId) else { return nil }
+        guard let policy = try hooks.triageDisplayPolicy?(sessionId) else { return nil }
         guard case .matching(let gate) = policy else { return nil }
         return (gate.fingerprint, gate.policyVersion)
     }

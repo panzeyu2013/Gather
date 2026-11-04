@@ -99,10 +99,10 @@ public final class CullingDecisionService {
     let delivery: any DeliveryModuleAdapter
     let cullingHistoryRepo: (any CullingHistoryRepository)?
     /// 设置读取端口（#9）：检测尺寸/预览上限等读取统一走端口。
-    let settings: any SettingsReading
+    /// #6 S8：设置读取 + T0 展示策略合成一个钩子（依赖 14 → 13）。
+    let hooks: CullingDisplayHooks
     /// P0/T0：资产级建议展示策略（指纹/策略匹配 + 关闭态隐藏）。
     /// nil = 兼容模式（不接 T0 的调用方/旧测试保持原有读行为）。
-    let triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)?
     /// P1-9 延伸：rating/label 入队后的写盘执行器（nil = 只入队，兼容旧测试）。
 
     public init(
@@ -117,8 +117,7 @@ public final class CullingDecisionService {
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: (any CullingHistoryRepository)? = nil,
-        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
-        triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
+        hooks: CullingDisplayHooks = .defaults,
         delivery: any DeliveryModuleAdapter
     ) {
         self.photoRepo = photoRepo
@@ -132,8 +131,7 @@ public final class CullingDecisionService {
         self.metadataMutations = metadataMutations
         self.writeback = writeback
         self.cullingHistoryRepo = cullingHistoryRepo
-        self.settings = settings
-        self.triageDisplayPolicy = triageDisplayPolicy
+        self.hooks = hooks
         // WP3b-2：不再按 connection 自建 coordinator（Application 不持 DBConnection）。
         // 组合根注入交付适配器；测试经 ServiceConstructionTestSupport 的兼容 init 装配。
         self.delivery = delivery

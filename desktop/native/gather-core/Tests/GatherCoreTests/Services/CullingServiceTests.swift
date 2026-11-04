@@ -261,7 +261,12 @@ func makeCullingHarness(
         metadataMutations: mutations,
         writeback: writeback,
         cullingHistoryRepo: history ? historyRepo : nil,
-        triageDisplayPolicy: triageDisplayPolicy,
+        hooks: CullingDisplayHooks(
+            detectInputSize: { ClosureSettingsReader { _ in nil }.int(.detectInputSize) },
+            facePreviewMaxDimension: {
+                ClosureSettingsReader { _ in nil }.int(.facePreviewMaxDimension)
+            },
+            triageDisplayPolicy: triageDisplayPolicy),
         delivery: deliveryCoordinator.adapter(for: .culling)
     )
     return CullingHarness(

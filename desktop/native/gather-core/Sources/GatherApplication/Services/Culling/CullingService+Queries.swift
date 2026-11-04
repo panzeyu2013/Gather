@@ -314,7 +314,7 @@ extension CullingDecisionService {
         let deliveryByPath = try core.deliveryRows.getMany(xmpPaths: xmpPaths)
         let metadataSourceByPath = try loadDeliveryMetadataSourceByPath(xmpPaths: xmpPaths)
         let similarityMap = try getLatestSimilarityMap(sessionId: sessionId)
-        let displayPolicy = try triageDisplayPolicy?(sessionId)
+        let displayPolicy = try hooks.triageDisplayPolicy?(sessionId)
         var triageByAsset = try loadTriageByAsset(
             sessionId: sessionId,
             photoIds: mode == .session ? nil : photoIds,
@@ -414,8 +414,8 @@ extension CullingDecisionService {
             let sourceHeight = max(1, photo.height)
             let analysisMax = lookup.analysisMaxByPhoto[photo.id]
                 ?? max(
-                    Double(settings.int(.detectInputSize)),
-                    Double(settings.int(.facePreviewMaxDimension))
+                    Double(hooks.detectInputSize()),
+                    Double(hooks.facePreviewMaxDimension())
                 )
             let analysisScale = min(1, analysisMax / Double(max(sourceWidth, sourceHeight)))
             let analysisWidth = Double(sourceWidth) * analysisScale

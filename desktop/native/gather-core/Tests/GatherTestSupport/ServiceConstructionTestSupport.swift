@@ -270,8 +270,7 @@ extension CullingServiceFactory {
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
         cullingHistoryRepo: CullingHistoryRepo? = nil,
-        settings: any SettingsReading = ClosureSettingsReader { _ in nil },
-        triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
+        hooks: CullingDisplayHooks = .defaults,
         fileLock: XMPFileLock? = nil,
         delivery: (any DeliveryModuleAdapter)? = nil
     ) -> CullingService {
@@ -287,8 +286,7 @@ extension CullingServiceFactory {
             metadataMutations: metadataMutations,
             writeback: writeback,
             cullingHistoryRepo: cullingHistoryRepo,
-            settings: settings,
-            triageDisplayPolicy: triageDisplayPolicy,
+            hooks: hooks,
             // 旧默认：宿主未注入时按同一 connection 自建 coordinator（行为不变）。
             delivery: delivery ?? CoordinatorDeliveryAdapter(
                 engine: DeliveryCoordinator(

@@ -270,14 +270,17 @@ struct CompositionCore {
             deliveryItems: deliveryRepo, transactions: db,
             metadataMutations: metadataMutationService, writeback: writebackService,
             cullingHistoryRepo: CullingHistoryRepo(connection: db),
-            settings: settingsService,
-            // T0 门控由 TriageService 单点产出：关闭即不展示，开启只展示指纹匹配行。
-            triageDisplayPolicy: { sessionId in
-                guard let gate = try triageService.cachedGate(sessionId: sessionId) else {
-                    return .hidden
-                }
-                return .matching(gate)
-            },
+            // #6 S8：设置读取与 T0 展示策略合成一个钩子（两个闭包都保持「每次调用现读」）。
+            hooks: CullingDisplayHooks(
+                detectInputSize: { settingsService.int(.detectInputSize) },
+                facePreviewMaxDimension: { settingsService.int(.facePreviewMaxDimension) },
+                // T0 门控由 TriageService 单点产出：关闭即不展示，开启只展示指纹匹配行。
+                triageDisplayPolicy: { sessionId in
+                    guard let gate = try triageService.cachedGate(sessionId: sessionId) else {
+                        return .hidden
+                    }
+                    return .matching(gate)
+                }),
             delivery: deliveryCoordinator.adapter(for: .culling))
         let sessionService = SessionService(
             sessionRepo: sessionRepo, photoRepo: photoRepo,
