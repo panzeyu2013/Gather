@@ -60,12 +60,12 @@ extension ExportViewModel {
         guard let settingsAPI else { return Self.defaultRecipes }
         // 交付目录与配方一起载入；settingsChanged（reset/清除用户内容）后即使
         // 当前值非空也必须重读，否则已清空的旧目录会在下次交付被写回 settings。
-        if let key = try? SettingsKey("output.deliveryRoot"),
+        if let key = try? SettingsKeyInput("output.deliveryRoot"),
            let saved = try? await settingsAPI.get(key) {
             deliveryRoot = saved
         }
         do {
-            let key = try SettingsKey("output.recipes")
+            let key = try SettingsKeyInput("output.recipes")
             let raw = try await settingsAPI.get(key)
             if !raw.isEmpty, let data = raw.data(using: .utf8) {
                 do { return try JSONDecoder().decode([OutputRecipe].self, from: data) } catch {

@@ -108,7 +108,7 @@ final class SessionDirectoryMonitor {
         let keyName = "watch.lastEventIDs"
         if lastEventIDs[sessionId] == nil {
             do {
-                let key = try SettingsKey(keyName)
+                let key = try SettingsKeyInput(keyName)
                 let raw = try await settings.get(key)
                 do {
                     let value = try JSONValue.parse(raw)
@@ -328,7 +328,7 @@ final class SessionDirectoryMonitor {
         keyName: String
     ) async {
         do {
-            let key = try SettingsKey(keyName)
+            let key = try SettingsKeyInput(keyName)
             // 只合并当前会话的 eventID：整表写回会把其它会话"尚未扫完"的 ID
             // 一起持久化（崩溃后那些目录就永久漏扫了）。
             var map: [String: JSONValue] = [:]

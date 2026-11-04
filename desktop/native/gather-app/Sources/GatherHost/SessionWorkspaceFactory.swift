@@ -46,14 +46,14 @@ package struct SessionWorkspaceFactory {
         let settings = deps.settings
         cullingViewModel.triageAutoApplyProvider = {
             do {
-                return try await settings.get(SettingsKey("triage_auto_apply")) == "1"
+                return try await settings.get(SettingsKeyInput("triage_auto_apply")) == "1"
             } catch {
                 return false
             }
         }
         cullingViewModel.triageEnabledProvider = {
             do {
-                let key = try SettingsKey("triage_enabled")
+                let key = try SettingsKeyInput("triage_enabled")
                 return try await settings.get(key) == "1"
             } catch {
                 GatherLogger.log("read triage_enabled failed: \(error)", level: .warn)
@@ -62,7 +62,7 @@ package struct SessionWorkspaceFactory {
         }
         cullingViewModel.triageAutoGenerateProvider = {
             do {
-                let key = try SettingsKey("triage_auto_generate")
+                let key = try SettingsKeyInput("triage_auto_generate")
                 return try await settings.get(key) == "1"
             } catch {
                 GatherLogger.log("read triage_auto_generate failed: \(error)", level: .warn)
@@ -73,12 +73,12 @@ package struct SessionWorkspaceFactory {
             var sortRaw = "import"
             var densityRaw = "m"
             do {
-                sortRaw = try await settings.get(SettingsKey("grid_default_sort"))
+                sortRaw = try await settings.get(SettingsKeyInput("grid_default_sort"))
             } catch {
                 GatherLogger.log("read grid_default_sort failed: \(error)", level: .warn)
             }
             do {
-                densityRaw = try await settings.get(SettingsKey("grid_density"))
+                densityRaw = try await settings.get(SettingsKeyInput("grid_density"))
             } catch {
                 GatherLogger.log("read grid_density failed: \(error)", level: .warn)
             }

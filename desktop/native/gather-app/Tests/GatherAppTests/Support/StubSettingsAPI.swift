@@ -36,7 +36,7 @@ private struct B8SettingsState {
         )
     )
     var setInputs: [SettingsSetInput] = []
-    var getKeys: [SettingsKey] = []
+    var getKeys: [SettingsKeyInput] = []
     var resetCalls = 0
     var resetInputs: [SettingsResetInput] = []
     var previewResetCalls = 0
@@ -80,7 +80,7 @@ final class B8SettingsAPIStub: SettingsAPI, @unchecked Sendable {
     }
 
     var setInputs: [SettingsSetInput] { box.lock.withLock { box.setInputs } }
-    var getKeys: [SettingsKey] { box.lock.withLock { box.getKeys } }
+    var getKeys: [SettingsKeyInput] { box.lock.withLock { box.getKeys } }
     var resetCalls: Int { box.lock.withLock { box.resetCalls } }
     var resetInputs: [SettingsResetInput] { box.lock.withLock { box.resetInputs } }
     var previewResetCalls: Int { box.lock.withLock { box.previewResetCalls } }
@@ -99,7 +99,7 @@ final class B8SettingsAPIStub: SettingsAPI, @unchecked Sendable {
         return values
     }
 
-    func get(_ key: SettingsKey) async throws -> String {
+    func get(_ key: SettingsKeyInput) async throws -> String {
         let (error, values): ((any Error)?, [String: String]) = box.lock.withLock {
             box.getKeys.append(key)
             return (box.getError, box.values)

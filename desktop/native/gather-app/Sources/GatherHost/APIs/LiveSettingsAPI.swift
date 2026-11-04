@@ -4,7 +4,7 @@
 // 对应命令（6 条）：settings.get_all / get / set / reset / set_language /
 // get_ml_status。
 //
-// 校验归属：key <= 256 非空白、value <= 4096 允许空串由 SettingsKey /
+// 校验归属：key <= 256 非空白、value <= 4096 允许空串由 SettingsKeyInput /
 // SettingsValue 在构造期完成（D-012）；setLanguage 只接受 InterfaceLanguage。
 // setLanguage 必须同步 GatherLocalization 并广播 languageChanged（对齐旧
 // 旧实现的即时 rebuild 行为；AppDelegate 也会在通知里再次 set，幂等）。
@@ -34,7 +34,7 @@ public final class LiveSettingsAPI: SettingsAPI, Sendable {
         settingsService.getAll()
     }
 
-    public func get(_ key: SettingsKey) async throws -> String {
+    public func get(_ key: SettingsKeyInput) async throws -> String {
         settingsService.get(key.value)
     }
 

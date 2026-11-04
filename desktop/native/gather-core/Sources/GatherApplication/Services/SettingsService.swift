@@ -20,115 +20,14 @@ import GatherProtocol
 /// 由 DBConnection 串行化。标注集中在状态所有者，LiveSettingsAPI 等调用方因此
 /// 可以保持普通 Sendable，不再各自 @unchecked。
 public final class SettingsService: @unchecked Sendable {
-    /// TS: getDefaults() —— 40 键默认值表。
+    /// TS: getDefaults() —— 68 键默认值表。
+    ///
+    /// #9：默认值不再在这里重复一份，而是从 SettingsKey（GatherProtocol）派生。
+    /// 唯一真相是枚举的 defaultValue；新增键漏写默认值会编译失败（switch 穷尽）。
     public static func getDefaults() -> [String: String] {
-        [
-            "detector_model_path": "models/face_detector.onnx",
-            "encoder_model_path": "models/face_encoder.onnx",
-            "detect_confidence": "0.5",
-            "detect_input_size": "640",
-            "detect_secondary_input_size": "128",
-            "face_preview_max_dimension": "2048",
-            "encoder_input_size": "112",
-            "embedding_dim": "128",
-            "face_compute_units": "auto",
-
-            "default_eps": "0.65",
-            "default_min_samples": "2",
-
-            // 原生扩展（TS 无对应键；算法对标改造，见 ADR-029）：
-            // · face_core_quality：核心点质量门槛（0 = 不设限）
-            // · face_core_retry_min_samples：二遍核心点 minPts（<2 视为关闭）
-            // · face_match_margin：冠军与人物级亚军的相似度差下限（不足则不写建议）
-            "face_core_quality": "0.35",
-            "face_core_retry_min_samples": "2",
-            "face_match_margin": "0.01",
-            // P0 / F0：复核队列阈值（可调；默认值见 f0 设计）
-            "face_review_cohesion_floor": "0.35",
-            "face_review_relative_mad": "2.5",
-            "face_review_min_quality": "0.35",
-            "face_review_face_size_min": "48",
-            // · face_incremental_clustering：增量聚类开关（"1" = 开[推荐]；其余 = 关）。
-            //   开启后 analyze 保留已有簇 id / matched_person_id / role_bindings，只
-            //   追加新增人脸；首次分析、签名变化、recluster 命令仍走全量。
-            "face_incremental_clustering": "1",
-            // 专用人脸嵌入模型（ADR-029 决策 1 的模型层）：
-            // 路径非空必须可加载（.mlmodel/.mlmodelc，112×112 图像输入），失败即报错，
-            // 不静默回退到内置 Vision 特征——混用两套向量空间会让阈值全部失去意义。
-            "face_embedding_model_path": "",
-            "face_embedding_model_version": "",
-
-            "nms_threshold": "0.4",
-            "max_detections": "100",
-            "onnx_threads": "4",
-
-            "default_threshold": "10",
-            "default_min_group_size": "2",
-
-            "model_download_url": "",
-
-            "thumbnail_size": "1024",
-            "thumbnail_quality": "80",
-
-            "disk_cache_dir": "",
-            "face_decode_concurrency": "4",
-            "face_inference_parallel_workers": "1",
-
-            "db_cache_size_mb": "64",
-            // 与宿主 DB 打开默认值保持同步（TS 注释：main/index.ts 的
-            // settings.get('db_synchronous', 'normal')）。
-            "db_synchronous": "normal",
-
-            "metadata_write_mode": "auto",
-
-            "ui_language": "",
-            "lazy_checksum": "true",
-
-            // P0 / G0：网格默认排序与密度（窗口内可临时覆盖）
-            "grid_default_sort": "import",
-            "grid_density": "m",
-
-            // P0 / T0：技术质量建议（Beta）
-            "triage_enabled": "0",
-            "output.recipes": "",
-            "output.deliveryRoot": "",
-            "triage_model_review": "1",
-            "triage_auto_apply": "0",
-            "triage_auto_generate": "0",
-            "triage_policy": "triage-v2",
-            "triage_keep_confidence_min": "0.60",
-            "triage_reject_confidence_min": "0.75",
-            "triage_min_executable_confidence": "0.55",
-
-            // P1 / B2：元数据模板（单键 JSON 数组）
-            "metadata.templates": "[]",
-            "metadata.templates.corrupt": "",
-            "metadata.applyBatches": "[]",
-            // 解析失败时的原文留证（见 MetadataApplyBatchStore.preserveCorruptPayload）
-            "metadata.applyBatches.corrupt": "",
-            // P1 / D：FSEvents 各会话的 lastEventID（JSON 对象，单键避免动态 key）
-            "watch.lastEventIDs": "{}",
-
-            // B0：备份 / 诊断
-            "backup_dir": "",
-            "backup_retention": "5",
-            "backup_auto": "off",
-            "diagnostics_include_paths": "0",
-
-            // P1 下一波：元数据生命周期 / 写盘 / 关键词 / 检索 / 校样 / 语义
-            "metadata_backup_retention_days": "7",
-            "metadata_sync_auto_confirm": "1",
-            "metadata_sync_auto_finalize": "0",
-            "embedded_fast_path": "1",
-            "keyword_dc_style": "leaf",
-            "gallery_saved_search_limit": "50",
-            "proof_feedback_apply_rating": "0",
-            "c1_auto_reload": "1",
-            "triage_calibration_min_samples": "50",
-            "semantic_index_enabled": "0",
-        ]
+        Dictionary(
+            uniqueKeysWithValues: SettingsKey.allCases.map { ($0.rawValue, $0.defaultValue) })
     }
-
     /// TS: KNOWN_SETTING_KEYS = new Set(Object.keys(getDefaults()))。
     public static var knownSettingKeys: Set<String> {
         Set(getDefaults().keys)
@@ -366,6 +265,18 @@ public final class SettingsService: @unchecked Sendable {
         )
     }
 
+    // MARK: - SettingsReading（#9：设置读取端口）
+
+    /// 端口实现：只读内存缓存（与 get(_:defaultValue:) 同源、同一把锁）。
+    ///
+    /// 注意语义差异：get(_:defaultValue:) 在未命中时返回调用方默认值，
+    /// 这里返回 nil，由 SettingsReading 扩展折叠成「键自带默认值」——
+    /// 后者才是唯一真相，前者是历史遗留（73 个调用点各带一份，已漂 3 处）。
+    fileprivate func cachedValue(for key: SettingsKey) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return cache[key.rawValue]
+    }
+
     private static func jsonArrayCount(_ raw: String?) -> Int {
         guard let raw, let data = raw.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
@@ -374,6 +285,16 @@ public final class SettingsService: @unchecked Sendable {
         }
         return array.count
     }
+}
+
+// MARK: - SettingsReading（#9）
+
+/// 设置服务就是端口的默认实现：缓存即读模型，写路径仍走 set(_:value:)。
+///
+/// 为什么放在同文件：cache/lock 是 private，跨文件扩展拿不到；把它们降成
+/// internal 只会让「谁的锁」这件事更难追。
+extension SettingsService: SettingsReading {
+    public func storedValue(for key: SettingsKey) -> String? { cachedValue(for: key) }
 }
 
 /// 未知设置键错误（TS: Error(`Unknown setting key: ${key}`) 消息逐字一致，

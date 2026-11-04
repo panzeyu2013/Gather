@@ -14,7 +14,7 @@ import Foundation
 
 public protocol SettingsAPI: Sendable {
     func all() async throws -> [String: String]
-    func get(_ key: SettingsKey) async throws -> String
+    func get(_ key: SettingsKeyInput) async throws -> String
     func set(_ input: SettingsSetInput) async throws
     /// 旧入口：等价于 preferences + language（保留用户内容）。新 UI 用分级入口。
     func reset() async throws -> [String: String]

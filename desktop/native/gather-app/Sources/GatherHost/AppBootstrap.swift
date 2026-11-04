@@ -290,9 +290,9 @@ package final class AppBootstrap {
         // provider 之后恒 nil（db_synchronous/db_cache_size_mb 改了要重启才生效）。
         // 这里每次读时临时构造 Repo，避免为 provider 制造 db→repo→db 的持有环；
         // 只在 PRAGMA 应用时调用，频率极低。
-        db.settingsProvider = { [weak db] key in
+        db.settingsReader = ClosureSettingsReader { [weak db] key in
             guard let db else { return nil }
-            return (try? SettingsRepo(connection: db).get(key: key))?.value
+            return (try? SettingsRepo(connection: db).get(key: key.rawValue))?.value
         }
 
         // Cut 1 / B8.3b-2a/B8.3b-2b：组合根只构造一次（24 个服务/Repo +
@@ -544,7 +544,7 @@ package final class AppBootstrap {
     /// applyStoredInterfaceLanguage。
     package static func storedInterfaceLanguage(using settings: any SettingsAPI) async -> String? {
         do {
-            let stored = try await settings.get(SettingsKey("ui_language"))
+            let stored = try await settings.get(SettingsKeyInput("ui_language"))
             return stored.isEmpty ? nil : stored
         } catch {
             return nil

@@ -11,7 +11,7 @@
 import Foundation
 
 /// settings key：<= 256、非空白、trim 后存储。
-public struct SettingsKey: Decodable, Sendable, Equatable, Hashable {
+public struct SettingsKeyInput: Decodable, Sendable, Equatable, Hashable {
     public let value: String
 
     public init(_ value: String) throws {
@@ -40,23 +40,23 @@ public struct SettingsValue: Decodable, Sendable, Equatable, Hashable {
 
 /// settings.set 的输入。
 public struct SettingsSetInput: Decodable, Sendable, Equatable {
-    public let key: SettingsKey
+    public let key: SettingsKeyInput
     public let value: SettingsValue
 
-    public init(key: SettingsKey, value: SettingsValue) {
+    public init(key: SettingsKeyInput, value: SettingsValue) {
         self.key = key
         self.value = value
     }
 
     public init(key: String, value: String) throws {
-        self.key = try SettingsKey(key)
+        self.key = try SettingsKeyInput(key)
         self.value = try SettingsValue(value)
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
-            key: container.decode(SettingsKey.self, forKey: .key),
+            key: container.decode(SettingsKeyInput.self, forKey: .key),
             value: container.decode(SettingsValue.self, forKey: .value)
         )
     }

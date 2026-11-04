@@ -376,12 +376,12 @@ struct APISessionTests {
         try await fixture.settingsAPI.set(
             try SettingsSetInput(key: "thumbnail_size", value: "512")
         )
-        let changed = try await fixture.settingsAPI.get(try SettingsKey("thumbnail_size"))
+        let changed = try await fixture.settingsAPI.get(try SettingsKeyInput("thumbnail_size"))
         #expect(changed == "512")
 
         let reset = try await fixture.settingsAPI.reset()
         #expect(reset["thumbnail_size"] == "1024")
-        let afterReset = try await fixture.settingsAPI.get(try SettingsKey("thumbnail_size"))
+        let afterReset = try await fixture.settingsAPI.get(try SettingsKeyInput("thumbnail_size"))
         #expect(afterReset == "1024")
     }
 
@@ -390,7 +390,7 @@ struct APISessionTests {
         let fixture = try APIFixture()
 
         do {
-            _ = try SettingsKey(String(repeating: "k", count: 257))
+            _ = try SettingsKeyInput(String(repeating: "k", count: 257))
             Issue.record("超长 key 必须抛错")
         } catch let error as GatherError {
             #expect(error.code == .INVALID_PARAM)
@@ -446,7 +446,7 @@ struct APISessionTests {
         #expect(applied == target)
         #expect(observed.lock.withLock { observed.language } == target.rawValue)
         #expect(observed.lock.withLock { observed.count } >= 1)
-        #expect(try await fixture.settingsAPI.get(try SettingsKey("ui_language")) == target.rawValue)
+        #expect(try await fixture.settingsAPI.get(try SettingsKeyInput("ui_language")) == target.rawValue)
     }
 
     @Test("settings：mlStatus 形状与旧 buildMLStatus 对齐")

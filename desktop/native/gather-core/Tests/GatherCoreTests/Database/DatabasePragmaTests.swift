@@ -1,7 +1,7 @@
 // 第二轮验证补测（F-5）：db_synchronous / db_cache_size_mb 必须真正生效。
 //
 // 背景：这两个设置在 SettingsService 里定义、在设置 UI 里暴露，但第一轮之前
-// 全仓无消费者（用户改了不生效）；修复后由宿主注入 settingsProvider，DB 在
+// 全仓无消费者（用户改了不生效）；修复后由宿主注入 settingsReader，DB 在
 // open() 与注入时各重放一次 PRAGMA。这里把「注入即生效」钉成回归。
 import Foundation
 import Testing
@@ -24,14 +24,14 @@ struct DatabasePragmaTests {
         #expect(try pragmaInt(db, "cache_size") == -65536)
     }
 
-    @Test("注入 settingsProvider 后立即重放 PRAGMA（用户设置生效）")
+    @Test("注入 settingsReader 后立即重放 PRAGMA（用户设置生效）")
     func injectionReappliesPragmas() throws {
         let db = try DBConnection(path: ":memory:")
         defer { db.close() }
-        db.settingsProvider = { key in
+        db.settingsReader = ClosureSettingsReader { key in
             switch key {
-            case "db_synchronous": return "off"
-            case "db_cache_size_mb": return "16"
+            case .dbSynchronous: return "off"
+            case .dbCacheSizeMB: return "16"
             default: return nil
             }
         }
@@ -43,18 +43,18 @@ struct DatabasePragmaTests {
     func invalidAndOutOfRangeValuesFallBack() throws {
         let db = try DBConnection(path: ":memory:")
         defer { db.close() }
-        db.settingsProvider = { key in
+        db.settingsReader = ClosureSettingsReader { key in
             switch key {
-            case "db_synchronous": return "sometimes"
-            case "db_cache_size_mb": return "abc"
+            case .dbSynchronous: return "sometimes"
+            case .dbCacheSizeMB: return "abc"
             default: return nil
             }
         }
         #expect(try pragmaInt(db, "synchronous") == 1, "白名单外必须回落 normal")
         #expect(try pragmaInt(db, "cache_size") == -65536, "解析失败必须回落 64MB")
 
-        db.settingsProvider = { key in
-            key == "db_cache_size_mb" ? "8192" : nil
+        db.settingsReader = ClosureSettingsReader { key in
+            key == .dbCacheSizeMB ? "8192" : nil
         }
         #expect(try pragmaInt(db, "cache_size") == -1048576, "必须钳制到 1024MB（-1048576 KiB）")
     }

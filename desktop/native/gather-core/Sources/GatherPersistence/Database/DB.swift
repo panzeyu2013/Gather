@@ -125,16 +125,19 @@ public final class DBConnection: @unchecked Sendable {
         }
     }
 
-    /// 性能相关 PRAGMA（F-5）。open() 与 settingsProvider 注入后各调用一次：
-    /// 首次打开时宿主还没注入设置钩子，注入后必须重放，否则用户改的
+    /// 性能相关 PRAGMA（F-5）。open() 与 settingsReader 注入后各调用一次：
+    /// 首次打开时宿主还没注入设置端口，注入后必须重放，否则用户改的
     /// db_synchronous / db_cache_size_mb 仍不生效。
+    ///
+    /// #9：改为经 SettingsReading 读（原先是 (String) -> String? 裸闭包）。
+    /// 语义逐条保留：白名单外回落 normal；解析失败/非有限值回落 64；钳制 1..1024MB。
     private func applyPerformancePragmas() {
-        let storedSync = settingsProvider?("db_synchronous")
         let allowedSync = ["off", "normal", "full", "extra"]
-        let syncValue = (storedSync ?? "normal").lowercased()
-        applyPragma("PRAGMA synchronous = \(allowedSync.contains(syncValue) ? syncValue : "normal");")
-        let storedCache = Int(settingsProvider?("db_cache_size_mb") ?? "64") ?? 64
-        applyPragma("PRAGMA cache_size = -\(max(1, min(1024, storedCache)) * 1024);")
+        let rawSync = (settingsReader?.storedValue(for: .dbSynchronous) ?? "").lowercased()
+        let syncValue = allowedSync.contains(rawSync) ? rawSync : "normal"
+        applyPragma("PRAGMA synchronous = \(syncValue);")
+        let cacheMB = min(1024, max(1, settingsReader?.int(.dbCacheSizeMB) ?? 64))
+        applyPragma("PRAGMA cache_size = -\(cacheMB * 1024);")
     }
 
     /// 性能 PRAGMA 是尽力而为：失败时保留 SQLite 当前值（不影响打开/查询），
@@ -147,9 +150,12 @@ public final class DBConnection: @unchecked Sendable {
         }
     }
 
-    /// 设置读取钩子（由宿主注入；nil = 用默认值）。DB 层不直接依赖 SettingsService，
-    /// 避免 Database → Services 的反向依赖。注入时立即重放 PRAGMA（F-5）。
-    public var settingsProvider: ((String) -> String?)? {
+    /// 设置读取端口（由宿主注入；nil = 用键自带默认值）。
+    ///
+    /// DB 层只依赖 GatherProtocol 的 SettingsReading 协议，不依赖 SettingsService，
+    /// Database → Services 的反向依赖依然不存在；端口本身在 Protocol（最底层），
+    /// 因此这里不需要任何字符串键。注入时立即重放 PRAGMA（F-5）。
+    public var settingsReader: (any SettingsReading)? {
         didSet { applyPerformancePragmas() }
     }
 
@@ -357,7 +363,7 @@ public final class DBConnection: @unchecked Sendable {
     /// R6-a：慢事务诊断阈值（毫秒；0 = 关闭）。
     /// 开启优先级：静态阈值 > 环境变量 GATHER_SLOW_TX_MS（生产诊断入口）。
     /// **不读 SettingsService**：阈值检查发生在每个最外层事务的收尾路径上，
-    /// 走 settingsProvider 会变成每次事务一次设置查询；需要动态开关时用环境变量
+    /// 走 settingsReader 会变成每次事务一次设置查询；需要动态开关时用环境变量
     /// 或显式设置静态阈值。只影响日志，不改变事务语义。
     nonisolated(unsafe) public static var slowTransactionThresholdMilliseconds: Int = 0
 

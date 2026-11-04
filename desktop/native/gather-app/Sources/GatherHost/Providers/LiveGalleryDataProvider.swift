@@ -80,7 +80,7 @@ public final class LiveGalleryDataProvider: GalleryDataProvider {
     /// TS: Gallery.tsx:50-55 —— settings thumbnail_size（默认 1024）分桶映射。
     /// B8.2a：SettingsAPI.get（async）；键是常量，校验失败/读取失败都回退默认值。
     public func thumbnailSize() async -> Int {
-        let raw = (try? await settingsAPI.get(SettingsKey("thumbnail_size"))) ?? ""
+        let raw = (try? await settingsAPI.get(SettingsKeyInput("thumbnail_size"))) ?? ""
         return Self.thumbnailBucket(Int(raw) ?? 1024)
     }
 

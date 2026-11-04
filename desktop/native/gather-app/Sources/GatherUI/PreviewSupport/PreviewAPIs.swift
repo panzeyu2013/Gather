@@ -96,7 +96,7 @@ struct PreviewJobAPI: JobAPI {
 struct PreviewSettingsAPI: SettingsAPI {
     func all() async throws -> [String: String] { PreviewData.settings }
 
-    func get(_ key: SettingsKey) async throws -> String {
+    func get(_ key: SettingsKeyInput) async throws -> String {
         PreviewData.settings[key.value] ?? ""
     }
 
