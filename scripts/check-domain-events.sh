@@ -54,6 +54,7 @@ PUBLISHERS = {
     # #11 补广播：集合/堆栈是库级数据（侧栏计数、图库「加入集合」菜单都读它）。
     "Gallery/GalleryViewModel+Load.swift": {"library"},
     "Curation/CollectionView.swift": {"library"},
+    "Curation/CollectionSidebar.swift": {"library"},
     # #11 补广播：这些写路径在「R3 补齐」时新增了域广播，按所属域登记。
     "ControlCenter/SessionControlViewModel.swift": {"library"},
     "Culling/IngestSheet.swift": {"library"},
