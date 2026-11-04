@@ -114,10 +114,9 @@ let package = Package(
         // 写了」这条不变量只能在 app 测试里验证；搬下来后 core 侧的交付集成测试可以
         // 直接驱动真实 adapter。
         //
-        // 依赖**暂时**含 Application + Delivery（Stage 1 平移）：Embedded 的
-        // XMPPacketReader/JPEGMetadataWriter/MetadataWriteRouter 还借用 Application 的
-        // 解析与 baseline 工具、router 用 Delivery 的备份路径白名单。后续两步（C4/C5）
-        // 逐个去掉，最终只留 Protocol + Persistence。
+        // 依赖已按 #1 C4/C5 收窄完成：只留 Protocol + Persistence + Analysis。
+        // 曾经的 Application 依赖（内嵌解析/合并工具）已上移 GatherProtocol，
+        // Delivery 依赖（备份白名单）已上移 XMPBackupNaming。
         .target(
             name: "GatherMetadataIO",
             // #1 C4/C5：只依赖 Protocol + Persistence + Analysis（ImageIO 读取实现在

@@ -146,7 +146,8 @@ let package = Package(
                 .product(name: "GatherApplication", package: "gather-core"),
                 // WP7：复用 core 的测试夹具（makeTestDB / AsyncGate / LockedBox），
                 // 不再在 app 侧复制。product 只链接进测试，不进 app 运行时。
-                .product(name: "GatherMetadataIO", package: "gather-core"),
+                // 评审补：GatherMetadataIO 的测试已全部迁回 core，app 测试不再 import 它，
+                // 这条 product 依赖是死的——删掉，避免依赖声明与 import 不一致。
                 .product(name: "GatherTestSupport", package: "gather-core"),
             ],
             swiftSettings: swift6Settings

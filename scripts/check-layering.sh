@@ -28,9 +28,13 @@ DOMAIN_DIR="$CORE_SRC/GatherApplication"
 PERSISTENCE_DIR="$CORE_SRC/GatherPersistence"
 # #1：元数据写盘（XMP/JPEG/IPTC）从 GatherHost 抽成独立 target。
 METADATA_IO_DIR="$CORE_SRC/GatherMetadataIO"
+# 评审面 2 F5：Delivery 一直没有扫描根，等于「无人拦 Delivery → Application/Analysis」；
+# 评审面 3 5.3：新模块 GatherPreviewData 也没进扫描表。两者补上。
+DELIVERY_DIR="$CORE_SRC/GatherDelivery"
+PREVIEW_DIR="$APP_SRC/GatherPreviewData"
 
 # 扫描根守卫：目录消失/改名不得静默跳过（Gate fail-open，复审 P1）。
-for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR" "$METADATA_IO_DIR"; do
+for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR" "$METADATA_IO_DIR" "$DELIVERY_DIR" "$PREVIEW_DIR"; do
   if [ ! -d "$d" ]; then
     echo "check-layering: FAIL 缺少扫描根：$d" >&2
     exit 1
@@ -80,6 +84,10 @@ check_forbidden "$DOMAIN_DIR" "GatherApplication" GatherMetadataIO
 check_forbidden "$PERSISTENCE_DIR" "GatherPersistence" GatherMetadataIO
 check_forbidden "$ANALYSIS_DIR" "GatherAnalysis" GatherMetadataIO
 check_forbidden "$DOMAIN_DIR" "GatherApplication" SwiftUI
+# 评审补：Delivery 只能依赖 Protocol / Persistence / Analysis，不得反向依赖 Application；
+# PreviewData 是 DEBUG-only 预览夹具，只能依赖 Protocol（不得碰 UI / Host / Application）。
+check_forbidden "$DELIVERY_DIR" "GatherDelivery" GatherApplication GatherHost
+check_forbidden "$PREVIEW_DIR" "GatherPreviewData" GatherUI GatherHost GatherApplication GatherMetadataIO
 
 # 3b-6 已删除 GatherCore 伞：任何 target 再 import 它都视为回潮。
 for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR" "$METADATA_IO_DIR"; do
