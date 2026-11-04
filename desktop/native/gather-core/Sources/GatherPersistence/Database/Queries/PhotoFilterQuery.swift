@@ -568,8 +568,21 @@ public final class PhotoFilterQuery {
         switch op {
         case .eq: return ("\(fullCol) = ?", [value.toDBValue])
         case .neq:
-            // NULL 是"未填写"：不等于 X 必须保留未填写的照片（与数组分支一致）。
-            return ("(\(fullCol) IS NULL OR \(fullCol) != ?)", [value.toDBValue])
+            // NULL 是「未填写」：不等于 X 必须保留未填写的照片（与数组分支一致）。
+            // #10 复审：rating/label 的 eq/in 已套空值规范化（COALESCE），若 neq 仍用
+            // 「IS NULL OR != ?」，同一张未抽取/未标色照片会同时命中 = 与 != 两个互斥筛选。
+            // 这里改为对**规范化表达式**取反：单行资产上 eq 与 neq 严格互补。
+            // 注意残留限制：图库是「任一行命中即整组入选」，多行资产（RAW+JPEG 变体）
+            // 仍可能同时命中 eq 与 neq（不同行各自成立）——这是分组模型的固有语义，
+            // 不在本处修复；契约测试已记录该行为。
+            switch field {
+            case "rating":
+                return ("NOT (\(FilterFieldSQL.rating(fullCol)) = ?)", [value.toDBValue])
+            case "label":
+                return ("NOT (\(FilterFieldSQL.label(fullCol)) = ?)", [value.toDBValue])
+            default:
+                return ("(\(fullCol) IS NULL OR \(fullCol) != ?)", [value.toDBValue])
+            }
         case .gt: return ("\(fullCol) > ?", [value.toDBValue])
         case .lt: return ("\(fullCol) < ?", [value.toDBValue])
         case .gte: return ("\(fullCol) >= ?", [value.toDBValue])
