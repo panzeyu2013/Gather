@@ -166,7 +166,8 @@ struct CompositionCore {
             eventSink: deliveryEventSink, rewriteSessions: rewriteSessions)
         // P1-9：构造顺序 MetadataMutationService → WritebackService →
         // MetadataService（无环）；关键词 apply/retry 成功后经闭包立即写盘。
-        let keywordIndexSync = KeywordIndexSync(connection: db)
+        let keywordIndexSync = KeywordIndexSync(
+            index: KeywordRepo(connection: db), metadata: metadataCacheRepo)
         let metadataService = MetadataService(
             metadataCacheRepo: metadataCacheRepo, xmp: xmp, photoRepo: photoRepo,
             transactions: db, mutations: metadataMutationService,

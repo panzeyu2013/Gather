@@ -475,7 +475,9 @@ package final class AppBootstrap {
             }
         }
         Task.detached(priority: .utility) {
-            let sync = KeywordIndexSync(connection: db)
+            let sync = KeywordIndexSync(
+                index: KeywordRepo(connection: db),
+                metadata: MetadataCacheRepo(connection: db))
             var cursor: String?
             while !Task.isCancelled {
                 let step: KeywordBackfillStep

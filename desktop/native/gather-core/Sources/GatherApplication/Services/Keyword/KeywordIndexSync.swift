@@ -52,18 +52,13 @@ public struct KeywordBackfillStep: Equatable, Sendable {
 }
 
 public final class KeywordIndexSync: Sendable {
-    /// @unchecked Sendable：可变状态全在 DB 连接锁里（同其它 Repo/Domain 服务）。
-    private let repo: KeywordRepo
-    private let cacheRepo: MetadataCacheRepo
+    /// #8：两个窄端口（写/读索引 + 读缓存关键词），不再持有具体 Repo 与连接。
+    private let index: any KeywordIndexStore
+    private let metadata: any MetadataKeywordReading
 
-    public init(repo: KeywordRepo, cacheRepo: MetadataCacheRepo) {
-        self.repo = repo
-        self.cacheRepo = cacheRepo
-    }
-
-    public init(connection: DBConnection) {
-        self.repo = KeywordRepo(connection: connection)
-        self.cacheRepo = MetadataCacheRepo(connection: connection)
+    public init(index: any KeywordIndexStore, metadata: any MetadataKeywordReading) {
+        self.index = index
+        self.metadata = metadata
     }
 
     // MARK: - 单张同步
@@ -83,8 +78,8 @@ public final class KeywordIndexSync: Sendable {
         source: KeywordIndexSource = .xmp
     ) throws -> KeywordSyncSummary {
         let paths = KeywordCodec.parse(keywords)
-        if !paths.isEmpty { _ = try repo.ensure(paths: paths) }
-        let result = try repo.replacePhotoKeywords(
+        if !paths.isEmpty { _ = try index.ensure(paths: paths) }
+        let result = try index.replacePhotoKeywords(
             photoId: photoId, paths: paths, source: source.rawValue)
         return KeywordSyncSummary(inserted: result.inserted, removed: result.removed)
     }
@@ -92,20 +87,20 @@ public final class KeywordIndexSync: Sendable {
     /// 从 photo_metadata_cache.keywords（JSON）同步——索引/扫描完成后的默认入口。
     @discardableResult
     public func syncFromCache(photoId: String) throws -> KeywordSyncSummary {
-        guard let row = try cacheRepo.get(photoId) else {
+        guard let keywords = try metadata.keywords(photoId: photoId) else {
             // 缓存行不存在 = 该照片还没解析出元数据：清空索引比留着陈旧词更安全。
             return try remove(photoId: photoId)
         }
-        return try sync(photoId: photoId, keywords: row.keywords, source: .xmp)
+        return try sync(photoId: photoId, keywords: keywords, source: .xmp)
     }
 
     /// 照片被移除/清空关键词时同步清索引（photos 的 CASCADE 也会兜住删除，
     /// 但"清空关键词"不删照片行，必须显式清）。
     @discardableResult
     public func remove(photoId: String) throws -> KeywordSyncSummary {
-        let current = try repo.photoKeywordPaths(photoId: photoId)
+        let current = try index.photoKeywordPaths(photoId: photoId)
         guard !current.isEmpty else { return .empty }
-        let deleted = try repo.deletePhotoKeywords(photoId: photoId)
+        let deleted = try index.deletePhotoKeywords(photoId: photoId)
         _ = deleted
         return KeywordSyncSummary(inserted: [], removed: current.sorted())
     }
@@ -121,7 +116,7 @@ public final class KeywordIndexSync: Sendable {
         batchSize: Int = 5_000
     ) throws -> KeywordBackfillStep {
         let size = max(1, min(20_000, batchSize))
-        let batch = try repo.pendingBackfillBatch(after: photoId, limit: size)
+        let batch = try index.pendingBackfillBatch(after: photoId, limit: size)
         guard !batch.isEmpty else {
             return KeywordBackfillStep(
                 scanned: 0, indexed: 0, nextCursor: photoId, isDone: true)
