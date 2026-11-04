@@ -603,3 +603,17 @@
 
 这条复核修正了调研里「W1 风险低」的判断，理由是**静态依赖清单比行数更能预测拆分成本**：
 185 行但有 5 个跨簇出口，比 300 行但自洽的文件难拆得多。
+
+## 残留修复 9：#6 CullingService 收窄第二步（deliveryItems 类型收窄）
+
+- 新增 `GatherPersistence/Ports/DeliveryRowReading.swift`：交付行的只读子集
+  （`getItem` / `getMany`，2 个方法）。`CullingService.deliveryItems` 的类型从
+  `any DeliveryRepository` 收窄为 `any DeliveryRowReading`——它实际只用这 2 个方法
+  （8 处调用），却被塞了整个交付仓储（含写入、清理、租约）。
+- `DeliveryRepo` 与测试替身 `PortFakeDeliveryRepo` 各自加一个 conformance；替身带可变
+  记录器，只能 `@unchecked Sendable`（Tests 不进 ratchet 计数）。
+- **调研结论修正**：原报告说「deliveryItems 与 similarityResultRepo 都只用 2 个方法」，
+  实测 `similarityResultRepo` 用了 **5 个**方法（countFullyArchivedGroups / getGroupMembers /
+  getLatest / getPhotoGroupMap / groupMemberCounts，7 处调用）——它不能按 2 个方法收窄。
+- 踩坑：perl 替换里的 `@unchecked` 被当成数组变量吃掉了，生成出 `,  Sendable {`，
+  编译报「mutable stored property」才暴露；已改用 edit 工具精确写入。

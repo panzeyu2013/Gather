@@ -95,7 +95,8 @@ public final class CullingService {
     /// CullingReadQuery）；交付行读取与事务经端口。
     let pageQuery: any CullingPageReading
     let richQuery: any CullingRichReading
-    let deliveryItems: any DeliveryRepository
+    /// #6 收窄：只读交付行（getItem / getMany）；写入面由 delivery 适配器负责。
+    let deliveryItems: any DeliveryRowReading
     let transactions: any TransactionRunner
     let metadataMutations: any MetadataMutationPort
     let writeback: any CullingWritebackPort
@@ -117,7 +118,7 @@ public final class CullingService {
         metadataCacheRepo: any MetadataRepository,
         pageQuery: any CullingPageReading,
         richQuery: any CullingRichReading,
-        deliveryItems: any DeliveryRepository,
+        deliveryItems: any DeliveryRowReading,
         transactions: any TransactionRunner,
         metadataMutations: any MetadataMutationPort,
         writeback: any CullingWritebackPort,
