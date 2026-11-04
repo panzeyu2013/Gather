@@ -2920,3 +2920,26 @@ struct CullingSelectionUpdateTests {
         #expect(selection.truncated == false)
     }
 }
+// MARK: - 拆分契约钉子（#6 S7）
+
+/// 依赖数下降很容易变成名义上的：只要门面还挂着 15 参数装配 init，它就同时在接触全部仓储。
+/// 这两条反射断言让「名义下降」变成红灯——拆分后必须始终成立。
+@Suite("挑片服务拆分契约（门面零仓储 / 两服务分离）")
+struct CullingSplitContractTests {
+    @Test("门面只有 decision / sync 两个存储属性（K1）")
+    func facadeHoldsOnlyTwoServices() throws {
+        let harness = try makeHarness()
+        let labels = Mirror(reflecting: harness.service).children.compactMap(\.label)
+        #expect(labels.count == 2, "门面存储属性应为 2 个，实际 \(labels)")
+        #expect(Set(labels) == ["decision", "sync"], "两个字段必须是 decision / sync，实际 \(labels)")
+    }
+
+    @Test("同步服务只持 4 个依赖：core / writeback / delivery / decisions（K3/K5）")
+    func syncServiceHoldsFourDependencies() throws {
+        let harness = try makeHarness()
+        let sync = try #require(
+            Mirror(reflecting: harness.service).children.first { $0.label == "sync" }?.value)
+        let labels = Set(Mirror(reflecting: sync).children.compactMap(\.label))
+        #expect(labels == ["core", "writeback", "delivery", "decisions"], "实际 \(labels)")
+    }
+}
