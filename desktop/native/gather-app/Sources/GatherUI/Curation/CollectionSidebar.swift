@@ -286,6 +286,8 @@ public struct CollectionSidebar: View {
             let created = try await album.createCollection(
                 CollectionCreateInput(sessionId: sessionId, name: name)
             )
+            // #11：新建集合是库级数据变更（图库「加入集合」菜单、其它页的集合侧栏都读它）。
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
             showCreateSheet = false
             await reload()
             selection = .collection(created)

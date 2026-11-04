@@ -11,7 +11,13 @@
 #      因为 resolve/set/update/merge/split 在 LocalizedText/DescriptiveMetadata 等处撞名）。
 #
 # 通过条件（任一）：函数体含 postDomainChange( / 调用已登记 helper / 声明前一行的
-#   `// DOMAIN-EVENT: none — <非空理由>`。理由必须非空，且不许文件级豁免。
+#   `// DOMAIN-EVENT: none — <非空理由>`（必须紧邻声明上一行，理由非空）。
+#
+# 已知盲区（评审确认，刻意收窄承诺而不是假装全覆盖）：
+# - 端口型写（如 DashboardDataProvider.createSession/deleteSessions）的接收者不以 API 结尾，
+#   不在扫描面内；
+# - 「一函数多处写 + 条件 post」只按函数体判定，不区分成功分支。
+# 发现新的写入口时，请同时扩充 API_PROPS / NONCONF 与本节说明。
 #
 # 用法：./scripts/check-domain-writes.sh [--list]
 set -euo pipefail
@@ -69,7 +75,7 @@ NONCONF = {
   ("MetadataAPI","cleanupRetention"),("MetadataAPI","finalizeSync"),
   ("MetadataAPI","applyTemplate"),("MetadataAPI","undoTemplate"),
   ("MetadataAPI","applyDescriptive"),
-  ("AlbumAPI","addCollectionItems"),("AlbumAPI","createStack"),
+  ("AlbumAPI","createCollection"),("AlbumAPI","addCollectionItems"),("AlbumAPI","createStack"),
   ("AlbumAPI","removeCollectionItems"),("AlbumAPI","moveCollectionItem"),
   ("SessionAPI","ingest"),("SessionAPI","setSourceRoot"),
 }
@@ -85,7 +91,9 @@ for dp, _d, fs in os.walk(ui_dir):
         lines = open(p, encoding="utf-8").read().split(chr(10))
         recv = dict(API_PROPS)
         for ln in lines:
-            m = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:any\s+)?([A-Za-z_][A-Za-z0-9_]*API)\b", ln)
+            # 允许 `album: (any AlbumAPI)?` 这类括号/可选包裹——评审发现旧正则漏掉它们，
+            # 导致 CollectionSidebar.createCollection 这类真实写路径完全不在扫描面内。
+            m = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*\(?\s*(?:any\s+)?([A-Za-z_][A-Za-z0-9_]*API)\b", ln)
             if m: recv[m.group(1)] = m.group(2)
         i = 0
         while i < len(lines):
@@ -109,7 +117,11 @@ for dp, _d, fs in os.walk(ui_dir):
                     writers.add(mm.group(1) + "." + meth)
             if writers:
                 ok = ("postDomainChange(" in body) or any(h + "(" in body for h in HELPERS)
-                opt = "DOMAIN-EVENT: none" in body or "DOMAIN-EVENT: none" in (lines[i-1] if i else "")
+                # 评委 F2：豁免只认「紧邻声明上一行」且理由非空——否则函数体任何位置的一句
+                # 裸 none 都能让整条写路径免检。
+                OPT = re.compile(r"DOMAIN-EVENT:\s*none\s*[—–:\-]\s*(\S.*)$")
+                prev = lines[i - 1] if i else ""
+                opt = bool(OPT.search(prev))
                 findings.append((rel, name, i+1, sorted(writers), ok, opt))
             i = j + 1
 
