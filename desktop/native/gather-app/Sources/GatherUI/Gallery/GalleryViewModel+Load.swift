@@ -69,6 +69,8 @@ extension GalleryViewModel {
         do {
             _ = try await albumAPI.addCollectionItems(
                 CollectionItemsInput(collectionId: collectionId, photoIds: photoIds))
+            // #11：集合/堆栈是库级数据（侧栏与图库行集合都读它），必须发 .library。
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
             await refreshCollections()
         } catch {
             actionError = CommandError(error)
@@ -81,6 +83,8 @@ extension GalleryViewModel {
         do {
             _ = try await albumAPI.createStack(
                 StackCreateInput(sessionId: sessionId, photoIds: photoIds))
+            // #11：集合/堆栈是库级数据（侧栏与图库行集合都读它），必须发 .library。
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
             await refreshStackFolds()
         } catch {
             actionError = CommandError(error)

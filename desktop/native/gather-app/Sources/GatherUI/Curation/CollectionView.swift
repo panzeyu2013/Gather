@@ -64,6 +64,8 @@ final class CollectionViewModel {
             _ = try await album.removeCollectionItems(
                 CollectionItemsInput(collectionId: collection.id, photoIds: [photoId])
             )
+            // #11：集合成员变化影响侧栏计数与图库「加入集合」菜单，发 .library。
+            GatherEventCenter.postDomainChange(.library, sessionId: nil)
             await load()
             // D7：破坏性动作成功后必须有可见回执（否则"点了没反应"）。
             notice = LocalizedText("已移出「%@」", params: [displayName ?? photoId])
@@ -91,6 +93,7 @@ final class CollectionViewModel {
                     beforePhotoId: beforePhotoId
                 )
             )
+            GatherEventCenter.postDomainChange(.library, sessionId: nil)
             await load()
         } catch {
             actionError = CommandError(error)

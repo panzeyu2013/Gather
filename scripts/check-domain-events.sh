@@ -51,6 +51,9 @@ PUBLISHERS = {
     "Duplicates/DuplicatesViewModel.swift": {"duplicates"},
     # #11 补广播：同步条三个动作（清理/确认/结清）都改 deliveries 行。
     "Metadata/MetadataSyncBar.swift": {"metadata"},
+    # #11 补广播：集合/堆栈是库级数据（侧栏计数、图库「加入集合」菜单都读它）。
+    "Gallery/GalleryViewModel+Load.swift": {"library"},
+    "Curation/CollectionView.swift": {"library"},
     # 变参：调用方传 domain（簇结构变化/绑定变化两类），只登记 1 个调用点。
     "FaceKeywording/FaceKeywordingViewModel+Review.swift": None,
     # 定义处本身不算发布点
