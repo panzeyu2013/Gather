@@ -147,3 +147,21 @@
   改名 + 3 处 encode 调用 + helper 注释」；**8 个 executor 的函数体一字未动**。
 - C3（两个设置闭包 → SettingsReading）**暂不做**：`triageModelReview` 默认 "1"，
   换成空 reader 会让模型段从关闭变开启（现有测试显式传 false），需要单独的语义判定。
+
+## #2 S1：冲突/孤儿处置下沉 MetadataDispositionService
+
+- `LiveMetadataAPI` 990 → **586** 行；新增 `GatherApplication/Services/Metadata/
+  MetadataDispositionService.swift`（439 行，含 15 个方法：conflicts / orphans /
+  resolveConflict / resolveOrphan + 投影 / 守卫 / 文件阶段）。
+- 新端口 `Ports/MetadataDispositionStore.swift`：`MetadataDispositionReading`（5 方法，
+  唯一消费者，每个都用到）。写入口不搬——状态迁移仍走 GatherDelivery 的
+  `DeliveryStateWriter`（CAS/租约语义的拥有者）。
+- 适配器只留：`Confirmed<T>` 解包、`LiveAPIInput.requireSessionId`、
+  `LiveAPIErrorMapping`（`map`/`mapAsync`）、DTO 组装。错误码集合零变化：
+  app 的 13 条元数据 API 用例（含锁序、TOCTOU、跨会话门禁）全绿即回归证明。
+- 构造点零改动：处置服务由适配器就地装配，依赖与原来完全同源
+  （同一 `deliveryRepo`、同一 `XMPFileLock` 实例），因此 `FeatureAPIs` 与 6 处测试
+  构造点一字未改。
+- 未做：core 侧新增 `MetadataDispositionServiceTests`（需要 XMPProvider 假件 +
+  交付行种子，成本高于本步收益）；当前以 app 侧端到端用例作回归网，
+  后续做「整条写回链进 core 测试」时一并补。

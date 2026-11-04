@@ -8,7 +8,8 @@
 // 的文件阶段排成一条队列：
 // - cleanup/finalize/replay 的 verify → restore/remove → 事后 verify 整体在锁内；
 // - WritebackService 每个交付组的 backup → read → writeAttributes 在锁内；
-// - LiveMetadataAPI 的 orphan restore/remove 的复核 → 文件 → 事后复核在锁内；
+// - MetadataDispositionService（#2 起从 LiveMetadataAPI 下沉）的 orphan
+//   restore/remove 的复核 → 文件 → 事后复核在锁内；
 // - 不同路径互不阻塞，批次/顺序语义不变（执行仍按 xmpPath 排序分组）。
 //
 // 锁只覆盖文件阶段，绝不覆盖 DB 事务/await 之外的编排：调用方在锁内不得再次
