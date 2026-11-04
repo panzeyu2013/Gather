@@ -567,7 +567,9 @@
   `test-catalog` 计数不变（无需动基线）。
 - 剩余收窄（B-E）按调研顺序：抽 `CullingSyncWriter`（writeback + delivery → 1）、
   `flushMetadata` 并入 `MetadataMutationPort.flush`、`settings` 收窄为 2 个读闭包、
-  `deliveryItems` 收窄为 `DeliveryRowReading`。目标 15 → 12 个依赖。
+  `deliveryItems` 收窄为 `DeliveryRowReading`。**目标修正**：原记「15 → 12」不成立——
+  那需要三项才闭环（flush −1、settings+triage 合成 hooks −1、writeback+delivery 合一 −1）。
+  本波只做前两项，实际到 **13**；第三项（writeback+delivery 合一）未做，台账不再声称 12。
 
 ## 残留修复 8：Observation 哨兵（desk 抽取的前置保险）
 
@@ -676,34 +678,25 @@ app 798 全绿。这条结论也解释了为什么 CullingService 的 15 个依�
 - 为什么先做这步：它们是后面拆出 `CullingSyncService` 时那 6 个跨簇符号里的 2 个，且
   纯静态搬迁零风险，可先验证口径（行数、测试计数、门禁读数）是否稳定。
 - 实测读数：core 1,699+25 / app 798 不变；14 道门禁全绿。
-- 踩坑：用脚本按行区间删旧定义时，数组字面量的 `]` 与 switch 的 `}` 被留成孤立符号，
-  编译报 `expected declaration` / `extraneous }`；已逐处修正。后续步骤改为「先建新文件、
-  再手工删旧定义」而不是区间删除。
 
+## CullingService 拆分收尾（4 项计划任务，5 个提交）
 
+| # | 任务 | 提交 | 结果 |
+|---|---|---|---|
+| 1 | 装配独立 | `ee6cfefd` | `CullingServiceFactory`（public enum）；门面文件里仓储标识符命中 **0** |
+| 2 | 去掉 `@testable import GatherDelivery` | `16a6dfbb` | `DeliveryCleanupPayload` 加 public 入口（init 拆两个：public 只收 delivery/photoPath/module） |
+| 3 | S8 端口收紧 | `78a9bb20` + `903d2dbf` + `8890d174` | `flushMetadata` 并入 `MetadataMutationPort`（默认 no-op，11 个 conformer 零改动）；`settings`+`triageDisplayPolicy` 合成 `CullingDisplayHooks`；**15 → 13** |
+| 4 | 文档对账 | `a7cf9ee0` | 三个类型的真实位置 + **1 条改判**（`CullingUpdateContext` 不能降 internal，应做不透明句柄）+ 7 处越界行号 |
 
-## CullingService 一分为二：完成记录（S1–S7，7 个提交）
+**过程中踩到的三个真问题（都已修正并记录）**
 
-| 步 | 提交 | 内容 |
-|---|---|---|
-| S1 | `a758e987` | `CullingSharedRules`（colorLabels / colorLabel / syncStatus）纯规则提取 |
-| S2 | `b7971fc9` | `CullingSharedCore`（metadataCache + deliveryRows + currentSyncStatus），struct Sendable |
-| S4 | `48bc7fef` | `CullingSyncService`（4 依赖）+ `CullingDecisionLiteReading` 单方法端口 |
-| S5 | `695bf60b` + `663f5b89` | 改名 `CullingDecisionService` + 门面（2 字段 / 27 转发 / 调用方零改动） |
-| S6 | `7e869c17` | 门面只留 `init(decision:sync:)`，15 参数装配改静态工厂 |
-| S7 | `1e697454` + `2b1bf12a` + `1abb716f` | 结构钉子（K1/K3/K5）+ 27 条同步用例迁入 |
+1. **装配顺序**：`flush` 依赖 `writebackService` / `metadataDeliveryService`，二者在 `metadataMutationService`
+   之后构造 → 不能经 init 传入。`var` 方案被 Sendable 合成拒绝，`@unchecked` 盒子撞预算 60/60；
+   最终用 `OSAllocatedUnfairLock` 槽 + `public setFlush(_:)` 后置挂载。
+2. **`Int?` vs `Int`**：hooks 一开始返回 `Int?`，调用点被迫写 `- 0.0`，会让 `analysisMax` 可能为 0 →
+   `analysisScale=0` → 老数据人脸框全 clamp 成 1.0（调研点名的坑）。改回 `Int`，与 `settings.int(_:)` 一致。
+3. **`Sendable` 边界**：hooks 带 `triageDisplayPolicy`（捕获不可 Sendable 的 `TriageService`），
+   写成 `@Sendable` 会逼调用方硬包一层；改为非 Sendable 结构体（决策服务本身也不是 Sendable）。
 
-**最终形态**
-
-- `CullingService`（门面）：2 个存储属性（decision / sync）、27 个一行转发、`init(decision:sync:)`；
-- `CullingDecisionService`：15 个依赖，19 个公开方法（决策/查询/分页/选择更新）；
-- `CullingSyncService`：4 个依赖，8 个公开方法（写回/同步/清理/确认）；
-- 服务间只有**一条边**：sync → decision 的单方法读端口；
-- 调用方零改动（Host / App / 60+ 测试全部门面）；
-- 用例按服务边界分文件，**断言零改动**（27 例 / 152 断言 / 719 行整段搬移）。
-
-**可验证判据**：K1 门面 2 字段、K2 门面只剩 `init(decision:sync:)`、K3 同步服务 4 依赖——
-K1/K3 由两条 `Mirror` 用例守住，K2 由 `grep -c 'public init('` 判定。
-
-**读数**：core 1,701 / 250 suites、app 798 / 94 suites；test-catalog @Test 2,524、@Suite 290、
-断言 11,570（均高于基线）；14 道门禁全绿。
+**最终读数**：core 1,701 / 250 suites、app 798 / 94 suites、14 道门禁全绿；
+`CullingDecisionService` 依赖 **13**、`CullingSyncService` **4**、门面 **2** 个字段。
