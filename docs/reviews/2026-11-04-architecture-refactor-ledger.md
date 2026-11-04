@@ -476,7 +476,7 @@
   `Culling/C1RoundTripPorts.swift`；顺带删掉一个空的 `public extension Notification.Name`
   （通道名 #11 已迁走，只剩注释的零引用死声明）；+Writeback 516 → 379 行。
 - S1c：`CullingViewModel` 里的 6 个嵌套/顶层值类型 → `CullingFilterState.swift`（筛选/范围/
-  目标索引）+ `CullingSyncFlow.swift`（同步状态机）；CullingViewModel 660 → 577 行；
+  目标索引）+ `CullingSyncFlow.swift`（同步状态机）；CullingViewModel 654 → 577 行（原记 660 是另一种计数口径）；
   7 处限定名（`CullingViewModel.FilterState` 等）改为裸名。
 - 这一步是**纯搬移**：45 处构造点、345 处 View 调用点、140 条测试全部零改动；
   140 行（+Triage 201 + Writeback 136）的非 VM 类型各自落到自解释文件。
@@ -653,7 +653,7 @@ app 798 全绿。这条结论也解释了为什么 CullingService 的 15 个依�
 |---|---|---|
 | (1) #11 事件契约 | **完成** | `notification.object as? GatherJobEvent\|GatherApplicationChange` 零命中；R3 门禁第 14 道（叶子写函数 42 / 已发域 34 / 显式 none 8 / 缺口 0）；`GatherChangeDomain.similarity` 死 case 已删 |
 | (2) #1 C4/C5 | **完成** | `GatherMetadataIO` 的 import 只剩 Foundation / GatherProtocol / GatherAnalysis / GatherPersistence / CryptoKit / os；Package 依赖收窄为 Protocol+Persistence+Analysis；layering 新增 4 条方向规则 |
-| (3) #6 | **结构层面已尽力** | 纯类型 420 行搬出（+Triage 463→261、+Writeback 516→379、CullingViewModel 660→577）；3 个 public 降级；写回端口 7→5；交付行端口收窄；Observation 哨兵；导航簇 4 条用例 |
+| (3) #6 | **结构层面已尽力** | 纯类型 420 行搬出（+Triage 463→265、+Writeback 516→379、CullingViewModel 654→577）；3 个 public 降级；写回端口 7→5；交付行端口收窄；Observation 哨兵；导航簇 4 条用例 |
 
 **两次结构尝试与放弃理由（都有编译/依赖证据，非主观判断）**
 
@@ -699,4 +699,5 @@ app 798 全绿。这条结论也解释了为什么 CullingService 的 15 个依�
    写成 `@Sendable` 会逼调用方硬包一层；改为非 Sendable 结构体（决策服务本身也不是 Sendable）。
 
 **最终读数**：core 1,701 / 250 suites、app 798 / 94 suites、14 道门禁全绿；
-`CullingDecisionService` 依赖 **13**、`CullingSyncService` **4**、门面 **2** 个字段。
+`CullingDecisionService` 依赖 **11**（原记 13；评审发现 writeback / delivery 两个字段零读取，已删）、
+`CullingSyncService` **4**、门面 **2** 个字段。

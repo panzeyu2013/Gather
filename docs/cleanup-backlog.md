@@ -228,7 +228,7 @@
 | **smart_albums (10/0)** | 5 | 1 | **疑似未接线**：仅 Router `album.*` | 候选删除 |
 | **workflow_templates (6/0)** | 5 | 0 | **疑似未接线**：仅 Router `template.*` | 候选删除 |
 | culling_decisions (11/2) | 14 | 9 | 保留 | 保留 |
-| culling_history (5/1) | 9 | 7 | 保留（CullingView:698/794） | 保留 |
+| culling_history (5/1) | 9 | 7 | 保留（读点：CullingViewModel.swift:41、CullingViewModel+Load.swift:29/106/163/269；原记 CullingView:698/794 已越界） | 保留 |
 | navigation_groups (10/1) | 11 | 6 | 保留 | 保留 |
 | **metadata_outbox (16/2)** | 44 | 14 | **替换** | deliveries |
 | **metadata_outbox_sessions (4/1)** | 25 | 5 | **替换** | delivery_sessions |
@@ -250,7 +250,7 @@
 | metadata_outbox.owner_session_id / created_by_session_id (518-519) | 只写 + 原样拷贝（`MetadataOutboxRepo.swift:446`、`AssetRepo.swift:708-713`），无 WHERE/ORDER BY；两索引因此无支撑（见 §3.4） | 随表替换消失 |
 | schema_version.applied_at (557) | 除迁移 INSERT（`Migrations.swift:82`）外 0 读点 | 随表删除 |
 | writeback_items.backup_path (353) | 只写（`WritebackRepo.swift:80`），`backupPath` 无消费方（仅 record 字段 `:15/35/51`） | 随表替换消失 |
-| photos.metadata / photos.result (44-45) | 仅 INSERT 常量 `'{}'`（`PhotoRepo.swift:294`），全仓无 `UPDATE photos SET metadata/result`；读取只是透传（`CullingService.swift:2435-2436`、FilterEngine:86 投影） | 删 2 列（Cut 2 同步删透传字段） |
+| photos.metadata / photos.result (44-45) | 仅 INSERT 常量 `'{}'`（`PhotoRepo.swift:294`），全仓无 `UPDATE photos SET metadata/result`；读取只是透传（`CullingService+Queries.swift:612-630` photoRowToData 里 result 恒为 [:]；FilterEngine:86 投影。原记 CullingService.swift:2435-2436 已越界——该文件现 145 行） | 删 2 列（Cut 2 同步删透传字段） |
 
 **B. 疑似 / 需产品决策**
 
@@ -354,7 +354,7 @@
 | 3 | 双聚类 | ClusterEngine.swift（753 行）+ IncrementalClusterer.swift（766 行） | 2 | 同上；保留 parity 测试 |
 | 4 | 缩略图 loader | PhotoThumbnailView.swift:222-260 与 FaceCropThumbnailView.swift:415-449；@State :164-168 vs :289-293；.task :211 vs :342 | 2 | `ThumbnailLoader` + 统一 cache key |
 | 5 | 测试 helper | LockedBox ×3（SimilarityViewModelTests:55 / LibraryViewModelTests:20 / GalleryViewModelTests:22）；AsyncGate ×4（SimilarityViewModelTests:16 / FaceKeywordingServiceTests:27 / SimilarityServiceTests:45 / DuplicateServiceTests:47）；ResponseBox（CommandSurfaceRuntimeTests:31）；JobEventSink（GlobalInfraTests:124） | 9 | 每包 1 份 `Tests/Support`（跨包不能共享） |
-| 6 | errorMessage 出口 | 7 个 VM：CullingView:102、SettingsView:105、ExportView:31、DuplicatesView:118、SessionControlView:26、FaceKeywordingView:86、SimilarityViewModel:332 | 7 | `GatherError` + `CommandError` 单一出口（`ViewState` 已删） |
+| 6 | errorMessage 出口 | 7 个 VM：CullingViewModel.swift:66（原记 CullingView:102 已越界）、SettingsView:105、ExportView:31、DuplicatesView:118、SessionControlView:26、FaceKeywordingView:86、SimilarityViewModel:332 | 7 | `GatherError` + `CommandError` 单一出口（`ViewState` 已删） |
 | 7 | rawExtensions | AssetRepo.swift:1190（定义）、PhotoRepo.swift:163（排序投影）、PhotoAssets.swift:12（再导出） | 3 | `PhotoFileTypes`（Protocol） |
 | 8 | 轮询间隔 | SessionControlView.swift:236/239、SimilarityViewModel.swift:398、GalleryViewModel.swift:224（注释引用） | 3+ | `PollingPolicy` |
 | 9 | SQL 直写 Services | Services 下 15 个文件共 128 处 `prepare(`（DuplicateService 25、IndexerService 21、CullingService 15…） | 128 | Cut 2 收进 Repository；`check-db-boundary.sh` = 0 |
