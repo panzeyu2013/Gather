@@ -110,7 +110,7 @@ struct PortFakeCullingServiceTests {
         richQuery: PortFakeCullingRichReading,
         transactions: PortFakeTransactionRunner
     ) -> CullingService {
-        CullingService(
+        CullingService.make(
             photoRepo: photoRepo,
             cullingDecisionRepo: decisionRepo,
             similarityResultRepo: PortFakeSimilarityRepo(),

@@ -144,7 +144,7 @@ public final class CullingService {
 
     /// 兼容 init（#6 S5 第二阶段临时）：与拆分前同签名，内部装配 decision + sync + 门面。
     /// 6 处构造点因此零改动；S6 会把它挪到测试支持与组合根，门面只留 init(decision:sync:)。
-    public convenience init(
+    public static func make(
         photoRepo: any PhotoRepository,
         cullingDecisionRepo: any CullingDecisionRepository,
         similarityResultRepo: any SimilarityRepository,
@@ -160,7 +160,7 @@ public final class CullingService {
         triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
         flushMetadata: ((String) async throws -> Void)? = nil,
         delivery: any DeliveryModuleAdapter
-    ) {
+    ) -> CullingService {
         let decision = CullingDecisionService(
             photoRepo: photoRepo, cullingDecisionRepo: cullingDecisionRepo,
             similarityResultRepo: similarityResultRepo,
@@ -174,6 +174,6 @@ public final class CullingService {
             metadataCache: metadataCacheRepo, deliveryRows: deliveryItems)
         let sync = CullingSyncService(
             core: sharedCore, writeback: writeback, delivery: delivery, decisions: decision)
-        self.init(decision: decision, sync: sync)
+        return CullingService(decision: decision, sync: sync)
     }
 }

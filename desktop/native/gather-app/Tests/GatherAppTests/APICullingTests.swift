@@ -115,7 +115,7 @@ private struct CullingAPIFixture {
         let writeback = CullingTestWritebackPort()
         // 生产装配只包装 旧命令面已有的 CullingService；测试里用同一构造器 +
         // fake 端口，断言 API 边界而不是服务内部。
-        let service = CullingService(
+        let service = CullingService.make(
             photoRepo: photoRepo,
             cullingDecisionRepo: decisionRepo,
             similarityResultRepo: similarityRepo,
@@ -899,7 +899,7 @@ struct APICullingTests {
 
         let decisionRepo = CullingDecisionRepo(connection: db)
         let historyRepo = CullingHistoryRepo(connection: db)
-        let service = CullingService(
+        let service = CullingService.make(
             photoRepo: photoRepo,
             cullingDecisionRepo: decisionRepo,
             similarityResultRepo: SimilarityResultRepo(connection: db),
@@ -978,7 +978,7 @@ struct APICullingTests {
 
         let decisionRepo = CullingDecisionRepo(connection: db)
         let historyRepo = CullingHistoryRepo(connection: db)
-        let service = CullingService(
+        let service = CullingService.make(
             photoRepo: photoRepo,
             cullingDecisionRepo: decisionRepo,
             similarityResultRepo: SimilarityResultRepo(connection: db),
