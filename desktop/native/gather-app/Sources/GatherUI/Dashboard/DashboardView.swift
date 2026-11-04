@@ -101,8 +101,7 @@ package struct DashboardView: View {
             }
             viewModel.startAutoRefresh()
         }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
-            guard let event = notification.object as? GatherJobEvent else { return }
+        .onReceive(GatherEventChannel.jobProgress.publisher) { event in
             // 进度帧节流：1s 窗口内合并（对齐 GalleryViewModel 的
             // progressFrameDebounce 先例），避免高频帧反复重排整行 UI；
             // 终态帧始终透传（权威计数/整页刷新不受影响）。

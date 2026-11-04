@@ -134,8 +134,7 @@ public struct ExportView: View {
                 await viewModel.refreshPlan()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
-            guard let event = notification.object as? GatherJobEvent else { return }
+        .onReceive(GatherEventChannel.jobProgress.publisher) { event in
             viewModel.applyJobEvent(event)
         }
         .gatherDestructiveConfirm(

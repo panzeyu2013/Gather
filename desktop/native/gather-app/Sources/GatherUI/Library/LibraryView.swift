@@ -155,9 +155,8 @@ package struct LibraryView: View {
             // 任意终态事件都重载支持数据/照片列表（索引/分析结束即反映）。
             viewModel.scheduleEventRefresh()
         }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
-            guard let event = notification.object as? GatherJobEvent,
-                  event.job.type == .metadataScan else { return }
+        .onReceive(GatherEventChannel.jobProgress.publisher) { event in
+            guard event.job.type == .metadataScan else { return }
             let viewModel = viewModel
             jobProgressDebounceTask?.cancel()
             jobProgressDebounceTask = Task { [weak viewModel] in

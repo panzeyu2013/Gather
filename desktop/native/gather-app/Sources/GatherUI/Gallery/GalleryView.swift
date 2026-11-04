@@ -174,10 +174,9 @@ package struct GalleryView: View {
         ) {
             scheduleRefreshFromEvent()
         }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
+        .onReceive(GatherEventChannel.jobProgress.publisher) { event in
             // 条件构建：页面存在即可见；进度帧只更新缓存，按 scopeId 过滤。
             // 索引活跃期间 jobs:progress 帧 → 索引头实时刷新（VM 内 1s 去抖）。
-            guard let event = notification.object as? GatherJobEvent else { return }
             viewModel.handleIndexJobProgress(event)
         }
         .sheet(isPresented: lightboxPresented) {

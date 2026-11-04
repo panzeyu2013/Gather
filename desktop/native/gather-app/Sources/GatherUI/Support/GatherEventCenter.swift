@@ -87,14 +87,14 @@ public struct GatherApplicationChange: Sendable {
 public final class GatherEventCenter {
     public static let shared = GatherEventCenter()
 
-    public static let jobProgress = Notification.Name("gather.events.job-progress")
-    public static let jobTerminal = Notification.Name("gather.events.job-terminal")
-    public static let c1SyncStatus = Notification.Name("gather.events.c1-sync-status")
+    nonisolated public static let jobProgress = Notification.Name("gather.events.job-progress")
+    nonisolated public static let jobTerminal = Notification.Name("gather.events.job-terminal")
+    nonisolated public static let c1SyncStatus = Notification.Name("gather.events.c1-sync-status")
     /// 写路径领域变更（GatherApplicationChange 载荷）：常驻页按域刷新。
-    public static let domainChanged = Notification.Name("gather.events.domain-changed")
+    nonisolated public static let domainChanged = Notification.Name("gather.events.domain-changed")
     /// C1 自动 reload 失败（载荷：sessionId）。#11 起与其余通道并列登记——
     /// 此前它定义在 CullingViewModel+Writeback 里，属「第 5 条游离通道」。
-    public static let c1AutoReloadFailed = Notification.Name("gather.events.c1-auto-reload-failed")
+    nonisolated public static let c1AutoReloadFailed = Notification.Name("gather.events.c1-auto-reload-failed")
 
     public private(set) var wired = false
 
@@ -182,4 +182,15 @@ public final class GatherEventCenter {
             NotificationCenter.default.post(name: Self.jobTerminal, object: event)
         }
     }
+}
+
+/// #11 第二步：类型化通道。名字仍取自上面四个 Notification.Name（唯一真相不变），
+/// 载荷类型在此绑定一次。
+public enum GatherEventChannel {
+    public static let jobProgress = TypedEventChannel<GatherJobEvent>(GatherEventCenter.jobProgress)
+    public static let jobTerminal = TypedEventChannel<GatherJobEvent>(GatherEventCenter.jobTerminal)
+    public static let c1SyncStatus = TypedEventChannel<String>(GatherEventCenter.c1SyncStatus)
+    public static let c1AutoReloadFailed = TypedEventChannel<String>(GatherEventCenter.c1AutoReloadFailed)
+    public static let domainChanged = TypedEventChannel<GatherApplicationChange>(
+        GatherEventCenter.domainChanged)
 }

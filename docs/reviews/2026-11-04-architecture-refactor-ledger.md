@@ -421,3 +421,21 @@
 - **#6 总账**：`MetadataService` 1,645 → **457 行（-72%）**，拆成 6 个内聚类型：
   MetadataAttributes(纯) / MetadataDiskReader / PhotoMetadataProjector /
   MetadataExtractionService / MetadataAttributeWriter / MetadataKeywordWriter。
+
+## #11 第二步：TypedEventChannel（类型化事件通道）
+
+- 新增 `GatherUI/Support/TypedEventChannel.swift`：`TypedEventChannel<Payload: Sendable>`，
+  名字与载荷类型在构造时绑定；`post(_:)` 与 `publisher`（`AnyPublisher<Payload, Never>`）。
+  **唯一的 `as?` 收在这个文件里**，结构性不可能失败。
+- `GatherEventChannel` 命名空间把 5 条通道（job-progress / job-terminal /
+  c1-sync-status / c1-auto-reload-failed / domain-changed）各绑一次类型。
+- 消费端 13 处 `.onReceive` 从「收 Notification + as? 下转」变成「直接收载荷」：
+  `notification.object as? GatherJobEvent` 之类的守卫整行删除；带附加条件的保留条件、
+  删掉类型转换（如 LibraryView 的 `event.job.type == .metadataScan`）。
+- 顺带修掉研究里提到的一个 hack：5 个通道名加 `nonisolated`（`Notification.Name` 是
+  Sendable），非 MainActor 的调用点不再需要 `await MainActor.run` 才拿得到名字。
+- 传输仍是 NotificationCenter——所以现有观察者、测试直发、@MainActor 语义全不变，
+  793 条 app 用例零改写。将来换 EventBus 只需把 publisher 换成 PassthroughSubject。
+- 未做：5 处 `addObserver` 形态（C1StatusCapsule ×2、LiveJobAPI ×2、RootShellOverlay ×1）
+  仍在做 `as?`——它们不是 publisher 消费点，要改成类型化得走新增的 `observe(_:)` 助手并
+  重排闭包结构（不是纯改名），留作后续。

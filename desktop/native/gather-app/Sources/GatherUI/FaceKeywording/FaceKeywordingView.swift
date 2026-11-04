@@ -99,8 +99,7 @@ public struct FaceKeywordingView: View {
             }
         }
         // 页面级可见性（setPageVisible）由 GatherSessionPage 统一路由到 face VM。
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
-            guard let event = notification.object as? GatherJobEvent else { return }
+        .onReceive(GatherEventChannel.jobProgress.publisher) { event in
             viewModel.applyJobEvent(event)
         }
         .onChange(of: viewModel.roleFilter) { _, _ in

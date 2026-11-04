@@ -65,8 +65,8 @@ private struct DomainChangeModifier: ViewModifier {
     @State private var gate = DomainChangeGate()
 
     func body(content: Content) -> some View {
-        content.onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-            guard let change = notification.object as? GatherApplicationChange else { return }
+        content.onReceive(GatherEventChannel.domainChanged.publisher) { event in
+            let change = event
             guard DomainEventFilter(
                 domains: domains,
                 sessionId: sessionId,
@@ -105,8 +105,8 @@ private struct JobTerminalRefreshModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobTerminal)) { notification in
-                guard let event = notification.object as? GatherJobEvent else { return }
+            .onReceive(GatherEventChannel.jobTerminal.publisher) { event in
+                
                 if sessionOnly, event.job.scopeType != "session" { return }
                 if let sessionId, event.job.scopeId != sessionId { return }
 
@@ -141,8 +141,8 @@ private struct DomainRefreshModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.domainChanged)) { notification in
-                guard let change = notification.object as? GatherApplicationChange else { return }
+            .onReceive(GatherEventChannel.domainChanged.publisher) { event in
+                let change = event
                 guard DomainEventFilter(
                     domains: domains,
                     sessionId: sessionId,

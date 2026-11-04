@@ -103,8 +103,8 @@ package struct SimilarityView: View {
             Task { await viewModel.load() }
         }
         // 写回协调器 emitSummary 后刷新同步状态视图（TS useEvent('culling:sync-status')）。
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
-            guard (notification.object as? String) == viewModel.sessionId else { return }
+        .onReceive(GatherEventChannel.c1SyncStatus.publisher) { event in
+            guard event == viewModel.sessionId else { return }
             viewModel.refreshSyncState()
         }
         // 关键词变化 → 清空旧预览/旧写回结果（TS effect [keywordInput, ...]）。

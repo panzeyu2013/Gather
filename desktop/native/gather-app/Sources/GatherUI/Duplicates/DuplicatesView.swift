@@ -166,8 +166,7 @@ public struct DuplicatesView: View {
             )
         }
         .task { await viewModel.load() }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.jobProgress)) { notification in
-            guard let event = notification.object as? GatherJobEvent else { return }
+        .onReceive(GatherEventChannel.jobProgress.publisher) { event in
             viewModel.applyJobEvent(event)
         }
         // 组处置 / 成员保留状态：确认后才构造 Confirmed 调用 DuplicateAPI，

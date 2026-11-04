@@ -103,9 +103,9 @@ struct MetadataSyncBar: View {
                 .strokeBorder(GatherTheme.hairline, lineWidth: 1)
         )
         .task(id: sessionId) { await refresh() }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
+        .onReceive(GatherEventChannel.c1SyncStatus.publisher) { event in
             // 写回/确认/收尾都会广播 c1-sync-status：订阅中的会话立即重拉。
-            guard let changed = notification.object as? String, changed == sessionId else { return }
+            guard event == sessionId else { return }
             Task { await refresh() }
         }
         .confirmationDialog(

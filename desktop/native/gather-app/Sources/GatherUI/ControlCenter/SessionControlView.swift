@@ -197,8 +197,8 @@ public struct SessionControlView: View {
         .refreshOnJobTerminal(sessionId: viewModel.sessionId, sessionOnly: true) {
             await viewModel.load()
         }
-        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1SyncStatus)) { notification in
-            guard (notification.object as? String) == viewModel.sessionId else { return }
+        .onReceive(GatherEventChannel.c1SyncStatus.publisher) { event in
+            guard event == viewModel.sessionId else { return }
             Task { await viewModel.load() }
         }
         // 写路径广播（XMP/同步队列、重复处置、人脸簇变化）：按会话命中后刷新
