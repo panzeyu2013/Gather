@@ -270,7 +270,7 @@ public final class ExportViewModel: SessionPageModel {
                 deliveryPhase = nil
             } else if let current = event.update.current, let total = event.update.total {
                 deliveryProgress = (current, total)
-                // 执行器把 "output.<i>/<n>" 写在 message（见 ExecutorRegistry 的
+                // 执行器把 "output.<i>/<n>" 写在 message（见 WorkflowRegistry 的
                 // updateProgress），phase 恒为 nil；两者都认，避免相位永远回退「正在处理…」。
                 deliveryPhase = event.update.phase ?? event.update.message
             }

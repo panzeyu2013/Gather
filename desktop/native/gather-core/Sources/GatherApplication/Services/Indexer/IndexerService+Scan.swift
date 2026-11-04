@@ -18,7 +18,7 @@ extension IndexerService {
 
     /// TS: scanSession —— 全量/增量扫描 + 索引入库 + 缺失对账 + index_seq 游标。
     /// requestedPaths=nil 时走目录遍历（fullScan）；非 nil 时只处理候选路径。
-    /// 由 app 的 metadata.scan job executor（ExecutorRegistry）直接调用。
+    /// 由 metadata.scan workflow（WorkflowRegistry）直接调用。
     public func scanSession(
         sessionId: String,
         requestedPaths: [String]? = nil,

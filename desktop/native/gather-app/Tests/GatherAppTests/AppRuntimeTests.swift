@@ -63,7 +63,7 @@ private struct AppRuntimeFixture {
         let assetRepo = AssetRepo(connection: db)
         let faceRepo = FaceRepo(connection: db)
         let personRepo = PersonRepo(connection: db)
-        let deps = ExecutorRegistry.Dependencies(
+        let deps = WorkflowRegistry.Dependencies(
             similarityService: SimilarityService(
                 photoRepo: photoRepo,
                 sessionRepo: sessionRepo,

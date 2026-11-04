@@ -130,3 +130,20 @@
   注入的 runner」，防止有人把事务改回 repo 内部。
 - 协议没有默认参数：`nameExists(excluding:)` / `create(sortOrder:)` /
   `exactGroups(minSessionCount:limit:)` 等调用点补全实参（行为不变）。
+
+## #3：8 条 job workflow 回迁 GatherApplication（Wave 2 首项）
+
+- `ExecutorRegistry`（Host，522 行）→ `GatherApplication/Services/Workflows/WorkflowRegistry.swift`；
+  `SessionIngestRunner`（Host）→ `Services/Ingest/`（它本来就是纯 Application 逻辑，
+  只是当年落在 Host；checksum.backfill 的 ingest 分支依赖它，必须先搬）。
+- 依赖的两个具体 Repo 收敛成端口：`photoRepo: PhotoRepo` → `any PhotoRepository`；
+  `assetRepo: AssetRepo` → `any AssetRepository`（端口补 `reconcileRawJpegLinks`，
+  metadata.scan 唯一用点；PortFakeAssetRepo 同步补桩）。
+- **搬运中发现一处隐藏的跨界依赖**：`JSONValue(from:)`（Encodable → JSONValue）住在
+  GatherUI 的 `Support/JSONValueDecoding.swift`，Host 里的 workflow 靠 import GatherUI
+  才用得上。回迁后 core 不能依赖 UI，改为本文件内 3 行私有 helper（不涨 Protocol 公开面）。
+  这条依赖本身就是「workflow 长在层与 UI 之间」的证据。
+- 逐字搬运的证据：`diff` 旧 blob 与新文件共 93 行差异，全部是「公开化 + 新增 init +
+  改名 + 3 处 encode 调用 + helper 注释」；**8 个 executor 的函数体一字未动**。
+- C3（两个设置闭包 → SettingsReading）**暂不做**：`triageModelReview` 默认 "1"，
+  换成空 reader 会让模型段从关闭变开启（现有测试显式传 false），需要单独的语义判定。

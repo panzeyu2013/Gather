@@ -1,5 +1,5 @@
-// desktop/native/gather-app/Sources/GatherHost/ExecutorRegistry.swift
-// Cut 1 / B8.3a：JobService 的 8 个 executor 注册表。
+// desktop/native/gather-core/Sources/GatherApplication/Services/Workflows/WorkflowRegistry.swift
+// Cut 1 / B8.3a / #3：JobService 的 8 个 workflow 注册表（从 GatherHost 回迁）。
 //
 // 本文件从旧路由的 registerExecutors（原 423-698 行，已删除）逐字搬出
 // 以下 8 个执行器，闭包体/注释/checkpoint 语义保持不变：
@@ -13,47 +13,79 @@ import Foundation
 import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
-import GatherApplication
 
 /// 8 个 executor 的依赖集合（组合根在 B8.3b 由 AppComposition 提供）。
 ///
 /// 说明：`metadata.scan` 的恢复语义会用 jobService 再入队 checksum.backfill，
 /// 但 jobService 已作为 register(jobService:deps:) 的显式参数传入，故不在本
 /// struct 中重复持有。
-struct ExecutorRegistryDependencies {
-    let similarityService: SimilarityService
-    let duplicateService: DuplicateService
-    let faceKwService: FaceKwService
-    let qualityService: QualityService
-    let modelReviewService: ModelReviewService
+public struct WorkflowDependencies {
+    public let similarityService: SimilarityService
+    public let duplicateService: DuplicateService
+    public let faceKwService: FaceKwService
+    public let qualityService: QualityService
+    public let modelReviewService: ModelReviewService
     /// triage_model_review 设置（false 时 quality job 只跑技术质量）。
-    let modelReviewEnabled: @Sendable () -> Bool
+    public let modelReviewEnabled: @Sendable () -> Bool
     /// triage_auto_generate：导入完成后自动接 metadata.scan → quality.score。
-    let triageAutoGenerateEnabled: @Sendable () -> Bool
-    let indexerService: IndexerService
-    let metadataService: MetadataService
-    let photoRepo: PhotoRepo
-    let assetRepo: AssetRepo
-    let imagePreloadService: ImagePreloadService
-    let exportService: ExportService
-    let outputService: OutputService
+    public let triageAutoGenerateEnabled: @Sendable () -> Bool
+    public let indexerService: IndexerService
+    public let metadataService: MetadataService
+    public let photoRepo: any PhotoRepository
+    public let assetRepo: any AssetRepository
+    public let imagePreloadService: ImagePreloadService
+    public let exportService: ExportService
+    public let outputService: OutputService
     /// P1-3：ingest.run 执行器需要会话/登记服务。
-    let sessionService: SessionService
+    public let sessionService: SessionService
+    public init(
+        similarityService: SimilarityService,
+        duplicateService: DuplicateService,
+        faceKwService: FaceKwService,
+        qualityService: QualityService,
+        modelReviewService: ModelReviewService,
+        modelReviewEnabled: @escaping @Sendable () -> Bool,
+        triageAutoGenerateEnabled: @escaping @Sendable () -> Bool,
+        indexerService: IndexerService,
+        metadataService: MetadataService,
+        photoRepo: any PhotoRepository,
+        assetRepo: any AssetRepository,
+        imagePreloadService: ImagePreloadService,
+        exportService: ExportService,
+        outputService: OutputService,
+        sessionService: SessionService
+    ) {
+        self.similarityService = similarityService
+        self.duplicateService = duplicateService
+        self.faceKwService = faceKwService
+        self.qualityService = qualityService
+        self.modelReviewService = modelReviewService
+        self.modelReviewEnabled = modelReviewEnabled
+        self.triageAutoGenerateEnabled = triageAutoGenerateEnabled
+        self.indexerService = indexerService
+        self.metadataService = metadataService
+        self.photoRepo = photoRepo
+        self.assetRepo = assetRepo
+        self.imagePreloadService = imagePreloadService
+        self.exportService = exportService
+        self.outputService = outputService
+        self.sessionService = sessionService
+    }
 }
 
 /// JobService 执行器注册表：装配期一次性注册 8 个 type。
 ///
 /// 无状态命名空间：注册只发生在组合根/测试装配阶段，注册后 JobService 持有
 /// 不可变 Registration；本类型不保存任何服务实例，避免第二份缓存/状态。
-enum ExecutorRegistry {
-    typealias Dependencies = ExecutorRegistryDependencies
+public enum WorkflowRegistry {
+    public typealias Dependencies = WorkflowDependencies
 
     /// 注册全部 8 个 executor，返回实际注册的 type（顺序与注册顺序一致）。
     ///
     /// 返回值只用于装配期自检与测试断言，生产调用方可忽略；注册失败不会发生
     /// （JobService.registerExecutor 无失败路径，同 type 重复注册为覆盖）。
     @discardableResult
-    static func register(jobService: JobService, deps: Dependencies) -> [AnalysisJobType] {
+    public static func register(jobService: JobService, deps: Dependencies) -> [AnalysisJobType] {
         let registrations = makeExecutors(jobService: jobService, deps: deps)
         for (type, executor) in registrations {
             jobService.registerExecutor(type: type, executor: executor)
@@ -66,7 +98,7 @@ enum ExecutorRegistry {
     /// 每个闭包的执行体与原注册方法完全一致；
     /// 唯一的机械改动是 output.run 里的 `self.decodeJSON` 改为本类型私有
     /// 静态函数（路由实例方法不能跨类型引用）。
-    static func makeExecutors(
+    public static func makeExecutors(
         jobService: JobService,
         deps: Dependencies
     ) -> [(AnalysisJobType, JobService.JobExecutor)] {
@@ -242,7 +274,7 @@ enum ExecutorRegistry {
                 // 写 result 时丢掉它会让运行中的窄 job 被误判为全树扫描，
                 // watcher 提前 ack + 持久化 eventID → 永久漏扫（P1）。
                 var checkpoint = job.checkpoint
-                checkpoint["result"] = try JSONValue(from: result)
+                checkpoint["result"] = try Self.encodeJSONValue(result)
                 context.updateCheckpoint(checkpoint)
                 context.updateProgress(JobProgressUpdate(
                     current: photoIds.count, total: photoIds.count, phase: "index.metadata-done"
@@ -351,7 +383,7 @@ enum ExecutorRegistry {
                             var merged = latestCheckpoint
                             merged["outputRun"] = .bool(true)
                             do {
-                                merged["resume"] = try JSONValue(from: storedResume)
+                                merged["resume"] = try Self.encodeJSONValue(storedResume)
                             } catch {
                                 return
                             }
@@ -417,7 +449,7 @@ enum ExecutorRegistry {
                 // 旧实现每次都重建整份 options + destinations + completedPhotoIds
                 //（1 万张 Σk ≈ 5×10⁷ 次装箱）。现在：options 只编码一次，
                 // 其余键按代数缓存——只有真正变化时才重算。
-                let optionsValue: JSONValue = (try? JSONValue(from: options)) ?? .object([:])
+                let optionsValue: JSONValue = (try? Self.encodeJSONValue(options)) ?? .object([:])
                 var checkpointCache: [String: JSONValue]?
                 var checkpointGeneration = 0
                 var builtGeneration = -1
@@ -518,5 +550,14 @@ enum ExecutorRegistry {
 
     private static func decodeJSON<T: Decodable>(_ type: T.Type, from value: JSONValue) throws -> T {
         try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
+    }
+
+    /// Encodable → JSONValue（checkpoint 的通用编码入口）。
+    ///
+    /// 为什么不复用 GatherUI 的同名便利初始化（Support/JSONValueDecoding.swift）：
+    /// #3 把 workflow 搬进 core 后那条初始化在 UI target 里，core 不能依赖 UI。
+    /// 这里留一份 3 行本地实现，比把 UI 扩展上移到 GatherProtocol（涨公开面）更小。
+    private static func encodeJSONValue<T: Encodable>(_ value: T) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value))
     }
 }

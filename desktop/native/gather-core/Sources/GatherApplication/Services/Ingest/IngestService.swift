@@ -612,7 +612,7 @@ public final class IngestService: @unchecked Sendable {
             copied: copied, skipped: skipped + plan.skipped,
             unreadable: plan.unreadable, secondCopied: secondCopied, failed: failed,
             alreadyPresent: plan.alreadyPresent)
-        // 自动初审的唯一触发点在 Host 的 ExecutorRegistry（ingest 完整收尾后入队），
+        // 自动初审的唯一触发点在 WorkflowRegistry（GatherApplication）（ingest 完整收尾后入队），
         // 本服务只负责复制/登记，不持有 job/会话依赖。
         return result
     }

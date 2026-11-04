@@ -164,6 +164,9 @@ final class PortFakeSessionRepo: SessionRepository {
     func bumpIndexSeq(id: String) throws -> Int { indexSeq += 1; return indexSeq }
     func latestAnalysisRun(sessionId: String, kind: String) throws -> AnalysisRunRecord? { nil }
     func markOrphanedAssets() throws {}
+    func reconcileRawJpegLinks(_ sessionId: String) throws -> Int64 {
+        throw PortFakeError.unimplemented("AssetRepository.reconcileRawJpegLinks")
+    }
 }
 
 final class PortFakeAssetRepo: AssetRepository {
@@ -180,6 +183,7 @@ final class PortFakeAssetRepo: AssetRepository {
     ) throws -> RelinkMovedFileResult? { nil }
 
     func markOrphanedAssets() throws {}
+    func reconcileRawJpegLinks(_ sessionId: String) throws -> Int64 { 0 }
 }
 
 // MARK: - Metadata

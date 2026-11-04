@@ -46,7 +46,7 @@ public final class AppRuntime: @unchecked Sendable {
     /// 组合根构造的唯一 JobService（start 启动调度器、shutdown 停机）。
     public let jobService: JobService
     /// 8 个 executor 的依赖集合（与 AppServices 共用同一批服务实例）。
-    let executorDeps: ExecutorRegistry.Dependencies
+    let executorDeps: WorkflowRegistry.Dependencies
     /// 唯一的交付编排器（启动回放的执行者；与四域注入的是同一实例）。
     private let delivery: DeliveryCoordinator
 
@@ -73,7 +73,7 @@ public final class AppRuntime: @unchecked Sendable {
         database: Database? = nil,
         jobService: JobService,
         delivery: DeliveryCoordinator,
-        executorDeps: ExecutorRegistry.Dependencies
+        executorDeps: WorkflowRegistry.Dependencies
     ) {
         self.db = db
         self.ownedDatabase = database
@@ -198,7 +198,7 @@ public final class AppRuntime: @unchecked Sendable {
     /// executor 注册的唯一入口（装配期自检与 start() 共用，避免两份清单）。
     @discardableResult
     func registerExecutors() -> [AnalysisJobType] {
-        ExecutorRegistry.register(jobService: jobService, deps: executorDeps)
+        WorkflowRegistry.register(jobService: jobService, deps: executorDeps)
     }
 
     /// 停机临界区（同步）：返回本次（或已在进行的）停机 Task。

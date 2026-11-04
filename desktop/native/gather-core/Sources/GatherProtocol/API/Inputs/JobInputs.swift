@@ -26,7 +26,7 @@ extension JobCreateParams {
     }
 
     /// metadata.scan checkpoint 的扫描集合键，必须与执行器
-    /// （GatherHost ExecutorRegistry 的 metadata.scan）读取的键逐字一致。
+    /// （GatherApplication WorkflowRegistry 的 metadata.scan）读取的键逐字一致。
     public static let metadataScanRequestedPathsKey = "requestedPaths"
 
     /// 扫描范围 → checkpoint：nil/空 = 目录全树作用域（空对象；JobService

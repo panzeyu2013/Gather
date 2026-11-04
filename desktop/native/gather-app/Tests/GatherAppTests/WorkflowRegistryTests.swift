@@ -1,5 +1,5 @@
-// desktop/native/gather-app/Tests/GatherAppTests/ExecutorRegistryTests.swift
-// Cut 1 / B8.3a：ExecutorRegistry 的注册/执行契约。
+// desktop/native/gather-app/Tests/GatherAppTests/WorkflowRegistryTests.swift
+// Cut 1 / B8.3a / #3：WorkflowRegistry（原 ExecutorRegistry）的注册/执行契约。
 //
 // 覆盖：
 // 1. register 返回并实际注册全部 8 个 AnalysisJobType；JobService 能把每种
@@ -46,7 +46,7 @@ private struct RegistryNoopMutations: MetadataMutationPort {
 
 }
 
-private struct ExecutorRegistryFixture {
+private struct WorkflowFixture {
     let root: URL
     let exportRoot: URL
     let db: DBConnection
@@ -71,7 +71,7 @@ private struct ExecutorRegistryFixture {
         let exportService = ExportService(
             photoRepo: photoRepo, sessionRepo: sessionRepo, connection: db)
 
-        let deps = ExecutorRegistry.Dependencies(
+        let deps = WorkflowRegistry.Dependencies(
             similarityService: SimilarityService(
                 photoRepo: photoRepo,
                 sessionRepo: sessionRepo,
@@ -126,7 +126,7 @@ private struct ExecutorRegistryFixture {
         self.db = db
         self.sessionId = session.id
         self.jobService = jobService
-        self.registeredTypes = ExecutorRegistry.register(jobService: jobService, deps: deps)
+        self.registeredTypes = WorkflowRegistry.register(jobService: jobService, deps: deps)
         jobService.start()
     }
 
@@ -137,9 +137,9 @@ private struct ExecutorRegistryFixture {
 }
 
 private func withRegistryFixture(
-    _ body: (ExecutorRegistryFixture) async throws -> Void
+    _ body: (WorkflowFixture) async throws -> Void
 ) async throws {
-    let fixture = try ExecutorRegistryFixture()
+    let fixture = try WorkflowFixture()
     do {
         try await body(fixture)
         await fixture.jobService.stop()
@@ -182,7 +182,7 @@ private func waitForTerminal(
     return nil
 }
 
-private func seedMissingSourcePhoto(_ fixture: ExecutorRegistryFixture, photoId: String) throws {
+private func seedMissingSourcePhoto(_ fixture: WorkflowFixture, photoId: String) throws {
     let path = fixture.root.appendingPathComponent("\(photoId).jpg").path
     let now = "2026-01-01T00:00:00.000Z"
     _ = try fixture.db.prepare("""
@@ -204,8 +204,8 @@ private func seedMissingSourcePhoto(_ fixture: ExecutorRegistryFixture, photoId:
 
 // MARK: - 用例
 
-@Suite("B8.3a ExecutorRegistry")
-struct ExecutorRegistryTests {
+@Suite("B8.3a WorkflowRegistry")
+struct WorkflowRegistryTests {
     @Test("register：8 个 type 全部注册，JobService 逐 type 执行")
     func registersAllEightExecutors() async throws {
         try await withRegistryFixture { fixture in

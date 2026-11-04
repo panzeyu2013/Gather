@@ -1,17 +1,16 @@
-// desktop/native/gather-app/Sources/GatherHost/SessionIngestRunner.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/Ingest/SessionIngestRunner.swift
 // P1-3：摄取的可复用执行体。
 //
 // API 直调与 ingest.run Job 共用同一段“校验 → plan → 复制 → 登记”逻辑，
 // 避免两条路径对目的地边界/根外文件/部分失败给出不同结果。
 import Foundation
 import GatherProtocol
-import GatherApplication
 
-struct SessionIngestRunner {
-    let sessionService: SessionService
-    let ingestService: IngestService
+public struct SessionIngestRunner {
+    public let sessionService: SessionService
+    public let ingestService: IngestService
 
-    init(
+    public init(
         sessionService: SessionService,
         ingestService: IngestService = IngestService(exif: ImageIOExifProvider())
     ) {
@@ -20,7 +19,7 @@ struct SessionIngestRunner {
     }
 
     /// 从 Job checkpoint 解码请求；键与 JobCreateParams.ingestRun 同源。
-    static func decode(_ checkpoint: [String: JSONValue]) throws -> SessionIngestInput {
+    public static func decode(_ checkpoint: [String: JSONValue]) throws -> SessionIngestInput {
         guard let raw = checkpoint[JobCreateParams.ingestRunRequestKey]?.stringValue,
               let data = raw.data(using: .utf8) else {
             throw GatherError.invalidParameter(
@@ -34,7 +33,7 @@ struct SessionIngestRunner {
         }
     }
 
-    func run(
+    public func run(
         _ payload: SessionIngestInput,
         context: JobRunContext? = nil
     ) async throws -> SessionIngestResult {

@@ -15,7 +15,7 @@ enum CompositionRuntime {
     static func make(core: CompositionCore) -> AppRuntime {
         // executorDeps 与 runtime 的唯一构造点；参数顺序与拆分前逐字一致。
         let settingsService = core.settingsService
-        let executorDeps = ExecutorRegistry.Dependencies(
+        let executorDeps = WorkflowRegistry.Dependencies(
             similarityService: core.similarityService,
             duplicateService: core.duplicateService,
             faceKwService: core.faceKwService,
