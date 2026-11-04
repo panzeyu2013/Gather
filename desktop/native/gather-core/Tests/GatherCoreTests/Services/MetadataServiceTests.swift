@@ -284,14 +284,14 @@ struct MetadataServiceTests {
             descriptive: DescriptiveMetadata(caption: "旧说明"))
         let sidecar = MetadataWriteAttributes()
 
-        let message = MetadataService.jpegEmbeddedClearFailure(
+        let message = MetadataAttributeWriter.jpegEmbeddedClearFailure(
             expected: expected, disk: disk, sidecar: sidecar, isJpeg: true)
         #expect(message?.contains("caption") == true)
         #expect(message?.contains("keywords") == true)
         #expect(message?.contains("label") == true)
 
         // RAW 只有 sidecar 一个真相源：同样的差异是普通写后校验，不是内嵌残留。
-        #expect(MetadataService.jpegEmbeddedClearFailure(
+        #expect(MetadataAttributeWriter.jpegEmbeddedClearFailure(
             expected: expected, disk: disk, sidecar: sidecar, isJpeg: false) == nil)
 
         // sidecar 仍带值 = sidecar 没写成功：交给通用 verification，不谎报"内嵌不支持"。
@@ -299,7 +299,7 @@ struct MetadataServiceTests {
             keywords: ["k1"],
             label: "Red",
             descriptive: DescriptiveMetadata(caption: "旧说明"))
-        #expect(MetadataService.jpegEmbeddedClearFailure(
+        #expect(MetadataAttributeWriter.jpegEmbeddedClearFailure(
             expected: expected, disk: disk,
             sidecar: sidecarStillHasValue, isJpeg: true) == nil)
     }
@@ -318,21 +318,21 @@ struct MetadataServiceTests {
         let sidecar = MetadataWriteAttributes(
             descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")))
 
-        let message = MetadataService.jpegEmbeddedClearFailure(
+        let message = MetadataAttributeWriter.jpegEmbeddedClearFailure(
             expected: expected, disk: disk, sidecar: sidecar, isJpeg: true)
         #expect(message?.contains("contactInfo.city") == true, "\(message ?? "-")")
 
         // sidecar 仍带该成员 = sidecar 没写成功，交给通用校验，不谎报"内嵌不支持"。
         let sidecarStillHasCity = MetadataWriteAttributes(
             descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(city: "上海")))
-        #expect(MetadataService.jpegEmbeddedClearFailure(
+        #expect(MetadataAttributeWriter.jpegEmbeddedClearFailure(
             expected: expected, disk: disk, sidecar: sidecarStillHasCity, isJpeg: true) == nil)
 
         // 没有上报的成员（模板成员级合并）不得被当成清空。
         let unreported = MetadataWriteAttributes(
             descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")),
             replaceContact: true)
-        #expect(MetadataService.jpegEmbeddedClearFailure(
+        #expect(MetadataAttributeWriter.jpegEmbeddedClearFailure(
             expected: unreported, disk: disk, sidecar: sidecar, isJpeg: true) == nil)
     }
 

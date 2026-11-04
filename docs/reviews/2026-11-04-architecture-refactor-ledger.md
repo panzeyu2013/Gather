@@ -391,3 +391,18 @@
   文件尾的 `stringValue`/`keywordString` 自由函数 → 抽成 `Metadata/MetadataText.swift`
   供两处共用（保持 internal，避免涨协议公开面）。
 - MetadataService 累计：1,645 → **1,071 行（-574 / -35%）**。
+
+## #6 S4：MetadataAttributeWriter（属性写回，最高风险区）
+
+- `MetadataService.swift`：1,071 → **748 行**（-323）；新增
+  `Services/Metadata/MetadataAttributeWriter.swift`（475 行，`public struct: Sendable`）。
+- 搬走 `applyMetadataAttributes`（279 行）+ 写后校验簇（147 行：jpegEmbeddedClearFailure /
+  hasClearAttempt / isBlank / attributesMatch / contactContains / normalizedValue）。
+- **方法体逐字搬运、不重排任何一步**——六步顺序链是行为契约，原实现注释已逐条写明：
+  全 queue → 按会话 flush → 逐张回读 → 清空判定（必须早于投影）→ 缓存投影（含兄弟
+  刷新：每会话只查一次投影、并发 4 路读盘、写缓存串行）→ 写后校验。
+- 两个踩点：
+  ① 字段不能叫 `photos`——原函数内有局部 `let photos = ...` 会遮蔽（改成 `photoRepo`）；
+  ② `jpegEmbeddedClearFailure` 被测试直接调用（6 处），静态移到 writer 后测试要跟着改
+     → 已改为 `MetadataAttributeWriter.jpegEmbeddedClearFailure`（internal static）。
+- MetadataService 累计：1,645 → **748 行（-897 / -55%）**。
