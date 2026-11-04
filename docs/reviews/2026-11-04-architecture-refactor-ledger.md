@@ -335,3 +335,33 @@
   不占 @unchecked 预算。
 - 头注释写死了三条硬约束：每张照片只读一次 sidecar、只解析一次 EXIF、
   embeddedReadable 语义不得丢（否则「清空 JPEG 内嵌字段」会谎报成功）。
+
+## 当前状态与未完成清单（2026-11-04 第 13 轮验收）
+
+**全量验收**：13 道 `check-*.sh` 全绿；core 1,699 + 25、app 793 tests 全绿。
+
+**已完成**
+
+| Wave | 项 | 关键数字 |
+|---|---|---|
+| 1 | #12 页面生命周期表驱动 | 7 VM 注册表化，扇出 3 → 循环 |
+| 1 | #13 PreviewData target | GatherUI 2,178 → 793 行；新 target 1,417 行 |
+| 1 | #9 SettingsPort | 68+5 键枚举；闭包注入 9 → 0；DB 反钩子移除 |
+| 1 | #8 端口纪律 | 端口 31 → 38；Application 只剩 VACUUM 一处连接 |
+| 2 | #3 workflow 回迁 | ExecutorRegistry 522 行 → WorkflowRegistry（8 executor 逐字搬运） |
+| 2 | #2 Live*API 瘦身 | LiveMetadataAPI 990 → 614；moveRejected 规划器 + 锁内执行下沉 |
+| 2 | #1 GatherMetadataIO | 11 文件 4,189 行 + 87 用例进 core；跨层不变量落地 |
+| 3 | #10 过滤语义 | 契约测试 4 例 + FilterFieldSQL 原子；无色标两页已同集合 |
+
+**未完成（后续轮次）**
+
+- **#6 S2–S5**：`PhotoMetadataProjector`(75) / `MetadataExtractionService`(161) /
+  `MetadataAttributeWriter`(274) / `MetadataKeywordWriter`(337)。
+  已完成 S0（纯函数 254 行）+ S1（DiskReader 90 行）：MetadataService 1,645 → 1,334。
+  12 条事务/读盘约束见本轮之前的研究结论（每张只读一次 sidecar、只解析一次 EXIF、
+  queue→flush→回读→清空判定→投影→校验的顺序链等）。
+- **#11 第二步**：`TypedEventChannel`（消灭 17 处 `as?`）+ R3「写路径必发域」配对。
+  已知缺口：6 类破坏性写完全没广播（applyTriageWriteback / cleanupRetention /
+  集合栈写 / 模板套用 / 导入 / 设置），需先落「域→生产者」映射表。
+- **#2/#1 可选收尾**：`GatherMetadataIO` 仍依赖 Application+Delivery（C4/C5），
+  CullingViewModel 拆分（8 文件 3,303 行）未启动。
