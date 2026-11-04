@@ -191,7 +191,7 @@ struct FeatureAPIs {
             settingsService: composition.settingsService,
             metadataDelivery: composition.metadataDeliveryService,
             retention: MetadataRetentionService(
-                connection: composition.db,
+                lifecycle: MetadataLifecycleRepo(connection: composition.db),
                 coordinator: composition.deliveryCoordinator)
         )
     }

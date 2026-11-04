@@ -157,18 +157,17 @@ public struct MetadataRetentionService: Sendable {
     /// 孤儿备份的最小年龄（mtime 早于 24h）。
     static let orphanBackupMinimumAgeSeconds: TimeInterval = 86_400
 
-    private let connection: DBConnection
-    private let lifecycle: MetadataLifecycleRepo
+    /// #8：端口而非具体 repo（9 个方法，唯一消费者）。
+    private let lifecycle: any MetadataRetentionStore
     private let coordinator: DeliveryCoordinator
     private let now: @Sendable () -> Date
 
     public init(
-        connection: DBConnection,
+        lifecycle: any MetadataRetentionStore,
         coordinator: DeliveryCoordinator,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.connection = connection
-        self.lifecycle = MetadataLifecycleRepo(connection: connection)
+        self.lifecycle = lifecycle
         self.coordinator = coordinator
         self.now = now
     }

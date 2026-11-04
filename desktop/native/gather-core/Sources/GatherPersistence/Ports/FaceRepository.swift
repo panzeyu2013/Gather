@@ -50,7 +50,6 @@ public protocol FaceRepository {
     func getBindingsBySession(_ sessionId: String) throws -> [FaceBindingDetail]
     func removeMemberFromCluster(clusterId: Int64, memberId: Int64) throws -> Bool
     func invalidateDerivedResults(sessionId: String, photoIds: [String]) throws
-    func getThumbnailPathsBySession(_ sessionId: String) throws -> [String]
 
     // MARK: - WP3b-2（FaceKwService）：簇成员写路径
     /// 无脸结果清理：清空会话成员行（保留簇行）。

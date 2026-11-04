@@ -142,7 +142,8 @@ struct CompositionCore {
             connection: db, xmp: xmp, fileLock: xmpFileLock, target: targetResolver,
             c1Required: c1Required, eventSink: deliveryEventSink)
         let metadataDeliveryService = MetadataDeliveryService(
-            connection: db, coordinator: deliveryCoordinator,
+            lifecycle: MetadataLifecycleRepo(connection: db),
+            coordinator: deliveryCoordinator,
             settings: settingsService)
         let metadataMutationService = MetadataMutationService(
             deliveryRepo: deliveryRepo, xmp: xmp, assetResolver: assetResolver,

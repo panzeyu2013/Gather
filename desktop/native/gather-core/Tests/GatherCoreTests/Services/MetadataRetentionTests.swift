@@ -112,7 +112,8 @@ private func makeRetentionFixture(
     }
     return RetentionFixture(
         db: db, dir: dir, repo: repo, coordinator: coordinator,
-        retention: MetadataRetentionService(connection: db, coordinator: coordinator))
+        retention: MetadataRetentionService(
+            lifecycle: MetadataLifecycleRepo(connection: db), coordinator: coordinator))
 }
 
 private struct SeededRetentionDelivery {

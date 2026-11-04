@@ -768,6 +768,15 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
 
 **后果**：Delivery 内出现新的具体 Repo 读取时，评审要问“为什么不能落进某个窄端口”；
 新窄端口必须只含调用点实际使用的方法。
+
+**追加（2026-11-04，架构重构 #8）**：新增
+`desktop/native/gather-core/Sources/GatherPersistence/Ports/MetadataLifecycleStore.swift`，
+两条端口：`MetadataDeliveryReading`（2 方法，消费者 `MetadataDeliveryService`）、
+`MetadataRetentionStore`（9 方法，消费者 `MetadataRetentionService`）。
+后者**突破 #4 的「1–3 方法」字面要求**，理由：接口隔离的判据是「谁看得见」而不是
+「有几个方法」——两条端口各有唯一消费者、零未使用方法；再切成 5 个 ≤3 方法的端口只会
+给 `MetadataRetentionService` 的 init 多 4 个参数，隔离度不变。今后新增端口仍以 1–3 为默认；
+要超出必须是「唯一消费者 + 该消费者用到每一项」。
 ## ADR-033：Schema V3 纯增量（T0/F0 共表）
 
 状态：已实施（2026-10-25）。生产 `current=.v3`，线性链 `V1→V2→V3`，无 down migration。

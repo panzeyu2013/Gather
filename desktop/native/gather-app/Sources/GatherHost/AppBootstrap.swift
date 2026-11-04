@@ -467,7 +467,7 @@ package final class AppBootstrap {
         Task.detached(priority: .utility) {
             do { try await Task.sleep(for: .seconds(30)) } catch { return }
             let retention = MetadataRetentionService(
-                connection: db, coordinator: coordinator)
+                lifecycle: MetadataLifecycleRepo(connection: db), coordinator: coordinator)
             while !Task.isCancelled {
                 let policy = MetadataRetentionPolicy.fromSettings(settings)
                 _ = await retention.run(policy: policy)

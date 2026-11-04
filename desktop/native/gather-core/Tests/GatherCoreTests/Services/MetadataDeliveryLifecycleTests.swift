@@ -151,7 +151,7 @@ private func makeLifecycleFixture(
         c1Required: c1Required
     )
     let service = MetadataDeliveryService(
-        connection: db,
+        lifecycle: MetadataLifecycleRepo(connection: db),
         coordinator: coordinator,
         settings: ClosureSettingsReader { key in box.stored(key.rawValue) }
     )

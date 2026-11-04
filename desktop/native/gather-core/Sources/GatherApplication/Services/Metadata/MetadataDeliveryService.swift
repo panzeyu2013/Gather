@@ -104,19 +104,20 @@ public struct MetadataDeliveryService: Sendable {
     /// 两个模块分别确认/结束，第二次调用是幂等）。
     public static let modules: [DeliveryModule] = [.metadata, .template]
 
-    private let lifecycle: MetadataLifecycleRepo
+    /// #8：端口而非具体 repo（消费者只有这一个，2 个方法）。
+    private let lifecycle: any MetadataDeliveryReading
     private let coordinator: DeliveryCoordinator
     /// 设置读取端口（#9）：自动确认/自动结束开关。
     private let settings: any SettingsReading
     private let now: @Sendable () -> Date
 
     public init(
-        connection: DBConnection,
+        lifecycle: any MetadataDeliveryReading,
         coordinator: DeliveryCoordinator,
         settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.lifecycle = MetadataLifecycleRepo(connection: connection)
+        self.lifecycle = lifecycle
         self.coordinator = coordinator
         self.settings = settings
         self.now = now

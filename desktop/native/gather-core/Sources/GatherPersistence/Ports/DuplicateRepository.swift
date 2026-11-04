@@ -272,8 +272,6 @@ public protocol DuplicateGroupReading {
     func getVisibleMembers(groupId: Int) throws -> [DuplicateMemberRow]
     /// SELECT dgm.*, p.filepath, p.filename ... ORDER BY dgm.id（列序 0-7 + 8/9）
     func getMembers(groupIds: [Int]) throws -> [Int: [DuplicateGroupMemberDetail]]
-    /// SELECT is_kept, resolution ... ORDER BY id（组级 resolution 派生）。
-    func getMemberStates(groupId: Int) throws -> [DuplicateMemberState]
     /// 同上，但只返回可见成员（组级 resolution 派生不阻塞在归档件上）。
     func getVisibleMemberStates(groupId: Int) throws -> [DuplicateMemberState]
 }

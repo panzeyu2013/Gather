@@ -37,8 +37,6 @@ public protocol PhotoRepository {
         sessionId: String, afterRowId: Int64?, limit: Int, visibleOnly: Bool
     ) throws -> [PhotoPageRow]
     func pendingChecksumCount(sessionId: String) throws -> Int
-    /// 物理登记行数（**含归档行**）：不是"工作区照片数"，不能用于侧栏/控制中心展示。
-    func countBySession(sessionId: String) throws -> Int
     /// 仍在工作区的照片数（PhotoVisibility.visiblePredicate）；WorkspaceStatus /
     /// sessions.photo_count 用它，避免"移出 100 张后工作区总数不变"。
     func countVisibleBySession(sessionId: String) throws -> Int

@@ -11,7 +11,6 @@ public protocol SimilarityHashRepository {
     func upsert(_ rows: [SimilarityHashWrite]) throws
     func getPhotoAssetFileIds(sessionId: String) throws -> [PhotoAssetFileRef]
     func getReuseCandidates(assetFileIds: [String]) throws -> [SimilarityHashCandidate]
-    func deleteByPhotoIds(_ photoIds: [String]) throws
 }
 
 extension SimilarityHashRepo: SimilarityHashRepository {}

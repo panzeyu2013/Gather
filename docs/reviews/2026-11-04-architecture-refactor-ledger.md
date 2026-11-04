@@ -83,3 +83,30 @@
 - 迁移中改写的断言 4 条（SessionService NaN 语义、SimilarityService corrupt 语义、
   DefaultSignatures 的 embeddingDim、SettingsKeyTests 的 bool 方言），均在上面的
   「有意改变的行为」里点名。
+
+## #9 收尾：Host/UI 类型化设置键（69281240）
+
+- 生产侧字符串设置键读取清零（Live*API / 组合根 / Runtime / MaintenanceService /
+  TriagePolicy）；`clearableSettingKeys` 改为「默认值为空 ∩ 设置页真的暴露」派生。
+- **行为变更**：`default_eps` 在 LiveFaceAPI 的本地默认 0.6 收口到注册表 0.65
+  （此前 UI 显示 0.65、实际按 0.6 跑）。
+
+### 勘误（对 0d46bbf5 提交信息的更正）
+
+该提交信息称「删掉 MetadataDeliveryService/MetadataRetentionService 两个死 connection 字段」，
+**不实**：当时只删了 MetadataDeliveryService 的那个；MetadataRetentionService 的
+`connection` 字段仍在，直到 #8 端口化（下一节）才删。原因是我把两处改动写在同一个
+编辑计划里，第二处因 old_string 不匹配被跳过却没复查产物。教训：机械编辑后必须用
+`grep` 复核「声称删掉的东西真的没了」。
+
+## #8 Step 0 + 1：死端口要求 + 元数据生命周期端口
+
+- Step 0：删掉 4 条**零消费者**的端口要求（`PhotoRepository.countBySession`、
+  `SimilarityHashRepository.deleteByPhotoIds`、`DuplicateGroupReading.getMemberStates`、
+  `FaceRepository.getThumbnailPathsBySession`）。具体 Repo 方法保留（测试仍直接用），
+  只删协议要求——端口是「给 Application 看的窗口」，没人用的窗口就是噪音。
+- Step 1：新增 `Ports/MetadataLifecycleStore.swift`（2 + 9 方法），
+  `MetadataDeliveryService` / `MetadataRetentionService` 从 `connection: DBConnection`
+  改为吃端口，顺带删掉 Retention 的死 `connection` 字段。两个服务此前**零事务、零裸 SQL**，
+  所以是纯签名替换。
+- ADR-032 追加一行：解释 9 方法端口为何不违反接口隔离（按消费者切分 > 按方法数切分）。
