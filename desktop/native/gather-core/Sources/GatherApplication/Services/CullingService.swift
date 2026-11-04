@@ -55,11 +55,6 @@ import GatherProtocol
 public final class CullingService {
     // MARK: - 常量（TS 文件头部）
 
-    /// TS: COLOR_LABELS。
-    static let colorLabels: Set<CaptureOneColorLabel> = [
-        .none, .red, .orange, .yellow, .green, .blue, .pink, .purple,
-    ]
-
     /// TS: PREFERRED_RAW_EXTENSIONS —— RAW 判定只用共享表
     /// PhotoFileTypes.sortedRawExtensions（与 PhotoRepo.rawExtensions、
     /// preferredRowOrderSQL 里 LIKE 链同源；唯一真相源在 GatherProtocol），

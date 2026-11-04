@@ -136,7 +136,7 @@ extension CullingService {
                         sessionId: sessionId, resultId: resultRow.id))
             )
         }
-        let labels = Self.colorLabels.filter { $0 != .none }.map(\.rawValue).sorted()
+        let labels = CullingSharedRules.colorLabels.filter { $0 != .none }.map(\.rawValue).sorted()
         let counts = try richQuery.summaryCounts(sessionId: sessionId, colorLabels: labels)
         return CullingSummary(
             totalGroups: totalGroups,
@@ -445,7 +445,7 @@ extension CullingService {
                     cachedLabel: cache?.label
                 ),
                 xmpPath: xmpPath,
-                syncStatus: deliveryStatus.map { Self.syncStatus(from: $0) } ?? .clean,
+                syncStatus: deliveryStatus.map { CullingSharedRules.syncStatus(from: $0) } ?? .clean,
                 people: lookup.peopleByPhoto[photo.id] ?? [],
                 keywords: keywords,
                 similarityGroupId: lookup.similarityMap[photo.id],
@@ -585,19 +585,13 @@ extension CullingService {
             photoId: photoId,
             pickState: decisionToPickState(decisionRow?.decision),
             rating: Double(rating),
-            colorLabel: Self.colorLabel(cachedLabel),
+            colorLabel: CullingSharedRules.colorLabel(cachedLabel),
             source: sourceFromDecisionRow(decisionRow),
             revision: Int(decisionRow?.revision ?? 0),
             updatedAt: decisionRow?.updatedAt ?? ""
         )
     }
 
-    /// 合法色标解析：nil / 未知 / 非法值一律归 .none（唯一真相源里可能有历史脏值）。
-    static func colorLabel(_ raw: String?) -> CaptureOneColorLabel {
-        guard let raw, let parsed = CaptureOneColorLabel(rawValue: raw),
-              colorLabels.contains(parsed) else { return .none }
-        return parsed
-    }
     /// TS: rowToState 的 source 分支（决策行存在时取合法 decision_source，缺省
     /// manual；行缺失时为 imported）。
     private func sourceFromDecisionRow(_ row: CullingDecisionRow?) -> CullingDecisionSource {

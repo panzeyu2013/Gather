@@ -666,3 +666,16 @@ app 798 全绿。这条结论也解释了为什么 CullingService 的 15 个依�
 真正能减的方式只有把它一分为二（决策服务 + 同步服务），那是重写编排层，应单独立项而非当作残留清理。
 
 **最终读数**：core 1,699 + 25、app 798 / 94 suites、14 道门禁全绿；本轮 16 个提交。
+
+## CullingService 拆分 S1：纯规则提取（零行为变化）
+
+- 新增 `Culling/CullingSharedRules.swift`（enum，全 static）：`colorLabels` / `colorLabel(_:)` /
+  `syncStatus(from:)`。三者原本分散在 `CullingService`（常量）、`+Queries`（色标解析）、
+  `+Delivery`（状态投影），但都是**纯函数/常量**——被决策侧与交付侧同时使用。
+- 7 处调用点改指 `CullingSharedRules.xxx`（Queries 4 / Commands 3 / Paging 0 / Delivery 2）。
+- 为什么先做这步：它们是后面拆出 `CullingSyncService` 时那 6 个跨簇符号里的 2 个，且
+  纯静态搬迁零风险，可先验证口径（行数、测试计数、门禁读数）是否稳定。
+- 实测读数：core 1,699+25 / app 798 不变；14 道门禁全绿。
+- 踩坑：用脚本按行区间删旧定义时，数组字面量的 `]` 与 switch 的 `}` 被留成孤立符号，
+  编译报 `expected declaration` / `extraneous }`；已逐处修正。后续步骤改为「先建新文件、
+  再手工删旧定义」而不是区间删除。

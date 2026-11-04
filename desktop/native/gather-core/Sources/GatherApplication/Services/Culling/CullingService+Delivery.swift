@@ -9,19 +9,6 @@ import GatherProtocol
 extension CullingService {
     // MARK: - 同步态读模型（S5c-2b-3b-2a）
 
-    /// 交付行 → 旧 MetadataSyncStatus 投影（culling 徽标/更新结果用）。
-    static func syncStatus(from status: DeliveryStatus) -> MetadataSyncStatus {
-        switch status {
-        case .pending: .pending
-        case .writing: .writing
-        case .written: .written
-        case .synced: .synced
-        case .failed: .failed
-        case .conflict: .conflict
-        case .cleaned: .cleaned
-        }
-    }
-
     /// 同步态的唯一读模型是 deliveries（写回执行器直接维护）。
     /// 手动 rating/label 的旧 outbox 行不再读取：交付行尚未出现时返回调用方给出的
     /// 默认值（updateState 对共享元数据传 .pending，表达"已入队、尚未落交付"）。
@@ -30,7 +17,7 @@ extension CullingService {
         fallback: MetadataSyncStatus
     ) throws -> MetadataSyncStatus {
         if let row = try deliveryItems.getItem(xmpPath: xmpPath), let status = row.typedStatus {
-            return Self.syncStatus(from: status)
+            return CullingSharedRules.syncStatus(from: status)
         }
         return fallback
     }
@@ -362,7 +349,7 @@ extension CullingService {
                 let rating = Swift.min(5, Swift.max(0, cache?.rating ?? 0))
                 plan[decision.photoId] = WritebackAttributes(rating: Double(rating))
             case .colorLabel:
-                let label = Self.colorLabel(cacheByPhoto[decision.photoId]?.label)
+                let label = CullingSharedRules.colorLabel(cacheByPhoto[decision.photoId]?.label)
                 // 写盘标签语义：None → 空串（清空色标），与 culling.update 一致。
                 plan[decision.photoId] = WritebackAttributes(
                     label: label == .none ? "" : label.rawValue

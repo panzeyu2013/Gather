@@ -298,7 +298,7 @@ extension CullingService {
         let deliveryByPath = try deliveryItems.getMany(xmpPaths: Array(xmpPaths))
         for xmpPath in xmpPaths {
             if let status = deliveryByPath[xmpPath]?.typedStatus {
-                syncByXmp[xmpPath] = Self.syncStatus(from: status)
+                syncByXmp[xmpPath] = CullingSharedRules.syncStatus(from: status)
             } else {
                 syncByXmp[xmpPath] = syncFallback
             }
@@ -595,7 +595,7 @@ extension CullingService {
         )
         func deliveryStatus(_ xmpPath: String) -> MetadataSyncStatus {
             if let status = deliveryByPath[xmpPath]?.typedStatus {
-                return Self.syncStatus(from: status)
+                return CullingSharedRules.syncStatus(from: status)
             }
             return .clean
         }
@@ -816,7 +816,7 @@ extension CullingService {
            ![PickState.unreviewed, .picked, .rejected].contains(pickState) {
             throw CullingServiceError.invalidPickState
         }
-        if let colorLabel = patch.colorLabel, !Self.colorLabels.contains(colorLabel) {
+        if let colorLabel = patch.colorLabel, !CullingSharedRules.colorLabels.contains(colorLabel) {
             throw CullingServiceError.invalidColorLabel
         }
     }
