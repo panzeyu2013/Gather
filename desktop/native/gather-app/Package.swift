@@ -78,12 +78,24 @@ let package = Package(
         .package(path: "../gather-core"),
     ],
     targets: [
+        // DEBUG-only 预览数据与 API 替身（#13）：从 GatherUI 拆出，让 1.5k 行
+        // 预览脚手架不再属于生产 UI 模块。只依赖 GatherProtocol（不能依赖 GatherUI：
+        // 预览数据 → UI 会成环）。整目录被 #if DEBUG 包裹，Release 下是空模块。
+        .target(
+            name: "GatherPreviewData",
+            dependencies: [
+                .product(name: "GatherProtocol", package: "gather-core"),
+            ],
+            path: "Sources/GatherPreviewData",
+            swiftSettings: swift6Settings
+        ),
         // 页面层：SwiftUI 视图 + 视图模型 + 本地化资源。
-        // 只依赖 GatherProtocol；资源 bundle 名为 gather-app_GatherUI.bundle。
+        // 只依赖 GatherProtocol（+ DEBUG 预览数据）；资源 bundle 名为 gather-app_GatherUI.bundle。
         .target(
             name: "GatherUI",
             dependencies: [
                 .product(name: "GatherProtocol", package: "gather-core"),
+                "GatherPreviewData",
             ],
             path: "Sources/GatherUI",
             exclude: ["Support/Info.plist", "DesignSystem/README.md", "Interaction/README.md"],

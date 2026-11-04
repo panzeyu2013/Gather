@@ -98,7 +98,7 @@ CI 的 `gather-core` / `gather-app` step 仍**直跑** `swift test --no-parallel
 
 ### 3.3 视图空白是策略而非遗漏
 
-`PreviewSupport` 0% 与 `DashboardView`/`LightboxView` 等 0% 属于手工验收面
+`PreviewSupport`/`GatherPreviewData` 0% 与 `DashboardView`/`LightboxView` 等 0% 属于手工验收面
 （`docs/DEVELOPMENT.md` 的“手工检查清单”）；对应 ViewModel 多为 80~99%。
 把 View 行覆盖直接当成“测试不足”会误导预算，本审计按逻辑/视图分开记账。
 

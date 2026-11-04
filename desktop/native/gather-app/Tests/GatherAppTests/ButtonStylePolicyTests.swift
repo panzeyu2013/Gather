@@ -40,7 +40,8 @@ struct ButtonStylePolicyTests {
         while let url = enumerator?.nextObject() as? URL {
             guard url.pathExtension == "swift",
                   !url.path.contains("/DesignSystem/"),
-                  !url.path.contains("/PreviewSupport/") else { continue }
+                  !url.path.contains("/PreviewSupport/"),
+                  !url.path.contains("/GatherPreviewData/") else { continue }
             scannedFiles += 1
             let text = Self.masked(try String(contentsOf: url, encoding: .utf8))
             buttonCount += Self.matches(of: Self.bareButton, in: text).count

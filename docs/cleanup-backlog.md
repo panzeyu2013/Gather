@@ -485,7 +485,7 @@ grep -rn 'class LockedBox\|class AsyncGate' --include=*.swift desktop/native/*/T
 
 **保留（经 subagent 复核）**
 
-- DebugLaunchOptions（58 行）/ PreviewSupport（12 文件/2,178 行）：DEBUG-only，仍服务 V6 截图验收与 14 个 #Preview；删除会跌破 preview 门禁。
+- DebugLaunchOptions（58 行）/ 预览脚手架（12 文件/2,210 行）：DEBUG-only，仍服务 V6 截图验收与 14 个 #Preview；删除会跌破 preview 门禁。#13 起拆成两处：`GatherUI/PreviewSupport`（5 文件/793 行，依赖视图与 VM）+ `GatherPreviewData`（7 文件/1,417 行，只依赖 GatherProtocol）——行数没降，但 1,417 行不再属于生产 UI 模块。
 - 测试接缝：DeliveryStateMachine.isConfirmReady/shouldReopenForInput、ProofFeedbackRow.isApplied、StackFoldIndex.expandedPhotoIds、KeywordPath.ancestors/topSegment、C1RoundTripCoordinator.flushPendingReloads、DeliveryRepo.mark*ForTesting、Database.isInMemory/rawHandle；保留为行为规格或 @testable 隔离，删除收益为负。
 - Curation 的 fromLightroom/focusedFraction/synchronizedZoom：裁剪/AF/对照几何的唯一实现，虽当前仅测试调用，先保留待接线评估（不是一次性调试代码）。
 - 工具：scripts/find-unused-symbols.swift（本轮仍在用）、scripts/clean-test-temp.sh（手工残留清理）、scripts/validation/CullingPaging100kPerfTests.swift（V5 100k 证据，保留待 V5 收口）。

@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import GatherProtocol
+import GatherPreviewData
 
 // desktop/native/gather-app/Sources/GatherUI/PreviewSupport/PreviewProviders.swift
 // Cut 4 / 4c-1：三个 DataProvider 的 Preview 实现（只在 DEBUG 编译）。

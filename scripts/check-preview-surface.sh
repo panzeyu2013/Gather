@@ -16,6 +16,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCES="$ROOT/desktop/native/gather-app/Sources"
 PREVIEW_DIR="$SOURCES/GatherUI/PreviewSupport"
+# #13：预览数据/API 替身拆到独立 DEBUG-only target，门禁必须同时覆盖两个目录，
+# 否则「把文件挪走」就能让 support_lines 假降。
+PREVIEW_DATA_DIR="$SOURCES/GatherPreviewData"
 
 # 底线来自 docs/cut4-ui-audit.md §6.3（≥12）；4c-1 实际交付 14 个，
 # --strict 把"建议目标"变成硬门槛，防止后续拆分悄悄丢失预览。
@@ -76,15 +79,22 @@ if [ "$count" -lt "$MIN_PREVIEWS" ]; then
   fail=1
 fi
 
-# PreviewSupport 是 Cut 4 / 4c-1 的 fixture 目录：至少要有固定数据 + API 替身。
+# 预览脚手架由两个目录承载（#13）：GatherUI 保留依赖视图/VM 的 Factory/Providers/
+# ShellViews/缩略图 seeder，纯数据与 API 替身在 GatherPreviewData（DEBUG-only target）。
+# 行数按两目录求和 —— 目标是把「预览脚手架」整体从生产 UI 模块里挪出去，
+# 不是把行数塞进另一个未被统计的角落。
+PREVIEW_DIRS=("$PREVIEW_DIR" "$PREVIEW_DATA_DIR")
 support_files=0
 support_lines=0
-if [ -d "$PREVIEW_DIR" ]; then
-  support_files="$(find "$PREVIEW_DIR" -type f -name '*.swift' | wc -l | tr -d ' ')"
-  if [ "$support_files" -gt 0 ]; then
-    support_lines="$(find "$PREVIEW_DIR" -type f -name '*.swift' -print0 | xargs -0 wc -l | tail -1 | awk '{print $1}')"
+for dir in "${PREVIEW_DIRS[@]}"; do
+  if [ -d "$dir" ]; then
+    support_files=$((support_files + $(find "$dir" -type f -name '*.swift' | wc -l | tr -d ' ')))
+    dir_files="$(find "$dir" -type f -name '*.swift' | wc -l | tr -d ' ')"
+    if [ "$dir_files" -gt 0 ]; then
+      support_lines=$((support_lines + $(find "$dir" -type f -name '*.swift' -print0 | xargs -0 wc -l | tail -1 | awk '{print $1}')))
+    fi
   fi
-fi
+done
 
 if [ "$STRICT" -eq 1 ]; then
   # 1) 目标 14 个。
@@ -113,32 +123,44 @@ if [ "$STRICT" -eq 1 ]; then
     fail=1
   fi
 
-  # 3) PreviewSupport 下每个文件整体 #if DEBUG ... #endif。
+  # 3) 两个预览目录下每个文件整体 #if DEBUG ... #endif。
   # 4) 预览替身不得依赖测试 target。
-  if [ ! -d "$PREVIEW_DIR" ]; then
-    echo "FAIL(strict): 缺少目录 $PREVIEW_DIR" >&2
+  missing_dir=0
+  for dir in "${PREVIEW_DIRS[@]}"; do
+    [ -d "$dir" ] || { echo "FAIL(strict): 缺少预览目录 $dir" >&2; missing_dir=1; }
+  done
+  if [ "$missing_dir" -ne 0 ]; then
     fail=1
   else
-    for file in "$PREVIEW_DIR"/*.swift; do
-      [ -e "$file" ] || continue
-      first="$(awk 'NF && $0 !~ /^[[:space:]]*\/\// { print; exit }' "$file")"
-      last="$(awk 'NF { last = $0 } END { print last }' "$file")"
-      if [ "$first" != "#if DEBUG" ] || [ "$last" != "#endif" ]; then
-        echo "FAIL(strict): $file 未整体包裹在 #if DEBUG ... #endif 内。" >&2
-        fail=1
-      fi
+    for dir in "${PREVIEW_DIRS[@]}"; do
+      for file in "$dir"/*.swift; do
+        [ -e "$file" ] || continue
+        first="$(awk 'NF && $0 !~ /^[[:space:]]*\/\// { print; exit }' "$file")"
+        last="$(awk 'NF { last = $0 } END { print last }' "$file")"
+        if [ "$first" != "#if DEBUG" ] || [ "$last" != "#endif" ]; then
+          echo "FAIL(strict): $file 未整体包裹在 #if DEBUG ... #endif 内。" >&2
+          fail=1
+        fi
+      done
     done
 
     if grep -RInE --include='*.swift' \
         '^[[:space:]]*(@testable[[:space:]]+)?import[[:space:]]+(XCTest|Testing|GatherAppTests)' \
-        "$PREVIEW_DIR" >/dev/null 2>&1; then
-      echo "FAIL(strict): PreviewSupport 不得 import 测试模块（XCTest/Testing/GatherAppTests）。" >&2
+        "${PREVIEW_DIRS[@]}" >/dev/null 2>&1; then
+      echo "FAIL(strict): 预览目录不得 import 测试模块（XCTest/Testing/GatherAppTests）。" >&2
       fail=1
     fi
 
-    for required in PreviewFixtures.swift PreviewAPIs.swift PreviewProviders.swift; do
+    # 必需文件按归属拆开：#13 把纯数据/替身搬到了 GatherPreviewData。
+    for required in PreviewProviders.swift; do
       if [ ! -f "$PREVIEW_DIR/$required" ]; then
-        echo "FAIL(strict): 缺少 fixture 文件 $required" >&2
+        echo "FAIL(strict): 缺少 fixture 文件 $PREVIEW_DIR/$required" >&2
+        fail=1
+      fi
+    done
+    for required in PreviewFixtures.swift PreviewAPIs.swift; do
+      if [ ! -f "$PREVIEW_DATA_DIR/$required" ]; then
+        echo "FAIL(strict): 缺少 fixture 文件 $PREVIEW_DATA_DIR/$required" >&2
         fail=1
       fi
     done
@@ -149,4 +171,4 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "PASS: #Preview=$count, PreviewSupport files=$support_files, lines=$support_lines"
+echo "PASS: #Preview=${count}, preview files=${support_files}, lines=${support_lines} (GatherUI/PreviewSupport + GatherPreviewData)"

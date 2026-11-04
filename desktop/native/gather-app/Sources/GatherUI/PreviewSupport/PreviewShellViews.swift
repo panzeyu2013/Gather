@@ -1,6 +1,7 @@
 #if DEBUG
 import SwiftUI
 import GatherProtocol
+import GatherPreviewData
 
 // desktop/native/gather-app/Sources/GatherUI/PreviewSupport/PreviewShellViews.swift
 // Cut 4 / 4c-1：Root / Shell / SessionPage 三个"壳层"预览（只在 DEBUG 编译）。

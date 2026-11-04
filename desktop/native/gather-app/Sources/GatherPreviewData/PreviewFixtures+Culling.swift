@@ -9,7 +9,7 @@ import GatherProtocol
 extension PreviewData {
     // MARK: 挑片（Culling）
 
-    static let cullingAssets: [CullingAsset] = (1...3).map { index in
+    package static let cullingAssets: [CullingAsset] = (1...3).map { index in
         let path = galleryPaths[index - 1]
         let pickState: PickState = index == 1 ? .picked : (index == 2 ? .rejected : .unreviewed)
         let rating: Double = index == 1 ? 5 : (index == 2 ? 1 : 0)
@@ -62,9 +62,9 @@ extension PreviewData {
         )
     }
 
-    static let cullingPage = CullingPage(assets: cullingAssets, total: cullingAssets.count)
+    package static let cullingPage = CullingPage(assets: cullingAssets, total: cullingAssets.count)
 
-    static let cullingSummary = CullingSummary(
+    package static let cullingSummary = CullingSummary(
         totalGroups: 1,
         totalPhotos: 3,
         kept: 1,
@@ -74,7 +74,7 @@ extension PreviewData {
         labeled: 1
     )
 
-    static let cullingGroups: [CullingGroup] = [
+    package static let cullingGroups: [CullingGroup] = [
         CullingGroup(
             groupId: "preview-group-1",
             groupIndex: 0,
@@ -92,7 +92,7 @@ extension PreviewData {
         ),
     ]
 
-    static let navigationGroups: [NavigationGroup] = [
+    package static let navigationGroups: [NavigationGroup] = [
         NavigationGroup(
             id: "preview-nav-burst",
             type: .burst,
@@ -115,7 +115,7 @@ extension PreviewData {
         ),
     ]
 
-    static let syncSummary = MetadataSyncSummary(
+    package static let syncSummary = MetadataSyncSummary(
         sessionId: sessionOneId,
         pending: 2,
         writing: 1,
@@ -154,9 +154,9 @@ extension PreviewData {
         ]
     )
 
-    static let cullingSyncStatus = CullingSyncStatus(summary: syncSummary, reloadAckedAt: timestamp)
+    package static let cullingSyncStatus = CullingSyncStatus(summary: syncSummary, reloadAckedAt: timestamp)
 
-    static let cullingHistory: [CullingHistoryOperation] = [
+    package static let cullingHistory: [CullingHistoryOperation] = [
         CullingHistoryOperation(
             id: 1,
             sessionId: sessionOneId,
@@ -174,7 +174,7 @@ extension PreviewData {
         ),
     ]
 
-    static let conflicts: [MetadataConflict] = [
+    package static let conflicts: [MetadataConflict] = [
         MetadataConflict(
             xmpPath: sourceRoot + "/DSC_0002.xmp",
             photoPath: sourceRoot + "/DSC_0002.NEF",

@@ -9,7 +9,7 @@ import GatherProtocol
 extension PreviewData {
     // MARK: 人物库（Persons）
 
-    static let persons: [PersonData] = [
+    package static let persons: [PersonData] = [
         person(id: "preview-person-1", name: "Mika", keywords: ["Mika", "人像"], photoCount: 42, sessions: 2),
         person(id: "preview-person-2", name: "Ren", keywords: ["Ren", "人像"], photoCount: 31, sessions: 2),
         person(id: "preview-person-3", name: "Aoi", keywords: ["Aoi"], photoCount: 18, sessions: 1),
@@ -39,7 +39,7 @@ extension PreviewData {
         )
     }
 
-    static func personDetail(_ id: String) -> PersonDetailData {
+    package static func personDetail(_ id: String) -> PersonDetailData {
         let base = persons.first { $0.id == id } ?? persons[0]
         let photos = (1...6).map { index in
             PersonPhotoItem(

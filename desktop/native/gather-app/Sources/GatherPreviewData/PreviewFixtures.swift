@@ -21,40 +21,40 @@ import GatherProtocol
 
 // MARK: - 固定样例
 
-enum PreviewData {
+package enum PreviewData {
     // 固定 id / 时间 / 路径（确定性）。
-    static let timestamp = "2026-03-28T09:15:00.000Z"
-    static let earlierTimestamp = "2026-03-27T18:40:00.000Z"
-    static let sessionOneId = "preview-session-kyoto"
-    static let sessionTwoId = "preview-session-iceland"
-    static let sessionOneName = "京都 · 樱花 2026"
-    static let sessionTwoName = "冰岛 · 极光"
-    static let sourceRoot = "/Volumes/Studio/2026/Kyoto"
-    static let secondRoot = "/Volumes/Studio/2026/Iceland"
-    static let exportDestination = "/Volumes/Exports/Kyoto-Selects"
+    package static let timestamp = "2026-03-28T09:15:00.000Z"
+    package static let earlierTimestamp = "2026-03-27T18:40:00.000Z"
+    package static let sessionOneId = "preview-session-kyoto"
+    package static let sessionTwoId = "preview-session-iceland"
+    package static let sessionOneName = "京都 · 樱花 2026"
+    package static let sessionTwoName = "冰岛 · 极光"
+    package static let sourceRoot = "/Volumes/Studio/2026/Kyoto"
+    package static let secondRoot = "/Volumes/Studio/2026/Iceland"
+    package static let exportDestination = "/Volumes/Exports/Kyoto-Selects"
 
     /// 图库 12 张：文件名/路径固定；第 2 张带 RAW+JPEG 变体，第 5 张离线。
-    static let galleryPaths: [String] = (1...12).map {
+    package static let galleryPaths: [String] = (1...12).map {
         String(format: "/Volumes/Studio/2026/Kyoto/DSC_%04d.NEF", $0)
     }
     /// 人脸成员照片（和人像库共用一组路径）。
-    static let facePaths: [String] = (1...8).map {
+    package static let facePaths: [String] = (1...8).map {
         String(format: "/Volumes/Studio/2026/Kyoto/PORTRAIT_%03d.NEF", $0)
     }
     /// 相似度分组照片。
-    static let similarityPaths: [String] = (1...6).map {
+    package static let similarityPaths: [String] = (1...6).map {
         String(format: "/Volumes/Studio/2026/Kyoto/BURST_%03d.NEF", $0)
     }
     /// 全局图库（Library）照片。
-    static let libraryPaths: [String] = (1...8).map {
+    package static let libraryPaths: [String] = (1...8).map {
         String(format: "/Volumes/Studio/2026/Kyoto/LIB_%04d.NEF", $0)
     }
-    static let personPaths: [String] = (1...6).map {
+    package static let personPaths: [String] = (1...6).map {
         String(format: "/Volumes/Studio/2026/Kyoto/PERSON_%03d.NEF", $0)
     }
 
     /// 所有需要占位缩略图的路径（去重后交给 PreviewThumbnailSeeder）。
-    static let thumbnailPaths: [String] = {
+    package static let thumbnailPaths: [String] = {
         var seen = Set<String>()
         return (galleryPaths + facePaths + similarityPaths + libraryPaths + personPaths)
             .filter { seen.insert($0).inserted }
@@ -62,7 +62,7 @@ enum PreviewData {
 
     // MARK: 会话
 
-    static let sessions: [SessionData] = [
+    package static let sessions: [SessionData] = [
         SessionData(
             id: sessionOneId,
             name: sessionOneName,
@@ -93,13 +93,13 @@ enum PreviewData {
         ),
     ]
 
-    static func session(_ id: String) -> SessionData {
+    package static func session(_ id: String) -> SessionData {
         sessions.first { $0.id == id } ?? sessions[0]
     }
 
     // MARK: 工作区状态
 
-    static let workspaceOne = WorkspaceStatus(
+    package static let workspaceOne = WorkspaceStatus(
         sessionId: sessionOneId,
         stage: .indexed,
         softFlags: WorkspaceSoftFlags(culled: true, exported: false),
@@ -119,7 +119,7 @@ enum PreviewData {
         generatedAt: timestamp
     )
 
-    static let workspaceTwo = WorkspaceStatus(
+    package static let workspaceTwo = WorkspaceStatus(
         sessionId: sessionTwoId,
         stage: .created,
         softFlags: WorkspaceSoftFlags(culled: false, exported: false),
@@ -132,13 +132,13 @@ enum PreviewData {
         generatedAt: timestamp
     )
 
-    static func workspaceStatus(_ id: String) -> WorkspaceStatus {
+    package static func workspaceStatus(_ id: String) -> WorkspaceStatus {
         id == sessionTwoId ? workspaceTwo : workspaceOne
     }
 
     // MARK: 任务
 
-    static let jobs: [AnalysisJobData] = [
+    package static let jobs: [AnalysisJobData] = [
         AnalysisJobData(
             id: "preview-job-scan",
             type: .metadataScan,
@@ -238,6 +238,20 @@ enum PreviewData {
             startedAt: "",
             finishedAt: "",
             updatedAt: earlierTimestamp
+        ),
+    ]
+
+    /// 元数据孤儿 fixture：原在 PreviewFixtures+Library 里，但 PreviewMetadataAPI
+    /// （本模块）要用；Library 侧的 gallery 类型属于 GatherUI，故只把这个成员
+    /// 挪到基础文件，保持「预览数据不反向依赖 UI」。
+    package static let orphanXMPs: [MetadataOrphan] = [
+        MetadataOrphan(
+            xmpPath: sourceRoot + "/ORPHAN_001.xmp",
+            photoPath: sourceRoot + "/ORPHAN_001.NEF",
+            status: "pending",
+            revision: 1,
+            errorMessage: "",
+            updatedAt: timestamp
         ),
     ]
 }

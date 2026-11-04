@@ -9,7 +9,7 @@ import GatherProtocol
 extension PreviewData {
     // MARK: 导出（Export）
 
-    static let exportPreview: ExportPreview = {
+    package static let exportPreview: ExportPreview = {
         let files = (1...8).map { index in
             let path = galleryPaths[index - 1]
             return ExportPreviewFile(

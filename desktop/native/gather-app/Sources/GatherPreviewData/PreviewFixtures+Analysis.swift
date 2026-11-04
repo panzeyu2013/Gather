@@ -11,7 +11,7 @@ extension PreviewData {
 
     // 每个实参先落到显式类型的局部常量：Xcode 26 的 type-checker 对整段字面量
     // 初始化式会超时（CI 实测 unable to type-check this expression in reasonable time）。
-    static let faceClusters: [FaceClusterData] = (1...6).map { clusterIndex in
+    package static let faceClusters: [FaceClusterData] = (1...6).map { clusterIndex in
         let members: [ClusterMember] = (1...4).map { memberIndex in
             let pathIndex: Int = (clusterIndex + memberIndex) % facePaths.count
             let photoPath: String = facePaths[pathIndex]
@@ -56,14 +56,14 @@ extension PreviewData {
         }
     }
 
-    static let faceModelsStatus = FaceModelsStatus(
+    package static let faceModelsStatus = FaceModelsStatus(
         provider: "vision",
         fallbackToOnnxEnabled: false,
         modelsPresent: true,
         downloading: false
     )
 
-    static let faceWritebackPreview: WritebackPreview = {
+    package static let faceWritebackPreview: WritebackPreview = {
         let items: [WritebackItem] = (1...3).map { index in
             let path: String = facePaths[index - 1]
             let xmpPath: String = path.replacingOccurrences(of: ".NEF", with: ".xmp")
@@ -94,7 +94,7 @@ extension PreviewData {
         return WritebackPreview(items: items, totalCount: 3, affectedPhotos: 3)
     }()
 
-    static let faceWritebackResult = WritebackResult(
+    package static let faceWritebackResult = WritebackResult(
         totalAffected: 3,
         written: 2,
         failed: 1,
@@ -106,7 +106,7 @@ extension PreviewData {
 
     // MARK: 相似度（Similarity）
 
-    static let similarityResult: SimilarityResult = {
+    package static let similarityResult: SimilarityResult = {
         let groups: [SimilarityGroup] = (1...3).map { groupIndex in
             let images: [SimilarityImage] = (1...4).map { imageIndex in
                 let path: String = similarityPaths[(groupIndex + imageIndex) % similarityPaths.count]
@@ -129,7 +129,7 @@ extension PreviewData {
         return SimilarityResult(groups: groups, ungrouped: ungrouped, stats: stats)
     }()
 
-    static let similarityWritebackItems: [WritebackItem] = (1...3).map { index in
+    package static let similarityWritebackItems: [WritebackItem] = (1...3).map { index in
         let status: String = index == 1 ? "pending" : (index == 2 ? "written" : "failed")
         let path: String = similarityPaths[index - 1]
         let failed: Bool = status == "failed"
@@ -151,7 +151,7 @@ extension PreviewData {
         )
     }
 
-    static let similarityWritebackPreview = WritebackPreview(
+    package static let similarityWritebackPreview = WritebackPreview(
         items: similarityWritebackItems,
         totalCount: similarityWritebackItems.count,
         affectedPhotos: similarityWritebackItems.count
@@ -159,7 +159,7 @@ extension PreviewData {
 
     // MARK: 重复检测（Duplicates）
 
-    static let duplicateGroups: [DuplicateGroup] = [
+    package static let duplicateGroups: [DuplicateGroup] = [
         duplicateGroup(
             id: 1,
             type: .exact,
@@ -177,7 +177,7 @@ extension PreviewData {
         ),
     ]
 
-    static let duplicateScanResult = DuplicateScanResult(
+    package static let duplicateScanResult = DuplicateScanResult(
         exactGroups: Array(duplicateGroups.prefix(2)),
         visualGroups: [duplicateGroups[2]],
         totalDuplicates: 7

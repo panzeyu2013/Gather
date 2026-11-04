@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import Foundation
+import GatherPreviewData
 
 // desktop/native/gather-app/Sources/GatherUI/PreviewSupport/PreviewFixtures+Thumbnails.swift
 // Cut 4 / 4c-1 Preview 纯色缩略图 seeder 的纯移动拆分（不读盘 / 不写盘）。

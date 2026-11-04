@@ -40,8 +40,9 @@ desktop/native/
 │   ├── Sources/GatherCoreBenchmarks/ + GatherFaceBenchmarks/
 │   ├── Tests/GatherTestSupport/     # makeTestDB 等共享夹具
 │   └── Tests/GatherCoreTests/
-├── gather-app/                      # 3 个 target
+├── gather-app/                      # 4 个 target
 │   ├── Sources/GatherUI/            # 页面/状态层/本地化资源（en/zh-Hans lproj）
+│   ├── Sources/GatherPreviewData/   # DEBUG-only 预览数据与 API 替身（#13 从 GatherUI 拆出）
 │   ├── Sources/GatherHost/          # AppComposition、AppRuntime、Live*API、RootView、菜单
 │   ├── Sources/GatherApp/           # @main
 │   └── Tests/GatherAppTests/

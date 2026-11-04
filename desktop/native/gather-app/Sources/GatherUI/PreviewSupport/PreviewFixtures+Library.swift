@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import GatherProtocol
+import GatherPreviewData
 
 // desktop/native/gather-app/Sources/GatherUI/PreviewSupport/PreviewFixtures+Library.swift
 // Cut 4 / 4c-1 Preview 固定样例的纯移动拆分（图库 / 全局图库 / 相册 / 资产关联 / 孤立 XMP）。
@@ -9,7 +10,7 @@ import GatherProtocol
 extension PreviewData {
     // MARK: 图库（Gallery）
 
-    static let galleryPhotos: [GalleryPhotoData] = (1...12).map { index in
+    package static let galleryPhotos: [GalleryPhotoData] = (1...12).map { index in
         let path = galleryPaths[index - 1]
         let variants: [GalleryVariantData] = index == 2
             ? [
@@ -48,7 +49,7 @@ extension PreviewData {
 
     // MARK: 全局图库（Library）
 
-    static let globalPhotos: [GlobalPhotoResult] = (1...8).map { index in
+    package static let globalPhotos: [GlobalPhotoResult] = (1...8).map { index in
         GlobalPhotoResult(
             photoId: "preview-library-\(index)",
             assetId: "preview-library-asset-\(index)",
@@ -65,7 +66,7 @@ extension PreviewData {
         )
     }
 
-    static let albums: [SmartAlbumData] = [
+    package static let albums: [SmartAlbumData] = [
         SmartAlbumData(
             id: "preview-album-1",
             schemaVersion: 1,
@@ -92,7 +93,7 @@ extension PreviewData {
         ),
     ]
 
-    static let assetCandidates: [AssetLinkCandidateData] = [
+    package static let assetCandidates: [AssetLinkCandidateData] = [
         AssetLinkCandidateData(
             id: "preview-candidate-1",
             leftFileId: "preview-library-1",
@@ -105,7 +106,7 @@ extension PreviewData {
         ),
     ]
 
-    static let assetVolumes: [AssetVolumeData] = [
+    package static let assetVolumes: [AssetVolumeData] = [
         AssetVolumeData(
             volumeId: "preview-volume-studio",
             roots: [sourceRoot],
@@ -114,15 +115,5 @@ extension PreviewData {
         ),
     ]
 
-    static let orphanXMPs: [MetadataOrphan] = [
-        MetadataOrphan(
-            xmpPath: sourceRoot + "/ORPHAN_001.xmp",
-            photoPath: sourceRoot + "/ORPHAN_001.NEF",
-            status: "pending",
-            revision: 1,
-            errorMessage: "",
-            updatedAt: timestamp
-        ),
-    ]
 }
 #endif

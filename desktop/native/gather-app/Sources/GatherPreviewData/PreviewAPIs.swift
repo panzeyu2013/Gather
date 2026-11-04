@@ -18,10 +18,10 @@ import GatherProtocol
 // update/writeback/resolve/start/...）全部抛错，Preview 不触发真实 DB/网络。
 
 /// Preview 替身对命令方法的统一拒绝（类型名带 Preview 前缀，避免与业务错误码混淆）。
-enum PreviewAPIError: Error, Equatable, CustomStringConvertible {
+package enum PreviewAPIError: Error, Equatable, CustomStringConvertible {
     case unavailable(String)
 
-    var description: String {
+    package var description: String {
         switch self {
         case .unavailable(let method):
             return "Preview API 不执行命令：\(method)"
@@ -540,5 +540,28 @@ struct PreviewCaptureOne: CaptureOneBridging {
     static func documentProbeScript(appName: String) -> String {
         "return \"Preview: \(appName)\""
     }
+}
+
+// MARK: - 跨模块构造面（#13）
+
+/// 预览替身的构造入口：GatherUI 的 PreviewFactory 只经这里拿替身。
+///
+/// 为什么不把 12 个 struct 直接改成 package：Swift 要求 package 类型的协议见证
+/// 也必须是 package，那意味着给 121 个方法逐个加访问级别；只暴露 13 个返回
+/// 存在类型的工厂方法，把「预览数据 → UI」的接触面压到最小。
+package enum PreviewAPIStubs {
+    package static func session() -> any SessionAPI { PreviewSessionAPI() }
+    package static func job() -> any JobAPI { PreviewJobAPI() }
+    package static func settings() -> any SettingsAPI { PreviewSettingsAPI() }
+    package static func culling() -> any CullingAPI { PreviewCullingAPI() }
+    package static func navigation() -> any NavigationAPI { PreviewNavigationAPI() }
+    package static func metadata() -> any MetadataAPI { PreviewMetadataAPI() }
+    package static func quality() -> any QualityAPI { PreviewQualityAPI() }
+    package static func face() -> any FaceAPI { PreviewFaceAPI() }
+    package static func similarity() -> any SimilarityAPI { PreviewSimilarityAPI() }
+    package static func duplicate() -> any DuplicateAPI { PreviewDuplicateAPI() }
+    package static func export() -> any ExportAPI { PreviewExportAPI() }
+    package static func person() -> any PersonAPI { PreviewPersonAPI() }
+    package static func captureOne() -> any CaptureOneBridging { PreviewCaptureOne() }
 }
 #endif

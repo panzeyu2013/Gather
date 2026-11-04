@@ -8,7 +8,7 @@ import GatherProtocol
 extension PreviewData {
     // MARK: 设置（Settings）
 
-    static let settings: [String: String] = [
+    package static let settings: [String: String] = [
         "ui_language": "zh-CN",
         "face_compute_units": "auto",
         "thumbnail_size": "1024",
@@ -29,7 +29,7 @@ extension PreviewData {
         "face_incremental_clustering": "1",
     ]
 
-    static let mlStatus = MLStatusData(
+    package static let mlStatus = MLStatusData(
         platform: "macOS",
         autoBackend: "coreml",
         autoBackendLabel: "Core ML",

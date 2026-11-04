@@ -2,6 +2,7 @@
 import Foundation
 import SwiftUI
 import GatherProtocol
+import GatherPreviewData
 
 // desktop/native/gather-app/Sources/GatherUI/PreviewSupport/PreviewFactory.swift
 // Cut 4 / 4c-1：14 个 #Preview 的"最小依赖装配"（只在 DEBUG 编译）。
@@ -30,7 +31,7 @@ enum PreviewFactory {
 
     static func dashboardViewModel() -> DashboardViewModel {
         let viewModel = DashboardViewModel(provider: PreviewDashboardProvider())
-        viewModel.captureOne = PreviewCaptureOne()
+        viewModel.captureOne = PreviewAPIStubs.captureOne()
         // Preview 不轮询：数据已经在首次 loadAll 后固定。
         viewModel.isVisible = false
         return viewModel
@@ -41,27 +42,27 @@ enum PreviewFactory {
     }
 
     static func personsViewModel() -> PersonsViewModel {
-        PersonsViewModel(person: PreviewPersonAPI())
+        PersonsViewModel(person: PreviewAPIStubs.person())
     }
 
     static func cullingViewModel() -> CullingViewModel {
         CullingViewModel(
             sessionId: PreviewData.sessionOneId,
-            culling: PreviewCullingAPI(),
-            navigation: PreviewNavigationAPI(),
-            metadata: PreviewMetadataAPI(),
-            jobs: PreviewJobAPI(),
-            quality: PreviewQualityAPI(),
-            captureOne: PreviewCaptureOne()
+            culling: PreviewAPIStubs.culling(),
+            navigation: PreviewAPIStubs.navigation(),
+            metadata: PreviewAPIStubs.metadata(),
+            jobs: PreviewAPIStubs.job(),
+            quality: PreviewAPIStubs.quality(),
+            captureOne: PreviewAPIStubs.captureOne()
         )
     }
 
     static func faceViewModel() -> FaceKeywordingViewModel {
         let viewModel = FaceKeywordingViewModel(
             sessionId: PreviewData.sessionOneId,
-            face: PreviewFaceAPI(),
-            jobs: PreviewJobAPI(),
-            captureOne: PreviewCaptureOne()
+            face: PreviewAPIStubs.face(),
+            jobs: PreviewAPIStubs.job(),
+            captureOne: PreviewAPIStubs.captureOne()
         )
         // 审核步：fixture 同时含已绑定（Mika/Ren）与未绑定簇。
         viewModel.step = .review
@@ -71,8 +72,8 @@ enum PreviewFactory {
     static func exportViewModel() -> ExportViewModel {
         let viewModel = ExportViewModel(
             sessionId: PreviewData.sessionOneId,
-            export: PreviewExportAPI(),
-            session: PreviewSessionAPI()
+            export: PreviewAPIStubs.export(),
+            session: PreviewAPIStubs.session()
         )
         viewModel.destination = PreviewData.exportDestination
         viewModel.scope = .selected
@@ -84,18 +85,18 @@ enum PreviewFactory {
     static func duplicatesViewModel() -> DuplicatesViewModel {
         DuplicatesViewModel(
             sessionId: PreviewData.sessionOneId,
-            duplicate: PreviewDuplicateAPI(),
-            jobs: PreviewJobAPI()
+            duplicate: PreviewAPIStubs.duplicate(),
+            jobs: PreviewAPIStubs.job()
         )
     }
 
     static func controlViewModel() -> SessionControlViewModel {
         SessionControlViewModel(
             sessionId: PreviewData.sessionOneId,
-            session: PreviewSessionAPI(),
-            culling: PreviewCullingAPI(),
-            jobAPI: PreviewJobAPI(),
-            qualityAPI: PreviewQualityAPI(),
+            session: PreviewAPIStubs.session(),
+            culling: PreviewAPIStubs.culling(),
+            jobAPI: PreviewAPIStubs.job(),
+            qualityAPI: PreviewAPIStubs.quality(),
             pollInterval: .seconds(3600),
             activePollInterval: .seconds(3600)
         )
@@ -105,7 +106,7 @@ enum PreviewFactory {
         GalleryViewModel(
             sessionId: PreviewData.sessionOneId,
             provider: PreviewGalleryProvider(),
-            job: PreviewJobAPI(),
+            job: PreviewAPIStubs.job(),
             debounceDelay: .seconds(3600),
             activeStatusPollInterval: .seconds(3600),
             idleStatusPollInterval: .seconds(3600)
@@ -115,12 +116,12 @@ enum PreviewFactory {
     static func similarityViewModel() -> SimilarityViewModel {
         SimilarityViewModel(
             sessionId: PreviewData.sessionOneId,
-            similarity: PreviewSimilarityAPI(),
-            jobs: PreviewJobAPI(),
+            similarity: PreviewAPIStubs.similarity(),
+            jobs: PreviewAPIStubs.job(),
             pollInterval: .seconds(3600),
             resultPollInterval: .seconds(3600),
             tierDebounceDelay: .seconds(3600),
-            captureOne: PreviewCaptureOne()
+            captureOne: PreviewAPIStubs.captureOne()
         )
     }
 
@@ -142,19 +143,19 @@ enum PreviewFactory {
 
     static func dependencies() -> RootShellDependencies {
         RootShellDependencies(
-            session: PreviewSessionAPI(),
-            job: PreviewJobAPI(),
-            settings: PreviewSettingsAPI(),
-            culling: PreviewCullingAPI(),
-            navigation: PreviewNavigationAPI(),
-            metadata: PreviewMetadataAPI(),
-            quality: PreviewQualityAPI(),
-            face: PreviewFaceAPI(),
-            similarity: PreviewSimilarityAPI(),
-            duplicate: PreviewDuplicateAPI(),
-            export: PreviewExportAPI(),
-            person: PreviewPersonAPI(),
-            captureOne: PreviewCaptureOne(),
+            session: PreviewAPIStubs.session(),
+            job: PreviewAPIStubs.job(),
+            settings: PreviewAPIStubs.settings(),
+            culling: PreviewAPIStubs.culling(),
+            navigation: PreviewAPIStubs.navigation(),
+            metadata: PreviewAPIStubs.metadata(),
+            quality: PreviewAPIStubs.quality(),
+            face: PreviewAPIStubs.face(),
+            similarity: PreviewAPIStubs.similarity(),
+            duplicate: PreviewAPIStubs.duplicate(),
+            export: PreviewAPIStubs.export(),
+            person: PreviewAPIStubs.person(),
+            captureOne: PreviewAPIStubs.captureOne(),
             libraryProvider: PreviewLibraryProvider(),
             galleryProvider: PreviewGalleryProvider(),
             dashboardProvider: PreviewDashboardProvider()
@@ -184,7 +185,7 @@ enum PreviewFactory {
         return NavigationStack {
             GalleryView(
                 workspace: workspace,
-                culling: PreviewCullingAPI()
+                culling: PreviewAPIStubs.culling()
             )
         }
         .environment(\.languageStore, store)
@@ -212,7 +213,7 @@ enum PreviewFactory {
         return NavigationStack {
             CullingView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI()
+                culling: PreviewAPIStubs.culling()
             )
         }
         .environment(\.languageStore, store)
@@ -225,7 +226,7 @@ enum PreviewFactory {
         return NavigationStack {
             FaceKeywordingView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI()
+                culling: PreviewAPIStubs.culling()
             )
         }
         .environment(\.languageStore, store)
@@ -238,7 +239,7 @@ enum PreviewFactory {
         return NavigationStack {
             SimilarityView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI()
+                culling: PreviewAPIStubs.culling()
             )
         }
         .environment(\.languageStore, store)
@@ -250,10 +251,10 @@ enum PreviewFactory {
         let store = languageStore()
         return NavigationStack {
             SettingsView(
-                session: PreviewSessionAPI(),
-                settings: PreviewSettingsAPI(),
-                culling: PreviewCullingAPI(),
-                captureOne: PreviewCaptureOne(),
+                session: PreviewAPIStubs.session(),
+                settings: PreviewAPIStubs.settings(),
+                culling: PreviewAPIStubs.culling(),
+                captureOne: PreviewAPIStubs.captureOne(),
                 languageStore: store
             )
         }
@@ -267,7 +268,7 @@ enum PreviewFactory {
         return NavigationStack {
             ExportView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI()
+                culling: PreviewAPIStubs.culling()
             )
         }
         .environment(\.languageStore, store)
@@ -280,7 +281,7 @@ enum PreviewFactory {
         return NavigationStack {
             DuplicatesView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI()
+                culling: PreviewAPIStubs.culling()
             )
         }
         .environment(\.languageStore, store)
@@ -310,7 +311,7 @@ enum PreviewFactory {
         return NavigationStack {
             SessionControlView(
                 workspace: workspace(),
-                culling: PreviewCullingAPI()
+                culling: PreviewAPIStubs.culling()
             )
         }
         .environment(\.languageStore, store)
@@ -327,7 +328,7 @@ enum PreviewFactory {
             SessionPageHost(
                 sessionId: PreviewData.sessionOneId,
                 page: .control,
-                culling: PreviewCullingAPI()
+                culling: PreviewAPIStubs.culling()
             )
             .environment(\.sessionWorkspace, workspace)
             .environment(\.languageStore, store)
