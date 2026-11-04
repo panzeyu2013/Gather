@@ -89,6 +89,8 @@ public final class SessionControlViewModel: SessionPageModel {
             let updated = try await sessionAPI.setSourceRoot(
                 Confirmed(input, source: .userDialog))
             session = updated
+            // #11：根目录变更改变会话的照片集合（等同库变更），发 .library。
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
             // 监听重建由 LiveSessionAPI.setSourceRoot 的唯一写路径完成。
             notice = LocalizedText("已设置工作区根目录")
             errorMessage = nil

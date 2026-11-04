@@ -30,8 +30,6 @@ public enum GatherChangeDomain: String, Sendable, CaseIterable {
     case duplicates
     /// 人脸簇结构变化（绑定/解绑/成员修订/合并）。
     case faceKeywording
-    /// 相似度写回以外的人脸/相似度窗口无需细分，统一由调用方选择语义域。
-    case similarity
     /// XMP 写回与同步队列（culling/sim/fkw 写回族；设置页/C1 胶囊/控制中心消费）。
     case metadata
     /// 挑片决策/状态变更（Culling 写路径；图库/画廊的星级与色标消费）。

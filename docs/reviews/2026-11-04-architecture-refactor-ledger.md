@@ -494,3 +494,21 @@
   GatherUI + GatherHost **零命中**。
 - 未处理：`RootShellOverlay` 的 `userInfo` 类 as?（那走 GatherAppNotification，不属本
   轮 5 条通道；`DashboardView` 的语言通知同理）。
+
+## 残留修复 3：#11 R3「写路径必发域」门禁（第 14 道）
+
+- 新增 `scripts/check-domain-writes.sh`。判定单元是**叶子写函数**（函数体内直接调用协议
+  写方法），写方法索引来自 ① 协议里签名含 `Confirmed<` 的方法（41 个，自动）
+  ② `NONCONF` 显式登记表（按 **(协议, 方法)** 二元组——`resolve`/`set`/`update` 在
+  LocalizedText/DescriptiveMetadata 等处撞名，纯按方法名匹配会产出 60+ 假阳）。
+- 通过条件三选一：函数体含 `postDomainChange(` / 调用已登记 helper / 声明前一行
+  `// DOMAIN-EVENT: none — <理由>`（理由必须非空，不许文件级豁免）。
+- 前置补齐：本轮把 15 个缺口全部处理——**7 处补广播**（模板套用/撤销、编辑器应用、
+  批处理撤销、导入、setSourceRoot、客户校样导入）+ **8 处显式 none**（设置写、备份恢复、
+  导航组拆分合并、WebDAV 发布、导出两次）。基线因此是**空**（0 条），不需要维护。
+- 顺带删掉 `GatherChangeDomain.similarity`：**0 生产者 0 消费者**的死 case（注释里也
+  自认「无需细分」）；删掉后 `allCases` 订阅少一档，无 switch 穷尽性影响。
+- 自检：抽掉 `MetadataSyncBar` 的 3 行广播 → rc=1 并点名 `cleanup`/`confirm`；
+  还原 → rc=0。
+- 现状读数：叶子写函数 42 / 已发域 34 / 显式 none 8 / 缺口 0。
+- 接入 CI gates job 与 DEVELOPMENT.md 清单（第 14 道）。

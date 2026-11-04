@@ -133,6 +133,7 @@ extension SettingsViewModel {
 
     /// P1-5：分级 reset；未勾选的 scope 原样保留。
     /// 破坏性入口只接收确认分支构造的 Confirmed，VM 不自行“补”确认。
+    // DOMAIN-EVENT: none — 设置写走 settingsChanged 通道；页面重新可见时自行读最新值，无常驻页消费者
     public func reset(_ confirmed: Confirmed<SettingsResetInput>) async {
         do {
             let input = confirmed.value

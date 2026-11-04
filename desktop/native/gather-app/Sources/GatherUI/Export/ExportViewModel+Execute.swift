@@ -68,6 +68,7 @@ extension ExportViewModel {
     /// （不伪造确认、不发送请求）——UI 不得自证确认。
     /// - Parameter request: 确认弹窗冻结的参数（D03）。传入时执行的就是被确认的
     ///   那一份，不再重新读界面状态；为 nil（无确认路径）则现读当前参数。
+    // DOMAIN-EVENT: none — 导出产物落到目标目录，落在应用外；无常驻页消费者
     public func executeExport(confirmed: Bool, request: ExportOptions? = nil) async {
         exportProgress = nil
         currentFileName = nil

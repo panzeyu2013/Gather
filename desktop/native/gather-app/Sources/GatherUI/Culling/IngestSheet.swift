@@ -197,6 +197,8 @@ struct IngestSheet: View {
             }
             let outcome = try await sessionAPI.ingest(Confirmed(input, source: .userDialog))
             result = outcome
+            // #11：导入改变会话的照片集合与计数（侧栏/图库都读它），发 .library。
+            GatherEventCenter.postDomainChange(.library, sessionId: nil)
             await viewModel.loadPage(reset: true)
         } catch {
             if error is any JobCancellationMarker {

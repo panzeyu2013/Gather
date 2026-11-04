@@ -50,6 +50,8 @@ jobs:
         run: ./scripts/check-layering.sh
       - name: Domain events
         run: ./scripts/check-domain-events.sh
+      - name: Domain writes
+        run: ./scripts/check-domain-writes.sh
       - name: Duplicate symbols
         run: ./scripts/check-duplicate-symbols.sh --strict
       - name: Test catalog

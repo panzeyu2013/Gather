@@ -211,6 +211,8 @@ struct MetadataEditorSheet: View {
                 clearedContactMembers: patch.clearedContactMembers.isEmpty
                     ? nil : patch.clearedContactMembers)
             let outcome = try await api.applyDescriptive(Confirmed(input, source: .userDialog))
+            // #11：编辑器写的是 XMP，常驻页（C1 胶囊/设置页）要立刻知道。
+            GatherEventCenter.postDomainChange(.metadata, sessionId: nil)
             // P1：失败（尤其是 JPEG 内嵌字段无法清空）必须留在编辑器里可见；
             // 同时重新读盘，让输入框回到盘上真实值，而不是用户刚敲的空值。
             if let failure = outcome.failed.first {

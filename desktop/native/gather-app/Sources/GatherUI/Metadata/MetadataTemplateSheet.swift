@@ -249,6 +249,7 @@ struct MetadataTemplateSheet: View {
         }
     }
 
+    // DOMAIN-EVENT: none — 模板定义不是照片元数据；删模板不影响任何页面的照片数据
     private func deleteSelected() async {
         guard let id = selectedId else { return }
         isBusy = true
@@ -291,6 +292,8 @@ struct MetadataTemplateSheet: View {
                     expectedPreviewToken: preview?.previewToken),
                     source: .userDialog))
             outcome = result
+            // #11：模板套用写的是 XMP，常驻页要立刻知道
+            GatherEventCenter.postDomainChange(.metadata, sessionId: nil)
             // P1：失败原因必须可见。JPEG 内嵌字段无法清空时只显示"失败 N 张"，
             // 用户会误以为清空完成；首条失败的码/参数由渲染期本地化。
             errorText = result.failed.first.map { failure in
@@ -314,6 +317,8 @@ struct MetadataTemplateSheet: View {
             let result = try await viewModel.metadataAPI.undoTemplate(
                 Confirmed(try MetadataTemplateUndoInput(batchId: batchId), source: .userDialog))
             outcome = result
+            // #11：撤销同样是写盘
+            GatherEventCenter.postDomainChange(.metadata, sessionId: nil)
             // 部分失败时保留 batchId，表内可重试；批次仍是 undone=false。
             if result.failed.isEmpty {
                 appliedBatchId = nil

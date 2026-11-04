@@ -41,6 +41,7 @@ extension CullingViewModel {
         selectedNavigationGroupId = groupId
     }
 
+    // DOMAIN-EVENT: none — 导航组只在挑片页内展示，拆分后本页自刷
     public func splitNavigation(beforePhotoId: String) async {
         guard !selectedNavigationGroupId.isEmpty, !beforePhotoId.isEmpty else {
             errorMessage = CommandError.localized("请选择导航组和拆分位置")
@@ -62,6 +63,7 @@ extension CullingViewModel {
         }
     }
 
+    // DOMAIN-EVENT: none — 导航组只在挑片页内展示，合并后本页自刷
     public func mergeSelectedNavigationGroups() async {
         guard selectedNavigationGroupIds.count >= 2 else {
             errorMessage = CommandError.localized("请选择至少两个导航组")

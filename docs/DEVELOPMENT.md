@@ -221,6 +221,7 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 ./scripts/check-cleanup-ratchet.sh       # 5 个清理指标不超 docs/cleanup-baseline.json
 ./scripts/check-layering.sh              # 依赖方向（UI 不 import Persistence/Domain/Analysis/Delivery/Host）
 ./scripts/check-domain-events.sh         # 域事件：通道名只在 2 个文件、发布点与域字面量在登记表内（#11）
+./scripts/check-domain-writes.sh         # 写路径必发域：叶子写函数必须发域 / 显式 none + 理由（#11 R3）
 ./scripts/check-protocol-surface.sh --strict
 ./scripts/check-duplicate-symbols.sh --strict
 ./scripts/check-test-catalog.sh --strict # 测试文件头注释 / skip 元数据

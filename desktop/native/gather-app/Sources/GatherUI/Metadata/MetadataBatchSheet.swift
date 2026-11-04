@@ -125,6 +125,8 @@ struct MetadataBatchSheet: View {
                 failedCount = try await viewModel.metadataAPI
                     .undoTemplate(confirmed).failed.count
             }
+            // #11：撤销可能已写盘（部分失败也写了），常驻页要立刻知道。
+            GatherEventCenter.postDomainChange(.metadata, sessionId: nil)
             // reload() 成功会把 errorText 清空：失败提示必须在它之后写，
             // 否则"部分撤销失败"的唯一反馈会在一个 await 内被抹掉。
             await reload()

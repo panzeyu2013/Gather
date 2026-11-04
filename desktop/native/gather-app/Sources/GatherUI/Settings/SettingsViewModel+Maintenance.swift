@@ -104,6 +104,7 @@ extension SettingsViewModel {
     // MARK: - 恢复
 
     /// 返回 true 表示已写入 journal、需要退出应用完成恢复。
+    // DOMAIN-EVENT: none — 恢复备份要重启才生效（既有设计），没有常驻页需要立刻刷新
     func restoreBackup(_ record: BackupRecord) async -> Bool {
         guard let maintenanceAPI else { return false }
         maintenanceBusy = true

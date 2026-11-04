@@ -160,6 +160,8 @@ extension ExportViewModel {
         do {
             let report = try await cullingAPI.importClientSelection(
                 Confirmed(ClientSelectionImportInput(sessionId: sessionId, json: json)))
+            // #11：导入客户校样写的是 culling 决策（星级/色标/勾选），挑片页必须立刻看到。
+            GatherEventCenter.postDomainChange(.culling, sessionId: sessionId)
             // 旧徽标仍用 v1 形态（picked/applied/skipped/failed），既有文案不变。
             clientSelectionImport = report.selection
             return report
@@ -174,6 +176,7 @@ extension ExportViewModel {
     /// 白名单**必填**：空列表说明上层没能从 manifest 推出产物清单，此时宁可不发布，
     /// 也绝不"回退成整目录上传"（会把历史 manifest、成片目录、用户杂物一起传上去）。
     /// allowDownload = false 时只传缩略图与校样页（大图/成片不上传）。
+    // DOMAIN-EVENT: none — 产物写 WebDAV，落在应用外；无常驻页消费者
     public func publishToWebDAV(
         localPath: String,
         baseURL: String,
@@ -346,6 +349,7 @@ extension ExportViewModel {
     /// 确认 sheet 的唯一下一动作：执行冻结好的输入（不再重读界面状态）。
     /// 确认 sheet 的唯一执行入口：只能拿到确认分支构造的 Confirmed，VM 不再
     /// 自行“补”用户确认（D-011 / DEVELOPMENT.md §523）。
+    // DOMAIN-EVENT: none — 导出产物落到目标目录，落在应用外；无常驻页消费者
     public func executeDelivery(_ input: Confirmed<OutputRunInput>) async {
         guard !isDelivering else { return }
         isDelivering = true
