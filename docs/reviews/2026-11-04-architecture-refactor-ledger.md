@@ -310,3 +310,16 @@
 - 意义：这一步同时解开两个死结——#6 的 S3/S4（Extraction/AttributeWriter 要存这些端口）
   与 #2 S3 剩余的「锁内搬移循环」（需要捕获 `any PhotoRepository`）。
 - 门禁读数未变：unchecked 60 / try? 255 / prepare 0。
+
+## #2 S3 收尾：锁内搬移循环下沉（#2 完成）
+
+- 新增 `CullingRejectMoveService`（GatherApplication，**真 Sendable**）：逐张进
+  `XMPFileLock` → `RejectedMover.move` → 失败隔离 → `photo_count` 重算。
+- 关键设计：`RejectedMover` 作为**方法参数**而不是字段。它内部存了一个非 Sendable 的
+  relocate 闭包（自身是 @unchecked Sendable，属存量预算）；把它塞进服务会逼服务也标
+  @unchecked，而预算 60/60 没有余量。传参数则由适配器持有它。
+- `SessionRepo` 声明 `Sendable`（同样只有 connection 一个存储属性），
+  使 `refreshPhotoCount` 闭包可以在 @Sendable 上下文里捕获它。
+- 适配器 `moveRejected` 从 ~100 行缩到「校验 + 规划 + 一次调用」；
+  构造点零改动（服务在适配器 init 里就地装配，依赖与原来同源）。
+- #2 至此完成：S1（处置下沉，LiveMetadataAPI 990→614）+ S3（淘汰移出规划器 + 锁内执行）。

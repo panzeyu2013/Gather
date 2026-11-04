@@ -45,6 +45,8 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     private let sessionRepo: SessionRepo?
     /// P1 / D：淘汰移动需要写 photos.filepath；nil = 未接线（调用显式报错）。
     private let photoRepo: (any PhotoRepository)?
+    /// #2 S3：锁内执行（逐张加锁 + 失败隔离 + photo_count 重算）。
+    private let rejectMove: CullingRejectMoveService?
     /// P1：移出后的跨表路径迁移（photos/deliveries/intents/origins/bindings/assets）。
     private let relocateAfterMove: ((String, String, String, Bool) throws -> Void)?
     /// P0-1：与写回/清理共用的按 xmpPath 文件锁。搬 sidecar 也在锁内，否则与
@@ -77,6 +79,15 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         self.photoRepo = photoRepo
         self.relocateAfterMove = relocateAfterMove
         self.fileLock = fileLock
+        // 依赖与原来完全同源（同一 photoRepo / 同一把锁），构造点在适配器内部，
+        // 因此 FeatureAPIs 与 3 处测试构造点的参数零改动。
+        self.rejectMove = photoRepo.map { _ in
+            CullingRejectMoveService(
+                refreshPhotoCount: { [sessionRepo] id in
+                    _ = try sessionRepo?.refreshPhotoCount(id: id)
+                },
+                fileLock: fileLock)
+        }
         self.modelReviewRepo = modelReviewRepo
         self.proofFeedback = proofFeedback
         self.calibration = calibration
@@ -123,48 +134,17 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
                 explicitDestinationRoot: payload.destinationRoot)
         }
 
-        var moved: [String] = []
-        var newPaths: [String] = []
-        var failures: [MetadataApplyFailureDTO] = []
-        for item in plan.items {
-            let one: RejectedMoveResult
-            do {
-                one = try await withFileLock(path: TSPath.xmpSidecarPath(item.filepath)) {
-                    // 只捕获 self（@unchecked Sendable 的不可变依赖）；直接捕获局部
-                    // photoRepo 会触发 Swift 6 的 non-Sendable 捕获错误。
-                    guard let repo = self.photoRepo else {
-                        throw GatherError(
-                            code: .INVALID_PARAM,
-                            params: ["field": "photoRepo", "reason": "move_rejected 未接线"])
-                    }
-                    return RejectedMover(photoRepo: repo, relocate: self.relocateAfterMove)
-                        .move(items: [item], destinationRoot: plan.destination)
-                }
-            } catch {
-                failures.append(MetadataApplyFailureDTO(
-                    photoId: item.photoId, message: String(describing: error)))
-                continue
-            }
-            moved.append(contentsOf: one.moved)
-            newPaths.append(contentsOf: one.newPaths)
-            failures.append(contentsOf: one.failed.map {
-                MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message)
-            })
+        // #2 S3：锁内执行已下沉到 CullingRejectMoveService（逐张加锁、失败隔离、
+        // photo_count 重算）。这里只做规划 + 一次调用。
+        guard let rejectMove else {
+            throw GatherError(
+                code: .INVALID_PARAM,
+                params: ["field": "photoRepo", "reason": "move_rejected 未接线（缺少 photoRepo）"]
+            )
         }
-        // P2：归档后 sessions.photo_count 必须跟着可见性回落（侧栏/控制中心
-        // 直接显示该数字）。有照片移出成功才重算；失败项不改变可见集合。
-        // 重算走单条 UPDATE … = (SELECT COUNT(*) …)：算与写原子完成，不会被并发
-        // 导入/扫描插在中间留下过期计数。
-        if !moved.isEmpty, let sessionRepo {
-            do {
-                try sessionRepo.refreshPhotoCount(id: payload.sessionId)
-            } catch {
-                GatherLogger.log(
-                    "move_rejected: refresh session photo_count failed: \(error)", level: .warn)
-            }
-        }
-        return CullingMoveRejectedResult(
-            moved: moved, newPaths: newPaths, skipped: plan.skipped, failed: failures)
+        // 函数开头的 guard 已把可选字段解成局部 photoRepo（同一作用域）。
+        let mover = RejectedMover(photoRepo: photoRepo, relocate: relocateAfterMove)
+        return try await rejectMove.move(plan, mover: mover, sessionId: payload.sessionId)
     }
 
     /// P0 / A1：当前 scope/filters 下的完整选中集（代表行）。

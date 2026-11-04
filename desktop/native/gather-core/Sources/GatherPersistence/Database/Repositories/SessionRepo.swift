@@ -36,7 +36,7 @@ public struct SessionRow: Equatable, Sendable {
     }
 }
 
-public final class SessionRepo {
+public final class SessionRepo: Sendable {
     private let connection: DBConnection
 
     public init(connection: DBConnection) {
