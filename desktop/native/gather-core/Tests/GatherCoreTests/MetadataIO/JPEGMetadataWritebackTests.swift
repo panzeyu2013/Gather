@@ -164,6 +164,37 @@ struct JPEGMetadataWritebackTests {
         #expect(disk?.descriptive?.title == "旧标题", "未触碰的内嵌字段不得丢")
     }
 
+
+    /// #1 C3：跨层不变量——**交付说 written，盘上就必须真的是那个值**。
+    ///
+    /// 这是写盘实现搬进 core 之后才有意义的一条断言：此前「状态机说已写」与
+    /// 「磁盘内容」分居两个 target，没有任何用例把两者放在一起比过。
+    @Test("不变量：deliveries.status == written ⇒ 磁盘回读 == 写入值")
+    func writtenStatusImpliesDiskContent() async throws {
+        let fx = try JPEGWritebackFixture()
+        defer { fx.cleanup() }
+        let photoPath = try fx.addPhoto(
+            id: "p-inv", name: "IMG_200.JPG", title: "T", caption: "C", copyright: "R")
+
+        let outcome = try await fx.metadata.applyMetadataAttributes(
+            [("p-inv", MetadataWriteAttributes(
+                descriptive: DescriptiveMetadata(caption: "盘上必须是这个")))],
+            source: .manual)
+        #expect(outcome.written == ["p-inv"])
+
+        // 1) 交付行：写完后必须落到 written（未经 confirm，所以不是 synced）。
+        let row = try #require(try fx.db.prepare(
+            "SELECT status, xmp_path FROM deliveries WHERE photo_path = ?").get([.text(photoPath)]))
+        #expect(row[0].textValue == "written", "写成功的交付必须是 written")
+
+        // 2) 盘上内容：交付声称的「已写」必须能在文件里读回来。
+        let disk = try await fx.xmp.readAttributes(photoPath: photoPath)
+        #expect(disk.descriptive?.caption == "盘上必须是这个",
+                "written 状态必须与磁盘内容一致；不一致就是状态机在说谎")
+        // 注意：这里只比 sidecar 口径。内嵌 title 属于 APP1，要读它得走 ImageIO
+        // 解析（另一条用例已覆盖），混在断言里会让「状态 vs 磁盘」这条不变量失焦。
+    }
+
     @Test("只改 caption：写后缓存仍保留 JPEG 内嵌 title/copyright")
     func editingCaptionKeepsEmbeddedTitle() async throws {
         let fx = try JPEGWritebackFixture()

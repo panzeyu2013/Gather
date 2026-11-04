@@ -254,3 +254,14 @@
 - 收益：这四条不变量第一次能在 core 侧单测（4 个用例，不需要 DB / 文件系统 / app target）。
 - 仍未解决：锁内搬移循环仍在适配器里（它才是需要 `@unchecked` 的部分）。要彻底下沉
   需先决定路线：三仓储端口 Sendable 化 / 削减既有 @unchecked / 接受预算上涨。
+
+## #1 C3：跨层不变量（deliveries == written ⇒ 磁盘回读 == 写入值）
+
+- 新增用例（在 `MetadataIO/JPEGMetadataWritebackTests.swift`）：真实 JPEG + 真实
+  `SidecarXMPProvider` + 真实 `WritebackService`，写完后同时断言两件事：
+  ① `deliveries.status == "written"`；② `readAttributes` 回读的 caption == 写入值。
+- 为什么此前没有：写盘实现住在 app target 时，「状态机说已写」与「磁盘内容」分居两个
+  target，没有任何用例把两者放在一起比过——这正是 #1 要兑现的收益。
+- 口径注意：用例只比 sidecar 口径。内嵌 title 属于 APP1，要读它得走 ImageIO 解析
+  （另一条用例已覆盖）；混在一起会让这条不变量失焦——首版就是因为比了内嵌 title
+  而误红，已改正并写进注释。
