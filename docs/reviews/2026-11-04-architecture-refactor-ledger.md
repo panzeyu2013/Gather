@@ -323,3 +323,15 @@
 - 适配器 `moveRejected` 从 ~100 行缩到「校验 + 规划 + 一次调用」；
   构造点零改动（服务在适配器 init 里就地装配，依赖与原来同源）。
 - #2 至此完成：S1（处置下沉，LiveMetadataAPI 990→614）+ S3（淘汰移出规划器 + 锁内执行）。
+
+## #6 S1：MetadataDiskReader（盘上读取与合成）
+
+- `MetadataService.swift`：1,417 → **1,331 行**（-86）；新增
+  `Services/Metadata/MetadataDiskReader.swift`（118 行，`public struct: Sendable`）。
+- 搬走 C3 六段：readEffectiveAttributes / diskAttributes / DiskSnapshot / diskSnapshot /
+  isJpegPath / readEffectiveAttributesOnce。门面保留 `diskAttributes` 一行委托，
+  所以 Host 与 Application 的 6 处外部调用零改动；7 处内部调用改指 `reader.`。
+- 三个依赖（xmp / exif / embeddedReader）都是构造后不变的 let，故 struct 直接 Sendable，
+  不占 @unchecked 预算。
+- 头注释写死了三条硬约束：每张照片只读一次 sidecar、只解析一次 EXIF、
+  embeddedReadable 语义不得丢（否则「清空 JPEG 内嵌字段」会谎报成功）。

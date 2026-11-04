@@ -142,6 +142,8 @@ private final class MetadataCollector: @unchecked Sendable {
 public final class MetadataService: @unchecked Sendable {
     private let metadataCacheRepo: any MetadataRepository
     private let xmp: any XMPProvider
+    /// #6 S1：盘上读取与合成（内嵌 + sidecar）。
+    private let reader: MetadataDiskReader
     private let photoRepo: any PhotoRepository
     private let transactions: any TransactionRunner
     private let mutations: any MetadataMutationPort
@@ -178,6 +180,7 @@ public final class MetadataService: @unchecked Sendable {
     ) {
         self.metadataCacheRepo = metadataCacheRepo
         self.xmp = xmp
+        self.reader = MetadataDiskReader(xmp: xmp, exif: exif, embeddedReader: embeddedReader)
         self.photoRepo = photoRepo
         self.transactions = transactions
         self.mutations = mutations
@@ -269,96 +272,13 @@ public final class MetadataService: @unchecked Sendable {
         let normalized = KeywordCodec.normalized(strings)
         return normalized.isEmpty ? nil : normalized
     }
-    // MARK: - 有效属性合成
+    // MARK: - 有效属性合成（#6 S1 起由 MetadataDiskReader 承担）
 
-    /// TS: readEffectiveAttributes —— 内嵌读取 + sidecar 读取合并（后者覆盖前者）。
-    private func readEffectiveAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        if let embeddedReader {
-            let embedded = try await embeddedReader.readAttributes(photoPath: photoPath)
-            let sidecar = try await xmp.readAttributes(photoPath: photoPath)
-            return Self.mergeAttributes(embedded, sidecar)
-        }
-        return try await xmp.readAttributes(photoPath: photoPath)
-    }
-
-    /// P0 / B1：**盘上现状**的统一读取入口（模板预览/写回、triage undo 用）。
-    ///
-    /// 与 readEffectiveAttributesOnce 的差别：
-    /// - 面向"任意路径"（不是 session 内照片），不做缓存投影；
-    /// - JPEG 走内嵌解析（XMP + IPTC）再叠加 sidecar；RAW 只读 sidecar；
-    /// - 解析失败不抛错，退化为 sidecar 读（模板 preview 的 disk=nil 语义由调用方处理）。
-    ///
-    /// 为什么必须读内嵌：Bridge/Lightroom 把 caption/版权写在 JPEG 的 IPTC-IIM 里，
-    /// 只读 .xmp 会让 preview 把"盘上已有值"当成未知（keepExternal 失效），
-    /// 也会让 triage undo 拿到错误的"当前星级"。
+    /// TS: diskAttributes —— 盘上有效属性（内嵌 + sidecar 合并）。
     public func diskAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        let sidecar = try await xmp.readAttributes(photoPath: photoPath)
-        return await diskSnapshot(photoPath: photoPath, sidecar: sidecar).attributes
+        try await reader.diskAttributes(photoPath: photoPath)
     }
 
-    /// 盘上合成值 + "内嵌是否读得到"。
-    ///
-    /// P1：JPEG 的 APP1 读不到时（parse 返回 nil 或抛错）不能当成"没有内嵌信息"——
-    /// 清空类写入在看不到内嵌值的情况下必须按**不确定**处理，否则会谎报清空成功。
-    struct DiskSnapshot {
-        let attributes: MetadataWriteAttributes
-        let embeddedReadable: Bool
-    }
-
-    /// 已读 sidecar 的盘上值合成（写后回读用：一次 sidecar 读同时服务校验与缓存投影）。
-    ///
-    /// P1：JPEG 必须叠加内嵌 IPTC/XMP。sidecar 只是 JPEG 的"可写投影"，Bridge/C1
-    /// 写的标题/版权仍在 APP1 里；只看 sidecar 会把它们从缓存投影里清掉。
-    private func diskSnapshot(
-        photoPath: String,
-        sidecar: MetadataWriteAttributes
-    ) async -> DiskSnapshot {
-        guard Self.isJpegPath(photoPath), let exif else {
-            return DiskSnapshot(attributes: sidecar, embeddedReadable: true)
-        }
-        do {
-            guard let parsed = try await exif.parse(filePath: photoPath, isJpeg: true) else {
-                // 读不到 APP1：无法判定内嵌值，标记不可读。
-                return DiskSnapshot(attributes: sidecar, embeddedReadable: false)
-            }
-            guard let embedded = MetadataService.embeddedAttributesFromParse(parsed) else {
-                return DiskSnapshot(attributes: sidecar, embeddedReadable: true)
-            }
-            return DiskSnapshot(
-                attributes: Self.mergeAttributes(embedded, sidecar), embeddedReadable: true)
-        } catch {
-            // 内嵌解析失败：退化为只读 sidecar（面板不阻断），但标记不可读供清空判定用。
-            GatherLogger.log(
-                "diskAttributes embedded parse failed (path token=\(TSPath.basename(photoPath))): "
-                    + "\(error)", level: .debug)
-            return DiskSnapshot(attributes: sidecar, embeddedReadable: false)
-        }
-    }
-
-    /// JPEG 判定（扩展名大小写不敏感）。
-    static func isJpegPath(_ path: String) -> Bool {
-        let lower = path.lowercased()
-        return lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg")
-    }
-
-    /// TS: readEffectiveAttributesOnce —— 单次读取路径：
-    /// - RAW / sidecar-mode（TS: selected === sidecar）：一次 sidecar 读。
-    /// - JPEG 且内嵌派生可用（IPTC-only 关键词之外）：从已解析段派生 + 一次 sidecar 读。
-    /// - 其余回退 readEffectiveAttributes（exiftool 池）。
-    private func readEffectiveAttributesOnce(
-        photoPath: String,
-        parsed: MetadataParseSegments,
-        isJpeg: Bool
-    ) async throws -> MetadataWriteAttributes {
-        if !isJpeg {
-            return try await xmp.readAttributes(photoPath: photoPath)
-        }
-        if let embedded = MetadataService.embeddedAttributesFromParse(parsed) {
-            let sidecar = try await xmp.readAttributes(photoPath: photoPath)
-            return Self.mergeAttributes(embedded, sidecar)
-        }
-        return try await readEffectiveAttributes(photoPath: photoPath)
-    }
 
     // #6 S0：属性合并 / 内嵌解析 / 关键词归一化已抽到 MetadataAttributes（纯函数，
     // 无 self、无 IO、无事务）。这里保留同名转发，避免 18 处跨 target 调用点跟着改。
@@ -532,7 +452,7 @@ public final class MetadataService: @unchecked Sendable {
                             cacheInput.fileSize = fingerprint.map { Int64($0.size) }
                             cacheInput.fileMtime = fingerprint?.value
 
-                            var writerAttributes = try await self.readEffectiveAttributesOnce(
+                            var writerAttributes = try await self.reader.readEffectiveAttributesOnce(
                                 photoPath: photo.filepath,
                                 parsed: exifData,
                                 isJpeg: isJpeg
@@ -583,7 +503,7 @@ public final class MetadataService: @unchecked Sendable {
                         fileMtime: fingerprint?.value
                     )
 
-                    var existingAttributes = try await self.readEffectiveAttributes(photoPath: photo.filepath)
+                    var existingAttributes = try await self.reader.readEffectiveAttributes(photoPath: photo.filepath)
                     self.preserveValuesOnCorruptSidecar(
                         photoId: photo.id,
                         filepath: photo.filepath,
@@ -1000,7 +920,7 @@ public final class MetadataService: @unchecked Sendable {
                     message: GatherErrorCode.XMP_DOCUMENT_READ_FAILED.rawValue + ": \(error)"))
                 continue
             }
-            let snapshot = await diskSnapshot(photoPath: readPath, sidecar: sidecar)
+            let snapshot = await reader.diskSnapshot(photoPath: readPath, sidecar: sidecar)
             let disk = snapshot.attributes
             // P1：内嵌读不到（JPEG 的 APP1 解析失败）时，清空类写入无法判定是否真的
             // 清掉，必须按不确定处理（进 failed + uncertain），不能报 written。
@@ -1067,7 +987,7 @@ public final class MetadataService: @unchecked Sendable {
                     ) { plan -> SiblingRead in
                         do {
                             let sidecar = try await self.xmp.readAttributes(photoPath: plan.path)
-                            let snapshot = await self.diskSnapshot(
+                            let snapshot = await self.reader.diskSnapshot(
                                 photoPath: plan.path, sidecar: sidecar)
                             return SiblingRead(
                                 photoId: plan.id, attributes: snapshot.attributes, error: nil)
@@ -1132,7 +1052,7 @@ public final class MetadataService: @unchecked Sendable {
             // 失败（fail-closed），不能让调用方以为"清空成功"。
             if let clearFailure = Self.jpegEmbeddedClearFailure(
                 expected: input.attributes, disk: disk, sidecar: sidecar,
-                isJpeg: Self.isJpegPath(readPath)) {
+                isJpeg: MetadataDiskReader.isJpegPath(readPath)) {
                 uncertain.append(input.photoId)
                 failed.append(MetadataApplyFailure(
                     photoId: input.photoId, message: clearFailure))
