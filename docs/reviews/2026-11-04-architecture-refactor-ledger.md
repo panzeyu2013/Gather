@@ -283,3 +283,17 @@
   调研已确认：今天有 6 类破坏性写完全没广播（`applyTriageWriteback` / cleanupRetention /
   集合栈写 / 模板套用 / 导入 / 设置），必须先落「域→生产者」映射表才谈得上 R3；
   且 R3 需要 `// DOMAIN-EVENT: none — <原因>` 的显式 opt-out，不能文件级豁免。
+
+## #6 S0：MetadataService 纯函数簇切出（第一刀）
+
+- `MetadataService.swift`：**1,645 → 1,417 行**（-228）；新增
+  `Services/Metadata/MetadataAttributes.swift`（268 行，`public enum` 命名空间）。
+- 切出的是研究里说的「二八」部分：36 个函数中 17 个 `static`（254 行），全部无 `self`、
+  无 IO、无事务——搬它们是等价变换。四个公开入口（mergeAttributes / mergeDescriptive /
+  embeddedAttributesFromParse / normalizeKeywordList 的一部分）在门面保留同名转发，
+  所以 18 处跨 target 调用点（含 `GatherMetadataIO` 的内嵌 JPEG 读路径）**一行未改**。
+- 踩到一处签名细节：`mergeDescriptive` 的入参/返回都是 optional（`nil` 表示「无描述性
+  元数据」），委托写成非 optional 会编译失败——已按原签名保留。
+- 未做（后续步）：S1-S5（MetadataDiskReader / PhotoMetadataProjector / Extraction /
+  AttributeWriter / KeywordWriter）与「三仓储端口 Sendable 化」前置；后者是解开
+  #2 S3 锁内循环的关键。
