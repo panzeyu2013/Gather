@@ -49,6 +49,8 @@ PUBLISHERS = {
     "Library/LibraryViewModel+Load.swift": {"library", "metadata"},
     "Persons/PersonsViewModel.swift": {"persons"},
     "Duplicates/DuplicatesViewModel.swift": {"duplicates"},
+    # #11 补广播：同步条三个动作（清理/确认/结清）都改 deliveries 行。
+    "Metadata/MetadataSyncBar.swift": {"metadata"},
     # 变参：调用方传 domain（簇结构变化/绑定变化两类），只登记 1 个调用点。
     "FaceKeywording/FaceKeywordingViewModel+Review.swift": None,
     # 定义处本身不算发布点

@@ -160,6 +160,10 @@ struct MetadataSyncBar: View {
                 Confirmed(
                     MetadataCleanupInput(sessionId: sessionId, ignoreReloadAck: true),
                     source: .userDialog))
+            // #11：清理/确认/结清都改了 deliveries 行（常驻页的计数与胶囊状态都读它），
+            // 必须发 .metadata；origin 用本组件名，避免挑片页把自己的写回当外部变更跳过。
+            GatherEventCenter.postDomainChange(
+                .metadata, sessionId: sessionId, origin: "metadata-sync-bar")
             await refresh()
             errorText = nil
             resultText = l10n.format(
@@ -202,6 +206,10 @@ struct MetadataSyncBar: View {
         do {
             let reference = try SessionReference(sessionId: sessionId)
             let updated = try await api.confirmSync(Confirmed(reference, source: .userDialog))
+            // #11：清理/确认/结清都改了 deliveries 行（常驻页的计数与胶囊状态都读它），
+            // 必须发 .metadata；origin 用本组件名，避免挑片页把自己的写回当外部变更跳过。
+            GatherEventCenter.postDomainChange(
+                .metadata, sessionId: sessionId, origin: "metadata-sync-bar")
             state = updated
             errorText = nil
             resultText = l10n("已确认同步")
@@ -217,6 +225,10 @@ struct MetadataSyncBar: View {
         do {
             let reference = try SessionReference(sessionId: sessionId)
             let updated = try await api.finalizeSync(Confirmed(reference, source: .userDialog))
+            // #11：清理/确认/结清都改了 deliveries 行（常驻页的计数与胶囊状态都读它），
+            // 必须发 .metadata；origin 用本组件名，避免挑片页把自己的写回当外部变更跳过。
+            GatherEventCenter.postDomainChange(
+                .metadata, sessionId: sessionId, origin: "metadata-sync-bar")
             state = updated
             errorText = nil
             if let first = updated.notices.first {

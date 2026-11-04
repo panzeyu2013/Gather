@@ -207,6 +207,9 @@ extension CullingViewModel {
                     "已处理；%lld 张无需写入（已有星级或人工决策）",
                     params: ["\(result.skipped.count)"])
             }
+            // #11：这次写的是 XMP（评级/关键词），常驻页（C1 胶囊/设置页/控制中心）
+            // 必须立刻知道，否则要等 12s 轮询。域用 .metadata，与其余写回同一口径。
+            postMetadataChange()
             await loadPage(reset: true)
         } catch {
             triageError = CommandError(error)
@@ -229,6 +232,7 @@ extension CullingViewModel {
                     "已撤销；%lld 张的星级已被人工改动，保留现值",
                     params: ["\(result.skipped.count)"])
             }
+            postMetadataChange()
             await loadPage(reset: true)
         } catch {
             triageError = CommandError(error)
