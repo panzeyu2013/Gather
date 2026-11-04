@@ -42,7 +42,7 @@ extension CullingViewModel {
     }
 
     // DOMAIN-EVENT: none — 导航组只在挑片页内展示，拆分后本页自刷
-    public func splitNavigation(beforePhotoId: String) async {
+    private func splitNavigation(beforePhotoId: String) async {
         guard !selectedNavigationGroupId.isEmpty, !beforePhotoId.isEmpty else {
             errorMessage = CommandError.localized("请选择导航组和拆分位置")
             return
@@ -64,7 +64,7 @@ extension CullingViewModel {
     }
 
     // DOMAIN-EVENT: none — 导航组只在挑片页内展示，合并后本页自刷
-    public func mergeSelectedNavigationGroups() async {
+    private func mergeSelectedNavigationGroups() async {
         guard selectedNavigationGroupIds.count >= 2 else {
             errorMessage = CommandError.localized("请选择至少两个导航组")
             return
@@ -139,7 +139,7 @@ extension CullingViewModel {
     }
 
     /// 对齐旧版 keepInGroupRejectRest 的工具列入口：按相似组 id 定位组并决策。
-    public func keepInGroupRejectRest(_ groupId: String, keepPhotoIds: [String], shouldAdvance: Bool = true) async {
+    private func keepInGroupRejectRest(_ groupId: String, keepPhotoIds: [String], shouldAdvance: Bool = true) async {
         var group = similarityGroups.first(where: { $0.groupId == groupId })
         if group == nil {
             // groups 只在相似度范围预载；从“全部/筛选”直接按组决策时按需加载。
