@@ -144,6 +144,8 @@ public final class MetadataService: @unchecked Sendable {
     private let xmp: any XMPProvider
     /// #6 S1：盘上读取与合成（内嵌 + sidecar）。
     private let reader: MetadataDiskReader
+    /// #6 S2：只读元数据投影（不触发磁盘解析）。
+    private let projector: PhotoMetadataProjector
     private let photoRepo: any PhotoRepository
     private let transactions: any TransactionRunner
     private let mutations: any MetadataMutationPort
@@ -181,6 +183,8 @@ public final class MetadataService: @unchecked Sendable {
         self.metadataCacheRepo = metadataCacheRepo
         self.xmp = xmp
         self.reader = MetadataDiskReader(xmp: xmp, exif: exif, embeddedReader: embeddedReader)
+        self.projector = PhotoMetadataProjector(
+            xmp: xmp, assetResolver: assetResolver, writeTarget: writeTarget)
         self.photoRepo = photoRepo
         self.transactions = transactions
         self.mutations = mutations
@@ -310,55 +314,15 @@ public final class MetadataService: @unchecked Sendable {
         try photoRepo.getLookupByIds(photoIds)
     }
 
-    /// P1 / IPTC：单张照片的只读元数据详情。
+    /// P1 / IPTC：单张照片的只读元数据详情（#6 S2 起投影逻辑在 PhotoMetadataProjector）。
     ///
     /// 只读缓存投影：**不触发磁盘解析**（面板翻页不得产生 N 次 IO）。
-    /// 缓存行缺失时返回空快照与空描述性元数据，而不是抛错 —— "尚未扫描"是正常态。
+    /// 缓存行缺失时返回空快照与空描述性元数据，而不是抛错 —— 尚未扫描是正常态。
     public func photoDetail(photoId: String) throws -> PhotoMetadataDetail {
         guard let lookup = try photoRepo.getLookupByIds([photoId]).first else {
             throw MetadataServiceError.photoNotFound(photoId)
         }
-        let row = try metadataCacheRepo.get(photoId)
-        // asset_read_mode=asset 时写盘/预览都必须用解析后的资产路径；photos.filepath
-        // 可能还是旧路径（写回执行器同样经 resolver），否则会读错 sidecar。
-        let resolved = try? assetResolver?.resolve(sessionId: lookup.sessionId, photoId: photoId)
-        let filepath = resolved?.filepath ?? lookup.filepath
-        let filename = (filepath as NSString).lastPathComponent
-        // 写目标优先用注入的解析器：内嵌模式下「写目标」就是照片本身，
-        // 面板若仍显示 sidecar 路径，用户会误判写回失败（EMBEDDED 模式下恒显示「尚未写入 XMP」）。
-        let target = writeTarget?(filepath)
-        let xmpPath = target?.writePath ?? resolved?.xmpPath ?? TSPath.xmpSidecarPath(filepath)
-        let exif = PhotoExifSnapshot(
-            dateTaken: row?.dateTaken,
-            cameraMake: row?.cameraMake,
-            cameraModel: row?.cameraModel,
-            lensModel: row?.lensModel,
-            focalLength: row?.focalLength,
-            fNumber: row?.fNumber,
-            exposureTime: row?.exposureTime,
-            iso: row?.iso.map { Int($0) },
-            gpsLatitude: row?.gpsLatitude,
-            gpsLongitude: row?.gpsLongitude,
-            width: row?.width.map { Int($0) },
-            height: row?.height.map { Int($0) },
-            fileSize: row?.fileSize.map { Int($0) },
-            fileMtime: row?.fileMtime,
-            rating: Int(row?.rating ?? 0),
-            label: row?.label,
-            keywords: row?.keywords ?? []
-        )
-        return PhotoMetadataDetail(
-            photoId: photoId,
-            sessionId: lookup.sessionId,
-            filepath: filepath,
-            filename: filename,
-            xmpPath: xmpPath,
-            hasXMP: xmp.fileExists(xmpPath),
-            exif: exif,
-            descriptive: row?.descriptive ?? DescriptiveMetadata(),
-            cachedAt: row?.cachedAt ?? "",
-            updatedAt: row?.updatedAt ?? ""
-        )
+        return projector.project(lookup, row: try metadataCacheRepo.get(photoId))
     }
 
     /// TS: preserveValuesOnCorruptSidecar —— 损坏 sidecar 让 readAttributes 返回

@@ -365,3 +365,14 @@
   集合栈写 / 模板套用 / 导入 / 设置），需先落「域→生产者」映射表。
 - **#2/#1 可选收尾**：`GatherMetadataIO` 仍依赖 Application+Delivery（C4/C5），
   CullingViewModel 拆分（8 文件 3,303 行）未启动。
+
+## #6 S2：PhotoMetadataProjector（只读详情投影）
+
+- `MetadataService.swift`：1,331 → **1,298 行**（-33）；新增
+  `Services/Metadata/PhotoMetadataProjector.swift`（~75 行，`public struct: Sendable`）。
+- 搬走 `photoDetail` 的投影逻辑；门面只剩「查 lookup + 查缓存行 + 投影」三行。
+- 硬约束原样保留并写进新文件头：**不触发磁盘解析**（面板翻页不得产生 N 次 IO），
+  唯一碰文件系统的是 `xmp.fileExists`（只判存在性）。
+- 两个小坑：`MetadataPhotoLookup` 实为 `PhotoLookupRow`，字段是 `id` 不是 `photoId`；
+  新文件需要 `import GatherPersistence`（`PhotoAssetResolver` / `MetadataCacheRow`）。
+- MetadataService 累计：1,645 → 1,298（**-347 行 / -21%**）。
