@@ -439,3 +439,31 @@
 - 未做：5 处 `addObserver` 形态（C1StatusCapsule ×2、LiveJobAPI ×2、RootShellOverlay ×1）
   仍在做 `as?`——它们不是 publisher 消费点，要改成类型化得走新增的 `observe(_:)` 助手并
   重排闭包结构（不是纯改名），留作后续。
+
+## 收尾：Wave 1–3 全部 10 项交付（第 19 轮验收）
+
+**全量验收**：13 道 `check-*.sh` 全绿；core 1,699 + 25、app 793 tests 全绿；29 个提交。
+
+| 项 | 交付物 | 关键数字 |
+|---|---|---|
+| #12 | 页面生命周期注册表 | 7 VM 表驱动，三处扇出 → 循环 |
+| #13 | GatherPreviewData target | GatherUI 2,178 → 793 行；预览数据独立 target |
+| #8 | 端口纪律统一 | 端口 31 → 38；Application 只剩 VACUUM 一处连接 |
+| #9 | SettingsPort | 68+5 键枚举；闭包注入 9 → 0；DB 反钩子移除 |
+| #3 | workflow 回迁 | `WorkflowRegistry`（8 executor 逐字搬运）进 Application |
+| #2 | Live*API 瘦身 | Metadata 990 → 614；culling 规划器 + 锁内执行下沉 |
+| #1 | GatherMetadataIO | 11 文件 / 4,189 行 / 87 用例进 core；跨层不变量 |
+| #10 | 过滤语义 | 4 条契约测试 + `FilterFieldSQL` 原子；无色标两页同集合 |
+| #11 | 事件契约 | 域事件门禁（第 13 道）+ `TypedEventChannel`（13 处 as? 清零） |
+| #6 | 上帝类型拆分 | MetadataService 1,645 → **457**（-72%），6 个内聚类型 |
+
+**已知残留（均已记账，非阻塞）**
+
+- #11：5 处 `addObserver` 形态仍是 `as?`（C1StatusCapsule×2、LiveJobAPI×2、
+  RootShellOverlay×1）——需要新增 `observe(_:)` 助手并重排闭包，不是纯改名；
+  门禁 R3「写路径必发域」仍待落，前提是先建「域→生产者」映射表（6 类破坏性写
+  今天完全没广播：applyTriageWriteback / cleanupRetention / 集合栈写 / 模板套用 /
+  导入 / 设置）。
+- #1：C4/C5（GatherMetadataIO 仍依赖 Application/Delivery）未做。
+- #6：`CullingViewModel`（8 文件 3,303 行）与 `CullingService`（28 方法）未拆；
+  研究结论是后者该收窄端口而非继续拆文件。
