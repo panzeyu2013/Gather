@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/SidecarXMPProvider+IPTC.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/SidecarXMPProvider+IPTC.swift
 // P1 / IPTC：按 XMPFieldDescriptor 表驱动的描述性元数据补丁（Core 22 + Extension 10）。
 //
 // 与既有四字段补丁的关系：同一条 patchDocument 管线、同一份命名空间注入与良构校验；

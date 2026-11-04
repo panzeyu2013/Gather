@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherUI/Support/GatherToast.swift
+// desktop/native/gather-app/Sources/GatherUI/DesignSystem/Components/GatherToast.swift
 // 全局 Toast 通知系统，对齐 Electron 版 ToastStore/Toast/ToastContainer：
 // 4 类型（info/success/warning/error）、5s 自动消失（error 15s）、右上角堆叠（≤3 条）、× 手动关闭。
 

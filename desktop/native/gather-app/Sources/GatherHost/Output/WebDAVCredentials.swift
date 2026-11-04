@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/Embedded/WebDAVCredentials.swift
+// desktop/native/gather-app/Sources/GatherHost/Output/WebDAVCredentials.swift
 // WebDAV 凭据与会话传输：密码只进 Keychain（kSecClassInternetPassword），
 // 不写 settings、不进日志、不进 job checkpoint。
 import Foundation

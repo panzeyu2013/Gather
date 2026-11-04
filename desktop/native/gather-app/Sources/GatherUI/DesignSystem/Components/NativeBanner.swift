@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherUI/Support/NativeBanner.swift
+// desktop/native/gather-app/Sources/GatherUI/DesignSystem/Components/NativeBanner.swift
 // Cut 3 / 3b-3：页面级内联提示条。
 //
 // 3b-2 前声明在 GatherHost/RootView.swift；Dashboard/Culling/Library/Gallery/

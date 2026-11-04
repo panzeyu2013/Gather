@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingDecisionService+Types.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Types.swift
 // WP5a：CullingDecisionService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
 // 共享类型：错误码、写回端口、照片行、历史缓冲、更新上下文、内部查找/缓存条目。
 import Foundation

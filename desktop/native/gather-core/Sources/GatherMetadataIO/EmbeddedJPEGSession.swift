@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/Embedded/EmbeddedJPEGSession.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/EmbeddedJPEGSession.swift
 // 内嵌 JPEG 写回的"一次打开、两次顺序遍历"会话（plan §3.2）。
 //
 // 旧路径一次写回要读 6–8 遍整文件（写前指纹 / 备份 / ImageIO 读属性 / Data 读全文 /

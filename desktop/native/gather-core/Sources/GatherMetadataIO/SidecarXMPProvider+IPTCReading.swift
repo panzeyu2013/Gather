@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/SidecarXMPProvider+IPTCReading.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/SidecarXMPProvider+IPTCReading.swift
 // P1 / IPTC：按 XMPFieldDescriptor 表收集描述性元数据（与写入同一张表，避免读写漂移）。
 //
 // 独立于既有 SidecarXMLDelegate（那个只管 rating/label/keywords/urgency/EXIF 六项）。

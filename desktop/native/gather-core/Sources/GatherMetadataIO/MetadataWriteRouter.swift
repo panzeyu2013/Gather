@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/Embedded/MetadataWriteRouter.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/MetadataWriteRouter.swift
 // 写目标路由：把 XMPProvider 的调用按 MetadataTargetPolicy 分派到 sidecar 或 JPEG 内嵌。
 //
 // 存在的意义：交付队列（deliveries/delivery_items/WritebackService）已经把"目标"

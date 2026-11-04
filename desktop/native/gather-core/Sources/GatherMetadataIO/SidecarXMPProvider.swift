@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/SidecarXMPProvider.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/SidecarXMPProvider.swift
 // XMP sidecar（<photo>.xmp）宿主读写实现 —— R4 全量重写。
 //
 // 与旧实现（replaceElementBlock / insertElement 版）的语义差异，逐条固定为契约：

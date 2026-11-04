@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/SidecarXMPProvider+Patching.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/SidecarXMPProvider+Patching.swift
 // WP5 纯移动：XMP 写入管线（四字段补丁 / 命名空间 / 标签扫描 / 原子落盘），
 // 自 SidecarXMPProvider.swift:285-799 原样搬移（方法体、错误码、调用顺序零改动）。
 // 跨文件访问级仅 4 处 private → internal：patchDocument / verify /

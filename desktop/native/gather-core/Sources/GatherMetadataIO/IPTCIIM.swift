@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/Embedded/IPTCIIM.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/IPTCIIM.swift
 // IPTC-IIM（APP13 / Photoshop IRB 0x0404）的解析与编码。
 //
 // 为什么必须有它：XMP 与 IIM 是两个独立存储。只清 XMP 时旧 IIM 会经

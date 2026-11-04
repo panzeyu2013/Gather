@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/Embedded/XMPPacketReader.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/XMPPacketReader.swift
 // 内嵌 XMP 包（APP1）+ IPTC-IIM（APP13/0x0404）→ MetadataWriteAttributes。
 //
 // 为什么要有它（plan §3.2.5）：旧的内部读取靠 ImageIOExifProvider.parse，会把

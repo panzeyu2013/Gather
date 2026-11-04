@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingDecisionService+Delivery.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Delivery.swift
 // 交付/写回编排的转发层（#6 S4：方法体已搬进 CullingSyncService）。
 // 公开面一字未改，调用方（Live API / 适配器 / 测试）零改动。
 import Foundation

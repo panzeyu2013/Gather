@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Tests/GatherCoreTests/Database/SchemaCurrentRowMappingTests.swift
+// desktop/native/gather-core/Tests/GatherCoreTests/Database/SchemaV1RowMappingTests.swift
 // Cut 2 / S4a：V1 行映射的命名解码门禁 + DB 层 NamedRow/queryNamed 的最小回归。
 //
 // 背景（R1 / D-028 / D-032）：

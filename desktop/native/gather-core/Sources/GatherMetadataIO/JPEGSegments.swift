@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/Embedded/JPEGSegments.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/JPEGSegments.swift
 // JPEG 段表：把 SOI…SOS 之间的头部段解析成「标记 + 载荷」，SOS 之后整体视为 scan
 // （熵编码数据，逐字节不解析）。
 //

@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Metadata/MetadataAttributes.swift
+// desktop/native/gather-core/Sources/GatherProtocol/Protocol/MetadataAttributes.swift
 // 元数据属性的**纯函数簇**（#6 S0：从 1,645 行的 MetadataService 里切出的第一刀）。
 //
 // 为什么先切这块：36 个函数里有 17 个是 static，合计 254 行，全部无 self、无 IO、

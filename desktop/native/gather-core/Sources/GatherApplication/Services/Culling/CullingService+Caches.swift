@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingDecisionService+Caches.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Caches.swift
 // WP5a：CullingDecisionService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
 // 会话查找/更新上下文 TTL 缓存（存储属性留在主类型体）。
 import Foundation

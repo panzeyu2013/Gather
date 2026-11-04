@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherUI/Curation/StackBadge.swift
+// desktop/native/gather-app/Sources/GatherUI/Curation/StackFoldIndex.swift
 // P1 下一波 §3.8.2：堆栈折叠的展示层零件（徽标 + 折叠索引）。
 //
 // 铁律：**折叠只影响展示**。本文件只回答"这张照片在这个网格里代表几张"，

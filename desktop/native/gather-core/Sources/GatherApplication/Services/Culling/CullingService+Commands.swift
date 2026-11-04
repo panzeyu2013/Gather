@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingDecisionService+Commands.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Commands.swift
 // WP5a：CullingDecisionService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
 // 写命令：update/batch/history/decide/reset 与补丁校验。
 import Foundation

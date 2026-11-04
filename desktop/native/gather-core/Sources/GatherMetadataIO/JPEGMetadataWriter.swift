@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/Embedded/JPEGMetadataWriter.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/JPEGMetadataWriter.swift
 // JPEG 内嵌元数据写入器：XMP（APP1）+ IPTC-IIM（APP13/0x0404）双写，scan 逐字节不动。
 //
 // 写入序列（每一步失败都不得留下半成品）：

@@ -1,4 +1,4 @@
-// desktop/native/gather-app/Sources/GatherHost/Embedded/XMPPacketStore.swift
+// desktop/native/gather-core/Sources/GatherMetadataIO/XMPPacketStore.swift
 // JPEG 内嵌 XMP 包体（APP1 / http://ns.adobe.com/xap/1.0/）的补丁。
 //
 // 复用 sidecar 同一条 patchDocument 管线（同一张 32 字段表、同一套三态语义、同一份

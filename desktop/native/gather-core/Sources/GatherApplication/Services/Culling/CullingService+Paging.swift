@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingDecisionService+Paging.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Paging.swift
 // WP5a：CullingDecisionService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
 // keyset 分页与 scope 计数（不含查询装配）。
 import Foundation
