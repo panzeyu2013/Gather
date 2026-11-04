@@ -568,3 +568,14 @@
 - 剩余收窄（B-E）按调研顺序：抽 `CullingSyncWriter`（writeback + delivery → 1）、
   `flushMetadata` 并入 `MetadataMutationPort.flush`、`settings` 收窄为 2 个读闭包、
   `deliveryItems` 收窄为 `DeliveryRowReading`。目标 15 → 12 个依赖。
+
+## 残留修复 8：Observation 哨兵（desk 抽取的前置保险）
+
+- 新增 `Tests/GatherAppTests/CullingObservationTests.swift`：用 `withObservationTracking`
+  钉住「读 root 的转发属性 → 改状态 → onChange 触发」。
+- 为什么必须有：345 处 View 调用点全走 root，不是 `$viewModel` 绑定；把状态挪进子 desk 后，
+  若转发属性读的不是 `@Observable` 的 getter（或 desk 忘了标 `@Observable`/`@MainActor`），
+  SwiftUI 会**静默不重绘**——现有 140 条用例不渲染，抓不到这类故障。
+- 探针用仓里已有的 `LockedBox`（`lock.withLock { probe.fired }`），不新增 `@unchecked
+  Sendable`（cleanup 预算 60/60 已满）。
+- 现状 794 条 app 用例（+1）。
