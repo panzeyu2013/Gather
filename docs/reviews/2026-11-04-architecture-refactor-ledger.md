@@ -681,18 +681,29 @@ app 798 全绿。这条结论也解释了为什么 CullingService 的 15 个依�
   再手工删旧定义」而不是区间删除。
 
 
-## CullingService 拆分 S4：抽出 CullingSyncService（编译真相步通过）
 
-- 新增 `Culling/CullingSyncService.swift`（376 行，`public final class`，非 Sendable）：
-  `core` + `writeback` + `delivery` + `decisions`（单方法读端口），承载 `+Delivery` 的
-  8 个 public + 5 个 private（mirror / confirmDelivery / cleanupResult / buildPlan）。
-- 新增 `GatherPersistence/Ports/CullingDecisionLiteReading.swift`：**单方法**读端口
-  （`getDecisions(sessionId:) -> [CullingDecisionLiteRow]`）。`extension CullingService:`
-  `CullingDecisionLiteReading {}` 一行 conformance。
-- `+Delivery.swift` 变成 8 个一行转发 + `currentSyncStatus` 转发（公开面一字未改）。
-- 6 个跨簇符号全部消解：colorLabel / syncStatus → `CullingSharedRules`（S1）；
-  currentSyncStatus / metadataCache / deliveryItems → `core`（S2）；getDecisions → 端口（S4）。
-- **一个 Swift 语言约束**：`decisions: self` 要求所有存储属性已初始化，而 `sync` 本身是
-  存储属性 → 循环。改为 `private(set) lazy var sync`（CullingService 是单上下文使用的
-  非 Sendable 类，lazy 的首次访问竞争与今日行为等价）。
-- 实测：core 1,699+25 / app 798 不变；14 道门禁全绿。上次尝试在这步编译失败，本次通过。
+## CullingService 一分为二：完成记录（S1–S7，7 个提交）
+
+| 步 | 提交 | 内容 |
+|---|---|---|
+| S1 | `a758e987` | `CullingSharedRules`（colorLabels / colorLabel / syncStatus）纯规则提取 |
+| S2 | `b7971fc9` | `CullingSharedCore`（metadataCache + deliveryRows + currentSyncStatus），struct Sendable |
+| S4 | `48bc7fef` | `CullingSyncService`（4 依赖）+ `CullingDecisionLiteReading` 单方法端口 |
+| S5 | `695bf60b` + `663f5b89` | 改名 `CullingDecisionService` + 门面（2 字段 / 27 转发 / 调用方零改动） |
+| S6 | `7e869c17` | 门面只留 `init(decision:sync:)`，15 参数装配改静态工厂 |
+| S7 | `1e697454` + `2b1bf12a` + `1abb716f` | 结构钉子（K1/K3/K5）+ 27 条同步用例迁入 |
+
+**最终形态**
+
+- `CullingService`（门面）：2 个存储属性（decision / sync）、27 个一行转发、`init(decision:sync:)`；
+- `CullingDecisionService`：15 个依赖，19 个公开方法（决策/查询/分页/选择更新）；
+- `CullingSyncService`：4 个依赖，8 个公开方法（写回/同步/清理/确认）；
+- 服务间只有**一条边**：sync → decision 的单方法读端口；
+- 调用方零改动（Host / App / 60+ 测试全部门面）；
+- 用例按服务边界分文件，**断言零改动**（27 例 / 152 断言 / 719 行整段搬移）。
+
+**可验证判据**：K1 门面 2 字段、K2 门面只剩 `init(decision:sync:)`、K3 同步服务 4 依赖——
+K1/K3 由两条 `Mirror` 用例守住，K2 由 `grep -c 'public init('` 判定。
+
+**读数**：core 1,701 / 250 suites、app 798 / 94 suites；test-catalog @Test 2,524、@Suite 290、
+断言 11,570（均高于基线）；14 道门禁全绿。
