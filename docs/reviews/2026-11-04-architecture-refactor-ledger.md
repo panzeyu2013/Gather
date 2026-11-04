@@ -644,3 +644,25 @@
 **已完整回滚**（`git checkout` 两个文件 + 删除新文件），工作树干净、core 1699+25 /
 app 798 全绿。这条结论也解释了为什么 CullingService 的 15 个依赖减不下去：它不是
 「分文件不到位」，而是**编排职责本身就要看三方状态**。
+
+## 残留修复：最终状态（16 个提交，全绿）
+
+| 残留 | 结论 | 关键证据 |
+|---|---|---|
+| (1) #11 事件契约 | **完成** | `notification.object as? GatherJobEvent\|GatherApplicationChange` 零命中；R3 门禁第 14 道（叶子写函数 42 / 已发域 34 / 显式 none 8 / 缺口 0）；`GatherChangeDomain.similarity` 死 case 已删 |
+| (2) #1 C4/C5 | **完成** | `GatherMetadataIO` 的 import 只剩 Foundation / GatherProtocol / GatherAnalysis / GatherPersistence / CryptoKit / os；Package 依赖收窄为 Protocol+Persistence+Analysis；layering 新增 4 条方向规则 |
+| (3) #6 | **结构层面已尽力** | 纯类型 420 行搬出（+Triage 463→261、+Writeback 516→379、CullingViewModel 660→577）；3 个 public 降级；写回端口 7→5；交付行端口收窄；Observation 哨兵；导航簇 4 条用例 |
+
+**两次结构尝试与放弃理由（都有编译/依赖证据，非主观判断）**
+
+1. `desk 抽取 W1`：`+Navigation` 185 行但有 5 个跨簇出口（similarityGroups / refreshSimilarityGroups /
+   loadSimilarityGroupsIfNeeded / decideSimilarityGroup / page.assets / currentPhotoId / selectCurrent）。
+   拆出来是带 5 个回调的薄壳。
+2. `CullingSyncWriter`：实际写完并编译，报 `cannot find getDecisions` / `no member colorLabel`——
+   `+Delivery` 那 355 行内部要回调决策仓储、照片行与事务，共 6 处。它不是「只依赖交付端口」的簇，
+   而是决策+照片+交付三者的汇合点。已完整回滚。
+
+**结论**：`CullingService` 的 15 个依赖减不下去，不是「分文件不到位」，而是**编排职责本身要看三方状态**。
+真正能减的方式只有把它一分为二（决策服务 + 同步服务），那是重写编排层，应单独立项而非当作残留清理。
+
+**最终读数**：core 1,699 + 25、app 798 / 94 suites、14 道门禁全绿；本轮 16 个提交。
