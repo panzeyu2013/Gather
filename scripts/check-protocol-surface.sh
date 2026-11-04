@@ -136,6 +136,21 @@ done < "$TMP/type-names"
 envelope_re='ResponseID|ResponseErrorBody|ResponseErr|ResponseOk|Response'
 router_envelope_types=$(grep -cE "^public (struct|enum|indirect enum|final class|class|protocol|actor) ($envelope_re)([^A-Za-z0-9_]|$)" "$TMP/decls" 2>/dev/null || true)
 
+# 评审补：本门禁原只统计 GatherProtocol，协议面之外的 public 增长（本批新增 32 个类型）
+# 完全在扫描面外，基线同期只 +7 全在 Protocol，掩盖了它们。现在按模块各记一行
+# （顶层 public 类型数 + public 声明行数），ratchet 逐模块只准降。
+: > "$TMP/module-metrics"
+for mod in GatherPersistence GatherDelivery GatherAnalysis GatherApplication GatherMetadataIO; do
+  dir="$CORE_SOURCES/$mod"
+  [ -d "$dir" ] || continue
+  find "$dir" -type f -name '*.swift' | LC_ALL=C sort > "$TMP/one-mod"
+  m_types=$(xargs -I{} cat {} < "$TMP/one-mod" | grep -cE '^public (struct|enum|indirect enum|final class|class|protocol|actor) [A-Za-z_][A-Za-z0-9_]*' || true)
+  m_decls=$(xargs -I{} cat {} < "$TMP/one-mod" | grep -cE '^[[:space:]]*public[[:space:]]' || true)
+  lower=$(printf '%s' "$mod" | tr '[:upper:]' '[:lower:]')
+  printf 'public_types_%s %s\n' "$lower" "$m_types" >> "$TMP/module-metrics"
+  printf 'public_declarations_%s %s\n' "$lower" "$m_decls" >> "$TMP/module-metrics"
+done
+
 baseline_value() {
   local key="$1"
   if [ ! -f "$BASELINE" ]; then
@@ -221,6 +236,61 @@ compare_metric public_types "$public_types"
 compare_metric public_declarations "$public_declarations"
 compare_metric zero_reference_types "$zero_reference_types"
 compare_metric router_envelope_types "$router_envelope_types"
+
+# ── 模块级 ratchet（评审补）──────────────────────────────────────────────
+# 单独一份基线：JSON 里保持原有 4 个键不变，模块指标另存，避免改写既有基线结构。
+MODULE_BASELINE="docs/protocol-surface-modules-baseline.json"
+module_baseline_value() {
+  [ -f "$MODULE_BASELINE" ] || return 1
+  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$MODULE_BASELINE" | head -n 1
+}
+
+if [ "$WRITE_BASELINE" -eq 1 ]; then
+  if [ "$ALLOW_GROWTH" -eq 0 ] && [ -f "$MODULE_BASELINE" ]; then
+    grew=0
+    while read -r k v; do
+      base=$(module_baseline_value "$k" || true)
+      [ -n "$base" ] || continue
+      if [ "$v" -gt "$base" ]; then echo "  涨：$k $base -> $v" >&2; grew=1; fi
+    done < "$TMP/module-metrics"
+    if [ "$grew" -ne 0 ]; then
+      echo "check-protocol-surface: REFUSED — 模块公开面膨胀必须显式批准（--allow-growth + 台账）" >&2
+      exit 1
+    fi
+  fi
+  {
+    echo "{"
+    echo "  \"generated_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+    echo "  \"note\": \"模块级 public 面 ratchet；口径同 check-protocol-surface.sh（顶层 public 类型 + public 声明行）\","
+    first=1
+    while read -r k v; do
+      if [ "$first" -eq 1 ]; then first=0; else echo ","; fi
+      printf '  "%s": %s' "$k" "$v"
+    done < "$TMP/module-metrics"
+    echo ""
+    echo "}"
+  } > "$MODULE_BASELINE"
+  echo "check-protocol-surface: 模块基线已写入 $MODULE_BASELINE"
+fi
+
+if [ -f "$MODULE_BASELINE" ]; then
+  echo "  模块 public 面（类型 / 声明）："
+  while read -r k v; do
+    base=$(module_baseline_value "$k" || true)
+    if [ -z "$base" ]; then
+      echo "FAIL 模块基线缺少指标 $k" >&2; fail=1
+    elif [ "$v" -gt "$base" ]; then
+      echo "FAIL $k = $v > baseline $base" >&2; fail=1
+    elif [ "$v" -lt "$base" ]; then
+      echo "warn $k = $v < baseline ${base}（可 --write-baseline 收紧）"
+    else
+      echo "ok   $k = $v"
+    fi
+  done < "$TMP/module-metrics"
+else
+  echo "check-protocol-surface: FAIL — 缺少模块基线 $MODULE_BASELINE（先运行 --write-baseline）" >&2
+  exit 2
+fi
 
 if [ -s "$TMP/zero" ]; then
   echo "零引用候选（file:line 见 WP1 盘点；此处仅列名）："
