@@ -557,3 +557,14 @@
 - **协议面增长（已记账）**：类型 413 → **415**（+2 协议），声明 2457 → **2459**（+2）。
 - 收口状态：`GatherMetadataIO` 的 import 只剩 Foundation / GatherProtocol /
   GatherAnalysis / GatherPersistence / CryptoKit / os。
+
+## 残留修复 7：#6 CullingService 收窄第一步（写回端口 7 → 5）
+
+- `CullingWritebackPort` 删掉 `confirmSync` / `cleanup` 两个要求——全仓零调用
+  （确认与清理统一走 `DeliveryModuleAdapter`），留着只会让每个替身都实现两个永不
+  调用的方法。协议文件里原注释「S5c-2b-3 删除旧服务时收敛」即指此事。
+- 测试替身保留这两个方法（多出来的实现合法），两条「旧两路不再被调用」的断言继续有效，
+  `test-catalog` 计数不变（无需动基线）。
+- 剩余收窄（B-E）按调研顺序：抽 `CullingSyncWriter`（writeback + delivery → 1）、
+  `flushMetadata` 并入 `MetadataMutationPort.flush`、`settings` 收窄为 2 个读闭包、
+  `deliveryItems` 收窄为 `DeliveryRowReading`。目标 15 → 12 个依赖。
