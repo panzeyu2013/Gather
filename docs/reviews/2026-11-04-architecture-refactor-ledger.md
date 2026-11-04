@@ -617,3 +617,14 @@
   getLatest / getPhotoGroupMap / groupMemberCounts，7 处调用）——它不能按 2 个方法收窄。
 - 踩坑：perl 替换里的 `@unchecked` 被当成数组变量吃掉了，生成出 `,  Sendable {`，
   编译报「mutable stored property」才暴露；已改用 edit 工具精确写入。
+
+## 残留修复 10：给导航簇补 4 条用例（此前零测试）
+
+- `CullingViewModel+Navigation.swift` 的 12 个方法此前**没有任何用例**（只被 View 的
+  按钮调用）。在决定「不拆分」之后，先把它可观察的行为钉住——零测试的公开面本身是风险。
+- 新增 `Tests/GatherAppTests/CullingNavigationTests.swift`：
+  ① `loadNavigation` 成功后落库并自动选中首组；
+  ② 失败时错误可见且**不清空**已有分组（易回归点：catch 分支里误写 `navigationGroups = []`）；
+  ③ `selectNavigationGroup` 对不存在的 id 不生效（防止越界选中）；
+  ④ `mergeCurrentWithPreviousSameType` 在没有前一个同类组时报错且不选中任何组。
+- app 用例 794 → **798**（+4）。
