@@ -125,7 +125,7 @@ extension CullingService {
                 cacheRows = preloadedCacheRows
             } else {
                 cacheRows = Dictionary(
-                    uniqueKeysWithValues: try metadataCacheRepo
+                    uniqueKeysWithValues: try core.metadataCache
                         .getBatch(affectedPhotos.map(\.id))
                         .map { ($0.photoId, $0) }
                 )
@@ -162,10 +162,10 @@ extension CullingService {
                     )
                 )
                 if patch.rating != nil {
-                    try metadataCacheRepo.updateRating(photoId: photo.id, rating: Int64(nextRating))
+                    try core.metadataCache.updateRating(photoId: photo.id, rating: Int64(nextRating))
                 }
                 if patch.colorLabel != nil {
-                    try metadataCacheRepo.updateLabel(photoId: photo.id, label: nextColorLabel.rawValue)
+                    try core.metadataCache.updateLabel(photoId: photo.id, label: nextColorLabel.rawValue)
                 }
                 resultStates.append(AssetCullingState(
                     photoId: photo.id,
@@ -295,7 +295,7 @@ extension CullingService {
             TSPath.normalize(DeliveryPath.sidecar($0.filepath))
         } })
         // 10k 批次逐张 getItem 会变成 1 万次查询；getMany 一次 IN 取回。
-        let deliveryByPath = try deliveryItems.getMany(xmpPaths: Array(xmpPaths))
+        let deliveryByPath = try core.deliveryRows.getMany(xmpPaths: Array(xmpPaths))
         for xmpPath in xmpPaths {
             if let status = deliveryByPath[xmpPath]?.typedStatus {
                 syncByXmp[xmpPath] = CullingSharedRules.syncStatus(from: status)
@@ -336,7 +336,7 @@ extension CullingService {
                     .map { ($0.photoId, $0) }
             )
             preloadedCacheRows = Dictionary(
-                uniqueKeysWithValues: try metadataCacheRepo
+                uniqueKeysWithValues: try core.metadataCache
                     .getBatch(union)
                     .map { ($0.photoId, $0) }
             )
@@ -552,7 +552,7 @@ extension CullingService {
                 .map { ($0.photoId, $0) }
         )
         let cacheRows = Dictionary(
-            uniqueKeysWithValues: try metadataCacheRepo
+            uniqueKeysWithValues: try core.metadataCache
                 .getBatch(applicableEntries.map(\.photoId))
                 .map { ($0.photoId, $0) }
         )
@@ -590,7 +590,7 @@ extension CullingService {
         // 每会话批量读一次而非每条目两次（1 万次 undo 就是 2 万次单行查询）：
         // 同步态只读交付行；无交付（手动队列尚未落交付）时按 .clean 呈现，
         // 2b-2 手动队列迁入交付后该默认值即唯一语义。
-        let deliveryByPath = try deliveryItems.getMany(
+        let deliveryByPath = try core.deliveryRows.getMany(
             xmpPaths: photoById.values.map { DeliveryPath.sidecar($0.filepath) }
         )
         func deliveryStatus(_ xmpPath: String) -> MetadataSyncStatus {
@@ -636,10 +636,10 @@ extension CullingService {
                     )
                 )
                 if entry.patch.rating != nil {
-                    try metadataCacheRepo.updateRating(photoId: entry.photoId, rating: Int64(after.rating))
+                    try core.metadataCache.updateRating(photoId: entry.photoId, rating: Int64(after.rating))
                 }
                 if entry.patch.colorLabel != nil {
-                    try metadataCacheRepo.updateLabel(photoId: entry.photoId, label: after.colorLabel.rawValue)
+                    try core.metadataCache.updateLabel(photoId: entry.photoId, label: after.colorLabel.rawValue)
                 }
                 let xmpPath = DeliveryPath.sidecar(photo.filepath)
                 var values = xmpPatches[xmpPath]?.values ?? [:]

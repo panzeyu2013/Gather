@@ -9,17 +9,12 @@ import GatherProtocol
 extension CullingService {
     // MARK: - 同步态读模型（S5c-2b-3b-2a）
 
-    /// 同步态的唯一读模型是 deliveries（写回执行器直接维护）。
-    /// 手动 rating/label 的旧 outbox 行不再读取：交付行尚未出现时返回调用方给出的
-    /// 默认值（updateState 对共享元数据传 .pending，表达"已入队、尚未落交付"）。
+    /// 同步态读模型（#6 S2 起在 CullingSharedCore）。
     func currentSyncStatus(
         xmpPath: String,
         fallback: MetadataSyncStatus
     ) throws -> MetadataSyncStatus {
-        if let row = try deliveryItems.getItem(xmpPath: xmpPath), let status = row.typedStatus {
-            return CullingSharedRules.syncStatus(from: status)
-        }
-        return fallback
+        try core.currentSyncStatus(xmpPath: xmpPath, fallback: fallback)
     }
     // MARK: - IPC 命令面（culling.ipc.ts 逐命令对齐）
 
@@ -222,7 +217,7 @@ extension CullingService {
 
             // S5c-2b-3b-2a：基线/备份以执行器刚写进 deliveries 的行为准（execute
             // 已直接落 base_fingerprint/base_values/backup_path），不再从 outbox 抄。
-            let deliveryRow = try? deliveryItems.getItem(xmpPath: candidate.xmpPath)
+            let deliveryRow = try? core.deliveryRows.getItem(xmpPath: candidate.xmpPath)
             let baseValues = deliveryRow?.baseValues ?? .object([:])
             var attributes: [String: JSONValue] = [:]
             if let rating = candidate.attributes?.rating {
@@ -336,7 +331,7 @@ extension CullingService {
         var cacheByPhoto: [String: MetadataCacheRow] = [:]
         if target != .keyword {
             cacheByPhoto = Dictionary(
-                uniqueKeysWithValues: try metadataCacheRepo
+                uniqueKeysWithValues: try core.metadataCache
                     .getBatch(decisions.map(\.photoId))
                     .map { ($0.photoId, $0) }
             )

@@ -80,18 +80,18 @@ public final class CullingService {
 
     // MARK: - 依赖
 
+    /// #6 S2：跨簇共享的两个端口（metadata_cache + 交付行）。
+    let core: CullingSharedCore
+
     /// P1-1：仓储依赖一律走 Persistence 端口（any XxxRepository），具体 SQLite
     /// Repo 只在组合根构造；测试可用 fake 替换。
     let photoRepo: any PhotoRepository
     let cullingDecisionRepo: any CullingDecisionRepository
     let similarityResultRepo: any SimilarityRepository
-    let metadataCacheRepo: any MetadataRepository
     /// WP3b-2：分页/计数/富查询 SQL 下沉到 Persistence（CullingPageQuery /
     /// CullingReadQuery）；交付行读取与事务经端口。
     let pageQuery: any CullingPageReading
     let richQuery: any CullingRichReading
-    /// #6 收窄：只读交付行（getItem / getMany）；写入面由 delivery 适配器负责。
-    let deliveryItems: any DeliveryRowReading
     let transactions: any TransactionRunner
     let metadataMutations: any MetadataMutationPort
     let writeback: any CullingWritebackPort
@@ -126,10 +126,9 @@ public final class CullingService {
         self.photoRepo = photoRepo
         self.cullingDecisionRepo = cullingDecisionRepo
         self.similarityResultRepo = similarityResultRepo
-        self.metadataCacheRepo = metadataCacheRepo
+        self.core = CullingSharedCore(metadataCache: metadataCacheRepo, deliveryRows: deliveryItems)
         self.pageQuery = pageQuery
         self.richQuery = richQuery
-        self.deliveryItems = deliveryItems
         self.transactions = transactions
         self.metadataMutations = metadataMutations
         self.writeback = writeback

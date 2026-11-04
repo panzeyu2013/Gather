@@ -305,13 +305,13 @@ extension CullingService {
                 .map { ($0.photoId, $0) }
         )
         let cacheRows = Dictionary(
-            uniqueKeysWithValues: try metadataCacheRepo.getBatch(photoIds)
+            uniqueKeysWithValues: try core.metadataCache.getBatch(photoIds)
                 .map { ($0.photoId, $0) }
         )
         // 同步态读交付行（不再读旧 outbox）：一次 IN 查询覆盖本次页/会话的照片；
         // 交付项 module 投影成旧 MetadataMutationSource 供 UI 显示来源。
         let xmpPaths = photos.map { DeliveryPath.sidecar($0.filepath) }
-        let deliveryByPath = try deliveryItems.getMany(xmpPaths: xmpPaths)
+        let deliveryByPath = try core.deliveryRows.getMany(xmpPaths: xmpPaths)
         let metadataSourceByPath = try loadDeliveryMetadataSourceByPath(xmpPaths: xmpPaths)
         let similarityMap = try getLatestSimilarityMap(sessionId: sessionId)
         let displayPolicy = try triageDisplayPolicy?(sessionId)
