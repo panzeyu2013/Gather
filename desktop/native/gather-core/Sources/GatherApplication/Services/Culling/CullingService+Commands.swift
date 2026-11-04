@@ -456,7 +456,8 @@ extension CullingDecisionService {
     /// P1-9：把本次 update/batchUpdate/applyHistory 入队的 metadata 意图立即写盘。
     /// service 方法保持同步（与旧契约一致），由 async 的 API 层在返回前调用。
     public func flushQueuedMetadata(sessionId: String) async throws {
-        try await flushMetadata?(sessionId)
+        // #6 S8：写盘执行器改由 MetadataMutationPort 提供（默认 no-op）。
+        try await metadataMutations.flushQueuedMetadata(sessionId: sessionId)
     }
 
     /// TS: applyHistory —— 应用显式条目（renderer 重建的补丁）或历史栈操作

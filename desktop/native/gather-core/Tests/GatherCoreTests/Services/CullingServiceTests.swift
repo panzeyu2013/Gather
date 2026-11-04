@@ -24,6 +24,15 @@ import GatherTestSupport
 /// TS: MetadataMutationService 替身（queuePhotoValues 记录调用）。
 /// S5c-2b-3b-2b-1 起 CullingService 不再读旧 outbox，替身也不再写库。
 final class FakeMutationPort: MetadataMutationPort, @unchecked Sendable {
+    // #6 S8: flush 经端口下发，替身可注入并记录。
+    var flush: ((String) async throws -> Void)?
+    var flushSessions: [String] = []
+
+    func flushQueuedMetadata(sessionId: String) async throws {
+        flushSessions.append(sessionId)
+        try await flush?(sessionId)
+    }
+
     var queued: [(sessionId: String, photoId: String, values: [String: JSONValue], source: MetadataMutationSource, schedule: Bool)] = []
 
     func queuePhotoValues(
@@ -220,11 +229,12 @@ func latestResultId(_ harness: CullingHarness) throws -> Int64 {
 func makeCullingHarness(
     history: Bool = true,
     triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
-    flushMetadata: ((String) async throws -> Void)? = nil
+    flush: ((String) async throws -> Void)? = nil
 ) throws -> CullingHarness {
     let db = try makeTestDB()
     try insertSession(db, "session")
     let mutations = FakeMutationPort()
+    mutations.flush = flush
     let writeback = FakeWritebackPort()
     let historyRepo = CullingHistoryRepo(connection: db)
     // S5c-2a：culling confirm/cleanup 走真实 coordinator（真实 SQLite），
@@ -252,7 +262,6 @@ func makeCullingHarness(
         writeback: writeback,
         cullingHistoryRepo: history ? historyRepo : nil,
         triageDisplayPolicy: triageDisplayPolicy,
-        flushMetadata: flushMetadata,
         delivery: deliveryCoordinator.adapter(for: .culling)
     )
     return CullingHarness(
@@ -1962,7 +1971,7 @@ struct CullingServicePerfTests {
             var sessions: [String] = []
         }
         let recorder = Recorder()
-        let harness = try makeCullingHarness(flushMetadata: { sessionId in
+        let harness = try makeCullingHarness(flush: { sessionId in
             recorder.sessions.append(sessionId)
         })
         defer { harness.db.close() }

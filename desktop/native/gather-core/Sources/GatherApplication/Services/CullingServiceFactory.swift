@@ -25,7 +25,6 @@ public enum CullingServiceFactory {
         cullingHistoryRepo: (any CullingHistoryRepository)? = nil,
         settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
-        flushMetadata: ((String) async throws -> Void)? = nil,
         delivery: any DeliveryModuleAdapter
     ) -> CullingService {
         let decision = CullingDecisionService(
@@ -35,7 +34,7 @@ public enum CullingServiceFactory {
             richQuery: richQuery, deliveryItems: deliveryItems,
             transactions: transactions, metadataMutations: metadataMutations,
             writeback: writeback, cullingHistoryRepo: cullingHistoryRepo, settings: settings,
-            triageDisplayPolicy: triageDisplayPolicy, flushMetadata: flushMetadata,
+            triageDisplayPolicy: triageDisplayPolicy,
             delivery: delivery)
         let sharedCore = CullingSharedCore(
             metadataCache: metadataCacheRepo, deliveryRows: deliveryItems)

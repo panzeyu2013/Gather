@@ -272,7 +272,6 @@ extension CullingServiceFactory {
         cullingHistoryRepo: CullingHistoryRepo? = nil,
         settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
-        flushMetadata: ((String) async throws -> Void)? = nil,
         fileLock: XMPFileLock? = nil,
         delivery: (any DeliveryModuleAdapter)? = nil
     ) -> CullingService {
@@ -290,7 +289,6 @@ extension CullingServiceFactory {
             cullingHistoryRepo: cullingHistoryRepo,
             settings: settings,
             triageDisplayPolicy: triageDisplayPolicy,
-            flushMetadata: flushMetadata,
             // 旧默认：宿主未注入时按同一 connection 自建 coordinator（行为不变）。
             delivery: delivery ?? CoordinatorDeliveryAdapter(
                 engine: DeliveryCoordinator(

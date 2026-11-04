@@ -104,7 +104,6 @@ public final class CullingDecisionService {
     /// nil = 兼容模式（不接 T0 的调用方/旧测试保持原有读行为）。
     let triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)?
     /// P1-9 延伸：rating/label 入队后的写盘执行器（nil = 只入队，兼容旧测试）。
-    let flushMetadata: ((String) async throws -> Void)?
 
     public init(
         photoRepo: any PhotoRepository,
@@ -120,7 +119,6 @@ public final class CullingDecisionService {
         cullingHistoryRepo: (any CullingHistoryRepository)? = nil,
         settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         triageDisplayPolicy: ((String) throws -> TriageDisplayPolicy)? = nil,
-        flushMetadata: ((String) async throws -> Void)? = nil,
         delivery: any DeliveryModuleAdapter
     ) {
         self.photoRepo = photoRepo
@@ -136,7 +134,6 @@ public final class CullingDecisionService {
         self.cullingHistoryRepo = cullingHistoryRepo
         self.settings = settings
         self.triageDisplayPolicy = triageDisplayPolicy
-        self.flushMetadata = flushMetadata
         // WP3b-2：不再按 connection 自建 coordinator（Application 不持 DBConnection）。
         // 组合根注入交付适配器；测试经 ServiceConstructionTestSupport 的兼容 init 装配。
         self.delivery = delivery

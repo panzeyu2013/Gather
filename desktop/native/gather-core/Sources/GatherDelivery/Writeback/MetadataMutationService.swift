@@ -45,6 +45,10 @@ public enum MetadataMutationError: Error, Equatable, CustomStringConvertible {
 
 /// WritebackService / MetadataService 依赖的变更服务最小面。
 public protocol MetadataMutationPort: Sendable {
+    /// 把本会话已入队的 metadata 意图立即写盘（#6 S8：原 CullingService 的 flushMetadata 闭包）。
+    /// 默认 no-op —— 只有真正装配了写回执行器的组合根才实现它。
+    func flushQueuedMetadata(sessionId: String) async throws
+
     /// TS: queuePhotoValues（schedule 默认 true）。
     func queuePhotoValues(
         sessionId: String,
@@ -105,9 +109,18 @@ public enum MetadataKeywordWriteMode: String, Sendable, Equatable {
     case delta
 }
 
+/// 默认 no-op：只有装配了写回执行器的组合根才实现 flushQueuedMetadata。
+/// 这样 11 个替身（测试）与不需要立即落盘的生产实现都无需改动。
+public extension MetadataMutationPort {
+    func flushQueuedMetadata(sessionId: String) async throws {}
+}
+
 public final class MetadataMutationService: MetadataMutationPort {
     /// attributes_json 中保存写入模式的键（不属于用户可写字段，执行器内部读取）。
     public static let keywordsModeKey = "keywords_mode"
+
+    /// #6 S8：立即落盘的执行入口（组合根注入；nil = 只入队不落盘）。
+    private let flush: (@Sendable (String) async throws -> Void)?
 
     private let deliveryRepo: DeliveryRepo
     /// 交付状态写入的唯一入口（WP2b）：applyMetadataMutation 的复合事务仍由 Repo 执行。
@@ -122,13 +135,20 @@ public final class MetadataMutationService: MetadataMutationPort {
         deliveryRepo: DeliveryRepo,
         xmp: any XMPProvider,
         assetResolver: PhotoAssetResolver,
-        target: MetadataTargetResolver = .sidecar
+        target: MetadataTargetResolver = .sidecar,
+        flush: (@Sendable (String) async throws -> Void)? = nil
     ) {
         self.deliveryRepo = deliveryRepo
         self.stateWriter = DeliveryStateWriter(repo: deliveryRepo)
         self.xmp = xmp
         self.assetResolver = assetResolver
         self.target = target
+        self.flush = flush
+    }
+
+    /// #6 S8：立即写盘（原 CullingService.flushMetadata 闭包）。nil = 只入队。
+    public func flushQueuedMetadata(sessionId: String) async throws {
+        try await flush?(sessionId)
     }
 
     /// TS: queuePhotoValues —— 值直写合并进交付项并等待执行器刷盘。
