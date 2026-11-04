@@ -2,12 +2,16 @@
 // Gather 原生宿主 app。
 //
 // Cut 3 / 3b-2+3 拆分、3b-6 收口：从单 target 拆成 GatherUI（页面/视图模型，
-// 只依赖 GatherProtocol）+ GatherHost（组合根/Live API/启动装配，依赖四层 core）+
-// GatherApp（只剩 @main 与 Scene 的可执行）。过渡伞 GatherCore 已删除，app 包
-// 只依赖四个分层 product；依赖方向严格单向：
+// 只依赖 GatherProtocol）+ GatherHost（组合根/Live API/启动装配，依赖 core 各层）
+// + GatherApp（只剩 @main 与 Scene 的可执行）。过渡伞 GatherCore 已删除，app 包
+// 只依赖 core 的分层 product；依赖方向严格单向：
 //
 //   GatherApp → GatherHost → GatherUI → GatherProtocol
-//                    ↘ GatherPersistence / GatherAnalysis / GatherApplication → GatherProtocol
+//                    ↘ GatherPersistence / GatherAnalysis / GatherApplication /
+//                      GatherDelivery / GatherMetadataIO → GatherProtocol
+//
+// （GatherMetadataIO 是 #1 从 GatherHost 抽出的写盘实现；GatherPreviewData 是 #13
+//   从 GatherUI 拆出的 DEBUG-only 预览数据。）
 //
 // GatherUI **不得** import GatherPersistence / GatherApplication / GatherAnalysis /
 // GatherHost：跨域能力一律经 GatherProtocol 的 API 协议或 GatherUI 内的端口
@@ -106,7 +110,7 @@ let package = Package(
             swiftSettings: swift6Settings
         ),
         // 宿主编排层：AppBootstrap / AppComposition / Live API / RootView / C1 桥。
-        // 可 import 全部四层 core，并向上只暴露给 GatherApp（同包内 package）。
+        // 可 import core 各层（含 MetadataIO），并向上只暴露给 GatherApp（同包内 package）。
         .target(
             name: "GatherHost",
             dependencies: [

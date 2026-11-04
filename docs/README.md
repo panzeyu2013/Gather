@@ -8,8 +8,9 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 ## 架构
 
 SwiftUI（GatherUI）→ AppServices（16 个域 API / 172 个类型化方法）→ GatherHost
-（AppComposition / AppRuntime / Live*API）→ GatherApplication（服务与 JobService）；
-交付在 GatherDelivery，持久层是 GatherPersistence，图像/人脸在 GatherAnalysis。
+（AppComposition / AppRuntime / Live*API）→ GatherApplication（服务、JobService、
+WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是 GatherPersistence，
+图像/人脸在 GatherAnalysis，XMP/JPEG/IPTC 写盘在 GatherMetadataIO。
 
 - SQLite（WAL）单一当前 schema：`SchemaCurrent` 55 表 / 451 列 / 86 索引 / 81 外键，
   `user_version=1`。旧版本/未知形态默认 fail closed，只有显式重置才归档重建。
