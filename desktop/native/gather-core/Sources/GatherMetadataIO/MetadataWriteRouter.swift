@@ -217,7 +217,7 @@ final class MetadataWriteRouter: XMPProvider {
 
     private func readEmbedded(photoPath: String) async throws -> MetadataWriteAttributes {
         let parsed = try await ImageIOExifProvider().parse(filePath: photoPath, isJpeg: true)
-        var embedded = parsed.flatMap(MetadataService.embeddedAttributesFromParse)
+        var embedded = parsed.flatMap(MetadataAttributes.embeddedAttributesFromParse)
             ?? MetadataWriteAttributes()
         // P1-1：内嵌 XMP 才是层级关键词的真相源。ImageIO 只返回 dc:subject/IIM 的
         // **扁平**列表，不返回 lr:hierarchicalSubject；只用它当基线的话，写侧
@@ -228,7 +228,7 @@ final class MetadataWriteRouter: XMPProvider {
         if let fromXMP = Self.readEmbeddedXMPAttributes(photoPath: photoPath) {
             // keywords 是整体覆盖（XMP 的 dc + lr 已在 reader 里合并成路径列表），
             // 其余字段 XMP 优先、nil 回退内嵌。
-            embedded = MetadataService.mergeAttributes(embedded, fromXMP)
+            embedded = MetadataAttributes.mergeAttributes(embedded, fromXMP)
         }
         // 内嵌目标也允许存在外部 .xmp（策略上不会走到这里，但直接调用 readAttributes
         // 时仍要给出有效值）。合并规则与 MetadataService 一致：sidecar 逐字段覆盖。
@@ -244,7 +244,7 @@ final class MetadataWriteRouter: XMPProvider {
             return embedded
         }
         // 合并表唯一实现在 core（以前这里抄了一份，漏了三个字段）。
-        return MetadataService.mergeAttributes(embedded, overlay)
+        return MetadataAttributes.mergeAttributes(embedded, overlay)
     }
 
     /// 只读头部（到 SOS 或快路径同一个 4MiB 上限），交给 XMPPacketReader 解析内嵌属性。

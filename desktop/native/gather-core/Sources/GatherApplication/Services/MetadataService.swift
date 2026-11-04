@@ -236,35 +236,9 @@ public final class MetadataService: @unchecked Sendable {
         )
     }
 
-    /// TS: normalizeKeywordList —— 镜像 EmbeddedWriter 对 exifr 关键词列表的归一化
-    /// （单值到达为标量）。
-    ///
-    /// P1 下一波 §3.6.3：走 KeywordPath（层级路径 "A|B"）——
-    /// - 段 trim + NFC + 丢空段（"A||B" → "A|B"）：**非法段丢弃而非整词丢弃**；
-    /// - 按 foldedKey 去重（dc:subject 与 lr:hierarchicalSubject 合并后的同义重复）；
-    /// - 写回时仍然只吐 [String]（wire 不变，delivery_items.keywords 不用迁移）。
+    /// TS: normalizeKeywordList —— #1 C4 起住在 MetadataAttributes（Protocol）。
     public static func normalizeKeywordList(_ value: JSONValue?) -> [String]? {
-        let strings: [String]
-        switch value {
-        case .array(let items):
-            strings = items.compactMap { item in
-                if let s = item.stringValue { return s }
-                if let n = item.numberValue { return keywordString(n) }
-                return nil
-            }
-        case .none, .null:
-            strings = []
-        case .some(let scalar):
-            if let s = scalar.stringValue {
-                strings = [s]
-            } else if let n = scalar.numberValue {
-                strings = [keywordString(n)]
-            } else {
-                strings = []
-            }
-        }
-        let normalized = KeywordCodec.normalized(strings)
-        return normalized.isEmpty ? nil : normalized
+        MetadataAttributes.normalizeKeywordList(value)
     }
     // MARK: - 有效属性合成（#6 S1 起由 MetadataDiskReader 承担）
 

@@ -215,7 +215,7 @@ enum JPEGMetadataWriter {
                 throw JPEGMetadataWriterError.verificationFailed("scan bytes changed")
             }
             let parsed = try await ImageIOExifProvider().parse(filePath: photoPath, isJpeg: true)
-            var actual = parsed.flatMap(MetadataService.embeddedAttributesFromParse)
+            var actual = parsed.flatMap(MetadataAttributes.embeddedAttributesFromParse)
                 ?? MetadataWriteAttributes()
             // gather:Triage 是私有命名空间，embeddedAttributesFromParse 不解析它；
             // 直接从写后的 XMP 包体校验，避免"建议写回必失败并回滚"。

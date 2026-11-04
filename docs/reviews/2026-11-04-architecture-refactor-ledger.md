@@ -524,3 +524,18 @@
 - 后续（C4）：`MetadataAttributes` + `MetadataParseSegments` 整体进 Protocol（预计
   +2 类型 / +14 声明），再给 `MetadataWriteRouter` 注入 ImageIO 基线闭包，最后删死 import
   并给 layering 加规则。
+
+## 残留修复 5：#1 C4 第二步 —— 纯函数簇进 Protocol
+
+- `MetadataAttributes`（268 行纯函数）从 `GatherApplication/Services/Metadata/` 移到
+  `GatherProtocol/Protocol/`；`MetadataParseSegments` 从 `MetadataProviders.swift` 移出
+  单独成文件进 Protocol。
+- `MetadataService.normalizeKeywordList` 也随之下放（它被 `embeddedAttributesFromParse`
+  调用，而后者现在住 Protocol）；Application 侧保留一行转发，18 处跨 target 调用点零改动。
+- `GatherMetadataIO` 的 6 处调用从 `MetadataService.xxx` 改指 `MetadataAttributes.xxx`——
+  **它对 Application 的符号依赖只剩 `ImageIOExifProvider` 两处**（下一步改用注入）。
+- **协议面增长（已记账）**：类型 411 → **413**（+2），声明 2443 → **2457**（+14）。
+  已 `--write-baseline --allow-growth`。这是有意为之：这两个类型是读写两侧的共享词汇，
+  放 Protocol 比"沿着依赖方向另开一个 target"便宜得多。
+- 说明：app 套件出现过 1 次 `APIDuplicateQualityTests` 的偶发失败（job 去重时序），
+  单独复跑通过；与本改动无关（改的是元数据纯函数与类型所在模块）。

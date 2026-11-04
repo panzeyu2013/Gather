@@ -99,7 +99,7 @@ enum XMPPacketReader {
             xmpPresentKeys: present)
         // 合并规则唯一实现在 core：XMP 优先、IIM 回退、present-but-empty 阻断回退、
         // contact 结构单独成表。这里绝不复制第二份映射表。
-        var attributes = MetadataService.embeddedAttributesFromParse(segments)
+        var attributes = MetadataAttributes.embeddedAttributesFromParse(segments)
             ?? MetadataWriteAttributes()
         // dc:subject（扁平/可能含路径）与 lr:hierarchicalSubject（路径）合并成
         // 唯一的关键词列表；写回时再按 keyword_dc_style 拆回两套。

@@ -8,7 +8,6 @@
 //
 // 边界：只放「值 → 值」的映射与合并。任何需要读盘/读库/事务的都不能进这里。
 import Foundation
-import GatherProtocol
 
 public enum MetadataAttributes {
     /// TS: `{ ...selectedAttributes, ...sidecarAttributes }`（后者按 key 覆盖）。
@@ -37,7 +36,7 @@ public enum MetadataAttributes {
     }
 
     /// 逐字段合并：overlay 的非 nil 字段覆盖 base（nil = 该来源没有该字段）。
-    static func mergeDescriptive(
+    public static func mergeDescriptive(
         _ base: DescriptiveMetadata?,
         _ overlay: DescriptiveMetadata?
     ) -> DescriptiveMetadata? {
@@ -76,9 +75,9 @@ public enum MetadataAttributes {
         // 关键词同样要做 presence 阻断：外部只清空 XMP 的 dc:subject 时，
         // ImageIO 会把 IIM 旧关键词合成回 dc:subject（实测），不判 presence 会复活旧值。
         let keywords: [String]? = if parsed.xmpPresentKeys.contains("subject") {
-            MetadataService.normalizeKeywordList(dc?["subject"])
+            normalizeKeywordList(dc?["subject"])
         } else {
-            MetadataService.normalizeKeywordList(dc?["subject"] ?? iptc?["Keywords"])
+            normalizeKeywordList(dc?["subject"] ?? iptc?["Keywords"])
         }
         let descriptive = descriptiveFromParse(parsed)
         if keywords == nil, rating == nil, xmp?["Label"] == nil, descriptive.isEmpty {
@@ -264,5 +263,38 @@ public enum MetadataAttributes {
         }
         if let text = textValue(value), !text.isEmpty { return [text] }
         return nil
+    }
+
+    /// 关键词归一化：数组/标量都收成去重排序的词表；空表返回 nil。
+    public static func normalizeKeywordList(_ value: JSONValue?) -> [String]? {
+        let strings: [String]
+        switch value {
+        case .array(let items):
+            strings = items.compactMap { item in
+                if let s = item.stringValue { return s }
+                if let n = item.numberValue { return keywordString(n) }
+                return nil
+            }
+        case .none, .null:
+            strings = []
+        case .some(let scalar):
+            if let s = scalar.stringValue {
+                strings = [s]
+            } else if let n = scalar.numberValue {
+                strings = [keywordString(n)]
+            } else {
+                strings = []
+            }
+        }
+        let normalized = KeywordCodec.normalized(strings)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    /// Double 转关键词字符串（整数值不带 .0；NaN/Infinity 有稳定写法）。
+    static func keywordString(_ number: Double) -> String {
+        if number.isNaN { return "NaN" }
+        if number.isInfinite { return number < 0 ? "-Infinity" : "Infinity" }
+        if let integer = Int64(exactly: number) { return String(integer) }
+        return String(number)
     }
 }
