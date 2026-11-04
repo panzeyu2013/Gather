@@ -82,6 +82,11 @@ public final class CullingService {
 
     /// #6 S2：跨簇共享的两个端口（metadata_cache + 交付行）。
     let core: CullingSharedCore
+    /// #6 S4：交付/写回编排。lazy 是因为构造它要把 self 当决策只读端口传进去，
+    /// 而 Swift 不允许在所有存储属性初始化前使用 self。CullingService 是单上下文使用的
+    /// 非 Sendable 类，lazy 的首次访问竞争与今日行为等价（都在同一 actor 上）。
+    private(set) lazy var sync: CullingSyncService = CullingSyncService(
+        core: core, writeback: writeback, delivery: delivery, decisions: self)
 
     /// P1-1：仓储依赖一律走 Persistence 端口（any XxxRepository），具体 SQLite
     /// Repo 只在组合根构造；测试可用 fake 替换。
@@ -126,7 +131,8 @@ public final class CullingService {
         self.photoRepo = photoRepo
         self.cullingDecisionRepo = cullingDecisionRepo
         self.similarityResultRepo = similarityResultRepo
-        self.core = CullingSharedCore(metadataCache: metadataCacheRepo, deliveryRows: deliveryItems)
+        let sharedCore = CullingSharedCore(metadataCache: metadataCacheRepo, deliveryRows: deliveryItems)
+        self.core = sharedCore
         self.pageQuery = pageQuery
         self.richQuery = richQuery
         self.transactions = transactions

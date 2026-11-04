@@ -680,18 +680,19 @@ app 798 全绿。这条结论也解释了为什么 CullingService 的 15 个依�
   编译报 `expected declaration` / `extraneous }`；已逐处修正。后续步骤改为「先建新文件、
   再手工删旧定义」而不是区间删除。
 
-## CullingService 拆分 S2：共享核心落地（字段 15 → 13）
 
-- 新增 `Culling/CullingSharedCore.swift`（`public struct: Sendable`）：
-  两个跨簇端口（`metadataCache: any MetadataRepository` / `deliveryRows: any DeliveryRowReading`）
-  + `currentSyncStatus(xmpPath:fallback:)`（从 `+Delivery` 迁入）。
-- `CullingService` 的两个字段（`metadataCacheRepo` / `deliveryItems`）合并为 `let core`；
-  init 仍收这两个参数、在体内构造 core → **6 处构造点零改动**。
-- 全仓 13 处引用改名（`metadataCacheRepo.` → `core.metadataCache.`，`deliveryItems.` → `core.deliveryRows.`）。
-- 为什么 struct 不 class：只持 2 个 Sendable 协议字段，编译器自动合成 Sendable，**不占
-  @unchecked 预算**（60/60 保持）。缓存（sessionLookup/sessionUpdate/pageTotal）**刻意不入核心**
-  ——它们只服务决策侧，被值拷贝会让「写路径失效只作用一半」。
-- 实测读数：core 1,699+25 / app 798 不变；cleanup / layering / test-catalog / warnings /
-  protocol-surface 全绿。
-- 测试口径已固定：`check-test-catalog.sh` 自报 @Test **2,522**/2,502、@Suite **289**/283、
-  断言 **11,566**/11,509 —— 「只准升」判据可用（有 57 条断言余量）。
+## CullingService 拆分 S4：抽出 CullingSyncService（编译真相步通过）
+
+- 新增 `Culling/CullingSyncService.swift`（376 行，`public final class`，非 Sendable）：
+  `core` + `writeback` + `delivery` + `decisions`（单方法读端口），承载 `+Delivery` 的
+  8 个 public + 5 个 private（mirror / confirmDelivery / cleanupResult / buildPlan）。
+- 新增 `GatherPersistence/Ports/CullingDecisionLiteReading.swift`：**单方法**读端口
+  （`getDecisions(sessionId:) -> [CullingDecisionLiteRow]`）。`extension CullingService:`
+  `CullingDecisionLiteReading {}` 一行 conformance。
+- `+Delivery.swift` 变成 8 个一行转发 + `currentSyncStatus` 转发（公开面一字未改）。
+- 6 个跨簇符号全部消解：colorLabel / syncStatus → `CullingSharedRules`（S1）；
+  currentSyncStatus / metadataCache / deliveryItems → `core`（S2）；getDecisions → 端口（S4）。
+- **一个 Swift 语言约束**：`decisions: self` 要求所有存储属性已初始化，而 `sync` 本身是
+  存储属性 → 循环。改为 `private(set) lazy var sync`（CullingService 是单上下文使用的
+  非 Sendable 类，lazy 的首次访问竞争与今日行为等价）。
+- 实测：core 1,699+25 / app 798 不变；14 道门禁全绿。上次尝试在这步编译失败，本次通过。
