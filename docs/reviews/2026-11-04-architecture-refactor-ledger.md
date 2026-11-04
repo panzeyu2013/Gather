@@ -201,3 +201,27 @@
 - `GatherCoreTests` 目标依赖补 `GatherMetadataIO`。
 - 未做：C3 的跨层不变量套件（`deliveries.status == written ⇒ 目标文件回读 == base_values`）。
   它需要真实 DeliveryCoordinator + 交付行种子；当前由 87 个 IO 层用例覆盖实现细节。
+
+## #10 设计决策：**不统一**两套过滤模型（写于实施前）
+
+调研结论（逐字段对照后）：图库 `FilterGroup` 与挑片 `CullingFilters` 真正重复的 SQL
+仅 13 行（`CullingAssetPageQuery.swift:352-364` 的 COALESCE 列规范化），其余全是语义分歧：
+
+- **空值口径**：星级图库用 `pmc.rating = 0`（无缓存行不算），挑片用 `COALESCE(..., 0)`（算）；
+  色标图库只匹配字面 `None`，挑片把 `''/NULL/None` 都算——三种形态在生产里都真实存在
+  （写回写 `''`、reset 写 `None`、未抽取为 NULL）。
+- **粒度**：图库「任一变体命中即整组入选」，挑片「首选行命中」；变体星级不同时两页结果不同。
+- **游标契约**：`CullingPageCursor`（多键 + 方向）vs `PhotoPage.cursor: Int64`，
+  `PhotoFilterQuery` 明确不做多键排序。
+- **专有维度**：挑片态/未审/质量/冲突/triage 在图库是未知字段（直接抛错）。
+
+因此否决 (a) 共享 DSL 与 (b) 模型归一（会涨协议公开面且仍解不了空值/粒度分歧），
+改走 **(c′) 等价契约测试 + Persistence 层共享「列规范化」谓词原子**：
+
+1. `FilterSemanticsContractTests`：把「两页在共享维度上同集合」「已知分歧显式断言」
+   「图库对挑片专有维必须抛错」「`pageFilter` 七维映射表」钉成用例；
+2. `FilterFieldSQL`（Persistence，~40 行）：只做 `COALESCE(NULLIF(col,''), ...)` 这类
+   列规范化，**不建 DSL、不进 Protocol**，维持 411/2441 不变；
+3. 语义变更（图库星级/色标的空值口径）单独提交并点名——结果集变多是**有意**的。
+
+风险记录：对 label 无差别套 COALESCE 会让 `label exists` 变恒真，只能 op-aware（仅 eq/in）。
