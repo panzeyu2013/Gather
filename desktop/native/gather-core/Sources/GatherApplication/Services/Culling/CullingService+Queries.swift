@@ -1,12 +1,12 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Queries.swift
-// WP5a：CullingService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
+// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingDecisionService+Queries.swift
+// WP5a：CullingDecisionService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
 // 读模型：资产列表/分组/历史/摘要 + 富查询装配与状态投影。
 import Foundation
 import GatherPersistence
 import GatherDelivery
 import GatherProtocol
 
-extension CullingService {
+extension CullingDecisionService {
     // MARK: - 列表
 
     /// TS: list —— 会话全量资产列表。

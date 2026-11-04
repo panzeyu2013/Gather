@@ -36,7 +36,7 @@ public enum TriageServiceError: Error, Equatable, CustomStringConvertible {
 }
 
 /// 资产级建议门控：只有 fingerprint 与 policyVersion 都匹配的行才可展示/应用。
-/// 由 TriageService 产出，CullingService 只读消费（不自己拼指纹）。
+/// 由 TriageService 产出，CullingDecisionService 只读消费（不自己拼指纹）。
 public struct TriageSuggestionGate: Equatable, Sendable {
     public let fingerprint: String
     public let policyVersion: String
@@ -445,7 +445,7 @@ public final class TriageService {
 
     // MARK: - 反馈（校准样本）
 
-    /// 手动改决策后写 feedback（CullingService 写完 culling_decisions 后调用）。
+    /// 手动改决策后写 feedback（CullingDecisionService 写完 culling_decisions 后调用）。
     ///
     /// - 只记录人工来源（manual/imported）：模板写入（template）不是用户对建议的表态；
     /// - 该照片没有建议行 = 没有可比对的建议，返回 false（不是错误）；

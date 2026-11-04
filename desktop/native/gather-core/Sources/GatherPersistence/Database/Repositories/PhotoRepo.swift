@@ -177,7 +177,7 @@ public final class PhotoRepo: Sendable {
     /// （rowid = 导入顺序 ⇒ 展示顺序稳定）。
     ///
     /// 必须全仓共用：图库全局查询（FilterEngine.filterGlobally 的
-    /// representatives）与挑片分组（CullingService.preferredRowPredicate）若各写
+    /// representatives）与挑片分组（CullingDecisionService.preferredRowPredicate）若各写
     /// 一份，同一资产在两页会显示成不同的照片（RAW/JPEG 变体各自的缩略图与
     /// 元数据），且筛选计数与页内容会互相矛盾。
     public static func preferredRowOrderSQL(alias: String) -> String {

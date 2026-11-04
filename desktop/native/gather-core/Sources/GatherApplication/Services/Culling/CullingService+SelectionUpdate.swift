@@ -1,10 +1,10 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+SelectionUpdate.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingDecisionService+SelectionUpdate.swift
 // P1-7：跨页全选批量。服务端用与 selection 完全相同的查询重算，hash 不符则零写入；
 // 按 10k 分块调用既有 batchUpdate，每块一个 history operation。
 import Foundation
 import GatherProtocol
 
-extension CullingService {
+extension CullingDecisionService {
     public func updateSelection(
         _ input: CullingSelectionUpdateInput
     ) throws -> CullingSelectionUpdateResult {

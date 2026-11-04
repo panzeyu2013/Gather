@@ -13,7 +13,7 @@
 
 import Foundation
 
-/// 复用 Protocol 的 patch 校验（旧 CullingService.validatePatch 的前置部分）。
+/// 复用 Protocol 的 patch 校验（旧 CullingDecisionService.validatePatch 的前置部分）。
 func validateCullingPatch(_ patch: CullingUpdatePatch, field: String = "patch") throws {
     guard patch.rating != nil || patch.pickState != nil || patch.colorLabel != nil else {
         throw GatherError(

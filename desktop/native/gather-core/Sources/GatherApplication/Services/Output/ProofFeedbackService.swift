@@ -4,7 +4,7 @@
 // 一次导入做四件事（顺序固定，失败面逐段隔离）：
 // 1. 解析 selection.json（v1/v2）→ 条目；
 // 2. 原始反馈**全量落库**（client_proof_feedback；未知 id 不落库但计入 skipped）；
-// 3. 应用：picks → CullingService.applyImportedPicks（source=imported，有人工保护）；
+// 3. 应用：picks → CullingDecisionService.applyImportedPicks（source=imported，有人工保护）；
 //          rating/label → MetadataMutationService 入队（冲突不覆盖本地）；
 //          comment → 只落库（不写 XMP，不覆盖 dc:description）；
 // 4. 字段级记账：pick_applied_at / rating_applied_at（同时补 applied_at 总标记）。
@@ -22,7 +22,7 @@
 // 冲突判定：本地值 != 客户值 且 本地 updated_at > submittedAt → 冲突，保留本地并
 // 逐条上报（UI 给"用客户值"）。本地没有缓存行 = 没有本地真相 → 直接采用。
 //
-// 端口化：picks / metadata 都是协议，生产实现是 CullingService / MetadataMutationService，
+// 端口化：picks / metadata 都是协议，生产实现是 CullingDecisionService / MetadataMutationService，
 // 测试可以直接断言"入队了什么值"，不需要真库。
 
 import Foundation
@@ -30,7 +30,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherDelivery
 
-/// 勾选应用端口（生产 = CullingService）。
+/// 勾选应用端口（生产 = CullingDecisionService）。
 public protocol ProofPickApplying: AnyObject {
     /// - Returns: (真正应用的 photoIds, 单张失败数)。人工保护导致的跳过不计入两者。
     func applyImportedPicks(
@@ -47,11 +47,11 @@ public protocol ProofMetadataQueueing: AnyObject {
     ) throws -> Bool
 }
 
-/// 生产实现：CullingService.applyImportedPicks。
+/// 生产实现：CullingDecisionService.applyImportedPicks。
 public final class CullingProofPickApplier: ProofPickApplying {
-    private let service: CullingService
+    private let service: CullingDecisionService
 
-    public init(service: CullingService) {
+    public init(service: CullingDecisionService) {
         self.service = service
     }
 

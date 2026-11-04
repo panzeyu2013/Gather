@@ -2,7 +2,7 @@
 // P1 下一波 / §3.11.4：triage_feedback 的写入与校准样本查询。
 //
 // 边界：
-// - 只写 Gather 自己的表；不写 XMP、不动 culling_decisions（决策由 CullingService 写）；
+// - 只写 Gather 自己的表；不写 XMP、不动 culling_decisions（决策由 CullingDecisionService 写）；
 // - 「只保留最后一条」在写入时执行（同一 photo 重复改动先删后插），保证表有界；
 //   删除条数经结果返回，调用方可记日志（DDL 无计数字段，不 ALTER 既有表）；
 // - 校准样本**只取人工决定**（culling_decisions.decision_source ∈ manual/imported

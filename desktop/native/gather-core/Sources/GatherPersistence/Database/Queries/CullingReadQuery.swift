@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Queries/CullingReadQuery.swift
-// WP3b-2：Culling 富查询读模型下沉（原 CullingService 的 buildRichLookup 支撑查询）。
+// WP3b-2：Culling 富查询读模型下沉（原 CullingDecisionService 的 buildRichLookup 支撑查询）。
 //
 // 只搬 SQL 与分块：JSON 解析、bbox 语义、名称去重、缓存装配仍留在 Application。
 // 所有返回类型都是 Persistence 自己的窄行，避免把 Application 的读模型拉进来。
@@ -99,7 +99,7 @@ public struct CullingSummaryCounts: Sendable, Equatable {
 }
 
 public final class CullingReadQuery {
-    /// 每批 IN 参数上限（与旧 CullingService.chunkSize 同值）。
+    /// 每批 IN 参数上限（与旧 CullingDecisionService.chunkSize 同值）。
     static let chunkSize = 800
 
     private let connection: DBConnection

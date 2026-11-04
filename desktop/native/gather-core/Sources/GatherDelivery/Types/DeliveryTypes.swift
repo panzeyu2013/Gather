@@ -149,7 +149,7 @@ public struct DeliveryCleanupSummary: Sendable, Equatable {
     public let errors: [String]
     /// 检测到外部修改、已标 conflict 的 sidecar 路径（按发现顺序）。
     /// 与 errors 分开：冲突不是「可重试失败」，而是需要用户裁决的外部修改；
-    /// 调用方（如 CullingService.cleanup）据此把冲突按路径回填到旧 CleanupResult.errors。
+    /// 调用方（如 CullingDecisionService.cleanup）据此把冲突按路径回填到旧 CleanupResult.errors。
     public let conflictedXmpPaths: [String]
 
     public init(
@@ -220,7 +220,7 @@ public struct DeliveryFinalizeSummary: Sendable, Equatable {
 /// 旧 WritebackService 的执行结果 → 交付镜像的窄输入（S5c-2b-1 过渡双写）。
 ///
 /// 为什么不让 coordinator 读 MetadataOutboxRow：outbox 是 S5c-2b-3 要删的旧模型；
-/// 基线/备份路径由 CullingService 在过渡期从 outbox 抄出后显式传入，coordinator
+/// 基线/备份路径由 CullingDecisionService 在过渡期从 outbox 抄出后显式传入，coordinator
 /// 不反向依赖旧仓储。
 public struct DeliveryWritebackMirrorItem: Sendable, Equatable {
     public let photoId: String

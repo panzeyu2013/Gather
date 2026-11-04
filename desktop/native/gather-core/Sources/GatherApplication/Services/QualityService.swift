@@ -12,7 +12,7 @@
 //   与 TS 语义对齐；测试注入 fake 避免真解码慢路径。
 // - stat 经 statProvider 注入（TS 无此接缝，用 node:fs 直读）；错误消息透传
 //   String(describing:) 对齐 TS error.message 语义。
-// - culling 可选依赖经 invalidateCullingLookup 闭包注入（TS 为可注入 CullingService）；
+// - culling 可选依赖经 invalidateCullingLookup 闭包注入（TS 为可注入 CullingDecisionService）；
 //   未注入时为 no-op。
 // - 有界并发批处理复用共享 batchAsync（Concurrent/BatchRunner.swift）语义（滑动
 //   窗口，结果保序）；进度帧与 checkpoint

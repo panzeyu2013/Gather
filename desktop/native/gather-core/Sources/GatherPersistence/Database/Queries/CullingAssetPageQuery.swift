@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Queries/CullingAssetPageQuery.swift
-// WP3b-2：Culling 分页/计数读模型下沉（原 CullingService 内联 SQL + 谓词拼接）。
+// WP3b-2：Culling 分页/计数读模型下沉（原 CullingDecisionService 内联 SQL + 谓词拼接）。
 //
 // 迁移口径：SQL 与子句顺序逐字保留（filtered 两段式资产组 keyset 页、相似度
 // 成员 EXISTS、countForScope 的 GROUP BY 子查询）。Application 只决定 scope，
@@ -65,7 +65,7 @@ public enum CullingSimilarityScope: Sendable, Equatable {
 }
 
 public final class CullingAssetPageQuery {
-    /// 每批 IN 参数上限（与旧 CullingService.chunkSize 同值）。
+    /// 每批 IN 参数上限（与旧 CullingDecisionService.chunkSize 同值）。
     static let chunkSize = 800
 
     private let connection: DBConnection
@@ -293,7 +293,7 @@ public final class CullingAssetPageQuery {
         return (ids, false)
     }
 
-    // MARK: - 谓词（原 CullingService 内联拼接）
+    // MARK: - 谓词（原 CullingDecisionService 内联拼接）
 
     /// TS: loadAssetRows —— 取给定资产组的全部行（分块，SQLite 参数上限内）。
     private func loadAssetRows(

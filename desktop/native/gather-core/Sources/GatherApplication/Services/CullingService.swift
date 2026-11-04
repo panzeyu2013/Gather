@@ -1,4 +1,4 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/CullingService.swift
+// desktop/native/gather-core/Sources/GatherApplication/Services/CullingDecisionService.swift
 // TS 源: desktop/src/main/services/culling/culling.service.ts（1902 行，逐字移植）
 // + culling.ipc.ts（387 行）的命令面（writeback/sync_status/flush/retry_sync/
 // finalize_sync/retry_failed_writeback/confirm_sync/cleanup 的确认校验与委托）。
@@ -51,8 +51,8 @@ import GatherPersistence
 import GatherDelivery
 import GatherProtocol
 
-/// TS: CullingService。
-public final class CullingService {
+/// TS: CullingDecisionService。
+public final class CullingDecisionService {
     // MARK: - 常量（TS 文件头部）
 
     /// TS: PREFERRED_RAW_EXTENSIONS —— RAW 判定只用共享表
@@ -83,7 +83,7 @@ public final class CullingService {
     /// #6 S2：跨簇共享的两个端口（metadata_cache + 交付行）。
     let core: CullingSharedCore
     /// #6 S4：交付/写回编排。lazy 是因为构造它要把 self 当决策只读端口传进去，
-    /// 而 Swift 不允许在所有存储属性初始化前使用 self。CullingService 是单上下文使用的
+    /// 而 Swift 不允许在所有存储属性初始化前使用 self。CullingDecisionService 是单上下文使用的
     /// 非 Sendable 类，lazy 的首次访问竞争与今日行为等价（都在同一 actor 上）。
     private(set) lazy var sync: CullingSyncService = CullingSyncService(
         core: core, writeback: writeback, delivery: delivery, decisions: self)
@@ -154,3 +154,7 @@ public final class CullingService {
     /// TS: sessionUpdateCache —— 会话级更新上下文（见 SessionUpdateEntry）。
     var sessionUpdateCache: [String: SessionUpdateEntry] = [:]
 }
+
+/// #6 S5 第一阶段（临时）：改名期间用别名兜住所有外部引用，保证改名瞬间树仍可编译。
+/// 第二阶段建真正的 CullingService 门面时必须删掉本行（新门面会与别名重名）。
+public typealias CullingService = CullingDecisionService

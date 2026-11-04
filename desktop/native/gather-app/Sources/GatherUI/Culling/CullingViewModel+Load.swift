@@ -33,7 +33,7 @@ extension CullingViewModel {
     }
 
     /// 历史栈可见窗口：仓库 list 的 clamp 上限 = 路由器 culling.history 的 limit 上限
-    ///（500）。读取方据此保证栈顶在窗口内（服务端还会补栈顶，见 CullingService.getHistory）。
+    ///（500）。读取方据此保证栈顶在窗口内（服务端还会补栈顶，见 CullingDecisionService.getHistory）。
     nonisolated private static let historyWindow = 500
 
     func refreshSilently(forcePage: Bool = false) {

@@ -102,15 +102,15 @@ struct PortFakeIndexerServiceTests {
 
 // MARK: - Culling
 
-@Suite("WP3b port fakes: CullingService")
+@Suite("WP3b port fakes: CullingDecisionService")
 struct PortFakeCullingServiceTests {
     private func makeService(
         photoRepo: PortFakePhotoRepo,
         decisionRepo: PortFakeCullingDecisionRepo,
         richQuery: PortFakeCullingRichReading,
         transactions: PortFakeTransactionRunner
-    ) -> CullingService {
-        CullingService(
+    ) -> CullingDecisionService {
+        CullingDecisionService(
             photoRepo: photoRepo,
             cullingDecisionRepo: decisionRepo,
             similarityResultRepo: PortFakeSimilarityRepo(),

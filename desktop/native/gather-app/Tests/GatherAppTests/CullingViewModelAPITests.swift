@@ -188,7 +188,7 @@ private actor StubCullingAPI: CullingAPI {
 
     func applyHistory(_ input: CullingApplyHistoryInput) async throws -> [CullingUpdateResult] {
         applyHistoryInputs.append(input)
-        // 夹具对齐真实 CullingService：applyHistory 落库后，history 查询立即反映
+        // 夹具对齐真实 CullingDecisionService：applyHistory 落库后，history 查询立即反映
         // undone 标记。否则 undo() 内的 refreshSilently() 会用旧 history（undone=false）
         // 覆盖本地刚标记的状态——并行调度下 detached 刷新先落地就必红（R8 P1-1）。
         historyResult = historyResult.map { operation in

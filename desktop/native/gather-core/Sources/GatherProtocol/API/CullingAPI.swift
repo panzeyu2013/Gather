@@ -10,7 +10,7 @@
 // - scope/枚举、limit/afterRowId、entries 数量与 patch 范围在输入类型（§6.2）；
 // - 破坏性入口 reset/writeback/retryFailedWriteback/cleanup/finalizeSync 使用
 //   Confirmed<T>；实现不得自行补确认；
-// - 修订冲突（CULLING_REVISION_CONFLICT）、照片归属、历史顺序由 CullingService 负责，
+// - 修订冲突（CULLING_REVISION_CONFLICT）、照片归属、历史顺序由 CullingDecisionService 负责，
 //   实现只做 GatherError 映射；
 // - 写回/清理/最终同步的服务语义保持现状（Cut 2 的 DeliveryCoordinator 再统一）。
 

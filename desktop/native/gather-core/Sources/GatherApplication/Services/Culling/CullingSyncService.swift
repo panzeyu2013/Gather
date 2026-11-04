@@ -1,11 +1,11 @@
 // desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingSyncService.swift
-// 挑片域的**交付/写回编排**（#6 拆分 S4：从 CullingService 的 Delivery 扩展抽出）。
+// 挑片域的**交付/写回编排**（#6 拆分 S4：从 CullingDecisionService 的 Delivery 扩展抽出）。
 //
 // 依赖只有 4 个：共享核心（metadata_cache + 交付行）、写回端口、交付适配器、
 // 决策的单方法读端口。决策输入走端口而不是回调——这是本方案与上次失败尝试的分水岭。
 //
 // 非 Sendable（CullingWritebackPort / DeliveryModuleAdapter 都不是 Sendable），与今日
-// CullingService 相同，因此**不新增 @unchecked**（预算 60/60）。
+// CullingDecisionService 相同，因此**不新增 @unchecked**（预算 60/60）。
 import Foundation
 import GatherPersistence
 import GatherDelivery

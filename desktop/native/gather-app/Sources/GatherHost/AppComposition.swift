@@ -60,7 +60,7 @@ public struct AppComposition {
     var smartAlbumRepo: SmartAlbumRepo { core.smartAlbumRepo }
     var curationService: CurationService { core.curationService }
     var metadataDeliveryService: MetadataDeliveryService { core.metadataDeliveryService }
-    var cullingService: CullingService { core.cullingService }
+    var cullingService: CullingDecisionService { core.cullingService }
     /// P0 / T0：技术质量初筛服务（LiveCullingAPI 注入）。
     var triageService: TriageService { core.triageService }
     /// P0 / B0：备份/恢复/诊断服务。

@@ -451,7 +451,7 @@ public final class WritebackService: @unchecked Sendable {
         let summary = try await delivery.cleanup(sessionId: sessionId, module: deliveryModule)
         var errors = summary.errors
         // 外部修改冲突：交付已标 conflict（不恢复不删行），按旧码回填到 errors，
-        // 让调用方的报告卡能显示哪些 sidecar 被外部改过（与 CullingService 同口径）。
+        // 让调用方的报告卡能显示哪些 sidecar 被外部改过（与 CullingDecisionService 同口径）。
         for path in summary.conflictedXmpPaths {
             errors.append(
                 MetadataWritebackFailure.from(

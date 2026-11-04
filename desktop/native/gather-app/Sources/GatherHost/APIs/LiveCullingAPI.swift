@@ -16,13 +16,13 @@
 // - 5 个破坏性入口只接收 Confirmed<T>（reset / writeback / retryFailedWriteback /
 //   cleanup / finalizeSync），内部固定传 confirmed: true：类型层面已经保证
 //   “没有确认弹窗就写不出调用点”，实现不自行补确认、也不再解析 Bool（D-011）；
-// - 修订冲突、照片归属、历史顺序、写回与清理的编排仍由 CullingService 负责；
+// - 修订冲突、照片归属、历史顺序、写回与清理的编排仍由 CullingDecisionService 负责；
 //   本实现只做 CullingServiceError -> GatherError 的映射。revisionConflict 带上
 //   expected/current 参数（旧命令面 以 CODE::expected::current 传给 UI 插值，
 //   GatherError 改为结构化 params，UI 模板可继续插值）。
 //
 // 边界：
-// - 写回 / 清理 / 最终同步继续走 CullingService 现有接缝（Cut 2 的
+// - 写回 / 清理 / 最终同步继续走 CullingDecisionService 现有接缝（Cut 2 的
 //   DeliveryCoordinator 再统一状态机），本文件不提前改语义（R6）；
 // - syncStatus 额外补 reloadAckedAt（旧命令面 在 JSON 层临时补的键），由
 //   SessionRepo 读 session.reload_acked_at，输出收敛为 CullingSyncStatus。
@@ -37,7 +37,7 @@ import GatherApplication
 import GatherDelivery
 
 public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
-    private let cullingService: CullingService
+    private let cullingService: CullingDecisionService
     /// P0 / T0：技术质量建议（只写决策/建议，不写 XMP）。
     private let triageService: TriageService
     /// 只读会话行：syncStatus 需要 session.reload_acked_at。nil 时该字段恒为 nil
@@ -59,11 +59,11 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
     /// P1：技术质量建议阈值校准；nil = 未接线（API 显式报 INVALID_PARAM）。
     private let calibration: TriageCalibrationService?
 
-    /// @unchecked Sendable 依据：两个依赖都是构造后不再变更的 let；CullingService
+    /// @unchecked Sendable 依据：两个依赖都是构造后不再变更的 let；CullingDecisionService
     /// 的可变状态（会话级更新上下文缓存、Repo 缓存）由 DBConnection 的递归锁与
     /// 各 Repo 串行化（与组合根 @unchecked Sendable 同一约定）。
     public init(
-        cullingService: CullingService,
+        cullingService: CullingDecisionService,
         triageService: TriageService,
         sessionRepo: SessionRepo? = nil,
         photoRepo: (any PhotoRepository)? = nil,
@@ -108,7 +108,7 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         // XMPFileLock（与写回/清理同一把锁），所以拆成「校验 → 逐张加锁搬移」。
         //
         // P0 / A1 两处语义修正：
-        // 1. **按资产展开**：挑片决策是资产级（CullingService.updateState 把 pickState
+        // 1. **按资产展开**：挑片决策是资产级（CullingDecisionService.updateState 把 pickState
         //    写到同资产全部变体），只移代表行会把另一半变体留在工作区且仍是已淘汰。
         // 2. **按张过滤而不是整批拒绝**：混进保留件/已移出件时返回 skipped，
         //    其余照常移出（旧实现 allSatisfy 失败 → 一张都动不了）。

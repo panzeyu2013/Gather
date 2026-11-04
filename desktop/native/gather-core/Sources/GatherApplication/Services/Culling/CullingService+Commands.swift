@@ -1,12 +1,12 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Commands.swift
-// WP5a：CullingService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
+// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingDecisionService+Commands.swift
+// WP5a：CullingDecisionService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
 // 写命令：update/batch/history/decide/reset 与补丁校验。
 import Foundation
 import GatherPersistence
 import GatherDelivery
 import GatherProtocol
 
-extension CullingService {
+extension CullingDecisionService {
     /// TS: updateState —— 单张照片状态更新（pick/rating/colorLabel），受影响
     /// 照片为 asset 变体（pick）或共享 sidecar（shared metadata）。
     @discardableResult
@@ -194,7 +194,7 @@ extension CullingService {
                 )
             }
             if !metadataPatch.isEmpty {
-                // 不再由 CullingService 直连 sync 端口排程：排程随变更入队
+                // 不再由 CullingDecisionService 直连 sync 端口排程：排程随变更入队
                 // （MetadataMutationService 的 schedule=true）走同一条写回链。
                 _ = try metadataMutations.queuePhotoValues(
                     sessionId: sessionId,
@@ -668,7 +668,7 @@ extension CullingService {
                 ))
             }
             for (photoId, values) in xmpPatches.values {
-                // 排程随入队（不再由 CullingService 直连 sync 端口）。
+                // 排程随入队（不再由 CullingDecisionService 直连 sync 端口）。
                 _ = try metadataMutations.queuePhotoValues(
                     sessionId: sessionId,
                     photoId: photoId,

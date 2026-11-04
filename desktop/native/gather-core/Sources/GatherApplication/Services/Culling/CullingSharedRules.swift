@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingSharedRules.swift
-// 挑片域的**纯规则**（#6 拆分 S1：从 CullingService 的 Queries/Delivery 扩展里提出）。
+// 挑片域的**纯规则**（#6 拆分 S1：从 CullingDecisionService 的 Queries/Delivery 扩展里提出）。
 //
 // 为什么单独成类型：这三个符号被决策侧（Queries/Commands）与交付侧（Delivery）同时使用，
 // 但它们是纯函数/常量——没有状态、没有 IO、没有依赖。抽成 enum 之后两边都能直接引用，

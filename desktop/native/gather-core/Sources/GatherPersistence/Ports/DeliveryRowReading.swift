@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Ports/DeliveryRowReading.swift
-// 交付行的**只读**子集（#6 CullingService 收窄）。
+// 交付行的**只读**子集（#6 CullingDecisionService 收窄）。
 //
 // 为什么单独切：挑片服务只用 DeliveryRepository 的 2 个读方法（getItem / getMany，
 // 共 8 处调用），却要在构造点接收整个交付仓储（含写入、清理、租约等方法）。

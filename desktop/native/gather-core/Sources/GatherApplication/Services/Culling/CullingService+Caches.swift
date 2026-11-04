@@ -1,12 +1,12 @@
-// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Caches.swift
-// WP5a：CullingService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
+// desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingDecisionService+Caches.swift
+// WP5a：CullingDecisionService 按角色拆分（纯移动；方法体/错误码/事务/查询逐字未改）。
 // 会话查找/更新上下文 TTL 缓存（存储属性留在主类型体）。
 import Foundation
 import GatherPersistence
 import GatherDelivery
 import GatherProtocol
 
-extension CullingService {
+extension CullingDecisionService {
     // MARK: - 更新上下文（IPC culling.update 复用）
 
     /// TS: getUpdateContext —— 缓存的 `updateState` 上下文；IPC 更新 handler 复用
