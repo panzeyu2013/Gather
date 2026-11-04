@@ -56,33 +56,33 @@ struct FilterSemanticsContractTests {
         #expect(gallery == 1)
     }
 
-    @Test("已知分歧 1：未评级（rating=0）—— 计数相同但**集合不同**")
-    func unratedCountsMatchButSetsDiffer() throws {
+    @Test("未评级：空值口径已统一（缺缓存行 = 0 星），剩余差异是**行粒度**")
+    func unratedSharesNullSemanticsButNotGranularity() throws {
         let db = try makeFixture()
         let gallery = try galleryCount(db, [
             FilterRule(field: "rating", operator: .eq, value: .number(0))])
         let culling = try cullingCount(db, CullingPageFilter(ratings: [0]))
-        // 两边都是 2，但**命中的不是同一批**：
-        // - 图库「任一行命中即整组入选」→ a1（因为 JPEG 变体 p2 rating=0）+ p4；
-        // - 挑片只看资产**首选行**（a1 首选 RAW p1，rating=5，排除）+ 无缓存行的 p3
-        //   （COALESCE(NULLIF(rating,...),0)=0）+ p4。
-        // 这正是「不能靠计数判断两页一致」的证据：断言集合需要 filterGloballyIDs /
-        // pageSorted 的返回，留给 Step 2（届时口径统一后应变成真等集）。
-        #expect(gallery == 2)
-        #expect(culling == 2, "culling 实测 \(culling)")
+        // #10 Step 2 之后，两页对「没有缓存行」都按 0 星算（此前图库要求有缓存行）：
+        // - 图库「任一行命中即整组入选」→ a1（JPEG 变体 p2）+ p3（缺行）+ p4 = 3；
+        // - 挑片只看资产**首选行**（a1 首选 RAW p1 rating=5，排除）+ p3 + p4 = 2。
+        // 也就是说：空值口径已统一，剩下的差异纯粹是「任一行 vs 首选行」的粒度问题。
+        // 粒度差要不要改属于产品决策（改图库为 preferred-row 会动 4 处 SQL + facet），
+        // 不在本轮范围；这里把它钉住，谁改粒度这条用例会先红。
+        #expect(gallery == 3)
+        #expect(culling == 2)
     }
 
-    @Test("已知分歧 2：无色标—— 图库只认字面 None，挑片把空串也算 None")
-    func noneLabelDivergesOnEmptyString() throws {
+    @Test("无色标：两页已同集合（''/NULL/None 都算 None）")
+    func noneLabelIsNowShared() throws {
         let db = try makeFixture()
         let gallery = try galleryCount(db, [
             FilterRule(field: "label", operator: .eq, value: .string("None"))])
         let culling = try cullingCount(db, CullingPageFilter(colorLabels: ["None"]))
-        // 图库：只有 p4 的字面 "None" 命中 → 1；
-        // 挑片：a1 首选行 p1 的 label="" 经 COALESCE(NULLIF(label,''),'None') 变成 None，
-        // 加上无缓存行的 p3 也被 COALESCE 成 None，再加 p4 → 3。
-        #expect(gallery == 1)
-        #expect(culling == 3, "culling 实测 \(culling)")
+        // #10 Step 2 之前：图库只认字面 "None"（1），挑片把 ""/NULL 也算（3）。
+        // 现在两页都走 FilterFieldSQL.label：p1 的 ""、p3 的无缓存行、p4 的字面 None
+        // 都归一到 None → 3 == 3。
+        #expect(gallery == culling, "无色标口径已统一，两页必须同结果")
+        #expect(gallery == 3)
     }
 
     @Test("挑片专有维在图库必须显式抛错（防假统一）")

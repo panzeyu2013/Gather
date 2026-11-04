@@ -47,7 +47,15 @@ struct PhotoFilterQueryBoundaryTests {
         #expect(PhotoFilterQuery.simpleFields.union(PhotoFilterQuery.metadataFields).count == 21)
         for (field, column) in simple + metadata {
             let clause = try query.whereClause(group(rule(field, .eq, .string("v"))))
-            #expect(clause.sql == "\(column) = ?", "字段 \(field) 必须解析到 \(column)")
+            // #10 Step 2：rating / label 的 eq 会套空值规范化（与挑片同口径），
+            // 其余字段仍是裸列比较。规范化只在 eq/in 上生效。
+            let expected: String
+            switch field {
+            case "rating": expected = "\(FilterFieldSQL.rating(column)) = ?"
+            case "label": expected = "\(FilterFieldSQL.label(column)) = ?"
+            default: expected = "\(column) = ?"
+            }
+            #expect(clause.sql == expected, "字段 \(field) 必须解析到 \(column)（含 #10 规范化）")
             #expect(clause.params == [.text("v")])
         }
         let dateClause = try query.whereClause(group(rule("date_taken", .eq, .string("v"))))

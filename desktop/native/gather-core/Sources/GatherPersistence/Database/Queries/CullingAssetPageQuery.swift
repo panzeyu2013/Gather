@@ -352,14 +352,12 @@ public final class CullingAssetPageQuery {
         // 星级/色标只读唯一真相源 c（photo_metadata_cache）。
         if let ratings = filter.ratings, !ratings.isEmpty {
             let placeholders = ratings.map { _ in "?" }.joined(separator: ",")
-            clauses.append("COALESCE(c.rating, 0) IN (\(placeholders))")
+            clauses.append("\(FilterFieldSQL.rating("c.rating")) IN (\(placeholders))")
             params.append(contentsOf: ratings.map { DBValue.real($0) })
         }
         if let colorLabels = filter.colorLabels, !colorLabels.isEmpty {
             let placeholders = colorLabels.map { _ in "?" }.joined(separator: ",")
-            clauses.append("""
-                COALESCE(NULLIF(c.label, ''), 'None') IN (\(placeholders))
-                """)
+            clauses.append("\(FilterFieldSQL.label("c.label")) IN (\(placeholders))")
             params.append(contentsOf: colorLabels.map { .text($0) })
         }
         if filter.metadataConflictOnly == true {

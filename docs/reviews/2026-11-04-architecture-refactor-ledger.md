@@ -225,3 +225,19 @@
 3. 语义变更（图库星级/色标的空值口径）单独提交并点名——结果集变多是**有意**的。
 
 风险记录：对 label 无差别套 COALESCE 会让 `label exists` 变恒真，只能 op-aware（仅 eq/in）。
+
+## #10 Step 2：列规范化原子 + 空值口径统一（**有意改变图库结果集**）
+
+- 新增 `Persistence/Database/Queries/FilterFieldSQL.swift`：
+  `rating(col)` = `COALESCE(col, 0)`、`label(col)` = `COALESCE(NULLIF(col, ''), 'None')`。
+  两套查询都改为引用这两个原子（挑片原本就是内联同款表达式，图库是这次对齐的）。
+- **行为变更（有意）**：图库的 `rating eq/in` 现在把「没有 photo_metadata_cache 行」
+  按 0 星算（此前要求有缓存行），`label eq/in "None"` 把 `''` 与 NULL 也算 None
+  （此前只认字面 None）。这修的是图库**自身**的不一致：投影 `COALESCE(pmc.rating,0)`
+  早就把它当 0 星，谓词却当「没有」。代价是这两个条件的结果集变多。
+- 只对 `eq/in` 生效：套到 `neq/gt/exists` 会改「未填写」语义（`label exists` 会恒真）。
+- 结果：label 两页**已同集合**（3 == 3）；rating 仍是 3(图库) vs 2(挑片)，
+  但差异已收窄为纯**行粒度**（任一行 vs 首选行），不再是空值口径——粒度是否统一
+  属产品决策（改图库为 preferred-row 要动 4 处 SQL + facet），不在本轮范围。
+- 测试：`FilterSemanticsContractTests` 相应改为「已同集合」/「仅剩粒度差」；
+  `PhotoFilterQueryTests` 的 SQL 形状断言改为按字段套用规范化表达式。

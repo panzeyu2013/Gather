@@ -507,7 +507,8 @@ public final class PhotoFilterQuery {
 
         // P1 / C：描述性元数据存在 photo_metadata_cache.iptc_json（单列 JSON），
         // 用 json_extract 投影成列，使搜索/筛选与普通列同构（操作符语义完全一致）。
-        let fullCol: String
+        // var：#10 的空值规范化会按 op 重写这个表达式（只改 eq/in，见下方）。
+        var fullCol: String
         if field == "date_taken" {
             // EXIF 原样存 "2024:05:01 10:00:00"，sidecar/相册可能是 ISO：先归一
             // 到 "2024-05-01 10:00:00" 再做文本比较/排序，否则混合数据 BETWEEN
@@ -518,6 +519,17 @@ public final class PhotoFilterQuery {
         } else {
             let resolved = try resolveField(field)
             fullCol = "\(resolved.prefix).\(resolved.col)"
+        }
+
+        // #10：空值口径与挑片对齐（**只对 eq/in**）。rating 的缺行 = 0 星（与上方投影
+        // COALESCE(pmc.rating,0) 同口径）；label 的 '' 与 NULL 都算 None。
+        // 不套在 neq/gt/exists 上：那会把「未填写」的语义改掉（label exists 会恒真）。
+        if op == .eq || op == .in {
+            switch field {
+            case "rating": fullCol = FilterFieldSQL.rating(fullCol)
+            case "label": fullCol = FilterFieldSQL.label(fullCol)
+            default: break
+            }
         }
 
         // 数组字段：对 json_each 的每个元素判定（creator=["张三","李四"]）。
