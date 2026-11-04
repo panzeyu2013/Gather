@@ -251,7 +251,7 @@ struct CompositionCore {
             feedback: TriageFeedbackRepo(connection: db))
         // 3.4 CullingService：写回执行器走 WritebackService（CullingWritebackPort），
         // confirm/cleanup/syncStatus 走交付模型（不再注入旧 outbox 仓储）。
-        let cullingService = CullingService.make(
+        let cullingService = CullingServiceFactory.make(
             photoRepo: photoRepo, cullingDecisionRepo: CullingDecisionRepo(connection: db),
             similarityResultRepo: similarityResultRepo,
             metadataCacheRepo: metadataCacheRepo,

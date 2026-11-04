@@ -242,7 +242,7 @@ func makeCullingHarness(
         fingerprint: { [deliveryFingerprint] _ in deliveryFingerprint.current },
         resolvePhotoPath: { _, delivery in delivery.photoPath }
     )
-    let service = CullingService.make(
+    let service = CullingServiceFactory.make(
         photoRepo: PhotoRepo(connection: db),
         cullingDecisionRepo: CullingDecisionRepo(connection: db),
         similarityResultRepo: SimilarityResultRepo(connection: db),

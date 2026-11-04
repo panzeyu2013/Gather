@@ -260,7 +260,7 @@ extension FaceKwService {
 
 // MARK: - WP3b-2：Culling（分页/富查询/交付项/事务端口）
 
-extension CullingService {
+extension CullingServiceFactory {
     public static func make(
         photoRepo: PhotoRepo,
         cullingDecisionRepo: CullingDecisionRepo,
@@ -276,7 +276,7 @@ extension CullingService {
         fileLock: XMPFileLock? = nil,
         delivery: (any DeliveryModuleAdapter)? = nil
     ) -> CullingService {
-        CullingService.make(
+        CullingServiceFactory.make(
             photoRepo: photoRepo,
             cullingDecisionRepo: cullingDecisionRepo,
             similarityResultRepo: similarityResultRepo,
