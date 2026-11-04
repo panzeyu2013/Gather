@@ -100,7 +100,7 @@ extension CullingView {
                 // A3（审计 4）：setFilterState 内部已经触发一次 loadPage(reset:)，
                 // 这里不再调用 load()，避免同一次进入跑两轮完整加载 + 两个 conflicts 请求。
                 await viewModel.setFilterState { state in
-                    state = CullingViewModel.FilterState()
+                    state = FilterState()
                     state.metadataConflictOnly = true
                 }
             } else if viewModel.page == nil {

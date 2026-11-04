@@ -20,7 +20,7 @@ import GatherApplication
 private enum FlowStateName: String, Sendable {
     case disconnected, conflict, failed, syncing, c1Read, safeToCleanup, synced
 
-    var state: CullingViewModel.SyncFlowState {
+    var state: SyncFlowState {
         switch self {
         case .disconnected: return .disconnected
         case .conflict: return .conflict
@@ -66,7 +66,7 @@ private func makeCullingStack(
 
 @Suite("CullingSyncFlow deriveControls（对齐 c1-sync-controls.test.ts）", .serialized)
 struct CullingSyncFlowTests {
-    private typealias Controls = CullingViewModel.SyncFlowControls
+    private typealias Controls = SyncFlowControls
 
     // 原 8 条用例：syncing / c1Read 未 ack / c1Read+ack+written /
     // c1Read+ack 无写入 / safeToCleanup / synced / failed / conflict /
@@ -107,7 +107,7 @@ struct CullingSyncFlowTests {
         expected: Controls,
         label: String
     ) {
-        let c = CullingViewModel.CullingSyncFlow.deriveControls(
+        let c = CullingSyncFlow.deriveControls(
             syncState: stateName.state, hasWritten: hasWritten, acked: acked)
         #expect(c == expected, Comment(rawValue: label))
     }

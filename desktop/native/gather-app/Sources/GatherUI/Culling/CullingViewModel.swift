@@ -9,100 +9,17 @@ import Foundation
 import SwiftUI
 import GatherProtocol
 
-struct KeywordTargetIndex {
-    let key: String
-    let union: [String]
-    let counts: [String: Int]
-}
 
 @MainActor
 @Observable
 public final class CullingViewModel: SessionPageModel {
     /// 组合筛选状态：对齐 TS CullingFilters + FilterControls（Culling.tsx:1720-1817）——
     /// 未审/状态/星级/颜色/质量/冲突 六个维度可任意叠加，全部关闭即"全部"。
-    public struct FilterState: Equatable {
-        public var unreviewedOnly = false
-        public var pickState: PickState?
-        public var rating: Int?
-        public var colorLabel: CaptureOneColorLabel?
-        public var qualityStatus: CullingFilterQualityStatus?
-        public var metadataConflictOnly = false
-        /// P0/T0：按建议 verdict 过滤（仅 .filtered scope 生效）。
-        public var triageVerdicts: [TriageVerdict]?
 
-        public init() {}
-
-        public var isActive: Bool {
-            unreviewedOnly || pickState != nil || rating != nil || colorLabel != nil
-                || qualityStatus != nil || metadataConflictOnly
-                || (triageVerdicts?.isEmpty == false)
-        }
-    }
-
-    public enum ScopeMode: String, CaseIterable, Equatable {
-        case all
-        case filtered
-        case similarityGroup
-
-        /// Cut 4 / 4b-2a：只存 key，渲染期由 View 的 l10n 解析（切语言即换文案）。
-        var title: LocalizedText {
-            switch self {
-            case .all: return LocalizedText("全部照片")
-            case .filtered: return LocalizedText("按筛选")
-            case .similarityGroup: return LocalizedText("相似度分组")
-            }
-        }
-    }
 
     /// 同步状态机（对齐旧版 c1-sync-controls.ts C1SyncState 语义，从
     /// MetadataSyncSummary 推导）：syncing=正在写入、c1Read=已写入待 C1 确认、
     /// safeToCleanup=全部行终态（synced>0）、synced=无行。
-    public enum SyncFlowState: Equatable {
-        case disconnected
-        case conflict
-        case failed
-        case syncing
-        case c1Read
-        case safeToCleanup
-        case synced
-    }
-
-    /// 纯函数版按钮可用性矩阵：对齐 TS deriveSyncControls({ syncState, hasWritten, acked })
-    /// （tests/unit/renderer/c1-sync-controls.test.ts 的 8 组门控用例）。
-    /// internal：CullingViewModelTests 直测。
-    struct SyncFlowControls: Equatable {
-        let canLoadMetadata: Bool
-        let canConfirmSync: Bool
-        let canCleanup: Bool
-    }
-
-    enum CullingSyncFlow {
-        static func deriveControls(
-            syncState: SyncFlowState,
-            hasWritten: Bool,
-            acked: Bool
-        ) -> SyncFlowControls {
-            switch syncState {
-            case .syncing, .c1Read, .safeToCleanup:
-                // syncing：可重载（无需 ack）；c1Read/safeToCleanup 同左。
-                let canLoad = true
-                let canConfirm: Bool
-                switch syncState {
-                case .safeToCleanup: canConfirm = true
-                case .c1Read: canConfirm = acked && hasWritten
-                default: canConfirm = false
-                }
-                return SyncFlowControls(
-                    canLoadMetadata: canLoad,
-                    canConfirmSync: canConfirm,
-                    canCleanup: syncState == .safeToCleanup
-                )
-            case .disconnected, .conflict, .failed, .synced:
-                // 保守：全部禁用。
-                return SyncFlowControls(canLoadMetadata: false, canConfirmSync: false, canCleanup: false)
-            }
-        }
-    }
 
     // Cut 1 / B3b：挑片域依赖（19 条 culling.* 命令 / 17 个方法）。
     let cullingAPI: any CullingAPI

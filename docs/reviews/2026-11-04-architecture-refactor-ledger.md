@@ -467,3 +467,18 @@
 - #1：C4/C5（GatherMetadataIO 仍依赖 Application/Delivery）未做。
 - #6：`CullingViewModel`（8 文件 3,303 行）与 `CullingService`（28 方法）未拆；
   研究结论是后者该收窄端口而非继续拆文件。
+
+## 残留修复 1：#6 S1 —— 纯类型搬移（4 个新文件 / 420 行）
+
+- S1a：`+Triage.swift:263-463` 的 **5** 个类型（含 `TriageCalibrationViewModel`，调研修正了
+  「4 个」的说法）→ `Culling/TriageCalibration.swift`；+Triage.swift 463 → 261 行。
+- S1b：`+Writeback.swift:7-142` 的 **7** 个类型（含 2 个 public 协议）→
+  `Culling/C1RoundTripPorts.swift`；顺带删掉一个空的 `public extension Notification.Name`
+  （通道名 #11 已迁走，只剩注释的零引用死声明）；+Writeback 516 → 379 行。
+- S1c：`CullingViewModel` 里的 6 个嵌套/顶层值类型 → `CullingFilterState.swift`（筛选/范围/
+  目标索引）+ `CullingSyncFlow.swift`（同步状态机）；CullingViewModel 660 → 577 行；
+  7 处限定名（`CullingViewModel.FilterState` 等）改为裸名。
+- 这一步是**纯搬移**：45 处构造点、345 处 View 调用点、140 条测试全部零改动；
+  140 行（+Triage 201 + Writeback 136）的非 VM 类型各自落到自解释文件。
+- 踩坑：第一次切片把类的声明头一起切掉了（`KeywordTargetIndex` 是顶层、其余是嵌套，
+  中间隔着 class 声明），编译报「expected } in class」——已按「逐个类型用花括号配对」重做。

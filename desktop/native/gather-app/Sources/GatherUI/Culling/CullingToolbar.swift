@@ -41,7 +41,7 @@ struct CullingToolbar: View {
 
             labeledPicker(l10n("范围")) {
                 Picker(l10n("范围"), selection: scopeBinding) {
-                    ForEach(CullingViewModel.ScopeMode.allCases, id: \.self) { scope in
+                    ForEach(ScopeMode.allCases, id: \.self) { scope in
                         Text(l10n.resolve(scope.title)).tag(scope)
                     }
                 }
@@ -89,7 +89,7 @@ struct CullingToolbar: View {
 
             Menu {
                 Picker(l10n("范围"), selection: scopeBinding) {
-                    ForEach(CullingViewModel.ScopeMode.allCases, id: \.self) { scope in
+                    ForEach(ScopeMode.allCases, id: \.self) { scope in
                         Text(l10n.resolve(scope.title)).tag(scope)
                     }
                 }
@@ -256,7 +256,7 @@ struct CullingToolbar: View {
         )
     }
 
-    private var scopeBinding: Binding<CullingViewModel.ScopeMode> {
+    private var scopeBinding: Binding<ScopeMode> {
         Binding(
             get: { viewModel.scopeMode },
             set: { value in Task { await viewModel.setScope(value) } }
