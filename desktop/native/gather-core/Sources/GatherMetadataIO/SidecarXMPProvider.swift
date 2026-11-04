@@ -238,7 +238,7 @@ public final class SidecarXMPProvider: XMPProvider {
 
     /// sidecar 的实际路径：优先返回磁盘上真实存在的条目（photo.XMP → photo.XMP），
     /// 找不到时才使用规范的 .xmp 小写路径（新建 sidecar）。
-    static func resolveSidecarPath(_ photoPath: String) -> String {
+    public static func resolveSidecarPath(_ photoPath: String) -> String {
         let canonical = TSPath.xmpSidecarPath(photoPath)
         let url = URL(fileURLWithPath: canonical)
         let directory = url.deletingLastPathComponent().path

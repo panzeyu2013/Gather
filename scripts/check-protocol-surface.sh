@@ -60,8 +60,11 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 find "$PROTO" -type f -name '*.swift' | LC_ALL=C sort > "$TMP/proto-files"
+# #1：GatherMetadataIO（XMP/JPEG/IPTC 写盘）也是生产代码，必须计入引用面，
+# 否则把文件搬去新 target 会让原本有引用的 DTO 变成"零引用"假阳性。
 find "$CORE_SOURCES/GatherPersistence" "$CORE_SOURCES/GatherAnalysis" \
-     "$CORE_SOURCES/GatherApplication" "$CORE_SOURCES/GatherDelivery" "$APP_SOURCES" \
+     "$CORE_SOURCES/GatherApplication" "$CORE_SOURCES/GatherDelivery" \
+     "$CORE_SOURCES/GatherMetadataIO" "$APP_SOURCES" \
      -type f -name '*.swift' 2>/dev/null | LC_ALL=C sort > "$TMP/prod-files"
 
 proto_file_n=$(wc -l < "$TMP/proto-files" | tr -d ' ')

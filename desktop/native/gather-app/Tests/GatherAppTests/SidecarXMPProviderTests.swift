@@ -11,6 +11,7 @@ import GatherAnalysis
 import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
+@testable import GatherMetadataIO
 
 // MARK: - 测试基建
 

@@ -11,6 +11,7 @@ import Foundation
 import Testing
 import GatherProtocol
 @testable import GatherHost
+@testable import GatherMetadataIO
 
 // MARK: - 夹具
 

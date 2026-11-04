@@ -22,6 +22,7 @@ import GatherPersistence
 import GatherProtocol
 import GatherTestSupport
 @testable import GatherHost
+@testable import GatherMetadataIO
 
 // MARK: - 夹具
 

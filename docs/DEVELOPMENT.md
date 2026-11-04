@@ -30,12 +30,13 @@ Gather 是 macOS 26+ 的 Swift/SwiftUI 原生桌面应用。业务能力位于
 
 ```text
 desktop/native/
-├── gather-core/                     # 5 个库 target + GatherTestSupport 夹具
+├── gather-core/                     # 6 个库 target + GatherTestSupport 夹具
 │   ├── Sources/GatherProtocol/      # 值类型、16 个域 API 协议、GatherErrorCode、路径策略
 │   ├── Sources/GatherPersistence/   # SchemaCurrent、Database、Repositories
 │   ├── Sources/GatherDelivery/      # DeliveryCoordinator、写回、XMP 文件锁
 │   ├── Sources/GatherAnalysis/      # Face/Image/Concurrent/Similarity
-│   ├── Sources/GatherApplication/   # Services 编排、JobService
+│   ├── Sources/GatherApplication/   # Services 编排、JobService、WorkflowRegistry
+│   ├── Sources/GatherMetadataIO/    # XMP/JPEG/IPTC 写盘（#1 从 Host 抽出）
 │   ├── Sources/GatherSchema/        # schema 导出可执行
 │   ├── Sources/GatherCoreBenchmarks/ + GatherFaceBenchmarks/
 │   ├── Tests/GatherTestSupport/     # makeTestDB 等共享夹具

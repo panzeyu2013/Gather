@@ -12,6 +12,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherApplication
+import GatherMetadataIO
 import GatherDelivery
 import GatherUI
 
@@ -100,21 +101,30 @@ struct CompositionCore {
         // metadata_write_mode=sidecar 可强制回到全 sidecar（旧行为）。
         let keywordStyle = KeywordDCSubjectStyle(
             rawValue: settingsService.string(.keywordDCSubjectStyle)) ?? .leaf
-        let xmp: any XMPProvider = xmpProvider ?? MetadataWriteRouter(
-            sidecar: SidecarXMPProvider(dcSubjectStyle: keywordStyle),
-            dcSubjectStyle: keywordStyle,
-            modeProvider: {
-                settingsService.string(.metadataWriteMode)
-            })
+        // #1：写盘实现搬到 GatherMetadataIO 后，宿主不再下转具体类型——要么用注入的
+        // provider（此时目标恒为 sidecar，与旧实现的 as? 失败回退逐字一致），要么用
+        // 工厂给出的「provider + 两个解析闭包」。
+        let xmp: any XMPProvider
+        let targetWritePath: @Sendable (String) -> String
+        let targetKind: @Sendable (String) -> MetadataTargetKind
+        if let xmpProvider {
+            xmp = xmpProvider
+            targetWritePath = { SidecarXMPProvider.resolveSidecarPath($0) }
+            targetKind = { _ in .sidecar }
+        } else {
+            let wiring = MetadataIOWiring.makeRouter(
+                dcSubjectStyle: keywordStyle,
+                modeProvider: {
+                    settingsService.string(.metadataWriteMode)
+                })
+            xmp = wiring.xmp
+            targetWritePath = wiring.writePath
+            targetKind = wiring.kind
+        }
         // 交付层只知道"目标是个文件"：由路由器回答是 sidecar 还是照片自身。
         let targetResolver = MetadataTargetResolver(
-            path: { photoPath in
-                (xmp as? MetadataWriteRouter)?.target(for: photoPath).writePath
-                    ?? SidecarXMPProvider.resolveSidecarPath(photoPath)
-            },
-            kind: { photoPath in
-                (xmp as? MetadataWriteRouter)?.target(for: photoPath).kind ?? .sidecar
-            })
+            path: { targetWritePath($0) },
+            kind: { targetKind($0) })
         let metadataCacheRepo = MetadataCacheRepo(connection: db)
         let assetResolver = PhotoAssetResolver(connection: db, settings: settingsService)
         let deliveryRepo = DeliveryRepo(connection: db)
@@ -153,9 +163,7 @@ struct CompositionCore {
             settingsService.string(.embeddedFastPath) == "0"
             ? nil
             : EmbeddedJPEGSessionFactory(
-                isEmbeddedTarget: { photoPath in
-                    (xmp as? MetadataWriteRouter)?.target(for: photoPath).kind == .embedded
-                },
+                isEmbeddedTarget: { photoPath in targetKind(photoPath) == .embedded },
                 dcSubjectStyle: keywordStyle)
         let writebackService = WritebackService(
             deliveryRepo: deliveryRepo, xmp: xmp, photoRepo: photoRepo,

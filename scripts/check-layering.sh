@@ -26,9 +26,11 @@ ENTRY_DIR="$APP_SRC/GatherApp"
 ANALYSIS_DIR="$CORE_SRC/GatherAnalysis"
 DOMAIN_DIR="$CORE_SRC/GatherApplication"
 PERSISTENCE_DIR="$CORE_SRC/GatherPersistence"
+# #1：元数据写盘（XMP/JPEG/IPTC）从 GatherHost 抽成独立 target。
+METADATA_IO_DIR="$CORE_SRC/GatherMetadataIO"
 
 # 扫描根守卫：目录消失/改名不得静默跳过（Gate fail-open，复审 P1）。
-for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR"; do
+for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR" "$METADATA_IO_DIR"; do
   if [ ! -d "$d" ]; then
     echo "check-layering: FAIL 缺少扫描根：$d" >&2
     exit 1
@@ -66,14 +68,15 @@ check_forbidden() {
   done
 }
 
-check_forbidden "$UI_DIR" "GatherUI" GatherPersistence GatherApplication GatherAnalysis GatherHost GatherDelivery
-check_forbidden "$ENTRY_DIR" "GatherApp" GatherProtocol GatherPersistence GatherAnalysis GatherApplication GatherDelivery
+# UI/入口不得直接依赖写盘实现（#1）：只能经 GatherProtocol 的 XMPProvider 端口。
+check_forbidden "$UI_DIR" "GatherUI" GatherPersistence GatherApplication GatherAnalysis GatherHost GatherDelivery GatherMetadataIO
+check_forbidden "$ENTRY_DIR" "GatherApp" GatherProtocol GatherPersistence GatherAnalysis GatherApplication GatherDelivery GatherMetadataIO
 check_forbidden "$HOST_DIR" "GatherHost" GatherApp
 check_forbidden "$ANALYSIS_DIR" "GatherAnalysis" GatherPersistence
 check_forbidden "$DOMAIN_DIR" "GatherApplication" SwiftUI
 
 # 3b-6 已删除 GatherCore 伞：任何 target 再 import 它都视为回潮。
-for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR"; do
+for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR" "$METADATA_IO_DIR"; do
   if [ -d "$d" ]; then
     check_forbidden "$d" "$(basename "$d")" GatherCore
   fi

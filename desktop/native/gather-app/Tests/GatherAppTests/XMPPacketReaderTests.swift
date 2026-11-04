@@ -9,6 +9,7 @@ import Testing
 import GatherApplication
 import GatherProtocol
 @testable import GatherHost
+@testable import GatherMetadataIO
 
 // MARK: - 夹具
 

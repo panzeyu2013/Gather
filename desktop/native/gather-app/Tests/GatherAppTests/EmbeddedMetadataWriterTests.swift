@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 import GatherApplication
 import GatherProtocol
 @testable import GatherHost
+@testable import GatherMetadataIO
 
 private func embeddedFixtureJPEG(iptc: [String: Any]? = nil) throws -> Data {
     let width = 48

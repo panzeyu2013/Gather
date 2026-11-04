@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 import GatherApplication
 import GatherProtocol
 @testable import GatherHost
+@testable import GatherMetadataIO
 
 private func routerFixtureJPEG() throws -> Data {
     let width = 32

@@ -6,6 +6,7 @@ import Testing
 import GatherDelivery
 import GatherProtocol
 @testable import GatherHost
+@testable import GatherMetadataIO
 
 @Suite("交付文件端口（删除守卫）")
 struct DeliveryFilePortTests {

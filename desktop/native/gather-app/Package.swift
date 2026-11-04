@@ -116,6 +116,8 @@ let package = Package(
                 .product(name: "GatherAnalysis", package: "gather-core"),
                 .product(name: "GatherDelivery", package: "gather-core"),
                 .product(name: "GatherApplication", package: "gather-core"),
+                // #1：元数据写盘（XMP/JPEG/IPTC）已搬到 core，宿主只装配。
+                .product(name: "GatherMetadataIO", package: "gather-core"),
             ],
             path: "Sources/GatherHost",
             swiftSettings: swift6Settings
@@ -140,6 +142,7 @@ let package = Package(
                 .product(name: "GatherApplication", package: "gather-core"),
                 // WP7：复用 core 的测试夹具（makeTestDB / AsyncGate / LockedBox），
                 // 不再在 app 侧复制。product 只链接进测试，不进 app 运行时。
+                .product(name: "GatherMetadataIO", package: "gather-core"),
                 .product(name: "GatherTestSupport", package: "gather-core"),
             ],
             swiftSettings: swift6Settings

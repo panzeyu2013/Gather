@@ -1,5 +1,6 @@
 // swift-tools-version: 6.2
-// Gather Swift 核心库（Cut 3 / 3a，3b-6 删除过渡伞）。四层 target + schema 工具/基准可执行 + 测试基建。
+// Gather Swift 核心库（Cut 3 / 3a，3b-6 删除过渡伞）。分层 target + 元数据写盘 target
+// + schema 工具/基准可执行 + 测试基建。
 // 语言模式固定为 Swift 6：并发安全检查为硬错误（不再依赖 Swift 5 模式的警告）。
 import PackageDescription
 import Foundation
@@ -45,6 +46,8 @@ let package = Package(
         .library(name: "GatherDelivery", targets: ["GatherDelivery"]),
         .library(name: "GatherAnalysis", targets: ["GatherAnalysis"]),
         .library(name: "GatherApplication", targets: ["GatherApplication"]),
+        // #1：XMP/JPEG/IPTC 写盘实现（从 gather-app 的 GatherHost 抽出）。
+        .library(name: "GatherMetadataIO", targets: ["GatherMetadataIO"]),
         // WP7：core 测试共享夹具作为 library product 暴露，供 gather-app 的
         // GatherAppTests 复用（只进测试链接，不改变 core 运行时；app 不链接它）。
         .library(name: "GatherTestSupport", targets: ["GatherTestSupport"]),
@@ -103,6 +106,23 @@ let package = Package(
         .target(
             name: "GatherApplication",
             dependencies: ["GatherProtocol", "GatherPersistence", "GatherDelivery", "GatherAnalysis"],
+            swiftSettings: swift6Settings
+        ),
+        // #1：元数据写盘（sidecar XMP / 内嵌 JPEG XMP+IPTC / 写目标路由）。
+        //
+        // 为什么从宿主搬下来：写盘真相住在 app target 时，「delivered == 磁盘上真的
+        // 写了」这条不变量只能在 app 测试里验证；搬下来后 core 侧的交付集成测试可以
+        // 直接驱动真实 adapter。
+        //
+        // 依赖**暂时**含 Application + Delivery（Stage 1 平移）：Embedded 的
+        // XMPPacketReader/JPEGMetadataWriter/MetadataWriteRouter 还借用 Application 的
+        // 解析与 baseline 工具、router 用 Delivery 的备份路径白名单。后续两步（C4/C5）
+        // 逐个去掉，最终只留 Protocol + Persistence。
+        .target(
+            name: "GatherMetadataIO",
+            dependencies: [
+                "GatherProtocol", "GatherPersistence", "GatherDelivery", "GatherApplication",
+            ],
             swiftSettings: swift6Settings
         ),
         // 系统 SQLite3 的 C 模块 shim（module.modulemap），Linux/macOS 双平台。

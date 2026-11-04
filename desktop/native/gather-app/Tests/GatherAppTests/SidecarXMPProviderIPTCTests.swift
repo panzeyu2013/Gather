@@ -10,6 +10,7 @@ import GatherApplication
 import GatherTestSupport
 @testable import GatherUI
 @testable import GatherHost
+@testable import GatherMetadataIO
 
 private func makeTempDir() throws -> String {
     let dir = FileManager.default.temporaryDirectory

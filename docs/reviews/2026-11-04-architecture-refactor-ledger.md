@@ -165,3 +165,26 @@
 - 未做：core 侧新增 `MetadataDispositionServiceTests`（需要 XMPProvider 假件 +
   交付行种子，成本高于本步收益）；当前以 app 侧端到端用例作回归网，
   后续做「整条写回链进 core 测试」时一并补。
+
+## #1 C0+C1：GatherMetadataIO target（写盘实现离开宿主）
+
+- 11 文件 / 4,189 行从 `GatherHost` 搬到新 target `GatherMetadataIO`（gather-core）：
+  Sidecar 组 4 文件 1,834 行（`SidecarXMPProvider` + Patching + IPTC + IPTCReading）、
+  Embedded 组 7 文件 2,355 行（EmbeddedJPEGSession / IPTCIIM / JPEGMetadataWriter /
+  JPEGSegments / MetadataWriteRouter / XMPPacketReader / XMPPacketStore）。
+- `WebDAVCredentials`（94 行）**不搬**：它只有 Security + URLSession，不含元数据 IO，
+  已归到 `GatherHost/Output/`。
+- 依赖方向（Stage 1）：target 暂时依赖 Protocol + Persistence + Delivery + Application。
+  原因：Embedded 的 `XMPPacketReader` / `JPEGMetadataWriter` / `MetadataWriteRouter` 还借用
+  Application 的解析与 baseline 工具，router 还用 Delivery 的 `DeliveryBackupPath` 白名单。
+  C4/C5 会逐个去掉，最终只留 Protocol + Persistence。
+- 宿主接触面收敛为 1 个工厂：写目标路由（`MetadataWriteRouter`）仍是 internal——
+  它如果公开，等于把 `XMPProvider` 的 8 个 witness 一起漏成公开 API。改为
+  `MetadataIOWiring.makeRouter(...)` 返回「`any XMPProvider` + 写路径闭包 + 目标种类闭包」，
+  宿主不再 `as?` 下转具体类型（旧实现在注入 provider 时靠 cast 失败回退 sidecar，新实现
+  用同一条分支显式表达，行为逐字一致）。
+- 门禁改动：`check-layering.sh` 增加 `GatherMetadataIO` 扫描根 + 禁止 UI/入口 import 它；
+  `check-protocol-surface.sh` 的生产扫描列表补上该目录（否则搬走的 DTO 会被误判为
+  「零引用」——实测 `MetadataTargetPolicy` 立刻假阳性，已修）。
+- 未做：C2 把 10 个 app 测试文件（2,715 行 / 87 用例）迁进 core；C3 加
+  「delivered == 磁盘真写了」不变量套件。当前 app 测试仍覆盖这些实现。

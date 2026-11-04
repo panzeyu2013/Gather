@@ -10,6 +10,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import GatherProtocol
 @testable import GatherHost
+@testable import GatherMetadataIO
 
 private func makeJPEG(width: Int = 32, height: Int = 32, iptc: [String: Any]? = nil) throws -> Data {
     let colorSpace = CGColorSpaceCreateDeviceRGB()
