@@ -251,6 +251,15 @@ struct CompositionCore {
             feedback: TriageFeedbackRepo(connection: db))
         // 3.4 CullingService：写回执行器走 WritebackService（CullingWritebackPort），
         // confirm/cleanup/syncStatus 走交付模型（不再注入旧 outbox 仓储）。
+        // #6 S8：写回执行链在装配完 writebackService / metadataDeliveryService 之后挂上，
+        // 因为二者构造在 metadataMutationService 之后（闭包捕获实例成员，不能提前引用）。
+        metadataMutationService.setFlush({ sessionId in
+            _ = try await writebackService.executePending(
+                sessionId: sessionId, module: "metadata")
+            // 挑片 rating/label 也落 module=.metadata：写完立即自动确认，
+            // 否则这些行永远停在 written，cleanup/finalize 都收不到。
+            _ = metadataDeliveryService.autoConfirmAfterWrite(sessionId: sessionId)
+        })
         let cullingService = CullingServiceFactory.make(
             photoRepo: photoRepo, cullingDecisionRepo: CullingDecisionRepo(connection: db),
             similarityResultRepo: similarityResultRepo,
@@ -268,15 +277,6 @@ struct CompositionCore {
                     return .hidden
                 }
                 return .matching(gate)
-            },
-            // rating/label 与 applyHistory 入队后立即写盘（否则 metadata item 停在 pending，
-            // 看起来“改了但 XMP 没写”）。
-            flushMetadata: { sessionId in
-                _ = try await writebackService.executePending(
-                    sessionId: sessionId, module: "metadata")
-                // 挑片 rating/label 也落 module=.metadata：写完立即自动确认，
-                // 否则这些行永远停在 written，cleanup/finalize 都收不到。
-                _ = metadataDeliveryService.autoConfirmAfterWrite(sessionId: sessionId)
             },
             delivery: deliveryCoordinator.adapter(for: .culling))
         let sessionService = SessionService(

@@ -27,6 +27,7 @@
 //   - 路径一律经 TSPath.normalize 归一化（与 DeliveryRepo 的落库键同一口径）。
 
 import Foundation
+import os
 import GatherProtocol
 import GatherPersistence
 
@@ -120,7 +121,10 @@ public final class MetadataMutationService: MetadataMutationPort {
     public static let keywordsModeKey = "keywords_mode"
 
     /// #6 S8：立即落盘的执行入口（组合根注入；nil = 只入队不落盘）。
-    private let flush: (@Sendable (String) async throws -> Void)?
+    /// 组合根在装配完写回链之后再挂上（两者构造顺序有依赖，见 Core.swift）。
+    /// 用锁盒而不是 var：本类型是 Sendable，可变存储属性会破坏合成。
+    private let flushBox = OSAllocatedUnfairLock<(@Sendable (String) async throws -> Void)?>(
+        initialState: nil)
 
     private let deliveryRepo: DeliveryRepo
     /// 交付状态写入的唯一入口（WP2b）：applyMetadataMutation 的复合事务仍由 Repo 执行。
@@ -143,12 +147,18 @@ public final class MetadataMutationService: MetadataMutationPort {
         self.xmp = xmp
         self.assetResolver = assetResolver
         self.target = target
-        self.flush = flush
+        self.flushBox.withLock { $0 = flush }
     }
 
     /// #6 S8：立即写盘（原 CullingService.flushMetadata 闭包）。nil = 只入队。
     public func flushQueuedMetadata(sessionId: String) async throws {
+        let flush = flushBox.withLock { $0 }
         try await flush?(sessionId)
+    }
+
+    /// 装配顺序所迫：写回链晚于本类型构造，故提供后置挂载。
+    public func setFlush(_ flush: (@Sendable (String) async throws -> Void)?) {
+        flushBox.withLock { $0 = flush }
     }
 
     /// TS: queuePhotoValues —— 值直写合并进交付项并等待执行器刷盘。
