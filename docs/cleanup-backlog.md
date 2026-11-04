@@ -48,7 +48,7 @@
 - **验收**：三旧表/3 列在 Sources/Tests 引用 = 0；`DeliveryCoordinatorTests`/`DeliveryRepoTests`/`DeliveryIntentRepoTests` 覆盖 confirm 单事务、cleanup 崩溃回放与外改冲突。
 
 ### CL-04 4 套 stale 守卫 —— status: deferred（2026-10-22，post-refactor r8 P1-3）
-- **位置**【已确认】：Gallery `Gallery/GalleryViewModel.swift:241`（`fetchGeneration`，使用 :455/513/725-754）；Library `Library/LibraryViewModel.swift:334`（`latestRequestID`，:665-691）；Similarity `Similarity/SimilarityViewModel.swift:319`（`tierRequestID`，:472-482）；Culling `Culling/CullingView.swift:133`（`pageVersion`，:591-619、:805-814）。
+- **位置**【已确认】：Gallery `Gallery/GalleryViewModel.swift:241`（`fetchGeneration`，使用 :455/513/725-754）；Library `Library/LibraryViewModel.swift:334`（`latestRequestID`，:665-691）；Similarity `Similarity/SimilarityViewModel.swift:319`（`tierRequestID`，:472-482）；Culling `Culling/CullingViewModel.swift:211`（`pageVersion`，增点 `CullingViewModel+Actions.swift`；用处 `CullingViewModel+Load.swift:42`、`CullingGrid.swift:322`、`CullingViewModel+Keywords.swift:44`）。（原记 `CullingView.swift:133`，该文件现仅 192 行，行号已失效）
 - **未完成原因（r8 P1-3）**：`Support/RequestGate.swift` 自 4a-0 起就是零生产调用点（仅 `RequestGateTests` 引用）；`Support/ViewState.swift` 同样零生产调用点（R4 P2-8）。4 套私有代次从未迁移，本轮又不能改 Gallery/Library/Similarity/Culling 的业务 VM，无法给出“统一实现 + 对等测试 + 旧代码删除”的 done 证据。
 - **处置（2026-10-22）**：不保留“以后可能用”的类型储备，删除 `Support/RequestGate.swift`（34 行）、`Support/ViewState.swift`（49 行）及 `Tests/GatherAppTests/RequestGateTests.swift`（4 例/58 行）、`ViewStateTests.swift`（8 例/98 行），共 **4 文件 / 239 行 / 12 例**；4 个 VM 的私有代次原样保留。
 - **验收偏差**：原验收 `grep -rnE 'fetchGeneration|latestRequestID|tierRequestID|pageVersion' gather-app --include='*.swift'` = 0 **未达成**；实测仍 **37 行**（fetchGeneration 16 / latestRequestID 5 / tierRequestID 7 / pageVersion 11，其中 2 行双命中）。`RequestGate` 在生产与测试中的引用均为 0。
@@ -83,7 +83,7 @@
 - **证据（2026-10-24 复核）**：GatherUI 中 `var errorMessage: String?` = **0**（`grep` 实测）；
   7 个页面改为 `CommandError` 驱动（如 `SettingsViewModel.swift:36` 的 `errorMessage: CommandError?`）；
   唯一残留是 `GatherHost/AppBootstrap.swift:67` 的启动错误（宿主状态，不属于 VM）。
-- **位置**【已确认，实测 7 个】：`Culling/CullingView.swift:102`、`Settings/SettingsView.swift:105`、`Export/ExportView.swift:31`、`Duplicates/DuplicatesView.swift:118`、`ControlCenter/SessionControlView.swift:26`、`FaceKeywording/FaceKeywordingView.swift:86`、`Similarity/SimilarityViewModel.swift:332`。计划写 6 个，实测 7 个。
+- **位置**【已确认，实测 7 个】：`Culling/CullingViewModel.swift:66`（原记 `CullingView.swift:102`，已失效）、`Settings/SettingsView.swift:105`、`Export/ExportView.swift:31`、`Duplicates/DuplicatesView.swift:118`、`ControlCenter/SessionControlView.swift:26`、`FaceKeywording/FaceKeywordingView.swift:86`、`Similarity/SimilarityViewModel.swift:332`。计划写 6 个，实测 7 个。
 - **处置**：统一 `GatherError` + `CommandError`（`ViewState<V>` 已于 2026-10-22 删除，见 CL-04）；删除存储型 `errorMessage: String?`。
 - **验收**：`grep -rn 'var errorMessage: String?' app` = 0；错误横幅由 `LoadPhase.failed(CommandError)` / `CommandError` 驱动（不再使用已删的 `ViewState`）。
 - **风险**：现有文案含本地化模板，改 GatherError 后需 en/zh 键位对齐（Localization 测试）。
@@ -327,9 +327,9 @@
 | ResponseOk / ResponseErr / GroupData / ImageRef / EngineStatusData | struct | Protocol/Core.swift:223/259/549/550/75 | 4/5/0/0/0 | 命令面 DTO / 旧 IPC；删 |
 | DimensionsRequest / DimensionsResult / DecodeRequest / DecodeResultPayload | struct | IPC/ImageCommands.swift:11/22/61/72 | 0 | Helper 旧协议；删或降级 |
 | SettingsRow | struct | Repositories/SettingsRepo.swift:6 | 6 | 仅测试；降 internal |
-| CullingPhotoRow | struct | Services/CullingService.swift:155 | 0 | Service 内行类型误 public（own=45）；降 internal |
-| CullingUpdateContext | struct | Services/CullingService.swift:252 | 0 | 同上 |
-| CullingHistorySink | class | Services/CullingService.swift:241 | 0 | 同上 |
+| CullingPhotoRow | struct | Services/Culling/CullingService+Types.swift:95 | 0 | Service 内行类型误 public（own=45）；降 internal |
+| CullingUpdateContext | struct | Services/Culling/CullingService+Types.swift:181 | 0 | **改判**：它经门面 `getUpdateContext` 暴露给 GatherHost（LiveCullingAPI:381），成员类型必须 public；可行改法是**把它变成不透明句柄**（成员全 internal），而不是逐个降级类型 |
+| CullingHistorySink | class | Services/Culling/CullingService+Types.swift:171 | 0 | Service 内行类型误 public；降 internal（受上一条约束） |
 | DBStatement | class | Database/DB.swift:241 | 0 | 无外部构造；降 internal |
 | FaceIdentityFeedback | struct | Repositories/FaceFeedbackRepo.swift:4 | 0 | 无消费；删/降级 |
 | VectorIndexError / HnswHits / LshHits | enum/struct | Face/VectorIndex.swift:794/90/561 | 9/0/0 | HnswHits 随 HNSW 删；VectorIndexError 保留 |
@@ -349,7 +349,7 @@
 
 | # | 类别 | 位置（文件:行） | 份数 | 合并目标 |
 | --- | --- | --- | --- | --- |
-| 1 | stale 守卫 | GalleryViewModel.swift:241/725-754；LibraryViewModel.swift:334/665-691；SimilarityViewModel.swift:319/472-482；CullingView.swift:133/591-619 | 4 | `RequestGate`（2026-10-22 删除；CL-04 deferred，未统一） |
+| 1 | stale 守卫 | GalleryViewModel.swift:241/725-754；LibraryViewModel.swift:334/665-691；SimilarityViewModel.swift:319/472-482；CullingViewModel.swift:211（原记 CullingView.swift:133/591-619，已失效） | 4 | `RequestGate`（2026-10-22 删除；CL-04 deferred，未统一） |
 | 2 | 度门控 BFS | ClusterEngine.swift:329/512/587；IncrementalClusterer.swift:346/432（+ SimilarityService.swift:763 回退） | 5+1 | `ClusterGraph` 单一 BFS + `ClusterPipeline` |
 | 3 | 双聚类 | ClusterEngine.swift（753 行）+ IncrementalClusterer.swift（766 行） | 2 | 同上；保留 parity 测试 |
 | 4 | 缩略图 loader | PhotoThumbnailView.swift:222-260 与 FaceCropThumbnailView.swift:415-449；@State :164-168 vs :289-293；.task :211 vs :342 | 2 | `ThumbnailLoader` + 统一 cache key |
