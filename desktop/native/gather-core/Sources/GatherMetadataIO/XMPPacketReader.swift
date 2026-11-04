@@ -16,7 +16,6 @@
 //   attributes.triageSignal（ImageIO 不解析私有命名空间）；
 // - 包缺失/非 UTF-8/XML 不合法 → 返回 nil，由调用方回退 ImageIO 旧路径。
 import Foundation
-import GatherApplication
 import GatherProtocol
 
 enum XMPPacketReader {

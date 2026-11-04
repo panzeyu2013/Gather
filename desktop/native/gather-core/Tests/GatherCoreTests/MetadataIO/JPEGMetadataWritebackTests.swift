@@ -16,6 +16,7 @@ import Testing
 import UniformTypeIdentifiers
 import GatherTestSupport
 @testable import GatherProtocol
+import GatherAnalysis
 @testable import GatherPersistence
 @testable import GatherDelivery
 @testable import GatherApplication
@@ -159,7 +160,7 @@ struct JPEGMetadataWritebackTests {
         #expect(!FileManager.default.fileExists(atPath: sidecarPath),
                 "内嵌模式不得创建 sidecar（一份真相）")
         let parsed = try await ImageIOExifProvider().parse(filePath: photo, isJpeg: true)
-        let disk = parsed.flatMap(MetadataService.embeddedAttributesFromParse)
+        let disk = parsed.flatMap(MetadataAttributes.embeddedAttributesFromParse)
         #expect(disk?.descriptive?.caption == "内嵌新说明", "值必须真的写进 APP1")
         #expect(disk?.descriptive?.title == "旧标题", "未触碰的内嵌字段不得丢")
     }

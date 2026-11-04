@@ -10,6 +10,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import GatherApplication
 import GatherProtocol
+import GatherAnalysis
 @testable import GatherMetadataIO
 
 private func embeddedFixtureJPEG(iptc: [String: Any]? = nil) throws -> Data {
@@ -113,7 +114,7 @@ struct EmbeddedMetadataWriterTests {
         let after = try JPEGDocument(data: Data(contentsOf: URL(fileURLWithPath: path)))
         #expect(after.scanDigest == before.scanDigest, "scan 必须逐字节不变")
         let parsed = try await ImageIOExifProvider().parse(filePath: path, isJpeg: true)
-        let attributesReadBack = try #require(parsed.flatMap(MetadataService.embeddedAttributesFromParse))
+        let attributesReadBack = try #require(parsed.flatMap(MetadataAttributes.embeddedAttributesFromParse))
         #expect(attributesReadBack.descriptive?.caption == "新标题")
         #expect(attributesReadBack.descriptive?.city == nil, "清空必须连 IIM 一起删")
         #expect(attributesReadBack.descriptive?.creator == ["wedding"])
@@ -146,14 +147,14 @@ struct EmbeddedMetadataWriterTests {
             attributes: MetadataWriteAttributes(descriptive: descriptive))
 
         let afterWrite = try await ImageIOExifProvider().parse(filePath: path, isJpeg: true)
-        #expect(afterWrite.flatMap(MetadataService.embeddedAttributesFromParse)?
+        #expect(afterWrite.flatMap(MetadataAttributes.embeddedAttributesFromParse)?
             .descriptive?.caption == "写入后标题")
 
         try JPEGMetadataWriter.restore(photoPath: path, headerBackupPath: report.headerBackupPath)
         let restored = try JPEGDocument(data: Data(contentsOf: URL(fileURLWithPath: path)))
         #expect(restored.scanDigest == originalDocument.scanDigest)
         let restoredAttributes = try await ImageIOExifProvider().parse(filePath: path, isJpeg: true)
-        #expect(restoredAttributes.flatMap(MetadataService.embeddedAttributesFromParse)?
+        #expect(restoredAttributes.flatMap(MetadataAttributes.embeddedAttributesFromParse)?
             .descriptive?.caption == "原始标题")
     }
 
@@ -203,7 +204,7 @@ struct EmbeddedMetadataWriterTests {
         #expect(afterIIM.values(for: .objectAttributeReference).isEmpty, "清空必须删掉 2:4")
 
         let readBack = try await ImageIOExifProvider().parse(filePath: path, isJpeg: true)
-        let attributes = readBack.flatMap(MetadataService.embeddedAttributesFromParse)
+        let attributes = readBack.flatMap(MetadataAttributes.embeddedAttributesFromParse)
         #expect(attributes?.descriptive?.location == nil, "读侧不得回退到旧 IIM")
         #expect(attributes?.descriptive?.intellectualGenre == nil)
     }

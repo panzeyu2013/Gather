@@ -5,6 +5,7 @@
 // 避免两条路径对目的地边界/根外文件/部分失败给出不同结果。
 import Foundation
 import GatherProtocol
+import GatherAnalysis
 
 public struct SessionIngestRunner {
     public let sessionService: SessionService

@@ -262,12 +262,12 @@ struct MetadataServiceTests {
     /// 整数值不得带 ".0"（否则写回 XMP 的关键词从 "7" 变成 "7.0"，破坏跨端一致）。
     @Test("数字关键词字符串化：7→\"7\"、7.5→\"7.5\"、-0→\"0\"")
     func numericKeywordStringification() {
-        let list = MetadataService.normalizeKeywordList(
+        let list = MetadataAttributes.normalizeKeywordList(
             .array([.number(7), .number(7.5), .number(-0.0), .string("lead"), .null])
         )
         #expect(list == ["7", "7.5", "0", "lead"])
-        #expect(MetadataService.normalizeKeywordList(.number(7)) == ["7"])
-        #expect(MetadataService.normalizeKeywordList(.none) == nil)
+        #expect(MetadataAttributes.normalizeKeywordList(.number(7)) == ["7"])
+        #expect(MetadataAttributes.normalizeKeywordList(.none) == nil)
     }
 
     /// P1：JPEG 清空诊断覆盖 descriptive / keywords / label；RAW 与"sidecar 也没写"
@@ -365,7 +365,7 @@ struct MetadataServiceTests {
     func emptyContactStructureDoesNotWipe() {
         let base = DescriptiveMetadata(contactInfo: DescriptiveContact(city: "上海"))
         let overlayWithoutContact = DescriptiveMetadata(caption: "无联系人壳")
-        let merged = MetadataService.mergeDescriptive(base, overlayWithoutContact)
+        let merged = MetadataAttributes.mergeDescriptive(base, overlayWithoutContact)
         #expect(merged?.contactInfo?.city == "上海", "空 overlay 不得抹掉内嵌联系人")
     }
 }

@@ -10,7 +10,7 @@
 //   - `rewriteHeader(segments:)`：只重建头部（流式快路径，scan 由调用方分块拷贝）。
 // 两者对"改哪几段、IIM 怎么合并"必须完全一致，否则快慢路径会写出不同的文件。
 import Foundation
-import GatherApplication
+import GatherAnalysis
 import GatherProtocol
 
 struct EmbeddedMetadataWriteReport: Equatable, Sendable {

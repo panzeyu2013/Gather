@@ -539,3 +539,21 @@
   放 Protocol 比"沿着依赖方向另开一个 target"便宜得多。
 - 说明：app 套件出现过 1 次 `APIDuplicateQualityTests` 的偶发失败（job 去重时序），
   单独复跑通过；与本改动无关（改的是元数据纯函数与类型所在模块）。
+
+## 残留修复 6：#1 C4/C5 完成 —— GatherMetadataIO 不再依赖 Application / Delivery
+
+- `ImageIOExifProvider` / `ImageIODimensionsProvider` 从 Application 移到
+  `GatherAnalysis/Image/ImageMetadataProviders.swift`（读图实现在 Analysis，符合分层）。
+- 它们实现的 `ExifProvider` / `ImageDimensionsProvider` 协议从 Application 上移到
+  `GatherProtocol/Protocol/MetadataProviders.swift`——两个消费方（Application、MetadataIO）
+  都不用反向依赖。
+- `MetadataWriteRouter` 的 removeFile 白名单改指 `XMPBackupNaming.isControlledName`
+  （C5 第一步已上移），不再需要 `import GatherDelivery`。
+- 删掉 4 个死 import（`MetadataWriteRouter`/`XMPPacketReader`/`SidecarXMPProvider`）。
+- `Package.swift`：`GatherMetadataIO` 依赖从 `Protocol+Persistence+Delivery+Application`
+  收窄为 **`Protocol+Persistence+Analysis`**。
+- `check-layering.sh` 新增 4 条：MetadataIO 不得 import Application/Delivery/Host；
+  Application/Persistence/Analysis 不得 import MetadataIO。
+- **协议面增长（已记账）**：类型 413 → **415**（+2 协议），声明 2457 → **2459**（+2）。
+- 收口状态：`GatherMetadataIO` 的 import 只剩 Foundation / GatherProtocol /
+  GatherAnalysis / GatherPersistence / CryptoKit / os。

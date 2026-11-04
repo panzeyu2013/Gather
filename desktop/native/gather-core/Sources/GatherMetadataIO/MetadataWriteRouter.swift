@@ -10,8 +10,7 @@
 //   backup() 生成的路径会挂到 pending，write() 复用它（避免两份备份/孤儿文件）。
 import Foundation
 import os
-import GatherApplication
-import GatherDelivery
+import GatherAnalysis
 import GatherProtocol
 
 enum MetadataWriteRouterError: Error, Equatable, CustomStringConvertible {
@@ -204,8 +203,9 @@ final class MetadataWriteRouter: XMPProvider {
         // 这里是最靠近 removeItem 的一道关，宁可多拦。
         let lowered = path.lowercased()
         let isSidecar = lowered.hasSuffix(".xmp")
-        // 白名单唯一来源在 DeliveryBackupPath（与 DeliveryTypes 共用，避免两处漂移）。
-        let isControlledBackup = DeliveryBackupPath.isControlledName(path)
+        // 白名单唯一来源已上移 Protocol（XMPBackupNaming），#1 C5 之后本 target 不再
+        // 依赖 GatherDelivery；DeliveryBackupPath 同名函数只是一行转发。
+        let isControlledBackup = XMPBackupNaming.isControlledName(path)
         guard isSidecar || isControlledBackup else {
             throw MetadataWriteRouterError.embeddedWriteFailed(
                 "refusing to remove a non-metadata path")

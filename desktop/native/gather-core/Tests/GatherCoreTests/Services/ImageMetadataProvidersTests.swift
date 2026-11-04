@@ -6,6 +6,7 @@ import Testing
 import UniformTypeIdentifiers
 import GatherTestSupport
 @testable import GatherProtocol
+import GatherAnalysis
 @testable import GatherPersistence
 @testable import GatherAnalysis
 @testable import GatherApplication
@@ -85,12 +86,12 @@ struct ImageMetadataProvidersTests {
         #expect(CGImageDestinationFinalize(destination))
 
         let segments = try #require(await ImageIOExifProvider().parse(filePath: path, isJpeg: true))
-        // 消费端契约（MetadataService.embeddedAttributesFromParse）：xmp 用本地名。
+        // 消费端契约（MetadataAttributes.embeddedAttributesFromParse）：xmp 用本地名。
         // ImageIO 可能把 XMP 数值以字符串存回（"3"）：消费端两种都接受（见 embeddedAttributesFromParse）。
         let rawRating = segments.xmp?["Rating"]
         #expect(rawRating?.numberValue == 3 || rawRating?.stringValue == "3")
         #expect(segments.xmp?["Label"]?.stringValue == "Green")
-        let attributes = try #require(MetadataService.embeddedAttributesFromParse(segments))
+        let attributes = try #require(MetadataAttributes.embeddedAttributesFromParse(segments))
         #expect(attributes.rating == 3, "内嵌 XMP rating 必须派生为星级")
         #expect(attributes.label == "Green", "内嵌 XMP label 必须派生为色标")
     }
@@ -107,7 +108,7 @@ struct ImageMetadataProvidersTests {
         try writeJPEG(at: xmpPath, iptc: nil, xmpSubject: ["alpha", "beta"])
         let xmpSegments = try #require(await ImageIOExifProvider().parse(filePath: xmpPath, isJpeg: true))
         #expect(xmpSegments.dc?["subject"] == .array([.string("alpha"), .string("beta")]))
-        #expect(MetadataService.embeddedAttributesFromParse(xmpSegments)?.keywords == ["alpha", "beta"])
+        #expect(MetadataAttributes.embeddedAttributesFromParse(xmpSegments)?.keywords == ["alpha", "beta"])
 
         // (2) IPTC 关键词：顶层 iptc 段是唯一 IPTC 出口（xmp 段不再复制一份无消费者的副本）。
         let iptcPath = dir + "/iptc-kw.jpg"
@@ -115,7 +116,7 @@ struct ImageMetadataProvidersTests {
         let iptcSegments = try #require(await ImageIOExifProvider().parse(filePath: iptcPath, isJpeg: true))
         #expect(iptcSegments.iptc?["Keywords"] != nil, "IPTC 必须在顶层 iptc 段可读")
         #expect(iptcSegments.xmp?["iptc"] == nil, "IPTC 不得再复制进 xmp 段")
-        #expect(MetadataService.embeddedAttributesFromParse(iptcSegments)?.keywords == ["iptc-a", "iptc-b"])
+        #expect(MetadataAttributes.embeddedAttributesFromParse(iptcSegments)?.keywords == ["iptc-a", "iptc-b"])
     }
 
     @Test("内嵌 IPTC：dc 优先、IIM 回退、Alt 数组解包（P0 / B1）")
@@ -148,7 +149,7 @@ struct ImageMetadataProvidersTests {
             "Writer/Editor": .string("李四"),
             "Scene": .array([.string("011100")]),
         ])
-        let attributes = MetadataService.embeddedAttributesFromParse(
+        let attributes = MetadataAttributes.embeddedAttributesFromParse(
             MetadataParseSegments(xmp: xmp, dc: dc, iptc: iptc))
         let descriptive = attributes?.descriptive
         #expect(descriptive?.title == "上海夜色", "dc:title 必须优先于 IIM ObjectName")
@@ -185,7 +186,7 @@ struct ImageMetadataProvidersTests {
         ], xmpSubject: nil)
         let segments = try #require(await ImageIOExifProvider().parse(filePath: path, isJpeg: true))
         let descriptive = try #require(
-            MetadataService.embeddedAttributesFromParse(segments)?.descriptive)
+            MetadataAttributes.embeddedAttributesFromParse(segments)?.descriptive)
         #expect(descriptive.caption == "桥上的说明")
         #expect(descriptive.copyrightNotice == "© 2024 摄影师")
         #expect(descriptive.creator == ["王五"])
@@ -198,7 +199,7 @@ struct ImageMetadataProvidersTests {
     func mergesDescriptivePerField() {
         let embedded = DescriptiveMetadata(caption: "内嵌说明", copyrightNotice: "内嵌版权", city: "上海")
         let sidecar = DescriptiveMetadata(title: "sidecar 标题", caption: "sidecar 说明")
-        let merged = MetadataService.mergeDescriptive(embedded, sidecar)
+        let merged = MetadataAttributes.mergeDescriptive(embedded, sidecar)
         #expect(merged?.caption == "sidecar 说明")
         #expect(merged?.copyrightNotice == "内嵌版权", "sidecar 没写的字段必须保留内嵌值")
         #expect(merged?.city == "上海")
@@ -291,7 +292,7 @@ struct ImageMetadataProvidersTests {
             dc: .object(["description": .array([])]),
             iptc: .object(["Caption/Abstract": .string("旧标题")]),
             xmpPresentKeys: ["description"])
-        let attributes = MetadataService.embeddedAttributesFromParse(segments)
+        let attributes = MetadataAttributes.embeddedAttributesFromParse(segments)
         #expect(attributes?.descriptive?.caption == nil)
     }
 
@@ -300,7 +301,7 @@ struct ImageMetadataProvidersTests {
         let segments = MetadataParseSegments(
             iptc: .object(["Caption/Abstract": .string("旧标题")]),
             xmpPresentKeys: [])
-        let attributes = MetadataService.embeddedAttributesFromParse(segments)
+        let attributes = MetadataAttributes.embeddedAttributesFromParse(segments)
         #expect(attributes?.descriptive?.caption == "旧标题")
     }
 }

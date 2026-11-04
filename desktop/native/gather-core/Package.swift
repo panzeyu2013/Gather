@@ -120,8 +120,10 @@ let package = Package(
         // 逐个去掉，最终只留 Protocol + Persistence。
         .target(
             name: "GatherMetadataIO",
+            // #1 C4/C5：只依赖 Protocol + Persistence + Analysis（ImageIO 读取实现在
+            // Analysis）。不再依赖 Application / Delivery —— 它是被宿主装配的叶子适配器。
             dependencies: [
-                "GatherProtocol", "GatherPersistence", "GatherDelivery", "GatherApplication",
+                "GatherProtocol", "GatherPersistence", "GatherAnalysis",
             ],
             swiftSettings: swift6Settings
         ),

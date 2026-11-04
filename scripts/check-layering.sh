@@ -73,6 +73,12 @@ check_forbidden "$UI_DIR" "GatherUI" GatherPersistence GatherApplication GatherA
 check_forbidden "$ENTRY_DIR" "GatherApp" GatherProtocol GatherPersistence GatherAnalysis GatherApplication GatherDelivery GatherMetadataIO
 check_forbidden "$HOST_DIR" "GatherHost" GatherApp
 check_forbidden "$ANALYSIS_DIR" "GatherAnalysis" GatherPersistence
+# #1 C4/C5：写盘实现是叶子适配器——只许依赖 Protocol / Persistence / Analysis，
+# 反过来任何 core 层都不得 import 它（宿主与测试除外）。
+check_forbidden "$METADATA_IO_DIR" "GatherMetadataIO" GatherApplication GatherDelivery GatherHost
+check_forbidden "$DOMAIN_DIR" "GatherApplication" GatherMetadataIO
+check_forbidden "$PERSISTENCE_DIR" "GatherPersistence" GatherMetadataIO
+check_forbidden "$ANALYSIS_DIR" "GatherAnalysis" GatherMetadataIO
 check_forbidden "$DOMAIN_DIR" "GatherApplication" SwiftUI
 
 # 3b-6 已删除 GatherCore 伞：任何 target 再 import 它都视为回潮。
