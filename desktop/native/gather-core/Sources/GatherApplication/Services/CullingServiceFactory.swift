@@ -32,9 +32,8 @@ public enum CullingServiceFactory {
             metadataCacheRepo: metadataCacheRepo, pageQuery: pageQuery,
             richQuery: richQuery, deliveryItems: deliveryItems,
             transactions: transactions, metadataMutations: metadataMutations,
-            writeback: writeback, cullingHistoryRepo: cullingHistoryRepo,
-            hooks: hooks,
-            delivery: delivery)
+            cullingHistoryRepo: cullingHistoryRepo,
+            hooks: hooks)
         let sharedCore = CullingSharedCore(
             metadataCache: metadataCacheRepo, deliveryRows: deliveryItems)
         let sync = CullingSyncService(

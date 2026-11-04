@@ -2232,6 +2232,16 @@ struct CullingSplitContractTests {
         #expect(Set(labels) == ["decision", "sync"], "两个字段必须是 decision / sync，实际 \(labels)")
     }
 
+    @Test("决策服务不持交付端口：writeback / delivery 必须只属于同步侧（F2 回归）")
+    func decisionDoesNotHoldDeliveryPorts() throws {
+        let harness = try makeCullingHarness()
+        let decision = try #require(
+            Mirror(reflecting: harness.service).children.first { $0.label == "decision" }?.value)
+        let labels = Set(Mirror(reflecting: decision).children.compactMap(\.label))
+        #expect(!labels.contains("writeback"), "决策服务不得持有 writeback 端口：\(labels)")
+        #expect(!labels.contains("delivery"), "决策服务不得持有 delivery 适配器：\(labels)")
+    }
+
     @Test("同步服务只持 4 个依赖：core / writeback / delivery / decisions（K3/K5）")
     func syncServiceHoldsFourDependencies() throws {
         let harness = try makeCullingHarness()

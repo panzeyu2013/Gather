@@ -94,9 +94,6 @@ public final class CullingDecisionService {
     let richQuery: any CullingRichReading
     let transactions: any TransactionRunner
     let metadataMutations: any MetadataMutationPort
-    let writeback: any CullingWritebackPort
-    /// 交付适配器（WP2c：module 固定 .culling）：confirm/cleanup/finalize/镜像/读模型。
-    let delivery: any DeliveryModuleAdapter
     let cullingHistoryRepo: (any CullingHistoryRepository)?
     /// 设置读取端口（#9）：检测尺寸/预览上限等读取统一走端口。
     /// #6 S8：设置读取 + T0 展示策略合成一个钩子（依赖 14 → 13）。
@@ -115,10 +112,8 @@ public final class CullingDecisionService {
         deliveryItems: any DeliveryRowReading,
         transactions: any TransactionRunner,
         metadataMutations: any MetadataMutationPort,
-        writeback: any CullingWritebackPort,
         cullingHistoryRepo: (any CullingHistoryRepository)? = nil,
         hooks: CullingDisplayHooks = .defaults,
-        delivery: any DeliveryModuleAdapter
     ) {
         self.photoRepo = photoRepo
         self.cullingDecisionRepo = cullingDecisionRepo
@@ -129,12 +124,10 @@ public final class CullingDecisionService {
         self.richQuery = richQuery
         self.transactions = transactions
         self.metadataMutations = metadataMutations
-        self.writeback = writeback
         self.cullingHistoryRepo = cullingHistoryRepo
         self.hooks = hooks
         // WP3b-2：不再按 connection 自建 coordinator（Application 不持 DBConnection）。
         // 组合根注入交付适配器；测试经 ServiceConstructionTestSupport 的兼容 init 装配。
-        self.delivery = delivery
     }
 
     // MARK: - 会话查找缓存（TS SessionLookupEntry / SessionUpdateEntry）

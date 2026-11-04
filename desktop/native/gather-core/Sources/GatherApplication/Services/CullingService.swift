@@ -24,6 +24,7 @@ public final class CullingService {
     public func getUpdateContext(sessionId: String) throws -> CullingUpdateContext {
         try self.decision.getUpdateContext(sessionId: sessionId)
     }
+    @discardableResult
     public func updateState(
         sessionId: String,
         photoId: String,
@@ -45,6 +46,7 @@ public final class CullingService {
     ) throws -> [CullingUpdateResult] {
         try self.decision.batchUpdate(sessionId: sessionId, photoIds: photoIds, patch: patch)
     }
+    @discardableResult
     public func applyImportedPicks(
         sessionId: String,
         photoIds: [String]
@@ -54,6 +56,7 @@ public final class CullingService {
     public func flushQueuedMetadata(sessionId: String) async throws {
         try await self.decision.flushQueuedMetadata(sessionId: sessionId)
     }
+    @discardableResult
     public func applyHistory(
         sessionId: String,
         requestedEntries: [CullingHistoryApplyEntry],
