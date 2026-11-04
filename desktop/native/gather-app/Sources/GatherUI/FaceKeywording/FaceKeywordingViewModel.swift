@@ -11,7 +11,7 @@ import GatherProtocol
 
 @MainActor
 @Observable
-public final class FaceKeywordingViewModel: PageVisibility {
+public final class FaceKeywordingViewModel: SessionPageModel {
     /// TS AnalysisStatus：idle/running/done/failed/cancelled。
     public enum AnalysisPhase: Equatable {
         case idle
@@ -146,6 +146,12 @@ public final class FaceKeywordingViewModel: PageVisibility {
 
     /// 可见性唯一入口（PageVisibility）：默认不可见，重复调用幂等；
     /// shutdown 之后 no-op（关闭是终态）。
+    // MARK: - SessionPageModel（生命周期注册表契约）
+
+    /// 可见性真相的只读桥（存储属性与写入口仍归本 VM 所有）。
+    public var isPageVisible: Bool { isVisible }
+    /// 关闭终态的只读桥（关闭动作仍走 shutdown()）。
+    public var hasShutDown: Bool { isShutdown }
     public func setVisible(_ visible: Bool) {
         guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
     }

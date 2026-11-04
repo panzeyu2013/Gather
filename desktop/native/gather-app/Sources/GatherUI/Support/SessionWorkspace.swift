@@ -12,7 +12,15 @@
 //    setPageVisible 启动；页签切换由旧页 onDisappear(false) + 新页 onAppear(true)
 //    交接，进入会话不再顺带启动未挂载页面。
 // 会话区域进出由外壳调 workspace.setVisible（见 RootView.switchWorkspace）；
-// close 调 7 个 VM 的 shutdown（取消各自长任务）。
+// close 按注册表逐个 shutdown（取消各自长任务）。
+//
+// #12（生命周期表驱动）：上面三处扇出（会话级 hidden / 页面级 hidden / close）
+// 不再逐页手写字面量，统一迭代 SessionPage → SessionPageModel 注册表
+// （pageModels / lifecycleOrder）。加页面只需在 init 登记一次；
+// 视图构造（SessionPageHost.pageView）与标题（SessionPage.titleKey）仍是穷尽
+// switch —— 那里编译期报错是刻意的，换成表只会把错误推迟到运行时。
+// 生命周期完整性由 init 的 assert（debug）+ WorkspaceVisibilityTests 的
+// 「注册表覆盖全部页面」用例（CI）共同兜住。
 //
 // 构造：VM 全部由 SessionStore 的工厂闭包创建后注入，本文件不构造 VM；
 // 标题缓存走 SessionAPI.get（GatherUI 只依赖 GatherProtocol）。
@@ -46,6 +54,25 @@ public final class SessionWorkspace: Identifiable {
     public let control: SessionControlViewModel
     public let gallery: GalleryViewModel
     public let similarity: SimilarityViewModel
+
+    /// 页面生命周期注册表：SessionPage → 该页的 ViewModel。
+    ///
+    /// 为什么加：三处扇出（会话级 hidden / 页面级 hidden / close）原先是 7 行
+    /// 手写字面量，加页面必须记得改三处；现在只在这里登记一次，扇出统一迭代。
+    /// 强类型字段（culling/gallery/…）保留：67 处消费点靠它们做类型推断，
+    /// 换成 any SessionPageModel 只会把编译期类型检查换成运行时 cast。
+    ///
+    /// 完整性由两方面保证：init 里的 assert（debug）+ WorkspaceVisibilityTests
+    /// 的「注册表覆盖 SessionPage.allCases」用例（两道都失败才会漏）。
+    private let pageModels: [Page: any SessionPageModel]
+
+    /// 生命周期扇出顺序：与历史手写顺序逐字一致（culling → … → similarity）。
+    ///
+    /// 顺序有语义：shutdown 是终态，先停 culling 的画质轮询再停别人，与旧行为
+    /// 保持同一副作用次序；用数组而不是字典遍历，保证不依赖哈希顺序。
+    static let lifecycleOrder: [Page] = [
+        .culling, .duplicates, .export, .faceKw, .control, .gallery, .similarity,
+    ]
 
     public private(set) var lifecycle: Lifecycle = .suspended
     /// 会话级可见性（= SessionStore.activeSessionId 命中且目的地属于本会话）。
@@ -82,53 +109,57 @@ public final class SessionWorkspace: Identifiable {
         self.gallery = gallery
         self.similarity = similarity
         self.sessionName = sessionName
+        self.pageModels = [
+            .culling: culling,
+            .duplicates: duplicates,
+            .export: export,
+            .faceKw: face,
+            .control: control,
+            .gallery: gallery,
+            .similarity: similarity,
+        ]
+        // 新页面漏登记时，debug 直接炸在第一处构造；release 由测试与
+        // setPageVisible 的 assertionFailure 兜底。
+        assert(
+            Set(pageModels.keys) == Set(Page.allCases),
+            "SessionWorkspace 注册表缺少页面：\(Set(Page.allCases).subtracting(pageModels.keys))")
     }
+
+    /// 注册表读取（internal：测试断言完整性/终态；生产只经三处扇出）。
+    func pageModel(_ page: Page) -> (any SessionPageModel)? { pageModels[page] }
 
     public var isClosed: Bool { lifecycle == .closed }
 
     /// 会话级可见性（第一级）：只标记会话区域进出，**不**启动任何 VM 轮询。
     /// - visible=true：无 VM 副作用；当前挂载页的 onAppear 会经 setPageVisible
     ///   启动它自己的那个 VM（进入会话不再启动未挂载页面）；
-    /// - visible=false：离开会话/关闭，全量扇出停止 7 个 VM（必须全停）；
+    /// - visible=false：离开会话/关闭，按注册表全量停止（必须全停，漏停比多停危险）；
     /// - shutdown 之后明确 no-op（关闭是终态）。
     public func setVisible(_ visible: Bool) {
         guard lifecycle != .closed else { return }
         isVisible = visible
         lifecycle = visible ? .active : .suspended
         guard !visible else { return }
-        culling.setVisible(false)
-        duplicates.setVisible(false)
-        export.setVisible(false)
-        face.setVisible(false)
-        control.setVisible(false)
-        gallery.setVisible(false)
-        similarity.setVisible(false)
+        for page in Self.lifecycleOrder {
+            pageModels[page]?.setVisible(false)
+        }
     }
 
     /// 页面级可见性（第二级）：只由**当前挂载页面**的 onAppear/onDisappear 调用。
     ///
-    /// 与旧的 7 VM 扇出相反，本方法只启停 `page` 对应的那一个 VM：进入
+    /// 与旧的 7 VM 扇出相反，本方法只经注册表启停 `page` 对应的那一个 VM：进入
     /// sessionTab(culling) 只启动 culling，切到图库只启动 gallery，未挂载的
     /// control/similarity 不会因会话激活而在后台轮询（R4 P1-2）。
     /// close 之后 no-op，避免页面离场回调复活已关闭的 VM。
     public func setPageVisible(_ page: Page, _ visible: Bool) {
         guard lifecycle != .closed else { return }
-        switch page {
-        case .control:
-            control.setVisible(visible)
-        case .faceKw:
-            face.setVisible(visible)
-        case .duplicates:
-            duplicates.setVisible(visible)
-        case .culling:
-            culling.setVisible(visible)
-        case .export:
-            export.setVisible(visible)
-        case .gallery:
-            gallery.setVisible(visible)
-        case .similarity:
-            similarity.setVisible(visible)
+        guard let model = pageModels[page] else {
+            // release 下静默跳过（宁可少停一个页面，也不能崩掉整条离场路径）；
+            // debug 用 assertionFailure 把「漏登记」暴露在第一次切页时。
+            assertionFailure("SessionWorkspace 未登记页面 \(page.rawValue) 的生命周期模型")
+            return
         }
+        model.setVisible(visible)
     }
 
     // MARK: - 标题缓存
@@ -171,13 +202,9 @@ public final class SessionWorkspace: Identifiable {
         isVisible = false
         nameTask?.cancel()
         nameTask = nil
-        culling.shutdown()
-        duplicates.shutdown()
-        export.shutdown()
-        face.shutdown()
-        control.shutdown()
-        gallery.shutdown()
-        similarity.shutdown()
+        for page in Self.lifecycleOrder {
+            pageModels[page]?.shutdown()
+        }
         pendingIntents.removeAll()
         sessionName = nil
     }

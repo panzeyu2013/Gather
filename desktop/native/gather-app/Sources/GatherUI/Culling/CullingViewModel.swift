@@ -17,7 +17,7 @@ struct KeywordTargetIndex {
 
 @MainActor
 @Observable
-public final class CullingViewModel: PageVisibility {
+public final class CullingViewModel: SessionPageModel {
     /// 组合筛选状态：对齐 TS CullingFilters + FilterControls（Culling.tsx:1720-1817）——
     /// 未审/状态/星级/颜色/质量/冲突 六个维度可任意叠加，全部关闭即"全部"。
     public struct FilterState: Equatable {
@@ -444,6 +444,12 @@ public final class CullingViewModel: PageVisibility {
     /// - visible=false：置 isActive=false，画质 500ms 轮询在下一拍退出/暂停；
     /// - visible=true：置 isActive=true，补刷隐藏期登记的领域变更并恢复轮询；
     /// - shutdown 之后明确 no-op（关闭是终态）。
+    // MARK: - SessionPageModel（生命周期注册表契约）
+
+    /// 可见性真相的只读桥（存储属性与写入口仍归本 VM 所有）。
+    public var isPageVisible: Bool { isActive }
+    /// 关闭终态的只读桥（关闭动作仍走 shutdown()）。
+    public var hasShutDown: Bool { isShutdown }
     public func setVisible(_ visible: Bool) {
         guard !isShutdown, transitionVisibility(&isActive, to: visible) else { return }
         guard visible else {

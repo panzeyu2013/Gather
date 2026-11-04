@@ -150,6 +150,11 @@ GatherApplication（服务编排；交付在 GatherDelivery）
   `NavigationSplitView` 负责侧栏材质与选中语义。
 - 会话页由 `GatherUI/Shell/SessionPageHost.swift` 按 `SessionPage` 分发 ViewModel；
   session 切换用 `.id("session-page-\(sessionId)-\(page.rawValue)")` 保留身份。
+- 页面生命周期（`setVisible` / `shutdown`）走 `SessionWorkspace` 的
+  `SessionPage → SessionPageModel` 注册表（`Support/SessionPageModel.swift`）：
+  会话级隐藏、页面级隐藏、close 三处扇出都是迭代，新增页面只需在
+  `SessionWorkspace.init` 登记一次；漏登记由 debug `assert` +
+  `WorkspaceVisibilityTests` 的注册表用例兜住。视图构造与标题仍是穷尽 switch。
 - 工作区状态由 `SessionStore`/`SessionWorkspace` 持有（每会话一套 + LRU），入口意图经
   `WorkspaceIntent` 取用即清。
 - Jobs、Settings、Face Keywording、Duplicates、Culling、Export、Control Center 均为

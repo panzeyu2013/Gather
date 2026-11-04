@@ -8,6 +8,11 @@
 // （R4）：Culling 画质轮询 / Gallery 索引轮询 / Control 兜底轮询 /
 // Similarity 两路轮询各自保留，业务与文案不变。
 //
+// #12 起：会话页的完整生命周期契约是 SessionPageModel（本协议 + shutdown +
+// isPageVisible/hasShutDown），SessionWorkspace 用注册表按页路由；本协议仍单独
+// 保留，因为「只关心可见性」的调用点（页面 onAppear/onDisappear）不该被迫持有
+// shutdown 语义。
+//
 // 契约：
 // 1. 默认不可见：VM 构造后可见性状态为 false，不启动轮询、不发起首载；
 // 2. setVisible 幂等：重复 true / 重复 false 不重复启动或停止副作用；

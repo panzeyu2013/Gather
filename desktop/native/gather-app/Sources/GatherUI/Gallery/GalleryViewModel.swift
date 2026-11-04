@@ -178,7 +178,7 @@ public struct GalleryIndexHeaderCopy: Equatable, Sendable {
 /// 工作区图库视图模型：photo.list_page 键集分页 + 客户端搜索/人脸过滤。
 @MainActor
 @Observable
-public final class GalleryViewModel: PageVisibility {
+public final class GalleryViewModel: SessionPageModel {
     /// TS: PAGE_SIZE = 200（非搜索态）；搜索/筛选态链式拉满用 1000。
     public static let pageSize = 200
     public static let chainFetchLimit = 1_000
@@ -229,6 +229,13 @@ public final class GalleryViewModel: PageVisibility {
     /// 关闭终态：shutdown() 之后 setVisible(true) 明确 no-op。
     /// 4a-2c：对外只读，供 SessionWorkspace.close 的扇出测试断言。
     public internal(set) var isShutdown = false
+
+    // MARK: - SessionPageModel（生命周期注册表契约）
+
+    /// 可见性真相的只读桥（存储属性与写入口仍归本 VM 所有）。
+    public var isPageVisible: Bool { isVisible }
+    /// 关闭终态的只读桥（关闭动作仍走 shutdown()）。
+    public var hasShutDown: Bool { isShutdown }
     /// 距上次 workspace.status 刷新时刻（progress 帧去抖）。
     var lastStatusRefreshAt = Date.distantPast
     var pages: [[GalleryPhotoData]] = []

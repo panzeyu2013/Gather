@@ -93,11 +93,13 @@ extension RootView {
         // （销毁），而 VM 由 workspace 持有——同会话页签切换不会 activate，
         // 不能只依赖页面的 onDisappear 分支。R4 P1-2 后页面的 onDisappear 也会
         // 经 workspace.setPageVisible 停一次；这里是目的地级的幂等兜底。
+        // 与页面离场回调走同一入口（setPageVisible）：注册表缺页/顺序问题
+        // 只在一个地方暴露，不再有绕过 workspace 的直连字段调用。
         if case .session(let previousSessionId, .gallery) = previous, !Self.isGalleryDestination(destination) {
-            sessionStore.workspaces[previousSessionId]?.gallery.setVisible(false)
+            sessionStore.workspaces[previousSessionId]?.setPageVisible(.gallery, false)
         }
         if case .session(let previousSessionId, .similarity) = previous {
-            sessionStore.workspaces[previousSessionId]?.similarity.setVisible(false)
+            sessionStore.workspaces[previousSessionId]?.setPageVisible(.similarity, false)
         }
         // 轮询门控：离开工作台显式停止自动刷新，回到时恢复。
         if case .dashboard = previous {

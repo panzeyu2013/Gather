@@ -28,7 +28,7 @@ public enum ExportRangeIntent: Equatable, Sendable {
 
 @MainActor
 @Observable
-public final class ExportViewModel: PageVisibility {
+public final class ExportViewModel: SessionPageModel {
     // Cut 1 / B6b：导出域走类型化 API（preview/execute/cancel/report）。
     let exportAPI: any ExportAPI
     /// W3：客户校样回传（可选；nil = 未接线，导入按钮隐藏）。
@@ -133,6 +133,12 @@ public final class ExportViewModel: PageVisibility {
 
     /// 可见性唯一入口（PageVisibility）：默认不可见，重复调用幂等；
     /// shutdown 之后 no-op（关闭是终态）。
+    // MARK: - SessionPageModel（生命周期注册表契约）
+
+    /// 可见性真相的只读桥（存储属性与写入口仍归本 VM 所有）。
+    public var isPageVisible: Bool { isVisible }
+    /// 关闭终态的只读桥（关闭动作仍走 shutdown()）。
+    public var hasShutDown: Bool { isShutdown }
     public func setVisible(_ visible: Bool) {
         guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
     }

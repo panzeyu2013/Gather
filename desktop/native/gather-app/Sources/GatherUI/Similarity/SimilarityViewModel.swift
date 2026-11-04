@@ -126,7 +126,7 @@ public struct SimilarityNotice: Equatable, Sendable {
 /// （预览/写回/重试/loadMetadata→confirmSync→cleanup 状态机）。
 @MainActor
 @Observable
-public final class SimilarityViewModel: PageVisibility {
+public final class SimilarityViewModel: SessionPageModel {
     /// 页面级状态（TS 由 result/isLoading/error + isAnalyzing 组合表达）。
     ///
     /// Cut 4 / 4a-3b-2a：`error` 的关联值从码值字符串改为 `CommandError`。
@@ -296,6 +296,12 @@ public final class SimilarityViewModel: PageVisibility {
     /// - visible=false：停两路轮询（进度/结果），隐藏期不发命令；
     /// - visible=true：按当前状态恢复——分析中恢复进度轮询，无结果恢复结果轮询；
     /// - 代次守卫（resultRequestID/tierRequestID）与轮询内的空闲上限保持原样。
+    // MARK: - SessionPageModel（生命周期注册表契约）
+
+    /// 可见性真相的只读桥（存储属性与写入口仍归本 VM 所有）。
+    public var isPageVisible: Bool { isVisible }
+    /// 关闭终态的只读桥（关闭动作仍走 shutdown()）。
+    public var hasShutDown: Bool { isShutdown }
     public func setVisible(_ visible: Bool) {
         guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
         if visible {

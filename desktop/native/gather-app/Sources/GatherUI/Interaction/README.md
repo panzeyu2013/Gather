@@ -26,6 +26,9 @@
 - 任何返回语义改动先写行为矩阵（工作台→控制→浏览→相似度→返回 等），再改实现。
 - 会话页可见性只由 `GatherSessionPage` 调；页面不要重复 onAppear/onDisappear 钩子。
 - 新增页面直接进 `SessionPage` / `AppRoute`；不要再引入第二套页面枚举。
+  同时在 `SessionWorkspace.init` 的注册表里登记它的生命周期模型
+  （`SessionPageModel`：setVisible / shutdown）；漏登记会被 debug assert 与
+  `WorkspaceVisibilityTests` 的注册表用例抓到。
 
 ## 下一阶段
 

@@ -12,7 +12,7 @@ import GatherProtocol
 
 @MainActor
 @Observable
-public final class SessionControlViewModel: PageVisibility {
+public final class SessionControlViewModel: SessionPageModel {
     // Cut 1 / B8.2a：session.get / workspace.status → SessionAPI，
     // culling.sync_status → CullingAPI（原同步字符串命令已删除；
     // C1 状态胶囊同样使用该 CullingAPI，不再经过字符串命令）。
@@ -106,6 +106,12 @@ public final class SessionControlViewModel: PageVisibility {
     /// - visible=true：启动兜底轮询（startPolling 自身也幂等）；
     /// - visible=false：停轮询；
     /// - shutdown 之后明确 no-op（关闭是终态）。
+    // MARK: - SessionPageModel（生命周期注册表契约）
+
+    /// 可见性真相的只读桥（存储属性与写入口仍归本 VM 所有）。
+    public var isPageVisible: Bool { isVisible }
+    /// 关闭终态的只读桥（关闭动作仍走 shutdown()）。
+    public var hasShutDown: Bool { isShutdown }
     public func setVisible(_ visible: Bool) {
         guard !isShutdown, transitionVisibility(&isVisible, to: visible) else { return }
         if visible {

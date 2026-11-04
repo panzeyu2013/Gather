@@ -278,6 +278,35 @@ struct WorkspaceVisibilityTests {
         #expect(probe.similarityAPI.resultQueries.isEmpty, "关闭后相似度轮询不得复活")
     }
 
+    /// 注册表完整性（#12 生命周期表驱动）：lifecycleOrder 与全部页面一一对应，
+    /// 每页都能解析出模型；close 之后每个模型都进入 shutdown 终态。
+    ///
+    /// 这条用例承接了原先「加页面靠 3 处穷尽 switch 报错」的一部分保障：
+    /// 视图构造与标题仍保持穷尽 switch（编译期），生命周期改注册表（运行期断言），
+    /// 两者一起把「漏登记」压到零。
+    @Test("注册表：覆盖全部页面，close 后每页进入 shutdown 终态")
+    func pageRegistryCoversAllPagesAndCloses() {
+        let probe = VisibilityProbe.make()
+
+        #expect(SessionWorkspace.lifecycleOrder.count == SessionWorkspace.Page.allCases.count)
+        #expect(Set(SessionWorkspace.lifecycleOrder) == Set(SessionWorkspace.Page.allCases))
+
+        for page in SessionWorkspace.Page.allCases {
+            let model = probe.workspace.pageModel(page)
+            #expect(model != nil, "page=\(page) 未登记生命周期模型")
+            #expect(model?.isPageVisible == false, "page=\(page) 构造后必须不可见")
+            #expect(model?.hasShutDown == false)
+        }
+
+        probe.workspace.close()
+        #expect(probe.workspace.isClosed)
+
+        for page in SessionWorkspace.Page.allCases {
+            #expect(probe.workspace.pageModel(page)?.hasShutDown == true, "page=\(page) 未进入终态")
+            #expect(probe.workspace.pageModel(page)?.isPageVisible == false)
+        }
+    }
+
     // MARK: - WP4d：PageVisibility 统一契约（默认不可见 + 幂等 + 显式 conformance）
 
     /// 7×{true,true,false,false,true} 幂等矩阵：
@@ -289,15 +318,8 @@ struct WorkspaceVisibilityTests {
         let probe = VisibilityProbe.make()
 
         // 显式 conformance：7 个 VM 都能以存在类型交给统一生命周期入口。
-        let pages: [any PageVisibility] = [
-            probe.workspace.control,
-            probe.workspace.face,
-            probe.workspace.duplicates,
-            probe.workspace.culling,
-            probe.workspace.export,
-            probe.workspace.gallery,
-            probe.workspace.similarity,
-        ]
+        // #12 起从注册表取，避免测试里再手写一份 7 元素清单（会与生产漂移）。
+        let pages = SessionWorkspace.Page.allCases.compactMap { probe.workspace.pageModel($0) }
         #expect(pages.count == SessionWorkspace.Page.allCases.count)
 
         for page in SessionWorkspace.Page.allCases {
@@ -397,19 +419,12 @@ struct WorkspaceVisibilityTests {
         }
     }
 
-    /// VM 的可见性真相读取：Culling 沿用 isActive，其余 6 个是 isVisible。
+    /// VM 的可见性真相读取：走注册表的统一只读桥（Culling 映射 isActive 的差异
+    /// 已收在 CullingViewModel.isPageVisible 里，测试不再复制一份 switch）。
     private static func pageIsVisible(
         _ page: SessionWorkspace.Page,
         in workspace: SessionWorkspace
     ) -> Bool {
-        switch page {
-        case .control: workspace.control.isVisible
-        case .faceKw: workspace.face.isVisible
-        case .duplicates: workspace.duplicates.isVisible
-        case .culling: workspace.culling.isActive
-        case .export: workspace.export.isVisible
-        case .gallery: workspace.gallery.isVisible
-        case .similarity: workspace.similarity.isVisible
-        }
+        workspace.pageModel(page)?.isPageVisible ?? false
     }
 }
