@@ -43,19 +43,24 @@ extension SettingsViewModel {
         return key
     }
 
-    /// 可清空键 = core 默认值表中 value 为空串的键。
+    /// 可清空键 = 默认值为空串的设置键。
     ///
-    /// Cut 3 / 3b-3（E-19 #2）：GatherUI 不能 import GatherApplication，无法直接读
-    /// SettingsService.getDefaults()；这里保留同一份键集合（值快照自
-    /// GatherApplication/Services/SettingsService.swift 的默认值表）。新增"默认空"
-    /// 设置键时需同步本表（SettingsCatalogTests 守住键集合）。
-    public static let clearableSettingKeys: Set<String> = [
-        "face_embedding_model_path",
-        "face_embedding_model_version",
-        "model_download_url",
-        "disk_cache_dir",
-        "ui_language",
-    ]
+    /// #9 起直接由 GatherProtocol 的 SettingsKey 派生：UI 只 import Protocol（不能
+    /// import GatherApplication 的 SettingsService），而默认值现在就在枚举的 case 上
+    /// —— 这张曾经手抄的键表（Cut 3 / 3b-3 E-19 #2 的妥协）不再是第二份真相，
+    /// 新增「默认空」键时也不会再漏同步。
+    /// 判据 = 「默认值为空串」∩「设置页真的暴露了这个键」。
+    ///
+    /// 只按默认值空串取会多出 output.recipes / metadata.templates.corrupt /
+    /// backup_dir 这类 JSON 或路径键——它们默认空但不是可清空的文本输入。
+    public static let clearableSettingKeys: Set<String> = {
+        let exposed = Set((generalSliders + advancedSliders).map(\.key))
+            .union(settingGroups.flatMap { $0.fields.map(\.key) })
+        return Set(
+            SettingsKey.allCases
+                .filter { $0.defaultValue.isEmpty && exposed.contains($0.rawValue) }
+                .map(\.rawValue))
+    }()
 
     /// 该键在 core 默认表里是否为空串（决定"清空输入框"是否为合法操作）。
     public static func defaultValueIsEmpty(_ key: String) -> Bool {

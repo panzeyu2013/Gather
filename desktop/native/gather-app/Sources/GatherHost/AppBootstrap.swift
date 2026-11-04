@@ -366,8 +366,7 @@ package final class AppBootstrap {
             isC1Installed: { C1Installation.isInstalled() },
             settings: {
                 C1AutoReloadSettings(
-                    enabled: composition.settingsService.get(
-                        "c1_auto_reload", defaultValue: "1") == "1")
+                    enabled: composition.settingsService.bool(.c1AutoReload))
             },
             extras: C1RoundTripExtras(
                 select: { try await captureOneBridge.selectVariants(paths: $0) },

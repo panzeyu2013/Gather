@@ -440,7 +440,7 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
     /// 保持旧命令面 的 clampedInt 行为（不在解码层收到 0/负值）。
     private func resolvedThumbnailSize(_ explicit: Int?) -> Int {
         if let explicit { return explicit }
-        let raw = settingsService.getNumber("thumbnail_size", defaultValue: 1024)
+        let raw = settingsService.double(.thumbnailSize)
         guard raw.isFinite else { return 1024 }
         let rounded = raw.rounded()
         if rounded < 64 { return 64 }
@@ -450,7 +450,7 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
 
     /// 保存查询上限（设置键 gallery_saved_search_limit；异常值钳到 1...1000）。
     static func savedSearchLimit(_ settings: SettingsService) -> Int {
-        let raw = settings.getNumber("gallery_saved_search_limit", defaultValue: 50)
+        let raw = settings.double(.gallerySavedSearchLimit)
         guard raw.isFinite else { return 50 }
         let rounded = Int(raw.rounded())
         if rounded < 1 { return 1 }

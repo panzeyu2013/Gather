@@ -99,12 +99,12 @@ struct CompositionCore {
         // 有 .xmp / RAW / 有 RAW 兄弟的照片走 sidecar（一份真相）。
         // metadata_write_mode=sidecar 可强制回到全 sidecar（旧行为）。
         let keywordStyle = KeywordDCSubjectStyle(
-            rawValue: settingsService.get("keyword_dc_style", defaultValue: "leaf")) ?? .leaf
+            rawValue: settingsService.string(.keywordDCSubjectStyle)) ?? .leaf
         let xmp: any XMPProvider = xmpProvider ?? MetadataWriteRouter(
             sidecar: SidecarXMPProvider(dcSubjectStyle: keywordStyle),
             dcSubjectStyle: keywordStyle,
             modeProvider: {
-                settingsService.get("metadata_write_mode", defaultValue: "auto")
+                settingsService.string(.metadataWriteMode)
             })
         // 交付层只知道"目标是个文件"：由路由器回答是 sidecar 还是照片自身。
         let targetResolver = MetadataTargetResolver(
@@ -149,7 +149,7 @@ struct CompositionCore {
             target: targetResolver)
         // P1：内嵌 JPEG 的"一次打开、顺序遍历"会话（embedded_fast_path=0 回旧路径）。
         let rewriteSessions: (any MetadataRewriteSessionFactory)? =
-            settingsService.get("embedded_fast_path", defaultValue: "1") == "0"
+            settingsService.string(.embeddedFastPath) == "0"
             ? nil
             : EmbeddedJPEGSessionFactory(
                 isEmbeddedTarget: { photoPath in
@@ -236,7 +236,7 @@ struct CompositionCore {
             transactions: db,
             policyProvider: { TriagePolicy.fromSettings(settingsService) },
             enabledProvider: {
-                settingsService.get("triage_enabled", defaultValue: "0") == "1"
+                settingsService.bool(.triageEnabled)
             },
             feedback: TriageFeedbackRepo(connection: db))
         // 3.4 CullingService：写回执行器走 WritebackService（CullingWritebackPort），
@@ -319,7 +319,7 @@ struct CompositionCore {
             // P1：语义索引采集（默认关；开启后在 quality.score 的同一次预览解码上写向量）。
             semantics: PhotoSemanticsRepo(connection: db),
             semanticsEnabled: {
-                settingsService.get("semantic_index_enabled", defaultValue: "0") == "1"
+                settingsService.bool(.semanticIndexEnabled)
             })
         let indexerService = IndexerService(
             // WP3b-2：扫描写路径/派生失效 SQL 在 IndexerRepo，事务经 TransactionRunner。

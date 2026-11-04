@@ -123,13 +123,14 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
     /// fkw.analyze：建 job + 等待结果（dedupeKey/checkpoint 与旧命令面 逐字一致）。
     public func analyze(_ input: FaceAnalyzeInput) async throws -> FaceAnalysisResult {
         let detectorPath = input.detectorPath
-            ?? settingsService.get("detector_model_path", defaultValue: "models/face_detector.onnx")
+            ?? settingsService.string(.detectorModelPath)
         let encoderPath = input.encoderPath
-            ?? settingsService.get("encoder_model_path", defaultValue: "models/face_encoder.onnx")
+            ?? settingsService.string(.encoderModelPath)
         // 缺省值来自设置：先在 API 边界显式校验，避免脏设置把非法参数带进 job。
-        let resolvedEps = input.eps ?? settingsService.getNumber("default_eps", defaultValue: 0.6)
+        // #9：默认值改由键决定（0.65）——旧写法 0.6 是这里的本地默认，与注册表漂移。
+        let resolvedEps = input.eps ?? settingsService.double(.defaultEps)
         let resolvedMinPts = input.minSamples.map(Double.init)
-            ?? settingsService.getNumber("default_min_samples", defaultValue: 2)
+            ?? settingsService.double(.defaultMinSamples)
         try map { try validateFaceClusteringParameters(eps: resolvedEps, minPts: resolvedMinPts) }
 
         let job = try map {
@@ -160,9 +161,9 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
 
     /// fkw.recluster：仅重聚类（不重推理），与旧命令面 一样直接 await 服务。
     public func recluster(_ input: FaceReclusterInput) async throws {
-        let resolvedEps = input.eps ?? settingsService.getNumber("default_eps", defaultValue: 0.6)
+        let resolvedEps = input.eps ?? settingsService.double(.defaultEps)
         let resolvedMinPts = input.minSamples.map(Double.init)
-            ?? settingsService.getNumber("default_min_samples", defaultValue: 2)
+            ?? settingsService.double(.defaultMinSamples)
         try map { try validateFaceClusteringParameters(eps: resolvedEps, minPts: resolvedMinPts) }
         try await mapAsync {
             try await faceKwService.recluster(
@@ -238,10 +239,7 @@ public final class LiveFaceAPI: FaceAPI, @unchecked Sendable {
         // 配置层（FaceInferenceConfig）是 fallback 开关与嵌入模型路径的唯一来源；
         // 这里只补“文件是否存在”的宿主判定（与旧命令的读法一致）。
         let config = FaceInferenceConfig(
-            faceEmbeddingModelPath: settingsService.get(
-                FaceEmbeddingModelFactory.modelPathSetting,
-                defaultValue: ""
-            )
+            faceEmbeddingModelPath: settingsService.string(.faceEmbeddingModelPath)
         )
         let configuredPath = config.faceEmbeddingModelPath
             .trimmingCharacters(in: .whitespacesAndNewlines)

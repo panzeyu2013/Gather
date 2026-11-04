@@ -96,14 +96,14 @@ public final class LiveSettingsAPI: SettingsAPI, Sendable {
     // MARK: - ML 状态（对齐旧命令面 buildMLStatus）
 
     private func buildMLStatus() -> MLStatusData {
-        let provider = settingsService.get("face_compute_units", defaultValue: "auto")
-        let custom = settingsService.get(FaceEmbeddingModelFactory.modelPathSetting, defaultValue: "")
+        let provider = settingsService.string(.faceComputeUnits)
+        let custom = settingsService.string(.faceEmbeddingModelPath)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let encoderURL = custom.isEmpty ? FaceEmbeddingModelFactory.bundledModelURL
             : URL(fileURLWithPath: (custom as NSString).expandingTildeInPath).resolvingSymlinksInPath()
         let encoderPath = encoderURL?.path ?? "SFace.mlpackage"
         let previewMaxDimension = clampedInt(
-            settingsService.getNumber("face_preview_max_dimension", defaultValue: 2048),
+            settingsService.double(.facePreviewMaxDimension),
             fallback: 2048,
             range: 256...8192
         )

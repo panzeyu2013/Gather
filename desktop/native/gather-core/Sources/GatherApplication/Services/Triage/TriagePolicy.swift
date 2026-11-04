@@ -102,22 +102,19 @@ public struct TriagePolicy: Equatable, Sendable {
 
     /// 设置页只暴露 policy version + 三个可执行置信度；其余阈值仍由版本常量控制。
     /// 设置变更即时生效：composition 用 provider 每次重建 policy（见 `Core.swift`）。
-    public static func fromSettings(_ settings: SettingsService) -> TriagePolicy {
+    public static func fromSettings(_ settings: any SettingsReading) -> TriagePolicy {
         // 默认必须与 SettingsService.getDefaults 一致（triage-v2）：
         // settings 缓存为空时 get 返回这里的 defaultValue，用 v1 会让
         // “默认 v2”在真实引擎里静默退化成 v1（UI 显示 v2、判定按 v1 跑）。
         var policy = TriagePolicy.v2
-        let version = settings.get("triage_policy", defaultValue: policy.version)
+        // #9：阈值默认值来自键（与 policy v2 常量逐位相同：0.60/0.75/0.55）。
+        let version = settings.string(.triagePolicy)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !version.isEmpty { policy.version = version }
-        policy.keepConfidenceMin = clamp(
-            settings.getNumber("triage_keep_confidence_min", defaultValue: policy.keepConfidenceMin))
-        policy.rejectConfidenceMin = clamp(
-            settings.getNumber("triage_reject_confidence_min", defaultValue: policy.rejectConfidenceMin))
-        policy.minExecutableConfidence = clamp(
-            settings.getNumber("triage_min_executable_confidence", defaultValue: policy.minExecutableConfidence))
-        policy.modelSignalsEnabled = settings.get("triage_model_review", defaultValue: "1")
-            .trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+        policy.keepConfidenceMin = clamp(settings.double(.triageKeepConfidenceMin))
+        policy.rejectConfidenceMin = clamp(settings.double(.triageRejectConfidenceMin))
+        policy.minExecutableConfidence = clamp(settings.double(.triageMinExecutableConfidence))
+        policy.modelSignalsEnabled = settings.bool(.triageModelReview)
         return policy
     }
 

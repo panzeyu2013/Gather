@@ -408,7 +408,7 @@ public actor MaintenanceService {
 
     public func exportDiagnostics(_ input: DiagnosticsExportInput) async throws -> DiagnosticsExportResult {
         let includePaths = input.includePaths
-            ?? (settings.get("diagnostics_include_paths", defaultValue: "0") == "1")
+            ?? settings.bool(.diagnosticsIncludePaths)
         let collector = DiagnosticsCollector(database: database, settings: settings, appDir: appDir)
         do {
             return try collector.collect(
@@ -424,7 +424,7 @@ public actor MaintenanceService {
     // MARK: - 调度
 
     public func startScheduler() {
-        let mode = settings.get("backup_auto", defaultValue: "off")
+        let mode = settings.string(.backupAuto)
         scheduler?.cancel()
         scheduler = nil
         switch mode {
@@ -496,7 +496,7 @@ public actor MaintenanceService {
     // MARK: - 工具
 
     private func resolvedBackupDirectory() throws -> URL {
-        let raw = settings.get("backup_dir", defaultValue: "").trimmingCharacters(in: .whitespaces)
+        let raw = settings.string(.backupDir).trimmingCharacters(in: .whitespaces)
         if raw.isEmpty { return backupStore.directory }
         let expanded = (raw as NSString).expandingTildeInPath
         guard expanded.hasPrefix("/") else {
@@ -506,7 +506,7 @@ public actor MaintenanceService {
     }
 
     private func retentionLimit() -> Int {
-        Int(settings.get("backup_retention", defaultValue: "5")) ?? 5
+        settings.int(.backupRetention)
     }
 
     private func readState() -> MaintenanceStateFile {

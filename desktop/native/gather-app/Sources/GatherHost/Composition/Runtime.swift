@@ -24,11 +24,11 @@ enum CompositionRuntime {
             modelReviewEnabled: {
                 // 只有 v2 策略真的使用模型信号；v1 用户跑模型段纯属浪费
                 // （每张一次 1280 解码 + Vision），还会让建议因模型行更新而 stale。
-                settingsService.get("triage_model_review", defaultValue: "1") == "1"
-                    && settingsService.get("triage_policy", defaultValue: "triage-v2") == "triage-v2"
+                settingsService.bool(.triageModelReview)
+                    && settingsService.string(.triagePolicy) == "triage-v2"
             },
             triageAutoGenerateEnabled: {
-                settingsService.get("triage_auto_generate", defaultValue: "0") == "1"
+                settingsService.bool(.triageAutoGenerate)
             },
             indexerService: core.indexerService,
             metadataService: core.metadataService,

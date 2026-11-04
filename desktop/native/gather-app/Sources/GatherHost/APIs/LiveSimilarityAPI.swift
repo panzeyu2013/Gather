@@ -74,9 +74,9 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
     /// sim.analyze：建 job + 等待（旧命令成功即 ok(true)）。
     public func analyze(_ input: SimilarityAnalyzeInput) async throws -> Bool {
         let resolvedThreshold = input.threshold.map(Double.init)
-            ?? settingsService.getNumber("default_threshold", defaultValue: 10)
+            ?? settingsService.double(.defaultThreshold)
         let resolvedMinGroupSize = input.minGroupSize.map(Double.init)
-            ?? settingsService.getNumber("default_min_group_size", defaultValue: 2)
+            ?? settingsService.double(.defaultMinGroupSize)
         try map {
             try validateSimilarityParameters(threshold: resolvedThreshold, minGroupSize: resolvedMinGroupSize)
         }
@@ -107,9 +107,9 @@ public final class LiveSimilarityAPI: SimilarityAPI, @unchecked Sendable {
     /// 按解析后的阈值读回真实结果；无结果返回 nil（旧命令 ok(null)）。
     public func recluster(_ input: SimilarityAnalyzeInput) async throws -> SimilarityResult? {
         let threshold = input.threshold.map(Double.init)
-            ?? settingsService.getNumber("default_threshold", defaultValue: 10)
+            ?? settingsService.double(.defaultThreshold)
         let minGroupSize = input.minGroupSize.map(Double.init)
-            ?? settingsService.getNumber("default_min_group_size", defaultValue: 2)
+            ?? settingsService.double(.defaultMinGroupSize)
         try map {
             try validateSimilarityParameters(threshold: threshold, minGroupSize: minGroupSize)
         }
