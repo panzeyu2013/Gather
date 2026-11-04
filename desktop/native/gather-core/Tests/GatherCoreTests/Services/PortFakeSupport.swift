@@ -13,6 +13,7 @@
 //   @unchecked Sendable（测试串行执行，类内可变只做记录）。
 
 import Foundation
+import os
 import GatherProtocol
 @testable import GatherPersistence
 import GatherDelivery
@@ -32,11 +33,15 @@ enum PortFakeError: Error, CustomStringConvertible {
 // MARK: - 事务
 
 /// TransactionRunner 记录型替身：执行闭包并计数。
-final class PortFakeTransactionRunner: TransactionRunner {
-    private(set) var transactionCount = 0
+final class PortFakeTransactionRunner: TransactionRunner, Sendable {
+    // #8：TransactionRunner 声明 Sendable 后，fake 不能再用裸 var；锁盒既是真 Sendable，
+    // 也不占 @unchecked Sendable 的 cleanup 预算。
+    private let count = OSAllocatedUnfairLock(initialState: 0)
+
+    var transactionCount: Int { count.withLock { $0 } }
 
     func transaction<T>(_ body: () throws -> T) throws -> T {
-        transactionCount += 1
+        count.withLock { $0 += 1 }
         return try body()
     }
 }

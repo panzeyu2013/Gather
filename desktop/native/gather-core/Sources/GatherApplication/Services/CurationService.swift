@@ -87,10 +87,12 @@ public struct CurationService: Sendable {
     // 无 @unchecked：四个仓储都是值类型、只包一个线程安全的 DBConnection
     // （Persistence 层既定约定），本类型自身没有可变状态；唯一的缓存由
     // OSAllocatedUnfairLock 保护。
-    private let connection: DBConnection
-    private let collections: CollectionRepo
-    private let stacks: StackRepo
-    private let duplicates: GlobalDuplicateQuery
+    // #8：三个窄端口 + 事务端口，不再持有连接。组合根必须保证四个依赖同源
+    // （同一个 DBConnection），否则嵌套事务会退化成两个独立事务。
+    private let collections: any CollectionStore
+    private let stacks: any StackStore
+    private let duplicates: any GlobalDuplicateReading
+    private let transactions: any TransactionRunner
     // 不持有 SessionRepo（非 Sendable 的 final class）：会话存在性走
     // CollectionRepo.sessionExists，从而保持本类型是**普通** Sendable，
     // 不占用 @unchecked Sendable 的 cleanup ratchet 预算。
@@ -107,11 +109,16 @@ public struct CurationService: Sendable {
     /// 缓存有效期（秒）：5 分钟。超期后下次读取重扫（扫描本身是只读 SQL + 纯计算）。
     public static let globalDuplicateCacheTTL: TimeInterval = 300
 
-    public init(connection: DBConnection) {
-        self.connection = connection
-        self.collections = CollectionRepo(connection: connection)
-        self.stacks = StackRepo(connection: connection)
-        self.duplicates = GlobalDuplicateQuery(connection: connection)
+    public init(
+        collections: any CollectionStore,
+        stacks: any StackStore,
+        duplicates: any GlobalDuplicateReading,
+        transactions: any TransactionRunner
+    ) {
+        self.collections = collections
+        self.stacks = stacks
+        self.duplicates = duplicates
+        self.transactions = transactions
         self.cache = OSAllocatedUnfairLock(initialState: GlobalDuplicateCache())
     }
 
@@ -125,12 +132,14 @@ public struct CurationService: Sendable {
     public func createCollection(_ input: CollectionCreateInput) throws -> CollectionSummary {
         try requireSession(input.sessionId)
         let name = try CurationNaming.normalized(input.name)
-        guard try !collections.nameExists(sessionId: input.sessionId, name: name) else {
+        guard try !collections.nameExists(
+            sessionId: input.sessionId, name: name, excluding: nil) else {
             throw CurationError.nameConflict(name)
         }
         // A9：sortOrder 交给仓储在**同一事务内**取尾部再 INSERT。原实现先
         // nextSortOrder 再 create（两条独立语句），并发建集合会拿到同一个 sort_order。
-        let row = try collections.create(sessionId: input.sessionId, name: name)
+        let row = try collections.create(
+            sessionId: input.sessionId, name: name, sortOrder: nil)
         return Self.summary(row)
     }
 
@@ -242,7 +251,7 @@ public struct CurationService: Sendable {
         let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = name.isEmpty ? "" : try CurationNaming.normalized(name)
         // 摘旧堆栈 + 建新堆栈必须同一事务：create 失败不能留下"已摘掉"的半状态。
-        let row = try connection.transaction {
+        let row = try transactions.transaction {
             _ = try stacks.detachPhotos(photoIds: photoIds)
             return try stacks.create(
                 sessionId: input.sessionId,
@@ -293,7 +302,7 @@ public struct CurationService: Sendable {
         // 原实现两步各是一个已提交事务，add 失败会留下"照片已被摘掉、却不在任何
         // 堆栈"的半状态，而 API 返回失败。仓储方法内部也是事务，这里是嵌套 →
         // SAVEPOINT（同一连接、同一线程），语义等价于外层一个事务。
-        return try connection.transaction {
+        return try transactions.transaction {
             _ = try stacks.detachPhotos(photoIds: photoIds)
             return try stacks.addMembers(stackId: row.id, photoIds: photoIds)
         }
@@ -305,7 +314,7 @@ public struct CurationService: Sendable {
         try requirePhotoIds(input.photoIds)
         // 删成员 → 判空 → 删堆栈同一事务：原实现判空/删除在 removeMembers 提交之后，
         // 两步之间失败会留下空壳堆栈；并发加入的成员也可能被误删（判空与删除之间）。
-        return try connection.transaction {
+        return try transactions.transaction {
             let removed = try stacks.removeMembers(stackId: row.id, photoIds: input.photoIds)
             // 成员被摘空的堆栈不留壳（与 detachPhotos 语义一致）。
             // P1-8：不能用 members(stackId:) 判空——它按 PhotoVisibility 过滤，堆栈里

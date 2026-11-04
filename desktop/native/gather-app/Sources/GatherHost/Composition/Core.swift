@@ -339,7 +339,12 @@ struct CompositionCore {
                 _ = try? await metadataService.getMetadata(photoIds: photoIds)
             })
         let smartAlbumRepo = SmartAlbumRepo(connection: db)
-        let curationService = CurationService(connection: db)
+        // #8：四个依赖必须同源（同一个 db），否则嵌套事务退化成两个独立事务。
+        let curationService = CurationService(
+            collections: CollectionRepo(connection: db),
+            stacks: StackRepo(connection: db),
+            duplicates: GlobalDuplicateQuery(connection: db),
+            transactions: db)
         let appDir: URL
         if let path = database?.path {
             appDir = URL(fileURLWithPath: path).deletingLastPathComponent()

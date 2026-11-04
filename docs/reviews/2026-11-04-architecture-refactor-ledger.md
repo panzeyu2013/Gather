@@ -110,3 +110,23 @@
   改为吃端口，顺带删掉 Retention 的死 `connection` 字段。两个服务此前**零事务、零裸 SQL**，
   所以是纯签名替换。
 - ADR-032 追加一行：解释 9 方法端口为何不违反接口隔离（按消费者切分 > 按方法数切分）。
+
+## #8 Step 2–3：关键词索引 + 策展三仓储（Wave 1 收口）
+
+- Step 2（03ae0cba）：`Ports/KeywordIndexStore.swift` —— `KeywordIndexStore`(5) +
+  `MetadataKeywordReading`(1)；`KeywordIndexSync` 删掉 `init(connection:)`。
+  顺带修正注释不实：`sync` 声称「单事务 diff」，实际 `ensure` 与 `replacePhotoKeywords`
+  各开一个事务。
+- Step 3：`Ports/CurationStores.swift` —— `CollectionStore`(13) + `StackStore`(12) +
+  `GlobalDuplicateReading`(5)；`CurationService` 的 3 处 `connection.transaction` 改为
+  `transactions.transaction`。
+- **`TransactionRunner` 加 `Sendable`**（CurationService 是 Sendable 值类型，要把它存成
+  字段）。唯一生产实现 `DBConnection` 已是 @unchecked Sendable；测试 fake 改成
+  `OSAllocatedUnfairLock` 锁盒 + 真 `Sendable`，**不占** @unchecked 的 cleanup 预算
+  （baseline 仍 60，没有新增）。
+- 同源不变量：CurationService 的 4 个依赖必须来自同一个 `DBConnection`（不同连接时
+  嵌套事务退化成两个独立事务，外层回滚撤不掉内层）。组合根 Core.swift 已用一个表达式
+  从同一个 db 构造；新增 `CurationService 端口纪律` 用例钉住「3 个跨仓储操作各走一次
+  注入的 runner」，防止有人把事务改回 repo 内部。
+- 协议没有默认参数：`nameExists(excluding:)` / `create(sortOrder:)` /
+  `exactGroups(minSessionCount:limit:)` 等调用点补全实参（行为不变）。

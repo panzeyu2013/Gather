@@ -87,7 +87,11 @@ private struct DuplicateQualityFixture {
         self.duplicateAPI = LiveDuplicateAPI(
             duplicateService: DuplicateService(connection: db),
             jobService: jobService,
-            curation: CurationService(connection: db)
+            curation: CurationService(
+            collections: CollectionRepo(connection: db),
+            stacks: StackRepo(connection: db),
+            duplicates: GlobalDuplicateQuery(connection: db),
+            transactions: db)
         )
         self.qualityAPI = LiveQualityAPI(
             qualityService: QualityService(

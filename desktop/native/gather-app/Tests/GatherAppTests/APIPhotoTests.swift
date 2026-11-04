@@ -69,7 +69,11 @@ private struct PhotoAPIFixture {
         self.albumAPI = LiveAlbumAPI(
             albumRepo: SmartAlbumRepo(connection: db),
             filterEngine: filterEngine,
-            curation: CurationService(connection: db)
+            curation: CurationService(
+            collections: CollectionRepo(connection: db),
+            stacks: StackRepo(connection: db),
+            duplicates: GlobalDuplicateQuery(connection: db),
+            transactions: db)
         )
         self.navigationAPI = LiveNavigationAPI(
             navigationService: NavigationService(connection: db)

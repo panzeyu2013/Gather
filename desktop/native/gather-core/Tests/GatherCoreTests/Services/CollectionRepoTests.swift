@@ -86,7 +86,11 @@ private struct CurationFixture {
         collections = CollectionRepo(connection: db)
         stacks = StackRepo(connection: db)
         duplicates = GlobalDuplicateQuery(connection: db)
-        service = CurationService(connection: db)
+        service = CurationService(
+            collections: CollectionRepo(connection: db),
+            stacks: StackRepo(connection: db),
+            duplicates: GlobalDuplicateQuery(connection: db),
+            transactions: db)
     }
 
     func makeCollection(name: String = "Keepers") throws -> CollectionRow {
@@ -95,6 +99,39 @@ private struct CurationFixture {
             name: name,
             sortOrder: collections.nextSortOrder(sessionId: "session-a")
         )
+    }
+}
+
+// MARK: - 端口纪律（#8）
+
+@Suite("CurationService 端口纪律")
+struct CurationServicePortTests {
+    /// 跨仓储事务必须经注入的 TransactionRunner，而不是服务自己拿连接开事务。
+    ///
+    /// 这条用例是 #8 的回归钉：CurationService 曾经持有 DBConnection 并直接
+    /// 「connection.transaction { detach + create }」；端口化后如果谁把事务改回
+    /// 「各自 repo 内部事务」，计数会变 0，用例先红。
+    @Test("建栈/加成员/删成员各走一次注入的 TransactionRunner")
+    func crossStoreTransactionsRouteThroughInjectedRunner() throws {
+        let fixture = try CurationFixture()
+        let counter = PortFakeTransactionRunner()
+        let service = CurationService(
+            collections: fixture.collections,
+            stacks: fixture.stacks,
+            duplicates: fixture.duplicates,
+            transactions: counter)
+
+        let stack = try service.createStack(
+            StackCreateInput(sessionId: "session-a", name: "S", photoIds: ["p0", "p1"]))
+        #expect(counter.transactionCount == 1, "createStack 必须恰好一次外层事务")
+
+        _ = try service.addStackMembers(
+            StackMembersInput(stackId: stack.id, photoIds: ["p2"]))
+        #expect(counter.transactionCount == 2, "addStackMembers 必须恰好一次外层事务")
+
+        _ = try service.removeStackMembers(
+            StackMembersInput(stackId: stack.id, photoIds: ["p2"]))
+        #expect(counter.transactionCount == 3, "removeStackMembers 必须恰好一次外层事务")
     }
 }
 

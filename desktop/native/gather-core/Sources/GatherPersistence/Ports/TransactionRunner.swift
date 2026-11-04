@@ -9,7 +9,10 @@
 //   - 端口故意不暴露 prepare/exec/query：Application 无法借此重新长回 SQL。
 //   - 事务体内仍只调用 Repository 方法；嵌套事务退化为 SAVEPOINT，语义与
 //     SessionService/SimilarityService 旧实现一致。
-public protocol TransactionRunner {
+/// #8：加 Sendable——Application 的 Sendable 值类型（CurationService）要把它存成字段。
+/// 唯一生产实现 DBConnection 已是 @unchecked Sendable；测试 fake 用锁盒实现真正的
+/// Sendable，避免再吃掉 @unchecked 的 cleanup 预算。
+public protocol TransactionRunner: Sendable {
     func transaction<T>(_ body: () throws -> T) throws -> T
 }
 
