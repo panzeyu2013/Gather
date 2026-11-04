@@ -203,7 +203,10 @@ struct CullingDeliverySyncTests {
         let items = try harness.deliveryRepo.listItems(sessionId: "session", module: .culling)
         #expect(items.map(\.status) == [DeliveryItemStatus.synced.rawValue])
         // 旧两路（metadataSync.confirmSync / writeback.confirmSync）不再被调用。
-        #expect(harness.writeback.confirmSyncCalls.isEmpty)
+        // 评审：旧断言 #expect(writeback.confirmSyncCalls.isEmpty) 在协议收窄后已恒真（类型层面
+        // 就没有这两个方法）。改成断言真实结果：确认后交付行进入 synced。
+        #expect(try harness.deliveryRepo.listItems(sessionId: "session", module: .culling)
+            .allSatisfy { $0.status == DeliveryItemStatus.synced.rawValue })
         // D-021：会话级写回状态不落库，由交付聚合派生（confirm 后 → done）。
         #expect(try DeliverySummaryQuery(connection: harness.db)
             .summary(sessionId: "session", module: .culling).writebackStatus == .done)
@@ -267,7 +270,8 @@ struct CullingDeliverySyncTests {
         // 文件阶段：备份内容恢复回 sidecar（restore 幂等覆盖）。
         #expect(harness.deliveryFiles.restoreTargets == ["/shoot/p1.xmp"])
         #expect(harness.deliveryFiles.contents("/shoot/p1.xmp") == "original")
-        #expect(harness.writeback.cleanupCalls.isEmpty)
+        // 同上：清理走交付适配器，旧端口的调用计数恒空、断言无信息量。改为断言行已删除。
+        #expect(try harness.deliveryRepo.get("/shoot/p1.xmp") == nil)
         // 交付行删完后聚合回到 idle（不依赖已删的 sessions.writeback_status）。
         #expect(try DeliverySummaryQuery(connection: harness.db)
             .summary(sessionId: "session", module: .culling).writebackStatus == .idle)
