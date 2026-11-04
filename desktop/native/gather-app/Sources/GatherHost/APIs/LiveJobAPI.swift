@@ -56,29 +56,19 @@ public final class LiveJobAPI: JobAPI {
     public func start(_ request: JobRequest) async throws -> JobHandle {
         try validate(request)
         let job = try jobService.create(request)
-        // GatherEventCenter 是 @MainActor（@Observable）；通知名是静态常量，
-        // 在非隔离的 API 实现里经 MainActor 读取，避免把整个 API 类标成
-        // MainActor（那样无法满足 Sendable 协议的 nonisolated 要求）。
-        let names = await MainActor.run {
-            (progress: GatherEventCenter.jobProgress, terminal: GatherEventCenter.jobTerminal)
-        }
+        // #11 第二步：通道名已是 nonisolated（Notification.Name 是 Sendable），
+        // 不再需要经 MainActor.run 取名字；observe 回调直接拿到 GatherJobEvent。
+        // （原注释担心的是把整个 API 类标成 MainActor，这里同样不需要。）
         let (stream, continuation) = AsyncStream<JobEvent>.makeStream(
             bufferingPolicy: .bufferingNewest(128)
         )
         let observers = JobObserverBag()
-        let progressToken = NotificationCenter.default.addObserver(
-            forName: names.progress, object: nil, queue: nil
-        ) { notification in
-            guard let event = notification.object as? GatherJobEvent,
-                  event.job.id == job.id,
-                  !event.isTerminal else { return }
+        let progressToken = GatherEventChannel.jobProgress.observe(queue: nil) { event in
+            guard event.job.id == job.id, !event.isTerminal else { return }
             continuation.yield(.progress(event.update))
         }
-        let terminalToken = NotificationCenter.default.addObserver(
-            forName: names.terminal, object: nil, queue: nil
-        ) { notification in
-            guard let event = notification.object as? GatherJobEvent,
-                  event.job.id == job.id else { return }
+        let terminalToken = GatherEventChannel.jobTerminal.observe(queue: nil) { event in
+            guard event.job.id == job.id else { return }
             continuation.yield(.finished(event.job))
             continuation.finish()
         }

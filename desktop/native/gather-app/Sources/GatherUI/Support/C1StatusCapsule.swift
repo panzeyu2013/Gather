@@ -34,25 +34,16 @@ final class C1StatusService {
 
     /// 生产只使用 `shared`；测试可建隔离实例，避免单例状态在并行套件间串扰。
     init() {
-        eventObserver = NotificationCenter.default.addObserver(
-            forName: GatherEventCenter.c1SyncStatus,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let sessionId = notification.object as? String else { return }
+        // #11 第二步：走类型化通道，回调直接拿到 sessionId（不再 as? 下转）。
+        eventObserver = GatherEventChannel.c1SyncStatus.observe(queue: .main) { [weak self] sessionId in
             Task { @MainActor [weak self] in
                 guard let self, self.activeSessions[sessionId] != nil else { return }
                 await self.refresh(sessionId: sessionId)
             }
         }
         // 写路径广播（XMP/同步队列）：订阅中的会话立即重拉，胶囊不再等 12s 轮询。
-        domainObserver = NotificationCenter.default.addObserver(
-            forName: GatherEventCenter.domainChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let change = notification.object as? GatherApplicationChange,
-                  change.domain == .metadata else { return }
+        domainObserver = GatherEventChannel.domainChanged.observe(queue: .main) { [weak self] change in
+            guard change.domain == .metadata else { return }
             Task { @MainActor [weak self] in
                 guard let self, !self.activeSessions.isEmpty else { return }
                 if let sessionId = change.sessionId {

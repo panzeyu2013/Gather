@@ -22,6 +22,22 @@ public struct TypedEventChannel<Payload: Sendable>: Sendable {
         NotificationCenter.default.post(name: name, object: payload)
     }
 
+    /// 强类型观察（addObserver 形态）。返回的 token 仍需在 deinit/onDisappear 里
+    /// removeObserver——API 与裸 NotificationCenter 一致，所以调用方的生命周期写法不变。
+    @discardableResult
+    public func observe(
+        queue: OperationQueue? = .current,
+        _ handler: @escaping @Sendable (Payload) -> Void
+    ) -> NSObjectProtocol {
+        NotificationCenter.default.addObserver(
+            forName: name, object: nil, queue: queue
+        ) { note in
+            // 通道名与载荷类型在构造时绑定，这里的转型结构性不可能失败。
+            guard let payload = note.object as? Payload else { return }
+            handler(payload)
+        }
+    }
+
     /// 强类型订阅：消费端拿到的就是 Payload，不再需要 `as?` 下转。
     public var publisher: AnyPublisher<Payload, Never> {
         NotificationCenter.default.publisher(for: name).compactMap { $0.object as? Payload }

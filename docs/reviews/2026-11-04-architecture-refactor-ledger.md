@@ -482,3 +482,15 @@
   140 行（+Triage 201 + Writeback 136）的非 VM 类型各自落到自解释文件。
 - 踩坑：第一次切片把类的声明头一起切掉了（`KeywordTargetIndex` 是顶层、其余是嵌套，
   中间隔着 class 声明），编译报「expected } in class」——已按「逐个类型用花括号配对」重做。
+
+## 残留修复 2：#11 —— addObserver 形态收口，通道相关 as? 清零
+
+- `TypedEventChannel` 增 `observe(queue:_:)`：返回 `NSObjectProtocol`，API 与裸
+  `NotificationCenter.addObserver` 一致（生命周期写法不变），回调直接给 Payload。
+- `C1StatusCapsule` 2 处（c1SyncStatus / domainChanged）、`LiveJobAPI` 2 处
+  （jobProgress / jobTerminal）改用它；后者顺带删掉「经 MainActor.run 取通道名」的 hack
+  ——通道名 `nonisolated` 之后不必要了。
+- 结果：`notification.object as? GatherJobEvent` / `as? GatherApplicationChange` 在
+  GatherUI + GatherHost **零命中**。
+- 未处理：`RootShellOverlay` 的 `userInfo` 类 as?（那走 GatherAppNotification，不属本
+  轮 5 条通道；`DashboardView` 的语言通知同理）。
