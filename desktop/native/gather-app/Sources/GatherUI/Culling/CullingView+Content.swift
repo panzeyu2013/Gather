@@ -118,7 +118,7 @@ extension CullingView {
             guard (notification.object as? String) == viewModel.sessionId else { return }
             Task { await viewModel.refreshSyncStatus() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .c1AutoReloadFailed)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: GatherEventCenter.c1AutoReloadFailed)) { notification in
             guard (notification.object as? String) == viewModel.sessionId else { return }
             viewModel.handleC1AutoReloadFailure()
         }

@@ -265,3 +265,21 @@
 - 口径注意：用例只比 sidecar 口径。内嵌 title 属于 APP1，要读它得走 ImageIO 解析
   （另一条用例已覆盖）；混在一起会让这条不变量失焦——首版就是因为比了内嵌 title
   而误红，已改正并写进注释。
+
+## #11（第一步）：领域事件契约门禁 + 第 5 条游离通道归口
+
+- 现状：4 条进程内通知的通道名是字符串、载荷是 `Any`（17 处 `as?` 下转），
+  「哪个写路径该发哪个域」只是约定；另有第 5 条 `.c1AutoReloadFailed` 游离在
+  `CullingViewModel+Writeback` 里。
+- 本轮：
+  1. 第 5 条通道归口到 `GatherEventCenter`（与其余 4 条并列登记），生产者改指它；
+  2. 新增 `scripts/check-domain-events.sh`：
+     R1 通道名闭包（`Notification.Name("gather.…")` 只允许出现在 2 个文件）、
+     R2 发布点白名单（8 个文件；每个文件只能发登记的域，变参发布单独登记）。
+  3. 接入 CI gates job 与 `docs/DEVELOPMENT.md` 门禁清单。
+- 自检：往 `Support/` 塞一个未登记的 `postDomainChange(.similarity)` → rc=1；
+  删除后 rc=0（脚本本身不自证就等于没写门禁）。
+- 未做（下一步）：R3「写路径必须发域」配对规则 + 类型化 envelope（`TypedEventChannel`）。
+  调研已确认：今天有 6 类破坏性写完全没广播（`applyTriageWriteback` / cleanupRetention /
+  集合栈写 / 模板套用 / 导入 / 设置），必须先落「域→生产者」映射表才谈得上 R3；
+  且 R3 需要 `// DOMAIN-EVENT: none — <原因>` 的显式 opt-out，不能文件级豁免。

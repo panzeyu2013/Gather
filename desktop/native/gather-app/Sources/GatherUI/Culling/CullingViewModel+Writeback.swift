@@ -138,7 +138,7 @@ public struct C1AdjustmentHint: Equatable, Sendable {
 
 public extension Notification.Name {
     /// 自动 reload 失败（object = sessionId）。消费方：CullingView 调 VM 展示提示。
-    static let c1AutoReloadFailed = Notification.Name("gather.events.c1-auto-reload-failed")
+    // #11：通道名已收进 GatherEventCenter（门禁 R1 要求通道名只在两个文件里定义）。
 }
 
 extension CullingViewModel {

@@ -364,7 +364,7 @@ public final class C1RoundTripCoordinator: C1RoundTripReloading {
             suppressed[sessionId] = signal.written
             lastFailure = failure
             NotificationCenter.default.post(
-                name: Notification.Name.c1AutoReloadFailed, object: sessionId)
+                name: GatherEventCenter.c1AutoReloadFailed, object: sessionId)
             return .failed(code: failure.code, message: failure.message)
         }
     }

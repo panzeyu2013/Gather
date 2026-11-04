@@ -92,6 +92,9 @@ public final class GatherEventCenter {
     public static let c1SyncStatus = Notification.Name("gather.events.c1-sync-status")
     /// 写路径领域变更（GatherApplicationChange 载荷）：常驻页按域刷新。
     public static let domainChanged = Notification.Name("gather.events.domain-changed")
+    /// C1 自动 reload 失败（载荷：sessionId）。#11 起与其余通道并列登记——
+    /// 此前它定义在 CullingViewModel+Writeback 里，属「第 5 条游离通道」。
+    public static let c1AutoReloadFailed = Notification.Name("gather.events.c1-auto-reload-failed")
 
     public private(set) var wired = false
 
