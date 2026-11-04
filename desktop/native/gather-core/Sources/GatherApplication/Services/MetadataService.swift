@@ -98,7 +98,6 @@ public typealias MetadataPhotoLookup = PhotoLookupRow
 /// 并发收集状态全部收在上面两个锁盒子里。
 public final class MetadataService: @unchecked Sendable {
     private let metadataCacheRepo: any MetadataRepository
-    private let xmp: any XMPProvider
     /// #6 S1：盘上读取与合成（内嵌 + sidecar）。
     private let reader: MetadataDiskReader
     /// #6 S2：只读元数据投影（不触发磁盘解析）。
@@ -110,22 +109,11 @@ public final class MetadataService: @unchecked Sendable {
     /// #6 S5：关键词预览 / delta / 重试。
     private let keywordWriter: MetadataKeywordWriter
     private let photoRepo: any PhotoRepository
-    private let transactions: any TransactionRunner
-    private let mutations: any MetadataMutationPort
     /// 入队后的写盘执行器（P1-9；nil = 只入队，兼容旧测试/无写回宿主）。
-    private let flushPending: MetadataQueueFlush?
     /// 显式重试入口（含 failed 项）；nil = 退回 flushPending。
-    private let retryFlush: MetadataQueueFlush?
-    private let assetResolver: PhotoAssetResolver?
-    private let exif: (any ExifProvider)?
-    private let dimensions: (any ImageDimensionsProvider)?
-    private let embeddedReader: (any EmbeddedXMPReader)?
     /// K0：生成词来源（face/similarity/culling/template），用于阻止删除。
-    private let origins: MetadataKeywordOriginRepo?
     /// 写目标解析（sidecar / 内嵌）：信息面板必须显示**真实写入位置**，不能恒说 sidecar。
-    private let writeTarget: (@Sendable (String) -> MetadataTarget)?
     /// P1：缓存更新后的关键词索引同步（失败只记日志，不影响元数据结果）。
-    private let keywordIndex: (@Sendable (String) -> Void)?
 
     public init(
         metadataCacheRepo: any MetadataRepository,
@@ -144,7 +132,6 @@ public final class MetadataService: @unchecked Sendable {
         keywordIndex: (@Sendable (String) -> Void)? = nil
     ) {
         self.metadataCacheRepo = metadataCacheRepo
-        self.xmp = xmp
         self.reader = MetadataDiskReader(xmp: xmp, exif: exif, embeddedReader: embeddedReader)
         self.projector = PhotoMetadataProjector(
             xmp: xmp, assetResolver: assetResolver, writeTarget: writeTarget)
@@ -166,17 +153,6 @@ public final class MetadataService: @unchecked Sendable {
             reader: MetadataDiskReader(xmp: xmp, exif: exif, embeddedReader: embeddedReader),
             assetResolver: assetResolver)
         self.photoRepo = photoRepo
-        self.transactions = transactions
-        self.mutations = mutations
-        self.flushPending = flushPending
-        self.retryFlush = retryFlush
-        self.assetResolver = assetResolver
-        self.exif = exif
-        self.dimensions = dimensions
-        self.embeddedReader = embeddedReader
-        self.origins = origins
-        self.writeTarget = writeTarget
-        self.keywordIndex = keywordIndex
         self.keywordWriter = MetadataKeywordWriter(
             photoRepo: photoRepo,
             xmp: xmp,
@@ -312,92 +288,6 @@ public final class MetadataService: @unchecked Sendable {
     }
 
 
-    /// 本次补丁是否包含"清空"意图（字段清空 / 空关键词 / 空 label）。
-    static func hasClearAttempt(_ attributes: MetadataWriteAttributes) -> Bool {
-        if let descriptive = attributes.descriptive {
-            for field in descriptive.explicitlySetFields
-            where normalizedValue(descriptive.value(for: field)) == nil {
-                return true
-            }
-        }
-        // P1：成员级联系人清空不体现在"整体为空"里，只挂在 clearedContactMembers 上；
-        // 漏判会让内嵌不可读时的清空按 written 放行（旧值仍在 APP1）。
-        if let cleared = attributes.clearedContactMembers, !cleared.isEmpty { return true }
-        if let keywords = attributes.keywords, keywords.isEmpty { return true }
-        if let label = attributes.label, isBlank(label) { return true }
-        return false
-    }
-
-    /// 文本是否"空"（nil / 全空白）。
-    static func isBlank(_ value: String?) -> Bool {
-        guard let value else { return true }
-        return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    /// 写后回读判定：描述性元数据逐字段（空值等价于不存在），其余字段精确比较。
-    private static func attributesMatch(
-        _ expected: MetadataWriteAttributes,
-        _ actual: MetadataWriteAttributes
-    ) -> Bool {
-        if expected.rating != nil, expected.rating != actual.rating { return false }
-        if let expectedLabel = expected.label {
-            // 空串与 nil 等价于"没有 label"：清空后回读 nil 不能报成校验失败。
-            let wanted = expectedLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-            let got = (actual.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if wanted != got { return false }
-        }
-        if let expectedKeywords = expected.keywords {
-            let actualKeywords = Set(actual.keywords ?? [])
-            if !Set(expectedKeywords).isSubset(of: actualKeywords) { return false }
-        }
-        if let descriptive = expected.descriptive {
-            let actualDescriptive = actual.descriptive ?? DescriptiveMetadata()
-            for field in descriptive.explicitlySetFields {
-                let expectedValue = Self.normalizedValue(descriptive.value(for: field))
-                let actualValue = Self.normalizedValue(actualDescriptive.value(for: field))
-                if case .contact(let expectedContact) = expectedValue {
-                    // 结构字段是成员级合并：模板只填部分成员时，盘上必然比输入多。
-                    guard case .contact(let actualContact) = actualValue,
-                          Self.contactContains(actualContact, expectedContact) else {
-                        return false
-                    }
-                } else if expectedValue != actualValue {
-                    return false
-                }
-            }
-        }
-        return true
-    }
-
-    /// expected 的每个非 nil 成员都必须与 actual 相同（成员级合并校验）。
-    private static func contactContains(_ actual: DescriptiveContact, _ expected: DescriptiveContact) -> Bool {
-        func eq(_ a: String?, _ b: String?) -> Bool { b == nil || a == b }
-        return eq(actual.city, expected.city)
-            && eq(actual.country, expected.country)
-            && eq(actual.address, expected.address)
-            && eq(actual.postalCode, expected.postalCode)
-            && eq(actual.region, expected.region)
-            && eq(actual.email, expected.email)
-            && eq(actual.telephone, expected.telephone)
-            && eq(actual.url, expected.url)
-    }
-
-    /// 读侧会 trim 文本并丢掉空列表项；比较前必须同口径，否则"写成功却报失败"。
-    private static func normalizedValue(_ value: XMPFieldValue?) -> XMPFieldValue? {
-        switch value {
-        case .text(let text):
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : .text(trimmed)
-        case .list(let values):
-            let items = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            return items.isEmpty ? nil : .list(items)
-        case .contact(let contact):
-            return contact.isEmpty ? nil : .contact(contact)
-        case .none:
-            return nil
-        }
-    }
 
     // MARK: - 关键词（#6 S5 起由 MetadataKeywordWriter 承担）
 

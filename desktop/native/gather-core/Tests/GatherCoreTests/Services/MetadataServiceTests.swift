@@ -338,21 +338,21 @@ struct MetadataServiceTests {
 
     @Test("清空意图判定：字段/关键词/label 的空值都算清空尝试")
     func clearAttemptDetection() {
-        #expect(!MetadataService.hasClearAttempt(MetadataWriteAttributes()), "空补丁没有清空意图")
-        #expect(!MetadataService.hasClearAttempt(MetadataWriteAttributes(
+        #expect(!MetadataAttributeWriter.hasClearAttempt(MetadataWriteAttributes()), "空补丁没有清空意图")
+        #expect(!MetadataAttributeWriter.hasClearAttempt(MetadataWriteAttributes(
             descriptive: DescriptiveMetadata(caption: "有值"))))
-        #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(
+        #expect(MetadataAttributeWriter.hasClearAttempt(MetadataWriteAttributes(
             descriptive: DescriptiveMetadata(caption: ""))))
-        #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(keywords: [])))
-        #expect(!MetadataService.hasClearAttempt(MetadataWriteAttributes(keywords: ["k"])))
-        #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(label: "  ")))
+        #expect(MetadataAttributeWriter.hasClearAttempt(MetadataWriteAttributes(keywords: [])))
+        #expect(!MetadataAttributeWriter.hasClearAttempt(MetadataWriteAttributes(keywords: ["k"])))
+        #expect(MetadataAttributeWriter.hasClearAttempt(MetadataWriteAttributes(label: "  ")))
         // P1 回归：成员级联系人清空不体现在"整体为空"里，只挂在 clearedContactMembers 上。
         // 漏判 → 内嵌不可读时 clear 被当成 written（旧值仍在 APP1）。
-        #expect(MetadataService.hasClearAttempt(MetadataWriteAttributes(
+        #expect(MetadataAttributeWriter.hasClearAttempt(MetadataWriteAttributes(
             descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")),
             replaceContact: true,
             clearedContactMembers: ["city"])))
-        #expect(!MetadataService.hasClearAttempt(MetadataWriteAttributes(
+        #expect(!MetadataAttributeWriter.hasClearAttempt(MetadataWriteAttributes(
             descriptive: DescriptiveMetadata(contactInfo: DescriptiveContact(email: "a@b.c")))))
     }
 
