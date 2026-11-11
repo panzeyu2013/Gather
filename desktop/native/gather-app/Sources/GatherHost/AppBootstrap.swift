@@ -371,16 +371,82 @@ package final class AppBootstrap {
             extras: C1RoundTripExtras(
                 select: { try await captureOneBridge.selectVariants(paths: $0) },
                 hints: { captureOneBridge.adjustmentHints(paths: $0) }))
+        // Wave3：UI 侧门面 = 协调器（reload/选中）+ 具体桥（变体级写回）。
+        // rootDeps.captureOne 换成门面后，UI 的 as? C1RoundTripReloading/Extending
+        // 仍成立（门面同时实现两个端口），写回走具体桥。
+        let c1BridgeFacade = CaptureOneBridgeFacade(
+            coordinator: c1RoundTrip, bridge: captureOneBridge)
+
+        // Wave3 / task-21：Shortcuts / App Intents 运行时（只包既有 typed API；
+        // scene 发布前安装，未完成启动时 intents 显式报 runtimeUnavailable）。
+        let automationRuntime = GatherAutomationRuntime(
+            createWorkspaceAndImport: { name, filepaths in
+                let normalized = normalizeImportFilepaths(filepaths)
+                guard !normalized.isEmpty else { throw GatherAutomationError.noFiles }
+                let trimmed = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolved = trimmed.isEmpty ? Self.automationImportName() : trimmed
+                let input = try SessionCreateInput(
+                    name: resolved, source: "shortcuts", filepaths: normalized)
+                let created = try await appServices.session.create(input)
+                return created.session.id
+            },
+            exportSession: { sessionId, destination, formatRaw, quality, maxDimension in
+                guard let format = ExportFormat(rawValue: formatRaw) else {
+                    throw GatherAutomationError.unsupportedFormat(formatRaw)
+                }
+                let options = ExportOptions(
+                    scope: .session,
+                    variantPolicy: .preferred,
+                    format: format,
+                    quality: quality,
+                    maxDimension: maxDimension,
+                    naming: ExportNaming(pattern: "{orig}"),
+                    includeXmp: false,
+                    destination: destination)
+                let input = try ExportInput(sessionId: sessionId, options: options)
+                return try await appServices.export.execute(
+                    Confirmed(input, source: .automation))
+            },
+            writebackMetadata: { sessionId, targetRaw in
+                guard let target = CullingWritebackTarget(rawValue: targetRaw) else {
+                    throw GatherAutomationError.unsupportedTarget(targetRaw)
+                }
+                let input = try CullingWritebackInput(sessionId: sessionId, target: target)
+                let result = try await appServices.culling.writeback(
+                    Confirmed(input, source: .automation))
+                return GatherAutomationWritebackSummary(
+                    sessionId: sessionId, target: targetRaw,
+                    written: result.written, failed: result.failed, skipped: result.skipped)
+            },
+            sessionStatus: { sessionId in
+                let session = try await appServices.session.get(sessionId)
+                let sync = try await appServices.culling.syncStatus(sessionId)
+                return GatherAutomationSessionStatus(
+                    sessionId: session.id, name: session.name, photoCount: session.photoCount,
+                    pendingXmp: sync.summary.pending, writtenXmp: sync.summary.written,
+                    failedXmp: sync.summary.failed, conflictXmp: sync.summary.conflict,
+                    reloadAckedAt: sync.reloadAckedAt)
+            })
+        GatherAutomationRuntimeRegistry.current = automationRuntime
+        let photoRepo = composition.photoRepo
 
         wire(
             delegate: delegate,
             composition: composition,
             sessionAPI: appServices.session,
+            jobAPI: appServices.job,
             runtime: runtime,
             captureOneBridge: c1RoundTrip,
             // Wave2 / G3：判断数据要读具体桥（C1SelectionSnapshot 只在 CaptureOneBridge
             // 上；协议面只管 UI 既有能力，不把导入专用读取扩进 CaptureOneBridging）。
             captureOneJudgements: { try await captureOneBridge.selectedVariantSnapshot() },
+            // Wave3 / task-21：gather://photo/<id> 的 session 归属（只读查询）。
+            // 只捕获 Sendable 的 PhotoRepo，不把整个组合根拖进 @Sendable 闭包。
+            resolvePhotoSession: { photoId in
+                do { return try photoRepo.getLookupByIds([photoId]).first?.sessionId } catch {
+                    return nil
+                }
+            },
             // Cut 4 / 4b-3：语言唯一来源随装配交给 Delegate（导入面板
             // 没有 environment，只能在动作发生时读同一个 store）。
             languageStore: languageStore
@@ -406,7 +472,7 @@ package final class AppBootstrap {
             duplicate: appServices.duplicate,
             export: appServices.export,
             person: appServices.person,
-            captureOne: c1RoundTrip,
+            captureOne: c1BridgeFacade,
             libraryProvider: libraryProvider,
             galleryProvider: galleryProvider,
             dashboardProvider: provider,
@@ -417,7 +483,9 @@ package final class AppBootstrap {
             },
             chooseImportFolder: {
                 guard let delegate else { return .cancelled }
-                return await delegate.chooseImportFolder()
+                let selection = await delegate.chooseImportFolder()
+                // Wave3 / G6：C1 Session 根目录 → 只扫 Capture（Trash 不复活、Selects 不重复扫）。
+                return C1SessionDirectoryImport.redirect(selection)
             },
             captureOneImport: {
                 guard let delegate else { return }
@@ -497,15 +565,44 @@ package final class AppBootstrap {
         delegate: GatherAppDelegate?,
         composition: AppComposition,
         sessionAPI: any SessionAPI,
+        jobAPI: any JobAPI,
         runtime: AppRuntime,
         captureOneBridge: any CaptureOneBridging,
         captureOneJudgements: @escaping @Sendable () async throws -> C1SelectionSnapshot,
+        resolvePhotoSession: @escaping @Sendable (String) -> String?,
         languageStore: LanguageStore
     ) {
         guard let delegate else { return }
         // Cut 4 / 4b-3：界面语言源注入 Delegate（导入面板文案在动作发生时读它）；
         // 导入闭包同样在**动作发生时**取 store.l10n，不缓存字符串。
         delegate.languageStore = languageStore
+        // Wave3 / task-21：gather:// 深链路由（session/photo/import-into-session）。
+        // 事件名与 userInfo 键在 GatherUI/GatherAppNotification 单源定义。
+        delegate.onImportFilesIntoSession = { files, sessionId in
+            let l10n = languageStore.l10n
+            Task {
+                await AppImport.importFiles(
+                    files, into: sessionId,
+                    sessionAPI: sessionAPI, jobAPI: jobAPI,
+                    source: "shortcuts", sourceLabel: "Shortcut", l10n: l10n)
+            }
+        }
+        delegate.onOpenSession = { sessionId in
+            NotificationCenter.default.post(
+                name: GatherAppNotification.deepLinkSession, object: sessionId)
+        }
+        delegate.onOpenPhoto = { sessionId, photoId in
+            NotificationCenter.default.post(
+                name: GatherAppNotification.deepLinkPhoto, object: nil,
+                userInfo: [
+                    GatherAppDeepLinkUserInfoKey.sessionId: sessionId,
+                    GatherAppDeepLinkUserInfoKey.photoId: photoId,
+                ])
+        }
+        delegate.onResolvePhotoSession = resolvePhotoSession
+        delegate.onDeepLinkError = { error in
+            GatherLogger.log("deep link rejected: \(error.description)", level: .warn)
+        }
         // Wave2 / task-14：导入完成后的自动初审接线（quality.score → triage.generate）。
         // 只取三个 Sendable 服务（JobService/SettingsService 已是 @unchecked Sendable，
         // TriageService 经 actor 桥），不把整个 AppComposition 拖进后台任务。
@@ -590,6 +687,17 @@ package final class AppBootstrap {
     }
 
     // MARK: - 冷启动语言
+
+    /// Wave3 / task-21：Shortcuts 未命名导入的默认工作区名（写入 sessions.name）。
+    ///
+    /// nonisolated：App Intents 的 @Sendable 闭包在非 MainActor 上下文调用它；
+    /// 只用 DateFormatter 与 Date，无共享状态。
+    nonisolated private static func automationImportName() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return "Shortcuts 导入 " + formatter.string(from: Date())
+    }
 
     /// 读取持久化的界面语言（settings.ui_language 是唯一真相源）。
     /// 未设置 / 空串 / 读取失败都返回 nil = 保持系统语言检测（启动不能因为
@@ -749,3 +857,95 @@ enum AITriageImportTrigger {
     }
 }
 
+// MARK: - Wave3：C1 门面 + Session 目录导入（G4/G5/G6）
+
+/// UI 侧 C1 门面：协调器（reload/选中/预检）+ 具体桥（变体级写回）。
+///
+/// 为什么需要：`RootShellDependencies.captureOne` 既要让 UI 的
+/// `as? C1RoundTripReloading / C1RoundTripExtending` 动态派发成立（手动/自动 reload
+/// 共用串行队列、在 C1 中显示），又要暴露只有具体桥才有的变体级写回能力。组合根用
+/// 一个门面同时委托两者，避免让 coordinator 反向依赖写回实现。
+@MainActor
+final class CaptureOneBridgeFacade: CaptureOneBridging, C1RoundTripReloading, C1RoundTripExtending {
+    private let coordinator: C1RoundTripCoordinator
+    private let bridge: CaptureOneBridge
+
+    init(coordinator: C1RoundTripCoordinator, bridge: CaptureOneBridge) {
+        self.coordinator = coordinator
+        self.bridge = bridge
+    }
+
+    // MARK: CaptureOneBridging（reloadMetadata 同时满足 C1RoundTripReloading 的同签名要求）
+
+    func selectedPhotoPaths() async throws -> [String] {
+        try await coordinator.selectedPhotoPaths()
+    }
+
+    func reloadMetadata(sessionId: String) async throws {
+        try await coordinator.reloadMetadata(sessionId: sessionId)
+    }
+
+    func checkHealth() async -> Result<String, CaptureOneBridgeError> {
+        await coordinator.checkHealth()
+    }
+
+    func preflight() async -> C1PreflightStatus {
+        await coordinator.preflight()
+    }
+
+    nonisolated static func documentProbeScript(appName: String) -> String {
+        C1RoundTripCoordinator.documentProbeScript(appName: appName)
+    }
+
+    func writeVariantJudgements(
+        sessionId: String?,
+        items: [C1VariantWritebackItem]
+    ) async throws -> C1VariantWritebackReport {
+        try await bridge.writeVariantJudgements(sessionId: sessionId, items: items)
+    }
+
+    // MARK: C1RoundTripReloading
+
+    func noteDeliveryStateChanged(sessionId: String) {
+        coordinator.noteDeliveryStateChanged(sessionId: sessionId)
+    }
+
+    func currentAutoReloadFailure() -> C1AutoReloadFailure? {
+        coordinator.currentAutoReloadFailure()
+    }
+
+    func clearAutoReloadFailure() {
+        coordinator.clearAutoReloadFailure()
+    }
+
+    // MARK: C1RoundTripExtending
+
+    func selectVariants(paths: [String]) async throws -> C1SelectionOutcome {
+        try await coordinator.selectVariants(paths: paths)
+    }
+
+    func adjustmentHints(paths: [String]) -> [C1AdjustmentHint] {
+        coordinator.adjustmentHints(paths: paths)
+    }
+}
+
+/// C1 Session 根目录导入的扫描根重定向（Wave3 / G6）。
+///
+/// C1 Session 根 = Capture（原始）+ Selects（挑中/移动后的文件）+ Trash（淘汰）。
+/// 把根当普通目录递归会让 Trash 淘汰件"复活"成普通资产，并在 Capture/Selects 之间
+/// 产生重复。这里识别到 session 结构后**只把 Capture 交给后续导入**（会话 source_path
+/// = Capture → 监听/摄取也在 Capture 内；Trash 不扫；Selects 因不扫描而不重复）。
+/// 已知边界：Selects 中与 Capture 不同名的文件（C1 "Move to Selects" 移动过）本次
+/// 不会导入——完整覆盖需要索引器支持按目录排除/去重（不在本波范围，见汇报）。
+enum C1SessionDirectoryImport {
+    static func redirect(_ selection: ImportFolderSelection) -> ImportFolderSelection {
+        guard case .directory(let url) = selection else { return selection }
+        guard let layout = C1SessionDirectoryResolver.detect(root: url.path),
+              layout.isCaptureOneSession else { return selection }
+        GatherLogger.log(
+            "c1.session import scanRoot=\(layout.scanRoot)"
+                + " selects=\(layout.selects != nil) trash=\(layout.trash != nil)",
+            level: .info)
+        return .directory(URL(fileURLWithPath: layout.scanRoot))
+    }
+}

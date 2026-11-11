@@ -442,6 +442,8 @@ struct CullingInspector: View {
                         .gatherButton(.destructive)
                         .disabled(isBusy)
                         .help(l10n("移到会话目录下的 _rejects 文件夹，不删除文件"))
+                        // Wave3 / G12：_rejects 若被 C1 Hot Folder 监视会重复导入（检测不到，只提示）。
+                        C1HotFolderNotice()
                     }
                 }
 

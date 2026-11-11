@@ -169,7 +169,8 @@ struct FeatureAPIs {
     }
 
     private static func makeExport(_ composition: AppComposition) -> any ExportAPI {
-        LiveExportAPI(
+        let settingsService = composition.settingsService
+        return LiveExportAPI(
             exportService: composition.exportService,
             jobService: composition.jobService,
             webDAVPublisher: WebDAVPublisher(transport: URLSessionWebDAVTransport()),
@@ -179,7 +180,17 @@ struct FeatureAPIs {
             },
             webDAVCredentialLookup: { url, username in
                 WebDAVCredentialStore.password(server: url, username: username)
-            }
+            },
+            // Wave3 / task-21：导出后命令钩子。配置读 settings；未配置时不产生副作用。
+            postCommand: ExportPostCommandHook(configuration: {
+                let template = settingsService.string(.exportPostCommand)
+                guard !template.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return nil
+                }
+                return ExportPostCommandConfiguration(
+                    template: template,
+                    timeoutSeconds: Double(settingsService.int(.exportPostCommandTimeout)))
+            })
         )
     }
 

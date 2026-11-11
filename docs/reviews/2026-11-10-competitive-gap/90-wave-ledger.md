@@ -147,3 +147,44 @@
 5. **scene/person facet 在 Filtering/FacetBar 的标题**落到 default 文案；NOT/集合/相对日期目前只有 API/JSON 路径可存，FilterRuleEditor 的编辑入口未接（属 task-13 目录，下一波）。
 6. **C1 color tag 整数序**仍未真机核对；C1 关键词含 `|` 会按层级解析。
 7. 搜索 OR 扩到 17 字段的大库性能未测；词库补全每次读全量同义词（当前规模可接受）。
+
+---
+
+## 8. Wave 3 第一批（2026-11-11，task-18 / task-19 / task-21）
+
+| 任务 | 缺口 | 修复要点 | 关键文件 |
+| --- | --- | --- | --- |
+| task-18 | 30 册 G4/G5/G6/G12 | 变体级 C1 **写回**：协议新增 `writeVariantJudgements`（要求 + 默认 unsupported 降级）、`C1ColorTagMapping` 读写单一事实源；按路径→image→variants 只写目标 variant（优先已 pick，否则 position 1），写 rating/color tag/pick，**不写关键词**（keep→pick=true / reject→pick=false / unreviewed 不写），单次上限 500；写后写 durable reload-ack（口径已批准：catalog 权威，不 reload）；Session 三目录识别（Capture/Selects/Trash，扫描根=Capture、Trash 不扫、Selects 同名去重）+ 信息条标注 + Hot Folder「不检测」边界提示；UI 菜单「在 Capture One 中写回判断（变体级）」+ 失败可执行下一步 | `Protocol/C1.swift`、`GatherHost/CaptureOneBridge.swift`、`AppBootstrap.swift`（Facade）、`GatherUI/Culling/*` |
+| task-19 | 20 册 #5 / 50 册 #8 | 感知级相似**评估物**（产品行为零改动）：标注集解码/校验/指纹、pair 指标与阈值曲线/推荐工作点、聚类 ARI/过度合并、FeaturePrint 与 dHash 双通道、`similarity-eval` 子命令（markdown+JSON+基线对照+`--self-test`）、本地采样脚本、决策报告（先定后测的立项门槛/阈值先验/9 类失败/成本） | `Sources/GatherTriageEval/*`、`scripts/sample-similarity-annotation.sh`、`docs/reviews/2026-11-10-competitive-gap/95-similarity-eval-design.md` |
+| task-21 | 05 册 §2 | 自动化面：`gather://session/<id>`、`photo/<id>`、`import?session=`（加入已有工作区）+ 兼容旧 import；4 个 App Intents/Shortcuts 动作（经 @Sendable runtime 复用既有 API，未启动显式 runtimeUnavailable）；导出后命令钩子（模板拆参数后替换占位符、不经 shell、超时 1–600s、失败只记 Outcome/manifest）；新增 settings 键 2 个 | `GatherHost/Automation/*`、`GatherApp/GatherAutomationIntents.swift`、`GatherApplication/Services/Export/ExportPostCommandRunner.swift`、`SettingsKey.swift` |
+
+### Lead 修掉的缺陷（3 处 + 1 处防回归）
+
+1. `SimilarityEvalCommand.swift`：`struct SimilarityEvalCLIError`（含 `case`）→ `enum`；604 行多行字符串插值里跨行闭包 → 先算 `firstFailed` 再插值。
+2. `AppBootstrap.automationImportName()` 在 @Sendable 闭包里调用 MainActor 静态方法 → 标 `nonisolated`。
+3. cleanup ratchet 回涨（try_optional +9）：把 `ExportPostCommandRunner` 的 8 处、`AppBootstrap` 的 1 处 `try?` 改成 do/catch（保持指标 261 不变）。
+4. tool `--self-test` 失败（推荐阈值 0.97 vs 0.9）：由 ai-reviewer 复核数学后确认**期望错**（0.99 是负样本，0.97 处 precision=0.5），新增逐点混淆矩阵断言 + 达标路径用例，并修正 cosine 容差（Float 精度），self-test 现 PASS。
+
+### 验证证据（Lead 执行）
+
+- 构建：`gather-core`（含 tool target）与 `gather-app` `swift build --build-tests --disable-sandbox` 无 error。
+- 测试：core **57 tests / 9 suites**、app **225 tests / 40 suites** 通过（含 C1BridgeWave3 / GatherDeepLinkRoute / ExportPostCommand / GatherAutomationRuntime / 既有 C1/本地化回归）。
+- 工具：`similarity-eval --self-test` → **PASS**；旧 CLI `--help` 冒烟正常。
+- 门禁 12 项全绿（含 `--strict`）；cleanup 指标未涨（try_optional 261）。
+
+### 基线变更（Wave 3 第一批）
+
+| 基线 | 变更 | 原因 |
+| --- | --- | --- |
+| `docs/protocol-surface-baseline.json` | public_types 460 → **468**；public_declarations 2718 → **2765**；protocol_lines 14492 → **14825** | task-18 的 C1 写回/目录角色 DTO 与协议要求、task-21 的 `OutputPostCommandOutcome` |
+| cleanup | 未变（261） | 新增 try? 已改为 do/catch |
+
+### 遗留（Wave 3 第一批）
+
+1. **App Intents 发现性**：SwiftPM 构建不生成 `Metadata.appintents`，需在 `build.sh` 组装后加 `xcrun appintentsmetadataprocessor`，否则 Shortcuts 里看不到动作（代码/运行时可验证，打包步骤未做）。
+2. **C1 变体写回真机未验**：只在文本层按 sdef 钉契约；需真机确认 `variant.rating/color tag/pick` 可写、多 variant 只改目标、写后门禁放行。
+3. **Selects 覆盖不完整**：重定向只扫 Capture，Selects 中与 Capture 不同名的移动文件不导入（已上 UI 提示；完整方案需索引器目录排除）。
+4. **reject 往返不闭合**：C1 只有布尔 pick，reject→pick=false，而 Wave2 导入侧 false→未处理（保守不误杀）。
+5. **Hot Folder 不检测**：sdef 无读取接口，仅 UI 明示「未检测」。
+6. **评估工具无独立 test target**：用内置 `--self-test` 作验收点；真实数值待标注集。
+7. **导出后钩子只挂整套交付**（`runRecipes` 成功后），单次 export.execute 不触发；UI 未展示 postCommand。

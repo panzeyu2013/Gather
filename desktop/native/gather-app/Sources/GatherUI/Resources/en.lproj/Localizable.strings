@@ -2388,3 +2388,14 @@
 
 /* Wave2 task-13 收口补漏（Lead） */
 "词库操作失败：%@" = "Keyword library operation failed: %@";
+/* Wave3 task-18 */
+"Capture One Hot Folder 未检测：C1 不提供读取该设置的接口；若该目录被 C1 监视，导入或移出可能重复。" = "Capture One Hot Folder undetected: C1 does not expose a way to read that setting; if C1 watches this folder, imports or moves may be duplicated.";
+"在 Capture One 中写回判断（变体级）" = "Write Judgments to Capture One (per Variant)";
+"把当前选择集（无选择时当前照片）的星级/色标/保留-淘汰按 variant 写回 C1；不写关键词" = "Write the current selection's rating/color label/keep-reject to C1 per variant (current photo when nothing is selected); no keywords are written";
+"已在 Capture One 中写回 %lld 个变体" = "Wrote %lld variants in Capture One";
+"已写回 %lld 个变体，%lld 个不在当前目录" = "Wrote %lld variants; %lld were not in the current folder";
+"C1 Session：已识别 Capture/Selects/Trash，仅导入 Capture" = "C1 Session: Capture/Selects/Trash recognized; only Capture is imported";
+"Trash 中的淘汰件不会被导入或复活；Selects 不与 Capture 重复导入；目录角色仅作标注，不改写 C1" = "Items in Trash are not imported or revived; Selects is not imported twice; folder roles are annotations only and C1 is never modified";
+/* Wave3 task-18 */
+"Selects 中与 Capture 不同名的文件不会被导入" = "Files in Selects whose names differ from Capture are not imported";
+"变体级写回未完成（%@）：请改用「写回 XMP…」写盘，再在 Capture One 手动 Load Metadata（或点「我已在 Capture One 手动加载元数据」）" = "Per-variant writeback did not complete (%@): use “Write XMP…” instead, then run Load Metadata manually in Capture One (or click “I loaded metadata manually in Capture One”)";

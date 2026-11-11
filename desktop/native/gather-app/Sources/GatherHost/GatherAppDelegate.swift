@@ -90,8 +90,24 @@ public enum GatherDeepLink {
 @MainActor
 public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
     public var onImportFiles: (([String]) -> Void)? {
-        didSet { flushPendingImports() }
+        didSet { flushPendingDeepLinks() }
     }
+    /// Wave3 / task-21：gather://import?session=<id> —— 加入已有工作区。
+    public var onImportFilesIntoSession: (([String], String) -> Void)? {
+        didSet { flushPendingDeepLinks() }
+    }
+    /// Wave3 / task-21：gather://session/<id> —— 打开工作区。
+    public var onOpenSession: ((String) -> Void)? {
+        didSet { flushPendingDeepLinks() }
+    }
+    /// Wave3 / task-21：gather://photo/<id> —— 打开照片（sessionId 已由宿主解析）。
+    public var onOpenPhoto: ((String, String) -> Void)? {
+        didSet { flushPendingDeepLinks() }
+    }
+    /// 把 photoId 解析成所属 sessionId（同步只读查询；nil = 未找到）。
+    public var onResolvePhotoSession: ((String) -> String?)?
+    /// 深链解析失败（诊断/提示用）。
+    public var onDeepLinkError: ((GatherDeepLinkError) -> Void)?
     public var onCaptureOneImport: (() async throws -> [String])?
     /// C1 菜单导入专用回调（携带 capture-one 来源标记与失败提示标签；
     /// 与 onImportFiles 区分，见 GatherApp.importFiles 的 source 参数）。
@@ -106,6 +122,8 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
     private static let bootstrapL10n = L10n(language: .zhCN)
 
     private var pendingImportURLs: [URL] = []
+    /// 启动早期到达、handler 尚未挂载的深链（按 URL 原样留存，挂载后重放）。
+    private var pendingRouteURLs: [URL] = []
 
     public func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         true
@@ -143,23 +161,77 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         lastHandledURL = (url, Date())
-        let files = GatherDeepLink.importFiles(from: url)
-        guard !files.isEmpty else { return }
-        if let onImportFiles {
-            onImportFiles(files)
-        } else {
-            pendingImportURLs.append(url)
+        switch GatherDeepLinkParser.parse(url) {
+        case .invalid(let error):
+            GatherLogger.log("deep link rejected: \(error.description)", level: .warn)
+            onDeepLinkError?(error)
+        case .route(let route):
+            dispatch(route, url: url)
+        }
+    }
+
+    private func dispatch(_ route: GatherDeepLinkRoute, url: URL) {
+        switch route {
+        case .importFiles(let files):
+            if let onImportFiles {
+                onImportFiles(files)
+            } else {
+                pendingImportURLs.append(url)
+            }
+        case .importIntoSession(let sessionId, let files):
+            if let onImportFilesIntoSession {
+                onImportFilesIntoSession(files, sessionId)
+            } else {
+                pendingRouteURLs.append(url)
+            }
+        case .openSession(let sessionId):
+            if let onOpenSession {
+                onOpenSession(sessionId)
+            } else {
+                pendingRouteURLs.append(url)
+            }
+        case .openPhoto(let photoId):
+            guard let onOpenPhoto,
+                  let sessionId = onResolvePhotoSession?(photoId) else {
+                pendingRouteURLs.append(url)
+                break
+            }
+            onOpenPhoto(sessionId, photoId)
         }
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func flushPendingImports() {
-        guard let onImportFiles else { return }
-        let urls = pendingImportURLs
+    /// handler 挂载后重放启动早期到达的深链；仍未挂载的保留到下次。
+    private func flushPendingDeepLinks() {
+        let imports = pendingImportURLs
         pendingImportURLs.removeAll()
-        for url in urls {
-            let files = GatherDeepLink.importFiles(from: url)
-            if !files.isEmpty { onImportFiles(files) }
+        for url in imports {
+            if case .route(.importFiles(let files)) = GatherDeepLinkParser.parse(url) {
+                onImportFiles?(files)
+            }
+        }
+        let routes = pendingRouteURLs
+        pendingRouteURLs.removeAll()
+        for url in routes {
+            switch GatherDeepLinkParser.parse(url) {
+            case .route(let route):
+                switch route {
+                case .importFiles(let files):
+                    if let onImportFiles { onImportFiles(files) } else { pendingImportURLs.append(url) }
+                case .importIntoSession(let sessionId, let files):
+                    if let onImportFilesIntoSession {
+                        onImportFilesIntoSession(files, sessionId)
+                    } else { pendingRouteURLs.append(url) }
+                case .openSession(let sessionId):
+                    if let onOpenSession { onOpenSession(sessionId) } else { pendingRouteURLs.append(url) }
+                case .openPhoto(let photoId):
+                    if let onOpenPhoto, let sessionId = onResolvePhotoSession?(photoId) {
+                        onOpenPhoto(sessionId, photoId)
+                    } else { pendingRouteURLs.append(url) }
+                }
+            case .invalid(let error):
+                onDeepLinkError?(error)
+            }
         }
     }
 

@@ -84,6 +84,9 @@ struct SettingsKeyTests {
         "c1_auto_reload": "1",
         "triage_calibration_min_samples": "50",
         "semantic_index_enabled": "0",
+        // Wave3 / task-21：导出后命令钩子（新键，oracle 追加；不改旧键默认值）。
+        "export_post_command": "",
+        "export_post_command_timeout_seconds": "30",
         // #9 转正的幽灵键（此前不在默认表里，永远读调用点硬编码默认值）。
         "import_concurrency": "8",
         "asset_read_mode": "dual",

@@ -127,6 +127,59 @@ enum AppImport {
         }
     }
 
+    /// Wave3 / task-21：把文件加入**已有工作区**（gather://import?session=<id> /
+    /// App Intents 共用）。成功/失败都走既有 importCompleted / importFailed 通知，
+    /// RootView 因此仍然只认一条导入完成契约（自动落图库、Toast 失败计数）。
+    @MainActor
+    static func importFiles(
+        _ files: [String],
+        into sessionId: String,
+        sessionAPI: any SessionAPI,
+        jobAPI: any JobAPI,
+        source: String = "shortcuts",
+        sourceLabel: String = "",
+        l10n: L10n
+    ) async {
+        let normalized = normalizeImportFilepaths(files)
+        guard !normalized.isEmpty else { return }
+        do {
+            let input = try SessionAddPhotosInput(
+                sessionId: sessionId, filepaths: normalized, source: source)
+            let result = try await sessionAPI.addPhotos(input)
+            // 只扫本次新增的文件集合（job 的 dedupeKey/checkpoint 继承既有语义）。
+            do {
+                _ = try await jobAPI.start(
+                    JobCreateParams.metadataScan(sessionId: sessionId, requestedPaths: normalized))
+            } catch {
+                // 入队失败不是导入失败：照片行已落库，用户可以重试索引；必须可见。
+                GatherLogger.log("import-into-session scan failed: \(error)", level: .warn)
+            }
+            let examples = result.failedFiles
+                .prefix(3)
+                .map { URL(fileURLWithPath: $0).lastPathComponent }
+                .joined(separator: "、")
+            NotificationCenter.default.post(
+                name: GatherAppNotification.importCompleted,
+                object: nil,
+                userInfo: [
+                    GatherAppImportUserInfoKey.sessionId: sessionId,
+                    GatherAppImportUserInfoKey.failedCount: result.failedFiles.count,
+                    GatherAppImportUserInfoKey.addedCount: result.added,
+                    GatherAppImportUserInfoKey.sourceLabel: sourceLabel,
+                    GatherAppImportUserInfoKey.examples: examples,
+                    GatherAppImportUserInfoKey.directoryImport: false,
+                ]
+            )
+        } catch {
+            GatherLogger.log("import into session failed: \(error)", level: .error)
+            NotificationCenter.default.post(
+                name: GatherAppNotification.importFailed,
+                object: CommandError(error),
+                userInfo: [GatherAppImportUserInfoKey.retryFiles: normalized]
+            )
+        }
+    }
+
     /// Phase 4.3 一次性迁移：Vision feature print rev2 为 768 维，不能与
     /// 旧 512 维向量混用。首次启动原生宿主时切换 native
     /// embedding_dim，并为已有工作区排入 face.analyze；JobService 的

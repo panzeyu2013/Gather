@@ -36,6 +36,12 @@ struct CullingSyncControls: View {
             Button(l10n("在 Capture One 中显示")) { Task { await viewModel.showInCaptureOne() } }
                 .disabled(isBusy)
                 .help(l10n("在 Capture One 中选中这些照片；只改变选中，不导入"))
+            // Wave3 / G4：在线通道——直接写 C1 catalog 的 variant 属性（不用关键词表达 pick）。
+            Button(l10n("在 Capture One 中写回判断（变体级）")) {
+                Task { await viewModel.writeVariantJudgementsToCaptureOne() }
+            }
+            .disabled(isBusy)
+            .help(l10n("把当前选择集（无选择时当前照片）的星级/色标/保留-淘汰按 variant 写回 C1；不写关键词"))
             if (viewModel.syncStatus?.written ?? 0) > 0 {
                 Button(l10n("在 Capture One 中加载元数据")) { Task { await viewModel.reloadCaptureOne() } }
                     .disabled(!viewModel.canLoadMetadata || isBusy)

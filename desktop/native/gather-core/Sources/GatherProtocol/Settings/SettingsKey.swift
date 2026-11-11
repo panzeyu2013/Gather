@@ -92,6 +92,9 @@ public enum SettingsKey: String, CaseIterable, Sendable, Hashable {
     case c1AutoReload = "c1_auto_reload"
     case triageCalibrationMinSamples = "triage_calibration_min_samples"
     case semanticIndexEnabled = "semantic_index_enabled"
+    // Wave3 / task-21：导出后命令钩子（空串 = 关闭；参数数组执行，不经 shell）。
+    case exportPostCommand = "export_post_command"
+    case exportPostCommandTimeout = "export_post_command_timeout_seconds"
 
     // MARK: - #9 转正：原先只读不写的「幽灵键」
     //
@@ -180,6 +183,8 @@ public enum SettingsKey: String, CaseIterable, Sendable, Hashable {
         case .c1AutoReload: "1"
         case .triageCalibrationMinSamples: "50"
         case .semanticIndexEnabled: "0"
+        case .exportPostCommand: ""
+        case .exportPostCommandTimeout: "30"
         case .importConcurrency: "8"
         case .assetReadMode: "dual"
         case .similarityClusterConvergenceInterval: "10"

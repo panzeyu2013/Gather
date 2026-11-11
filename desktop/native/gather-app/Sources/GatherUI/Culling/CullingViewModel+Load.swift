@@ -402,3 +402,23 @@ extension CullingViewModel {
         await loadPage(reset: true)
     }
 }
+// MARK: - Wave3 / G6：C1 Session 三目录标注
+
+extension CullingViewModel {
+    /// 读取会话源路径并识别 C1 Session（Capture/Selects/Trash）。
+    ///
+    /// 只做标注：扫描根重定向在宿主 chooseImportFolder 阶段完成（C1SessionDirectoryImport），
+    /// 这里不改导入范围、不移动文件、不触发任何写入。sessionAPI 未接线时保持 nil。
+    func loadCaptureOneSessionLayout() async {
+        guard let sessionAPI else { return }
+        do {
+            let session = try await sessionAPI.get(sessionId)
+            sessionSourcePath = session.sourcePath.isEmpty ? nil : session.sourcePath
+        } catch {
+            sessionSourcePath = nil
+        }
+        captureOneSessionLayout = sessionSourcePath.flatMap {
+            C1SessionDirectoryResolver.detect(root: $0)
+        }
+    }
+}

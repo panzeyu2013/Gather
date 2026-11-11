@@ -285,6 +285,40 @@ public struct OutputRecipeResult: Codable, Equatable, Sendable {
     }
 }
 
+/// Wave3 / task-21：导出后命令钩子的执行结果。
+///
+/// 只记录「跑了什么、退没退、有没有超时、输出尾部」——不记录完整环境变量，
+/// 也不把命令输出当错误抛出：钩子失败**只记日志并计入导出报告**，不改交付结果。
+public struct OutputPostCommandOutcome: Codable, Equatable, Sendable {
+    /// 展开占位符前的命令模板（用户配置值，便于审计）。
+    public var command: String
+    /// 正常退出时的退出码；启动失败/超时/被信号杀掉时为 nil。
+    public var exitCode: Int?
+    public var timedOut: Bool
+    /// 从 launch 到进程结束/被终止的墙钟耗时。
+    public var durationMilliseconds: Int
+    /// 启动失败（不可执行、权限等）或超时终止的说明。
+    public var error: String?
+    /// stdout + stderr 的尾部（截断，最多几 KB）。
+    public var outputTail: String?
+
+    public init(
+        command: String,
+        exitCode: Int? = nil,
+        timedOut: Bool = false,
+        durationMilliseconds: Int = 0,
+        error: String? = nil,
+        outputTail: String? = nil
+    ) {
+        self.command = command
+        self.exitCode = exitCode
+        self.timedOut = timedOut
+        self.durationMilliseconds = durationMilliseconds
+        self.error = error
+        self.outputTail = outputTail
+    }
+}
+
 public struct OutputRunSummary: Codable, Equatable, Sendable {
     public var runId: String
     public var sessionId: String
@@ -295,6 +329,9 @@ public struct OutputRunSummary: Codable, Equatable, Sendable {
     public var manifestError: String?
     /// true = 本次运行被取消，manifest 记录的是「已交付的部分」。
     public var cancelled: Bool?
+    /// Wave3 / task-21：导出后命令钩子结果（nil = 未配置/未运行）。
+    /// 只在整套交付（runRecipes）完成后写入；旧 manifest 没有该键 → 解码为 nil。
+    public var postCommand: OutputPostCommandOutcome?
 
     public init(
         runId: String,
@@ -303,7 +340,8 @@ public struct OutputRunSummary: Codable, Equatable, Sendable {
         createdAt: String,
         recipes: [OutputRecipeResult],
         manifestError: String? = nil,
-        cancelled: Bool? = nil
+        cancelled: Bool? = nil,
+        postCommand: OutputPostCommandOutcome? = nil
     ) {
         self.runId = runId
         self.sessionId = sessionId
@@ -312,6 +350,7 @@ public struct OutputRunSummary: Codable, Equatable, Sendable {
         self.recipes = recipes
         self.manifestError = manifestError
         self.cancelled = cancelled
+        self.postCommand = postCommand
     }
 
     public var totalExported: Int { recipes.reduce(0) { $0 + $1.exported } }

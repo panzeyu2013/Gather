@@ -305,6 +305,103 @@ extension CullingViewModel {
         return CommandError(error)
     }
 
+    // MARK: - Wave3 / G4：变体级写回（在线通道；XMP 写回仍是离线兜底）
+
+    /// 把当前选择集（无选择时当前照片）的文件级判断按 variant 写回 C1。
+    ///
+    /// 与「写回 XMP…」的分工：C1 运行中时直接写 catalog 的 variant 属性（rating/
+    /// color tag/pick），无需等 Load Metadata；C1 未运行/脚本不可用时仍走 XMP 写回
+    ///（同一个菜单，行为不变）。pick 用 C1 原生布尔位表达 keep/reject，**不写关键词**
+    ///（G4：不污染 C1 词库）。写回成功后 bridge 已写入 durable reload-ack，
+    /// confirm/finalize 门禁照常放行。
+    ///
+    /// 收口口径（2026-11-11 已确认）：写的是 C1 catalog（权威），**不再** reload metadata
+    ///（会把盘上旧 XMP 读回覆盖判断）；失败/未接线时统一提示可执行的下一步：
+    /// 改用「写回 XMP…」+ 在 C1 手动 Load Metadata（或点「我已在 C1 手动加载元数据」）。
+    public func writeVariantJudgementsToCaptureOne() async {
+        let items = variantWritebackItems
+        guard !items.isEmpty else {
+            errorMessage = CommandError.localized("请先选择照片（或让当前照片可见）")
+            return
+        }
+        do {
+            let report = try await captureOne.writeVariantJudgements(
+                sessionId: sessionId, items: items)
+            if let unsupported = report.unsupportedReason {
+                // 未接线（预览/旧宿主）：给出可执行的下一步（XMP 写回 + 手动 Load），不伪造成功。
+                errorMessage = CommandError.localized(
+                    "变体级写回未完成（%@）：请改用「写回 XMP…」写盘，再在 Capture One 手动 Load Metadata（或点「我已在 Capture One 手动加载元数据」）",
+                    params: [unsupported])
+                return
+            }
+            errorMessage = nil
+            if report.notFound.isEmpty {
+                notice = CullingNotice(
+                    "已在 Capture One 中写回 %lld 个变体",
+                    params: ["\(report.written)"])
+            } else {
+                notice = CullingNotice(
+                    "已写回 %lld 个变体，%lld 个不在当前目录",
+                    params: ["\(report.written)", "\(report.notFound.count)"])
+            }
+            if report.skipped > 0 {
+                GatherLogger.log(
+                    "c1.variant_writeback skipped=\(report.skipped)（超过单次上限，需分批）",
+                    level: .warn)
+            }
+        } catch {
+            // 失败同样给出可执行下一步（改用 XMP 写回 + 手动 Load），不能只报错。
+            let code: String
+            if let bridge = error as? CaptureOneBridgeError {
+                code = bridge.description
+            } else if let command = error as? CommandError, !command.code.isEmpty {
+                code = command.code
+            } else if let roundTrip = error as? C1RoundTripError {
+                code = roundTrip.code
+            } else {
+                code = String(describing: error)
+            }
+            errorMessage = CommandError.localized(
+                "变体级写回未完成（%@）：请改用「写回 XMP…」写盘，再在 Capture One 手动 Load Metadata（或点「我已在 Capture One 手动加载元数据」）",
+                params: [code],
+                diagnostic: String(describing: error))
+        }
+    }
+
+
+    /// 写回目标：选择集（保持页面顺序）或当前照片；路径去重保序。
+    ///
+    /// rating/colorLabel/pickState 都取当前资产的决策状态（缓存投影），不查库：
+    /// 用户看到什么就写回什么。unreviewed 不写 pick（避免把 C1 已有 pick 清掉）。
+    var variantWritebackItems: [C1VariantWritebackItem] {
+        let assets = page?.assets ?? []
+        let targets: [CullingAsset]
+        if !selectedPhotoIds.isEmpty {
+            targets = assets.filter { selectedPhotoIds.contains($0.photo.id) }
+        } else if let currentAsset {
+            targets = [currentAsset]
+        } else {
+            targets = []
+        }
+        var seen = Set<String>()
+        return targets.compactMap { asset in
+            let path = asset.photo.filepath
+            guard path.hasPrefix("/"),
+                  seen.insert(ScanPath.canonical(path)).inserted else { return nil }
+            let pick: Bool?
+            switch asset.state.pickState {
+            case .picked: pick = true
+            case .rejected: pick = false
+            case .unreviewed: pick = nil
+            }
+            return C1VariantWritebackItem(
+                photoPath: path,
+                rating: Int(asset.state.rating.rounded()),
+                colorTag: C1ColorTagMapping.rawValue(for: asset.state.colorLabel),
+                pick: pick)
+        }
+    }
+
     public func confirmSync() async {
         do {
             _ = try await cullingAPI.confirmSync(sessionId)

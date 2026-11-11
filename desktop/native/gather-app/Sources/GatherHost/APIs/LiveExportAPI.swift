@@ -45,6 +45,8 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
     private let webDAVPublisher: WebDAVPublisher?
     private let webDAVCredentialSaver: (@Sendable (URL, String, String) throws -> Bool)?
     private let webDAVCredentialLookup: (@Sendable (URL, String) -> String?)?
+    /// Wave3 / task-21：整套交付完成后的命令钩子（nil = 未接线/未配置）。
+    private let postCommand: ExportPostCommandHook?
 
     /// @unchecked Sendable 依据：两个依赖都是构造后不再变更的 let；
     /// ExportService 的取消位由内部 NSLock 串行化，JobService 的任务表同样由
@@ -54,13 +56,15 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         jobService: JobService,
         webDAVPublisher: WebDAVPublisher? = nil,
         webDAVCredentialSaver: (@Sendable (URL, String, String) throws -> Bool)? = nil,
-        webDAVCredentialLookup: (@Sendable (URL, String) -> String?)? = nil
+        webDAVCredentialLookup: (@Sendable (URL, String) -> String?)? = nil,
+        postCommand: ExportPostCommandHook? = nil
     ) {
         self.exportService = exportService
         self.jobService = jobService
         self.webDAVPublisher = webDAVPublisher
         self.webDAVCredentialSaver = webDAVCredentialSaver
         self.webDAVCredentialLookup = webDAVCredentialLookup
+        self.postCommand = postCommand
     }
 
     // MARK: - 预览
@@ -207,9 +211,20 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
                 scopeId: sessionId,
                 dedupeKey: dedupe,
                 checkpoint: ["outputRun": .bool(true), "input": encoded]))
-            let result: OutputRunSummary? = try await self.jobService.waitForResult(jobId: job.id)
-            guard let result else {
+            let decoded: OutputRunSummary? = try await self.jobService.waitForResult(jobId: job.id)
+            guard let decoded else {
                 throw JobServiceError.jobFailed(job.id, "empty output.run result")
+            }
+            var result = decoded
+            // Wave3 / task-21：整套交付成功后执行用户配置的钩子。
+            // 取消跑不执行（产物不完整）；钩子失败只进结果与日志，不改交付结论。
+            if result.cancelled != true, let postCommand {
+                if let outcome = await postCommand.runIfConfigured(
+                    sessionId: payload.sessionId,
+                    destinationRoot: payload.destinationRoot,
+                    manifestPath: result.manifestPath) {
+                    result.postCommand = outcome
+                }
             }
             return result
         }

@@ -3,6 +3,14 @@
 //
 // 用法：
 //   gather-triage-eval --db <gather.sqlite> --session <id> --labels <labels.csv|tsv> [--strict]
+//   gather-triage-eval similarity-eval --annotations <json|csv> [--source featureprint|dhash]
+//       [--thresholds 0.70:0.99:0.01] [--min-precision 0.95] [--json out.json]
+//       [--markdown out.md] [--no-baseline] [--self-test]
+//
+// similarity-eval 是 Wave3 / task-19 的评估物（ROADMAP 决策 A）：只读图片算临时向量
+// （Vision feature print 或 dHash 基线），输出阈值曲线/过度合并率/失败样例；不写库、
+// 不改产品行为。数据集格式与结论见 docs/reviews/2026-11-10-competitive-gap/
+// 95-similarity-eval-design.md。
 //
 // labels 每行：photo_path,keep|reject|unsure[,category]
 // - 路径可写绝对路径或唯一 basename；同 basename 多文件时必须用绝对路径。
@@ -318,8 +326,20 @@ private func run(_ options: Options) throws -> Int32 {
     return 0
 }
 
+// Wave3 / task-19：相似/重复评估子命令（不认识该子命令时保持旧 CLI 行为不变）。
+let rawArguments = Array(CommandLine.arguments.dropFirst())
+if rawArguments.first == "similarity-eval" {
+    do {
+        exit(try SimilarityEvalCLI.run(arguments: Array(rawArguments.dropFirst())))
+    } catch {
+        FileHandle.standardError.write(Data(
+            ("gather-triage-eval similarity-eval: \(error)\n").utf8))
+        exit(2)
+    }
+}
+
 do {
-    let options = try parseArgs(Array(CommandLine.arguments.dropFirst()))
+    let options = try parseArgs(rawArguments)
     exit(try run(options))
 } catch {
     FileHandle.standardError.write(Data(("gather-triage-eval: \(error)\n").utf8))

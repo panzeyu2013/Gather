@@ -262,6 +262,8 @@ public final class CullingViewModel: SessionPageModel {
     /// 首次 / 重试加载：导航组与主列表保持旧顺序（先导航、再整页）。
     public func load() async {
         guard !sessionId.isEmpty else { return }
+        // Wave3 / G6：识别 C1 Session 三目录（只读标注；会话源路径取一次即可）。
+        await loadCaptureOneSessionLayout()
         await loadNavigation()
         await loadPage(reset: true)
     }
@@ -282,6 +284,10 @@ public final class CullingViewModel: SessionPageModel {
     /// 当前照片的只读元数据详情（缓存投影）。nil = 尚未加载或未选中。
     /// P1 / D：会话域（摄取登记用）。nil = 未接线，摄取入口报错而不是静默失败。
     var sessionAPI: (any SessionAPI)?
+    /// Wave3 / G6：会话源路径与 C1 Session 三目录识别结果。
+    /// 只用于 UI 标注（Capture/Selects/Trash 角色）；导入范围的重定向在宿主导入阶段完成。
+    public internal(set) var sessionSourcePath: String?
+    public internal(set) var captureOneSessionLayout: C1SessionLayout?
 
     public var metadataDetail: PhotoMetadataDetail?
     /// latest-wins 代数：快速翻页时只落最后一次请求的结果。

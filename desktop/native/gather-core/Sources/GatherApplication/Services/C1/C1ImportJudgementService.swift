@@ -33,19 +33,9 @@ public enum C1ImportJudgementMapping {
     /// 0=None、1=Red、2=Orange、3=Yellow、4=Green、5=Blue、6=Pink、7=Purple。
     /// 越界值返回 nil：不猜、不写，调用方计入 unmappedColorTags（真机核对点）。
     public static func mapColorTag(_ raw: Int) -> CaptureOneColorLabel? {
-        switch raw {
-        // 注意：返回类型是 Optional，`.none` 会被解析成 Optional.none(nil)；
-        // 这里必须显式写枚举值，否则 C1 的"无标签"会被当成"未映射"。
-        case 0: return CaptureOneColorLabel.none
-        case 1: return .red
-        case 2: return .orange
-        case 3: return .yellow
-        case 4: return .green
-        case 5: return .blue
-        case 6: return .pink
-        case 7: return .purple
-        default: return nil
-        }
+        // 单一事实源在 Protocol/C1.swift 的 C1ColorTagMapping（G3 读 + G4 写共用；
+        // 双向映射必须同表，否则读回来的色标写回去可能变形）。
+        C1ColorTagMapping.label(for: raw)
     }
 
     /// C1 `pick` → Gather pickState：true → keep，false → unreviewed。

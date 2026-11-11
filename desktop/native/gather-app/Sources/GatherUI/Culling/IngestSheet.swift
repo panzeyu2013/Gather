@@ -87,6 +87,9 @@ struct IngestSheet: View {
                 }
             }
 
+            // Wave3 / G12：C1 若把目标目录设为 Hot Folder 会与摄取重复（检测不到，只提示）。
+            C1HotFolderNotice()
+
             Toggle(l10n("复制后校验校验和"), isOn: $verifyChecksum)
 
             if isRunning {

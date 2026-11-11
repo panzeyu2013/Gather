@@ -802,6 +802,145 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         }
         return result
     }
+
+    // MARK: - Wave3 / G4：变体级写回（在线通道；XMP 通道保留为离线兜底）
+
+    /// 单次写回的条目上限：AppleScript 单次脚本过长会变慢/超时，调用方负责分批。
+    static let maxVariantWritebackItems = 500
+
+    /// 把文件级判断按 variant 写回 C1（在线通道）。
+    ///
+    /// 流程：路径 → `every image of targetDoc whose path is p`，取该 image 的 variants；
+    /// 目标 variant = 已 pick 的那个，否则 position 1；**只写目标 variant**，
+    /// 同一 image 其余 variant 原值不动（G5：多 variant 不互相覆盖）。
+    /// 写属性：rating / color tag / pick（pick 原生布尔位表达 keep/reject，
+    /// 不写任何关键词 —— G4 明确禁止用 culling:keep 污染 C1 词库）。
+    ///
+    /// 收口：写的是 C1 catalog 本身（已是权威），因此**不**再对同一 variant 调
+    /// reload metadata（那会把盘上旧 XMP 读回、覆盖刚写入的判断）。成功写入后沿用
+    /// durable reload-ack（sessions.reload_acked_at），confirm/finalize 门禁照常放行；
+    /// 离线/未运行时仍走原 XMP 写回（本方法不触碰 XMP）。
+    ///
+    /// 【口径已确认 2026-11-11（Lead/产品批准）】**不要**把这里"修"成先 reload 再写/写后 reload：
+    /// 变体级写回取代的是"写 XMP 再让 C1 Load"这条链路；若需要 XMP 权威（离线兜底），
+    /// 用户应显式走「写回 XMP…」再手动 Load/手动 ack。
+    public func writeVariantJudgements(
+        sessionId: String?,
+        items: [C1VariantWritebackItem]
+    ) async throws -> C1VariantWritebackReport {
+        var unique: [C1VariantWritebackItem] = []
+        var seen = Set<String>()
+        var notFound: [String] = []
+        var skipped = 0
+        for item in items {
+            let path = item.photoPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard path.hasPrefix("/") else {
+                notFound.append(item.photoPath)
+                continue
+            }
+            // 去重键用 canonical（fold /private 前缀），脚本仍用原始路径匹配 C1 登记值。
+            let key = ScanPath.canonical(path)
+            guard seen.insert(key).inserted else { continue }
+            guard unique.count < Self.maxVariantWritebackItems else {
+                skipped += 1
+                continue
+            }
+            unique.append(C1VariantWritebackItem(
+                photoPath: path,
+                rating: max(0, min(5, item.rating)),
+                // 越界色标按 None(0) 写：宁可清色标也不把非法整数塞进 C1。
+                colorTag: C1ColorTagMapping.label(for: item.colorTag) == nil ? 0 : item.colorTag,
+                pick: item.pick))
+        }
+        guard !unique.isEmpty else {
+            return C1VariantWritebackReport(written: 0, notFound: notFound, skipped: skipped)
+        }
+        let appName = try await captureOneApplicationName()
+        let output = try await runAppleScript(
+            Self.variantWritebackScript(appName: appName, items: unique), timeout: 30)
+        guard let flags = Self.parseVariantWritebackReport(output, expected: unique.count) else {
+            throw CaptureOneBridgeError.scriptFailed(
+                "unexpected variant writeback report: \(output)")
+        }
+        var written = 0
+        for (index, flag) in flags.enumerated() {
+            if flag == "1" {
+                written += 1
+            } else {
+                notFound.append(unique[index].photoPath)
+            }
+        }
+        if written > 0, let sessionId {
+            // C1 catalog 已是权威值：写 durable ack 让 confirm/finalize 门禁放行，
+            // 但绝不再触发 reload（会把旧 XMP 读回覆盖判断）。ack 写失败只记日志，
+            // 不掩盖"C1 已写入"的事实（: ack 是会话级簿记，不是写入结果）。
+            do { try recordReloadAck(sessionId) } catch {
+                GatherLogger.log(
+                    "c1.variant_writeback ack failed: \(error)", level: .warn)
+            }
+        }
+        return C1VariantWritebackReport(
+            written: written, notFound: notFound, skipped: skipped)
+    }
+
+    /// 写回脚本（internal：脚本契约由 C1BridgeWave3Tests 文本断言）。
+    ///
+    /// 输出：每条请求路径一行 "1"/"0"，与 items 同序（解析见 parseVariantWritebackReport）。
+    static func variantWritebackScript(
+        appName: String,
+        items: [C1VariantWritebackItem]
+    ) -> String {
+        var blocks: [String] = []
+        for item in items {
+            let rating = max(0, min(5, item.rating))
+            let tag = C1ColorTagMapping.label(for: item.colorTag) == nil ? 0 : item.colorTag
+            var lines = [
+                "    set matches to (every image of targetDoc whose path is \(appleScriptLiteral(item.photoPath)))",
+                "    if (count of matches) > 0 then",
+                "      set theImage to (item 1 of matches)",
+                "      set targetVariant to missing value",
+                "      repeat with v in (variants of theImage)",
+                "        if pick of v then set targetVariant to v",
+                "      end repeat",
+                "      if targetVariant is missing value then set targetVariant to variant 1 of theImage",
+                "      if targetVariant is not missing value then",
+                "        set rating of targetVariant to \(rating)",
+                "        set color tag of targetVariant to \(tag)",
+            ]
+            if let pick = item.pick {
+                lines.append("        set pick of targetVariant to \(pick ? "true" : "false")")
+            }
+            lines.append(contentsOf: [
+                "        set report to report & \"1\" & linefeed",
+                "      else",
+                "        set report to report & \"0\" & linefeed",
+                "      end if",
+                "    else",
+                "      set report to report & \"0\" & linefeed",
+                "    end if",
+            ])
+            blocks.append(lines.joined(separator: "\n"))
+        }
+        return """
+        tell application "\(appName)"
+          set targetDoc to current document
+          set report to ""
+        \(blocks.joined(separator: "\n"))
+          return report
+        end tell
+        """
+    }
+
+    /// 写回报告解析：每行 "1"/"0"，行数必须等于请求条目数；否则 nil（契约不匹配）。
+    static func parseVariantWritebackReport(_ output: String, expected: Int) -> [String]? {
+        let flags = output
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard flags.count == expected, flags.allSatisfy({ $0 == "1" || $0 == "0" }) else {
+            return nil
+        }
+        return flags
+    }
 }
 
 /// G3 只读脚本的解析结果（internal：C1BridgeWave2Tests 直接驱动纯函数）。

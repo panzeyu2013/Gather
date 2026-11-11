@@ -25,4 +25,17 @@ public enum GatherAppNotification {
     public static let importFailed = Notification.Name("gather.import.failed")
     /// T0 等设置保存后广播；已打开会话据此重读 enabled/auto 状态。
     public static let settingsChanged = Notification.Name("gather.settings.changed")
+
+    // MARK: - Wave3 / task-21：URL scheme 路由事件（宿主解析 → 外壳导航）
+
+    /// gather://session/<id>：object = sessionId（String）。
+    public static let deepLinkSession = Notification.Name("gather.deeplink.session")
+    /// gather://photo/<id>：userInfo 携带 sessionId/photoId（GatherAppDeepLinkUserInfoKey）。
+    public static let deepLinkPhoto = Notification.Name("gather.deeplink.photo")
+}
+
+/// 深链事件 userInfo 键（宿主与外壳共用；避免两处字符串漂移）。
+public enum GatherAppDeepLinkUserInfoKey {
+    public static let sessionId = "gather.deeplink.session-id"
+    public static let photoId = "gather.deeplink.photo-id"
 }

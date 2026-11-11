@@ -156,6 +156,21 @@ package struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.captureOneError)) { notification in
             handleCaptureOneError(notification)
         }
+        // Wave3 / task-21：gather://session/<id> 深链 → 打开工作区。
+        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.deepLinkSession)) { notification in
+            guard let sessionId = notification.object as? String, !sessionId.isEmpty else { return }
+            navigation.openSession(sessionId)
+            Task { await viewModel.refreshSidebarSessions() }
+        }
+        // Wave3 / task-21：gather://photo/<id> 深链 → 该工作区图库并定位照片。
+        .onReceive(NotificationCenter.default.publisher(for: GatherAppNotification.deepLinkPhoto)) { notification in
+            guard let info = notification.userInfo,
+                  let sessionId = info[GatherAppDeepLinkUserInfoKey.sessionId] as? String,
+                  let photoId = info[GatherAppDeepLinkUserInfoKey.photoId] as? String,
+                  !sessionId.isEmpty, !photoId.isEmpty else { return }
+            navigation.openGallery(sessionId, photoId: photoId)
+            Task { await viewModel.refreshSidebarSessions() }
+        }
         .overlay(alignment: .topTrailing) {
             ToastView()
         }

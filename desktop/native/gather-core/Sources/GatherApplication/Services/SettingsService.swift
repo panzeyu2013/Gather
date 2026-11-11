@@ -184,6 +184,9 @@ public final class SettingsService: @unchecked Sendable {
         "c1_auto_reload",
         "triage_calibration_min_samples",
         "semantic_index_enabled",
+        // Wave3 / task-21：导出后命令钩子属于偏好（reset 回默认 = 关闭）。
+        "export_post_command",
+        "export_post_command_timeout_seconds",
         // #9 转正的 5 个键：算法/IO 参数，属于偏好（reset 会回到默认）。
         "import_concurrency",
         "asset_read_mode",

@@ -64,6 +64,25 @@ struct CullingInfoBar: View {
                         .lineLimit(1)
                 }
             }
+            // Wave3 / G6：C1 Session 三目录识别结果（只标注，不改导入范围）。
+            if viewModel.captureOneSessionLayout != nil {
+                HStack(spacing: GatherMetrics.Space.xs) {
+                    Image(systemName: "folder.badge.gearshape")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text(l10n("C1 Session：已识别 Capture/Selects/Trash，仅导入 Capture"))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    // 口径（Lead 2026-11-11 确认）：Selects 只做同名去重；不同名的文件本次不导入，
+                    // 必须在界面上可见，不能只写在注释/汇报里。
+                    Text(l10n("Selects 中与 Capture 不同名的文件不会被导入"))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(l10n("Trash 中的淘汰件不会被导入或复活；Selects 不与 Capture 重复导入；目录角色仅作标注，不改写 C1"))
+                }
+            }
             // 原为 Spacer()（把同步区推到最右）。横向滚动容器里 Spacer 没有
             // 可分配空间，改为固定分隔线：语义上把「照片信息」与「同步动作」分开。
             Divider().frame(height: 16)
