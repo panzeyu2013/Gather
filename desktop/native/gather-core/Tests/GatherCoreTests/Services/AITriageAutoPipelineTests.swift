@@ -114,9 +114,6 @@ private func makePipeline(
         },
         autoApplyEnabled: { autoApply },
         triageEnabled: { triageEnabled },
-        cancelQualityJob: { jobId in
-            feed.recordCancel(jobId)
-        },
         log: { message in
             feed.recordLog(message)
         },
@@ -239,7 +236,7 @@ struct AITriageAutoPipelineTests {
         #expect(AITriageAutoPipeline.activeQualityJob(jobs, sessionId: "other") == nil)
     }
 
-    @Test("质量 job 超时 → 停止、给出 quality-timeout，并请求取消 job（Wave4b）")
+    @Test("质量 job 超时 → 只停止等待、不取消 job（Wave5 batch2）")
     func qualityTimeout() async {
         let feed = FakeJobFeed([
             [
@@ -251,9 +248,9 @@ struct AITriageAutoPipelineTests {
             .run(sessionId: "s1")
         #expect(outcome.stage == .stopped)
         #expect(outcome.reason == "quality-timeout")
-        #expect(feed.cancelledJobs == ["q1"], "超时后必须取消仍在后台解码的 job")
-        let loggedCancel = feed.logs.contains { $0.contains("cancel=requested") }
-        #expect(loggedCancel)
+        #expect(feed.cancelledJobs.isEmpty, "超时只停止等待，不得取消仍在后台推进的 job")
+        let loggedLeftRunning = feed.logs.contains { $0.contains("quality-job=left-running") }
+        #expect(loggedLeftRunning)
     }
 
     @Test("入队失败 → 停止 + 日志，不静默吞掉（Wave4b）")

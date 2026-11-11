@@ -69,6 +69,8 @@ enum FilterFieldCatalog {
         .init(id: "usage_terms", label: "使用条款", kind: .text),
         .init(id: "web_statement", label: "权利声明网址", kind: .text),
         .init(id: "job_identifier", label: "任务标识", kind: .text),
+        // Wave5（batch2）：IPTC Core Instructions（与 PhotoFilterQuery.jsonFields 同 id）。
+        .init(id: "instructions", label: "使用说明", kind: .text),
         .init(id: "caption_writer", label: "说明撰写者", kind: .text),
         .init(id: "subject_code", label: "主题代码", kind: .list),
         .init(id: "scene", label: "场景", kind: .list),
@@ -83,11 +85,16 @@ enum FilterFieldCatalog {
         .init(id: "person_in_image", label: "画面人物", kind: .list),
         .init(id: "organisation_in_image", label: "画面机构", kind: .list),
         .init(id: "event", label: "事件", kind: .text),
+        // Wave5（batch2）：Event Id（multi → 列表语义）。
+        .init(id: "event_identifier", label: "事件标识", kind: .list),
         .init(id: "sublocation", label: "地点细节", kind: .text),
         .init(id: "world_region", label: "世界区域", kind: .text),
         .init(id: "province_state", label: "省/州（Ext）", kind: .text),
         .init(id: "model_release_status", label: "模特释放状态", kind: .text),
+        // Wave5（batch2）：PLUS release id（multi → 列表语义）。
+        .init(id: "model_release_id", label: "肖像权释放编号", kind: .list),
         .init(id: "property_release_status", label: "财产释放状态", kind: .text),
+        .init(id: "property_release_id", label: "物权释放编号", kind: .list),
         .init(id: "digital_source_type", label: "数字来源类型", kind: .text),
         .init(id: "additional_model_info", label: "补充模特信息", kind: .text),
         // 关键词

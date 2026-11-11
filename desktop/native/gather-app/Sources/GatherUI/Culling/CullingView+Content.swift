@@ -88,6 +88,27 @@ extension CullingView {
         }
         .gatherAnimatePresence(viewModel.errorMessage != nil || viewModel.notice != nil)
         .task {
+            // B3 / 浏览状态恢复（20-culling-viewer §1.1 #12）：先套本会话存档。
+            // VM 侧应用筛选/范围/排序/相似组/目标照片，页面侧恢复 chrome；必须在
+            // applyPageLimit 与首载之前，首页请求才能按恢复后的 scope/filters 发出。
+            if let saved = viewModel.takeSavedViewState() {
+                if CullingLayoutMode(rawValue: saved.layout) != nil {
+                    layoutRaw = saved.layout
+                }
+                if CullingGridDensity(rawValue: saved.density) != nil {
+                    densityRaw = saved.density
+                }
+                showInspector = saved.inspectorVisible
+                filmstripExpanded = saved.filmstripExpanded
+                // 排序以存档为准：下面 SceneStorage 的兜底不得覆盖恢复值。
+                sortRaw = saved.sort
+            }
+            // chrome 与 VM 对齐（保存时一起落盘；无存档时用当前 SceneStorage 值）。
+            viewModel.noteViewChrome(
+                layout: layoutMode,
+                density: densityBinding.wrappedValue,
+                inspectorVisible: showInspector,
+                filmstripExpanded: filmstripExpanded)
             // G0：布局决定首页大小（网格 200，其余 500）；在首次加载前静默设置。
             // B2：页大小由布局单一决定，与切换布局时的续页计划同源。
             viewModel.applyPageLimit(layoutMode.pageLimit)
@@ -114,6 +135,12 @@ extension CullingView {
                 // 页签重建不应重置已翻页的网格；隐藏期变更由 setVisible 补刷。
                 await viewModel.load()
             }
+            // 恢复收尾（幂等）：加载成功的那次已在 load() 内 finish；这里覆盖
+            // 「冲突意图（只加载筛选页）/ 同次运行回页签」两类不经过 load() 的路径。
+            // 首载失败且仍在恢复中则跳过——保留待恢复目标，等重试 load() 继续定位。
+            if viewModel.page != nil || !viewModel.isRestoringViewState {
+                viewModel.finishViewStateRestore()
+            }
         }
         // 可见性门控（审计 P1-并发 / Cut 4 4a-2b / R4 P1-2）：条件渲染页离开即销毁，
         // 页面级启停由 GatherSessionPage 的 onAppear/onDisappear 经
@@ -137,6 +164,40 @@ extension CullingView {
         .handleDomainEvents(Set(GatherChangeDomain.allCases)) { change in
             viewModel.handleDomainChange(change)
         }
+        // B3 / 浏览状态恢复：浏览状态变化后 0.5s 节流保存（连按 P/X 不写盘）。
+        // 筛选/范围/排序/当前照片来自 VM；布局/密度/检查器/胶片条是页面 chrome。
+        .onChange(of: viewModel.currentPhotoId) { _, _ in
+            viewModel.scheduleViewStateSave()
+        }
+        .onChange(of: viewModel.filterState) { _, _ in
+            viewModel.scheduleViewStateSave()
+        }
+        .onChange(of: viewModel.scopeMode) { _, _ in
+            viewModel.scheduleViewStateSave()
+        }
+        .onChange(of: viewModel.sortMode) { _, _ in
+            viewModel.scheduleViewStateSave()
+        }
+        // 相似度范围下的组 id 也是浏览状态（scope=similarityGroup 时恢复它）。
+        .onChange(of: viewModel.selectedSimilarityGroupId) { _, _ in
+            viewModel.scheduleViewStateSave()
+        }
+        .onChange(of: layoutRaw) { _, _ in syncViewChromeAndScheduleSave() }
+        .onChange(of: densityRaw) { _, _ in syncViewChromeAndScheduleSave() }
+        .onChange(of: showInspector) { _, _ in syncViewChromeAndScheduleSave() }
+        .onChange(of: filmstripExpanded) { _, _ in syncViewChromeAndScheduleSave() }
+        // 页面销毁/离开：把尚未落盘的最后一拍写掉（B3）。
+        .onDisappear { viewModel.flushViewStateSave() }
+    }
+
+    /// B3：页面 chrome 同步给 VM 后按节流保存（布局/密度/检查器/胶片条共用）。
+    private func syncViewChromeAndScheduleSave() {
+        viewModel.noteViewChrome(
+            layout: layoutMode,
+            density: densityBinding.wrappedValue,
+            inspectorVisible: showInspector,
+            filmstripExpanded: filmstripExpanded)
+        viewModel.scheduleViewStateSave()
     }
 
     private func emptyGuide(

@@ -43,9 +43,10 @@ public struct CullingView: View {
     @State private var filmstripBeforeFocus = true
     /// 进入前的窗口全屏状态：原本就全屏时，退出专注模式不该把系统全屏一起退掉。
     @State private var wasFullScreenBeforeFocus = false
-    @SceneStorage("culling.layout") private var layoutRaw = CullingLayoutMode.single.rawValue
+    /// internal：B3 的会话状态恢复在 CullingView+Content 里写回（页面 chrome 恢复同一来源）。
+    @SceneStorage("culling.layout") var layoutRaw = CullingLayoutMode.single.rawValue
     /// 空串 = 本窗口未设置，回落到设置 grid_density（VM 默认值）。
-    @SceneStorage("culling.gridDensity") private var densityRaw = ""
+    @SceneStorage("culling.gridDensity") var densityRaw = ""
     /// 排序跨页签/窗口保持；空串 = 用设置 grid_default_sort。
     @SceneStorage("culling.sort") var sortRaw = ""
 
@@ -83,7 +84,7 @@ public struct CullingView: View {
     /// 右侧检查器（系统 .inspector）的展开状态：Bridge/Capture One 式，
     /// 选项面板默认可见，工具栏开关由系统提供。可见性用 @SceneStorage 按页
     /// 记忆（跨导航重建 / 新窗口保持；参考 darktable 各视图独立存储面板可见性）。
-    @SceneStorage("culling.inspectorVisible") private var showInspector = true
+    @SceneStorage("culling.inspectorVisible") var showInspector = true
 
     /// 生产装配（Cut 4 / 4a-2a-2）：VM 来自会话工作区（`SessionStore.workspace(for:)`
     /// 的 `SessionWorkspace.culling`）。外壳不再缓存/替换 VM，页面也不接收

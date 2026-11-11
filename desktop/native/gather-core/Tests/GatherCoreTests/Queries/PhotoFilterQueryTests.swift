@@ -336,3 +336,240 @@ struct PhotoFilterQueryBoundaryTests {
         #expect(rows.map(\.id) == ["p2", "p3"])
     }
 }
+
+// MARK: - Wave5（batch2）：关键词同义词检索
+
+@Suite("关键词同义词检索（Wave5 batch2）")
+struct PhotoFilterSynonymSearchTests {
+    private struct Fixture {
+        let db: DBConnection
+        let sessionId: String
+    }
+
+    /// 词库：Travel（父）→ Travel|Paris（同义词 Paris / 巴黎）、故宫（同义词 Gugong）、
+    /// Tokyo（无同义词）。
+    /// 照片（pmc.keywords 用**叶子**形态，与 keyword_dc_style=leaf 的现实数据一致；
+    /// photo_keywords 用**规范路径**）：
+    /// p1 = Travel|Paris / ["Paris"]、p2 = 故宫 / ["故宫"]、p3 = Tokyo / ["Tokyo"]、
+    /// p4 = 无关键词。
+    private func makeDB() throws -> Fixture {
+        let db = try makeQueryTestDB()
+        let sessionId = "s-syn"
+        try queryInsertSession(db, id: sessionId)
+        let photos: [(id: String, keywords: String)] = [
+            ("p1", #"["Paris"]"#),
+            ("p2", #"["故宫"]"#),
+            ("p3", #"["Tokyo"]"#),
+            ("p4", "[]"),
+        ]
+        for photo in photos {
+            try queryInsertPhoto(db, id: photo.id, sessionId: sessionId)
+            try queryInsertCache(
+                db, photoId: photo.id, sessionId: sessionId, keywords: photo.keywords)
+        }
+        let now = "2026-01-01T00:00:00.000Z"
+        let keywordRows: [(path: String, name: String, parent: String?)] = [
+            ("Travel", "Travel", nil),
+            ("Travel|Paris", "Paris", "Travel"),
+            ("故宫", "故宫", nil),
+            ("Tokyo", "Tokyo", nil),
+        ]
+        for row in keywordRows {
+            _ = try db.prepare("""
+                INSERT INTO keywords (path, name, parent_path, usage_count, created_at)
+                VALUES (?, ?, ?, 0, ?)
+                """).run([
+                    .text(row.path), .text(row.name),
+                    row.parent.map(DBValue.text) ?? .null, .text(now),
+                ])
+        }
+        let synonyms: [(path: String, synonym: String)] = [
+            ("Travel|Paris", "Paris"),
+            ("Travel|Paris", "巴黎"),
+            ("故宫", "Gugong"),
+        ]
+        for row in synonyms {
+            _ = try db.prepare(
+                "INSERT INTO keyword_synonyms (keyword_path, synonym) VALUES (?, ?)")
+                .run([.text(row.path), .text(row.synonym)])
+        }
+        let joined: [(photoId: String, path: String)] = [
+            ("p1", "Travel|Paris"), ("p2", "故宫"), ("p3", "Tokyo"),
+        ]
+        for row in joined {
+            _ = try db.prepare("""
+                INSERT INTO photo_keywords (photo_id, keyword_path, source, updated_at)
+                VALUES (?, ?, 'xmp', ?)
+                """).run([.text(row.photoId), .text(row.path), .text(now)])
+        }
+        return Fixture(db: db, sessionId: sessionId)
+    }
+
+    private func ids(_ fixture: Fixture, _ rule: FilterRule) throws -> [String] {
+        try PhotoFilterQuery(connection: fixture.db)
+            .filterPhotos(sessionId: fixture.sessionId, criteria: group(rule))
+            .map(\.id).sorted()
+    }
+
+    @Test("keyword_path eq：按同义词命中规范路径；无同义词时行为不变")
+    func keywordPathEqExpandsSynonyms() throws {
+        let fixture = try makeDB()
+        #expect(try ids(fixture, rule("keyword_path", .eq, .string("Gugong"))) == ["p2"])
+        #expect(try ids(fixture, rule("keyword_path", .eq, .string("故宫"))) == ["p2"])
+        #expect(try ids(fixture, rule("keyword_path", .eq, .string("巴黎"))) == ["p1"],
+                "同义词「巴黎」→ 规范路径 Travel|Paris")
+        #expect(try ids(fixture, rule("keyword_path", .eq, .string("Tokyo"))) == ["p3"])
+        #expect(try ids(fixture, rule("keyword_path", .eq, .string("Nowhere"))).isEmpty)
+    }
+
+    @Test("keyword_path neq：同义词命中的照片同样被排除")
+    func keywordPathNeqExcludesSynonymMatches() throws {
+        let fixture = try makeDB()
+        #expect(try ids(fixture, rule("keyword_path", .neq, .string("Gugong")))
+                == ["p1", "p3", "p4"])
+        #expect(try ids(fixture, rule("keyword_path", .neq, .string("Tokyo")))
+                == ["p1", "p2", "p4"])
+    }
+
+    @Test("keyword_path contains：同义词整词映射做子串命中（不做子串反查）")
+    func keywordPathContainsExpandsSynonyms() throws {
+        let fixture = try makeDB()
+        #expect(try ids(fixture, rule("keyword_path", .contains, .string("Gugong"))) == ["p2"])
+        #expect(try ids(fixture, rule("keyword_path", .contains, .string("Paris"))) == ["p1"])
+        // 边界：只有整词命中才展开，输入 "Gug" 不命中任何照片。
+        #expect(try ids(fixture, rule("keyword_path", .contains, .string("Gug"))).isEmpty)
+    }
+
+    @Test("keyword_path contains_any/all 与 starts_with：同义词与规范路径混合")
+    func keywordPathAnyAllAndStartsWith() throws {
+        let fixture = try makeDB()
+        #expect(try ids(fixture, rule("keyword_path", .containsAny,
+            .array([.string("Gugong"), .string("Tokyo")]))) == ["p2", "p3"])
+        #expect(try ids(fixture, rule("keyword_path", .containsAll,
+            .array([.string("Gugong"), .string("Tokyo")]))).isEmpty,
+                "不同照片的关键词不能同时满足 contains_all")
+        #expect(try ids(fixture, rule("keyword_path", .containsAll,
+            .array([.string("Gugong"), .string("故宫")]))) == ["p2"],
+                "同一规范路径的两种写法算同一个词")
+        #expect(try ids(fixture, rule("keyword_path", .startsWith, .string("巴黎"))) == ["p1"])
+        #expect(try ids(fixture, rule("keyword_path", .startsWith, .string("Travel"))) == ["p1"])
+    }
+
+    @Test("keywords（dc:subject JSON）contains / any / all / eq 走同义词")
+    func keywordsJsonExpandsSynonyms() throws {
+        let fixture = try makeDB()
+        #expect(try ids(fixture, rule("keywords", .contains, .string("Gugong"))) == ["p2"])
+        #expect(try ids(fixture, rule("keywords", .containsAny,
+            .array([.string("Gugong")]))) == ["p2"])
+        #expect(try ids(fixture, rule("keywords", .containsAny,
+            .array([.string("Gugong"), .string("Tokyo")]))) == ["p2", "p3"])
+        #expect(try ids(fixture, rule("keywords", .containsAll,
+            .array([.string("Gugong"), .string("Tokyo")]))).isEmpty)
+        // eq（整表相等）命中同义词时退化为「每个词都有等价命中」。
+        #expect(try ids(fixture, rule("keywords", .eq, .array([.string("Gugong")]))) == ["p2"])
+        // 无同义词时 eq 仍是整表相等。
+        #expect(try ids(fixture, rule("keywords", .eq, .array([.string("Tokyo")]))) == ["p3"])
+    }
+
+    @Test("无同义词时不改 SQL 形状（既有索引计划/契约不回归）")
+    func noSynonymKeepsLegacySQLShape() throws {
+        let fixture = try makeDB()
+        let query = PhotoFilterQuery(connection: fixture.db)
+        let pathClause = try query.whereClause(group(rule("keyword_path", .eq, .string("Tokyo"))))
+        #expect(pathClause.sql ==
+            "EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND (pk.keyword_path = ?))")
+        #expect(pathClause.params == [.text("Tokyo")])
+        let keywordsClause = try query.whereClause(group(rule("keywords", .contains, .string("海滩"))))
+        #expect(keywordsClause.sql.hasPrefix(
+            "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value LIKE"))
+        #expect(keywordsClause.params == [.text("海滩")])
+    }
+
+    @Test("Wave5 新字段的检索 id 契约（id → iptc_json key）")
+    func newFieldIdsContract() {
+        #expect(PhotoFilterQuery.jsonFields["instructions"] == "instructions")
+        #expect(PhotoFilterQuery.jsonFields["event_identifier"] == "eventIdentifier")
+        #expect(PhotoFilterQuery.jsonFields["model_release_id"] == "modelReleaseID")
+        #expect(PhotoFilterQuery.jsonFields["property_release_id"] == "propertyReleaseID")
+        #expect(PhotoFilterQuery.jsonArrayFields.contains("event_identifier"))
+        #expect(PhotoFilterQuery.jsonArrayFields.contains("model_release_id"))
+        #expect(PhotoFilterQuery.jsonArrayFields.contains("property_release_id"))
+    }
+
+    @Test("Wave5 新字段可检索：instructions / event_identifier / release id")
+    func newIPTCFieldsAreSearchable() throws {
+        let db = try makeQueryTestDB()
+        let sessionId = "s-iptc5"
+        try queryInsertSession(db, id: sessionId)
+        for id in ["p1", "p2"] {
+            try queryInsertPhoto(db, id: id, sessionId: sessionId)
+            try queryInsertCache(db, photoId: id, sessionId: sessionId)
+        }
+        let metadata = DescriptiveMetadata(
+            instructions: "Embargo until 2026-12-01",
+            eventIdentifier: ["urn:event:acme-2026"],
+            modelReleaseID: ["MR-0001"])
+        let json = String(decoding: try JSONEncoder().encode(metadata), as: UTF8.self)
+        _ = try db.prepare(
+            "UPDATE photo_metadata_cache SET iptc_json = ? WHERE photo_id = 'p1'")
+            .run([.text(json)])
+        let query = PhotoFilterQuery(connection: db)
+        func hit(_ rule: FilterRule) throws -> [String] {
+            try query.filterPhotos(sessionId: sessionId, criteria: group(rule)).map(\.id).sorted()
+        }
+        #expect(try hit(rule("instructions", .contains, .string("Embargo"))) == ["p1"])
+        #expect(try hit(rule("instructions", .eq, .string("Embargo until 2026-12-01"))) == ["p1"])
+        #expect(try hit(rule("event_identifier", .containsAny,
+            .array([.string("acme-2026")]))) == ["p1"])
+        #expect(try hit(rule("event_identifier", .eq,
+            .string("urn:event:acme-2026"))) == ["p1"])
+        #expect(try hit(rule("model_release_id", .contains, .string("MR-0001"))) == ["p1"])
+        #expect(try hit(rule("property_release_id", .exists, .bool(true))).isEmpty,
+                "未填写的列表字段 exists=false（p2 连 iptc_json 都没有）")
+    }
+}
+
+// MARK: - Wave5（batch2）：搜索串覆盖新字段
+
+@Suite("搜索串覆盖 Wave5 新字段")
+struct PhotoFilterSearchStringWave5Tests {
+    @Test("搜索串 OR 组（Gallery searchCriteria 形态）命中 instructions / event id / release id")
+    func searchStringOrGroupCoversWave5Fields() throws {
+        let db = try makeQueryTestDB()
+        let sessionId = "s-search-wave5"
+        try queryInsertSession(db, id: sessionId)
+        for id in ["p1", "p2"] {
+            try queryInsertPhoto(db, id: id, sessionId: sessionId)
+            try queryInsertCache(db, photoId: id, sessionId: sessionId)
+        }
+        let metadata = DescriptiveMetadata(
+            instructions: "Embargo until 2026-12-01",
+            eventIdentifier: ["urn:event:acme-2026"],
+            modelReleaseID: ["MR-0001"],
+            propertyReleaseID: ["PR-0001"])
+        let json = String(decoding: try JSONEncoder().encode(metadata), as: UTF8.self)
+        _ = try db.prepare(
+            "UPDATE photo_metadata_cache SET iptc_json = ? WHERE photo_id = 'p1'")
+            .run([.text(json)])
+        // 与 GalleryViewModel+Filters.searchCriteria 同形：顶层 OR + 每字段 contains。
+        let fields = [
+            "filename", "instructions", "event_identifier",
+            "model_release_id", "property_release_id",
+        ]
+        let query = PhotoFilterQuery(connection: db)
+        func hit(_ needle: String) throws -> [String] {
+            let group = FilterGroup(logic: .or, conditions: fields.map { field -> FilterCondition in
+                .rule(FilterRule(field: field, operator: .contains, value: .string(needle)))
+            })
+            return try query.filterPhotos(sessionId: sessionId, criteria: group)
+                .map(\.id).sorted()
+        }
+        #expect(try hit("Embargo") == ["p1"])
+        #expect(try hit("acme-2026") == ["p1"])
+        #expect(try hit("MR-0001") == ["p1"])
+        #expect(try hit("PR-0001") == ["p1"])
+        #expect(try hit("没有这个值").isEmpty)
+    }
+}
+
+

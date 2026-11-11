@@ -15,10 +15,29 @@ struct MetadataDisplayRow: Equatable {
 }
 
 enum MetadataDisplay {
-    /// IPTC Core 22 项（顺序与 XMPFieldDescriptor.all 一致）。
-    static let iptcCoreFields: [DescriptiveField] = Array(DescriptiveField.allCases.prefix(22))
-    /// IPTC Extension 10 项。
-    static let iptcExtensionFields: [DescriptiveField] = Array(DescriptiveField.allCases.suffix(10))
+    /// IPTC Core 22 项（Wave5 batch2 起用**显式列表**：DescriptiveField 新增字段后
+    /// prefix/suffix 切片会把分组切错；新增字段单独成组见 wave5DeliveryFields）。
+    /// contactInfo 是结构：面板显示成一行"联系方式"，编辑器会单独渲染其成员。
+    static let iptcCoreFields: [DescriptiveField] = [
+        .title, .caption, .creator, .creatorJobTitle, .credit, .source,
+        .copyrightNotice, .usageTerms, .webStatement, .headline, .captionWriter,
+        .jobIdentifier, .subjectCode, .scene, .intellectualGenre,
+        .location, .city, .state, .country, .countryCode, .dateCreated, .contactInfo,
+    ]
+    /// IPTC Extension（原有 10 项）。
+    static let iptcExtensionFields: [DescriptiveField] = [
+        .personInImage, .event, .organisationInImage,
+        .sublocation, .worldRegion, .provinceState,
+        .modelReleaseStatus, .propertyReleaseStatus,
+        .digitalSourceType, .additionalModelInfo,
+    ]
+    /// Wave5（batch2）新增的交付字段：Instructions（标准里属 Core）、Event Identifier、
+    /// Model/Property Release Id（标准里属 Extension，XMP 在 plus:）。
+    /// 单独成组是为了不改动既有 Core/Extension 面板行数（既有测试与用户肌肉记忆）；
+    /// 三组并集 == DescriptiveField.allCases（由 MetadataEditorTests 守住）。
+    static let wave5DeliveryFields: [DescriptiveField] = [
+        .instructions, .eventIdentifier, .modelReleaseID, .propertyReleaseID,
+    ]
 
     /// 十进制安全格式化（避免 50.00000000001 之类）。
     static func number(_ value: Double) -> String {
@@ -183,6 +202,7 @@ enum MetadataDisplay {
         case .headline: "标题（Headline）"
         case .captionWriter: "编辑者"
         case .jobIdentifier: "作业编号"
+        case .instructions: "使用说明"
         case .subjectCode: "主题代码"
         case .scene: "场景代码"
         case .intellectualGenre: "类型"
@@ -195,12 +215,15 @@ enum MetadataDisplay {
         case .contactInfo: "联系方式"
         case .personInImage: "画面人物"
         case .event: "事件"
+        case .eventIdentifier: "事件标识"
         case .organisationInImage: "画面机构"
         case .sublocation: "次级地点"
         case .worldRegion: "世界区域"
         case .provinceState: "省/州（Ext）"
         case .modelReleaseStatus: "肖像权授权"
+        case .modelReleaseID: "肖像权释放编号"
         case .propertyReleaseStatus: "物权授权"
+        case .propertyReleaseID: "物权释放编号"
         case .digitalSourceType: "数字来源类型"
         case .additionalModelInfo: "模特补充说明"
         }

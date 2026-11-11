@@ -232,6 +232,32 @@ public final class CullingViewModel: SessionPageModel {
     private var lastAutoReloadWritten: Int?
     var refreshTask: Task<Void, Never>?
 
+    // MARK: - B3 / 浏览状态恢复（筛选 / 范围 / 排序 / 当前照片 / 参考槽）
+
+    /// 按 sessionId 持久化查看状态（UserDefaults + JSON；见 CullingViewStateStore）。
+    @ObservationIgnored var viewStateStore = CullingViewStateStore()
+    /// 保存节流：只保留最新一份待写状态（防每按一键写盘）。
+    @ObservationIgnored var viewStateSaveThrottle = CullingViewStateSaveThrottle()
+    @ObservationIgnored var viewStateSaveTask: Task<Void, Never>?
+    /// 保存去抖（毫秒）；测试可调小/置 0，不真等 0.5s。
+    var viewStateDebounceMilliseconds = CullingViewStateSaveThrottle.defaultDebounceMilliseconds
+    /// 睡眠注入（测试传立即返回，避免真实等待）。
+    @ObservationIgnored var viewStateSleep: @Sendable (Duration) async throws -> Void = { duration in
+        try await Task.sleep(for: duration)
+    }
+    /// 页面级 chrome（布局/密度/检查器/胶片条）：保存时与业务状态一起落盘。
+    @ObservationIgnored var savedViewLayout: CullingLayoutMode = .single
+    @ObservationIgnored var savedViewDensity: CullingGridDensity = .m
+    @ObservationIgnored var savedViewInspectorVisible = true
+    @ObservationIgnored var savedViewFilmstripExpanded = true
+    /// 参考槽（观察属性）：查看器 onAppear/onChange 据此恢复，R 切换后回写。
+    var viewerReference: CullingViewReference?
+    /// 待定位的当前照片 / 是否已读过存档 / 恢复是否完成（完成前不写盘）。
+    @ObservationIgnored var pendingRestoredCurrentPhotoId: String?
+    @ObservationIgnored var hasAttemptedViewStateRestore = false
+    @ObservationIgnored var isViewStateRestorationFinished = false
+    @ObservationIgnored var isRestoringViewState = false
+
     /// 生产装配（RootView）：挑片 / 导航 / 元数据 / 任务 / 画质全部走
     /// AppServices 的类型化 API；captureOne 必传（组合根构造，reload ack 写
     /// 唯一 AppRuntime）。E-17：删除默认自建 CaptureOneBridge() 的兜底。
@@ -260,12 +286,22 @@ public final class CullingViewModel: SessionPageModel {
     }
 
     /// 首次 / 重试加载：导航组与主列表保持旧顺序（先导航、再整页）。
+    ///
+    /// B3：首载完成后定位存档里的当前照片（分页是键集游标，必须先有首页才能
+    /// 往前续读）。首载失败时保留待恢复目标，重试 load() 会继续定位。
     public func load() async {
         guard !sessionId.isEmpty else { return }
         // Wave3 / G6：识别 C1 Session 三目录（只读标注；会话源路径取一次即可）。
         await loadCaptureOneSessionLayout()
         await loadNavigation()
         await loadPage(reset: true)
+        if isRestoringViewState, page != nil {
+            await resolveRestoredCurrentPhoto()
+            finishViewStateRestore()
+        } else if isRestoringViewState, page == nil, errorMessage == nil {
+            // 空会话（0 张）：没有目标可定位，按已知状态收尾，避免永远不写盘。
+            finishViewStateRestore()
+        }
     }
     /// 从 MetadataSyncSummary 推导同步状态机（优先级对齐旧版 syncLabel：
     /// 冲突 > 失败 > 写入中 > 已写入 > 已载入 > 空）。
@@ -399,6 +435,8 @@ public final class CullingViewModel: SessionPageModel {
             // 隐藏页不再预取：未完成的邻张预取立即取消（避免隐藏期占解码名额）。
             preloadTask?.cancel()
             preloadTask = nil
+            // B3：隐藏 = 页面离开，把 0.5s 节流里还没落盘的浏览状态写掉。
+            flushViewStateSave()
             return
         }
         flushDeferredDomainRefresh()
@@ -425,6 +463,11 @@ public final class CullingViewModel: SessionPageModel {
         preloadTask = nil
         pendingCommit = nil
         isCommitting = false
+        // B3：会话关闭是最后一次落盘机会（flush 内部会取消节的保存任务）。
+        viewStateSaveTask?.cancel()
+        viewStateSaveTask = nil
+        flushViewStateSave()
+        pendingRestoredCurrentPhotoId = nil
     }
 
     private static func isQualityJobActive(_ status: AnalysisJobStatus) -> Bool {

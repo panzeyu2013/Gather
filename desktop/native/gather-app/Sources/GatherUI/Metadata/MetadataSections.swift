@@ -28,6 +28,10 @@ struct MetadataSections: View {
             GatherInspectorSection(l10n("IPTC Extension")) {
                 iptcGroup(MetadataDisplay.iptcExtensionFields, detail.descriptive)
             }
+            // Wave5（batch2）：Instructions / Event Identifier / Release Id。
+            GatherInspectorSection(l10n("交付字段")) {
+                iptcGroup(MetadataDisplay.wave5DeliveryFields, detail.descriptive)
+            }
             GatherInspectorSection(l10n("文件")) {
                 VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
                     row(l10n("文件名"), detail.filename)

@@ -2634,3 +2634,32 @@
 "本次写入：当前照片" = "This write: current photo";
 "本次写入：全部选中 %lld 张" = "This write: all %lld selected";
 "本次写入目标：对比/Survey 默认只写当前照片，批量需打开左侧开关" = "Write target: Compare/Survey writes only the current photo by default; turn on the switch on the left for batch writes.";
+
+/* Wave5 / Batch2（IPTC 交付字段 + 受控值） */
+"使用说明" = "Instructions";
+"事件标识" = "Event Identifier";
+"肖像权释放编号" = "Model Release ID";
+"物权释放编号" = "Property Release ID";
+"交付字段" = "Delivery Fields";
+"常用值" = "Common Values";
+"现值（词表外）：%@" = "Current value (outside vocabulary): %@";
+"「%@」的值「%@」不在受控词表内，请从列表选择、改正或清空后再应用。" = "The value “%@” for “%@” is not in the controlled vocabulary. Choose from the list, correct it, or clear it before applying.";
+
+/* Wave5 / Batch2（AI 初审状态原因） */
+"质量分析仍在后台继续，可稍后刷新" = "Quality analysis continues in the background; refresh later";
+"等待索引超时，可稍后在挑片页生成" = "Timed out waiting for indexing; generate later on the culling page";
+"索引未成功" = "Indexing did not succeed";
+"质量分析未能入队" = "Quality analysis could not be enqueued";
+"质量分析被中止" = "Quality analysis was stopped";
+"建议功能未开启" = "Suggestions are disabled";
+
+/* Wave5 / Batch2（AI 初审状态文案） */
+"AI 初审：未启用（可在设置中开启）" = "AI triage: disabled (enable it in Settings)";
+"AI 初审：等待扫描" = "AI triage: waiting for scan";
+"AI 初审：质量分析中" = "AI triage: analyzing quality";
+"AI 初审：待人脸分析（本次先按无脸信号生成）" = "AI triage: waiting for face analysis (generating with face-free signals for now)";
+"AI 初审：生成建议中" = "AI triage: generating suggestions";
+"AI 初审：已生成 %lld 条建议（保留 %lld · 淘汰 %lld · 待复核 %lld）" = "AI triage: %lld suggestions generated (%lld keep · %lld reject · %lld review)";
+"AI 初审：已跳过（%@）" = "AI triage: skipped (%@)";
+"AI 初审：未完成（%@）" = "AI triage: incomplete (%@)";
+"AI 初审：失败（%@）" = "AI triage: failed (%@)";

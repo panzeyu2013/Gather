@@ -6,8 +6,14 @@
 //   XMP 的实际读写由宿主（gather-app/SidecarXMPProvider）按本表驱动。
 // - 字段三态必须可区分：nil = 不触碰；空串/空数组 = 显式清空；有值 = 写入。
 //   模板批量应用与冲突检测都依赖这一区分。
-// - 覆盖：IPTC Core 22 项（含 Contact Info 结构）+ IPTC Extension 10 项。
-//   未纳入：ArtworkOrObject 结构数组、Accessibility 字段，留 P2。
+// - 覆盖：IPTC Core 23 项（含 Contact Info 结构）+ IPTC Extension 13 项 = 36 项。
+//   Wave5（batch2）新增交付高频字段：Instructions（Core）、Event Identifier、
+//   Model Release Id、Property Release Id（Extension）。
+//   未纳入：ArtworkOrObject 结构数组、Accessibility、Image Creator（后者在标准
+//   2025.1 里是 plus:ImageCreator 结构值，本波只做文本字段，暂缓；见 40 册 §2）。
+// - 受控值表见文件末 IPTCControlledVocabulary（countryCode / scene / subjectCode /
+//   digitalSourceType）；modelReleaseStatus / propertyReleaseStatus 的 PLUS 受控值
+//   本波未核实，不加表也不校验。
 
 import Foundation
 
@@ -25,11 +31,22 @@ public enum DescriptiveField: String, Codable, CaseIterable, Sendable {
     // IPTC Core
     case title, caption, creator, creatorJobTitle, credit, source
     case copyrightNotice, usageTerms, webStatement, headline, captionWriter, jobIdentifier
+    /// Wave5（batch2）：IPTC Core Instructions（IIM 2:40 / photoshop:Instructions）。
+    case instructions
     case subjectCode, scene, intellectualGenre, location
     case city, state, country, countryCode, dateCreated, contactInfo
     // IPTC Extension
-    case personInImage, event, organisationInImage, sublocation, worldRegion, provinceState
-    case modelReleaseStatus, propertyReleaseStatus, digitalSourceType, additionalModelInfo
+    case personInImage, event
+    /// Wave5（batch2）：IPTC Ext Event Identifier（Iptc4xmpExt:EventId，multi → Bag）。
+    case eventIdentifier
+    case organisationInImage, sublocation, worldRegion, provinceState
+    case modelReleaseStatus
+    /// Wave5（batch2）：IPTC Ext Model Release Id（plus:ModelReleaseID，multi → Bag）。
+    case modelReleaseID
+    case propertyReleaseStatus
+    /// Wave5（batch2）：IPTC Ext Property Release Id（plus:PropertyReleaseID，multi → Bag）。
+    case propertyReleaseID
+    case digitalSourceType, additionalModelInfo
 }
 
 /// XMP 命名空间与属性映射。
@@ -59,6 +76,10 @@ public enum XMPNamespaces {
     public static let photoshop = "http://ns.adobe.com/photoshop/1.0/"
     public static let iptcCore = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
     public static let iptcExt = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+    /// Wave5（batch2）：PLUS LDF XMP 命名空间。IPTC 2025.1 技术参考里
+    /// Model Release Id / Property Release Id 的 XMP 属性都在 plus:（plus:ModelReleaseID
+    /// / plus:PropertyReleaseID），不在 Iptc4xmpExt。
+    public static let plus = "http://ns.useplus.org/ldf/xmp/1.0/"
     public static let rdf = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
     /// P1 / E：triage 可移植信号的私有命名空间（与 TriageWritebackPlanner 同源）。
     public static let gatherTriage = "https://gather.app/ns/triage/1.0/"
@@ -139,7 +160,7 @@ public struct DescriptiveContact: Codable, Equatable, Sendable {
 }
 
 public extension XMPFieldDescriptor {
-    /// 全部 32 个字段的映射，顺序即 UI 展示顺序。
+    /// 全部 36 个字段的映射（顺序 = 写入/模板遍历顺序；面板分组见 MetadataDisplay）。
     static let all: [XMPFieldDescriptor] = [
         .init(.title, "dc", XMPNamespaces.dc, "title", .alt),
         .init(.caption, "dc", XMPNamespaces.dc, "description", .alt),
@@ -153,6 +174,8 @@ public extension XMPFieldDescriptor {
         .init(.headline, "photoshop", XMPNamespaces.photoshop, "Headline", .text),
         .init(.captionWriter, "photoshop", XMPNamespaces.photoshop, "CaptionWriter", .text),
         .init(.jobIdentifier, "photoshop", XMPNamespaces.photoshop, "TransmissionReference", .text),
+        // Wave5（batch2）：IPTC 2025.1 技术参考 XMPid=photoshop:Instructions（IIM 2:40）。
+        .init(.instructions, "photoshop", XMPNamespaces.photoshop, "Instructions", .text),
         .init(.subjectCode, "Iptc4xmpCore", XMPNamespaces.iptcCore, "SubjectCode", .bag),
         .init(.scene, "Iptc4xmpCore", XMPNamespaces.iptcCore, "Scene", .bag),
         .init(.intellectualGenre, "Iptc4xmpCore", XMPNamespaces.iptcCore, "IntellectualGenre", .text),
@@ -165,14 +188,26 @@ public extension XMPFieldDescriptor {
         .init(.contactInfo, "Iptc4xmpCore", XMPNamespaces.iptcCore, "CreatorContactInfo", .structure),
         .init(.personInImage, "Iptc4xmpExt", XMPNamespaces.iptcExt, "PersonInImage", .bag),
         .init(.event, "Iptc4xmpExt", XMPNamespaces.iptcExt, "Event", .alt),
+        // Wave5（batch2）：XMPid=Iptc4xmpExt:EventId，datatype string + occurrence multi → Bag。
+        .init(.eventIdentifier, "Iptc4xmpExt", XMPNamespaces.iptcExt, "EventId", .bag),
         .init(.organisationInImage, "Iptc4xmpExt", XMPNamespaces.iptcExt, "OrganisationInImageName", .bag),
         .init(.sublocation, "Iptc4xmpExt", XMPNamespaces.iptcExt, "Sublocation", .text),
         .init(.worldRegion, "Iptc4xmpExt", XMPNamespaces.iptcExt, "WorldRegion", .text),
         .init(.provinceState, "Iptc4xmpExt", XMPNamespaces.iptcExt, "ProvinceState", .text),
         .init(.modelReleaseStatus, "Iptc4xmpExt", XMPNamespaces.iptcExt, "ModelReleaseStatus", .text),
+        // Wave5（batch2）：标准 2025.1 的 XMPid 是 plus:ModelReleaseID（string + multi → Bag），
+        // 与 repo 既有 release **Status** 的 Iptc4xmpExt 命名空间不同（既有 status 的
+        // qname 与标准不一致，属存量问题，见回执待裁决项，本波不改存量字段）。
+        .init(.modelReleaseID, "plus", XMPNamespaces.plus, "ModelReleaseID", .bag),
         .init(.propertyReleaseStatus, "Iptc4xmpExt", XMPNamespaces.iptcExt, "PropertyReleaseStatus", .text),
+        .init(.propertyReleaseID, "plus", XMPNamespaces.plus, "PropertyReleaseID", .bag),
         .init(.digitalSourceType, "Iptc4xmpExt", XMPNamespaces.iptcExt, "DigitalSourceType", .text),
         .init(.additionalModelInfo, "Iptc4xmpExt", XMPNamespaces.iptcExt, "AddlModelInfo", .text),
+        // 注记（Wave5 batch2）：上面 4 个新字段尚未进入
+        // MetadataAttributes.embeddedDescriptiveFields（该文件不在本波写作用域）。
+        // 后果：JPEG 内嵌元数据（无 .xmp sidecar）的写入会在写后校验时读不到这些字段
+        // 而失败回滚；RAW / sidecar 路径不受影响。下一批补齐该表 + IPTCIIM 的
+        // 2:40（Instructions）映射后，本条注记应删除（详见 40 册 §2 与回执）。
     ]
 
     static let byField: [DescriptiveField: XMPFieldDescriptor] = Dictionary(
@@ -229,6 +264,8 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
     public var headline: String?
     public var captionWriter: String?
     public var jobIdentifier: String?
+    /// Wave5（batch2）：使用说明（禁发令/限制/复现要求）。
+    public var instructions: String?
     public var subjectCode: [String]?
     public var scene: [String]?
     public var intellectualGenre: String?
@@ -242,12 +279,18 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
     // IPTC Extension
     public var personInImage: [String]?
     public var event: String?
+    /// Wave5（batch2）：事件标识（可多个）。
+    public var eventIdentifier: [String]?
     public var organisationInImage: [String]?
     public var sublocation: String?
     public var worldRegion: String?
     public var provinceState: String?
     public var modelReleaseStatus: String?
+    /// Wave5（batch2）：肖像权释放编号（可多个）。
+    public var modelReleaseID: [String]?
     public var propertyReleaseStatus: String?
+    /// Wave5（batch2）：物权释放编号（可多个）。
+    public var propertyReleaseID: [String]?
     public var digitalSourceType: String?
     public var additionalModelInfo: String?
 
@@ -256,13 +299,16 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
         creatorJobTitle: String? = nil, credit: String? = nil, source: String? = nil,
         copyrightNotice: String? = nil, usageTerms: String? = nil, webStatement: String? = nil,
         headline: String? = nil, captionWriter: String? = nil, jobIdentifier: String? = nil,
+        instructions: String? = nil,
         subjectCode: [String]? = nil, scene: [String]? = nil, intellectualGenre: String? = nil,
         location: String? = nil, city: String? = nil, state: String? = nil,
         country: String? = nil, countryCode: String? = nil, dateCreated: String? = nil,
         contactInfo: DescriptiveContact? = nil, personInImage: [String]? = nil,
-        event: String? = nil, organisationInImage: [String]? = nil,
+        event: String? = nil, eventIdentifier: [String]? = nil,
+        organisationInImage: [String]? = nil,
         sublocation: String? = nil, worldRegion: String? = nil, provinceState: String? = nil,
-        modelReleaseStatus: String? = nil, propertyReleaseStatus: String? = nil,
+        modelReleaseStatus: String? = nil, modelReleaseID: [String]? = nil,
+        propertyReleaseStatus: String? = nil, propertyReleaseID: [String]? = nil,
         digitalSourceType: String? = nil, additionalModelInfo: String? = nil
     ) {
         self.title = title
@@ -277,6 +323,7 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
         self.headline = headline
         self.captionWriter = captionWriter
         self.jobIdentifier = jobIdentifier
+        self.instructions = instructions
         self.subjectCode = subjectCode
         self.scene = scene
         self.intellectualGenre = intellectualGenre
@@ -289,12 +336,15 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
         self.contactInfo = contactInfo
         self.personInImage = personInImage
         self.event = event
+        self.eventIdentifier = eventIdentifier
         self.organisationInImage = organisationInImage
         self.sublocation = sublocation
         self.worldRegion = worldRegion
         self.provinceState = provinceState
         self.modelReleaseStatus = modelReleaseStatus
+        self.modelReleaseID = modelReleaseID
         self.propertyReleaseStatus = propertyReleaseStatus
+        self.propertyReleaseID = propertyReleaseID
         self.digitalSourceType = digitalSourceType
         self.additionalModelInfo = additionalModelInfo
     }
@@ -324,6 +374,7 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
         case .headline: return headline.map(XMPFieldValue.text)
         case .captionWriter: return captionWriter.map(XMPFieldValue.text)
         case .jobIdentifier: return jobIdentifier.map(XMPFieldValue.text)
+        case .instructions: return instructions.map(XMPFieldValue.text)
         case .subjectCode: return subjectCode.map(XMPFieldValue.list)
         case .scene: return scene.map(XMPFieldValue.list)
         case .intellectualGenre: return intellectualGenre.map(XMPFieldValue.text)
@@ -336,12 +387,15 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
         case .contactInfo: return contactInfo.map(XMPFieldValue.contact)
         case .personInImage: return personInImage.map(XMPFieldValue.list)
         case .event: return event.map(XMPFieldValue.text)
+        case .eventIdentifier: return eventIdentifier.map(XMPFieldValue.list)
         case .organisationInImage: return organisationInImage.map(XMPFieldValue.list)
         case .sublocation: return sublocation.map(XMPFieldValue.text)
         case .worldRegion: return worldRegion.map(XMPFieldValue.text)
         case .provinceState: return provinceState.map(XMPFieldValue.text)
         case .modelReleaseStatus: return modelReleaseStatus.map(XMPFieldValue.text)
+        case .modelReleaseID: return modelReleaseID.map(XMPFieldValue.list)
         case .propertyReleaseStatus: return propertyReleaseStatus.map(XMPFieldValue.text)
+        case .propertyReleaseID: return propertyReleaseID.map(XMPFieldValue.list)
         case .digitalSourceType: return digitalSourceType.map(XMPFieldValue.text)
         case .additionalModelInfo: return additionalModelInfo.map(XMPFieldValue.text)
         }
@@ -376,6 +430,7 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
         case .headline: headline = text
         case .captionWriter: captionWriter = text
         case .jobIdentifier: jobIdentifier = text
+        case .instructions: instructions = text
         case .subjectCode: subjectCode = list
         case .scene: scene = list
         case .intellectualGenre: intellectualGenre = text
@@ -391,12 +446,15 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
             if case .contact(let contact) = value { contactInfo = contact } else { contactInfo = nil }
         case .personInImage: personInImage = list
         case .event: event = text
+        case .eventIdentifier: eventIdentifier = list
         case .organisationInImage: organisationInImage = list
         case .sublocation: sublocation = text
         case .worldRegion: worldRegion = text
         case .provinceState: provinceState = text
         case .modelReleaseStatus: modelReleaseStatus = text
+        case .modelReleaseID: modelReleaseID = list
         case .propertyReleaseStatus: propertyReleaseStatus = text
+        case .propertyReleaseID: propertyReleaseID = list
         case .digitalSourceType: digitalSourceType = text
         case .additionalModelInfo: additionalModelInfo = text
         }
@@ -439,6 +497,272 @@ public struct DescriptiveMetadata: Codable, Equatable, Sendable {
             set(.text(""), for: field)
         }
     }
+}
+
+// MARK: - 受控值（Wave5 batch2）
+
+/// IPTC 受控值（controlled vocabulary）：常量表 + 归一化 + 写入前校验。
+///
+/// 只收**可核实**的四张表（数据来源：IPTC NewsCodes CV 服务与 IPTC Photo Metadata
+/// 2025.1 技术参考，2026-11 抓取）：
+/// - countryCode：ISO 3166-1 alpha-2 常用集（标准允许 2/3 字母，本表只收 2 字母；
+///   三字母代码不在此表，写入会被判为"词表外"，需要时再补）；
+/// - scene：IPTC Scene NewsCodes 全部 24 个（6 位数字码，写码不写英文名）；
+/// - subjectCode：IPTC Subject Code NewsCodes **顶层 17 类**（8 位数字码）。该词表
+///   已被 IPTC 标记为 legacy（改用 Media Topic），本表只做顶层，够目前 UI 用；
+/// - digitalSourceType：IPTC Digital Source Type NewsCodes 18 个在用概念，值是
+///   **完整 URI**（例如 http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture）。
+///
+/// 不做表 / 不校验：modelReleaseStatus、propertyReleaseStatus —— 它们的值是PLUS
+/// 受控值（dataformat uri），PLUS CV 站点当前返回 500/XSL 错误，无法核实取值集合；
+/// 为避免把合法值判成非法（或写错值），本波只保留自由文本，待拿到官方词表再补。
+public enum IPTCControlledVocabulary {
+    /// 一个受控值选项：value 落盘（与 XMP 里写的字符串完全一致），label 中文展示。
+    /// Identifiable 的 id 就是 value：Picker 的 tag 与身份一致，避免重复值。
+    public struct Option: Equatable, Sendable, Identifiable {
+        public let value: String
+        public let label: String
+        public var id: String { value }
+        public init(value: String, label: String) {
+            self.value = value
+            self.label = label
+        }
+    }
+
+    /// 受控值字段 → 词表；nil = 自由文本字段（不做选择器也不做校验）。
+    public static func options(for field: DescriptiveField) -> [Option]? {
+        switch field {
+        case .countryCode: return countryCodes
+        case .scene: return sceneCodes
+        case .subjectCode: return subjectCodes
+        case .digitalSourceType: return digitalSourceTypes
+        default: return nil
+        }
+    }
+
+    /// 是否受控值字段（UI 决定渲染 Picker 还是 TextField）。
+    public static func isControlled(_ field: DescriptiveField) -> Bool {
+        options(for: field) != nil
+    }
+
+    /// 写入前归一化：countryCode 统一大写（标准要求字母码，手打 "cn" 不应写成小写）；
+    /// 其余只 trim。非受控值字段原样返回（保持既有写入行为）。
+    public static func normalized(_ raw: String, for field: DescriptiveField) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isControlled(field) else { return trimmed }
+        switch field {
+        case .countryCode: return trimmed.uppercased()
+        default: return trimmed
+        }
+    }
+
+    /// 校验：非空时必须在词表内（调用方负责先归一化；空串 = 清空，合法）。
+    /// 同义词/别名不做映射：Scene/SubjectCode 是数字码、DigitalSourceType 是 CV URI，
+    /// 写别名会被外部工具判成非法值。
+    public static func isValid(_ raw: String, for field: DescriptiveField) -> Bool {
+        guard let table = options(for: field) else { return true }
+        let candidate = normalized(raw, for: field)
+        guard !candidate.isEmpty else { return true }
+        return table.contains { $0.value == candidate }
+    }
+
+    // MARK: 表（顺序即 UI 展示顺序）
+
+    /// ISO 3166-1 alpha-2 常用集（按中文名排序，常用国家在前）。
+    public static let countryCodes: [Option] = [
+        Option(value: "CN", label: "CN 中国"),
+        Option(value: "HK", label: "HK 中国香港"),
+        Option(value: "MO", label: "MO 中国澳门"),
+        Option(value: "TW", label: "TW 中国台湾"),
+        Option(value: "JP", label: "JP 日本"),
+        Option(value: "KR", label: "KR 韩国"),
+        Option(value: "SG", label: "SG 新加坡"),
+        Option(value: "MY", label: "MY 马来西亚"),
+        Option(value: "TH", label: "TH 泰国"),
+        Option(value: "VN", label: "VN 越南"),
+        Option(value: "ID", label: "ID 印度尼西亚"),
+        Option(value: "PH", label: "PH 菲律宾"),
+        Option(value: "IN", label: "IN 印度"),
+        Option(value: "PK", label: "PK 巴基斯坦"),
+        Option(value: "BD", label: "BD 孟加拉国"),
+        Option(value: "LK", label: "LK 斯里兰卡"),
+        Option(value: "NP", label: "NP 尼泊尔"),
+        Option(value: "MN", label: "MN 蒙古"),
+        Option(value: "KZ", label: "KZ 哈萨克斯坦"),
+        Option(value: "UZ", label: "UZ 乌兹别克斯坦"),
+        Option(value: "AE", label: "AE 阿联酋"),
+        Option(value: "SA", label: "SA 沙特阿拉伯"),
+        Option(value: "QA", label: "QA 卡塔尔"),
+        Option(value: "KW", label: "KW 科威特"),
+        Option(value: "BH", label: "BH 巴林"),
+        Option(value: "OM", label: "OM 阿曼"),
+        Option(value: "IL", label: "IL 以色列"),
+        Option(value: "JO", label: "JO 约旦"),
+        Option(value: "LB", label: "LB 黎巴嫩"),
+        Option(value: "SY", label: "SY 叙利亚"),
+        Option(value: "TR", label: "TR 土耳其"),
+        Option(value: "IR", label: "IR 伊朗"),
+        Option(value: "IQ", label: "IQ 伊拉克"),
+        Option(value: "AF", label: "AF 阿富汗"),
+        Option(value: "RU", label: "RU 俄罗斯"),
+        Option(value: "UA", label: "UA 乌克兰"),
+        Option(value: "BY", label: "BY 白俄罗斯"),
+        Option(value: "GE", label: "GE 格鲁吉亚"),
+        Option(value: "AM", label: "AM 亚美尼亚"),
+        Option(value: "AZ", label: "AZ 阿塞拜疆"),
+        Option(value: "PL", label: "PL 波兰"),
+        Option(value: "CZ", label: "CZ 捷克"),
+        Option(value: "SK", label: "SK 斯洛伐克"),
+        Option(value: "HU", label: "HU 匈牙利"),
+        Option(value: "RO", label: "RO 罗马尼亚"),
+        Option(value: "BG", label: "BG 保加利亚"),
+        Option(value: "GR", label: "GR 希腊"),
+        Option(value: "CY", label: "CY 塞浦路斯"),
+        Option(value: "IT", label: "IT 意大利"),
+        Option(value: "ES", label: "ES 西班牙"),
+        Option(value: "PT", label: "PT 葡萄牙"),
+        Option(value: "FR", label: "FR 法国"),
+        Option(value: "DE", label: "DE 德国"),
+        Option(value: "AT", label: "AT 奥地利"),
+        Option(value: "CH", label: "CH 瑞士"),
+        Option(value: "NL", label: "NL 荷兰"),
+        Option(value: "BE", label: "BE 比利时"),
+        Option(value: "LU", label: "LU 卢森堡"),
+        Option(value: "DK", label: "DK 丹麦"),
+        Option(value: "SE", label: "SE 瑞典"),
+        Option(value: "NO", label: "NO 挪威"),
+        Option(value: "FI", label: "FI 芬兰"),
+        Option(value: "IS", label: "IS 冰岛"),
+        Option(value: "IE", label: "IE 爱尔兰"),
+        Option(value: "GB", label: "GB 英国"),
+        Option(value: "EE", label: "EE 爱沙尼亚"),
+        Option(value: "LV", label: "LV 拉脱维亚"),
+        Option(value: "LT", label: "LT 立陶宛"),
+        Option(value: "SI", label: "SI 斯洛文尼亚"),
+        Option(value: "HR", label: "HR 克罗地亚"),
+        Option(value: "RS", label: "RS 塞尔维亚"),
+        Option(value: "EG", label: "EG 埃及"),
+        Option(value: "MA", label: "MA 摩洛哥"),
+        Option(value: "TN", label: "TN 突尼斯"),
+        Option(value: "DZ", label: "DZ 阿尔及利亚"),
+        Option(value: "ZA", label: "ZA 南非"),
+        Option(value: "KE", label: "KE 肯尼亚"),
+        Option(value: "NG", label: "NG 尼日利亚"),
+        Option(value: "TZ", label: "TZ 坦桑尼亚"),
+        Option(value: "ET", label: "ET 埃塞俄比亚"),
+        Option(value: "GH", label: "GH 加纳"),
+        Option(value: "US", label: "US 美国"),
+        Option(value: "CA", label: "CA 加拿大"),
+        Option(value: "MX", label: "MX 墨西哥"),
+        Option(value: "CU", label: "CU 古巴"),
+        Option(value: "DO", label: "DO 多米尼加"),
+        Option(value: "GT", label: "GT 危地马拉"),
+        Option(value: "CR", label: "CR 哥斯达黎加"),
+        Option(value: "PA", label: "PA 巴拿马"),
+        Option(value: "BR", label: "BR 巴西"),
+        Option(value: "AR", label: "AR 阿根廷"),
+        Option(value: "CL", label: "CL 智利"),
+        Option(value: "PE", label: "PE 秘鲁"),
+        Option(value: "CO", label: "CO 哥伦比亚"),
+        Option(value: "VE", label: "VE 委内瑞拉"),
+        Option(value: "EC", label: "EC 厄瓜多尔"),
+        Option(value: "UY", label: "UY 乌拉圭"),
+        Option(value: "BO", label: "BO 玻利维亚"),
+        Option(value: "PY", label: "PY 巴拉圭"),
+        Option(value: "AU", label: "AU 澳大利亚"),
+        Option(value: "NZ", label: "NZ 新西兰"),
+        Option(value: "FJ", label: "FJ 斐济"),
+        Option(value: "PG", label: "PG 巴布亚新几内亚"),
+    ]
+
+    /// IPTC Scene NewsCodes（scn:010100…scn:012400）：落盘只写 6 位数字码。
+    public static let sceneCodes: [Option] = [
+        Option(value: "010100", label: "010100 头像特写"),
+        Option(value: "010200", label: "010200 半身"),
+        Option(value: "010300", label: "010300 全身"),
+        Option(value: "010400", label: "010400 侧面"),
+        Option(value: "010500", label: "010500 背面"),
+        Option(value: "010600", label: "010600 单人"),
+        Option(value: "010700", label: "010700 双人"),
+        Option(value: "010800", label: "010800 两人"),
+        Option(value: "010900", label: "010900 群像"),
+        Option(value: "011000", label: "011000 全景概览"),
+        Option(value: "011100", label: "011100 全景"),
+        Option(value: "011200", label: "011200 航拍"),
+        Option(value: "011300", label: "011300 水下"),
+        Option(value: "011400", label: "011400 夜景"),
+        Option(value: "011500", label: "011500 卫星影像"),
+        Option(value: "011600", label: "011600 外景"),
+        Option(value: "011700", label: "011700 内景"),
+        Option(value: "011800", label: "011800 特写"),
+        Option(value: "011900", label: "011900 动作"),
+        Option(value: "012000", label: "012000 表演"),
+        Option(value: "012100", label: "012100 摆拍"),
+        Option(value: "012200", label: "012200 象征"),
+        Option(value: "012300", label: "012300 趣味"),
+        Option(value: "012400", label: "012400 电影场景"),
+    ]
+
+    /// IPTC Subject Code NewsCodes 顶层 17 类（8 位数字码；该词表 IPTC 已标 legacy）。
+    public static let subjectCodes: [Option] = [
+        Option(value: "01000000", label: "01000000 艺术、文化与娱乐"),
+        Option(value: "02000000", label: "02000000 犯罪、法律与司法"),
+        Option(value: "03000000", label: "03000000 灾难与事故"),
+        Option(value: "04000000", label: "04000000 经济、商业与金融"),
+        Option(value: "05000000", label: "05000000 教育"),
+        Option(value: "06000000", label: "06000000 环境议题"),
+        Option(value: "07000000", label: "07000000 健康"),
+        Option(value: "08000000", label: "08000000 人情味"),
+        Option(value: "09000000", label: "09000000 劳动"),
+        Option(value: "10000000", label: "10000000 生活方式与休闲"),
+        Option(value: "11000000", label: "11000000 政治"),
+        Option(value: "12000000", label: "12000000 宗教与信仰"),
+        Option(value: "13000000", label: "13000000 科学与技术"),
+        Option(value: "14000000", label: "14000000 社会议题"),
+        Option(value: "15000000", label: "15000000 体育"),
+        Option(value: "16000000", label: "16000000 冲突与战争"),
+        Option(value: "17000000", label: "17000000 天气"),
+    ]
+
+    /// IPTC Digital Source Type NewsCodes（在用 18 项；值是 CV 概念的完整 URI）。
+    public static let digitalSourceTypes: [Option] = [
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture",
+               label: "数字拍摄（真实场景）"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/computationalCapture",
+               label: "计算拍摄（多帧合成）"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/negativeFilm",
+               label: "胶片负片扫描"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/positiveFilm",
+               label: "胶片正片扫描"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/print",
+               label: "印刷品扫描"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/minorHumanEdits",
+               label: "少量人工修图"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/humanEdits",
+               label: "人工修图（非生成式）"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicallyEnhanced",
+               label: "算法增强"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCreation",
+               label: "数字创作（人工、非生成式）"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/dataDrivenMedia",
+               label: "数据驱动媒体"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia",
+               label: "生成式 AI 生成"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicMedia",
+               label: "纯算法生成"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/screenCapture",
+               label: "屏幕截图"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/virtualRecording",
+               label: "虚拟事件录制"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/composite",
+               label: "多元素合成"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/compositeCapture",
+               label: "实拍元素合成"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/compositeSynthetic",
+               label: "含生成式 AI 元素合成"),
+        Option(value: "http://cv.iptc.org/newscodes/digitalsourcetype/compositeWithTrainedAlgorithmicMedia",
+               label: "生成式 AI 编辑合成"),
+    ]
 }
 
 // MARK: - JSONValue 往返

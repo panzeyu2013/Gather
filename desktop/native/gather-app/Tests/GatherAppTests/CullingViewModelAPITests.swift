@@ -107,6 +107,9 @@ private func vmPage(_ assets: [CullingAsset]) -> CullingPage {
 
 private actor StubCullingAPI: CullingAPI {
     var pageResult = CullingPage(assets: [], total: 0)
+    /// B3 恢复定位用：多页夹具（按请求顺序返回，最后一个反复返回）。
+    /// 空队列 = 走 setPage 的单页结果（既有用例全部走这条，行为不变）。
+    var pageResultsQueue: [CullingPage] = []
     var summaryResult = CullingSummary(
         totalGroups: 0, totalPhotos: 0, kept: 0, rejected: 0, pending: 0, rated: 0, labeled: 0
     )
@@ -156,6 +159,7 @@ private actor StubCullingAPI: CullingAPI {
     var updateDelay = Duration.zero
 
     func setPage(_ value: CullingPage) { pageResult = value }
+    func setPageResults(_ values: [CullingPage]) { pageResultsQueue = values }
     func setUpdateDelay(_ value: Duration) { updateDelay = value }
     func setUpdateSelectionResult(_ value: CullingSelectionUpdateResult) {
         updateSelectionResult = value
@@ -178,7 +182,10 @@ private actor StubCullingAPI: CullingAPI {
     func page(_ query: CullingPageQuery) async throws -> CullingPage {
         pageQueries.append(query)
         if let pageError { throw pageError }
-        return pageResult
+        guard !pageResultsQueue.isEmpty else { return pageResult }
+        // 队列：首页 → 第二页……；最后一个一直返回（"读到底"用例用得到）。
+        if pageResultsQueue.count > 1 { return pageResultsQueue.removeFirst() }
+        return pageResultsQueue[0]
     }
 
     func history(_ query: CullingHistoryQuery) async throws -> [CullingHistoryOperation] {
@@ -1383,5 +1390,212 @@ struct CullingViewModelAPITests {
         #expect(queries.last?.limit == 500, "页变大重取一次，按新页大小")
         #expect(queries.last?.cursor == nil, "重取的是首页")
         #expect(vm.currentPhotoId == "p80", "当前照片仍在新的首页内")
+    }
+
+    // MARK: - Wave5 批次 2：B3 浏览状态恢复
+
+    /// B3 夹具：独立 UserDefaults suite + 可注入存档（测完清理，不碰真实默认值）。
+    private func makeViewStateStore() -> (store: CullingViewStateStore, defaults: UserDefaults, suiteName: String) {
+        let suiteName = "culling-viewstate-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+        return (CullingViewStateStore(defaults: defaults), defaults, suiteName)
+    }
+
+    @Test("B3：进页恢复筛选/范围/排序/布局，并跨页定位到存档里的当前照片")
+    func restoresViewStateAndSeeksCurrentPhoto() async throws {
+        let (store, defaults, suiteName) = makeViewStateStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let sessionId = "s-restore"
+
+        var filters = CullingViewFilters()
+        filters.unreviewedOnly = true
+        filters.rating = 4
+        store.save(CullingViewState(
+            scope: ScopeMode.filtered.rawValue,
+            filters: filters,
+            sort: CullingSort.ratingDesc.rawValue,
+            layout: CullingLayoutMode.grid.rawValue,
+            density: CullingGridDensity.l.rawValue,
+            currentPhotoId: "p501",
+            filmstripExpanded: false,
+            inspectorVisible: false), sessionId: sessionId)
+
+        let api = StubCullingAPI()
+        await api.setPageResults([
+            CullingPage(
+                assets: (1...500).map { vmAsset("p\($0)") }, total: 520,
+                nextCursor: CullingPageCursor(sort: .ratingDesc, numberKey: 5, rowId: 500)),
+            CullingPage(assets: (501...520).map { vmAsset("p\($0)") }, total: 520),
+        ])
+        let vm = CullingViewModel(
+            sessionId: sessionId, culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub())
+        vm.viewStateStore = store
+        vm.viewStateDebounceMilliseconds = 0
+        vm.viewStateSleep = { _ in await Task.yield() }
+
+        let restored = try #require(vm.takeSavedViewState())
+        #expect(restored.layout == CullingLayoutMode.grid.rawValue)
+        #expect(vm.scopeMode == .filtered)
+        #expect(vm.filterState.unreviewedOnly)
+        #expect(vm.filterState.rating == 4)
+        #expect(vm.sortMode == .ratingDesc)
+        #expect(vm.savedViewLayout == .grid)
+        #expect(vm.savedViewDensity == .l)
+        #expect(vm.savedViewInspectorVisible == false)
+        #expect(vm.savedViewFilmstripExpanded == false)
+
+        // 与页面 .task 同序：先按恢复后的布局设置页大小，再首载。
+        vm.applyPageLimit(CullingLayoutMode.grid.pageLimit)
+        await vm.load()
+
+        let queries = await api.pageQueries
+        #expect(queries.count == 2, "首页 + 续读一页（目标在第 501 张）")
+        #expect(queries.first?.scope == .filtered)
+        #expect(queries.first?.sort == .ratingDesc)
+        #expect(queries.first?.limit == CullingLayoutMode.grid.pageLimit)
+        #expect(queries.last?.cursor != nil, "续页必须带键集游标")
+        #expect(queries.last?.limit == CullingViewStateRestore.seekPageLimit,
+                "定位用服务端单次上限的大页，不逐页 200 张爬")
+        #expect(vm.page?.assets.count == 520)
+        #expect(vm.currentPhotoId == "p501")
+        #expect(vm.selectedPhotoIds == ["p501"], "只恢复当前照片，不恢复多选")
+    }
+
+    @Test("B3：存档里的照片已不存在 → 回退第一张并把回退结果写回存档")
+    func restoresMissingPhotoFallsBackToFirst() async throws {
+        let (store, defaults, suiteName) = makeViewStateStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let sessionId = "s-missing"
+
+        store.save(CullingViewState(
+            scope: ScopeMode.all.rawValue,
+            sort: CullingSort.importOrder.rawValue,
+            layout: CullingLayoutMode.single.rawValue,
+            density: CullingGridDensity.m.rawValue,
+            currentPhotoId: "gone"), sessionId: sessionId)
+
+        let api = StubCullingAPI()
+        await api.setPageResults([
+            CullingPage(assets: [vmAsset("p1"), vmAsset("p2")], total: 2)
+        ])
+        let vm = CullingViewModel(
+            sessionId: sessionId, culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub())
+        vm.viewStateStore = store
+        vm.viewStateDebounceMilliseconds = 0
+        vm.viewStateSleep = { _ in await Task.yield() }
+
+        _ = vm.takeSavedViewState()
+        await vm.load()
+
+        #expect(vm.currentPhotoId == "p1", "找不到就回退第一张")
+        vm.flushViewStateSave()
+        let saved = try #require(store.load(sessionId: sessionId))
+        #expect(saved.currentPhotoId == "p1",
+                "回退结果立即写回，下次进页不再 seek 一张已不存在的照片")
+    }
+
+    @Test("B3：没有存档时不改变默认行为，并直接进入可保存态")
+    func restoreWithoutSavedStateKeepsDefaults() async throws {
+        let (store, defaults, suiteName) = makeViewStateStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let api = StubCullingAPI()
+        await api.setPageResults([
+            CullingPage(assets: [vmAsset("p1"), vmAsset("p2")], total: 2)
+        ])
+        let vm = CullingViewModel(
+            sessionId: "s-fresh", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub())
+        vm.viewStateStore = store
+
+        #expect(vm.takeSavedViewState() == nil)
+        #expect(vm.isViewStateRestorationFinished, "无存档也要允许后续保存")
+        await vm.load()
+        #expect(vm.currentPhotoId == "p1")
+        #expect(vm.scopeMode == .all)
+        #expect(vm.filterState.isActive == false)
+    }
+
+    @Test("B3：flush 后按会话落盘（筛选/范围/排序/当前照片/参考槽/布局面板）")
+    func flushPersistsViewState() async throws {
+        let (store, defaults, suiteName) = makeViewStateStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let sessionId = "s-persist"
+
+        let api = StubCullingAPI()
+        await api.setPageResults([
+            CullingPage(assets: [vmAsset("p1"), vmAsset("p2"), vmAsset("p3")], total: 3)
+        ])
+        let vm = CullingViewModel(
+            sessionId: sessionId, culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub())
+        vm.viewStateStore = store
+        vm.viewStateDebounceMilliseconds = 0
+        vm.viewStateSleep = { _ in await Task.yield() }
+        _ = vm.takeSavedViewState()
+        await vm.load()
+
+        vm.filterState.rating = 3
+        vm.scopeMode = .filtered
+        vm.sortMode = .captureAsc
+        vm.currentPhotoId = "p2"
+        let reference = CullingViewReference(
+            photoId: "p1", filepath: "/shoot/p1.jpg", filename: "p1.jpg")
+        vm.viewerReference = reference
+        vm.noteViewChrome(
+            layout: .compare2, density: .l,
+            inspectorVisible: false, filmstripExpanded: false)
+        vm.scheduleViewStateSave()
+        vm.flushViewStateSave()
+
+        let saved = try #require(store.load(sessionId: sessionId))
+        #expect(saved.scope == ScopeMode.filtered.rawValue)
+        #expect(saved.filters.rating == 3)
+        #expect(saved.sort == CullingSort.captureAsc.rawValue)
+        #expect(saved.currentPhotoId == "p2")
+        #expect(saved.reference == reference)
+        #expect(saved.layout == CullingLayoutMode.compare2.rawValue)
+        #expect(saved.density == CullingGridDensity.l.rawValue)
+        #expect(saved.inspectorVisible == false)
+        #expect(saved.filmstripExpanded == false)
+
+        // 新 VM（模拟重启）读回同一份存档：参考槽与布局面板都恢复。
+        let vm2 = CullingViewModel(
+            sessionId: sessionId, culling: StubCullingAPI(), navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub())
+        vm2.viewStateStore = store
+        _ = vm2.takeSavedViewState()
+        #expect(vm2.viewerReference == reference)
+        #expect(vm2.savedViewLayout == .compare2)
+        #expect(vm2.savedViewDensity == .l)
+        #expect(vm2.filterState.rating == 3)
+        #expect(vm2.sortMode == .captureAsc)
+    }
+
+    @Test("B3：shutdown 时把节流中的状态 flush 掉（会话关闭是最后落盘机会）")
+    func shutdownFlushesPendingViewState() async throws {
+        let (store, defaults, suiteName) = makeViewStateStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let sessionId = "s-shutdown"
+
+        let api = StubCullingAPI()
+        await api.setPageResults([
+            CullingPage(assets: [vmAsset("p1"), vmAsset("p2")], total: 2)
+        ])
+        let vm = CullingViewModel(
+            sessionId: sessionId, culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub())
+        vm.viewStateStore = store
+        _ = vm.takeSavedViewState()
+        await vm.load()
+        vm.currentPhotoId = "p2"
+        vm.scheduleViewStateSave()
+        // 不调 flush：验证 shutdown 自己会写。
+        vm.shutdown()
+
+        let saved = try #require(store.load(sessionId: sessionId))
+        #expect(saved.currentPhotoId == "p2")
     }
 }

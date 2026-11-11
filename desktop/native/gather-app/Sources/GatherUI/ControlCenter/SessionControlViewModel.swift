@@ -236,3 +236,53 @@ public final class SessionControlViewModel: SessionPageModel {
         jobs.filter { [.succeeded, .cancelled].contains($0.status) }
     }
 }
+
+// MARK: - AI 初审状态（Wave5 batch2 / E1+E2）
+
+/// AI 初审的可见状态投影（Host 写、控制中心读），只在进程内、不持久化。
+///
+/// 为什么状态在 UI 而不是 AppBootstrap：GatherUI 不能 import GatherHost
+/// （check-layering 的硬门禁），Host 侧无法把类型暴露给页面；沿用
+/// `C1PendingJudgementStore`（Host 写 UI store）的既有模式。
+///
+/// 状态由 `AITriageImportTrigger`（AppBootstrap）在导入后写入：
+/// 未启用 → 等待扫描 → 质量分析中 →（待人脸分析）→ 生成建议中 → 已生成/跳过/未完成。
+@MainActor
+@Observable
+package final class AITriageStatusStore {
+    package enum Phase: Equatable, Sendable {
+        /// triage_enabled / triage_auto_generate 关闭：本次导入没有自动初审。
+        case notEnabled
+        /// 等 metadata.scan 终态（目录导入的照片由索引发现）。
+        case waitingIndex
+        /// quality.score 已入队（技术质量 + 模型信号）。
+        case waitingQuality
+        /// 缺 `face_observations`：已入队 face.analyze，但本次**不等待**（按无脸信号先生成）。
+        case waitingFace
+        /// 正在生成建议（TriageService.generate）。
+        case generating
+        /// 已生成：keep/reject/review 计数。
+        case done(keep: Int, reject: Int, review: Int)
+        /// 主动跳过（triage 关闭等），reason 为 AITriageStopReason 诊断串。
+        case skipped(String)
+        /// 等待超时/取消等"未完成"（job 可能仍在后台继续）。
+        case stopped(String)
+        /// 未预期失败。
+        case failed(String)
+    }
+
+    package static let shared = AITriageStatusStore()
+
+    package private(set) var phases: [String: Phase] = [:]
+
+    package func set(sessionId: String, phase: Phase) {
+        guard !sessionId.isEmpty else { return }
+        phases[sessionId] = phase
+    }
+
+    package func phase(sessionId: String) -> Phase? { phases[sessionId] }
+
+    package func clear(sessionId: String) { phases.removeValue(forKey: sessionId) }
+
+    package func reset() { phases.removeAll() }
+}

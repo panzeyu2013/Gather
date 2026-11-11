@@ -1,5 +1,9 @@
 // desktop/native/gather-app/Sources/GatherUI/Metadata/MetadataEditorSheet.swift
-// P0 / B2：单张照片的直接元数据编辑（32 字段 + 联系人 8 成员）。
+// P0 / B2：单张照片的直接元数据编辑（36 字段 + 联系人 8 成员）。
+//
+// Wave5（batch2）：受控值字段（countryCode / scene / subjectCode / digitalSourceType）
+// 用词表 Picker（列表字段用"常用值"菜单追加）+ 应用前校验：
+// 改过的非空值必须在词表内，否则留在面板里报错、不写盘（详见 MetadataEditorDraft）。
 //
 // 语义：
 // - 初值来自**盘上**（metadata.diskDescriptive：sidecar + JPEG 内嵌 IPTC），
@@ -50,6 +54,8 @@ struct MetadataEditorSheet: View {
                             .foregroundStyle(.secondary)
                         section(title: l10n("IPTC Core"), fields: MetadataDisplay.iptcCoreFields)
                         section(title: l10n("IPTC Extension"), fields: MetadataDisplay.iptcExtensionFields)
+                        // Wave5（batch2）：交付字段（受控值 Picker / 列表"常用值"菜单）。
+                        section(title: l10n("交付字段"), fields: MetadataDisplay.wave5DeliveryFields)
                         contactSection
                     }
                 }
@@ -106,19 +112,92 @@ struct MetadataEditorSheet: View {
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
             ForEach(fields.filter { $0 != .contactInfo }, id: \.self) { field in
-                HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
-                    Text(l10n(MetadataDisplay.fieldTitle(field)))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 96, alignment: .leading)
-                    TextField(l10n("未填写"), text: Binding(
-                        get: { values[field] ?? "" },
-                        set: { values[field] = $0 }
-                    ))
+                fieldRow(field)
+            }
+        }
+    }
+
+    /// 一行字段。三种形态：
+    /// - 受控值标量字段（countryCode / digitalSourceType）：Picker（词表 + 未填写 +
+    ///   "现值（词表外）"兜底，保存时由 Draft 校验拦截词表外输入）；
+    /// - 受控值列表字段（scene / subjectCode）：TextField（顿号分隔）+"常用值"菜单追加，
+    ///   避免把 24 个场景码做成多选控件；
+    /// - 其余：自由文本 TextField（行为与旧版一致）。
+    private func fieldRow(_ field: DescriptiveField) -> some View {
+        let options = IPTCControlledVocabulary.options(for: field)
+        let isList = XMPFieldDescriptor.descriptor(for: field)?.isList == true
+        return HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
+            Text(l10n(MetadataDisplay.fieldTitle(field)))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 96, alignment: .leading)
+            if let options, !isList {
+                Picker("", selection: valueBinding(for: field)) {
+                    ForEach(controlledPickerTags(field: field, options: options)) { tag in
+                        Text(tag.label).tag(tag.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            } else {
+                TextField(l10n("未填写"), text: valueBinding(for: field))
                     .textFieldStyle(.roundedBorder)
+                if let options, isList {
+                    Menu(l10n("常用值")) {
+                        ForEach(options) { option in
+                            Button(option.label) { appendControlledValue(option.value, to: field) }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
             }
         }
+    }
+
+    private func valueBinding(for field: DescriptiveField) -> Binding<String> {
+        Binding(
+            get: { values[field] ?? "" },
+            set: { values[field] = $0 })
+    }
+
+    /// Picker 的一个候选（SwiftUI 的 ForEach 不接受元组元素，单独建一个 Identifiable）。
+    private struct ControlledPickerTag: Identifiable {
+        let id: String
+        let label: String
+    }
+
+    /// Picker 的候选：(空 = 未填写) + 词表 + 盘上现值（词表外时保留，不改写存量数据）。
+    private func controlledPickerTags(
+        field: DescriptiveField, options: [IPTCControlledVocabulary.Option]
+    ) -> [ControlledPickerTag] {
+        var tags: [ControlledPickerTag] = [
+            ControlledPickerTag(id: "", label: l10n("未填写"))
+        ]
+        tags.append(contentsOf: options.map {
+            ControlledPickerTag(id: $0.value, label: $0.label)
+        })
+        let current = values[field] ?? ""
+        let normalizedCurrent = IPTCControlledVocabulary.normalized(current, for: field)
+        if !normalizedCurrent.isEmpty,
+           !options.contains(where: { $0.value == normalizedCurrent }) {
+            tags.append(ControlledPickerTag(
+                id: current, label: l10n.format("现值（词表外）：%@", current)))
+        }
+        return tags
+    }
+
+    /// 列表受控值追加：顿号分隔、去重、空值不追加。
+    private func appendControlledValue(_ value: String, to field: DescriptiveField) {
+        let current = (values[field] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var items = current.isEmpty
+            ? []
+            : current.split(whereSeparator: { $0 == "、" || $0 == "," })
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        guard !items.contains(value) else { return }
+        items.append(value)
+        values[field] = items.joined(separator: "、")
     }
 
     private var contactSection: some View {
@@ -197,6 +276,14 @@ struct MetadataEditorSheet: View {
     }
 
     private func apply() async {
+        // 受控值先校验再算补丁：写盘侧不做二次拒绝（服务层不认识 UI 词表）。
+        if let violation = MetadataEditorDraft.controlledValueViolation(
+            values: values, initial: initialValues) {
+            errorText = l10n.format(
+                "「%@」的值「%@」不在受控词表内，请从列表选择、改正或清空后再应用。",
+                l10n(MetadataDisplay.fieldTitle(violation.field)), violation.value)
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         guard let patch = MetadataEditorDraft.changes(

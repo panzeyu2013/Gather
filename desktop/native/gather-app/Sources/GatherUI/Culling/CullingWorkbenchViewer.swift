@@ -488,6 +488,8 @@ struct CullingWorkbenchViewer: View {
         })
         .onAppear {
             startWheelMonitor()
+            // B3：参考槽随会话恢复（存档在 VM；已设参考时不覆盖）。
+            restoreViewerReferenceIfNeeded()
             // P0-4：进入查看器即为当前照片调度邻张预取（去抖后只跑最后一次）。
             viewModel.scheduleNeighborPreload()
             // Wave3 / task-20：把当前缩放/平移发布给第二屏（只读镜像）。
@@ -498,6 +500,10 @@ struct CullingWorkbenchViewer: View {
             // 离开查看器（切网格/离开页面）立即取消未完成的预取与贴片解码。
             viewModel.cancelNeighborPreload()
             clearDetailTiles()
+        }
+        // B3：会话存档异步注入（页面 .task 晚于查看器 onAppear 时也能恢复）。
+        .onChange(of: viewModel.viewerReference) { _, _ in
+            restoreViewerReferenceIfNeeded()
         }
         // 复用旧版 resetTransform 语义：对比模式切换 / 人脸对齐开关 / 翻页
         // 均显式复位缩放与位移（替代旧的 .id() 整树重建，避免焦点与监听扰动）。
@@ -1360,6 +1366,25 @@ struct CullingWorkbenchViewer: View {
             filepath: asset.photo.filepath,
             filename: asset.photo.filename
         )
+        // B3：参考槽变化回写会话状态（清空时写 nil；0.5s 节流后落盘）。
+        viewModel.recordViewerReference(
+            photoId: overlayState.referencePhotoId,
+            filepath: overlayState.referenceFilepath,
+            filename: overlayState.referenceFilename)
+    }
+
+    /// B3：把会话存档里的参考槽套到当前叠加层状态（已有参考时不覆盖）。
+    ///
+    /// 存档由页面 .task 异步注入（可能晚于查看器 onAppear），因此同时挂在
+    /// onAppear 与 viewerReference 的 onChange 上；两条路径都幂等。
+    private func restoreViewerReferenceIfNeeded() {
+        guard !overlayState.hasReference,
+              let reference = viewModel.viewerReference,
+              !reference.photoId.isEmpty,
+              !reference.filepath.isEmpty else { return }
+        overlayState.referencePhotoId = reference.photoId
+        overlayState.referenceFilepath = reference.filepath
+        overlayState.referenceFilename = reference.filename
     }
 
     /// 参考对比模式循环（C：并排 → 分割 → 叠加）。

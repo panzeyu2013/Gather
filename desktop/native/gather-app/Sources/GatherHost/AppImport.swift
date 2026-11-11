@@ -130,6 +130,9 @@ enum AppImport {
     /// Wave3 / task-21：把文件加入**已有工作区**（gather://import?session=<id> /
     /// App Intents 共用）。成功/失败都走既有 importCompleted / importFailed 通知，
     /// RootView 因此仍然只认一条导入完成契约（自动落图库、Toast 失败计数）。
+    /// Wave5 batch2（E1）：`afterAdd` 是「照片行已落库 + 索引已入队」之后的可选钩子
+    /// （默认 nil ⇒ 其余调用方行为零变化）。自动初审用它把"加照片到已有工作区"也
+    /// 纳入导入入口覆盖；钩子失败不影响导入结果。
     @MainActor
     static func importFiles(
         _ files: [String],
@@ -138,7 +141,8 @@ enum AppImport {
         jobAPI: any JobAPI,
         source: String = "shortcuts",
         sourceLabel: String = "",
-        l10n: L10n
+        l10n: L10n,
+        afterAdd: (@MainActor (String) async throws -> Void)? = nil
     ) async {
         let normalized = normalizeImportFilepaths(files)
         guard !normalized.isEmpty else { return }
@@ -153,6 +157,15 @@ enum AppImport {
             } catch {
                 // 入队失败不是导入失败：照片行已落库，用户可以重试索引；必须可见。
                 GatherLogger.log("import-into-session scan failed: \(error)", level: .warn)
+            }
+            // Wave5 batch2：加照片到已有工作区同样属于"导入完成"入口（自动初审）。
+            // 钩子必须立即返回：真正调度在宿主侧异步执行，不能拖慢/拖红导入。
+            if let afterAdd {
+                do {
+                    try await afterAdd(sessionId)
+                } catch {
+                    GatherLogger.log("import afterAdd hook failed: \(error)", level: .warn)
+                }
             }
             let examples = result.failedFiles
                 .prefix(3)

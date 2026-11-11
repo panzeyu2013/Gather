@@ -24,6 +24,8 @@ struct IIMKey: Hashable, Comparable, Sendable {
     static let objectAttributeReference = IIMKey(record: 2, dataset: 4)
     /// 2:27 ContentLocationName（对应 XMP Iptc4xmpCore:Location）
     static let contentLocationName = IIMKey(record: 2, dataset: 27)
+    /// 2:40 Special Instructions（对应 XMP photoshop:Instructions）——Wave5（batch2）。
+    static let specialInstructions = IIMKey(record: 2, dataset: 40)
     static let keywords = IIMKey(record: 2, dataset: 25)
     static let dateCreated = IIMKey(record: 2, dataset: 55)
     static let byline = IIMKey(record: 2, dataset: 80)
@@ -158,6 +160,9 @@ struct IPTCIIM: Equatable, Sendable {
 }
 
 /// 描述性元数据 → IIM 的可写映射（只收 IIM 1.1 真实存在的 dataset）。
+/// Wave5（batch2）：instructions → 2:40（Special Instructions）；新增的
+/// eventIdentifier / modelReleaseID / propertyReleaseID 只在 XMP（Iptc4xmpExt / plus），
+/// IIM 无对应 dataset，映射返回 nil 是正确行为（不编造 dataset 号）。
 /// XMP 独有字段（contact / UsageTerms / Scene 等 IPTC-Ext 字段）在 IIM 里没有 dataset：
 /// 它们的「清空」只能靠 XMP 侧删除 + 读侧 presence 阻断，映射表返回 nil 是正确行为
 /// （不要为它们编造 dataset 号，否则会写坏别人的 IIM）。
@@ -195,6 +200,7 @@ enum IPTCIIMMapping {
         case .headline: .headline
         case .captionWriter: .writerEditor
         case .jobIdentifier: .transmissionReference
+        case .instructions: .specialInstructions
         case .subjectCode: .subjectReference
         case .intellectualGenre: .objectAttributeReference
         case .location: .contentLocationName

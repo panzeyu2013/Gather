@@ -3,6 +3,11 @@
 //
 // 编辑器只提交用户改过的字段：空白 = 显式清空，未改 = 不触碰。把这段语义从
 // SwiftUI 视图里抽出来，测试才能覆盖"只写改动字段""空值清空""contact 整块替换"。
+//
+// Wave5（batch2）追加受控值（IPTCControlledVocabulary）：
+// - changes() 在写盘侧做归一化（countryCode 大写等），校验与写盘同一口径；
+// - controlledValueViolation() 只校验"改过的、非空的"值：未改动不校验（盘上存量
+//   词表外值不该让用户无法编辑其它字段），清空合法。
 import Foundation
 import GatherProtocol
 
@@ -45,12 +50,15 @@ enum MetadataEditorDraft {
             if after.isEmpty {
                 edited.clear(field)
             } else if XMPFieldDescriptor.descriptor(for: field)?.isList == true {
+                // 受控值列表字段（scene / subjectCode / release ID）：逐项归一化
+                // （数字码/URI 不做大小写转换，country 类字段才转换）。
                 let items = after.split(whereSeparator: { $0 == "、" || $0 == "," })
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
+                    .map { IPTCControlledVocabulary.normalized($0, for: field) }
                 edited.set(.list(items), for: field)
             } else {
-                edited.set(.text(after), for: field)
+                edited.set(.text(IPTCControlledVocabulary.normalized(after, for: field)), for: field)
             }
         }
         if contact != initialContact {
@@ -67,6 +75,34 @@ enum MetadataEditorDraft {
         }
         guard !edited.isEmpty else { return nil }
         return Patch(fields: edited, clearedContactMembers: clearedMembers)
+    }
+
+    /// 受控值校验：只校验"改过的、非空的"值。
+    ///
+    /// 为什么不校验全部：盘上存量值可能是外部软件写的（词表外/旧码），用户只想改
+    /// 别的字段时不该被它挡住；三态语义下"未改动"本来就不会写盘。
+    /// 列表字段逐项校验（每个 Scene Code / Subject Code / Release Id 都必须是词表值）。
+    /// 返回第一条违规（字段 + 用户原始输入，文案要显示用户看到的东西）。
+    static func controlledValueViolation(
+        values: [DescriptiveField: String],
+        initial: [DescriptiveField: String]
+    ) -> (field: DescriptiveField, value: String)? {
+        for field in DescriptiveField.allCases {
+            guard IPTCControlledVocabulary.isControlled(field) else { continue }
+            let before = normalized(initial[field])
+            let after = normalized(values[field])
+            guard after != before, !after.isEmpty else { continue }
+            let isList = XMPFieldDescriptor.descriptor(for: field)?.isList == true
+            let items: [String] = isList
+                ? after.split(whereSeparator: { $0 == "、" || $0 == "," })
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                : [after]
+            for item in items where !IPTCControlledVocabulary.isValid(item, for: field) {
+                return (field, item)
+            }
+        }
+        return nil
     }
 
     private static func normalized(_ text: String?) -> String {

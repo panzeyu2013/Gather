@@ -45,3 +45,36 @@ public enum ScopeMode: String, CaseIterable, Equatable {
         }
     }
 }
+
+// MARK: - B3 / 浏览状态恢复：FilterState ↔ 存档纯值
+
+extension FilterState {
+    /// 从存档恢复筛选：非法 raw / 越界 rating 逐项丢弃，不整份失败
+    /// （存档损坏时用户宁可少一个筛选条件，也不能进不了页）。
+    init(restored saved: CullingViewFilters) {
+        self.init()
+        unreviewedOnly = saved.unreviewedOnly
+        pickState = saved.pickState.flatMap(PickState.init(rawValue:))
+        if let rating = saved.rating, (0...5).contains(rating) {
+            self.rating = rating
+        }
+        colorLabel = saved.colorLabel.flatMap(CaptureOneColorLabel.init(rawValue:))
+        qualityStatus = saved.qualityStatus.flatMap(CullingFilterQualityStatus.init(rawValue:))
+        metadataConflictOnly = saved.metadataConflictOnly
+        let verdicts = saved.triageVerdicts?.compactMap(TriageVerdict.init(rawValue:))
+        triageVerdicts = (verdicts?.isEmpty == false) ? verdicts : nil
+    }
+
+    /// 落盘投影：只存 raw 字符串，避免把 UI 枚举写进存档格式。
+    var savedViewFilters: CullingViewFilters {
+        var saved = CullingViewFilters()
+        saved.unreviewedOnly = unreviewedOnly
+        saved.pickState = pickState?.rawValue
+        saved.rating = rating
+        saved.colorLabel = colorLabel?.rawValue
+        saved.qualityStatus = qualityStatus?.rawValue
+        saved.metadataConflictOnly = metadataConflictOnly
+        saved.triageVerdicts = triageVerdicts?.map(\.rawValue)
+        return saved
+    }
+}

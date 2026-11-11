@@ -84,6 +84,8 @@ public final class PhotoFilterQuery {
         "web_statement": "webStatement",
         "job_identifier": "jobIdentifier",
         "caption_writer": "captionWriter",
+        // Wave5（batch2）：IPTC Core Instructions / IPTC Ext Event Id / PLUS release id。
+        "instructions": "instructions",
         "subject_code": "subjectCode",
         "scene": "scene",
         "intellectual_genre": "intellectualGenre",
@@ -96,12 +98,15 @@ public final class PhotoFilterQuery {
         // IPTC Extension
         "person_in_image": "personInImage",
         "event": "event",
+        "event_identifier": "eventIdentifier",
         "organisation_in_image": "organisationInImage",
         "sublocation": "sublocation",
         "world_region": "worldRegion",
         "province_state": "provinceState",
         "model_release_status": "modelReleaseStatus",
+        "model_release_id": "modelReleaseID",
         "property_release_status": "propertyReleaseStatus",
+        "property_release_id": "propertyReleaseID",
         "digital_source_type": "digitalSourceType",
         "additional_model_info": "additionalModelInfo",
     ]
@@ -111,6 +116,8 @@ public final class PhotoFilterQuery {
     /// 它的人员/地址检索走 city/country 等标量字段）。
     public static let jsonArrayFields: Set<String> = [
         "creator", "person_in_image", "subject_code", "scene", "organisation_in_image",
+        // Wave5（batch2）：标准里 eventIdentifier / releaseID 都是 string + multi（Bag）。
+        "event_identifier", "model_release_id", "property_release_id",
     ]
 
     private let connection: DBConnection
@@ -764,46 +771,156 @@ public final class PhotoFilterQuery {
         return ("(\(clauses.joined(separator: " OR ")))", [])
     }
 
+    // MARK: - Wave5（batch2）：关键词同义词展开
+
+    /// 查询词 → 同义词表命中的规范路径（**整词映射**）。
+    ///
+    /// 口径与边界：
+    /// - 只有「查询词与 keyword_synonyms.synonym 经 KeywordNormalizer.fold 后完全
+    ///   相等」才展开成该同义词所属的规范路径；contains 的子串语义**不**反向映射
+    ///   （否则输入「宫」会把「故宫」的同义词整批拉进来，筛选范围失控）；
+    /// - 词库规模小：一次全表读 + Swift 侧 fold 比较（SQLite 的 LIKE 不认 NFC/大小写
+    ///   折叠，放 SQL 里会漏命中）；读失败退化为"无同义词"，检索不因此整条报错；
+    /// - 返回字典序稳定，SQL 参数顺序可预期（测试可断言）。
+    private func keywordSynonymPaths(for term: String) -> [String] {
+        let needle = KeywordNormalizer.fold(term)
+        guard !needle.isEmpty else { return [] }
+        let rows: [(path: String, synonym: String)]
+        do {
+            rows = try connection.prepare(
+                "SELECT keyword_path, synonym FROM keyword_synonyms ORDER BY keyword_path")
+                .query()
+                .compactMap { row in
+                    guard let path = row[0].textValue, let synonym = row[1].textValue else {
+                        return nil
+                    }
+                    return (path, synonym)
+                }
+        } catch {
+            return []
+        }
+        var seen = Set<String>()
+        var paths: [String] = []
+        for row in rows where KeywordNormalizer.fold(row.synonym) == needle {
+            if seen.insert(row.path).inserted { paths.append(row.path) }
+        }
+        return paths.sorted()
+    }
+
+    /// 一个查询词的检索别名：原词 + 同义词命中的规范路径。
+    ///
+    /// - includeLeaves=true：pmc.keywords（dc:subject）里可能是叶子也可能是完整路径
+    ///   （取决于 keyword_dc_style），两种形态都要能命中；
+    /// - keyword_path 一定存规范路径，不需要叶子。
+    private func keywordTermAlternatives(_ term: String, includeLeaves: Bool) -> [String] {
+        var values = [term]
+        var seen = Set([term])
+        for synonymPath in keywordSynonymPaths(for: term) {
+            if seen.insert(synonymPath).inserted { values.append(synonymPath) }
+            guard includeLeaves, let leaf = KeywordPath(synonymPath)?.leaf, !leaf.isEmpty else {
+                continue
+            }
+            if seen.insert(leaf).inserted { values.append(leaf) }
+        }
+        return values
+    }
+
+    /// 交替拼 SQL 的 IN 子句 + 参数（保持调用点短）。
+    private static func inPlaceholders(_ count: Int) -> String {
+        (0..<count).map { _ in "?" }.joined(separator: ", ")
+    }
+
     private func buildKeywordsCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [DBValue]) {
         let op = `operator`
         let arr = value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)]
         switch op {
         case .contains:
+            let term = stringValue(value)
+            let alternatives = keywordTermAlternatives(term, includeLeaves: true)
+            guard alternatives.count > 1 else {
+                return (
+                    sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')",
+                    params: [.text(escapeLike(term))]
+                )
+            }
+            // 同义词是等价词：对每个等价词各做一次子串匹配（叶子/完整路径都能命中）。
+            let likes = alternatives
+                .map { _ in "value LIKE '%' || ? || '%' ESCAPE '\\'" }
+                .joined(separator: " OR ")
             return (
-                sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')",
-                params: [.text(escapeLike(stringValue(value)))]
+                sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE \(likes))",
+                params: alternatives.map { .text(escapeLike($0)) }
             )
         case .containsAny:
             if arr.isEmpty { return (sql: "1=0", params: []) }
-            let placeholders = arr.map { _ in "?" }.joined(separator: ", ")
-            return (
-                sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(placeholders)))",
-                params: arr.map(DBValue.text)
-            )
+            let expanded = arr.map { keywordTermAlternatives($0, includeLeaves: true) }
+            guard expanded.contains(where: { $0.count > 1 }) else {
+                let placeholders = Self.inPlaceholders(arr.count)
+                return (
+                    sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(placeholders)))",
+                    params: arr.map(DBValue.text)
+                )
+            }
+            var clauses: [String] = []
+            var params: [DBValue] = []
+            for alternatives in expanded {
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(Self.inPlaceholders(alternatives.count))))")
+                params.append(contentsOf: alternatives.map(DBValue.text))
+            }
+            return (sql: "(\(clauses.joined(separator: " OR ")))", params: params)
         case .containsAll:
             if arr.isEmpty { return (sql: "1=0", params: []) }
-            let unique = Array(Set(arr))
-            let placeholders = unique.map { _ in "?" }.joined(separator: ", ")
-            return (
-                sql: "(SELECT COUNT(DISTINCT value) FROM json_each(pmc.keywords) WHERE value IN (\(placeholders))) = ?",
-                params: unique.map(DBValue.text) + [.int(Int64(unique.count))]
-            )
+            let unique = Array(Set(arr)).sorted()
+            let expanded = unique.map { keywordTermAlternatives($0, includeLeaves: true) }
+            guard expanded.contains(where: { $0.count > 1 }) else {
+                let placeholders = Self.inPlaceholders(unique.count)
+                return (
+                    sql: "(SELECT COUNT(DISTINCT value) FROM json_each(pmc.keywords) WHERE value IN (\(placeholders))) = ?",
+                    params: unique.map(DBValue.text) + [.int(Int64(unique.count))]
+                )
+            }
+            // 有同义词时改「每个词各有一个等价命中」的 AND：等价词会让 distinct 计数
+            // 重复（两个词映射到同一路径时 count 不等），AND-of-EXISTS 语义更准。
+            var clauses: [String] = []
+            var params: [DBValue] = []
+            for alternatives in expanded {
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(Self.inPlaceholders(alternatives.count))))")
+                params.append(contentsOf: alternatives.map(DBValue.text))
+            }
+            return (sql: "(\(clauses.joined(separator: " AND ")))", params: params)
         case .exists:
             return (sql: "pmc.keywords IS NOT NULL AND pmc.keywords != '[]'", params: [])
         case .eq:
-            let sorted = arr.sorted()
-            let sortedJSON = try JSONSerialization.data(withJSONObject: sorted)
-            let jsonString = String(data: sortedJSON, encoding: .utf8) ?? "[]"
-            return (
-                sql: """
-                    (
-                      SELECT json_group_array(value ORDER BY value) FROM json_each(pmc.keywords)
-                    ) = (
-                      SELECT json_group_array(value ORDER BY value) FROM json_each(?)
-                    )
-                """,
-                params: [.text(jsonString)]
-            )
+            let terms = arr
+            let expanded = terms.map { keywordTermAlternatives($0, includeLeaves: true) }
+            guard expanded.contains(where: { $0.count > 1 }) else {
+                let sorted = terms.sorted()
+                let sortedJSON = try JSONSerialization.data(withJSONObject: sorted)
+                let jsonString = String(data: sortedJSON, encoding: .utf8) ?? "[]"
+                return (
+                    sql: """
+                        (
+                          SELECT json_group_array(value ORDER BY value) FROM json_each(pmc.keywords)
+                        ) = (
+                          SELECT json_group_array(value ORDER BY value) FROM json_each(?)
+                        )
+                    """,
+                    params: [.text(jsonString)]
+                )
+            }
+            // eq = 整组关键词相等；同义词是"等价替换"，整表比较无法表达，
+            // 命中同义词时退化为「每个查询词都有一个等价命中」（与 containsAll 同口径；
+            // 取舍已写入 40 册同义词章节与测试）。
+            var clauses: [String] = []
+            var params: [DBValue] = []
+            for alternatives in expanded {
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(Self.inPlaceholders(alternatives.count))))")
+                params.append(contentsOf: alternatives.map(DBValue.text))
+            }
+            return (sql: "(\(clauses.joined(separator: " AND ")))", params: params)
         default:
             return (sql: "1=1", params: [])
         }
@@ -829,44 +946,109 @@ public final class PhotoFilterQuery {
                 params
             )
         }
+        /// 路径的等价集合：规范路径 + 同义词命中的规范路径（整词映射）。
+        func alternatives(_ term: String) -> [String] {
+            var values = [term]
+            var seen = Set([term])
+            for synonymPath in keywordSynonymPaths(for: term) {
+                if seen.insert(synonymPath).inserted { values.append(synonymPath) }
+            }
+            return values
+        }
+        func inCondition(_ values: [String]) -> (condition: String, params: [DBValue]) {
+            ("pk.keyword_path IN (\(Self.inPlaceholders(values.count)))", values.map(DBValue.text))
+        }
         let values = value.arrayElements?.compactMap { $0.stringValue } ?? [raw]
         let normalizedValues = values.map { KeywordPath.parse($0)?.serialized ?? $0 }
         switch `operator` {
         case .eq:
-            return exists("pk.keyword_path = ?", [.text(path)])
+            let expanded = alternatives(path)
+            guard expanded.count > 1 else {
+                return exists("pk.keyword_path = ?", [.text(path)])
+            }
+            let (condition, params) = inCondition(expanded)
+            return exists(condition, params)
         case .neq:
+            let expanded = alternatives(path)
+            guard expanded.count > 1 else {
+                return (
+                    "NOT EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND pk.keyword_path = ?)",
+                    [.text(path)])
+            }
+            let (condition, params) = inCondition(expanded)
             return (
-                "NOT EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND pk.keyword_path = ?)",
-                [.text(path)])
+                "NOT EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND \(condition))",
+                params)
         case .startsWith:
-            return exists(
-                "pk.keyword_path = ? OR (pk.keyword_path >= ? AND pk.keyword_path < ?)",
-                [
-                    .text(path),
-                    .text(KeywordPathSQL.subtreeLowerBound(path)),
-                    .text(KeywordPathSQL.subtreeUpperBound(path)),
+            // 命中节点及其子孙；同义词等价节点同样展开子树（点 A 也看到 A|B）。
+            let expanded = alternatives(path).filter { KeywordPath($0) != nil }
+            let candidates = expanded.isEmpty ? [path] : expanded
+            if candidates.count == 1 {
+                return exists(
+                    "pk.keyword_path = ? OR (pk.keyword_path >= ? AND pk.keyword_path < ?)",
+                    [
+                        .text(path),
+                        .text(KeywordPathSQL.subtreeLowerBound(path)),
+                        .text(KeywordPathSQL.subtreeUpperBound(path)),
+                    ])
+            }
+            var clauses: [String] = []
+            var params: [DBValue] = []
+            for candidate in candidates {
+                clauses.append(
+                    "(pk.keyword_path = ? OR (pk.keyword_path >= ? AND pk.keyword_path < ?))")
+                params.append(contentsOf: [
+                    .text(candidate),
+                    .text(KeywordPathSQL.subtreeLowerBound(candidate)),
+                    .text(KeywordPathSQL.subtreeUpperBound(candidate)),
                 ])
+            }
+            return exists(clauses.joined(separator: " OR "), params)
         case .contains:
-            return exists(
-                "pk.keyword_path LIKE '%' || ? || '%' ESCAPE '\\'",
-                [.text(escapeLike(path))])
+            let expanded = alternatives(path)
+            guard expanded.count > 1 else {
+                return exists(
+                    "pk.keyword_path LIKE '%' || ? || '%' ESCAPE '\\'",
+                    [.text(escapeLike(path))])
+            }
+            // contains 是子串：同义词只做整词映射（等价词各自做子串匹配），
+            // 不做"输入子串 → 反查同义词"（边界见 keywordSynonymPaths 注释）。
+            let likes = expanded
+                .map { _ in "pk.keyword_path LIKE '%' || ? || '%' ESCAPE '\\'" }
+                .joined(separator: " OR ")
+            return exists(likes, expanded.map { .text(escapeLike($0)) })
         case .in, .containsAny:
             if normalizedValues.isEmpty { return (sql: "1=0", params: []) }
-            let unique = Array(Set(normalizedValues))
-            let placeholders = unique.map { _ in "?" }.joined(separator: ", ")
-            return exists(
-                "pk.keyword_path IN (\(placeholders))",
-                unique.sorted().map(DBValue.text))
+            var expanded: [String] = []
+            var seen = Set<String>()
+            for term in normalizedValues {
+                for candidate in alternatives(term) where seen.insert(candidate).inserted {
+                    expanded.append(candidate)
+                }
+            }
+            let (condition, params) = inCondition(expanded.sorted())
+            return exists(condition, params)
         case .containsAll:
             if normalizedValues.isEmpty { return (sql: "1=0", params: []) }
-            let unique = Array(Set(normalizedValues))
-            let placeholders = unique.map { _ in "?" }.joined(separator: ", ")
-            return (
-                """
-                (SELECT COUNT(DISTINCT pk.keyword_path) FROM photo_keywords pk
-                 WHERE pk.photo_id = p.id AND pk.keyword_path IN (\(placeholders))) = ?
-                """,
-                unique.sorted().map(DBValue.text) + [.int(Int64(unique.count))])
+            let unique = Array(Set(normalizedValues)).sorted()
+            guard unique.contains(where: { alternatives($0).count > 1 }) else {
+                let placeholders = Self.inPlaceholders(unique.count)
+                return (
+                    """
+                    (SELECT COUNT(DISTINCT pk.keyword_path) FROM photo_keywords pk
+                     WHERE pk.photo_id = p.id AND pk.keyword_path IN (\(placeholders))) = ?
+                    """,
+                    unique.map(DBValue.text) + [.int(Int64(unique.count))])
+            }
+            var clauses: [String] = []
+            var params: [DBValue] = []
+            for term in unique {
+                let (condition, itemParams) = inCondition(alternatives(term).sorted())
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND \(condition))")
+                params.append(contentsOf: itemParams)
+            }
+            return ("(\(clauses.joined(separator: " AND ")))", params)
         case .exists:
             return exists("1=1", [])
         case .gt, .lt, .gte, .lte, .between:

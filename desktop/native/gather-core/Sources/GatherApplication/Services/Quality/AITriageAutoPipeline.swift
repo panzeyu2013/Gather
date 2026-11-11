@@ -11,6 +11,11 @@
 // - 不新增 job 类型（schema CHECK 不允许），复用现有 quality.score；
 // - 失败/取消绝不反向影响导入（导入已成功，本流程只是增强）；
 // - 轮询与睡眠可注入 → 单测用假调度器驱动，不 sleep 真时间。
+//
+// Wave5 batch2（E1）：超时语义从「固定总时长 + 取消 job」改为「无进展才停止等待、
+// 不取消 job」——5000 张素材的 quality.score 永远超过 5 分钟；在目标素材量上旧实现
+// 会取消仍在正常推进的任务，而且用户毫无感知。索引等待放宽到 6× 预算，
+// 质量等待按 progress 续期（连续 maxPolls 次无进展才判定卡住）。
 import Foundation
 import GatherProtocol
 
@@ -82,9 +87,6 @@ public struct AITriageAutoPipeline: Sendable {
         /// triage_enabled（E4）：关闭时整条自动初审（含 quality.score 入队）直接 skipped，
         /// 不做无用的完整质量/模型分析。
         public var triageEnabled: @Sendable () -> Bool
-        /// 超时后请求取消 quality.score job（Wave4b：停止等待但 job 还在后台解码 → 明确取消）。
-        /// 取消失败不影响结果（只记日志）。
-        public var cancelQualityJob: @Sendable (String) async throws -> Void
         /// 结构化日志（宿主传 GatherLogger；测试注入记录器）。
         public var log: @Sendable (String) -> Void
         /// 轮询间隔（测试注入 no-op）。
@@ -97,7 +99,6 @@ public struct AITriageAutoPipeline: Sendable {
             applyTriage: @escaping @Sendable (TriageApplyInput) async throws -> TriageApplyResult,
             autoApplyEnabled: @escaping @Sendable () -> Bool,
             triageEnabled: @escaping @Sendable () -> Bool,
-            cancelQualityJob: @escaping @Sendable (String) async throws -> Void,
             log: @escaping @Sendable (String) -> Void,
             poll: @escaping @Sendable () async throws -> Void
         ) {
@@ -107,14 +108,16 @@ public struct AITriageAutoPipeline: Sendable {
             self.applyTriage = applyTriage
             self.autoApplyEnabled = autoApplyEnabled
             self.triageEnabled = triageEnabled
-            self.cancelQualityJob = cancelQualityJob
             self.log = log
             self.poll = poll
         }
     }
 
     private let deps: Dependencies
-    /// 轮询上限（默认 600 × 0.5s = 5 分钟；索引/质量都能在 job 里续跑，超时只是停止等待）。
+    /// 轮询预算（Wave5 batch2）：
+    /// - 质量等待：**连续 maxPolls 次无进展**才停止等待（默认 600 × 0.5s = 5 分钟无进展）；
+    /// - 索引等待：扫描进度只在收尾刷新，预算放宽到 6×（默认约 30 分钟）；
+    /// - 超时只停止等待，不取消 job（job 继续后台完成，建议可下次补生成）。
     private let maxPolls: Int
 
     public init(deps: Dependencies, maxPolls: Int = 600) {
@@ -164,13 +167,11 @@ public struct AITriageAutoPipeline: Sendable {
                     stage: .stopped, qualityJobId: qualityJobId,
                     reason: AITriageStopReason.qualityWaitTimeout)
             case .failed(let reason):
-                // Wave4b：超时/失败时显式请求取消 job（否则它会继续在后台解码，
-                // 用户既看不到结果也收不回 CPU）；取消失败只记日志。
-                if reason == AITriageStopReason.qualityTimeout {
-                    await cancelQualityJobBestEffort(qualityJobId, sessionId: sessionId)
-                }
+                // Wave5 batch2：超时只停止等待，**不取消** quality job —— 5000 张素材上
+                // 固定 5 分钟总上限会把仍在正常推进的任务取消掉；job 留在后台跑完，
+                // 建议可下次由导入/页面事件补生成（宿主状态卡显示"未完成"）。
                 deps.log("ai.auto-triage session=\(sessionId) stage=stopped"
-                    + " quality=\(qualityJobId) reason=\(reason)")
+                    + " quality=\(qualityJobId) reason=\(reason) quality-job=left-running")
                 return AITriageAutoOutcome(
                     stage: .stopped, qualityJobId: qualityJobId, reason: reason)
             }
@@ -278,8 +279,11 @@ public struct AITriageAutoPipeline: Sendable {
 
     // MARK: - 内部轮询
 
+    /// 索引等待（Wave5 batch2）：扫描进度只在收尾刷新，progress 无法用于续期，
+    /// 因此把预算放宽到 6×（默认约 30 分钟）；到点只停止等待，不取消扫描 job。
     private func waitForScan(sessionId: String) async throws -> ScanState? {
-        for _ in 0..<maxPolls {
+        let limit = max(1, maxPolls) * 6
+        for _ in 0..<limit {
             try Task.checkCancellation()
             let state = Self.scanState(try deps.listJobs(), sessionId: sessionId)
             if state != .waiting { return state }
@@ -302,23 +306,38 @@ public struct AITriageAutoPipeline: Sendable {
         }
     }
 
-    /// 超时后取消 quality.score（best-effort：失败只记日志，不改变停止结果）。
-    private func cancelQualityJobBestEffort(_ jobId: String, sessionId: String) async {
-        do {
-            try await deps.cancelQualityJob(jobId)
-            deps.log("ai.auto-triage session=\(sessionId) quality=\(jobId) cancel=requested")
-        } catch {
-            deps.log("ai.auto-triage session=\(sessionId) quality=\(jobId) cancel=failed error=\(error)")
-        }
-    }
-
+    /// 质量等待（Wave5 batch2）：按**进展**续期而非总时长 —— job 的
+    /// progress（current/total/message）一变就重置"无进展"计数；progressTotal
+    /// 即该批张数（QualityService/ModelReview 逐批上报），因此 5000 张只会延长
+    /// 等待、不会被 5 分钟总上限误杀；只有连续 maxPolls 次无进展（默认 5 分钟）
+    /// 才停止等待。hardLimit 仅防失控（默认 maxPolls × 24 ≈ 2 小时）。
     private func waitForQuality(sessionId: String, jobId: String) async throws -> QualityState {
-        for _ in 0..<maxPolls {
+        let hardLimit = max(1, maxPolls) * 24
+        var idlePolls = 0
+        var lastProgress = ""
+        for _ in 0..<hardLimit {
             try Task.checkCancellation()
-            let state = Self.qualityState(try deps.listJobs(), sessionId: sessionId, jobId: jobId)
+            let jobs = try deps.listJobs()
+            let state = Self.qualityState(jobs, sessionId: sessionId, jobId: jobId)
             if state != .waiting { return state }
+            let progress = Self.progressSignature(jobs.first { $0.id == jobId })
+            if progress == lastProgress {
+                idlePolls += 1
+            } else {
+                lastProgress = progress
+                idlePolls = 0
+            }
+            if idlePolls >= maxPolls {
+                return .failed(AITriageStopReason.qualityTimeout)
+            }
             try await deps.poll()
         }
         return .failed(AITriageStopReason.qualityTimeout)
+    }
+
+    /// job 进展签名（只含进度，不含 heartbeat/updatedAt —— 心跳不应让卡死任务"续命"）。
+    static func progressSignature(_ job: AnalysisJobData?) -> String {
+        guard let job else { return "missing" }
+        return "\(job.progressCurrent)/\(job.progressTotal)/\(job.progressMessage)"
     }
 }

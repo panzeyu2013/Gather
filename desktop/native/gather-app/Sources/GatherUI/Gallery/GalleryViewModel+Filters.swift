@@ -80,6 +80,9 @@ extension GalleryViewModel {
         let fields = [
             "filename", "title", "description", "headline", "creator",
             "copyright", "credit", "source", "usage_terms",
+            // Wave5（batch2）：Instructions / Event Id / release id（数组字段走
+            // json_each 的 contains 语义，与标量字段同一条规则形态）。
+            "instructions", "event_identifier", "model_release_id", "property_release_id",
             "city", "state", "country", "event", "sublocation", "person_in_image",
             FilterFields.keywords, "keyword_path",
         ]
@@ -296,6 +299,10 @@ extension GalleryViewModel {
         "credit",
         "source",
         "usage_terms",
+        "instructions",
+        "event_identifier",
+        "model_release_id",
+        "property_release_id",
         "city",
         "state",
         "country",

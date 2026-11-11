@@ -118,6 +118,10 @@ public enum MetadataAttributes {
         .init(field: .captionWriter, xmpKeys: ["CaptionWriter"], iimKeys: ["Writer/Editor"]),
         .init(field: .jobIdentifier, xmpKeys: ["TransmissionReference"],
               iimKeys: ["OriginalTransmissionReference"]),
+        // Wave5（batch2）：IPTC Core Instructions。IIM 2:40 存在→带 IIM 回退；
+        // ImageIO 读回键名实测为 "SpecialInstructions"（见 MetadataAttributesTests）。
+        .init(field: .instructions, xmpKeys: ["Instructions"],
+              iimKeys: ["SpecialInstructions"]),
         // 实测：ImageIO 把 UsageTerms 写在 XMP，IIM 无对应 dataset（2:130 读作 ImageType），
         // 因此不做 IIM 回退——否则清空 XMP 后旧 IIM 会把字段复活。
         .init(field: .usageTerms, xmpKeys: ["UsageTerms"]),
@@ -139,12 +143,20 @@ public enum MetadataAttributes {
         // IIM 2:202（实测 ImageIO 读回键名 Scene）：写侧已映射，清空时删 dataset。
         .init(field: .scene, xmpKeys: ["Scene"], iimKeys: ["Scene"], isList: true),
         .init(field: .event, xmpKeys: ["Event"]),
+        // Wave5（batch2）：Iptc4xmpExt:EventId（string + multi → Bag）。只在 XMP，IIM 无对应。
+        .init(field: .eventIdentifier, xmpKeys: ["EventId"], isList: true),
         .init(field: .personInImage, xmpKeys: ["PersonInImage"], isList: true),
         .init(field: .organisationInImage, xmpKeys: ["OrganisationInImageName"], isList: true),
         .init(field: .worldRegion, xmpKeys: ["WorldRegion"]),
         .init(field: .provinceState, xmpKeys: ["ProvinceState"]),
         .init(field: .modelReleaseStatus, xmpKeys: ["ModelReleaseStatus"]),
+        // Wave5（batch2）：plus:ModelReleaseID（string + multi → Bag）。
+        // 实测 CGImageMetadataCopyTags 会把 plus:* 标签按本地名透出（prefix=plus），
+        // 所以默认 auto 的 JPEG 内嵌写回校验能读回；IIM 无对应。
+        .init(field: .modelReleaseID, xmpKeys: ["ModelReleaseID"], isList: true),
         .init(field: .propertyReleaseStatus, xmpKeys: ["PropertyReleaseStatus"]),
+        // Wave5（batch2）：plus:PropertyReleaseID（string + multi → Bag）。
+        .init(field: .propertyReleaseID, xmpKeys: ["PropertyReleaseID"], isList: true),
         .init(field: .digitalSourceType, xmpKeys: ["DigitalSourceType"]),
         .init(field: .additionalModelInfo, xmpKeys: ["AddlModelInfo"]),
     ]

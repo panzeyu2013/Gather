@@ -35,3 +35,35 @@
 3. 检查器「保留/淘汰/星级」按钮仍走批量（评审允许的批量口径），如需同口径收窄另派。
 4. 交付发布记录/历史/HEAD 差分/独立发布入口留待 Batch 2+。
 5. S3 预签名 / WebDAV 静态入口 / browse / deselect 均为静态与单测级，真机矩阵（96 号 C1-x）仍需人工执行。
+
+## Batch 2（task-11 ~ task-14）
+
+| task | 域 | owner | 结论 |
+| --- | --- | --- | --- |
+| task-11 | AI 初审端到端（E1/E2） | ai-similarity | Host 侧 AITriageAutoScheduler 统一 5 个导入入口（菜单/Finder、C1、Dashboard 新建、加照片、Shortcuts）；索引/质量等待按 progress 续期，超时只停止等待不取消 job；控制中心状态行可见；缺人脸观测时入队 faceAnalyze 且不阻塞 |
+| task-12 | 元数据：IPTC 字段 + 受控值 + 同义词检索 | metadata-search | 新增 4 个交付字段（instructions/eventIdentifier/modelReleaseID/propertyReleaseID）与 4 张受控词表 + Picker/校验；keyword/keyword_path 过滤接整词同义词展开 |
+| task-13 | 浏览状态恢复 | culling-viewer | 新增 CullingViewStateStore：按 session 存/恢复 scope/filters/sort/layout/density/当前照片/参考槽/胶片条/检查器；0.5s 节流 + 离开 flush；定位不到回退首张 |
+| task-14 | 元数据收口 | metadata-search | embeddedDescriptiveFields 补 4 字段（JPEG 内嵌写后校验可读）；IIM 2:40 Special Instructions；FilterRuleEditor/搜索串收录 4 个新字段 |
+
+### 关键设计取舍
+
+- AI 超时：job 不取消，继续后台跑；状态行显示「质量分析仍在后台继续」；索引等待 6× 预算（约 30 分钟）、质量按 progress 续期（hardLimit 约 2h）。
+- 人脸前置：只做「缺观测则入队 face.analyze，不等待」；similarity/duplicate 自动分组留后续批。
+- 元数据字段：表驱动唯一真相源；imageCreator 因 PLUS 结构为 struct/multi 未做；release status 的 PLUS CV 站点损坏，本轮只做 ID 文本不做状态词表校验。
+- 受控值：只在 UI 层校验 + 写盘归一化（countryCode 大写）；批量面板/模板仍自由文本（下一批）。
+- 浏览状态：每 session 的查看状态存 UserDefaults（非 settings 用户偏好）；多选/待定队列/决策目标语义不持久化。
+
+### 验证（Lead 执行，2026-11-11）
+
+- 构建：gather-core / gather-app swift build --build-tests --disable-sandbox 均通过。
+- 测试：core 1902 tests / 280 suites + 串行 25 / 4 全绿；app 1098 tests / 156 suites 全绿。
+- 门禁 14 项全绿（含 warnings，CLANG_MODULE_CACHE_PATH 指定后）。
+- 基线记账：protocol-surface public_types 490→491（IPTCControlledVocabulary）、public_declarations 2929→2948（+19：受控值类型/4 字段/新描述符）、protocol_lines 15818→16154。
+
+### 未闭环/下一批
+
+1. 摄取（IngestSheet→ingest）未接 AI 初审：WorkflowRegistry 不在 task 作用域，留 Batch 3。
+2. XMPPacketReader 的 IIM-only fast-path 未补 2:40，外部只写 IIM 的老文件在 fast-path 读不到 instructions（XMP 通道正常）。
+3. 受控值只在单张编辑器生效；批量面板/模板仍自由文本。
+4. 存量 qname 与 IPTC 2025.1 不一致（Iptc4xmpExt vs plus:ModelReleaseStatus）未动，需单独立项做兼容迁移。
+5. 浏览状态定位预算 2 万张，超出按找不到回退首张；参考对比模式不持久化。

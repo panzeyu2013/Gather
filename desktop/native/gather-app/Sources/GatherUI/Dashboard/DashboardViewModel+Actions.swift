@@ -5,6 +5,22 @@
 import Foundation
 import GatherProtocol
 
+/// Wave5 batch2（E1）：Dashboard「新建工作区」→ Host 自动初审的最小接缝。
+///
+/// 为什么是桥而不是直接调用：GatherUI 不能 import GatherHost（check-layering），
+/// 宿主在启动装配时注入处理闭包、停机时清空；与 `C1PendingJudgementStore.onRetry`
+/// （Host 注入 UI）是同一模式的反向。桥只传 sessionId，不参与导入结果。
+@MainActor
+package enum AITriageUIBridge {
+    /// nil = 未接线（单测/预览/停机后）：调用即 no-op，不影响建库。
+    package static var onSessionCreated: (@MainActor (String) -> Void)?
+
+    package static func notifySessionCreated(_ sessionId: String) {
+        guard !sessionId.isEmpty else { return }
+        onSessionCreated?(sessionId)
+    }
+}
+
 extension DashboardViewModel {
     // MARK: 动作
 
@@ -24,6 +40,10 @@ extension DashboardViewModel {
             let session = try await provider.createSession(
                 name: resolvedName, source: "local", sourcePath: sourcePath)
             setImportNotice(session: session, with: l10n)
+            // Wave5 batch2：新建工作区也算"导入入口"——此前只有菜单/Finder/C1 文件
+            // 导入会触发自动初审，Dashboard 建库这条主路径一直漏掉。钩子只调度、
+            // 不等待，失败由 Host 侧收敛（不影响建库结果）。
+            AITriageUIBridge.notifySessionCreated(session.id)
             lastFullRefreshAt = .distantPast
             await refreshAll()
             return session
@@ -85,6 +105,8 @@ extension DashboardViewModel {
                 added: outcome.added,
                 with: l10n
             )
+            // Wave5 batch2：C1 新建工作区分支同样接自动初审（与本地目录一致）。
+            AITriageUIBridge.notifySessionCreated(outcome.session.id)
             lastFullRefreshAt = .distantPast
             await refreshAll()
             return outcome.session
