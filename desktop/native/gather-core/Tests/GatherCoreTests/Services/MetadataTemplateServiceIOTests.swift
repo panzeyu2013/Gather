@@ -353,4 +353,101 @@ struct MetadataTemplateServiceIOTests {
         #expect(after?.title == "模板标题")
         #expect(after?.city == "外部改过", "keepExternal 绝不覆盖外部改动")
     }
+
+    // MARK: - Wave2 收尾 task-22：模板变量展开（预览与写盘同源）
+
+    @Test("模板变量：{client}/{name}/{year}/{seq:2} 按同一引擎展开后写盘")
+    func templateVariablesExpandBeforeWrite() async throws {
+        let fx = try makeFixture()
+        defer { fx.cleanup() }
+        let cache = MetadataCacheRepo(connection: fx.db)
+        try cache.upsert(photoId: fx.photoId, sessionId: fx.sessionId, data: MetadataCacheInput(
+            dateTaken: "2026:05:01 10:00:00",
+            cameraModel: "X-T5",
+            descriptive: DescriptiveMetadata(title: "旧标题")))
+        fx.xmp.seed(fx.photoPath, MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(title: "旧标题")))
+
+        _ = try fx.templates.save(MetadataTemplate(
+            id: "t-vars", name: "变量模板",
+            fields: DescriptiveMetadata(
+                caption: "{client} - {name} ({year})",
+                headline: "No.{seq:2}"),
+            createdAt: "", updatedAt: "", client: "ACME"), now: "2026-10-26T00:00:00Z")
+
+        let preview = try await fx.service.preview(
+            templateId: "t-vars", photoIds: [fx.photoId])
+        #expect(!preview.hasUnresolvedVariables)
+        #expect(preview.photos.first?.writes.contains(DescriptiveField.caption.rawValue) == true)
+        #expect(preview.photos.first?.writes.contains(DescriptiveField.headline.rawValue) == true)
+
+        let applied = try await fx.service.apply(
+            templateId: "t-vars", photoIds: [fx.photoId], now: "2026-10-26T00:00:00Z")
+        #expect(applied.failed.isEmpty, "\(applied.failed)")
+        #expect(applied.written == [fx.photoId])
+        let after = fx.xmp.attributes(fx.photoPath).descriptive
+        #expect(after?.caption == "ACME - photo (2026)")
+        #expect(after?.headline == "No.01")
+        #expect(after?.title == "旧标题", "模板未设置的字段不触碰")
+    }
+
+    @Test("未解析变量：预览逐字段列出，apply 拒绝写入且不产生批次")
+    func unresolvedVariableRejectsWrite() async throws {
+        let fx = try makeFixture()
+        defer { fx.cleanup() }
+        let cache = MetadataCacheRepo(connection: fx.db)
+        try cache.upsert(photoId: fx.photoId, sessionId: fx.sessionId, data: MetadataCacheInput(
+            descriptive: DescriptiveMetadata(title: "旧标题")))
+        fx.xmp.seed(fx.photoPath, MetadataWriteAttributes(
+            descriptive: DescriptiveMetadata(title: "旧标题")))
+
+        // 模板没有 client，但 caption 使用 {client}：未解析。
+        _ = try fx.templates.save(MetadataTemplate(
+            id: "t-unresolved", name: "缺客户",
+            fields: DescriptiveMetadata(caption: "{client}", headline: "会写但不该写"),
+            createdAt: "", updatedAt: ""), now: "2026-10-26T00:00:00Z")
+
+        let preview = try await fx.service.preview(
+            templateId: "t-unresolved", photoIds: [fx.photoId])
+        #expect(preview.hasUnresolvedVariables)
+        let unresolved = try #require(preview.photos.first?.unresolved)
+        #expect(unresolved.contains {
+            $0.field == DescriptiveField.caption.rawValue && $0.variable == "{client}"
+        })
+        #expect(preview.photos.first?.writes.contains(DescriptiveField.caption.rawValue) == false)
+
+        let applied = try await fx.service.apply(
+            templateId: "t-unresolved", photoIds: [fx.photoId],
+            now: "2026-10-26T00:00:00Z")
+        #expect(applied.written.isEmpty)
+        #expect(applied.failed.count == 1)
+        #expect(applied.failed.first?.message.hasPrefix(
+            MetadataTemplateVariables.unresolvedMessagePrefix) == true)
+        #expect(fx.xmp.writeCount == 0, "拒绝写入时不得触碰 XMP")
+        #expect(fx.xmp.attributes(fx.photoPath).descriptive?.headline == nil)
+    }
+
+    @Test("旧模板正文里的未知花括号按字面保留（不误判为变量）")
+    func unknownBraceTokensStayLiteral() {
+        var fields = DescriptiveMetadata()
+        fields.caption = "{note} {client}"
+        let expansion = MetadataTemplateVariables.expand(
+            fields,
+            scope: MetadataVariableScope(client: "ACME"),
+            photo: MetadataVariablePhoto(filename: "a.jpg"),
+            sequence: 1)
+        #expect(expansion.isResolved)
+        #expect(expansion.fields.caption == "{note} ACME")
+    }
+
+    @Test("旧模板 JSON 缺 client：解码为 nil，行为不变")
+    func legacyTemplateJSONWithoutClientDecodes() throws {
+        let json = """
+            {"id":"t-old","name":"旧模板","fields":{"title":"A"},"createdAt":"","updatedAt":""}
+            """
+        let template = try JSONDecoder().decode(
+            MetadataTemplate.self, from: Data(json.utf8))
+        #expect(template.client == nil)
+        #expect(template.fields.title == "A")
+    }
 }

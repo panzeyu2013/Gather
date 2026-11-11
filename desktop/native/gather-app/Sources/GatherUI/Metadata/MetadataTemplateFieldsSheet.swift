@@ -164,7 +164,8 @@ struct MetadataTemplateFieldsSheet: View {
         do {
             _ = try await viewModel.metadataAPI.saveTemplate(
                 try MetadataTemplateSaveInput(
-                    id: template.id, name: template.name, fields: edited))
+                    id: template.id, name: template.name, fields: edited,
+                    client: template.client))
             dismiss()
         } catch {
             errorText = CommandErrorText.resolve(CommandError(error), with: l10n)

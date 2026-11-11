@@ -345,7 +345,7 @@ public final class LiveMetadataAPI: MetadataAPI {
             let id = input.id ?? UUID().uuidString
             let saved = try templateStore.save(
                 MetadataTemplate(id: id, name: input.name, fields: input.fields,
-                                 createdAt: "", updatedAt: ""),
+                                 createdAt: "", updatedAt: "", client: input.client),
                 now: nowISOString()
             )
             return summary(saved)
@@ -369,6 +369,9 @@ public final class LiveMetadataAPI: MetadataAPI {
         let templateId: String
         let name: String
         let fields: DescriptiveMetadata
+        /// Wave2 收尾 task-22：client 参与展开（{client}），必须进预览身份，
+        /// 否则改客户名后旧预览令牌仍通过校验。
+        let client: String?
         let photoIds: [String]
         let policy: MetadataConflictPolicy
     }
@@ -384,6 +387,7 @@ public final class LiveMetadataAPI: MetadataAPI {
             templateId: template.id,
             name: template.name,
             fields: template.fields,
+            client: template.client,
             photoIds: photoIds.sorted(),
             policy: policy)
         let encoder = JSONEncoder()
@@ -402,35 +406,15 @@ public final class LiveMetadataAPI: MetadataAPI {
             guard let template = templateStore.get(id: input.templateId) else {
                 throw MetadataTemplateServiceError.templateNotFound(input.templateId)
             }
-            var photos: [(photoId: String, current: DescriptiveMetadata, disk: DescriptiveMetadata?)] = []
-            for photoId in input.photoIds {
-                let detail = try metadataService.photoDetail(photoId: photoId)
-                let disk = (try? await metadataService.diskAttributes(
-                    photoPath: detail.filepath))?.descriptive
-                photos.append((photoId, detail.descriptive, disk))
-            }
-            let preview = MetadataTemplatePreviewBuilder.build(
-                template: template, photos: photos, policy: input.policy
-            )
-            let photoPreviews = preview.impacts.map { impact in
-                MetadataPhotoPreview(
-                    photoId: impact.photoId,
-                    writes: impact.fields.filter { $0.action == .write }.map { $0.field.rawValue },
-                    clears: impact.fields.filter { $0.action == .clear }.map { $0.field.rawValue },
-                    conflicts: impact.fields.filter { $0.action == .conflict }.map { $0.field.rawValue }
-                )
-            }
-            return MetadataTemplatePreviewResult(
-                templateId: preview.templateId,
-                templateName: preview.templateName,
-                totalPhotos: preview.totalPhotos,
-                changedPhotos: preview.changedPhotos,
-                changedFields: preview.changedFields,
-                conflictFields: preview.conflictFields,
-                photos: photoPreviews,
-                previewToken: Self.previewToken(
-                    template: template, photoIds: input.photoIds, policy: input.policy)
-            )
+            // Wave2 收尾 task-22：变量展开/预检明细由 Application 服务统一计算，
+            // host 只补 previewToken（与 apply 用同一套 planner/engine，保证同源）。
+            var result = try await templateService.preview(
+                templateId: input.templateId,
+                photoIds: input.photoIds,
+                policy: input.policy)
+            result.previewToken = Self.previewToken(
+                template: template, photoIds: input.photoIds, policy: input.policy)
+            return result
         }
     }
 
@@ -534,7 +518,8 @@ public final class LiveMetadataAPI: MetadataAPI {
             name: template.name,
             fieldCount: template.fields.nonNilFieldCount,
             createdAt: template.createdAt,
-            updatedAt: template.updatedAt
+            updatedAt: template.updatedAt,
+            client: template.client
         )
     }
 

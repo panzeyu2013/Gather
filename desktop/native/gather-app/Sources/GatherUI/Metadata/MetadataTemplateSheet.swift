@@ -8,6 +8,14 @@
 import SwiftUI
 import GatherProtocol
 
+/// 未解析变量的一行（逐字段展示；id 仅用于 ForEach 稳定身份）。
+private struct UnresolvedVariableRow: Identifiable {
+    let id: String
+    let photoId: String
+    let field: String
+    let variable: String
+}
+
 struct MetadataTemplateSheet: View {
     let viewModel: CullingViewModel
 
@@ -17,6 +25,8 @@ struct MetadataTemplateSheet: View {
 
     @State private var templates: [MetadataTemplateSummary] = []
     @State private var selectedId: String?
+    /// Wave2 收尾 task-22：模板级客户名（{client} 变量作用域；空 = 未设置）。
+    @State private var clientText = ""
     @State private var name = ""
     @State private var policy: MetadataConflictPolicy = .keepExternal
     @State private var preview: MetadataTemplatePreviewResult?
@@ -79,9 +89,22 @@ struct MetadataTemplateSheet: View {
                     .gatherButton(.secondary)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isBusy)
             }
+
+            // Wave2 收尾 task-22：模板级客户名（{client}）。改完点“保存模板变量”写入
+            // 当前模板；预览会按新 client 重新展开（预览令牌包含 client）。
+            HStack {
+                TextField(l10n("客户名（模板变量 {client}）"), text: $clientText)
+                    .labelsHidden()
+                Button(l10n("保存模板变量")) { Task { await saveTemplateVariables() } }
+                    .gatherButton(.secondary)
+                    .disabled(selectedId == nil || isBusy)
+            }
+            Text(l10n("留空 = 未设置：模板里的 {client} 会被判为未解析，预览会逐字段列出并禁止应用。"))
+                .font(GatherFont.label)
+                .foregroundStyle(.secondary)
             Text(l10n.format("当前照片已填写 %lld 个描述性字段",
                              viewModel.metadataDetail?.filledDescriptiveCount ?? 0))
-                .font(.caption)
+                .font(GatherFont.label)
                 .foregroundStyle(.secondary)
 
             Picker(l10n("冲突策略"), selection: $policy) {
@@ -109,11 +132,23 @@ struct MetadataTemplateSheet: View {
                         Text(policy == .keepExternal
                              ? l10n("冲突字段保留外部改动，不会覆盖。")
                              : l10n("冲突字段将按“覆盖外部改动”写入。"))
-                            .font(.caption)
+                            .font(GatherFont.label)
                             .foregroundStyle(.secondary)
                     }
+                    if preview.hasUnresolvedVariables {
+                        Text(l10n.format("%lld 处模板变量未解析，禁止应用：",
+                                         preview.unresolvedVariableCount))
+                            .font(GatherFont.label)
+                            .foregroundStyle(GatherTheme.warningText)
+                        ForEach(Array(unresolvedRows.prefix(8))) { row in
+                            Text(unresolvedLine(photoId: row.photoId, field: row.field,
+                                                variable: row.variable))
+                                .font(GatherFont.label)
+                                .foregroundStyle(GatherTheme.warningText)
+                        }
+                    }
                 }
-                .font(.callout)
+                .font(GatherFont.secondary)
             }
 
             if let outcome {
@@ -132,7 +167,8 @@ struct MetadataTemplateSheet: View {
                     .disabled(selectedTemplate == nil || targetPhotoIds.isEmpty || isBusy)
                 Button(l10n("应用到选中照片")) { Task { await runApply() } }
                     .gatherButton(.primary)
-                    .disabled(preview == nil || (preview?.changedFields ?? 0) == 0 || isBusy)
+                    .disabled(preview == nil || (preview?.changedFields ?? 0) == 0
+                              || (preview?.hasUnresolvedVariables ?? false) || isBusy)
                 Spacer()
                 if let appliedBatchId {
                     Button(l10n("撤销此次套用")) { showUndoConfirm = true }
@@ -191,8 +227,14 @@ struct MetadataTemplateSheet: View {
             outcome = nil
             // 旧批次的失败红字不能常驻：换模板后它描述的是另一件事。
             errorText = nil
+            // 模板级 client 随模板切换（旧模板没有 client 字段 = ""）。
+            clientText = selectedTemplate?.client ?? ""
         }
         .onChange(of: policy) {
+            preview = nil
+        }
+        // client 改了但没保存 = 模板未变，旧预览不能代表新输入；清了让用户重跑预览。
+        .onChange(of: clientText) {
             preview = nil
         }
         // 目标集变化后旧预览不再对应当前照片（确认计数会骗人）。
@@ -212,6 +254,7 @@ struct MetadataTemplateSheet: View {
             // 会让保存把 A 的字段写进 B（静默覆盖模板体）。
             guard selectedId == id else { return }
             editorFields = fields
+            clientText = selectedTemplate?.client ?? ""
         } catch {
             guard selectedId == id else { return }
             editorFields = nil
@@ -222,6 +265,62 @@ struct MetadataTemplateSheet: View {
     private func reload() async {
         do {
             templates = try await viewModel.metadataAPI.templates()
+        } catch {
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+        }
+    }
+
+    /// 模板级 client 的归一化值（空白 = nil）。
+    private var clientValue: String? {
+        let trimmed = clientText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// 未解析变量行（逐字段；照片可能不在当前页，名字回退到 photoId）。
+    private var unresolvedRows: [UnresolvedVariableRow] {
+        guard let preview else { return [] }
+        return preview.photos.flatMap { photo in
+            photo.unresolved.map { item in
+                UnresolvedVariableRow(
+                    id: photo.photoId + "|" + item.field + "|" + item.variable,
+                    photoId: photo.photoId,
+                    field: item.field,
+                    variable: item.variable)
+            }
+        }
+    }
+
+    /// 未解析变量的一行文案（照片名 + 字段标题 + 占位符）。
+    private func unresolvedLine(photoId: String, field: String, variable: String) -> String {
+        let fieldTitle: String
+        if let field = DescriptiveField(rawValue: field) {
+            fieldTitle = MetadataDisplay.fieldTitle(field)
+        } else {
+            fieldTitle = field
+        }
+        let filename = viewModel.page?.assets.first { $0.photo.id == photoId }?.photo.filename
+            ?? photoId
+        return l10n.format("%@ · %@ · 缺少变量 %@", filename, fieldTitle, variable)
+    }
+
+    /// 把 client 写回当前模板（字段体不变；旧 JSON 兼容由 Optional 解码保证）。
+    ///
+    /// 模板定义变更不是照片元数据：不发域事件（见 deleteSelected 同口径）。
+    // DOMAIN-EVENT: none — 模板定义/客户名不是照片元数据，不改任何照片的 XMP
+    private func saveTemplateVariables() async {
+        guard let summary = selectedTemplate else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let fields = try await viewModel.metadataAPI.templateFields(id: summary.id)
+            _ = try await viewModel.metadataAPI.saveTemplate(
+                MetadataTemplateSaveInput(
+                    id: summary.id, name: summary.name, fields: fields,
+                    client: clientValue))
+            await reload()
+            preview = nil
+            outcome = nil
+            errorText = nil
         } catch {
             errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
@@ -247,10 +346,12 @@ struct MetadataTemplateSheet: View {
                 return
             }
             let summary = try await viewModel.metadataAPI.saveTemplate(
-                MetadataTemplateSaveInput(id: nil, name: name, fields: fields))
+                MetadataTemplateSaveInput(
+                    id: nil, name: name, fields: fields, client: clientValue))
             name = ""
             await reload()
             selectedId = summary.id
+            clientText = summary.client ?? ""
             errorText = nil
         } catch {
             errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
@@ -291,6 +392,12 @@ struct MetadataTemplateSheet: View {
 
     private func runApply() async {
         guard let id = selectedId else { return }
+        // 服务端会拒绝（二次校验），这里先拦一层：预览已逐字段列出未解析变量。
+        if preview?.hasUnresolvedVariables == true {
+            errorText = l10n.format("%lld 处模板变量未解析，禁止应用：",
+                                    preview?.unresolvedVariableCount ?? 0)
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         do {

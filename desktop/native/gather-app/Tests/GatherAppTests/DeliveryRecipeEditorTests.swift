@@ -74,6 +74,9 @@ struct DeliveryRecipeEditorTests {
         #expect(decoded.dpi == nil)
         #expect(decoded.sharpening == nil)
         #expect(decoded.watermark == nil)
+        // Wave2 收尾：旧 JSON 没有迁移标记键 → nil（由 load 时的迁移补上）。
+        #expect(decoded.artifactsMigrationVersion == nil)
+        #expect(decoded.artifacts == [.photos])
     }
 
     // MARK: - 编辑与格式切换
@@ -101,9 +104,12 @@ struct DeliveryRecipeEditorTests {
                 type: .image, content: "/tmp/logo.png", position: .bottomLeft,
                 opacity: 0.6, imageScale: 0.2, imageMargin: 0.02)
         }
+        // task-23 起 load 会为老配方落一次迁移写；这里要等的是「编辑之后」的那次写，
+        // 否则可能拿到迁移快照（旧值）。
+        let writesBeforeEdit = settings.setInputs.count
         viewModel.persistDeliveryRecipes()
         let wrote = await waitUntilAsync {
-            settings.setInputs.contains { $0.key.value == "output.recipes" }
+            settings.setInputs.count > writesBeforeEdit
         }
         #expect(wrote)
         let last = try #require(
@@ -402,5 +408,129 @@ struct DeliveryRecipeEditorTests {
         viewModel.updateDeliveryWatermark(id: id) { $0.imageScale = 2 }
         #expect(viewModel.deliveryRecipeIssues(
             viewModel.deliveryRecipes[0]).contains("水印宽度比例必须在 2% 到 100% 之间"))
+    }
+
+    // MARK: - Wave2 收尾：旧配方产物清单一次性迁移（task-23）
+
+    @Test("旧配方迁移：Wave1 默认 Web 形态补 gallery；自定义 artifacts 只写 marker")
+    func legacyRecipesMigrateConservatively() async throws {
+        let webDefault = OutputRecipe(
+            id: "web1", name: "Web 2048", format: .jpeg, quality: 82,
+            maxDimension: 2048, artifacts: [.photos, .contactSheet])
+        let custom = OutputRecipe(id: "custom1", name: "客户交付", artifacts: [.photos])
+        let settings = B8SettingsAPIStub(
+            values: ["output.recipes": try recipeJSON([webDefault, custom])])
+        let viewModel = ExportViewModel(
+            sessionId: "s1", export: B6bExportAPIStub(),
+            session: B8SessionAPIStub(), settings: settings)
+        await viewModel.loadDeliveryRecipes()
+
+        let recipes = viewModel.deliveryRecipes
+        #expect(recipes[0].artifacts == [.photos, .contactSheet, .gallery])
+        #expect(recipes[0].artifactsMigrationVersion == 1)
+        // 规则 3：无法精确判定为历史默认的形态一律不补，只写 marker。
+        #expect(recipes[1].artifacts == [.photos])
+        #expect(recipes[1].artifactsMigrationVersion == 1)
+
+        // load 内部 await 到迁移写完，这里直接读即可。
+        let persisted = try #require(settings.values["output.recipes"],
+                                    "迁移必须落盘，否则下次启动会重跑")
+        let decoded = try JSONDecoder().decode(
+            [OutputRecipe].self, from: Data(persisted.utf8))
+        #expect(decoded[0].artifacts.contains(.gallery))
+        #expect(decoded[0].artifactsMigrationVersion == 1)
+        #expect(decoded[1].artifacts == [.photos])
+    }
+
+    @Test("旧配方迁移：仅 [photos] + 历史 Web 名才补 contactSheet+画廊")
+    func legacyWebOnlyRecipeMigratesByName() async throws {
+        let webOnly = OutputRecipe(id: "web2", name: "Web 2048", artifacts: [.photos])
+        let renamed = OutputRecipe(id: "web3", name: "我的 Web 预设", artifacts: [.photos])
+        let settings = B8SettingsAPIStub(
+            values: ["output.recipes": try recipeJSON([webOnly, renamed])])
+        let viewModel = ExportViewModel(
+            sessionId: "s1", export: B6bExportAPIStub(),
+            session: B8SessionAPIStub(), settings: settings)
+        await viewModel.loadDeliveryRecipes()
+
+        #expect(viewModel.deliveryRecipes[0].artifacts == [.photos, .contactSheet, .gallery])
+        #expect(viewModel.deliveryRecipes[1].artifacts == [.photos],
+                "改名后的自定义配方不能按历史默认名推测")
+        #expect(viewModel.deliveryRecipes[1].artifactsMigrationVersion == 1)
+    }
+
+    @Test("迁移幂等：第二次 load 不再迁移、不再写回")
+    func migrationIsIdempotent() async throws {
+        let legacy = OutputRecipe(
+            id: "web1", name: "Web 2048", artifacts: [.photos, .contactSheet])
+        let settings1 = B8SettingsAPIStub(
+            values: ["output.recipes": try recipeJSON([legacy])])
+        let first = ExportViewModel(
+            sessionId: "s1", export: B6bExportAPIStub(),
+            session: B8SessionAPIStub(), settings: settings1)
+        await first.loadDeliveryRecipes()
+        let persisted = try #require(settings1.values["output.recipes"])
+
+        let settings2 = B8SettingsAPIStub(values: ["output.recipes": persisted])
+        let second = ExportViewModel(
+            sessionId: "s1", export: B6bExportAPIStub(),
+            session: B8SessionAPIStub(), settings: settings2)
+        await second.loadDeliveryRecipes()
+        #expect(second.deliveryRecipes.first?.artifactsMigrationVersion == 1)
+        #expect(second.deliveryRecipes.first?.artifacts
+                == [.photos, .contactSheet, .gallery])
+        // 负向观察窗口：重复 load 不得产生任何 output.recipes 写。
+        await awaitNegativeWindow(.milliseconds(100))
+        #expect(!settings2.setInputs.contains { $0.key.value == "output.recipes" },
+                "已迁移配方重复 load 不得再写回 settings")
+    }
+
+    @Test("用户显式取消不被迁移补回（marker=1 + 缺 gallery）")
+    func explicitArtifactRemovalIsPreserved() async throws {
+        var recipe = OutputRecipe(
+            id: "web1", name: "Web 2048", artifacts: [.photos, .contactSheet])
+        recipe.artifactsMigrationVersion = 1
+        let settings = B8SettingsAPIStub(
+            values: ["output.recipes": try recipeJSON([recipe])])
+        let viewModel = ExportViewModel(
+            sessionId: "s1", export: B6bExportAPIStub(),
+            session: B8SessionAPIStub(), settings: settings)
+        await viewModel.loadDeliveryRecipes()
+
+        #expect(viewModel.deliveryRecipes.first?.artifacts == [.photos, .contactSheet],
+                "用户取消勾选的 gallery 不能因为缺字段被补回")
+        #expect(viewModel.deliveryRecipes.first?.artifactsMigrationVersion == 1)
+        // 负向观察窗口：内容未变化时迁移不得写回。
+        await awaitNegativeWindow(.milliseconds(150))
+        #expect(!settings.setInputs.contains { $0.key.value == "output.recipes" },
+                "内容未变化时迁移不得写回")
+    }
+
+    @Test("新建配方与勾选/取消产物都写 marker；取消后重载不复活")
+    func artifactToggleStampsMigrationMarker() async throws {
+        let (viewModel, settings) = try await makeViewModel()
+        // 默认配方在 load 时走过迁移（规则 3），marker 已写。
+        #expect(viewModel.deliveryRecipes.first?.artifactsMigrationVersion == 1)
+
+        viewModel.addDeliveryRecipe()
+        let added = try #require(viewModel.deliveryRecipes.last)
+        #expect(added.artifactsMigrationVersion == 1)
+        viewModel.setDeliveryRecipeArtifact(id: added.id, .gallery, isEnabled: false)
+        let toggled = try #require(viewModel.deliveryRecipes.last)
+        #expect(toggled.artifactsMigrationVersion == 1)
+        #expect(!toggled.artifacts.contains(.gallery))
+        // 面板的 .onChange 会调度落盘；测试里直接触发同一通道并等写完。
+        viewModel.persistDeliveryRecipes()
+        await viewModel.persistWriteTask?.value
+        let persisted = try #require(settings.values["output.recipes"])
+
+        let settings2 = B8SettingsAPIStub(values: ["output.recipes": persisted])
+        let reloaded = ExportViewModel(
+            sessionId: "s1", export: B6bExportAPIStub(),
+            session: B8SessionAPIStub(), settings: settings2)
+        await reloaded.loadDeliveryRecipes()
+        let restored = try #require(reloaded.deliveryRecipes.last)
+        #expect(!restored.artifacts.contains(.gallery), "显式取消在重载后必须保留")
+        #expect(restored.artifactsMigrationVersion == 1)
     }
 }

@@ -122,6 +122,26 @@ enum MetadataDisplay {
     /// 是跨语言稳定的 DescriptiveField.rawValue；上屏前换成字段标题（模板里的
     /// {{field}} 必须是用户认得的名字，不能是内部标识）。
     static func localizedFailure(_ message: String, with l10n: L10n) -> String {
+        // Wave2 收尾 task-22：模板变量未解析（apply 拒绝写入）。消息形如
+        // "METADATA_VARIABLE_UNRESOLVED: field=caption;variable={client};file=a.cr3"；
+        // 不新增错误码，前缀 + 结构化 token 由本函数本地化。
+        let variablePrefix = "METADATA_VARIABLE_UNRESOLVED: "
+        if message.hasPrefix(variablePrefix) {
+            var tokens: [String: String] = [:]
+            for part in message.dropFirst(variablePrefix.count).components(separatedBy: ";") {
+                let pair = part.split(separator: "=", maxSplits: 1).map(String.init)
+                guard pair.count == 2 else { continue }
+                tokens[pair[0].trimmingCharacters(in: .whitespaces)] =
+                    pair[1].trimmingCharacters(in: .whitespaces)
+            }
+            let fieldRaw = tokens["field"] ?? ""
+            let fieldTitleText = DescriptiveField(rawValue: fieldRaw)
+                .map { l10n(fieldTitle($0)) } ?? fieldRaw
+            return l10n.format("%@ · %@ · 模板变量 %@ 未解析，已拒绝写入",
+                               tokens["file"] ?? "",
+                               fieldTitleText,
+                               tokens["variable"] ?? "")
+        }
         let prefix = GatherErrorCode.JPEG_EMBEDDED_CLEAR_UNSUPPORTED.rawValue + ": "
         guard message.hasPrefix(prefix) else {
             return CommandErrorText.resolve(CommandError(APIError.failed(message)), with: l10n)

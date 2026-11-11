@@ -70,6 +70,13 @@ public struct OutputRecipe: Codable, Equatable, Identifiable, Sendable {
     /// Wave2：配方级画廊参数。nil = 回落 run 级参数（兼容路径）。
     public var gallery: OutputGalleryOptions?
     public var artifacts: [OutputArtifactKind]
+    /// Wave2 收尾：artifacts 一次性迁移标记。
+    ///
+    /// nil = 该配方还没跑过产物清单迁移（旧 JSON 没有此键，合成 Codable 走
+    /// decodeIfPresent → nil，旧数据照常解码）；1 = 已按 Wave1 历史默认处理过。
+    /// 迁移只在 VM 的 loadDeliveryRecipes 里写一次（见 ExportViewModel+Delivery）；
+    /// 之后即使 artifacts 被用户改过也保持 marker=1，避免重复补回用户显式取消的产物。
+    public var artifactsMigrationVersion: Int?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -88,7 +95,8 @@ public struct OutputRecipe: Codable, Equatable, Identifiable, Sendable {
         subdirectory: ExportSubdirectory? = nil,
         contactSheet: OutputContactSheetOptions? = nil,
         gallery: OutputGalleryOptions? = nil,
-        artifacts: [OutputArtifactKind] = [.photos]
+        artifacts: [OutputArtifactKind] = [.photos],
+        artifactsMigrationVersion: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -107,6 +115,7 @@ public struct OutputRecipe: Codable, Equatable, Identifiable, Sendable {
         self.contactSheet = contactSheet
         self.gallery = gallery
         self.artifacts = artifacts
+        self.artifactsMigrationVersion = artifactsMigrationVersion
     }
 }
 
@@ -194,6 +203,9 @@ public extension OutputRecipe {
     var withoutArtifacts: OutputRecipe {
         var copy = self
         copy.artifacts = []
+        // 副产品：Wave2 收尾的迁移标记只是新旧版本间的元数据，也不参与交付身份；
+        // 否则升级后首批 output.run 的去重键/续跑指纹会变，旧 checkpoint 无法复用。
+        copy.artifactsMigrationVersion = nil
         return copy
     }
 }

@@ -357,7 +357,7 @@ public enum FilterFields {
 /// 为什么用 token 而不是让调用方算绝对日期：算绝对日期要求 UI 持有"今天"，
 /// 规则保存成智能相册/保存查询后第二天就过期；token 由 SQL 侧按查询时刻求值，
 /// 规则长期有效。
-public enum RelativeDateRange: String, Codable, CaseIterable, Equatable, Sendable {
+public enum RelativeDateRange: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
     /// 最近 7 天（含今天，按本地时区）。
     case last7 = "last7"
     /// 最近 30 天（含今天，按本地时区）。

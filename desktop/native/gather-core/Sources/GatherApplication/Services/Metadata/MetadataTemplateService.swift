@@ -148,9 +148,13 @@ public final class MetadataTemplateService: Sendable {
         guard let template = templates.get(id: templateId) else {
             throw MetadataTemplateServiceError.templateNotFound(templateId)
         }
+        // Wave2 收尾 task-22：模板套用是唯一允许展开变量的路径（内联/批量直改
+        // 的调用方不传 scope：它们的文案在 UI 侧已展开或不应被解析）。
         return try await applyFields(
             fields: template.fields, templateId: template.id, templateName: template.name,
-            photoIds: photoIds, policy: policy, now: now, batchId: batchId)
+            photoIds: photoIds, policy: policy,
+            variableScope: MetadataVariableScope(client: template.client),
+            now: now, batchId: batchId)
     }
 
     /// P0 / B2：套用任意字段集（模板与单张内联编辑共用）。
@@ -163,6 +167,7 @@ public final class MetadataTemplateService: Sendable {
         templateName: String,
         photoIds: [String],
         policy: MetadataConflictPolicy = .keepExternal,
+        variableScope: MetadataVariableScope? = nil,
         replaceContact: Bool = false,
         clearedContactMembers: [String] = [],
         now: String,
@@ -170,9 +175,13 @@ public final class MetadataTemplateService: Sendable {
     ) async throws -> MetadataApplyResult {
         var seen = Set<String>()
         let uniqueIds = photoIds.filter { seen.insert($0).inserted }
+        /// {seq} 语义：按 uniqueIds（调用方传入顺序；模板 UI 传 sorted photoIds）逐张 +1。
+        let sequenceByPhotoId = Dictionary(
+            uniqueKeysWithValues: uniqueIds.enumerated().map { ($1, $0) })
         var skipped: [String] = []
         var conflicts: [String] = []
         var failed: [MetadataApplyFailure] = []
+        var variableFailures: [MetadataApplyFailure] = []
         var inputs: [(photoId: String, attributes: MetadataWriteAttributes)] = []
         var snapshots: [String: MetadataApplySnapshot] = [:]
 
@@ -180,6 +189,7 @@ public final class MetadataTemplateService: Sendable {
             case input(String, MetadataWriteAttributes, MetadataApplySnapshot, Bool)
             case skipped(String)
             case failure(MetadataApplyFailure)
+            case unresolvedVariables(String, [MetadataTemplateVariableIssue], String)
         }
         // 逐张读盘是 IO 主成本：有界并发读取，写盘仍由交付队列串行保证。
         let outcomes = try await batchAsync(uniqueIds, concurrency: 8) { photoId -> PlanOutcome in
@@ -190,15 +200,35 @@ public final class MetadataTemplateService: Sendable {
                 // 视为冲突；这里让错误走 catch，把整张标 failed 而不是静默覆盖。
                 let disk = try await self.metadata.diskAttributes(
                     photoPath: detail.filepath).descriptive
+                // Wave2 收尾 task-22：变量展开（与 preview 同一函数）。未解析字段
+                // 已被剔除；只要有任何未解析 → 整批拒绝写入（先收集，循环后统一返回）。
+                let fieldsForPhoto: DescriptiveMetadata
+                if let variableScope {
+                    let photo = MetadataVariablePhoto(
+                        filename: detail.filename,
+                        camera: detail.exif.cameraModel,
+                        dateTaken: detail.exif.dateTaken)
+                    let sequence = (sequenceByPhotoId[photoId] ?? 0)
+                        + variableScope.sequenceStart
+                    let expansion = MetadataTemplateVariables.expand(
+                        fields, scope: variableScope, photo: photo, sequence: sequence)
+                    if !expansion.issues.isEmpty {
+                        return .unresolvedVariables(
+                            photoId, expansion.issues, detail.filename)
+                    }
+                    fieldsForPhoto = expansion.fields
+                } else {
+                    fieldsForPhoto = fields
+                }
                 let plan = MetadataTemplatePlanner.plan(
-                    template: fields,
+                    template: fieldsForPhoto,
                     photoId: photoId,
                     current: detail.descriptive,
                     disk: disk,
                     policy: policy
                 )
                 guard let attributes = plan.writeAttributes(
-                    template: fields, replaceContact: replaceContact,
+                    template: fieldsForPhoto, replaceContact: replaceContact,
                     clearedContactMembers: clearedContactMembers) else {
                     return .skipped(photoId)
                 }
@@ -224,7 +254,24 @@ public final class MetadataTemplateService: Sendable {
                 skipped.append(photoId)
             case .failure(let failure):
                 failed.append(failure)
+            case .unresolvedVariables(let photoId, let issues, let filename):
+                // 整批拒绝：消息只带首条（预览已逐字段列出全部）；UI 解析前缀给出
+                // 照片/字段/变量，避免把占位符原样写进 XMP。
+                guard let first = issues.first else { continue }
+                variableFailures.append(MetadataApplyFailure(
+                    photoId: photoId,
+                    message: MetadataTemplateVariables.unresolvedMessage(
+                        filename: filename, field: first.field, variable: first.variable)))
             }
+        }
+
+        // 未解析变量 = 拒绝写入：不记批次、不入队、不写盘（预览阶段已能拦住；
+        // 这里是写入路径的二次校验）。
+        if !variableFailures.isEmpty {
+            failed.append(contentsOf: variableFailures)
+            return MetadataApplyResult(
+                batchId: batchId, written: [], skipped: skipped,
+                conflicts: conflicts, failed: failed, undoAvailable: false)
         }
 
         if !inputs.isEmpty {
@@ -299,6 +346,72 @@ public final class MetadataTemplateService: Sendable {
             batchId: batchId, written: [], skipped: skipped,
             conflicts: conflicts, failed: failed
         )
+    }
+
+    // MARK: - Wave2 收尾 task-22：模板预览（与 apply 同源展开）
+
+    /// 逐照片预检：写入/清空/冲突/未解析变量。
+    ///
+    /// 与 apply 共用 MetadataTemplateVariables.expand + MetadataTemplatePlanner.plan；
+    /// host 只负责补 previewToken。photoIds 顺序决定 {seq}（调用方传 sorted ids）。
+    public func preview(
+        templateId: String,
+        photoIds: [String],
+        policy: MetadataConflictPolicy = .keepExternal
+    ) async throws -> MetadataTemplatePreviewResult {
+        guard let template = templates.get(id: templateId) else {
+            throw MetadataTemplateServiceError.templateNotFound(templateId)
+        }
+        var seen = Set<String>()
+        let uniqueIds = photoIds.filter { seen.insert($0).inserted }
+        let scope = MetadataVariableScope(client: template.client)
+        var previews: [MetadataPhotoPreview] = []
+        var changedPhotos = 0
+        var changedFields = 0
+        var conflictFields = 0
+        for (index, photoId) in uniqueIds.enumerated() {
+            let detail = try metadata.photoDetail(photoId: photoId)
+            let disk: DescriptiveMetadata?
+            do {
+                disk = try await metadata.diskAttributes(photoPath: detail.filepath).descriptive
+            } catch {
+                // 读不到盘 = 未知：planner 视为未知（不判冲突），与 apply 的 catch
+                // 不同——apply 写盘前读不到会整张失败；预览只做展示，不能因此崩。
+                disk = nil
+            }
+            let photo = MetadataVariablePhoto(
+                filename: detail.filename,
+                camera: detail.exif.cameraModel,
+                dateTaken: detail.exif.dateTaken)
+            let expansion = MetadataTemplateVariables.expand(
+                template.fields, scope: scope, photo: photo,
+                sequence: scope.sequenceStart + index)
+            let plan = MetadataTemplatePlanner.plan(
+                template: expansion.fields,
+                photoId: photoId,
+                current: detail.descriptive,
+                disk: disk,
+                policy: policy
+            )
+            let writes = plan.fields.filter { $0.action == .write }.map { $0.field.rawValue }
+            let clears = plan.fields.filter { $0.action == .clear }.map { $0.field.rawValue }
+            let conflicts = plan.fields.filter { $0.action == .conflict }.map { $0.field.rawValue }
+            let unresolved = expansion.issues.map {
+                MetadataTemplateUnresolvedVariable(
+                    field: $0.field.rawValue, variable: $0.variable.raw)
+            }
+            if !writes.isEmpty || !clears.isEmpty { changedPhotos += 1 }
+            changedFields += writes.count + clears.count
+            conflictFields += conflicts.count
+            previews.append(MetadataPhotoPreview(
+                photoId: photoId, writes: writes, clears: clears,
+                conflicts: conflicts, unresolved: unresolved))
+        }
+        return MetadataTemplatePreviewResult(
+            templateId: template.id, templateName: template.name,
+            totalPhotos: uniqueIds.count, changedPhotos: changedPhotos,
+            changedFields: changedFields, conflictFields: conflictFields,
+            photos: previews, previewToken: nil)
     }
 
     /// 撤销：按 before 反向写；已撤销的批次拒绝重复回滚。

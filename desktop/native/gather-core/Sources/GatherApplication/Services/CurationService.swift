@@ -136,7 +136,10 @@ public struct CurationService: Sendable {
 
     public func createCollection(_ input: CollectionCreateInput) throws -> CollectionSummary {
         try requireSession(input.sessionId)
-        let name = try CurationNaming.normalized(input.name)
+        // Wave2 收尾（task-27）：集合名支持命名路径 A/B/C——层级只是**命名约定**
+        // （collections 表仍扁平、无 parent_id），由 UI 侧按 "/" 组装成树。
+        // 这里做权威校验：空段/非法字符/总长/单段长度，落库的是规范化后的全路径。
+        let name = try CurationPath.parse(input.name).fullName
         guard try !collections.nameExists(
             sessionId: input.sessionId, name: name, excluding: nil) else {
             throw CurationError.nameConflict(name)
@@ -148,16 +151,64 @@ public struct CurationService: Sendable {
         return Self.summary(row)
     }
 
+    /// 重命名 = 改名 / 移动（Wave2 收尾 task-27）。
+    ///
+    /// - 同父换叶子：`A/B` → `A/C`；换父：`A/B` → `X/B`；移到顶层：`A/B` → `B`；
+    /// - **父集合改名会连同其全部后代一起移动**（按命名前缀匹配），否则树里会留下
+    ///   指向旧父名的孤儿名字。子树的移动在同一事务里完成；
+    /// - 拒绝：移进自身子树（命名树成环）、目标与库内其他集合重名、子树内部撞名、
+    ///   以及不符合命名规则的输入。
+    ///
+    /// 注意：这只是"名字里的层级"，不做任何数据库父子关系维护（没有 parent_id）。
     public func renameCollection(_ input: CollectionRenameInput) throws {
         let row = try requireCollection(input.collectionId)
-        let name = try CurationNaming.normalized(input.name)
-        guard try !collections.nameExists(
-            sessionId: row.sessionId, name: name, excluding: row.id
-        ) else {
-            throw CurationError.nameConflict(name)
+        let target = try CurationPath.parse(input.name)
+        let current = CurationPath.parseLenient(row.name)
+        guard target.fullName != current.fullName else { return }
+        guard !current.isAncestor(of: target) else {
+            throw CurationError.invalidName(
+                "cannot move a collection into its own subtree")
         }
-        guard try collections.rename(id: row.id, name: name) else {
+        let all = try collections.list(sessionId: row.sessionId)
+        var moves: [(id: String, oldName: String, newName: String)] = []
+        for candidate in all {
+            let candidatePath = CurationPath.parseLenient(candidate.name)
+            let isSelf = candidatePath.fullName == current.fullName
+            guard isSelf || current.isAncestor(of: candidatePath) else { continue }
+            let suffix = isSelf
+                ? ""
+                : String(candidatePath.fullName.dropFirst(current.fullName.count))
+            let renamed: CurationPath
+            do {
+                renamed = try CurationPath.parse(target.fullName + suffix)
+            } catch {
+                // 子树拼接后越界（长度/非法字符）：整次改名拒绝，不做部分改名。
+                throw CurationError.invalidName(
+                    "renamed collection path violates the naming rules")
+            }
+            moves.append((candidate.id, candidate.name, renamed.fullName))
+        }
+        guard !moves.isEmpty else {
             throw CurationError.collectionNotFound(row.id)
+        }
+        // 重名检查：库内未被本次移动的集合名 + 本次生成的新名（子树内部也不许撞）。
+        let movedIDs = Set(moves.map { $0.id })
+        var occupied = Set<String>()
+        for candidate in all where !movedIDs.contains(candidate.id) {
+            occupied.insert(candidate.name)
+        }
+        for move in moves {
+            guard !occupied.contains(move.newName) else {
+                throw CurationError.nameConflict(move.newName)
+            }
+            occupied.insert(move.newName)
+        }
+        try transactions.transaction {
+            for move in moves {
+                guard try collections.rename(id: move.id, name: move.newName) else {
+                    throw CurationError.collectionNotFound(move.id)
+                }
+            }
         }
     }
 
@@ -210,7 +261,8 @@ public struct CurationService: Sendable {
     /// 原子性：建集合 + 追加成员在同一事务里；任何一步失败都不留空壳集合。
     public func combineCollections(_ input: CollectionCombineInput) throws -> CollectionSummary {
         try requireSession(input.sessionId)
-        let name = try CurationNaming.normalized(input.name)
+        // Wave2 收尾（task-27）：运算结果的集合名同样支持命名路径（层级只是命名约定）。
+        let name = try CurationPath.parse(input.name).fullName
         let orderedIds = CollectionRepo.unique(input.collectionIds)
         guard !orderedIds.isEmpty else {
             throw CurationError.invalidCollections("must not be empty")

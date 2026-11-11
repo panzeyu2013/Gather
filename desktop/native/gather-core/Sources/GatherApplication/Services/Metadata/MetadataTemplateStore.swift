@@ -15,13 +15,22 @@ public struct MetadataTemplate: Codable, Equatable, Sendable, Identifiable {
     public var fields: DescriptiveMetadata
     public var createdAt: String
     public var updatedAt: String
+    /// Wave2 收尾 task-22：模板级客户名（{client} 作用域）。nil = 未设置。
+    ///
+    /// 旧模板 JSON 没有该键：Codable 对 Optional 用 decodeIfPresent，缺键即 nil，
+    /// 旧模板解码/套用行为不变（没有 {client} 时作用域为空，不影响其它变量）。
+    public var client: String?
 
-    public init(id: String, name: String, fields: DescriptiveMetadata, createdAt: String, updatedAt: String) {
+    public init(
+        id: String, name: String, fields: DescriptiveMetadata,
+        createdAt: String, updatedAt: String, client: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.fields = fields
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.client = client
     }
 }
 

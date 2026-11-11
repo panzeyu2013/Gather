@@ -1,17 +1,33 @@
 // desktop/native/gather-app/Sources/GatherUI/Filtering/FilterRuleEditor.swift
-// P1 / C：规则编辑器（AND/OR + between/in）。
+// P1 / C：规则编辑器（AND/OR + Wave2 收尾 task-22：NOT 组 / 集合·堆栈成员 /
+// 相对日期）。
 //
-// 直接编辑 FilterGroup（不发明第二套筛选 DSL）：编辑器产出的就是引擎吃的结构，
-// 保存智能相册 / 保存查询时也能原样回填。
-//
-// P1 下一波 §3.7.2：从 Library/ 移到共享的 Filtering/（Library 与 Gallery 共用同一份），
-// 类型名与调用点签名逐字未变（同模块移动），因此 Library 的调用点无需修改。
+// 契约：
+// - 直接编辑 FilterGroup（不发明第二套筛选 DSL）：编辑器产出的就是
+//   PhotoFilterQuery 吃的结构；保存智能相册/保存查询可原样回填；
+// - 顶层的 AND/OR 由调用方决定（Library/Gallery 组合搜索串/四档/facet 后再进来）；
+//   嵌套组只从本编辑器的快捷入口产生：NOT 组（子条件 OR 后整体取反）；
+// - 集合/堆栈成员是 task-15 的服务端字段（FilterFields.collection/stack），
+//   本轮 UI 是"手填 ID + 剪贴板粘贴"入口，帮助文案写清 ID 从哪来；
+// - 相对日期（最近 7/30 天、本月）保存 token 而不是绝对日期，规则长期有效；
+// - 快捷规则与结构化编辑都走 FilterEditorModel（纯函数），测试复用同一入口做
+//   "UI 编辑 → JSON → PhotoFilterQuery 执行"的往返验证。
+import AppKit
 import SwiftUI
 import GatherProtocol
 
 /// 可编辑字段目录：名称 + 类型（决定可选操作符与输入控件）。
 enum FilterFieldCatalog {
-    enum Kind { case text, number, date, list }
+    enum Kind {
+        case text
+        case number
+        case date
+        case list
+        /// 集合/堆栈成员（FilterFields.collection / stack）：值 = 容器 UUID。
+        case membership
+        /// 相对日期（FilterFields.relativeDate）：值 = RelativeDateRange.rawValue。
+        case relativeDate
+    }
 
     struct Field: Identifiable {
         let id: String
@@ -19,9 +35,7 @@ enum FilterFieldCatalog {
         let kind: Kind
     }
 
-    /// 字段 id 与服务端 PhotoFilterQuery.jsonFields 的 key 必须逐字一致
-    /// （Wave2 task-13 起扩到描述性字段全集；PhotoFilterSearchFieldsTests 守两条
-    /// 集合相等，新增字段漏改任意一边都会红）。
+    /// 字段 id 与服务端 PhotoFilterQuery.jsonFields / 特殊分支的 key 必须逐字一致。
     static let fields: [Field] = [
         // 文件 / 挑选
         .init(id: "filename", label: "文件名", kind: .text),
@@ -32,6 +46,10 @@ enum FilterFieldCatalog {
         .init(id: "iso", label: "ISO", kind: .number),
         .init(id: "date_taken", label: "拍摄日期", kind: .date),
         .init(id: "created_at", label: "导入时间", kind: .date),
+        // 容器 / 相对日期（服务端特殊分支）
+        .init(id: FilterFields.collection, label: "集合成员", kind: .membership),
+        .init(id: FilterFields.stack, label: "堆栈成员", kind: .membership),
+        .init(id: FilterFields.relativeDate, label: "相对日期", kind: .relativeDate),
         // IPTC Core
         .init(id: "title", label: "标题", kind: .text),
         .init(id: "description", label: "说明", kind: .text),
@@ -67,8 +85,6 @@ enum FilterFieldCatalog {
         .init(id: "additional_model_info", label: "补充模特信息", kind: .text),
         // 关键词
         .init(id: "keywords", label: "关键词", kind: .list),
-        // P1 下一波 §3.6.4：层级关键词路径（photo_keywords）。
-        // starts_with = 命中该节点及其子孙（facet 下钻等价规则）。
         .init(id: "keyword_path", label: "关键词层级", kind: .text),
     ]
 
@@ -79,6 +95,19 @@ enum FilterFieldCatalog {
         case .text: [.contains, .eq, .neq, .startsWith, .exists]
         case .list: [.containsAny, .containsAll, .exists]
         case .number, .date: [.eq, .gte, .lte, .between, .in]
+        case .membership: [.eq, .neq, .in, .containsAny, .containsAll, .exists]
+        case .relativeDate: [.eq]
+        }
+    }
+
+    /// 切换字段类型时的初值（避免旧值形状与新类型冲突）。
+    static func defaultValue(for kind: Kind) -> JSONValue {
+        switch kind {
+        case .number: .null
+        case .list: .array([])
+        case .membership: .string("")
+        case .relativeDate: .string(RelativeDateRange.last7.rawValue)
+        case .text, .date: .string("")
         }
     }
 }
@@ -90,8 +119,57 @@ struct FilterRuleEditor: View {
     let onChange: () -> Void
 
     var body: some View {
+        FilterGroupEditor(
+            group: $group, l10n: l10n, onChange: onChange, depth: 0, onRemove: nil)
+    }
+}
+
+/// 单组编辑器：顶层与嵌套 NOT 组共用（递归）。
+private struct FilterGroupEditor: View {
+    @Binding var group: FilterGroup
+    let l10n: L10n
+    let onChange: () -> Void
+    let depth: Int
+    /// 嵌套组由父级删除（子视图拿不到父数组索引）；顶层为 nil。
+    let onRemove: (() -> Void)?
+
+    private static let maxDepth = 2
+
+    var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
-            HStack(spacing: GatherMetrics.Space.s) {
+            header
+            if group.conditions.isEmpty {
+                Text(l10n("还没有条件"))
+                    .font(GatherFont.label)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(group.conditions.enumerated()), id: \.offset) { index, condition in
+                    switch condition {
+                    case .rule(let rule):
+                        ruleRow(index: index, rule: rule)
+                    case .group(let nested):
+                        nestedGroupRow(index: index, nested: nested)
+                    }
+                    if index < group.conditions.count - 1 {
+                        Text(logicLabel)
+                            .font(GatherFont.label)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, GatherMetrics.Space.xxs)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - 头部
+
+    private var header: some View {
+        HStack(spacing: GatherMetrics.Space.s) {
+            if group.logic == .not {
+                Label(l10n("排除以下任一条件（NOT）"), systemImage: "nosign")
+                    .font(GatherFont.label)
+                    .foregroundStyle(GatherTheme.warningText)
+            } else {
                 Picker("", selection: logicBinding) {
                     Text(l10n("满足全部")).tag(FilterLogic.and)
                     Text(l10n("满足任一")).tag(FilterLogic.or)
@@ -99,30 +177,226 @@ struct FilterRuleEditor: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(maxWidth: 200)
-                Spacer(minLength: 0)
-                Button(l10n("添加条件")) { appendRule() }
-                    .gatherButton(.tertiary, size: .small)
             }
-
-            if group.conditions.isEmpty {
-                Text(l10n("还没有条件"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(group.conditions.enumerated()), id: \.offset) { index, condition in
-                    if case .rule(let rule) = condition {
-                        ruleRow(index: index, rule: rule)
-                        if index < group.conditions.count - 1 {
-                            Text(logicLabel)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, GatherMetrics.Space.xxs)
-                        }
-                    }
+            Spacer(minLength: 0)
+            if depth == 0 {
+                quickRulesMenu
+            }
+            Button(l10n("添加条件")) { appendRule() }
+                .gatherButton(.tertiary, size: .small)
+            if let onRemove {
+                Button {
+                    onRemove()
+                } label: {
+                    Image(systemName: "xmark.circle")
                 }
+                .buttonStyle(.borderless)
+                .help(l10n("删除这个 NOT 组"))
             }
         }
     }
+
+    /// 快捷规则（只在顶层显示）：NOT 组、相对日期、集合/堆栈成员。
+    private var quickRulesMenu: some View {
+        Menu {
+            Section {
+                Button(l10n("添加 NOT 组（排除）")) {
+                    if depth < Self.maxDepth {
+                        FilterEditorModel.addNotGroup(to: &group)
+                        onChange()
+                    }
+                }
+                .disabled(depth >= Self.maxDepth)
+            } header: {
+                Text(l10n("逻辑取反"))
+            }
+            Section {
+                Button(l10n("最近 7 天")) { addRelativeDate(.last7) }
+                Button(l10n("最近 30 天")) { addRelativeDate(.last30) }
+                Button(l10n("本月")) { addRelativeDate(.thisMonth) }
+            } header: {
+                Text(l10n("相对日期"))
+            }
+            Section {
+                Button(l10n("属于集合…")) { addCollectionMembership() }
+                Button(l10n("不属于集合…")) { addCollectionExclusion() }
+                Button(l10n("属于堆栈…")) { addStackMembership() }
+            } header: {
+                Text(l10n("集合 / 堆栈"))
+            }
+        } label: {
+            Label(l10n("快捷规则"), systemImage: "wand.and.stars")
+                .font(GatherFont.label)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    // MARK: - 规则行
+
+    private func ruleRow(index: Int, rule: FilterRule) -> some View {
+        let field = FilterFieldCatalog.field(rule.field)
+        let kind = field?.kind ?? .text
+        let operators = FilterFieldCatalog.operators(for: kind)
+        return VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
+            HStack(spacing: GatherMetrics.Space.controlGap) {
+                Picker("", selection: fieldBinding(index: index, rule: rule)) {
+                    ForEach(FilterFieldCatalog.fields) { item in
+                        Text(l10n(item.label)).tag(item.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 110)
+
+                Picker("", selection: operatorBinding(index: index, rule: rule, kind: kind, operators: operators)) {
+                    ForEach(operators, id: \.rawValue) { op in
+                        Text(operatorLabel(op)).tag(op)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 96)
+
+                valueEditor(index: index, rule: rule, kind: kind)
+
+                Button {
+                    FilterEditorModel.removeCondition(at: index, in: &group)
+                    onChange()
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+                .help(l10n("删除条件"))
+            }
+            if kind == .membership {
+                membershipHelp(index: index, rule: rule)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func valueEditor(index: Int, rule: FilterRule, kind: FilterFieldCatalog.Kind) -> some View {
+        if kind == .relativeDate {
+            Picker("", selection: relativeDateBinding(index: index, rule: rule)) {
+                Text(l10n("最近 7 天")).tag(RelativeDateRange.last7)
+                Text(l10n("最近 30 天")).tag(RelativeDateRange.last30)
+                Text(l10n("本月")).tag(RelativeDateRange.thisMonth)
+            }
+            .labelsHidden()
+            .frame(width: 120)
+        } else if kind == .membership {
+            membershipValueEditor(index: index, rule: rule)
+        } else {
+            switch rule.operator {
+            case .between:
+                HStack(spacing: GatherMetrics.Space.xs) {
+                    TextField(l10n("下限"), text: betweenBinding(index: index, rule: rule, second: false))
+                        .labelsHidden()
+                        .frame(width: 70)
+                    Text("–").foregroundStyle(.secondary)
+                    TextField(l10n("上限"), text: betweenBinding(index: index, rule: rule, second: true))
+                        .labelsHidden()
+                        .frame(width: 70)
+                }
+            case .in:
+                TextField(l10n("值，用逗号分隔"), text: inBinding(index: index, rule: rule))
+                    .labelsHidden()
+                    .frame(minWidth: 120)
+            case .exists:
+                Text(l10n("存在"))
+                    .font(GatherFont.label)
+                    .foregroundStyle(.secondary)
+            default:
+                TextField(l10n("值"), text: textBinding(index: index, rule: rule, kind: kind))
+                    .labelsHidden()
+                    .frame(minWidth: 110)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func membershipValueEditor(index: Int, rule: FilterRule) -> some View {
+        switch rule.operator {
+        case .in, .containsAny, .containsAll:
+            TextField(l10n("ID，用逗号分隔"), text: inBinding(index: index, rule: rule))
+                .labelsHidden()
+                .frame(minWidth: 140)
+        case .exists:
+            Text(l10n("属于任意容器"))
+                .font(GatherFont.label)
+                .foregroundStyle(.secondary)
+        default:
+            TextField(l10n("集合/堆栈 UUID"), text: textBinding(index: index, rule: rule, kind: .membership))
+                .labelsHidden()
+                .frame(minWidth: 180)
+        }
+    }
+
+    /// 集合/堆栈 ID 的来源帮助 + 剪贴板粘贴（本轮手填入口，下一波接选择器）。
+    private func membershipHelp(index: Int, rule: FilterRule) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
+            Text(l10n("集合/堆栈 ID 是创建时生成的 UUID：可从保存查询/智能相册的 criteria JSON（collection/stack 规则的 value）复制；本轮为手填入口，粘贴可避免手打 UUID。"))
+                .font(GatherFont.label)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(l10n("从剪贴板粘贴 ID")) {
+                pasteMembershipID(index: index, rule: rule)
+            }
+            .gatherButton(.tertiary, size: .small)
+            .disabled(NSPasteboard.general.string(forType: .string) == nil)
+        }
+    }
+
+    // MARK: - 嵌套 NOT 组
+
+    private func nestedGroupRow(index: Int, nested: FilterGroup) -> some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+            HStack(spacing: GatherMetrics.Space.xs) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(GatherFont.label)
+                    .foregroundStyle(.secondary)
+                Text(nested.logic == .not
+                     ? l10n("排除（NOT）：以下条件先按“任一”组合再整体取反")
+                     : l10n("子条件组"))
+                    .font(GatherFont.label)
+                    .foregroundStyle(.secondary)
+            }
+            FilterGroupEditor(
+                group: nestedBinding(index: index),
+                l10n: l10n,
+                onChange: onChange,
+                depth: depth + 1,
+                onRemove: {
+                    FilterEditorModel.removeCondition(at: index, in: &group)
+                    onChange()
+                })
+                .padding(.leading, GatherMetrics.Space.m)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(GatherTheme.hairline)
+                        .frame(width: 1)
+                }
+        }
+    }
+
+    private func nestedBinding(index: Int) -> Binding<FilterGroup> {
+        Binding(
+            get: {
+                guard group.conditions.indices.contains(index),
+                      case .group(let nested) = group.conditions[index] else {
+                    return FilterGroup(logic: .and, conditions: [])
+                }
+                return nested
+            },
+            set: { newValue in
+                guard group.conditions.indices.contains(index),
+                      case .group = group.conditions[index] else { return }
+                group.conditions[index] = .group(newValue)
+                onChange()
+            }
+        )
+    }
+
+    // MARK: - 绑定
 
     private var logicLabel: String {
         group.logic == .and ? l10n("且") : l10n("或")
@@ -132,76 +406,11 @@ struct FilterRuleEditor: View {
         Binding(
             get: { group.logic },
             set: { value in
-                group.logic = value
+                FilterEditorModel.setLogic(value, in: &group)
                 onChange()
             }
         )
     }
-
-    private func ruleRow(index: Int, rule: FilterRule) -> some View {
-        let field = FilterFieldCatalog.field(rule.field)
-        let kind = field?.kind ?? .text
-        let operators = FilterFieldCatalog.operators(for: kind)
-        return HStack(spacing: GatherMetrics.Space.controlGap) {
-            Picker("", selection: fieldBinding(index: index, rule: rule)) {
-                ForEach(FilterFieldCatalog.fields) { item in
-                    Text(l10n(item.label)).tag(item.id)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 110)
-
-            Picker("", selection: operatorBinding(index: index, rule: rule, operators: operators)) {
-                ForEach(operators, id: \.rawValue) { op in
-                    Text(operatorLabel(op)).tag(op)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 96)
-
-            valueEditor(index: index, rule: rule, kind: kind)
-
-            Button {
-                group.conditions.remove(at: index)
-                onChange()
-            } label: {
-                Image(systemName: "minus.circle")
-            }
-            .buttonStyle(.borderless)
-            .help(l10n("删除条件"))
-        }
-    }
-
-    @ViewBuilder
-    private func valueEditor(index: Int, rule: FilterRule, kind: FilterFieldCatalog.Kind) -> some View {
-        switch rule.operator {
-        case .between:
-            HStack(spacing: GatherMetrics.Space.xs) {
-                TextField(l10n("下限"), text: betweenBinding(index: index, rule: rule, second: false))
-                    .labelsHidden()
-                    .frame(width: 70)
-                Text("–").foregroundStyle(.secondary)
-                TextField(l10n("上限"), text: betweenBinding(index: index, rule: rule, second: true))
-                    .labelsHidden()
-                    .frame(width: 70)
-            }
-        case .in:
-            // 逗号分隔的枚举值；空项被忽略。
-            TextField(l10n("值，用逗号分隔"), text: inBinding(index: index, rule: rule))
-                .labelsHidden()
-                .frame(minWidth: 120)
-        case .exists:
-            Text(l10n("存在"))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        default:
-            TextField(l10n("值"), text: textBinding(index: index, rule: rule, kind: kind))
-                .labelsHidden()
-                .frame(minWidth: 110)
-        }
-    }
-
-    // MARK: - 绑定
 
     private func fieldBinding(index: Int, rule: FilterRule) -> Binding<String> {
         Binding(
@@ -210,42 +419,64 @@ struct FilterRuleEditor: View {
                 guard let newKind = FilterFieldCatalog.field(newField)?.kind else { return }
                 var updated = rule
                 updated.field = newField
-                // 字段类型变了，旧操作符可能非法：回退到该类型的第一个操作符。
-                if !FilterFieldCatalog.operators(for: newKind).contains(updated.operator) {
-                    updated.operator = FilterFieldCatalog.operators(for: newKind)[0]
-                    updated.value = .string("")
+                let operators = FilterFieldCatalog.operators(for: newKind)
+                if !operators.contains(updated.operator) {
+                    updated.operator = operators[0]
                 }
-                update(index: index, rule: updated)
+                updated.value = FilterFieldCatalog.defaultValue(for: newKind)
+                FilterEditorModel.updateRule(updated, at: index, in: &group)
+                onChange()
             }
         )
     }
 
-    private func operatorBinding(index: Int, rule: FilterRule, operators: [FilterOperator]) -> Binding<FilterOperator> {
+    private func operatorBinding(
+        index: Int, rule: FilterRule, kind: FilterFieldCatalog.Kind,
+        operators: [FilterOperator]
+    ) -> Binding<FilterOperator> {
         Binding(
             get: { rule.operator },
             set: { newOperator in
                 var updated = rule
                 updated.operator = newOperator
-                if newOperator == .between {
+                switch newOperator {
+                case .between:
                     updated.value = .array([.string(""), .string("")])
-                } else if newOperator == .in {
+                case .in, .containsAny, .containsAll:
                     updated.value = .array([])
+                default:
+                    if kind == .relativeDate {
+                        updated.value = .string(RelativeDateRange.last7.rawValue)
+                    } else if kind == .membership {
+                        updated.value = .string("")
+                    }
                 }
-                update(index: index, rule: updated)
+                FilterEditorModel.updateRule(updated, at: index, in: &group)
+                onChange()
             }
         )
     }
 
-    private func textBinding(index: Int, rule: FilterRule, kind: FilterFieldCatalog.Kind) -> Binding<String> {
+    private func textBinding(
+        index: Int, rule: FilterRule, kind: FilterFieldCatalog.Kind
+    ) -> Binding<String> {
         Binding(
-            get: { rule.value.stringValue ?? "" },
+            get: {
+                if kind == .relativeDate {
+                    return rule.value.stringValue ?? RelativeDateRange.last7.rawValue
+                }
+                return rule.value.stringValue ?? ""
+            },
             set: { text in
                 var updated = rule
                 switch kind {
-                case .number: updated.value = Double(text).map(JSONValue.number) ?? .null
-                default: updated.value = .string(text)
+                case .number:
+                    updated.value = Double(text).map(JSONValue.number) ?? .null
+                default:
+                    updated.value = .string(text)
                 }
-                update(index: index, rule: updated)
+                FilterEditorModel.updateRule(updated, at: index, in: &group)
+                onChange()
             }
         )
     }
@@ -264,31 +495,81 @@ struct FilterRuleEditor: View {
                 array[second ? 1 : 0] = .string(text)
                 var updated = rule
                 updated.value = .array(array)
-                update(index: index, rule: updated)
+                FilterEditorModel.updateRule(updated, at: index, in: &group)
+                onChange()
             }
         )
     }
 
     private func inBinding(index: Int, rule: FilterRule) -> Binding<String> {
         Binding(
-            get: { (rule.value.arrayElements ?? []).compactMap(\.stringValue).joined(separator: ",") },
+            get: {
+                (rule.value.arrayElements ?? []).compactMap(\.stringValue)
+                    .joined(separator: ",")
+            },
             set: { text in
-                let items = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                let items = text.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
                 var updated = rule
                 updated.value = .array(items.map(JSONValue.string))
-                update(index: index, rule: updated)
+                FilterEditorModel.updateRule(updated, at: index, in: &group)
+                onChange()
             }
         )
     }
 
-    private func update(index: Int, rule: FilterRule) {
-        guard index < group.conditions.count else { return }
-        group.conditions[index] = .rule(rule)
+    private func relativeDateBinding(index: Int, rule: FilterRule) -> Binding<RelativeDateRange> {
+        Binding(
+            get: {
+                rule.value.stringValue.flatMap(RelativeDateRange.init(rawValue:)) ?? .last7
+            },
+            set: { range in
+                var updated = rule
+                updated.operator = .eq
+                updated.value = .string(range.rawValue)
+                FilterEditorModel.updateRule(updated, at: index, in: &group)
+                onChange()
+            }
+        )
+    }
+
+    // MARK: - 快捷动作
+
+    private func appendRule() {
+        FilterEditorModel.addRule(
+            FilterRule(field: "filename", operator: .contains, value: .string("")),
+            to: &group)
         onChange()
     }
 
-    private func appendRule() {
-        group.conditions.append(.rule(FilterRule(field: "filename", operator: .contains, value: .string(""))))
+    private func addRelativeDate(_ range: RelativeDateRange) {
+        FilterEditorModel.addRelativeDate(range, to: &group)
+        onChange()
+    }
+
+    /// 快捷入口：先落一条空值成员规则，用户在该行内手填 ID（不会点击无反应）。
+    private func addCollectionMembership() {
+        FilterEditorModel.addRule(FilterRule.inCollection(""), to: &group)
+        onChange()
+    }
+
+    private func addCollectionExclusion() {
+        FilterEditorModel.addRule(FilterRule.notInCollection(""), to: &group)
+        onChange()
+    }
+
+    private func addStackMembership() {
+        FilterEditorModel.addRule(FilterRule.inStack(""), to: &group)
+        onChange()
+    }
+
+    private func pasteMembershipID(index: Int, rule: FilterRule) {
+        guard let pasted = NSPasteboard.general.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !pasted.isEmpty else { return }
+        var updated = rule
+        updated.value = .string(pasted)
+        FilterEditorModel.updateRule(updated, at: index, in: &group)
         onChange()
     }
 

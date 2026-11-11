@@ -43,7 +43,7 @@ extension ExportViewModel {
             let recipes = await self.readDeliveryRecipes()
             guard !Task.isCancelled, let recipes else { return }
             self.hasLoadedDeliveryRecipes = true
-            if recipes != self.deliveryRecipes { self.deliveryRecipes = recipes }
+            await self.applyLoadedDeliveryRecipes(recipes)
         }
     }
 
@@ -53,7 +53,59 @@ extension ExportViewModel {
         guard deliveryRecipes.isEmpty, !hasLoadedDeliveryRecipes else { return }
         hasLoadedDeliveryRecipes = true
         let recipes = await readDeliveryRecipes() ?? Self.defaultRecipes
-        if recipes != deliveryRecipes { deliveryRecipes = recipes }
+        await applyLoadedDeliveryRecipes(recipes)
+    }
+
+    /// 载入结果统一入口：先跑一次性的 Wave1 → Wave2 产物清单迁移，再赋值/落盘。
+    ///
+    /// 迁移与落盘只在这里发生一次（marker 落盘后重复 load 直接跳过）；
+    /// 这里等待写入完成，保证 load 返回时迁移已落定——设置变更重读不会把
+    /// 「还没写完」误当成「内容没变」而产生重复写。落盘失败 marker 只在内存，
+    /// 下次启动会重跑（幂等，最坏情况是多补一次同样内容）。
+    private func applyLoadedDeliveryRecipes(_ loaded: [OutputRecipe]) async {
+        let migration = Self.migratedRecipeArtifacts(loaded)
+        if migration.recipes != deliveryRecipes { deliveryRecipes = migration.recipes }
+        guard migration.changed else { return }
+        persistDeliveryRecipes()
+        // 等串行写链把这一份写完（此前已排队写会先完成）。
+        await persistWriteTask?.value
+    }
+
+    /// 迁移版本：以后若还要再补别的产物字段，递增并加分支即可。
+    static let artifactsMigrationVersion = 1
+    /// 历史默认 Web 配方名（Wave1 defaultRecipes 的 "Web 2048"/"Web"）。
+    static let legacyWebRecipeNames: Set<String> = ["Web 2048", "Web"]
+
+    /// Wave1 → Wave2 旧配方产物清单迁移（纯函数，可单测）。
+    ///
+    /// 背景：Wave1 的「包含联系表/画廊」是 run 级开关且**默认都为 true**，所以升级前
+    /// 每个配方实际都会出联系表 + 画廊；Wave2 改成配方级 artifacts 后，旧 JSON 的
+    /// artifacts 只有 [.photos] / [.photos, .contactSheet]，升级后就不再出画廊。
+    ///
+    /// 判定刻意保守（Wave2 编辑器里用户可以取消勾选，无法区分「旧默认缺字段」与
+    /// 「用户取消」——按 Lead 决定只补两种能精确识别的历史默认形态）：
+    /// 1) 无 marker 且 artifacts == [.photos, .contactSheet]（Wave1 默认 Web 配方）→ 补 .gallery；
+    /// 2) 无 marker 且 artifacts == [.photos] 且名字是历史默认 Web 名 → 补 .contactSheet + .gallery；
+    /// 3) 其余（用户自定义过 artifacts）→ 只写 marker=1，绝不改 artifacts。
+    /// 任何被检查到的无 marker 配方都会写 marker（幂等 + 保留用户取消意图）。
+    static func migratedRecipeArtifacts(
+        _ recipes: [OutputRecipe]
+    ) -> (recipes: [OutputRecipe], changed: Bool) {
+        var migrated = recipes
+        var changed = false
+        for index in migrated.indices {
+            guard migrated[index].artifactsMigrationVersion == nil else { continue }
+            var recipe = migrated[index]
+            if recipe.artifacts == [.photos, .contactSheet] {
+                recipe.artifacts = [.photos, .contactSheet, .gallery]
+            } else if recipe.artifacts == [.photos], legacyWebRecipeNames.contains(recipe.name) {
+                recipe.artifacts = [.photos, .contactSheet, .gallery]
+            }
+            recipe.artifactsMigrationVersion = artifactsMigrationVersion
+            migrated[index] = recipe
+            changed = true
+        }
+        return (migrated, changed)
     }
 
     /// 只读 settings，不改内存：nil = 读取失败（调用方保留现状），
@@ -98,6 +150,8 @@ extension ExportViewModel {
         }
         var recipe = Self.newRecipeDefaults
         recipe.name = name
+        // 新建配方从一开始就是新版语义：写 marker，避免下次启动被旧配方迁移规则碰到。
+        recipe.artifactsMigrationVersion = Self.artifactsMigrationVersion
         deliveryRecipes.append(recipe)
         persistDeliveryRecipes()
     }
@@ -208,6 +262,8 @@ extension ExportViewModel {
                 artifacts.remove(kind)
             }
             recipe.artifacts = OutputArtifactKind.allCases.filter { artifacts.contains($0) }
+            // 用户在这里显式勾选/取消产物：写 marker，保证取消勾选后下次启动不被迁移补回。
+            recipe.artifactsMigrationVersion = Self.artifactsMigrationVersion
         }
     }
 

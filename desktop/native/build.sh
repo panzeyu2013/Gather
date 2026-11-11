@@ -24,6 +24,9 @@ set -euo pipefail
 #                                        "sandbox_apply: Operation not permitted"。
 #                                        只做追加，脚本自己的 -c/--arch/--manifest-cache
 #                                        等参数不受影响。
+#   GATHER_SKIP_APPINTENTS_METADATA=1    跳过 App Intents 元数据提取（仅限本地排障；
+#                                        Shortcuts 将看不到 Gather 的 4 个动作，
+#                                        GATHER_RELEASE=1 下不应使用）。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -599,6 +602,40 @@ else
   echo "warning: Capture One plugin SDK or Makefile not found; skipping GatherLink.coplugin" >&2
   if [[ "$RELEASE_MODE" == "1" ]]; then
     echo "release mode requires the Capture One SDK + GatherLink makefile; refusing to ship without the plugin" >&2
+    exit 1
+  fi
+fi
+
+# Wave3 收尾 / task-25：Shortcuts 发现性所需的 App Intents 编译期元数据。
+# SwiftPM 不会执行 Xcode 的 ExtractAppIntentsMetadata，所以这里在 app 组装完成、
+# 签名之前补一步（产物 Contents/Resources/Metadata.appintents，不参与运行时逻辑）。
+# 实现细节与失败诊断在 scripts/build-appintents-metadata.sh；本脚本只负责接线。
+if [[ "${GATHER_SKIP_APPINTENTS_METADATA:-0}" == "1" ]]; then
+  if [[ "$RELEASE_MODE" == "1" ]]; then
+    echo "release mode requires App Intents metadata (unset GATHER_SKIP_APPINTENTS_METADATA)" >&2
+    exit 1
+  fi
+  echo "warning: GATHER_SKIP_APPINTENTS_METADATA=1; Shortcuts will not discover Gather actions" >&2
+else
+  APPINTENTS_METADATA_SCRIPT="$ROOT_DIR/scripts/build-appintents-metadata.sh"
+  if [[ ! -x "$APPINTENTS_METADATA_SCRIPT" ]]; then
+    echo "error: App Intents metadata helper is missing or not executable: $APPINTENTS_METADATA_SCRIPT" >&2
+    exit 1
+  fi
+  APPINTENTS_ARCH="${EXPECTED_ARCHS[0]:-$(uname -m)}"
+  APPINTENTS_METADATA_FLAGS=()
+  if [[ "$RELEASE_MODE" == "1" ]]; then
+    APPINTENTS_METADATA_FLAGS=(--strict)
+  fi
+  if ! "$APPINTENTS_METADATA_SCRIPT" \
+      --app-bundle "$APP_BUNDLE" \
+      --bin-path "$BIN_DIR" \
+      --source-root "$APP_PACKAGE/Sources/GatherApp" \
+      --module-name GatherApp \
+      --target-triple "$APPINTENTS_ARCH-apple-macos26.0" \
+      --deployment-target "26.0" \
+      ${APPINTENTS_METADATA_FLAGS[@]+"${APPINTENTS_METADATA_FLAGS[@]}"}; then
+    echo "error: App Intents metadata assembly failed; refusing to ship a bundle without Shortcuts metadata" >&2
     exit 1
   fi
 fi

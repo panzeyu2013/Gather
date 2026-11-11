@@ -32,10 +32,16 @@ struct FacetBar: View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
             ForEach(visibleGroups, id: \.dimension) { group in
                 HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
-                    Text(title(group.dimension))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 56, alignment: .leading)
+                    Label {
+                        Text(title(group.dimension))
+                            .font(GatherFont.label)
+                    } icon: {
+                        Image(systemName: icon(group.dimension))
+                            .font(GatherFont.label)
+                    }
+                    .foregroundStyle(.secondary)
+                    .labelStyle(.titleAndIcon)
+                    .frame(width: 76, alignment: .leading)
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: GatherMetrics.Space.xs) {
                             if group.dimension == "keyword" {
@@ -85,6 +91,8 @@ struct FacetBar: View {
         }
     }
 
+    /// Wave2 收尾 task-22：新维度标题（scene/person 已由 task-14 供数；
+    /// collection/stack 为后续维度预留，先给稳定文案，避免回退成英文维度名）。
     private func title(_ dimension: String) -> String {
         switch dimension {
         case "camera": l10n("相机")
@@ -93,7 +101,28 @@ struct FacetBar: View {
         case "year": l10n("年份")
         case "label": l10n("色标")
         case "keyword": l10n("关键词")
+        case "scene": l10n("场景")
+        case "person": l10n("人物")
+        case "collection": l10n("集合")
+        case "stack": l10n("堆栈")
         default: l10n(dimension)
+        }
+    }
+
+    /// 维度图标（SF Symbols）：与标题同一 switch，避免"有标题没图标"的漂移。
+    private func icon(_ dimension: String) -> String {
+        switch dimension {
+        case "camera": "camera"
+        case "lens": "camera.aperture"
+        case "iso": "sun.max"
+        case "year": "calendar"
+        case "label": "tag.fill"
+        case "keyword": "text.badge.plus"
+        case "scene": "sparkles"
+        case "person": "person.2"
+        case "collection": "square.stack.3d.up"
+        case "stack": "rectangle.stack"
+        default: "line.3.horizontal.decrease"
         }
     }
 

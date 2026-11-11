@@ -12,11 +12,15 @@ public struct MetadataTemplateSaveInput: Decodable, Sendable, Equatable {
     public let id: String?
     public let name: String
     public let fields: DescriptiveMetadata
+    /// Wave2 收尾 task-22：模板级客户名（变量 {client} 的取值）。
+    /// nil/空白 = 未设置；旧模板 JSON 缺该字段时解码为 nil，行为不变。
+    public let client: String?
 
-    public init(id: String?, name: String, fields: DescriptiveMetadata) throws {
+    public init(id: String?, name: String, fields: DescriptiveMetadata, client: String? = nil) throws {
         self.id = id
         self.name = try APIValidation.nonBlank(name, field: "name", maxLength: 120)
         self.fields = fields
+        self.client = try Self.normalizedClient(client)
     }
 
     public init(from decoder: Decoder) throws {
@@ -24,11 +28,24 @@ public struct MetadataTemplateSaveInput: Decodable, Sendable, Equatable {
         try self.init(
             id: try container.decodeIfPresent(String.self, forKey: .id),
             name: try container.decode(String.self, forKey: .name),
-            fields: try container.decode(DescriptiveMetadata.self, forKey: .fields)
+            fields: try container.decode(DescriptiveMetadata.self, forKey: .fields),
+            client: try container.decodeIfPresent(String.self, forKey: .client)
         )
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, fields }
+    /// 客户名归一化：trim；空白 = nil；长度上限 120（与模板名同界）。
+    static func normalizedClient(_ raw: String?) throws -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed.count <= 120 else {
+            throw GatherError.invalidParameter(
+                field: "client", reason: "must be at most 120 characters")
+        }
+        return trimmed
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, fields, client }
 }
 
 public struct MetadataTemplateDeleteInput: Decodable, Sendable, Equatable {
@@ -132,12 +149,30 @@ public struct MetadataTemplateSummary: Codable, Equatable, Sendable {
     public var fieldCount: Int
     public var createdAt: String
     public var updatedAt: String
-    public init(id: String, name: String, fieldCount: Int, createdAt: String, updatedAt: String) {
+    /// Wave2 收尾 task-22：模板级客户名（{client} 作用域）；nil = 未设置。
+    public var client: String?
+    public init(
+        id: String, name: String, fieldCount: Int, createdAt: String, updatedAt: String,
+        client: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.fieldCount = fieldCount
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.client = client
+    }
+}
+
+/// 模板变量未解析项（预览逐字段列出；apply 会拒绝整批写入）。
+public struct MetadataTemplateUnresolvedVariable: Codable, Equatable, Hashable, Sendable {
+    /// DescriptiveField.rawValue（"caption"/"copyrightNotice"…）。
+    public var field: String
+    /// 原文占位符（如 "{client}"、"{year}"）。
+    public var variable: String
+    public init(field: String, variable: String) {
+        self.field = field
+        self.variable = variable
     }
 }
 
@@ -149,11 +184,17 @@ public struct MetadataPhotoPreview: Codable, Equatable, Sendable {
     public var clears: [String]
     /// 因外部改动而跳过的字段名。
     public var conflicts: [String]
-    public init(photoId: String, writes: [String], clears: [String], conflicts: [String]) {
+    /// 模板变量未解析、因而不会写入的字段（逐字段列出，供 UI 定位）。
+    public var unresolved: [MetadataTemplateUnresolvedVariable]
+    public init(
+        photoId: String, writes: [String], clears: [String], conflicts: [String],
+        unresolved: [MetadataTemplateUnresolvedVariable] = []
+    ) {
         self.photoId = photoId
         self.writes = writes
         self.clears = clears
         self.conflicts = conflicts
+        self.unresolved = unresolved
     }
 }
 
@@ -181,6 +222,13 @@ public struct MetadataTemplatePreviewResult: Codable, Equatable, Sendable {
         self.photos = photos
         self.previewToken = previewToken
     }
+
+    /// 变量未解析总数（UI 禁用「应用」与逐字段提示共用）。
+    public var unresolvedVariableCount: Int {
+        photos.reduce(0) { $0 + $1.unresolved.count }
+    }
+
+    public var hasUnresolvedVariables: Bool { unresolvedVariableCount > 0 }
 }
 
 /// P1 / B3：批次摘要（不含快照明细，撤销只认 id）。

@@ -232,3 +232,47 @@
 6. 打印面板可能与选项 sheet 模态叠加（实机观感待验）；联系表按钮在占用时仍显示旧文案；多页单次上限 200 张。
 7. 第二屏未自动选屏/自动全屏；主窗口最小化时显示空态或最后内容。
 8. 目录迁移：导入不触发重索引（缺失文件以 pending 登记）；迁移 conflicts 按字段计。
+
+---
+
+## 10. 收尾批（2026-11-11，task-22 / task-23 / task-25 / task-27）
+
+| 任务 | 缺口 | 修复要点 | 关键文件 |
+| --- | --- | --- | --- |
+| task-22 | 10 册 Top3 余项 | 模板侧变量：新增唯一展开函数（复用 MetadataVariableEngine），`MetadataTemplate.client` 持久化（旧 JSON 兼容）+ SaveInput/Summary 透传；`apply` 逐张展开后规划、**未解析整批拒绝**（不写 XMP/不建批次）；新增 `preview` 与 apply 同源；UI 客户名输入、未解析变量逐字段列表、禁用/二次拦截应用；规则编辑器重写为递归组编辑器（NOT 组、最近 7/30 天、本月、集合/堆栈成员手填+剪贴板+帮助），`FilterEditorModel` 纯逻辑与 UI/测试共用；FacetBar 补 scene/person/collection/stack 标题图标 | `Application/Services/Metadata/MetadataTemplateVariables.swift`、`MetadataTemplateService.swift`、`GatherUI/Metadata/MetadataTemplateSheet.swift`、`GatherUI/Filtering/FilterRuleEditor.swift`、`FilterEditorModel.swift` |
+| task-23 | 40 册配方迁移 | `OutputRecipe.artifactsMigrationVersion: Int?`（nil=未迁移；旧 JSON 兼容）；保守精确迁移：① 无 marker 且 artifacts==[.photos,.contactSheet] → 补 .gallery；② 无 marker 且 [.photos] 且历史 Web 名 → 补 contactSheet+gallery；③ 其余只写 marker；迁移有变化才落盘并 await 写入任务；新建/勾选取消写 marker → 用户取消不被补回；`withoutArtifacts` 清 marker 保证交付指纹不变 | `Protocol/Output.swift`、`GatherUI/Export/ExportViewModel+Delivery.swift` |
+| task-25 | 打包缺 App Intents 元数据 | `scripts/build-appintents-metadata.sh`（对含 AppIntent 源文件 emit const-values → `xcrun appintentsmetadataprocessor --compile-time-extraction` → `Contents/Resources/Metadata.appintents`；release `--strict` 失败 exit 1 并具名原因）+ `scripts/check-appintents.sh`（可复跑验收，4 intent 缺一 exit 1）+ `build.sh` 签名前调用（`GATHER_SKIP_APPINTENTS_METADATA=1` 本地逃生，release 禁用）+ DEVELOPMENT.md 构建/Shortcuts 验收说明 | `scripts/build-appintents-metadata.sh`、`scripts/check-appintents.sh`、`desktop/native/build.sh`、`docs/DEVELOPMENT.md` |
+| task-27 | 40 册集合层级（Wave2 项） | 命名路径约定实现层级（不改 schema）：`CurationPath` 解析/规范化（段≤80/总长≤200/拒绝空段/控制字符/保留字符/..）+ 派生运算；`CurationService` 创建/改名走规范化，父改名**同事务移动全部后代**，拒绝移进自身子树/撞名；`CollectionTree` 扁平→树（隐式分组节点、稳定排序）、侧栏 DisclosureGroup + 折叠持久化 + 右键重命名/新建子集合 + 新建输入 `A/B`；README 写清「命名约定 ≠ 数据库父子关系，schema 层级另行决策」 | `Application/Services/CurationPath.swift`、`CurationService.swift`、`GatherUI/Curation/CollectionTree.swift`、`CollectionSidebar.swift`、`docs/README.md` |
+
+### Lead 修掉的缺陷（7 处）
+
+1. `CollectionTree.orderedBefore` 用 `en_US_POSIX` + caseInsensitive 时"大写优先"（B < a）→ 改为先 lowercased 再比较，符合"大小写不敏感"预期。
+2. `CollectionHierarchyTests.mixedNodes` 按下标断言根节点（排序后 P 在 X 前）→ 改按 path 查找。
+3. `DeliveryRecipeEditorTests` 编辑后落盘竞态：task-23 的 load 迁移会先写一次 → 改为等「编辑后」的写入（计数比较）。
+4. `FilterRuleRoundTripTests` 文件路径插值丢失（`"/tmp/rule/(id).jpg"`）→ 三个照片同路径触发 UNIQUE → 修正插值。
+5. en.lproj 孤儿键 `集合名称`（无代码引用）→ 删除。
+6. `FilterRuleRoundTripTests` 用 JSONSerialization 触发 legacy 边界门禁 → 改为类型化解码（并删掉注释里的敏感词）。
+7. build.sh 在本环境需要 `GATHER_SWIFT_FLAGS="--disable-sandbox"`；另 `git describe` 的 tag 非 semver 需显式 `GATHER_VERSION`（环境注记，非代码缺陷）。
+
+### 验证证据（Lead 执行）
+
+- 构建：两包 `swift build --build-tests --disable-sandbox` 无 error；**release app 组装成功**（build.sh 2m44s，unsigned），`[appintents] OK ... Metadata.appintents (11072 bytes)`。
+- 测试：app **138 tests / 11 suites**（含 FilterRuleRoundTrip/DeliveryRecipeEditor/LocalizationParity/CollectionHierarchy/ReviewFix/SettingsSaveSemantics/APIExportMetadata）；core **101 tests / 18 suites**（MetadataTemplate*/OutputContract/ExportSpecsWave2/OutputService/CollectionRepo/Settings*）。
+- 打包验收：`./scripts/check-appintents.sh` → version 3.0 / tools 27B51 / **intents(8) / shortcuts(4) / OK**。
+- 门禁 **12 项全绿**（--strict）。
+
+### 基线变更（收尾批）
+
+| 基线 | 变更 | 原因 |
+| --- | --- | --- |
+| `docs/protocol-surface-baseline.json` | public_types 484 → **485**；public_declarations 2870 → **2880**；protocol_lines 15441 → **15501** | `CurationPath`、模板未解析变量 DTO、`artifactsMigrationVersion` |
+| test-catalog / cleanup | 未变 | 新测试文件带文件头；新代码无 try? |
+
+### 遗留（收尾批）
+
+1. **集合层级是命名路径约定**，不是数据库父子关系；真正的 `parent_id` + user_version 迁移未做（需产品决策：迁移链 vs 重建库）。
+2. 规则编辑器的集合/堆栈仍是手填 UUID（下拉候选需要把 Gallery/Library 的集合/堆栈列表送进 Filtering）。
+3. 旧模板正文若本来使用 `{client}/{year}/{seq}` 这类引擎认识的词，现在会被展开/阻断（新语义）；未知花括号仍字面保留。
+4. 配方迁移采用保守精确匹配：改名/自定义过的旧配方只写 marker、不补 gallery（取舍已写入注释与测试）。
+5. App Intents helper 目前逐 intent 源文件编译；若 intent 文件引用同 target 其他符号需改整 target 编译（脚本内有注释）。
+6. build.sh 全量组装耗时约 2–3 分钟，属发布活动，不进日常测试循环。

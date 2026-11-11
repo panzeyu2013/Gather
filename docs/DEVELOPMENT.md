@@ -104,6 +104,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh
 | `GATHER_NOTARIZE=1` | `ditto` → `notarytool submit --wait` → `stapler` → `spctl`；凭据取 `GATHER_NOTARY_PROFILE` 或 Apple ID 三件套，缺省时本地 skip。 |
 | `GATHER_RELEASE=1` | 发布门：版本、universal、Developer ID、公证凭据、插件任一缺失即 exit 1。 |
 | `GATHER_SWIFT_FLAGS` | 追加给 `swift build` 的额外参数（默认空）。外层已有沙箱时（CI runner / 容器 / 受限桌面）需要 `--disable-sandbox`，否则 SwiftPM 自带的 `sandbox-exec` 会报 `sandbox_apply: Operation not permitted`。 |
+| `GATHER_SKIP_APPINTENTS_METADATA=1` | 跳过 App Intents 元数据提取（只用于本地排障；产物缺 `Metadata.appintents`，Shortcuts 看不到动作，发布模式不应使用）。 |
 
 - `release/Gather.app/Contents/Resources/build-info.json` 记录 version / build /
   commit / dirty / archs / plugin / minos / sdk 等固定键序字段，不含时间戳。
@@ -115,6 +116,52 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh
   `com.apple.security.automation.apple-events`（Capture One 桥接）。**不开启 App
   Sandbox**：当前签名/运行模型没有沙盒容器，沙盒化需要单独的容器迁移与
   `files.*` entitlement。
+
+#### App Intents / Shortcuts 元数据（Wave3 收尾）
+
+SwiftPM 不会执行 Xcode 的 `ExtractAppIntentsMetadata` 构建步骤，裸 `swift build`
+组装的 `.app` 因此没有 `Contents/Resources/Metadata.appintents`，Shortcuts.app 也就
+看不到 Gather 的 4 个动作。`desktop/native/build.sh` 在 app 组装完成、签名之前补这一步：
+
+- 实现：`scripts/build-appintents-metadata.sh`（不是产品运行时逻辑）
+  1. 找出 `Sources/GatherApp` 里含 `AppIntent`/`AppShortcutsProvider` 的源文件；
+  2. 逐个用 `swiftc -Xfrontend -emit-const-values-path` 生成 `.swiftconstvalues`
+     （等价 Xcode 的 `SWIFT_ENABLE_EMIT_CONST_VALUES`）；
+  3. 调 `xcrun appintentsmetadataprocessor --compile-time-extraction`，输出
+     `<app>/Contents/Resources/Metadata.appintents/`。
+- 依赖：Xcode 14+（`xcrun --find appintentsmetadataprocessor`）。缺工具、缺 SDK、
+  缺 SwiftPM Modules、const-values 为空、processor 无产物都会打印具名原因；
+  `GATHER_RELEASE=1` 下直接 exit 1，本地构建只告警并继续（Shortcuts 不可发现）。
+- 自检（需要已组装的 app，不是门禁脚本）：
+
+  ```bash
+  ./desktop/native/build.sh
+  ./scripts/check-appintents.sh                    # 默认检查 release/Gather.app
+  ./scripts/check-appintents.sh --app /path/Gather.app
+  ```
+
+  输出会列出 `Metadata.appintents` 的 version、actions 标识与 autoShortcuts 数；
+  4 个 intent（`CreateWorkspaceAndImportIntent`/`ExportWorkspaceIntent`/
+  `WritebackWorkspaceMetadataIntent`/`WorkspaceStatusIntent`）缺一即 exit 1。
+
+Shortcuts.app 端到端验收步骤：
+
+1. 构建并确认 `release/Gather.app/Contents/Resources/Metadata.appintents/extract.actionsdata`
+   与 `version.json` 存在；
+2. `./scripts/check-appintents.sh` 通过（列出 4 个 intent 标识）；
+3. `open -n release/Gather.app`，等待应用完成启动（首次可配合
+   `--data-dir`/`GATHER_APPLICATION_SUPPORT_DIR` 使用隔离库）；
+4. 打开 Shortcuts.app → 新建快捷指令 → 搜索 "Gather"：应能看到「新建工作区并导入」
+   「按工作区导出」「按工作区写回元数据」「查询工作区状态」4 个动作（App 快捷指令
+   短语里也应出现，如「用 Gather 新建工作区」）；
+5. 跑一次「查询工作区状态」（填已有工作区 ID）：应返回名称/照片数/XMP 队列；
+   若 Gather 未启动，动作应报「Gather 尚未完成启动」而不是静默失败。
+
+> 只索引已安装 `.app` 的 Metadata.appintents：裸 `swift build` 产物、未组装的目录、
+> 被替换前的旧 bundle 都不会出现在 Shortcuts 里。替换 app 后若列表未刷新，可重启
+> Shortcuts.app（或 `killall Shortcuts`）再试。Shortcuts 优先索引标准位置的应用；
+> `release/Gather.app` 没出现在列表时，把 app 拷到 `/Applications`（或
+> `~/Applications`）后重新打开 Shortcuts 再验收。
 
 ### 隔离数据目录（QA/实机验收）
 

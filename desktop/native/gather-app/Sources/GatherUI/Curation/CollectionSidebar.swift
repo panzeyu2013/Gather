@@ -90,6 +90,13 @@ public struct CollectionSidebar: View {
     @State private var combineSelected: Set<String> = []
     /// 新建集合失败（sheet 内展示，保留已输入名称，弹窗不关）。
     @State private var actionError: CommandError?
+    /// Wave2 收尾（task-27）：重命名/移动 sheet 的目标与草稿。
+    @State private var showRenameSheet = false
+    @State private var renameTarget: CollectionSummary?
+    @State private var renameName = ""
+    /// 树折叠状态持久化（按节点全路径；纯展示状态，SceneStorage 随窗口恢复）。
+    /// 命名路径变化（重命名/移动）后旧 key 会失效，属可接受的展示层代价。
+    @SceneStorage("curation.collectionTree.collapsed") private var collapsedPathsRaw = ""
 
     public init(
         sessionId: String?,
@@ -112,6 +119,7 @@ public struct CollectionSidebar: View {
         .task(id: sessionId) { await reload() }
         .sheet(isPresented: $showCreateSheet) { createSheet }
         .sheet(isPresented: $showCombineSheet) { combineSheet }
+        .sheet(isPresented: $showRenameSheet) { renameSheet }
     }
 
     // MARK: 集合
@@ -163,15 +171,10 @@ public struct CollectionSidebar: View {
                     .font(GatherFont.labelRegular)
                     .foregroundStyle(GatherTheme.secondaryText)
             } else {
-                ForEach(collections) { collection in
-                    row(
-                        title: collection.name,
-                        count: collection.itemCount,
-                        systemImage: "square.stack.3d.up.fill",
-                        isSelected: selection == .collection(collection)
-                    ) {
-                        selection = .collection(collection)
-                    }
+                // Wave2 收尾（task-27）：扁平集合按命名路径组装成树；
+                // 父节点允许是隐式分组节点（没有对应集合记录）。
+                ForEach(CollectionTree.build(collections)) { node in
+                    AnyView(treeRow(node))
                 }
             }
         }
@@ -185,8 +188,18 @@ public struct CollectionSidebar: View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("新建集合"))
                 .font(GatherFont.sectionTitle)
-            TextField(l10n("集合名称"), text: $newName)
+            TextField(l10n("集合名称或路径"), text: $newName)
                 .textFieldStyle(.roundedBorder)
+            Text(l10n("用 / 表示层级，例如 客户A/精选；开头/结尾/连续的分隔符与非法字符会被拒绝。"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(GatherTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            if !newName.isEmpty, let issue = CollectionPathInput.validate(newName) {
+                Text(l10n(issue.messageKey))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.errorText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let error = actionError {
                 // 失败就地展示（sheet 不关、名称不丢），文案与其它页面同一漏斗：
                 // 旧实现借用 loadFailed → 侧栏写"集合加载失败"，把"建集合失败"
@@ -206,7 +219,7 @@ public struct CollectionSidebar: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .gatherButton(.primary)
-                .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isWorking)
+                .disabled(CollectionPathInput.validate(newName) != nil || isWorking)
             }
         }
         .padding(GatherMetrics.Space.xl)
@@ -425,8 +438,14 @@ public struct CollectionSidebar: View {
 
     private func createCollection() async {
         guard let album = services.album, let sessionId else { return }
-        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        // 权威校验在服务端（CurationPath），这里先做同一规则的前置校验：
+        // 非法输入不发请求，红字留在 sheet 里（已输入内容不丢）。
+        guard let name = CollectionPathInput.normalizedPath(newName) else {
+            if let issue = CollectionPathInput.validate(newName) {
+                actionError = CommandError.localized(issue.messageKey)
+            }
+            return
+        }
         isWorking = true
         actionError = nil
         defer { isWorking = false }
@@ -437,11 +456,201 @@ public struct CollectionSidebar: View {
             // #11：新建集合是库级数据变更（图库「加入集合」菜单、其它页的集合侧栏都读它）。
             GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
             showCreateSheet = false
+            // 新建子集合后自动展开其祖先，否则用户看不到刚建的那一项。
+            expandAncestors(of: created.name)
             await reload()
             selection = .collection(created)
         } catch {
             // 建集合失败 ≠ 列表读取失败：只置 actionError（sheet 内联红字），
             // 不能置 loadFailed——那会让侧栏改口成"集合加载失败"并盖住已输入的名称。
+            actionError = CommandError(error)
+        }
+    }
+
+    // MARK: - 集合树（Wave2 收尾 / task-27）
+
+    /// 递归渲染（AnyView 打断 some View 的递归类型；集合树深度通常在个位数）。
+    private func treeRow(_ node: CollectionTreeNode) -> AnyView {
+        if node.children.isEmpty {
+            return AnyView(nodeLabelRow(node))
+        }
+        return AnyView(
+            DisclosureGroup(isExpanded: expansionBinding(for: node.path)) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+                    ForEach(node.children) { child in
+                        AnyView(treeRow(child))
+                    }
+                }
+                .padding(.leading, GatherMetrics.Space.m)
+            } label: {
+                nodeLabelRow(node)
+            }
+        )
+    }
+
+    /// 单行标签：隐式分组节点不可选中（只是命名层级）；落库集合单击即选中。
+    private func nodeLabelRow(_ node: CollectionTreeNode) -> some View {
+        HStack(spacing: GatherMetrics.Space.xs) {
+            Image(systemName: node.isGroup ? "folder" : "square.stack.3d.up.fill")
+                .foregroundStyle(
+                    isSelected(node) ? GatherTheme.accent : GatherTheme.secondaryText)
+            Text(node.displayName)
+                .font(GatherFont.body)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if !node.isGroup {
+                Text("\(node.itemCount)")
+                    .font(GatherFont.mono)
+                    .foregroundStyle(GatherTheme.secondaryText)
+            }
+        }
+        .padding(.vertical, GatherMetrics.Space.xs)
+        .padding(.horizontal, GatherMetrics.Space.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous)
+                .fill(isSelected(node) ? GatherTheme.selectionFill : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if let collection = node.collection {
+                selection = .collection(collection)
+            }
+        }
+        .contextMenu { nodeContextMenu(node) }
+        .help(node.isGroup
+              ? l10n("分组节点：只是命名层级，没有对应的集合记录")
+              : l10n("单击打开集合；右键可重命名/移动或新建子集合"))
+    }
+
+    private func isSelected(_ node: CollectionTreeNode) -> Bool {
+        guard let collection = node.collection else { return false }
+        if case .collection(let selected)? = selection {
+            return selected.id == collection.id
+        }
+        return false
+    }
+
+    @ViewBuilder
+    private func nodeContextMenu(_ node: CollectionTreeNode) -> some View {
+        if let collection = node.collection {
+            Button(l10n("重命名/移动…")) {
+                renameTarget = collection
+                renameName = collection.name
+                actionError = nil
+                showRenameSheet = true
+            }
+        }
+        Button(l10n("新建子集合…")) {
+            newName = node.path + "/"
+            actionError = nil
+            showCreateSheet = true
+        }
+    }
+
+    private var collapsedPaths: Set<String> {
+        Set(collapsedPathsRaw.split(separator: "\n").map(String.init).filter { !$0.isEmpty })
+    }
+
+    private func expansionBinding(for path: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedPaths.contains(path) },
+            set: { expanded in
+                var next = collapsedPaths
+                if expanded {
+                    next.remove(path)
+                } else {
+                    next.insert(path)
+                }
+                collapsedPathsRaw = next.sorted().joined(separator: "\n")
+            }
+        )
+    }
+
+    /// 展开某路径的全部祖先（新建子集合后让新项可见）。
+    private func expandAncestors(of fullName: String) {
+        let segments = fullName.split(separator: "/").map(String.init)
+        guard segments.count > 1 else { return }
+        var next = collapsedPaths
+        for depth in 1..<segments.count {
+            next.remove(segments.prefix(depth).joined(separator: "/"))
+        }
+        collapsedPathsRaw = next.sorted().joined(separator: "\n")
+    }
+
+    // MARK: - 重命名 / 移动 sheet
+
+    private var renameSheet: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
+            Text(l10n("重命名/移动集合"))
+                .font(GatherFont.sectionTitle)
+            if let target = renameTarget {
+                Text(l10n.format("当前：%@", target.name))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            TextField(l10n("新的名称或路径"), text: $renameName)
+                .textFieldStyle(.roundedBorder)
+            Text(l10n("改最后一段 = 改名；改父路径 = 移动；父集合改名会连同子集合一起移动。"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(GatherTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            if !renameName.isEmpty, let issue = CollectionPathInput.validate(renameName) {
+                Text(l10n(issue.messageKey))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.errorText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let error = actionError {
+                Text(l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.errorText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: GatherMetrics.Space.s) {
+                Spacer(minLength: 0)
+                Button(l10n("取消")) { showRenameSheet = false }
+                    .keyboardShortcut(.cancelAction)
+                    .gatherButton(.secondary)
+                Button(l10n("保存")) {
+                    Task { await renameCollection() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .gatherButton(.primary)
+                .disabled(CollectionPathInput.validate(renameName) != nil || isWorking)
+            }
+        }
+        .padding(GatherMetrics.Space.xl)
+        .frame(minWidth: 380)
+    }
+
+    private func renameCollection() async {
+        guard let album = services.album, let target = renameTarget, let sessionId else {
+            return
+        }
+        guard let name = CollectionPathInput.normalizedPath(renameName) else {
+            if let issue = CollectionPathInput.validate(renameName) {
+                actionError = CommandError.localized(issue.messageKey)
+            }
+            return
+        }
+        isWorking = true
+        actionError = nil
+        defer { isWorking = false }
+        do {
+            try await album.renameCollection(
+                CollectionRenameInput(collectionId: target.id, name: name))
+            // #11：集合改名/移动是库级数据变更（图库「加入集合」菜单、其它页侧栏都读它）。
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
+            showRenameSheet = false
+            expandAncestors(of: name)
+            await reload()
+            if let updated = collections.first(where: { $0.id == target.id }) {
+                selection = .collection(updated)
+            }
+        } catch {
             actionError = CommandError(error)
         }
     }

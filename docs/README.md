@@ -30,6 +30,10 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 | 人物与人脸关键词 | Vision 分析、簇审核、人物绑定、XMP 写回 |
 | 导出与任务 | 预览、变体输出、JPEG/TIFF、XMP 复制、可恢复任务 |
 
+### 集合层级（命名路径约定）
+
+集合名支持 `A/B/C` 形式的层级路径：侧栏按 `/` 把扁平集合列表组装成树（父节点可以只是分组、没有对应集合记录），新建时可直接输入路径，重命名即「改名/移动」（改父路径 = 换父；父集合改名会连同子集合一起移动）。**这是命名约定，不是数据库父子关系**：`collections` 表仍是扁平表、没有 `parent_id`，真正的 schema 层级（parent_id + 级联策略）需要一次 `user_version` 迁移并另行决策（见 [ROADMAP.md](ROADMAP.md)）。
+
 ## 快速开始
 
 - macOS 26+、Xcode 26+（Swift 6.2+）；Capture One 可选。

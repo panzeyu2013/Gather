@@ -879,6 +879,24 @@
 "在 Capture One 中显示" = "Show in Capture One";
 
 /* Wave3 task-24 */
+
+/* Wave2 收尾 task-27 */
+"集合名称或路径" = "Collection Name or Path";
+"用 / 表示层级，例如 客户A/精选；开头/结尾/连续的分隔符与非法字符会被拒绝。" = "Use / to express nesting, e.g. ClientA/Selects. Leading, trailing or doubled separators and invalid characters are rejected.";
+"分组节点：只是命名层级，没有对应的集合记录" = "Group node: a naming level only, with no collection record";
+"单击打开集合；右键可重命名/移动或新建子集合" = "Click to open the collection; right-click to rename/move or create a child collection";
+"重命名/移动…" = "Rename/Move…";
+"新建子集合…" = "New Child Collection…";
+"重命名/移动集合" = "Rename or Move Collection";
+"当前：%@" = "Current: %@";
+"新的名称或路径" = "New Name or Path";
+"改最后一段 = 改名；改父路径 = 移动；父集合改名会连同子集合一起移动。" = "Change the last segment to rename; change the parent path to move; renaming a parent collection also moves its child collections.";
+"集合路径不能为空" = "The collection path cannot be empty";
+"集合路径不能包含空段（检查开头、结尾或连续的分隔符）" = "The collection path cannot contain empty segments (check leading, trailing or doubled separators)";
+"集合路径过长（最多 200 个字符）" = "The collection path is too long (at most 200 characters)";
+"单层集合名过长（最多 80 个字符）" = "A single collection level is too long (at most 80 characters)";
+"集合名不能包含保留字符（反斜杠、冒号、星号、问号、引号、尖括号、竖线）" = "A collection name cannot contain reserved characters (backslash, colon, asterisk, question mark, quote, angle brackets, vertical bar)";
+"集合名不能是单点或双点" = "A collection name cannot be a single or double dot";
 "迁移与目录包" = "Migration & Library Packages";
 "目录包不含原图：换机或合并时按新根目录重绑定相对路径；XMP 迁移只读已有 sidecar。" = "Packages never embed originals: paths are re-bound under the new root when moving or merging. XMP migration only reads existing sidecars.";
 "导出目录包…" = "Export Library Package…";
@@ -2148,7 +2166,6 @@
 "集合不可用" = "Collections unavailable";
 "集合与跨工作区重复" = "Collections & cross-workspace duplicates";
 "集合加载失败" = "Failed to load collections";
-"集合名称" = "Collection name";
 "集合是空的" = "The collection is empty";
 "集合未接线（宿主未注入 AlbumAPI）" = "Collections not wired (host did not inject AlbumAPI)";
 "高级筛选规则" = "Advanced filter rules";
@@ -2511,3 +2528,30 @@
 "未知错误" = "Unknown error";
 "留空 = 沿用已保存的凭据" = "Empty = reuse saved credentials";
 "发布只是把静态文件写进你自备的存储；应用不托管服务端，也不起本地 web 服务。" = "Publishing writes static files to storage you provide; the app does not host a server or start a local web service.";
+
+/* Wave3 收尾 task-22 */
+"客户名（模板变量 {client}）" = "Client (template variable {client})";
+"保存模板变量" = "Save template variables";
+"留空 = 未设置：模板里的 {client} 会被判为未解析，预览会逐字段列出并禁止应用。" = "Leave empty to keep it unset: {client} in the template is reported as unresolved, listed field by field in the preview, and Apply is disabled.";
+"%lld 处模板变量未解析，禁止应用：" = "%lld template variables are unresolved; applying is disabled:";
+"%@ · %@ · 模板变量 %@ 未解析，已拒绝写入" = "%@ · %@ · template variable %@ is unresolved; write rejected";
+"排除以下任一条件（NOT）" = "Exclude any of the following (NOT)";
+"删除这个 NOT 组" = "Delete this NOT group";
+"逻辑取反" = "Negate logic";
+"添加 NOT 组（排除）" = "Add NOT group (exclude)";
+"相对日期" = "Relative date";
+"本月" = "This month";
+"集合 / 堆栈" = "Collections / stacks";
+"属于集合…" = "In collection…";
+"不属于集合…" = "Not in collection…";
+"属于堆栈…" = "In stack…";
+"快捷规则" = "Quick rules";
+"ID，用逗号分隔" = "IDs, comma-separated";
+"属于任意容器" = "In any container";
+"集合/堆栈 UUID" = "Collection/stack UUID";
+"集合/堆栈 ID 是创建时生成的 UUID：可从保存查询/智能相册的 criteria JSON（collection/stack 规则的 value）复制；本轮为手填入口，粘贴可避免手打 UUID。" = "Collection/stack IDs are creation-time UUIDs: copy one from a saved query or smart album criteria JSON (the value of a collection/stack rule). This build uses manual entry; pasting avoids typos in the UUID.";
+"从剪贴板粘贴 ID" = "Paste ID from clipboard";
+"排除（NOT）：以下条件先按“任一”组合再整体取反" = "Exclude (NOT): the following conditions are OR-ed, then negated";
+"子条件组" = "Condition subgroup";
+"集合成员" = "Collection member";
+"堆栈成员" = "Stack member";
