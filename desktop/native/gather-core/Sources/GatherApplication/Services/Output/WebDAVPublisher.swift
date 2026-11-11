@@ -285,7 +285,13 @@ public final class WebDAVPublisher: Sendable {
             }
             let remoteFile = Self.joinRemote(remoteDirectory, (file.relative as NSString).lastPathComponent)
             do {
-                let data = try Data(contentsOf: URL(fileURLWithPath: file.local))
+                var data = try Data(contentsOf: URL(fileURLWithPath: file.local))
+                // Wave4c（task-47）：严格发布时给 proof.html 打“已声明分享策略”标记；
+                // legacy 发布（share=nil）保持 0/缺省 → proof.js 旧回退。
+                if share != nil {
+                    data = OutputShareProofPage.declaringSharePolicy(
+                        data, relativePath: file.relative)
+                }
                 let response = try await putWithRetry(
                     url: remoteFile, data: data, path: file.relative, configuration: configuration)
                 if response.isSuccess {

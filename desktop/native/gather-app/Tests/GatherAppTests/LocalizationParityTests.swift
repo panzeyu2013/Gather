@@ -294,6 +294,14 @@ struct LocalizationParityTests {
         "相对交付根；留空 = 使用配方名；支持 {session} {date} {time} {recipe}",
     ]
 
+    /// Wave4c（task-50）撤销 scope 持久化后**已被取代**的旧文案：旧"重启后重新写回"
+    /// 提示与"撤销本批…"按钮（改为"撤销上一次写回…"，重开面板/重启后仍可撤销）。
+    /// 同样保留 en 行（只 append），收口时随表行一起删。
+    private static let supersededWave4cKeys: Set<String> = [
+        "没有可撤销的写回批次（先写回一次或重启后重新写回）",
+        "撤销本批…",
+    ]
+
     // MARK: - 测试
 
     @Test("错误码历史 %@ 模板按参数插值（B0/K0 新增码不得显示裸 %@）")
@@ -341,7 +349,9 @@ struct LocalizationParityTests {
         let literals = sourceLiteralKeys()
         // 扫描塌缩时孤儿会虚假膨胀：先用与覆盖性断言同一条下界兜住。
         #expect(literals.count > 1000, "Sources 整段字面量只有 \(literals.count) 个，扫描或路径假设失效")
-        let allowed = Self.testPinnedOrphans.union(Self.supersededWave2Keys)
+        let allowed = Self.testPinnedOrphans
+            .union(Self.supersededWave2Keys)
+            .union(Self.supersededWave4cKeys)
         let used = usedKeys()
         // R5-P1-2：plural 的单数条目（base + "#one"）不在源码字面量里，只能由
         // base key 的引用证明；base 不在用法的 #one 仍是孤儿（下一行会报红）。

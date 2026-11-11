@@ -643,4 +643,133 @@ struct OutputShareTests {
         let filePuts = requests.filter { $0.method == "PUT" && $0.url.absoluteString.contains("/thumbs/") }
         #expect(filePuts.isEmpty, "本地读失败不得上传该文件")
     }
+
+    // MARK: AWS 官方固定向量 + clock skew/重复头失败用例（Wave4c / task-51）
+
+    @Test("SigV4：AWS 官方 PUT Object 固定向量（canonical request / 签名密钥逐步 / 签名）")
+    func sigV4AWSPutObjectFixedVector() {
+        let payloadHash = "44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072"
+        let headers = [
+            "date": "Fri, 24 May 2013 00:00:00 GMT",
+            "host": "examplebucket.s3.amazonaws.com",
+            "x-amz-content-sha256": payloadHash,
+            "x-amz-date": "20130524T000000Z",
+            "x-amz-storage-class": "REDUCED_REDUNDANCY",
+        ]
+        let signedHeaders = [
+            "date", "host", "x-amz-content-sha256", "x-amz-date", "x-amz-storage-class",
+        ]
+        let expectedCanonical = #"""
+PUT
+/test%24file.text
+
+date:Fri, 24 May 2013 00:00:00 GMT
+host:examplebucket.s3.amazonaws.com
+x-amz-content-sha256:44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072
+x-amz-date:20130524T000000Z
+x-amz-storage-class:REDUCED_REDUNDANCY
+
+date;host;x-amz-content-sha256;x-amz-date;x-amz-storage-class
+44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072
+"""#
+        let canonical = S3SigV4.canonicalRequest(
+            method: "PUT", canonicalURI: "/test%24file.text",
+            headers: headers, signedHeaders: signedHeaders, payloadHash: payloadHash)
+        #expect(canonical == expectedCanonical)
+        #expect(S3SigV4.sha256Hex(Data(canonical.utf8))
+                == "9e0e90d9c76de8fa5b200d8c849cd5b8dc7a3be3951ddb7f6a76b4158342019d")
+
+        let steps = S3SigV4.signingKeySteps(
+            secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            date: "20130524", region: "us-east-1", service: "s3")
+        func hex(_ data: Data) -> String {
+            data.map { String(format: "%02x", $0) }.joined()
+        }
+        #expect(hex(steps.dateKey)
+                == "68896419206d6240ad4cd7dc8ba658efbf3b43b53041950083a10833824fcfbb")
+        #expect(hex(steps.regionKey)
+                == "0506335cc36b4a971f6beddf0adbd976ee71222cb42c131487e0c12c5c47a025")
+        #expect(hex(steps.serviceKey)
+                == "05602c14e8b6aad30e7f6dec4b544071f6e4a742934bc5e36415733c47a67d44")
+        #expect(hex(steps.signingKey)
+                == "dbb893acc010964918f1fd433add87c70e8b0db6be30c1fbeafefa5ec6ba8378")
+
+        let signature = S3SigV4.signature(
+            secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            date: "20130524", region: "us-east-1",
+            timestamp: "20130524T000000Z", method: "PUT",
+            canonicalURI: "/test%24file.text", headers: headers,
+            signedHeaders: signedHeaders, payloadHash: payloadHash)
+        #expect(signature
+                == "98ad721746da40c64f1a55b78f14c238d841ea1380cd77a1b5971af0ece108bd")
+    }
+
+    @Test("SigV4：x-amz-security-token + header 空白折叠固定向量（Wave4c）")
+    func sigV4TokenWhitespaceFixedVector() {
+        let payloadHash = "44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072"
+        let headers = [
+            "host": "examplebucket.s3.amazonaws.com",
+            "x-amz-content-sha256": payloadHash,
+            "x-amz-date": "20130524T000000Z",
+            "x-amz-security-token": "TOKEN-EXAMPLE-123",
+            "x-amz-storage-class": "  REDUCED   REDUNDANCY  ",
+        ]
+        let signedHeaders = [
+            "host", "x-amz-content-sha256", "x-amz-date",
+            "x-amz-security-token", "x-amz-storage-class",
+        ]
+        #expect(S3SigV4.canonicalHeaderValue("  a   b  ") == "a b")
+        #expect(S3SigV4.canonicalHeaderValue("  REDUCED   REDUNDANCY  ")
+                == "REDUCED REDUNDANCY")
+        let expectedCanonical = #"""
+PUT
+/test%24file.text
+
+host:examplebucket.s3.amazonaws.com
+x-amz-content-sha256:44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072
+x-amz-date:20130524T000000Z
+x-amz-security-token:TOKEN-EXAMPLE-123
+x-amz-storage-class:REDUCED REDUNDANCY
+
+host;x-amz-content-sha256;x-amz-date;x-amz-security-token;x-amz-storage-class
+44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072
+"""#
+        let canonical = S3SigV4.canonicalRequest(
+            method: "PUT", canonicalURI: "/test%24file.text",
+            headers: headers, signedHeaders: signedHeaders, payloadHash: payloadHash)
+        #expect(canonical == expectedCanonical)
+        #expect(S3SigV4.sha256Hex(Data(canonical.utf8))
+                == "74599c6f94ad77a462abf520fafa6517387d0846846b505d694d95924e63a53d")
+        let signature = S3SigV4.signature(
+            secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            date: "20130524", region: "us-east-1",
+            timestamp: "20130524T000000Z", method: "PUT",
+            canonicalURI: "/test%24file.text", headers: headers,
+            signedHeaders: signedHeaders, payloadHash: payloadHash)
+        #expect(signature
+                == "d63da51aa08b7349b33cdc14fcf6e6b86302982035c2559ac7863551e39deecd")
+    }
+
+    @Test("SigV4：clock skew / 重复头 / 非法时间戳失败用例（Wave4c）")
+    func sigV4ValidationFailures() {
+        let now = Date()
+        let fresh = S3SigV4.timestamp(now)
+        #expect(S3SigV4.validationFailure(timestamp: fresh, now: now) == nil)
+        #expect(S3SigV4.validationFailure(
+            timestamp: "2026-11-11T00:00:00Z", now: now) == .invalidTimestamp)
+        #expect(S3SigV4.validationFailure(
+            timestamp: S3SigV4.timestamp(now.addingTimeInterval(3600)),
+            now: now) == .clockSkew)
+        #expect(S3SigV4.validationFailure(
+            timestamp: fresh, signedHeaders: ["host", "host"],
+            now: now) == .duplicateSignedHeader)
+        #expect(S3SigV4.validationFailure(
+            timestamp: fresh, signedHeaders: [], now: now) == .emptySignedHeader)
+        #expect(S3SigV4.validationFailure(
+            timestamp: fresh, signedHeaders: ["host", ""],
+            now: now) == .emptySignedHeader)
+        #expect(S3SigV4.validationFailure(
+            timestamp: fresh, signedHeaders: ["Host"],
+            now: now) == .uppercaseSignedHeader)
+    }
 }

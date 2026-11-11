@@ -2604,3 +2604,11 @@
 /* Wave4b task-42 */
 "当前版本按纵向版面排版；需要横向请选择更宽的纸张（如 10 × 8 英寸）。" = "This version prints in portrait; choose a wider paper (e.g. 10 × 8 in) for landscape.";
 "选择集超过上限：本次只打印前 %lld 张，另有 %lld 张未包含。" = "Selection exceeds the limit: only the first %lld photos will print; %lld more are excluded.";
+
+/* Wave4c / task-50：撤销 scope 持久化后的文案 */
+"没有可撤销的写回批次（先写回一次）。" = "There is no writeback batch to undo (write once first).";
+"撤销上一次写回…" = "Undo last writeback…";
+"上一次写回可撤销：关闭面板或重启 App 后仍可撤销。" = "The last writeback can be undone: it stays available after closing the panel or restarting the app.";
+/* Wave4c task-48 */
+"有 %lld 项 C1 判断待重试（扫描未成功，写入可能被覆盖）" = "%lld C1 judgments are waiting to retry (scan did not succeed; writes may be overwritten)";
+"重试同步" = "Retry Sync";

@@ -99,11 +99,17 @@ struct LibraryFingerprintWave4Tests {
             db, id: "p-unhashed", sessionId: "s1",
             filepath: "/tmp/wave4a-c.jpg", checksum: "", size: 0, archived: false)
 
-        let rows = try PhotoRepo(connection: db).libraryFingerprints(matchingSizes: [10])
+        let repo = PhotoRepo(connection: db)
+        let rows = try repo.libraryFingerprints(matchingSizes: [10])
         let ids = Set(rows.map(\.photoId))
         #expect(ids.contains("p-hashed"))
         #expect(!ids.contains("p-archived"), "archived 的 _rejects 照片不能被 replace 命中")
-        #expect(ids.contains("p-unhashed"), "未回填行要交给上层 stat/懒算")
+        #expect(!ids.contains("p-unhashed"), "Wave4c：未回填候选走独立的分页查询")
+        // Wave4c（task-49）：未回填候选按 rowid 游标分页取，不再硬 LIMIT 500。
+        let page = try repo.libraryUnhashedFingerprints(afterRowId: 0)
+        let unhashedIds = Set(page.rows.map(\.photoId))
+        #expect(unhashedIds.contains("p-unhashed"))
+        #expect(!unhashedIds.contains("p-archived"), "分页同样只取可见行")
     }
 
     @Test("F1 size 命中才懒算；摄取路径回填 checksum")

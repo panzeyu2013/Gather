@@ -45,8 +45,8 @@ struct ProofPageScriptTests {
         #expect(process.terminationStatus == 0,
                 "proof.js JS 级行为不符合预期：\(output)")
         for marker in [
-            "OK fail-closed", "OK legacy-file-fallback", "OK expiry-locked",
-            "OK unlocked-download", "OK password-gate",
+            "OK fail-closed", "OK legacy-no-share", "OK legacy-file-fallback",
+            "OK expiry-locked", "OK unlocked-download", "OK password-gate",
         ] {
             #expect(output.contains(marker), "缺少场景断言：\(marker)（output=\(output)）")
         }
@@ -93,7 +93,7 @@ function makeElement(id) {
   return el;
 }
 
-function runScenario(origin, fetchImpl) {
+function runScenario(origin, fetchImpl, expectShare) {
   return new Promise(function (resolve) {
     var ids = ['picked', 'locked-note', 'expiry-note', 'password-gate',
                'gate-password', 'gate-submit', 'gate-error', 'download',
@@ -107,6 +107,12 @@ function runScenario(origin, fetchImpl) {
     var state = { blobCreated: false };
     var documentStub = {
       title: '客户校样',
+      documentElement: {
+        getAttribute: function (name) {
+          if (name === 'data-gather-expect-share') { return expectShare ? '1' : '0'; }
+          return null;
+        }
+      },
       body: { classList: {
         add: function (name) { bodyClasses.add(name); },
         remove: function (name) { bodyClasses.delete(name); },
@@ -168,7 +174,7 @@ async function main() {
   var r;
 
   // 1) http(s) 拿不到 share.json：fail-closed（页面锁定，不生成提交文件）
-  r = await runScenario('https:', function () { return Promise.reject(new Error('missing')); });
+  r = await runScenario('https:', function () { return Promise.reject(new Error('missing')); }, true);
   expect(r.bodyClasses.has('gate-pending'), 'fail-closed 应保持 gate-pending');
   expect(r.elements['download'].disabled === true, 'fail-closed 应禁用下载');
   expect(/无法读取分享配置/.test(r.elements['locked-note'].textContent),
@@ -176,8 +182,14 @@ async function main() {
   expect(r.state.blobCreated === false, 'fail-closed 不得生成 selection.json');
   lines.push('OK fail-closed');
 
+  // 1b) http(s) 且页面未声明分享策略（legacy share=nil 发布）：保持旧回退。
+  r = await runScenario('https:', function () { return Promise.reject(new Error('missing')); }, false);
+  expect(r.bodyClasses.has('gate-pending') === false, 'legacy 未声明分享策略应放行');
+  expect(r.state.blobCreated === true, 'legacy 页面应能生成 selection.json');
+  lines.push('OK legacy-no-share');
+
   // 2) file:// 本地预览：保留旧回退（可下载选择文件）
-  r = await runScenario('file:', function () { return Promise.reject(new Error('missing')); });
+  r = await runScenario('file:', function () { return Promise.reject(new Error('missing')); }, true);
   expect(r.bodyClasses.has('gate-pending') === false, 'file:// 本地预览应放行');
   expect(r.state.blobCreated === true, 'file:// 本地预览应能生成 selection.json');
   lines.push('OK legacy-file-fallback');
@@ -186,7 +198,7 @@ async function main() {
   var expiredShare = { version: 1, expiresAt: '2000-01-01T00:00:00Z' };
   r = await runScenario('https:', function () {
     return Promise.resolve({ ok: true, json: function () { return Promise.resolve(expiredShare); } });
-  });
+  }, true);
   expect(r.bodyClasses.has('locked'), '到期应进入 locked 态');
   expect(r.elements['download'].disabled === true, '到期必须禁用下载');
   expect(/已过期/.test(r.elements['download'].textContent), '到期按钮文案应明示只读');
@@ -197,7 +209,7 @@ async function main() {
   var normalShare = { version: 1, expiresAt: '2099-01-01T00:00:00Z' };
   r = await runScenario('https:', function () {
     return Promise.resolve({ ok: true, json: function () { return Promise.resolve(normalShare); } });
-  });
+  }, true);
   expect(r.bodyClasses.has('gate-pending') === false, '正常分享应解锁内容');
   expect(r.elements['download'].disabled === false, '正常分享下载应可用');
   expect(r.state.blobCreated === true, '正常分享应能生成 selection.json');
@@ -208,7 +220,7 @@ async function main() {
                     passwordHash: 'deadbeef', passwordSalt: '00', passwordIterations: 1 };
   r = await runScenario('https:', function () {
     return Promise.resolve({ ok: true, json: function () { return Promise.resolve(gateShare); } });
-  });
+  }, true);
   expect(r.bodyClasses.has('gated'), '口令分享应进入 gated 态');
   expect(r.elements['password-gate'].hidden === false, '口令输入应显示');
   expect(r.state.blobCreated === false, '未通过口令不得生成 selection.json');

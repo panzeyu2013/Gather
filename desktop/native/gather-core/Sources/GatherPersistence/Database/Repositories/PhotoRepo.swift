@@ -418,19 +418,13 @@ public final class PhotoRepo: Sendable {
     /// 全库指纹（跨会话导入去重 / replace 目标定位）。只读。
     ///
     /// matchingSizes 非空时已回填行按块 IN 预筛（大小不同必不是同内容）；
-    /// 空集合 = 不限大小（调用方明确要全库时）。未回填行按 unhashedLimit 截断——
-    /// 它们只有 filepath，size 由 Application 侧 stat 后再决定是否哈希。
+    /// 空集合 = 不限大小（调用方明确要全库时）。
     ///
     /// - Wave4a-F5：只返回**可见**行（archived_at IS NULL）——已淘汰移出（_rejects）
     ///   的照片不参与去重，也不能被 replace 策略覆盖。
-    /// - Wave4a-F1：除已回填 checksum 的行外，**同时返回未回填**（checksum = ''）的
-    ///   可见行（checksum 空、size 0）。懒索引常态下只查已回填会让跨工作区去重整体
-    ///   失效；Application 侧对这些候选先 stat 做 size 预筛、命中才 SHA-256 并回填。
-    /// 未回填候选带上限（避免一次摄取把整库逐张 stat）。上限是**实现细节**，不进
-    /// 协议签名：PhotoRepository 的 requirement 是一参数版本，额外参数会让
-    /// PhotoRepo 的 conformance 失配（默认参数不参与函数类型）。
-    private static let unhashedFingerprintLimit = 500
-
+    /// - Wave4c（task-49）：未回填 checksum 的候选不再混在这里（旧实现硬 LIMIT 500，
+    ///   大库会部分失效）；改由 `libraryUnhashedFingerprints(afterRowId:limit:)`
+    ///   按 rowid 游标分页拉取，调用方循环到不足一批为止。
     public func libraryFingerprints(
         matchingSizes: Set<Int>
     ) throws -> [LibraryPhotoFingerprint] {
@@ -453,14 +447,6 @@ public final class PhotoRepo: Sendable {
                 ).query(chunk.map { DBValue.int(Int64($0)) }))
             }
         }
-        rows.append(contentsOf: try connection.prepare("""
-            SELECT id, session_id, filepath, checksum,
-                   checksum_file_size, checksum_file_mtime_ms
-              FROM photos
-             WHERE checksum = '' AND \(visible)
-             ORDER BY rowid
-             LIMIT ?
-            """).query([.int(Int64(Self.unhashedFingerprintLimit))]))
         return rows.map { row in
             LibraryPhotoFingerprint(
                 photoId: row[0].textValue ?? "",
@@ -471,6 +457,46 @@ public final class PhotoRepo: Sendable {
                 fileMtimeMs: row[5].doubleValue ?? 0
             )
         }
+    }
+
+    /// Wave4c（task-49）：未回填 checksum 候选的**每批上限**（rowid 游标分页）。
+    /// 调用方循环：先 afterRowId=0，拿到不足一批即停止；不要硬 LIMIT 截断，
+    /// 否则 >500 个未回填行的大库跨会话去重会部分失效（审计发现）。
+    public static let libraryUnhashedPageSize = 500
+
+    /// 未回填 checksum 的可见照片，按 rowid > afterRowId 游标分页。
+    ///
+    /// 为什么单独一个方法而不是塞进 libraryFingerprints：PhotoRepository 的
+    /// requirement 是一参数版本，给协议方法加带默认值的参数会让 PhotoRepo 的
+    /// conformance 失配（默认参数不参与函数类型）。这里用 rowid 游标页，
+    /// 返回 (rows, lastRowId) 供调用方续页。
+    public func libraryUnhashedFingerprints(
+        afterRowId: Int64,
+        limit: Int = PhotoRepo.libraryUnhashedPageSize
+    ) throws -> (rows: [LibraryPhotoFingerprint], lastRowId: Int64) {
+        let visible = PhotoVisibility.visiblePredicate(alias: "")
+        let rows = try connection.prepare("""
+            SELECT rowid, id, session_id, filepath, checksum,
+                   checksum_file_size, checksum_file_mtime_ms
+              FROM photos
+             WHERE checksum = '' AND \(visible) AND rowid > ?
+             ORDER BY rowid
+             LIMIT ?
+            """).query([.int(afterRowId), .int(Int64(max(1, limit)))])
+        var fingerprints: [LibraryPhotoFingerprint] = []
+        var lastRowId = afterRowId
+        for row in rows {
+            lastRowId = max(lastRowId, row[0].intValue ?? afterRowId)
+            fingerprints.append(LibraryPhotoFingerprint(
+                photoId: row[1].textValue ?? "",
+                sessionId: row[2].textValue ?? "",
+                filepath: row[3].textValue ?? "",
+                checksum: row[4].textValue ?? "",
+                fileSize: Int(row[5].intValue ?? 0),
+                fileMtimeMs: row[6].doubleValue ?? 0
+            ))
+        }
+        return (fingerprints, lastRowId)
     }
 
     /// WP3b-1（ExportService.session_summary 下沉）：旧查询列序逐字保留。

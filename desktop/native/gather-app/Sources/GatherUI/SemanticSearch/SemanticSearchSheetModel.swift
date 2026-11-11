@@ -3,6 +3,9 @@
 //
 // 产品边界（ROADMAP §七）：**不做**自然语言/CLIP 文搜；这里是"Vision 标签的词面
 // 检索"（英文标签 + UI 本地化映射）与"多选平均向量找同类"，两条都不需要新模型资产。
+//
+// Wave4c / task-50：撤销 scope（上次写回的 appliedPhotoIds）落会话级 JSON 文件
+// （见 SemanticKeywordBatchStore.swift），面板重开/App 重启后仍可撤销上一次写回。
 import Foundation
 import Observation
 import GatherProtocol
@@ -40,11 +43,32 @@ final class SemanticSearchSheetModel {
     /// 上一次"写回"实际落到的照片 id（服务端返回，E2）：撤销时作为 photoIds 回传，
     /// 让"撤销本批"只清本批写过的照片，而不是整个会话的 AI 场景子树。
     private(set) var lastWriteScopePhotoIds: [String] = []
+    /// 上一次写回批次的持久化保存时间（Wave4c：从磁盘加载时来自记录；nil = 没写过）。
+    private(set) var lastBatchSavedAt: String?
+    /// 撤销 scope 的会话级持久化（重开面板 / 重启 App 后仍可撤销上一次写回）。
+    let batchStore: any SemanticKeywordBatchStoring
+    private let timestamp: () -> String
 
-    init(api: any PhotoAPI, sessionId: String, seedPhotoIds: [String]) {
+    init(
+        api: any PhotoAPI,
+        sessionId: String,
+        seedPhotoIds: [String],
+        batchStore: (any SemanticKeywordBatchStoring)? = nil,
+        timestamp: @escaping () -> String = {
+            ISO8601DateFormatter().string(from: Date())
+        }
+    ) {
         self.api = api
         self.sessionId = sessionId
         self.seedPhotoIds = seedPhotoIds
+        self.batchStore = batchStore ?? FileSemanticKeywordBatchStore()
+        self.timestamp = timestamp
+        // 启动即恢复上一次写回批次：面板重开/App 重启后"撤销"入口仍可用。
+        if let record = self.batchStore.load(sessionId: sessionId), !record.photoIds.isEmpty {
+            self.lastWriteScopePhotoIds = record.photoIds
+            self.canUndoWriteback = true
+            self.lastBatchSavedAt = record.savedAt
+        }
     }
 
     /// 标签检索词（逗号/空白分隔；Vision 标签是英文原串，UI 直接展示匹配到的标签）。
@@ -123,7 +147,7 @@ final class SemanticSearchSheetModel {
     func applyWriteback(_ action: WritebackAction, l10n: L10n) async {
         let undoScope = lastWriteScopePhotoIds
         if action == .undo && undoScope.isEmpty {
-            notice = l10n("没有可撤销的写回批次（先写回一次或重启后重新写回）")
+            notice = l10n("没有可撤销的写回批次（先写回一次）。")
             return
         }
         await run {
@@ -142,12 +166,24 @@ final class SemanticSearchSheetModel {
                 .culling, sessionId: self.sessionId, origin: "semantic-keywords")
             if action == .undo {
                 self.lastWriteScopePhotoIds = []
+                self.lastBatchSavedAt = nil
                 self.canUndoWriteback = false
+                // 撤销成功（或本批已无可移除词）：持久化批次一并清掉，避免旧入口复活。
+                self.batchStore.clear(sessionId: self.sessionId)
                 self.notice = l10n.format(
                     "已撤销 %lld 个场景关键词", Int64(result.keywordsRemoved))
-            } else {
+            } else if !result.appliedPhotoIds.isEmpty {
+                // 只有真正写到了照片才更新"上一次写回"：空写不能覆盖上一批的撤销入口。
                 self.lastWriteScopePhotoIds = result.appliedPhotoIds
-                self.canUndoWriteback = !result.appliedPhotoIds.isEmpty
+                self.canUndoWriteback = true
+                let record = SemanticKeywordBatchRecord(
+                    photoIds: result.appliedPhotoIds,
+                    batchId: result.batchId,
+                    savedAt: self.timestamp(),
+                    keywordsAdded: result.keywordsAdded,
+                    keywordsRemoved: 0)
+                self.batchStore.save(record, sessionId: self.sessionId)
+                self.lastBatchSavedAt = record.savedAt
             }
             if action == .write {
                 if result.failedPhotoIds.isEmpty {

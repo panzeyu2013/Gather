@@ -87,15 +87,83 @@ public enum S3SigV4 {
         Data(HMAC<SHA256>.authenticationCode(for: data, using: SymmetricKey(data: key)))
     }
 
+    /// 签名密钥派生的中间值（Wave4c：给 AWS 向量做逐步断言）。
+    public struct SigningKeySteps: Equatable, Sendable {
+        public var dateKey: Data
+        public var regionKey: Data
+        public var serviceKey: Data
+        public var signingKey: Data
+
+        public init(dateKey: Data, regionKey: Data, serviceKey: Data, signingKey: Data) {
+            self.dateKey = dateKey
+            self.regionKey = regionKey
+            self.serviceKey = serviceKey
+            self.signingKey = signingKey
+        }
+    }
+
+    /// 请求校验失败原因（Wave4c：clock skew/重复头等失败用例可测）。
+    public enum ValidationFailure: String, Codable, Equatable, Sendable {
+        case invalidTimestamp
+        case clockSkew
+        case emptySignedHeader
+        case duplicateSignedHeader
+        case uppercaseSignedHeader
+    }
+
+    /// 派生签名密钥的每一步：kSecret → kDate → kRegion → kService → kSigning。
+    public static func signingKeySteps(
+        secretAccessKey: String, date: String, region: String,
+        service: String = S3SigV4.service
+    ) -> SigningKeySteps {
+        let dateKey = hmacSHA256(
+            key: Data("AWS4\(secretAccessKey)".utf8), data: Data(date.utf8))
+        let regionKey = hmacSHA256(key: dateKey, data: Data(region.utf8))
+        let serviceKey = hmacSHA256(key: regionKey, data: Data(service.utf8))
+        let signingKey = hmacSHA256(key: serviceKey, data: Data("aws4_request".utf8))
+        return SigningKeySteps(
+            dateKey: dateKey, regionKey: regionKey,
+            serviceKey: serviceKey, signingKey: signingKey)
+    }
+
     /// 派生签名密钥：kSecret → kDate → kRegion → kService → kSigning。
     public static func signingKey(
         secretAccessKey: String, date: String, region: String, service: String = S3SigV4.service
     ) -> Data {
-        var key = hmacSHA256(
-            key: Data("AWS4\(secretAccessKey)".utf8), data: Data(date.utf8))
-        key = hmacSHA256(key: key, data: Data(region.utf8))
-        key = hmacSHA256(key: key, data: Data(service.utf8))
-        return hmacSHA256(key: key, data: Data("aws4_request".utf8))
+        signingKeySteps(
+            secretAccessKey: secretAccessKey, date: date,
+            region: region, service: service).signingKey
+    }
+
+    /// 签名请求的前置校验：时间戳可解析且在允许偏差内、SignedHeaders 非空/
+    /// 小写/无重复。nil = 合法。
+    ///
+    /// 生产请求的时间戳由本机生成，正常不会失败；该 API 供外部调用方与测试显式
+    /// 覆盖 clock skew/重复头等失败用例（而不是让失败在服务器侧才暴露）。
+    public static func validationFailure(
+        timestamp: String,
+        signedHeaders: [String] = signedHeaderNames,
+        now: Date = Date(),
+        toleranceSeconds: TimeInterval = 900
+    ) -> ValidationFailure? {
+        if signedHeaders.isEmpty { return .emptySignedHeader }
+        var seen = Set<String>()
+        for header in signedHeaders {
+            if header.isEmpty { return .emptySignedHeader }
+            if header != header.lowercased() { return .uppercaseSignedHeader }
+            if !seen.insert(header).inserted { return .duplicateSignedHeader }
+        }
+        guard let parsed = parseTimestamp(timestamp) else { return .invalidTimestamp }
+        if abs(parsed.timeIntervalSince(now)) > toleranceSeconds { return .clockSkew }
+        return nil
+    }
+
+    private static func parseTimestamp(_ value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        return formatter.date(from: value)
     }
 
     public static func scope(date: String, region: String, service: String = S3SigV4.service) -> String {
@@ -357,13 +425,17 @@ public final class S3ShareTransport: OutputShareTransport {
             let key = Self.joinKey(prefix, file.relative)
             // Wave4b：本地文件读取失败必须报 LOCAL_IO（不是 NETWORK、不重试），
             // 与真实网络错误分开，避免把"文件没了"误诊成网络抖动。
-            let data: Data
+            var data: Data
             do {
                 data = try Data(contentsOf: URL(fileURLWithPath: file.local))
             } catch {
                 failures.append(OutputSharePublishFailure(
                     path: file.relative, reason: Self.localReadFailureReason(error)))
                 continue
+            }
+            if request.share != nil {
+                data = OutputShareProofPage.declaringSharePolicy(
+                    data, relativePath: file.relative)
             }
             do {
                 let response = try await putWithRetry(

@@ -162,3 +162,23 @@
 
 - P0 修复后：**core 1814 tests / 263 suites + 25 / 4、app 967 tests / 128 suites 全绿；protocol-surface/cleanup/design-system/test-catalog 门禁全绿**。
 - P1/P2 未动：本报告的 §3/§4 仍是**待修清单**，建议按 §7 的 Wave 4 顺序推进（先正确性高频路径，再用户可见完整性，最后设计收敛）。
+
+## 11. 全量修复执行记录（Wave 4a / 4b / 4c，2026-11-11）
+
+用户要求「全量修复所有问题」后，按本报告 §7 的顺序分三批执行（每批 Lead 统一跑全量套件 + 12 门禁后提交）：
+
+| 批次 | commit | 范围 | 结果 |
+| --- | --- | --- | --- |
+| Wave 4a | `110d583a` | §3 全部 P1：C1 A1–A5、挑片 B1–B3、导出 C1–C5、元数据 D2–D4、AI E1–E5、组织 F1–F5 + L1/L2 | 全修 + 回归测试 |
+| Wave 4b | `b7ba51b4` | §4 P2：C1 诊断链、挑片性能/打印卫生、分享可测性与脱敏、AI facet/dedupeKey/广播/评估、组织 NOT/差集/折叠、打印渲染与第二屏只读测试 | 全修 + 测试补齐 |
+| Wave 4c | 见随提交 | 对抗审计发现的「半修」：legacy share=nil × 新 proof.js 回归、A2 判断无重试、F1 候选 LIMIT 500、E2 撤销 scope 不持久、C4 AWS 官方向量 | 修复中/已修 |
+
+关键取舍（明确记录，不再视为未修）：
+- C1 reject 不写回（C1 16.7 无 reject 位；UI 已说明），pick 只写 keep。
+- A2 改为「仅 succeeded 落库」后失败即待重试（4c 补自动重放），不再静默覆盖。
+- proof.js 对 http(s) 缺 share.json fail-closed；legacy 未声明分享策略的包保留旧回退（4c 修回归）。
+- 跨会话去重默认 .skip 且 UI 可见（重复处置三选一 + 预检计数）；恢复场景需 .coexist。
+- 撤销 scope 持久化最小实现（settings 上一批），跨设备/清除设置后不可撤销。
+- 未做：集合层级 schema parent_id（沿用名称路径约定）、服务端托管分享（保持 S3/WebDAV + 客户端口令/到期）、感知相似度结论（依赖人工标注集）。
+
+验证（每批提交前）：core / app 全量测试 + protocol-surface/design-system/cleanup/layering/coded-errors/domain-events/domain-writes/duplicate-symbols/select-star/no-legacy/test-catalog/warnings 全绿。

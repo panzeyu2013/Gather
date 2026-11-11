@@ -312,7 +312,7 @@ public enum GalleryBuilder {
         }.joined(separator: "\n")
         return """
         <!doctype html>
-        <html lang="zh">
+        <html lang="zh" data-gather-expect-share="0">
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -370,7 +370,7 @@ public enum GalleryBuilder {
         }.joined(separator: "\n")
         return """
         <!doctype html>
-        <html lang="zh">
+        <html lang="zh" data-gather-expect-share="0">
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -521,6 +521,15 @@ public enum GalleryBuilder {
       // Wave4a-C2：到期只读；C1：share.json 读不到时 fail-closed（http 发布）。
       var expired = false;
       var shareLoadFailed = false;
+      // Wave4c（task-47）：只有发布方声明了分享策略（严格发布时由发布器把
+      // data-gather-expect-share 改成 1）才在 share.json 缺失时 fail-closed；
+      // legacy share=nil 发布/手工上传的页面（标记为 0/缺省）保持旧回退。
+      var expectsShare = false;
+      if (document.documentElement
+          && typeof document.documentElement.getAttribute === 'function') {
+        expectsShare = document.documentElement
+          .getAttribute('data-gather-expect-share') === '1';
+      }
       var gate = document.getElementById('password-gate');
       var gateInput = document.getElementById('gate-password');
       var gateSubmit = document.getElementById('gate-submit');
@@ -794,10 +803,12 @@ public enum GalleryBuilder {
       // C1：http(s) 发布却读不到 share.json —— 保持门槛关闭（fail-closed），
       // 不再退回“无口令/无到期”的放行页；file:// 本地预览保留旧回退。
       function handleShareUnavailable() {
-        if (window.location.protocol === 'file:') {
+        // file:// 本地预览 / legacy 包（未声明分享策略）→ 旧回退：放行。
+        if (window.location.protocol === 'file:' || !expectsShare) {
           document.body.classList.remove('gate-pending');
           return;
         }
+        // 声明了分享策略（新发布包）却拿不到 share.json：fail-closed。
         shareLoadFailed = true;
         setActionsDisabled(true);
         if (note) {

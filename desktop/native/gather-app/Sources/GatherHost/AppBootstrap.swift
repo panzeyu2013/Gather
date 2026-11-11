@@ -90,6 +90,8 @@ package final class AppBootstrap {
     @ObservationIgnored private var runtime: AppRuntime?
     /// P0 / B0：维护服务（自动备份调度器随启动/停机接线；与 scene 同一实例）。
     @ObservationIgnored private var maintenanceService: MaintenanceService?
+    /// Wave4c / task-48：C1 判断 pending 重放器（扫描失败/超时后自动补落库）。
+    @ObservationIgnored private var c1PendingReplay: C1PendingJudgementReplay?
 
     /// 启动装配。顺序与拆分前 `GatherApp.bootstrap` 逐行一致：
     /// 目录 → 库 → 组合根 → AppServices → 冷启动语言 → runtime.start →
@@ -108,7 +110,7 @@ package final class AppBootstrap {
         noticeMessage = nil
         defer { isStarting = false }
         do {
-            let (state, runtime, maintenance, archived) = try await Self.makeScene(
+            let (state, runtime, maintenance, archived, c1PendingReplay) = try await Self.makeScene(
                 delegate: delegate,
                 applicationSupportDirectory: applicationSupportDirectory,
                 // 4a-3a：语言唯一写入口由装配层持有，冷启动在这里播种。
@@ -118,6 +120,11 @@ package final class AppBootstrap {
             self.runtime = runtime
             self.maintenanceService = maintenance
             self.scene = state
+            self.c1PendingReplay = c1PendingReplay
+            // Wave4c / task-48：状态条"重试同步"按钮 → pending 重放器（同一 apply 口径）。
+            C1PendingJudgementStore.shared.onRetry = { sessionId in
+                await c1PendingReplay.retry(sessionId: sessionId)
+            }
             if let archived {
                 noticeMessage = languageStore.l10n.format(
                     "旧数据库已归档到 %@（原版本 %@），已重建空库。备份可随时移回。",
@@ -161,6 +168,11 @@ package final class AppBootstrap {
     /// 优雅停机（ADR-023）：委托唯一 AppRuntime（幂等）。
     /// 启动未完成/失败时为 no-op（与拆分前「Delegate 回调未挂载」语义一致）。
     package func shutdown() async {
+        // Wave4c / task-48：先停 pending 重放（避免停机后仍尝试写库），再清 UI 计数。
+        await c1PendingReplay?.shutdown()
+        c1PendingReplay = nil
+        C1PendingJudgementStore.shared.onRetry = nil
+        C1PendingJudgementStore.shared.reset()
         SessionDirectoryMonitor.shared.stopAll()
         if let maintenanceService {
             await maintenanceService.stopScheduler()
@@ -176,7 +188,9 @@ package final class AppBootstrap {
         applicationSupportDirectory: URL?,
         languageStore: LanguageStore,
         commandCenter: AppCommandCenter
-    ) async throws -> (SceneState, AppRuntime, MaintenanceService, ArchivedDatabase?) {
+    ) async throws -> (
+        SceneState, AppRuntime, MaintenanceService, ArchivedDatabase?, C1PendingJudgementReplay
+    ) {
         let applicationSupport: URL
         if let applicationSupportDirectory {
             applicationSupport = applicationSupportDirectory
@@ -454,7 +468,7 @@ package final class AppBootstrap {
         GatherAutomationRuntimeRegistry.current = automationRuntime
         let photoRepo = composition.photoRepo
 
-        wire(
+        let c1PendingReplay = wire(
             delegate: delegate,
             composition: composition,
             sessionAPI: appServices.session,
@@ -549,7 +563,8 @@ package final class AppBootstrap {
             ),
             runtime,
             composition.maintenanceService,
-            archivedDatabase
+            archivedDatabase,
+            c1PendingReplay
         )
     }
 
@@ -597,8 +612,30 @@ package final class AppBootstrap {
         captureOneJudgements: @escaping @Sendable () async throws -> C1SelectionSnapshot,
         resolvePhotoSession: @escaping @Sendable (String) -> String?,
         languageStore: LanguageStore
-    ) {
-        guard let delegate else { return }
+    ) -> C1PendingJudgementReplay {
+        // Wave4c / task-48（A2 半修）：扫描非 succeeded 时登记 pending，下一次成功/手动
+        // 重试时自动重放；计数经 onStateChange 广播给 UI 状态条（GatherUI/Metadata）。
+        // 只捕获 Sendable 的 DBConnection（不把整个组合根拖进 @Sendable 闭包）。
+        let replayDatabase = composition.db
+        let c1PendingReplay = C1PendingJudgementReplay(
+            apply: { sessionId, judgements in
+                let service = C1JudgementImport.makeService(database: replayDatabase)
+                return await service.applyAfterIndexing(
+                    sessionId: sessionId,
+                    judgements: judgements,
+                    scanStatus: C1JudgementImport.scanStatusProvider(
+                        database: replayDatabase),
+                    // 重试路径的等待上限压到 60s：状态条"重试同步"不应被一次长扫描
+                    // 卡住 10 分钟；仍未成功就保留 pending 等下一次。
+                    timeout: .seconds(60))
+            },
+            onStateChange: { sessionId, count in
+                Task { @MainActor in
+                    C1PendingJudgementStore.shared.setCount(
+                        sessionId: sessionId, count: count)
+                }
+            })
+        guard let delegate else { return c1PendingReplay }
         // Cut 4 / 4b-3：界面语言源注入 Delegate（导入面板文案在动作发生时读它）；
         // 导入闭包同样在**动作发生时**取 store.l10n，不缓存字符串。
         delegate.languageStore = languageStore
@@ -688,7 +725,18 @@ package final class AppBootstrap {
                         C1JudgementImport.scheduleApply(
                             database: database,
                             sessionId: result.session.id,
-                            judgements: judgements)
+                            judgements: judgements,
+                            onSkipped: { report in
+                                // Wave4c：扫描失败/超时/取消不再是"静默跳过"——登记 pending，
+                                // 状态条可见且可重试；自动重试由 replay 的后台 watcher 负责。
+                                let reason = report.skippedReason ?? "unknown"
+                                Task {
+                                    await c1PendingReplay.register(
+                                        sessionId: result.session.id,
+                                        judgements: judgements,
+                                        skippedReason: reason)
+                                }
+                            })
                     }
                 )
             }
@@ -719,6 +767,7 @@ package final class AppBootstrap {
                 }
             }
         }
+        return c1PendingReplay
     }
 
     // MARK: - 冷启动语言
@@ -788,35 +837,49 @@ enum C1JudgementImport {
     /// photo_metadata_cache（XMP 无 rating 时写回 0 / 空关键词），先写的判断会被清掉。
     /// 等待有上限（服务内默认 10 分钟）；仅扫描成功才落库（A2），否则跳过并在日志/report
     /// 记 skippedReason（失败/取消/超时写入会被后续成功扫描的整行 upsert 清掉）。
+    /// 与 C1PendingJudgementReplay 共用同一 apply/scan-status 口径。
+    static func makeService(database: DBConnection) -> C1ImportJudgementService {
+        let cache = MetadataCacheRepo(connection: database)
+        return C1ImportJudgementService(
+            photos: PhotoRepo(connection: database),
+            cache: cache,
+            decisions: CullingDecisionRepo(connection: database),
+            keywordIndex: KeywordIndexSync(
+                index: KeywordRepo(connection: database),
+                metadata: cache),
+            transactions: database)
+    }
+
+    /// metadata.scan 状态读取（等待/重放共用；见 C1ScanJobSelection 的稳定排序）。
+    static func scanStatusProvider(
+        database: DBConnection
+    ) -> @Sendable (String) throws -> String? {
+        { id in
+            // P2（Wave4b）：latestScanJob 只按 updated_at DESC，同毫秒并列时顺序不定。
+            // 轮询阶段先看活跃扫描（廉价、与排序无关）；没有活跃扫描时才做一次
+            // (updatedAt, id) 全序选择，避免等错 job 的终态。
+            let repo = AnalysisJobRepo(connection: database)
+            if try !repo.activeJobIDs(type: .metadataScan, scopeId: id).isEmpty {
+                return AnalysisJobStatus.running.rawValue
+            }
+            let jobs = try repo.list(includeCheckpoint: false)
+            return C1ScanJobSelection.latestScanStatus(jobs: jobs, sessionId: id)
+        }
+    }
+
+    /// 调度落库；`onSkipped` 在扫描非 succeeded 时回调（Wave4c：登记 pending 重放）。
     static func scheduleApply(
         database: DBConnection,
         sessionId: String,
-        judgements: [C1VariantJudgement]
+        judgements: [C1VariantJudgement],
+        onSkipped: (@MainActor @Sendable (C1ImportJudgementReport) -> Void)? = nil
     ) {
         Task.detached(priority: .utility) {
-            let cache = MetadataCacheRepo(connection: database)
-            let service = C1ImportJudgementService(
-                photos: PhotoRepo(connection: database),
-                cache: cache,
-                decisions: CullingDecisionRepo(connection: database),
-                keywordIndex: KeywordIndexSync(
-                    index: KeywordRepo(connection: database),
-                    metadata: cache),
-                transactions: database)
+            let service = Self.makeService(database: database)
             let report = await service.applyAfterIndexing(
                 sessionId: sessionId,
                 judgements: judgements,
-                scanStatus: { id in
-                    // P2（Wave4b）：latestScanJob 只按 updated_at DESC，同毫秒并列时顺序不定。
-                    // 轮询阶段先看活跃扫描（廉价、与排序无关）；没有活跃扫描时才做一次
-                    // (updatedAt, id) 全序选择，避免等错 job 的终态。
-                    let repo = AnalysisJobRepo(connection: database)
-                    if try !repo.activeJobIDs(type: .metadataScan, scopeId: id).isEmpty {
-                        return AnalysisJobStatus.running.rawValue
-                    }
-                    let jobs = try repo.list(includeCheckpoint: false)
-                    return C1ScanJobSelection.latestScanStatus(jobs: jobs, sessionId: id)
-                })
+                scanStatus: Self.scanStatusProvider(database: database))
             GatherLogger.log(
                 "c1.judgements session=\(sessionId) applied=\(report.applied)"
                     + " missing=\(report.missing) ratings=\(report.ratings)"
@@ -827,6 +890,9 @@ enum C1JudgementImport {
                     + " skippedReason=\(report.skippedReason ?? "-")"
                     + " errors=\(report.errors.count)",
                 level: report.errors.isEmpty && report.skippedReason == nil ? .info : .warn)
+            if report.skippedReason != nil, let onSkipped {
+                await MainActor.run { onSkipped(report) }
+            }
             guard report.applied > 0 else { return }
             await MainActor.run {
                 // 广播挑片域变更：已挂载的挑片页/图库据此重拉星级、色标与决策。

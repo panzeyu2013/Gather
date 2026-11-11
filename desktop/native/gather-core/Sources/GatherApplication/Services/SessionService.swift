@@ -263,13 +263,8 @@ public final class SessionService {
         allowChecksumBackfill: Bool = true
     ) throws -> [String: LibraryDuplicateTarget] {
         var result: [String: LibraryDuplicateTarget] = [:]
-        var unhashed: [LibraryPhotoFingerprint] = []
         for row in try photoRepo.libraryFingerprints(matchingSizes: matchingSizes) {
-            guard !row.checksum.isEmpty else {
-                unhashed.append(row)
-                continue
-            }
-            guard result[row.checksum] == nil else { continue }
+            guard !row.checksum.isEmpty, result[row.checksum] == nil else { continue }
             result[row.checksum] = LibraryDuplicateTarget(
                 photoId: row.photoId,
                 sessionId: row.sessionId,
@@ -278,16 +273,16 @@ public final class SessionService {
             )
         }
         // 未回填候选：stat 做 size 预筛，命中才读整文件哈希。
-        for row in unhashed {
+        func inspectCandidate(_ row: LibraryPhotoFingerprint) {
             let attrs: [FileAttributeKey: Any]
             do {
                 attrs = try FileManager.default.attributesOfItem(atPath: row.filepath)
             } catch {
                 // 文件不在（卷未挂载/已移动）：该行本轮无法参与去重，跳过。
-                continue
+                return
             }
             let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
-            if !matchingSizes.isEmpty, !matchingSizes.contains(size) { continue }
+            if !matchingSizes.isEmpty, !matchingSizes.contains(size) { return }
             do {
                 let sum = try FileHasher.sha256File(row.filepath)
                 if result[sum] == nil {
@@ -298,24 +293,43 @@ public final class SessionService {
                         fileSize: size
                     )
                 }
-                if allowChecksumBackfill {
-                    let mtimeMs = (attrs[.modificationDate] as? Date)
-                        .map { $0.timeIntervalSince1970 * 1000 } ?? 0
-                    do {
-                        try photoRepo.updateChecksum(
-                            photoId: row.photoId, checksum: sum,
-                            fileSize: size, fileMtimeMs: mtimeMs)
-                    } catch {
-                        GatherLogger.log(
-                            "library dedupe checksum backfill failed for (row.photoId): (error)",
-                            level: .debug)
-                    }
+                guard allowChecksumBackfill else { return }
+                let mtimeMs = (attrs[.modificationDate] as? Date)
+                    .map { $0.timeIntervalSince1970 * 1000 } ?? 0
+                do {
+                    try photoRepo.updateChecksum(
+                        photoId: row.photoId, checksum: sum,
+                        fileSize: size, fileMtimeMs: mtimeMs)
+                } catch {
+                    GatherLogger.log(
+                        "library dedupe checksum backfill failed for \(row.photoId): \(error)",
+                        level: .debug)
                 }
             } catch {
                 GatherLogger.log(
-                    "library dedupe checksum skipped for (row.photoId): (error)",
+                    "library dedupe checksum skipped for \(row.photoId): \(error)",
                     level: .debug)
             }
+        }
+        // Wave4c（task-49）：未回填候选按 rowid 游标分页拉取直到不足一批，
+        // 不再硬 LIMIT 500（大库 >500 会部分失效）。生产实现是 PhotoRepo；
+        // 协议 fake（测试替身）没有分页方法时跳过懒算候选。
+        if let concrete = photoRepo as? PhotoRepo {
+            var afterRowId: Int64 = 0
+            let pageSize = PhotoRepo.libraryUnhashedPageSize
+            while true {
+                let page = try concrete.libraryUnhashedFingerprints(
+                    afterRowId: afterRowId, limit: pageSize)
+                for row in page.rows {
+                    inspectCandidate(row)
+                }
+                if page.rows.count < pageSize { break }
+                afterRowId = page.lastRowId
+            }
+        } else {
+            GatherLogger.log(
+                "library dedupe: 照片仓储实现不支持未回填候选分页，跳过懒算候选",
+                level: .debug)
         }
         return result
     }
@@ -350,7 +364,7 @@ public final class SessionService {
                 refreshed += 1
             } catch {
                 GatherLogger.log(
-                    "refreshPhotoFingerprints skipped (filepath): (error)", level: .warn)
+                    "refreshPhotoFingerprints skipped \(filepath): \(error)", level: .warn)
             }
         }
         return refreshed

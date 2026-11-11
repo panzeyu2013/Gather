@@ -220,13 +220,17 @@ struct SemanticSearchSheet: View {
                 .gatherButton(.secondary, size: .small)
                 .disabled(model.isBusy || (model.plan?.totalAdditions ?? 0) == 0)
 
-                Button(l10n("撤销本批…")) {
+                Button(l10n("撤销上一次写回…")) {
                     pendingWriteback = .undo
                 }
                 .gatherButton(.secondary, size: .small)
                 .disabled(model.isBusy || !model.canUndoWriteback)
             }
             Text(l10n("写回是幂等的：同一张照片重复写不会重复加词；撤销只移除 AI 场景子树。"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(l10n("上一次写回可撤销：关闭面板或重启 App 后仍可撤销。"))
                 .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -487,7 +487,7 @@ public extension CaptureOneBridging {
     }
 
     /// 默认未接线：不知道本机是否装了 C1（UI 的 Hot Folder 提示据此隐藏）。
-    public var c1Installed: Bool { false }
+    var c1Installed: Bool { false }
 }
 /// C1 往返（手动 reload / 选中）的稳定错误。
 ///

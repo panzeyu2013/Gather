@@ -135,6 +135,8 @@ struct MetadataSyncBar: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Wave4c / task-48：C1 判断因扫描未成功而 pending 时的可见状态 + 重试入口。
+            C1PendingJudgementNotice(sessionId: sessionId)
         }
         .padding(.horizontal, GatherMetrics.Space.m)
         .padding(.vertical, GatherMetrics.Space.s)

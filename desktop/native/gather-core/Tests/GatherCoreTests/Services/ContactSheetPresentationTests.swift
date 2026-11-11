@@ -322,6 +322,8 @@ struct ContactSheetPresentationTests {
             contentsOf: directory.appendingPathComponent("gallery/proof.html"),
             encoding: .utf8)
         #expect(proofHTML.contains("gate-pending"), "初始内容必须默认不可见（拿到配置再放行）")
+        #expect(proofHTML.contains("data-gather-expect-share=\"0\""),
+                "Wave4c：新生成页面默认未声明分享策略（legacy 回退）；发布器严格模式再改 1")
 
         let proofJS = try String(
             contentsOf: directory.appendingPathComponent("gallery/proof.js"),
