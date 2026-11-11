@@ -102,7 +102,9 @@ public struct SessionIngestRunner {
             libraryDuplicatesSkipped: result.librarySkipped.count,
             replaced: result.replaced.count,
             libraryDuplicateCount: result.libraryDuplicates.count,
-            secondDestinationSkipped: result.secondSkipped.count
+            secondDestinationSkipped: result.secondSkipped.count,
+            // Wave5（F4）：不支持格式的跳过统计随结果返回（旧任务载荷 = nil）。
+            unsupportedFormats: result.unsupportedFormats
         )
         // 取消发生在复制/登记之后：文件已经安全落地并登记，再把 Job 收成 cancelled。
         try context?.throwIfCancelled(forceDbCheck: true)
@@ -117,7 +119,8 @@ public struct SessionIngestRunner {
     /// - newCount = 本次会写盘并登记的文件数（已按策略处理过重复）；
     /// - libraryDuplicateCount = 命中全库（跨工作区）已登记照片的文件数（与策略无关）；
     /// - conflictCount = 目标目录同名异内容（现有冲突语义）；
-    /// - unreadableCount = 不可读 / 越界 / 模板越界被拒的源数量。
+    /// - unreadableCount = 不可读 / 越界 / 模板越界被拒的源数量；
+    /// - unsupportedFormats = 源里被跳过的「不支持格式」（扩展名分组 + 样例）。
     public func preview(_ payload: SessionIngestInput) async throws -> SessionIngestPreview {
         let session = try requireSession(payload)
         // Wave4a-F2：预检走只读路径（不回填 checksum）。
@@ -127,7 +130,8 @@ public struct SessionIngestRunner {
             // 口径修正（Review P2）：total 计入被 skip 策略跳过的库内重复；
             // new 排除冲突项（目标同名异内容，执行期会跳过，不算"新增"）。
             totalCount: plan.items.count + plan.skipped.count
-                + plan.unreadable.count + plan.librarySkipped.count,
+                + plan.unreadable.count + plan.librarySkipped.count
+                + plan.unsupportedFormats.count,
             newCount: plan.items.filter { !$0.conflict }.count,
             libraryDuplicateCount: plan.libraryDuplicates.count,
             conflictCount: plan.conflictCount,
@@ -135,7 +139,10 @@ public struct SessionIngestRunner {
             policy: payload.duplicatePolicy,
             duplicateSamplePaths: Array(plan.libraryDuplicates.prefix(20)),
             librarySkippedCount: plan.librarySkipped.count,
-            replaceableCount: plan.replaced.count
+            replaceableCount: plan.replaced.count,
+            // Wave5（F4）：预检阶段就把"不支持格式 N 个（按扩展名）"亮出来，
+            // 用户在下「开始摄取」前就知道哪些文件不会进来。
+            unsupportedFormats: plan.unsupportedFormats
         )
     }
 

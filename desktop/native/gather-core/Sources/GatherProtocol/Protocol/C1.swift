@@ -27,6 +27,11 @@
 //   · color tag 双向映射 C1ColorTagMapping（G3 读/G4 写共用一张表）；
 //   · C1 Session 三目录识别 C1SessionDirectoryResolver（纯逻辑，目录列举可注入）；
 //   · C1HotFolderCaveat：Hot Folder 不可检测的能力边界（不假装检测）。
+//
+// Wave5（2026-11-11，task-11 / C1 写回正确性）：
+//   · writeback 报告增加 skippedMultiVariant —— 同一 image 有多个 variant 时**不再猜目标**
+//     （写错 variant 不可逆，96 号 §10 判 P0），整条跳过并由 UI 提示用户回 C1 选变体；
+//   · 作用域补救（notFound 时 browse 到唯一父目录重试一次）是实现细节，不加公共类型。
 
 import Foundation
 
@@ -208,7 +213,7 @@ public struct C1VariantWritebackItem: Equatable, Sendable {
     }
 }
 
-/// 变体级写回结果（逐路径：写入 / 当前文档里找不到）。
+/// 变体级写回结果（逐路径：写入 / 当前文档里找不到 / 多变体跳过）。
 public struct C1VariantWritebackReport: Equatable, Sendable {
     /// 实际写入的 variant 数（每个路径最多一个目标 variant）。
     public var written: Int
@@ -216,6 +221,12 @@ public struct C1VariantWritebackReport: Equatable, Sendable {
     public var notFound: [String]
     /// 超过单次批量上限/非法路径而未处理的条目数（调用方需分批）。
     public var skipped: Int
+    /// Wave5 / R1：该 image 在 C1 里有多个 variant —— 不猜目标、整条跳过。
+    ///
+    /// 为什么跳过而不是"取第一个"：C1 的判断属于 variant，多 variant 时写错目标不可逆
+    /// （96 号 §10 把"写错 variant"判 P0）。用户可回 C1 选定变体后重试，或改用「写回 XMP…」
+    /// （文件级、无歧义）。非空时同样**不写** durable reload-ack（A1 门禁保持锁定）。
+    public var skippedMultiVariant: [String]
     /// 非 nil = 该通道未接线（默认实现），调用方应退回 XMP 写回；不是错误。
     public var unsupportedReason: String?
 
@@ -223,11 +234,13 @@ public struct C1VariantWritebackReport: Equatable, Sendable {
         written: Int = 0,
         notFound: [String] = [],
         skipped: Int = 0,
+        skippedMultiVariant: [String] = [],
         unsupportedReason: String? = nil
     ) {
         self.written = written
         self.notFound = notFound
         self.skipped = skipped
+        self.skippedMultiVariant = skippedMultiVariant
         self.unsupportedReason = unsupportedReason
     }
 

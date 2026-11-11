@@ -13,7 +13,73 @@
 //   回滚，避免同一张同时出现在 copied（被登记）与 failed（用户以为没摄进来）。
 import Foundation
 import CryptoKit
+import Synchronization
 import GatherProtocol
+
+// MARK: - 不支持格式统计（摄取与索引扫描共用）
+
+/// 「不支持格式」统计的噪音过滤：这些文件不是用户想导入的照片，不能计入
+/// "跳过 N 个不支持格式"（否则一张卡的 .DS_Store/.xmp 会淹没真实信号）。
+enum UnsupportedFileReport {
+    /// 与照片同名的附属文件：XMP sidecar、Apple 调整文件、DxO sidecar。
+    static let auxiliaryExtensions: Set<String> = ["xmp", "aae", "dop"]
+
+    static func isAuxiliary(named name: String) -> Bool {
+        if name.hasPrefix(".") { return true }
+        if name.hasSuffix(".gather-part") || name.contains(".gather-prev-") { return true }
+        return auxiliaryExtensions.contains((name as NSString).pathExtension.lowercased())
+    }
+
+    /// 日志用的一行摘要：`gif×3, mov×1; e.g. IMG_1.gif`。
+    static func describe(_ formats: IngestUnsupportedFormats) -> String {
+        guard formats.count > 0 else { return "" }
+        let groups = formats.extensions.sorted { $0.key < $1.key }
+            .map { "\($0.key)×\($0.value)" }
+            .joined(separator: ", ")
+        let samples = formats.samplePaths.prefix(3)
+            .map { ($0 as NSString).lastPathComponent }
+            .joined(separator: ", ")
+        return samples.isEmpty ? groups : "\(groups); e.g. \(samples)"
+    }
+}
+
+/// 线程安全的「不支持格式」收集器。
+///
+/// 摄取是单线程顺序枚举，索引扫描的生产者/消费者是并发任务；统一用锁保护，
+/// 两条路径共用同一套噪音过滤与样例上限，避免结果口径漂移。
+final class UnsupportedFormatTally: Sendable {
+    /// 统计里保留的样例上限（只看"哪些文件没进来"，不做清单搬运）。
+    static let sampleLimit = 5
+
+    // 索引扫描的生产者任务与摄取顺序路径共用；用 Mutex 而不是 @unchecked Sendable，
+    // 让"锁保护可变状态"由类型系统表达（cleanup ratchet 不再新增 unchecked 计数）。
+    private let state = Mutex(IngestUnsupportedFormats())
+
+    func record(filepath: String) {
+        let name = (filepath as NSString).lastPathComponent
+        guard !UnsupportedFileReport.isAuxiliary(named: name) else { return }
+        let ext = (filepath as NSString).pathExtension.lowercased()
+        guard !ext.isEmpty else { return }
+        state.withLock { formats in
+            formats.extensions[ext, default: 0] += 1
+            if formats.samplePaths.count < Self.sampleLimit {
+                formats.samplePaths.append(filepath)
+            }
+        }
+    }
+
+    func snapshot() -> IngestUnsupportedFormats {
+        state.withLock { $0 }
+    }
+
+    func logSummary(_ prefix: String) {
+        let snapshot = snapshot()
+        guard snapshot.count > 0 else { return }
+        GatherLogger.log(
+            "\(prefix): skipped \(snapshot.count) unsupported file(s) [\(UnsupportedFileReport.describe(snapshot))]",
+            level: .info)
+    }
+}
 
 // MARK: - 模板
 
@@ -121,12 +187,15 @@ public struct IngestPlan: Equatable, Sendable {
     public var librarySkipped: [String]
     /// Wave2：按 replace 策略覆盖写入的源文件。
     public var replaced: [String]
+    /// Wave5（F4）：源里被跳过的「不支持格式」（按归一化扩展名分组 + 样例路径）。
+    public var unsupportedFormats: IngestUnsupportedFormats
     public init(
         items: [IngestItem], skipped: [String], unreadable: [String],
         alreadyPresent: [String] = [],
         libraryDuplicates: [String] = [],
         librarySkipped: [String] = [],
-        replaced: [String] = []
+        replaced: [String] = [],
+        unsupportedFormats: IngestUnsupportedFormats = IngestUnsupportedFormats()
     ) {
         self.items = items
         self.skipped = skipped
@@ -135,6 +204,7 @@ public struct IngestPlan: Equatable, Sendable {
         self.libraryDuplicates = libraryDuplicates
         self.librarySkipped = librarySkipped
         self.replaced = replaced
+        self.unsupportedFormats = unsupportedFormats
     }
     public var conflictCount: Int { items.filter(\.conflict).count }
 }
@@ -205,13 +275,16 @@ public struct IngestResult: Equatable, Sendable {
     /// Wave4a-F4：replace 项在第二目的地被跳过（replace 目标是库内原路径，
     /// 不在 destinationRoot 内，无法按相对路径镜像；显式报告而不是静默少一份）。
     public var secondSkipped: [String]
+    /// Wave5（F4）：源里被跳过的「不支持格式」（plan 阶段收集，执行期原样带出）。
+    public var unsupportedFormats: IngestUnsupportedFormats
     public init(copied: [String], skipped: [String], unreadable: [String] = [],
                 secondCopied: [String], failed: [IngestFailure],
                 alreadyPresent: [String] = [],
                 libraryDuplicates: [String] = [],
                 librarySkipped: [String] = [],
                 replaced: [String] = [],
-                secondSkipped: [String] = []) {
+                secondSkipped: [String] = [],
+                unsupportedFormats: IngestUnsupportedFormats = IngestUnsupportedFormats()) {
         self.copied = copied
         self.skipped = skipped
         self.unreadable = unreadable
@@ -222,6 +295,7 @@ public struct IngestResult: Equatable, Sendable {
         self.librarySkipped = librarySkipped
         self.replaced = replaced
         self.secondSkipped = secondSkipped
+        self.unsupportedFormats = unsupportedFormats
     }
     /// 登记阶段要扫描的目录（等于成功落地的父目录集合）。
     public var registeredDirectories: [String] {
@@ -335,10 +409,11 @@ public final class IngestService: @unchecked Sendable {
     public func plan(
         sourcePaths: [String],
         options: IngestOptions,
-        extensions: Set<String> = [
-            "cr3", "cr2", "nef", "arw", "raf", "orf", "rw2", "dng", "pef", "srw",
-            "jpg", "jpeg", "tif", "tiff", "png", "webp", "heic", "heif", "psd",
-        ],
+        /// 受支持扩展名（dotless、小写）。Wave5 / F4：默认值 = 统一白名单
+        /// `PhotoFileTypes.supportedExtensions`（RAW + 位图 + 渲染位图的并集），
+        /// 不再维护第二张字面量表；参数保留给测试注入更窄的白名单。
+        extensions: Set<String> = Set(
+            PhotoFileTypes.supportedExtensions.map { String($0.dropFirst()) }),
         existingChecksums: [String: String] = [:],
         libraryDuplicates: [String: SessionService.LibraryDuplicateTarget] = [:],
         /// Wave4a-F2：库内候选的大小集合。非空时只有 size 命中的源才值得 SHA-256
@@ -353,6 +428,8 @@ public final class IngestService: @unchecked Sendable {
         var libraryDuplicatePaths: [String] = []
         var librarySkippedPaths: [String] = []
         var replacedSources: [String] = []
+        // Wave5（F4）：不支持格式不再静默跳过——按扩展名分组累积，进预检/结果。
+        let unsupportedTally = UnsupportedFormatTally()
         var sequence = 1
         var usedDestinations = Set<String>()
         var usedDestinationsFolded = Set<String>()
@@ -379,11 +456,16 @@ public final class IngestService: @unchecked Sendable {
             for file in files {
                 // 目录与其内文件同时传入时，枚举结果也要进去重集合（否则会复制两份）。
                 guard seenSources.insert((file as NSString).standardizingPath).inserted else { continue }
+                let name = (file as NSString).lastPathComponent
                 let ext = (file as NSString).pathExtension.lowercased()
-                guard extensions.contains(ext) else { continue }
+                guard extensions.contains(ext) else {
+                    // Wave5（F4）：不支持格式（GIF/视频/未知 RAW 等）计入统计，
+                    // 由预检与结果区显示"跳过 N 个（按扩展名）"，不再无声消失。
+                    unsupportedTally.record(filepath: file)
+                    continue
+                }
                 let attrs = try? fileManager.attributesOfItem(atPath: file)
                 let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
-                let name = (file as NSString).lastPathComponent
                 // Wave2（task-15）：先去重再读 EXIF（重导同一张卡时，被跳过的文件
                 // 不必做 ImageIO 解析）。
                 // 优先级：全库（跨工作区）索引 > 会话内索引。两者都只比较 SHA-256。
@@ -524,7 +606,8 @@ public final class IngestService: @unchecked Sendable {
             alreadyPresent: alreadyPresent,
             libraryDuplicates: libraryDuplicatePaths,
             librarySkipped: librarySkippedPaths,
-            replaced: replacedSources)
+            replaced: replacedSources,
+            unsupportedFormats: unsupportedTally.snapshot())
     }
 
     /// 执行：临时文件 → 校验 → rename → 第二目的地；单张失败整体回滚（见文件头）。
@@ -781,7 +864,8 @@ public final class IngestService: @unchecked Sendable {
             libraryDuplicates: plan.libraryDuplicates,
             librarySkipped: plan.librarySkipped,
             replaced: replacedDestinations,
-            secondSkipped: secondSkipped)
+            secondSkipped: secondSkipped,
+            unsupportedFormats: plan.unsupportedFormats)
         // 自动初审的唯一触发点在 WorkflowRegistry（GatherApplication）（ingest 完整收尾后入队），
         // 本服务只负责复制/登记，不持有 job/会话依赖。
         return result

@@ -34,6 +34,38 @@ public enum PhotoFileTypes {
     /// 可作为 RAW 配对侧的扩展名：相机 JPEG/HEIC + 渲染 TIFF。
     public static let rawPairingExtensions: Set<String> = [".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff"]
 
+    /// **单一「可解码 = 可导入 = 可索引」白名单**（Wave5 / F4）。
+    ///
+    /// 由三张既有分类表求并集：RAW + 位图 + 渲染位图。摄取（`IngestService`）、
+    /// 索引扫描（`IndexerService`）与解码（`RAWDecoder`）都只引用这一份；历史上
+    /// 三处各写一张字面量表，导致 `.iiq/.3fr/.x3f/.mrw` 等可解码的 RAW 在
+    /// 「导入文件夹 / 整卡摄取」时被静默跳过（并集比任一张单表都宽）。
+    public static let supportedExtensions: Set<String> =
+        rawExtensions.union(bitmapExtensions).union(renderedExtensions)
+
+    /// `supportedExtensions` 的稳定排序形态（日志/报告按扩展名字典序输出）。
+    public static let sortedSupportedExtensions: [String] = supportedExtensions.sorted()
+
+    /// 归一化扩展名：去首尾空白、去前导点、lowercased；空串/纯点 → nil。
+    ///
+    /// 全仓扩展名入参形态并存（`nef` / `.NEF` / ` cr2 `），统一在本函数收口：
+    /// `isRAW` / `isSupported` 内部都走它，调用方不再各自写归一化。
+    public static func normalizedExtension(_ ext: String) -> String? {
+        var normalized = ext.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while normalized.hasPrefix(".") {
+            normalized.removeFirst()
+        }
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    /// 是否属于统一白名单（可解码 = 可导入 = 可索引）。
+    ///
+    /// 入参形态归一化同 `isRAW`：`jpg`、`.JPG`、` .jpeg ` 都返回 true。
+    public static func isSupported(_ ext: String) -> Bool {
+        guard let normalized = normalizedExtension(ext) else { return false }
+        return supportedExtensions.contains(".\(normalized)")
+    }
+
     /// RAW 清单的稳定排序形态（Set → Array）。SQL 文本由它拼出，
     /// 顺序必须稳定（便于语句缓存）：PhotoRepo.rawVariantSQL 与代表行排序依赖。
     public static let sortedRawExtensions: [String] = rawExtensions.sorted()
@@ -45,11 +77,7 @@ public enum PhotoFileTypes {
     /// 点位约定上做二次判断（历史上 RAWDecoder 传无点 ext、AssetRepo 传带点
     /// extension，两种形态并存；规范化收口在这里，避免两边各写一套）。
     public static func isRAW(_ ext: String) -> Bool {
-        var normalized = ext.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        while normalized.hasPrefix(".") {
-            normalized.removeFirst()
-        }
-        guard !normalized.isEmpty else { return false }
+        guard let normalized = normalizedExtension(ext) else { return false }
         return rawExtensions.contains(".\(normalized)")
     }
 }

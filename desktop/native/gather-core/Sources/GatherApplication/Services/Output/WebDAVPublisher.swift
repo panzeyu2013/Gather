@@ -78,12 +78,20 @@ public struct WebDAVPublishResult: Equatable, Sendable {
     public var failed: [WebDAVPublishFailure]
     public var remoteRoot: String
     public var abortedOnAuth: Bool
+    /// Wave5：客户入口链接（endpoint + 远端目录 + index.html）；nil = 没有入口
+    /// 或入口文件未上传成功。WebDAV 链接不过期，故没有 entryURLExpiresAt。
+    public var entryURL: String?
 
-    public init(uploaded: Int, failed: [WebDAVPublishFailure], remoteRoot: String, abortedOnAuth: Bool) {
+    public init(
+        uploaded: Int, failed: [WebDAVPublishFailure],
+        remoteRoot: String, abortedOnAuth: Bool,
+        entryURL: String? = nil
+    ) {
         self.uploaded = uploaded
         self.failed = failed
         self.remoteRoot = remoteRoot
         self.abortedOnAuth = abortedOnAuth
+        self.entryURL = entryURL
     }
 
     public var isSuccess: Bool { failed.isEmpty && !abortedOnAuth }
@@ -175,6 +183,9 @@ public final class WebDAVPublisher: Sendable {
         }
         let root = Self.joinRemote(configuration.baseURL, configuration.remoteFolder)
         var uploaded = 0
+        /// Wave5：成功上传的相对路径。入口链接只在 `index.html` 真的传上去时才给，
+        /// 否则用户会拿到一个 404 的"客户链接"。
+        var uploadedRelatives = Set<String>()
         var failures: [WebDAVPublishFailure] = []
         var directoryCache = Set<String>()
 
@@ -296,6 +307,7 @@ public final class WebDAVPublisher: Sendable {
                     url: remoteFile, data: data, path: file.relative, configuration: configuration)
                 if response.isSuccess {
                     uploaded += 1
+                    uploadedRelatives.insert(file.relative)
                     onProgress?(index + 1, files.count)
                 } else if response.isAuthFailure {
                     failures.append(WebDAVPublishFailure(path: file.relative, reason: "HTTP \(response.status)"))
@@ -311,8 +323,15 @@ public final class WebDAVPublisher: Sendable {
                 failures.append(WebDAVPublishFailure(path: file.relative, reason: String(describing: error)))
             }
         }
+        // Wave5：客户入口链接（只有入口真的上传成功才给；scheme 在 publish 入口已校验）。
+        let entryURL: String? = {
+            guard let entry = Self.entryRelativePath(in: files),
+                  uploadedRelatives.contains(entry) else { return nil }
+            return Self.joinRemote(root, entry).absoluteString
+        }()
         return WebDAVPublishResult(
-            uploaded: uploaded, failed: failures, remoteRoot: root.path, abortedOnAuth: false)
+            uploaded: uploaded, failed: failures, remoteRoot: root.path,
+            abortedOnAuth: false, entryURL: entryURL)
     }
 
     private enum DirectoryResult: Equatable {
@@ -462,6 +481,19 @@ public final class WebDAVPublisher: Sendable {
     }
 
     // MARK: - 纯函数
+
+    /// 客户入口文件名（画廊入口；任意层的同名文件按相对路径排序取第一个）。
+    static let galleryEntryFileName = "index.html"
+
+    /// 本次发布里的客户入口相对路径（nil = 没有入口）。
+    ///
+    /// 按 `collectFiles` 的稳定排序（相对路径升序）取第一个 index.html；
+    /// 多配方多画廊时行为确定（第一套画廊），不会随枚举顺序漂移。
+    static func entryRelativePath(in files: [LocalFile]) -> String? {
+        files.first { file in
+            (file.relative as NSString).lastPathComponent == galleryEntryFileName
+        }?.relative
+    }
 
     /// 白名单外的文件不得因为"前缀匹配不上"而回落成整目录上传。
     ///

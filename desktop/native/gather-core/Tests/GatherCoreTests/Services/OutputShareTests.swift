@@ -772,4 +772,207 @@ host;x-amz-content-sha256;x-amz-date;x-amz-security-token;x-amz-storage-class
             timestamp: fresh, signedHeaders: ["Host"],
             now: now) == .uppercaseSignedHeader)
     }
+
+    // MARK: Wave5：客户入口链接（S3 预签名 / WebDAV 静态入口）
+
+    /// 带 `gallery/index.html` 的本地发布树；withEntry=false 时故意不给入口文件。
+    private func makeGalleryTree(withEntry: Bool) throws -> String {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-gallery-" + UUID().uuidString, isDirectory: true)
+        let gallery = root.appendingPathComponent("gallery")
+        try FileManager.default.createDirectory(
+            at: gallery.appendingPathComponent("thumbs"), withIntermediateDirectories: true)
+        if withEntry {
+            try Data("<html>gallery</html>".utf8)
+                .write(to: gallery.appendingPathComponent("index.html"))
+        }
+        try Data("thumb".utf8).write(to: gallery.appendingPathComponent("thumbs/0001.jpg"))
+        return root.path
+    }
+
+    @Test("Wave5 SigV4 预签名：AWS 官方 GET Object 固定向量 + 有效期/凭据边界")
+    func presignedGETURLMatchesAWSVector() throws {
+        // AWS 文档 "Authenticating Requests: Using Query Parameters (AWS Signature
+        // Version 4)" 的 GET Object 示例（20130524T000000Z / us-east-1 / 86400）：
+        // https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html
+        let fixedNow = Date(timeIntervalSince1970: 1_369_353_600) // 2013-05-24T00:00:00Z
+        let url = try #require(S3SigV4.presignedGETURL(
+            url: URL(string: "https://examplebucket.s3.amazonaws.com/test.txt")!,
+            host: "examplebucket.s3.amazonaws.com",
+            canonicalURI: "/test.txt",
+            accessKeyID: "AKIAIOSFODNN7EXAMPLE",
+            secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            region: "us-east-1",
+            expiresInSeconds: 86_400,
+            now: fixedNow))
+        #expect(url.absoluteString == "https://examplebucket.s3.amazonaws.com/test.txt"
+            + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            + "&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request"
+            + "&X-Amz-Date=20130524T000000Z"
+            + "&X-Amz-Expires=86400"
+            + "&X-Amz-SignedHeaders=host"
+            + "&X-Amz-Signature="
+            + "aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404")
+
+        // 有效期边界：0 / 超过 7 天都拒绝；7 天（上限）允许。
+        let base = URL(string: "https://examplebucket.s3.amazonaws.com/test.txt")!
+        #expect(S3SigV4.presignedGETURL(
+            url: base, host: "examplebucket.s3.amazonaws.com", canonicalURI: "/test.txt",
+            accessKeyID: "AK", secretAccessKey: "SK", region: "us-east-1",
+            expiresInSeconds: 0, now: fixedNow) == nil)
+        #expect(S3SigV4.presignedGETURL(
+            url: base, host: "examplebucket.s3.amazonaws.com", canonicalURI: "/test.txt",
+            accessKeyID: "AK", secretAccessKey: "SK", region: "us-east-1",
+            expiresInSeconds: S3SigV4.maximumPresignExpirySeconds + 1, now: fixedNow) == nil)
+        #expect(S3SigV4.presignedGETURL(
+            url: base, host: "examplebucket.s3.amazonaws.com", canonicalURI: "/test.txt",
+            accessKeyID: "AK", secretAccessKey: "SK", region: "us-east-1",
+            expiresInSeconds: S3SigV4.maximumPresignExpirySeconds, now: fixedNow) != nil)
+        #expect(S3SigV4.presignedGETURL(
+            url: base, host: "examplebucket.s3.amazonaws.com", canonicalURI: "/test.txt",
+            accessKeyID: "", secretAccessKey: "SK", region: "us-east-1",
+            expiresInSeconds: 60, now: fixedNow) == nil)
+
+        // STS 临时凭据：token 进 query 并改变签名；secret 不出现在 URL 里。
+        let withToken = try #require(S3SigV4.presignedGETURL(
+            url: base, host: "examplebucket.s3.amazonaws.com", canonicalURI: "/test.txt",
+            accessKeyID: "AK", secretAccessKey: "SK", region: "us-east-1",
+            sessionToken: "TOKEN-123",
+            expiresInSeconds: 60, now: fixedNow))
+        #expect(withToken.absoluteString.contains("X-Amz-Security-Token=TOKEN-123"))
+        #expect(withToken.absoluteString != url.absoluteString)
+        #expect(!withToken.absoluteString.contains("SK"))
+    }
+
+    @Test("Wave5 S3 发布：入口 index.html 生成预签名链接（含到期；secret 不进 URL）")
+    func s3PublishReturnsPresignedEntryLink() async throws {
+        let tree = try makeGalleryTree(withEntry: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
+        let transport = FakeS3Transport()
+        let publisher = S3ShareTransport(
+            transport: transport, sleep: { _ in }, now: { fixedNow })
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .s3, endpoint: "",
+            accessKeyID: "AKIAIOSFODNN7EXAMPLE", secret: "TOP-SECRET-KEY",
+            remoteFolder: "client/wedding", bucket: "photos", region: nil,
+            includePrefixes: ["gallery"])
+        let result = try await publisher.publish(request, onProgress: nil)
+        #expect(result.isSuccess)
+        let entry = try #require(result.entryURL)
+        #expect(!entry.contains("TOP-SECRET-KEY"), "预签名 URL 不能包含 secret")
+        let components = try #require(URLComponents(string: entry))
+        #expect(components.host == "photos.s3.us-east-1.amazonaws.com")
+        #expect(components.path == "/client/wedding/gallery/index.html")
+        let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map {
+            ($0.name, $0.value ?? "")
+        })
+        #expect(query["X-Amz-Algorithm"] == "AWS4-HMAC-SHA256")
+        #expect(query["X-Amz-Expires"] == "86400")
+        #expect(query["X-Amz-Date"] == S3SigV4.timestamp(fixedNow))
+        #expect(query["X-Amz-Credential"]?.hasPrefix("AKIAIOSFODNN7EXAMPLE/") == true)
+        #expect((query["X-Amz-Signature"] ?? "").count == 64)
+        #expect(result.entryURLExpiresAt
+                == OutputShareManifest.iso8601Now(fixedNow.addingTimeInterval(86_400)))
+        // 对象仍默认私有：不携带 ACL/public-read 头。
+        let requests = await transport.requests
+        #expect(requests.allSatisfy { $0.headers["x-amz-acl"] == nil })
+    }
+
+    @Test("Wave5 S3 发布：没有画廊入口时不给链接（不伪造 404 链接）")
+    func s3PublishWithoutGalleryEntryHasNoLink() async throws {
+        let tree = try makeGalleryTree(withEntry: false)
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let transport = FakeS3Transport()
+        let publisher = S3ShareTransport(transport: transport, sleep: { _ in })
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .s3, endpoint: "",
+            accessKeyID: "AK", secret: "SK",
+            remoteFolder: "client/wedding", bucket: "photos", region: nil,
+            includePrefixes: ["gallery"])
+        let result = try await publisher.publish(request, onProgress: nil)
+        #expect(result.isSuccess)
+        #expect(result.entryURL == nil)
+        #expect(result.entryURLExpiresAt == nil)
+    }
+
+    @Test("Wave5 S3 发布：入口文件上传失败时不给链接（防 404）")
+    func s3PublishEntryUploadFailureHasNoLink() async throws {
+        let tree = try makeGalleryTree(withEntry: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        // 探针 PUT 201 / 清理 204；index.html PUT 返回 400（非瞬态，不重试）；
+        // 其余文件 200。入口没传成功 → 不给客户链接。
+        let transport = FakeS3Transport([
+            .success(S3HTTPResponse(status: 201)),
+            .success(S3HTTPResponse(status: 204)),
+            .success(S3HTTPResponse(status: 400)),
+            .success(S3HTTPResponse(status: 200)),
+        ])
+        let publisher = S3ShareTransport(transport: transport, sleep: { _ in })
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .s3, endpoint: "",
+            accessKeyID: "AK", secret: "SK",
+            remoteFolder: "client/wedding", bucket: "photos", region: nil,
+            includePrefixes: ["gallery"])
+        let result = try await publisher.publish(request, onProgress: nil)
+        #expect(!result.isSuccess)
+        #expect(result.entryURL == nil, "入口失败时不能给客户链接")
+        #expect(result.entryURLExpiresAt == nil)
+    }
+
+    @Test("Wave5 WebDAV 发布：入口链接 = endpoint + 远端目录 + index.html")
+    func webDAVPublishReturnsStaticEntryLink() async throws {
+        let tree = try makeGalleryTree(withEntry: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let publisher = WebDAVPublisher(
+            transport: FakeWebDAVTransport([]), sleep: { _ in })
+        let adapter = WebDAVShareTransport(publisher: publisher)
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .webdav,
+            endpoint: "https://dav.example.com/dav/",
+            accessKeyID: "alice", secret: "secret",
+            remoteFolder: "client/Wedding", includePrefixes: ["gallery"])
+        let result = try await adapter.publish(request, onProgress: nil)
+        #expect(result.isSuccess)
+        #expect(result.entryURL
+                == "https://dav.example.com/dav/client/Wedding/gallery/index.html")
+        #expect(result.entryURLExpiresAt == nil, "WebDAV 静态链接不过期")
+    }
+
+    @Test("Wave5 WebDAV 发布：没有画廊入口时 entryURL 为 nil")
+    func webDAVPublishWithoutGalleryEntryHasNoLink() async throws {
+        let tree = try makeGalleryTree(withEntry: false)
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let publisher = WebDAVPublisher(
+            transport: FakeWebDAVTransport([]), sleep: { _ in })
+        let adapter = WebDAVShareTransport(publisher: publisher)
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .webdav,
+            endpoint: "https://dav.example.com/dav",
+            accessKeyID: "alice", secret: "secret",
+            remoteFolder: "client/Wedding", includePrefixes: ["gallery"])
+        let result = try await adapter.publish(request, onProgress: nil)
+        #expect(result.isSuccess)
+        #expect(result.entryURL == nil)
+    }
 }

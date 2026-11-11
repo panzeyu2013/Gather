@@ -37,6 +37,17 @@ enum CullingLayoutMode: String, CaseIterable, Equatable {
     /// 兼容旧调用点（没有选择集信息时的兜底）：survey 至少 2 张。
     var compareCount: Int { fixedCompareCount ?? 2 }
 
+    /// 该布局的首页大小（G0）：网格 200（密铺缩略图），其余布局 500（查看器翻片窗口）。
+    ///
+    /// 单一来源：页面 binding 与首屏 .task 都读它，避免两处各写一遍三元表达式
+    /// 漂移（B2 的续页计划也以它为新页大小）。
+    var pageLimit: Int {
+        switch self {
+        case .grid: return 200
+        case .single, .compare2, .compare3, .compare4, .survey: return 500
+        }
+    }
+
     /// 有效对比格数：survey = 当前选择集张数（夹在 2...surveyMaxCount），
     /// 其余布局按固定格数（选择集不影响单/2/3/4 图/网格）。
     func effectiveCompareCount(selectionCount: Int) -> Int {
@@ -295,6 +306,15 @@ struct CullingGridView: View {
                         withAnimation(.easeOut(duration: 0.12)) {
                             proxy.scrollTo(id, anchor: .center)
                         }
+                    }
+                    // B2 / 浏览连续性：进网格时先把视口定位到当前照片。旧实现只在
+                    // onChange 里滚——从单图第 300 张切到网格，看到的是列表顶部。
+                    // LazyVStack 首帧只实例化视口内的行，先让出一帧再滚，目标格的
+                    // id 才进滚动坐标系。
+                    .task {
+                        await Task.yield()
+                        guard let id = viewModel.currentPhotoId else { return }
+                        proxy.scrollTo(id, anchor: .center)
                     }
                 }
             }

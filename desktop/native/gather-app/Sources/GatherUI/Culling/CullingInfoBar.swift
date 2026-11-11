@@ -8,6 +8,11 @@ import GatherProtocol
 struct CullingInfoBar: View {
     let viewModel: CullingViewModel
     let isBusy: Bool
+    /// 当前布局：与查看器同源（工作台把 binding 值传下来），用于判定是否对比类布局
+    /// （B1：只有对比/Survey 需要「作用于全部选中」开关）。
+    let layoutMode: CullingLayoutMode
+    /// B1：批量写入开关（页面持有，默认关，切布局不丢）。
+    @Binding var writesDecisionToSelection: Bool
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
@@ -45,6 +50,28 @@ struct CullingInfoBar: View {
                     .monospacedDigit()
                     .foregroundStyle(.primary)
                     .accessibilityLabel(l10n.format("第 %lld 张，共 %lld 张", currentIndex + 1, viewModel.page?.total ?? page.assets.count))
+            }
+            // B1 / 20-culling-viewer §2 P1：对比/Survey 的多选是构造画面的手段，
+            // 不能同时悄悄变成批量写入目标（旧实现「盯着 A 按 X」会标掉 B…I）。
+            // 这里同时给出两件事：批量必须显式打开的开关 + 本次写入目标的回显。
+            if CullingDecisionScope.isComparisonLayout(layoutMode) {
+                Toggle(isOn: $writesDecisionToSelection) {
+                    Text(l10n.format("作用于全部选中 %lld 张", viewModel.selectedPhotoIds.count))
+                        .font(GatherFont.secondary)
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                .disabled(viewModel.selectedPhotoIds.isEmpty)
+                .help(l10n("对比/Survey 默认只写当前照片；打开后这一拍写到全部选中照片"))
+                .accessibilityLabel(l10n("作用于全部选中照片"))
+            }
+            if let target = decisionTargetEcho {
+                Text(decisionTargetText(target))
+                    .font(GatherFont.secondaryStrong)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .help(l10n("本次写入目标：对比/Survey 默认只写当前照片，批量需打开左侧开关"))
+                    .accessibilityLabel(decisionTargetText(target))
             }
             if let summary = viewModel.summary {
                 countItem(l10n.format("保留 %lld", summary.kept), color: GatherTheme.success)
@@ -129,6 +156,33 @@ struct CullingInfoBar: View {
         }
         .background(GatherTheme.surface)
         .overlay(alignment: .top) { Divider() }
+    }
+
+    /// 信息条要回显的本次写入目标（nil = 不回显）。
+    ///
+    /// 对比/Survey 恒定回显（本批修的核心语义：多选只用于构造画面）；单图只在
+    /// 多选（会批量写）时回显——单击时「本次写入：当前照片」是废话，不占信息条。
+    private var decisionTargetEcho: CullingDecisionTarget? {
+        let isComparison = CullingDecisionScope.isComparisonLayout(layoutMode)
+        guard isComparison || viewModel.selectedPhotoIds.count > 1 else { return nil }
+        return CullingDecisionScope.target(
+            isComparisonLayout: isComparison,
+            // 与 commit 同口径：currentPhotoId 失效时 currentAsset 回退页首。
+            currentPhotoId: viewModel.currentAsset?.photo.id,
+            selectedPhotoIds: viewModel.selectedPhotoIds,
+            writesToSelection: writesDecisionToSelection
+        )
+    }
+
+    /// 回显本次决策的写入目标（B1）：让「会写几张」在按键前就可见，
+    /// 而不是按完才发现批量标了一片。
+    private func decisionTargetText(_ target: CullingDecisionTarget) -> String {
+        switch target {
+        case .current:
+            return l10n("本次写入：当前照片")
+        case .selection:
+            return l10n.format("本次写入：全部选中 %lld 张", viewModel.selectedPhotoIds.count)
+        }
     }
 
     /// 对齐旧版 syncLabel 六档文案：已同步 / N 个冲突 / N 个失败 /

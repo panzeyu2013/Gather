@@ -19,6 +19,9 @@ struct PendingCullingCommit: Equatable {
     var targetSelection: Set<String>
     /// 入队时的服务端范围快照（⌘A 的 scope/filters/hash）；与 targetSelection 一起比较。
     var targetServerSnapshot: CullingSelectionSnapshot?
+    /// B1：这一拍是否只写当前照片（对比/Survey 的默认口径）。目标收窄必须随
+    /// 排队拍一起冻结——加载结束后不能按「现在」重新解析，否则又把选择集当目标。
+    var currentOnly: Bool
 }
 
 extension CullingViewModel {
@@ -225,7 +228,16 @@ extension CullingViewModel {
     }
 
     /// 单张更新；nextPhotoId 非空时在刷新前预置当前照片（自动前进目标）。
-    public func update(_ asset: CullingAsset, patch: CullingUpdatePatch, nextPhotoId: String? = nil) async {
+    ///
+    /// - Parameter keepSelectionOnAdvance: B1：自动前进时**不**把选择集收敛成下一张。
+    ///   对比/Survey 的选择集是构造画面的手段，收敛它会让画面在第一次判读后散架；
+    ///   单图/网格保持旧语义（前进即把选择移到新当前，防止连按写到上一张）。
+    public func update(
+        _ asset: CullingAsset,
+        patch: CullingUpdatePatch,
+        nextPhotoId: String? = nil,
+        keepSelectionOnAdvance: Bool = false
+    ) async {
         do {
             let input = try CullingUpdateInput(
                 sessionId: sessionId,
@@ -259,8 +271,12 @@ extension CullingViewModel {
                 currentPhotoId = nextPhotoId
                 // P1：自动前进必须同步选择集。否则连续按 P/X 时 targets 仍是上一张，
                 // 会在视图已前进的情况下反复重写同一张照片。
-                selectedPhotoIds = [nextPhotoId]
-                invalidateSelectionSnapshot()
+                // B1：对比/Survey（keepSelectionOnAdvance）例外——下一拍的目标是「当前
+                // 照片」（currentOnly），不需要靠收敛选择集来防止写重复。
+                if !keepSelectionOnAdvance {
+                    selectedPhotoIds = [nextPhotoId]
+                    invalidateSelectionSnapshot()
+                }
             }
             postCullingChange()
             refreshSilently()
@@ -360,7 +376,15 @@ extension CullingViewModel {
     /// **串行化**（2026-10-30 交互整改）：连按 P/X 时旧实现会并发提交同一张照片，
     /// 第二条请求携带过期 `expectedRevision` → 冲突横幅。这里先等上一拍落地，
     /// 再在执行前才取 `currentAsset`：自动前进已生效，第二拍自然作用于下一张。
-    public func commit(patch: CullingUpdatePatch, shouldAdvance: Bool = true) async {
+    ///
+    /// - Parameter currentOnly: B1 / 20-culling-viewer §2 P1：只把这一拍写到当前
+    ///   照片。对比/Survey 布局默认走这条（那里的多选是构造画面的手段）；网格/
+    ///   检查器这类「多选即目标」的界面保持 false，沿用批量分支。
+    public func commit(
+        patch: CullingUpdatePatch,
+        shouldAdvance: Bool = true,
+        currentOnly: Bool = false
+    ) async {
         // 先快照前驱、再把自己登记进链——顺序不能反。若「先 await 上一拍、后赋值」，
         // 连按三拍时第二、三拍会同时挂在第一拍上，第一拍结束后两者各自建 Task
         // 并发提交（R1 复评：仍带同一 expectedRevision 撞冲突）。
@@ -372,7 +396,8 @@ extension CullingViewModel {
         let task = Task { @MainActor [weak self] in
             await previous?.value
             guard let self else { return }
-            await self.performCommit(patch: patch, shouldAdvance: shouldAdvance)
+            await self.performCommit(
+                patch: patch, shouldAdvance: shouldAdvance, currentOnly: currentOnly)
         }
         commitChain = task
         await task.value
@@ -402,10 +427,18 @@ extension CullingViewModel {
             notice = CullingNotice("加载完成后目标已变化，已丢弃加载期间排队的操作")
             return
         }
-        await commit(patch: pending.patch, shouldAdvance: pending.shouldAdvance)
+        // B1：排队拍的「只写当前」收窄必须原样重放（否则加载一结束就退回批量）。
+        await commit(
+            patch: pending.patch,
+            shouldAdvance: pending.shouldAdvance,
+            currentOnly: pending.currentOnly)
     }
 
-    private func performCommit(patch: CullingUpdatePatch, shouldAdvance: Bool) async {
+    private func performCommit(
+        patch: CullingUpdatePatch,
+        shouldAdvance: Bool,
+        currentOnly: Bool
+    ) async {
         guard !isLoading else {
             // P0-4：旧实现在这里静默 return——连按 P/X 只有第一拍生效，用户当 bug。
             // 改为单槽排队：加载结束立刻执行最后一次，既不丢键也不会把中途的
@@ -414,9 +447,22 @@ extension CullingViewModel {
             queuePendingCommit(PendingCullingCommit(
                 patch: patch,
                 shouldAdvance: shouldAdvance,
-                targetPhotoId: targets.isEmpty ? currentAsset?.photo.id : nil,
+                // currentOnly 的目标永远是「当前这张」；批量/旧规则仍按选择集是否为空。
+                targetPhotoId: currentOnly || targets.isEmpty ? currentAsset?.photo.id : nil,
                 targetSelection: targets,
-                targetServerSnapshot: selectionSnapshot))
+                targetServerSnapshot: selectionSnapshot,
+                currentOnly: currentOnly))
+            return
+        }
+        // B1 / 20-culling-viewer §2 P1：对比/Survey 的决策目标只有当前照片。
+        // 旧实现在这里直接看 selectedPhotoIds，于是「盯着 A 按 X」会批量标掉 B…I。
+        if currentOnly {
+            guard let asset = currentAsset else { return }
+            let nextId = shouldAdvance && autoAdvance ? nextPhotoId(after: asset.photo.id) : nil
+            // 对比/Survey 的自动前进只移动当前照片、保留选择集：那里的选择集是
+            // 构造画面的手段，前进时把它收敛成一张会让画面在第一次判读后就散架。
+            await update(
+                asset, patch: patch, nextPhotoId: nextId, keepSelectionOnAdvance: true)
             return
         }
         guard !selectedPhotoIds.isEmpty else {

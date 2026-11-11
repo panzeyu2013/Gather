@@ -142,6 +142,22 @@ struct IngestSheet: View {
                             .lineLimit(3)
                             .truncationMode(.middle)
                     }
+                    // Wave5（F4）：不支持格式必须在"开始摄取"前可见（否则用户
+                    // 以为卡里的文件全进来了，实际少了 GIF/视频/未知 RAW）。
+                    if preview.unsupportedFormats.count > 0 {
+                        Text(Self.unsupportedFormatsText(preview.unsupportedFormats, l10n: l10n))
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !preview.unsupportedFormats.samplePaths.isEmpty {
+                            Text(l10n.format("示例：%@",
+                                Self.sampleFileNames(preview.unsupportedFormats)))
+                                .font(GatherFont.secondary)
+                                .foregroundStyle(GatherTheme.secondaryText)
+                                .lineLimit(3)
+                                .truncationMode(.middle)
+                        }
+                    }
                 }
             }
 
@@ -172,6 +188,20 @@ struct IngestSheet: View {
                     Text(l10n.format("无法读取/越界被拒绝：%lld 个", result.unreadable.count))
                         .font(.caption)
                         .foregroundStyle(.orange)
+                }
+                // Wave5（F4）：不支持格式的跳过在结果区可见（含扩展名分组 + 样例）。
+                if let unsupported = result.unsupportedFormats, unsupported.count > 0 {
+                    Text(Self.unsupportedFormatsText(unsupported, l10n: l10n))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !unsupported.samplePaths.isEmpty {
+                        Text(l10n.format("示例：%@", Self.sampleFileNames(unsupported)))
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(GatherTheme.secondaryText)
+                            .lineLimit(3)
+                            .truncationMode(.middle)
+                    }
                 }
                 // Wave4a-L1：按 libraryDuplicates / librarySkipped / replaced 分类展示。
                 if let duplicates = result.libraryDuplicateCount, duplicates > 0 {
@@ -325,6 +355,23 @@ struct IngestSheet: View {
         } catch {
             errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
         }
+    }
+
+    /// Wave5（F4）：不支持格式的一行摘要（按扩展名分组；调用方负责本地化）。
+    static func unsupportedFormatsText(
+        _ formats: IngestUnsupportedFormats, l10n: L10n
+    ) -> String {
+        let grouped = formats.extensions.sorted { $0.key < $1.key }
+            .map { ".\($0.key)×\($0.value)" }
+            .joined(separator: "、")
+        return l10n.format("不支持格式 %lld 个（%@），已跳过", formats.count, grouped)
+    }
+
+    /// Wave5（F4）：样例只显示文件名，不泄漏源目录结构。
+    static func sampleFileNames(_ formats: IngestUnsupportedFormats) -> String {
+        formats.samplePaths.prefix(3)
+            .map { ($0 as NSString).lastPathComponent }
+            .joined(separator: "、")
     }
 
     /// 当前会话活跃的 ingest 任务（摄取复用 checksum.backfill 载体，按 checkpoint 判定）。

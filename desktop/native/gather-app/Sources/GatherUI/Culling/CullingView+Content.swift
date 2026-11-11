@@ -60,7 +60,10 @@ extension CullingView {
                         conflictChoices: $conflictChoices,
                         filmstripExpanded: $filmstripExpanded,
                         isFocusMode: isFocusMode,
-                        onToggleFocusMode: { toggleFocusMode() }
+                        onToggleFocusMode: { toggleFocusMode() },
+                        // B1：对比/Survey 的「作用于全部选中 N 张」开关（页面持有，
+                        // 切布局不丢）；网格布局没有信息条，但状态要一路带过去。
+                        writesDecisionToSelection: $writesDecisionToSelection
                     )
                 }
             } else if let error = viewModel.errorMessage {
@@ -86,7 +89,8 @@ extension CullingView {
         .gatherAnimatePresence(viewModel.errorMessage != nil || viewModel.notice != nil)
         .task {
             // G0：布局决定首页大小（网格 200，其余 500）；在首次加载前静默设置。
-            viewModel.applyPageLimit(layoutMode == .grid ? 200 : 500)
+            // B2：页大小由布局单一决定，与切换布局时的续页计划同源。
+            viewModel.applyPageLimit(layoutMode.pageLimit)
             // 排序优先 SceneStorage（用户上次选择），否则用设置默认值。
             if let stored = CullingSort(rawValue: sortRaw), viewModel.sortMode != stored {
                 viewModel.applySort(stored)

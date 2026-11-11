@@ -215,7 +215,9 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
             uploaded: result.uploaded,
             failed: result.failed.map { WebDAVPublishFailureInfo(path: $0.path, reason: $0.reason) },
             remoteRoot: result.remoteRoot,
-            abortedOnAuth: result.abortedOnAuth)
+            abortedOnAuth: result.abortedOnAuth,
+            entryURL: result.entryURL,
+            entryURLExpiresAt: result.entryURLExpiresAt)
     }
 
     /// job 创建即终态 = dedupe 命中旧结果（缓存重放），不是本次新执行。

@@ -129,6 +129,9 @@ struct CullingWorkbenchViewer: View {
     /// 专注模式切换：F 裸键挂在查看器上（查看器是页面里唯一始终存在且持有焦点的
     /// 控件），实际的面板折叠/全屏动作由页面执行。
     var onToggleFocusMode: () -> Void = {}
+    /// B1：用户是否显式打开「作用于全部选中 N 张」（默认关，页面持有）。
+    /// 关着的时候对比/Survey 的键盘决策只写当前照片——多选在那里是构造画面的手段。
+    var writesDecisionToSelection: Bool = false
 
     /// Cut 4 / 4b-1：质量失败原因在渲染期按当前语言解析。
     @Environment(\.languageStore) private var languageStore
@@ -441,27 +444,25 @@ struct CullingWorkbenchViewer: View {
                 }
                 return .handled
             }
+            // B1：键盘决策统一走 commitDecision——对比/Survey 默认只写当前照片
+            // （旧实现直接走 commit = 选择集优先，盯着 A 按 X 会标掉 B…I）。
             switch press.characters.lowercased() {
             case " ":
-                Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }
+                commitDecision(CullingUpdatePatch(pickState: .picked))
                 return .handled
             case "p":
-                Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }
+                commitDecision(CullingUpdatePatch(pickState: .picked))
                 return .handled
             case "x":
-                Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected)) }
+                commitDecision(CullingUpdatePatch(pickState: .rejected))
                 return .handled
             case "u":
                 // P2-3：U 统一不前进（与检查器/网格一致），避免跳走当前照片。
-                Task {
-                    await viewModel.commit(
-                        patch: CullingUpdatePatch(pickState: .unreviewed),
-                        shouldAdvance: false)
-                }
+                commitDecision(CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false)
                 return .handled
             case "0", "1", "2", "3", "4", "5":
                 guard let value = Int(press.characters) else { return .ignored }
-                Task { await viewModel.commit(patch: CullingUpdatePatch(rating: Double(value))) }
+                commitDecision(CullingUpdatePatch(rating: Double(value)))
                 return .handled
             case "6", "7", "8", "9":
                 // 对齐 Lightroom：6–9 = 红 / 黄 / 绿 / 蓝色标（橙/粉/紫只留在检查器菜单）。
@@ -473,11 +474,7 @@ struct CullingWorkbenchViewer: View {
                 case "8": label = .green
                 default: label = .blue
                 }
-                Task {
-                    await viewModel.commit(
-                        patch: CullingUpdatePatch(colorLabel: label),
-                        shouldAdvance: false)
-                }
+                commitDecision(CullingUpdatePatch(colorLabel: label), shouldAdvance: false)
                 return .handled
             default:
                 return .ignored
@@ -868,6 +865,37 @@ struct CullingWorkbenchViewer: View {
         }
         if !row.isEmpty { groups.append(row) }
         return groups
+    }
+
+    /// 本次键盘决策是否只写当前照片（B1）。
+    ///
+    /// 解析规则见 CullingDecisionScope.target：对比类布局默认只写当前照片，
+    /// 只有用户显式打开「作用于全部选中 N 张」才退回批量分支（与网格/检查器一致）。
+    private var decisionCurrentOnly: Bool {
+        switch CullingDecisionScope.target(
+            isComparisonLayout: CullingDecisionScope.isComparisonLayout(
+                compareCount: compareCount, isSurvey: isSurvey),
+            // 用 currentAsset（= commit 实际会写的那张）：currentPhotoId 若已失效，
+            // currentAsset 会回退到页首，回显与写入必须同一口径。
+            currentPhotoId: viewModel.currentAsset?.photo.id,
+            selectedPhotoIds: viewModel.selectedPhotoIds,
+            writesToSelection: writesDecisionToSelection
+        ) {
+        case .current:
+            return true
+        case .selection, nil:
+            return false
+        }
+    }
+
+    /// 提交一拍决策：在按键落下时就冻结「是否只写当前照片」（加载期间的排队拍
+    /// 会原样重放这个收窄，不在 flush 时重新解析）。
+    private func commitDecision(_ patch: CullingUpdatePatch, shouldAdvance: Bool = true) {
+        let currentOnly = decisionCurrentOnly
+        Task {
+            await viewModel.commit(
+                patch: patch, shouldAdvance: shouldAdvance, currentOnly: currentOnly)
+        }
     }
 
     /// 单/2/3/4 图：显式选中的对应张数优先，否则当前照片 ± 相邻（避免第 100 张

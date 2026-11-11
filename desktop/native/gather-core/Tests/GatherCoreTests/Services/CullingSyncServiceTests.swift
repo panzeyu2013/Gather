@@ -3,6 +3,11 @@
 //
 // 搬迁原则：断言逐字不改，只把接收者从门面换成 sync（harness.sync）——
 // 覆盖量不变，变的是文件归属，与服务边界一致。
+//
+// Wave5（2026-11-11，Batch1 C1 写回正确性 / N6）：keyword 写回的旧用例
+//（writebackKeywordFlow / writebackKeywordMergeDeduplicates）断言的
+// culling:keep / culling:reject 正是要移除的污染，已按新语义改写为
+// "计划为空 + 不触达写回引擎"与"评分计划不含 culling:*"。
 import Foundation
 import Testing
 import GatherProtocol
@@ -37,81 +42,61 @@ struct CullingWritebackTests {
         }
     }
 
-    @Test("writeback keyword：preview 按决策 id 过滤、关键词合并、persist 与 execute 接同一批项")
-    func writebackKeywordFlow() async throws {
+    // Wave5 / N6（2026-11-11）：写回计划**不再生成** culling:keep / culling:reject
+    // 关键词 —— 关键词随 XMP 落盘后，C1 一旦 Load Metadata 就会把它们吸进自己的词库
+    //（10-c1-interop R13/N6）。挑片判断的在线通道是 C1 variant 属性
+    //（CaptureOneBridge.writeVariantJudgements），文件级写回只剩评分/色标。
+    // 因此 keyword 目标现在没有可写内容：计划为空 → CULLING_NO_DECISIONS，
+    // 且**不触达**写回引擎（不 preview / 不 persist / 不 execute，绝不落 culling:*）。
+    @Test("writeback keyword：计划为空（不再生成 culling:*），不触达写回引擎")
+    func writebackKeywordPlansNothing() async throws {
         let harness = try makeCullingHarness()
         try addPhoto(harness.db, id: "p1")
         try addPhoto(harness.db, id: "p2")
         try addDecision(harness.db, photoId: "p1", decision: "keep")
         try addDecision(harness.db, photoId: "p2", decision: "reject")
-        // fake preview 返回两项（含一项不在决策集的，必须被过滤）。
         harness.writeback.previewItems = [
             WritebackItem(
                 id: 1, photoId: "p1", photoPath: "/shoot/p1.jpg", sessionId: "session",
                 module: "culling", keywords: ["existing"],
-                attributes: WritebackAttributes(keywords: ["culling:keep"]),
                 xmpPath: "/shoot/p1.xmp", backupPath: "", xmpStatus: "pending",
-                errorMessage: "", attemptCount: 0, lastAttemptAt: ""
-            ),
-            WritebackItem(
-                id: 2, photoId: "p2", photoPath: "/shoot/p2.jpg", sessionId: "session",
-                module: "culling", keywords: [],
-                xmpPath: "/shoot/p2.xmp", backupPath: "", xmpStatus: "pending",
-                errorMessage: "", attemptCount: 0, lastAttemptAt: ""
-            ),
-            WritebackItem(
-                id: 3, photoId: "p3", photoPath: "/shoot/p3.jpg", sessionId: "session",
-                module: "culling", keywords: [],
-                xmpPath: "/shoot/p3.xmp", backupPath: "", xmpStatus: "pending",
                 errorMessage: "", attemptCount: 0, lastAttemptAt: ""
             ),
         ]
 
-        _ = try await harness.sync.writeback(
-            sessionId: "session", target: .keyword, confirmed: true
-        )
-
-        // preview 只携带决策集内的照片 id。
-        let previewCall = try #require(harness.writeback.previewCalls.first)
-        #expect(previewCall.module == "culling")
-        #expect(previewCall.photoIds == ["p1", "p2"])
-        // p1 的关键词被合并（保留已有 + 计划关键词），p2 无既有关键词。
-        let persisted = try #require(harness.writeback.persistCalls.first)
-        #expect(persisted.map(\.photoId) == ["p1", "p2"])
-        let p1 = persisted[0]
-        #expect(p1.attributes?.keywords == ["existing", "culling:keep"])
-        let p2 = persisted[1]
-        #expect(p2.attributes?.keywords == ["culling:reject"])
-        // execute 接同一批项。
-        #expect(harness.writeback.executeCalls.first?.module == "culling")
-        #expect(harness.writeback.executeCalls.first?.items.map(\.photoId) == ["p1", "p2"])
+        await #expect(throws: CullingServiceError.noDecisions) {
+            _ = try await harness.sync.writeback(
+                sessionId: "session", target: .keyword, confirmed: true
+            )
+        }
+        #expect(harness.writeback.previewCalls.isEmpty)
+        #expect(harness.writeback.persistCalls.isEmpty)
+        #expect(harness.writeback.executeCalls.isEmpty)
     }
 
-    /// TS 合并用的是 [...new Set([...item.keywords, ...attributes.keywords])]：
-    /// 既有词与计划词重复时只能保留一次，且保持既有顺序。
-    /// 变异「去掉 merged.contains 去重」可杀。
-    @Test("writeback keyword 合并去重：既有词与计划词重复只保留一次")
-    func writebackKeywordMergeDeduplicates() async throws {
+    /// N6 回归：评分/色标计划只带自己的属性，不再顺带塞 culling:* 关键词。
+    @Test("writeback 评分计划不带 culling:* 关键词（N6 回归）")
+    func writebackRatingPlansNoCullingKeywords() async throws {
         let harness = try makeCullingHarness()
         try addPhoto(harness.db, id: "p1")
         try addDecision(harness.db, photoId: "p1", decision: "keep")
         harness.writeback.previewItems = [
             WritebackItem(
                 id: 1, photoId: "p1", photoPath: "/shoot/p1.jpg", sessionId: "session",
-                module: "culling", keywords: ["culling:keep", "other"],
-                attributes: nil,
+                module: "culling", keywords: ["existing"],
                 xmpPath: "/shoot/p1.xmp", backupPath: "", xmpStatus: "pending",
                 errorMessage: "", attemptCount: 0, lastAttemptAt: ""
             ),
         ]
 
         _ = try await harness.sync.writeback(
-            sessionId: "session", target: .keyword, confirmed: true
+            sessionId: "session", target: .rating, confirmed: true
         )
 
         let persisted = try #require(harness.writeback.persistCalls.first)
-        #expect(persisted.first?.attributes?.keywords == ["culling:keep", "other"],
-                "既有词与计划词重复时必须去重且保持既有顺序")
+        let keywords = persisted.first?.attributes?.keywords ?? []
+        #expect(!keywords.contains { $0.hasPrefix("culling:") },
+                "写回计划不得再产生 culling:* 关键词（会污染 C1 词库）")
     }
 
     @Test("writeback rating/color_label 计划：写唯一真相源（cache）的值，不是 keep→5 派生常量")
@@ -414,8 +399,10 @@ struct CullingDeliveryCut2Tests {
             baseValues: .object(["rating": .number(3)])
         )
 
+        // Wave5 / N6：keyword 计划已为空（不再生成 culling:*），镜像用例改用 .rating
+        // 取得非空计划——镜像逻辑与 target 无关，断言面不变。
         let result = try await harness.sync.writeback(
-            sessionId: "session", target: .keyword, confirmed: true
+            sessionId: "session", target: .rating, confirmed: true
         )
 
         #expect(result.errors.isEmpty)
@@ -455,7 +442,7 @@ struct CullingDeliveryCut2Tests {
         harness.writeback.getItemsResult = [failed]
 
         let result = try await harness.sync.writeback(
-            sessionId: "session", target: .keyword, confirmed: true
+            sessionId: "session", target: .rating, confirmed: true
         )
 
         #expect(result.failed == 1)
@@ -479,10 +466,10 @@ struct CullingDeliveryCut2Tests {
         )
         // 不提供持久化行：验证 result.written + plan item 的兜底镜像路径。
         let first = try await harness.sync.writeback(
-            sessionId: "session", target: .keyword, confirmed: true
+            sessionId: "session", target: .rating, confirmed: true
         )
         let second = try await harness.sync.writeback(
-            sessionId: "session", target: .keyword, confirmed: true
+            sessionId: "session", target: .rating, confirmed: true
         )
         #expect(first.errors.isEmpty)
         #expect(second.errors.isEmpty)

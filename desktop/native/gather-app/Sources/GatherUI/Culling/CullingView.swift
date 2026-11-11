@@ -54,12 +54,22 @@ public struct CullingView: View {
         CullingLayoutMode(rawValue: layoutRaw) ?? .single
     }
 
+    /// B1 / 20-culling-viewer §2 P1：「作用于全部选中 N 张」开关（默认关）。
+    ///
+    /// 对比/Survey 里多选是**构造画面**的手段：默认只把决策写到当前照片；只有
+    /// 用户显式打开这个开关才批量写选择集（信息条同时回显本次写入目标）。
+    /// 状态挂在页面上而不是信息条里：切布局会销毁/重建信息条（网格没有信息条），
+    /// 但「切布局不丢」是硬要求；也不进 SceneStorage——粘住的批量写比丢状态危险。
+    @State var writesDecisionToSelection = false
+
     var layoutBinding: Binding<CullingLayoutMode> {
         Binding(
             get: { layoutMode },
             set: { mode in
                 layoutRaw = mode.rawValue
-                Task { await viewModel.setPageLimit(mode == .grid ? 200 : 500) }
+                // B2：页大小由布局单一决定（CullingLayoutMode.pageLimit）；setPageLimit
+                // 内部按当前照片续页，不会因为页变小把用户踢回第一张。
+                Task { await viewModel.setPageLimit(mode.pageLimit) }
             }
         )
     }

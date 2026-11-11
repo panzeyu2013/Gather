@@ -2,7 +2,8 @@
 // Wave3：S3 兼容对象存储发布（SigV4 头签名；纯逻辑 + 可注入 HTTP 传输，单测不连网络）。
 //
 // 边界与安全：
-// - 只做对象写入（PUT）/清理（DELETE），不做分片/预签名 URL；
+// - 对象写入（PUT）/清理（DELETE）走头签名；Wave5 起额外生成**只读**的
+//   query-string 预签名 GET URL（客户入口链接；不写 ACL、不改对象可见性）；
 // - 对象默认私有：不写 ACL/public-read，不开启公开读；
 // - 凭据（accessKeyID/secretAccessKey）由 Host 从 Keychain 查出来，仅在本层内存中使用，
 //   不落盘、不进错误串/日志；
@@ -266,6 +267,97 @@ public enum S3SigV4 {
         formatter.dateFormat = "yyyyMMdd"
         return formatter.string(from: date)
     }
+
+    // MARK: - Wave5：query-string 预签名（GET）
+
+    /// 预签名 GET 的载荷哈希占位符（AWS 规范：预签名 URL 不签 body）。
+    static let presignedPayloadHash = "UNSIGNED-PAYLOAD"
+    /// SigV4 预签名 URL 的最长有效期（AWS 上限 7 天）。
+    static let maximumPresignExpirySeconds = 604_800
+
+    /// 生成 AWS SigV4 **query-string 预签名 GET URL**。
+    ///
+    /// 与头签名共用 canonical request / 签名密钥实现；差异只在：
+    /// - 认证参数全部进 query（X-Amz-Algorithm/Credential/Date/Expires/SignedHeaders，
+    ///   临时凭据再追加 X-Amz-Security-Token）；
+    /// - SignedHeaders 只有 host，payload 固定 `UNSIGNED-PAYLOAD`；
+    /// - 最后追加 X-Amz-Signature。
+    ///
+    /// 纯函数（除 `now` 外无外部状态，不触网）；无效输入返回 nil，由调用方
+    /// 降级成"不提供链接"，绝不生成一个看似可用的坏链接。
+    ///
+    /// 空间/斜杠等按 RFC 3986 百分号编码（SigV4 口径）：Credential 里的
+    /// `/` 必须是 %2F（官方固定向量测试覆盖）。
+    ///
+    /// 官方示例（GET Object，20130524/us-east-1/86400）：
+    /// https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html
+    static func presignedGETURL(
+        url: URL,
+        host: String,
+        canonicalURI: String,
+        accessKeyID: String,
+        secretAccessKey: String,
+        region: String,
+        sessionToken: String? = nil,
+        expiresInSeconds: Int,
+        now: Date = Date()
+    ) -> URL? {
+        guard !accessKeyID.isEmpty, !secretAccessKey.isEmpty,
+              !host.isEmpty, !region.isEmpty,
+              (1...maximumPresignExpirySeconds).contains(expiresInSeconds),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return nil }
+        let timestamp = timestamp(now)
+        let date = dateStamp(now)
+        let credentialScope = scope(date: date, region: region)
+        let credential = accessKeyID + "/" + credentialScope
+        var query: [(String, String)] = [
+            ("X-Amz-Algorithm", algorithm),
+            ("X-Amz-Credential", credential),
+            ("X-Amz-Date", timestamp),
+            ("X-Amz-Expires", String(expiresInSeconds)),
+        ]
+        if let token = sessionToken, !token.isEmpty {
+            query.append(("X-Amz-Security-Token", token))
+        }
+        query.append(("X-Amz-SignedHeaders", "host"))
+        // canonical query 必须按参数名排序（同名再按值），并与最终 URL 逐字一致。
+        query.sort { $0.0 < $1.0 }
+        let canonicalQuery = query
+            .map { uriEncode($0.0) + "=" + uriEncode($0.1) }
+            .joined(separator: "&")
+        let request = canonicalRequest(
+            method: "GET",
+            canonicalURI: canonicalURI,
+            canonicalQueryString: canonicalQuery,
+            headers: ["host": host],
+            signedHeaders: ["host"],
+            payloadHash: presignedPayloadHash)
+        let requestHash = sha256Hex(Data(request.utf8))
+        let toSign = stringToSign(
+            timestamp: timestamp, scope: credentialScope, canonicalRequestHash: requestHash)
+        let key = signingKey(secretAccessKey: secretAccessKey, date: date, region: region)
+        let signature = hmacSHA256(key: key, data: Data(toSign.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        var signed = components
+        signed.percentEncodedQuery = canonicalQuery + "&X-Amz-Signature=" + signature
+        return signed.url
+    }
+
+    /// RFC 3986 百分号编码（SigV4 的 URI/query 编码口径：unreserved 之外全部转义）。
+    static func uriEncode(_ value: String) -> String {
+        let unreserved = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        var output = ""
+        for byte in value.utf8 {
+            let scalar = Character(UnicodeScalar(byte))
+            if unreserved.contains(scalar) {
+                output.append(scalar)
+            } else {
+                output += String(format: "%%%02X", Int(byte))
+            }
+        }
+        return output
+    }
 }
 
 public struct S3Configuration: Equatable, Sendable {
@@ -295,9 +387,14 @@ public struct S3Configuration: Equatable, Sendable {
 
 public final class S3ShareTransport: OutputShareTransport {
     public let kind: OutputShareTransportKind = .s3
+    /// Wave5：预签名客户链接的有效期（24 小时；AWS 预签名上限 7 天）。
+    static let entryURLExpiresInSeconds = 86_400
+
     private let transport: any S3HTTPTransport
     private let maxAttempts: Int
     private let sleep: @Sendable (Int) async -> Void
+    /// Wave5：时钟接缝（预签名链接的 X-Amz-Date/Expires 用它，固定向量测试可注入）。
+    private let now: @Sendable () -> Date
 
     public init(
         transport: any S3HTTPTransport = URLSessionS3HTTPTransport(),
@@ -305,11 +402,13 @@ public final class S3ShareTransport: OutputShareTransport {
         sleep: @escaping @Sendable (Int) async -> Void = { attempt in
             let nanoseconds = UInt64(max(1, attempt)) * 500_000_000
             do { try await Task.sleep(nanoseconds: nanoseconds) } catch { return }
-        }
+        },
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.maxAttempts = max(1, maxAttempts)
         self.sleep = sleep
+        self.now = now
     }
 
     public func publish(
@@ -364,6 +463,8 @@ public final class S3ShareTransport: OutputShareTransport {
         }
         let rootLabel = Self.rootLabel(configuration)
         var uploaded = 0
+        /// Wave5：成功上传的相对路径（只有入口文件真的传上去才给客户链接）。
+        var uploadedRelatives = Set<String>()
         var failures: [OutputSharePublishFailure] = []
 
         // 发布前可写探测：PUT/DELETE 一个随机探针对象；失败分类后再决定是否继续。
@@ -445,6 +546,7 @@ public final class S3ShareTransport: OutputShareTransport {
                     path: file.relative)
                 if response.isSuccess {
                     uploaded += 1
+                    uploadedRelatives.insert(file.relative)
                     onProgress?(index + 1, files.count)
                 } else if response.isAuthFailure {
                     failures.append(OutputSharePublishFailure(
@@ -466,9 +568,44 @@ public final class S3ShareTransport: OutputShareTransport {
                     path: file.relative, reason: Self.failureReason(for: error)))
             }
         }
+        // Wave5：客户入口 = 画廊 index.html 的预签名 GET（对象仍默认私有；
+        // 入口没传成功就不给链接，避免"发布成功但客户打开 404"）。
+        let entry = Self.entryLink(
+            configuration: configuration, prefix: prefix,
+            files: files, uploaded: uploadedRelatives, now: now())
         return OutputSharePublishResult(
             uploaded: uploaded, failed: failures,
-            remoteRoot: rootLabel, abortedOnAuth: false)
+            remoteRoot: rootLabel, abortedOnAuth: false,
+            entryURL: entry?.url, entryURLExpiresAt: entry?.expiresAt)
+    }
+
+    /// Wave5：入口文件 → SigV4 预签名 GET URL + 到期时间（ISO-8601）。
+    ///
+    /// 只做链接生成：不写 ACL、不改对象可见性、不把 secret 拼进任何字符串。
+    private static func entryLink(
+        configuration: S3Configuration,
+        prefix: String,
+        files: [WebDAVPublisher.LocalFile],
+        uploaded: Set<String>,
+        now: Date
+    ) -> (url: String, expiresAt: String)? {
+        guard let relative = WebDAVPublisher.entryRelativePath(in: files),
+              uploaded.contains(relative) else { return nil }
+        let key = joinKey(prefix, relative)
+        guard let address = S3ShareAddressing.address(
+            baseURL: configuration.endpoint, bucket: configuration.bucket,
+            region: configuration.region, key: key) else { return nil }
+        let effectiveRegion = configuration.region ?? S3ShareAddressing.defaultRegion
+        guard let url = S3SigV4.presignedGETURL(
+            url: address.url, host: address.host, canonicalURI: address.canonicalURI,
+            accessKeyID: configuration.accessKeyID,
+            secretAccessKey: configuration.secretAccessKey,
+            region: effectiveRegion,
+            sessionToken: configuration.sessionToken,
+            expiresInSeconds: entryURLExpiresInSeconds,
+            now: now) else { return nil }
+        let expiresAt = now.addingTimeInterval(TimeInterval(entryURLExpiresInSeconds))
+        return (url.absoluteString, OutputShareManifest.iso8601Now(expiresAt))
     }
 
     // MARK: - 请求构造与重试

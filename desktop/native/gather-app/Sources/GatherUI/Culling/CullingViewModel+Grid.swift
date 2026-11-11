@@ -23,14 +23,31 @@ extension CullingViewModel {
         await loadPage(reset: true)
     }
 
-    /// 切换布局导致的页大小变化：重置分页。
+    /// 切换布局导致的页大小变化：按「当前照片所在页」续页，不整页 reset。
+    ///
+    /// B2 / 浏览连续性（20-culling-viewer §2 P1 / §3-2）：网格 200 / 其余 500，
+    /// 切布局会改页大小。旧实现无条件 loadPage(reset: true)：页变小后当前照片
+    /// （例如第 300 张）不在新页内，被回退到第一张——每小时十几次的动作看起来
+    /// 像"软件坏了"。分页是键集游标（没有 offset），所以「停在第 N 页」无法直接
+    /// 请求；能保证连续性的做法是不动已加载窗口（见 CullingPageContinuation）。
     public func setPageLimit(_ limit: Int) async {
         let clamped = min(1_000, max(50, limit))
         guard pageLimit != clamped else { return }
         pageLimit = clamped
         // 不再无条件清空：跨页选择保留在 selectedPhotoIds（提交时再按可见性收窄），
         // 避免“切布局/翻页即丢选择”。
-        await loadPage(reset: true)
+        let plan = CullingPageContinuation.plan(
+            loadedCount: page?.assets.count ?? 0,
+            currentIndex: currentLoadedIndex,
+            newLimit: clamped)
+        guard let reloadLimit = plan.reloadLimit else { return }
+        await loadPage(reset: true, initialLimit: reloadLimit)
+    }
+
+    /// 当前照片在已加载页里的下标（nil = 无当前照片 / 不在已加载页内）。
+    var currentLoadedIndex: Int? {
+        guard let currentPhotoId, let assets = page?.assets else { return nil }
+        return assets.firstIndex { $0.photo.id == currentPhotoId }
     }
 
     /// 首屏加载前静默设置页大小（不触发第二次请求）。
@@ -150,5 +167,74 @@ extension CullingViewModel {
         selectionAnchorId = photoId
         invalidateSelectionSnapshot()
         currentPhotoId = photoId
+    }
+}
+
+// MARK: - 布局切换的续页计划（B2：浏览连续性）
+
+/// 切布局导致页大小变化时，首页要不要重取、按多大取（纯函数，便于单测）。
+///
+/// 分页是**键集游标**（只有「下一页」，没有 offset），所以「停在第 N 页」无法直接
+/// 请求；能保证浏览连续性的做法是不动已经加载的窗口——它是排序后的前缀，只要
+/// 当前照片还在其中，切布局就不该把它踢回第一张。只有「页变大」才值得重取一次
+/// 拿更多数据（当前照片必然仍在新的首页内）。
+enum CullingPageContinuation: Equatable {
+    /// 保持已加载窗口，只改后续页大小（不发请求）。
+    case keepLoadedWindow
+    /// 重取首页，请求 limit 条。
+    case reload(limit: Int)
+
+    /// 重取首页的 limit（nil = 不需要重取，保持已加载窗口）。
+    var reloadLimit: Int? {
+        if case .reload(let limit) = self { return limit }
+        return nil
+    }
+}
+
+extension CullingPageContinuation {
+    /// index 在新页大小下所属页的「页尾」下标 = 覆盖那一页所需条数。
+    ///
+    /// 分页按页对齐（0..<limit、limit..<2×limit …），这样重取后网格/查看器的
+    /// 翻页节奏与页大小一致；超出单次请求上限（service pageLimitMax = 2000）
+    /// 时返回 nil（无法用一次请求覆盖）。
+    static func pageAlignedLimit(
+        covering index: Int,
+        limit: Int,
+        maxLimit: Int = 2_000
+    ) -> Int? {
+        guard index >= 0, limit > 0, maxLimit > 0 else { return nil }
+        let aligned = ((index / limit) + 1) * limit
+        guard aligned <= maxLimit else { return nil }
+        return aligned
+    }
+
+    /// 页大小从旧值切到 newLimit 时的首页计划。
+    ///
+    /// - loadedCount == 0：没有可保留的窗口，按新页大小取首页；
+    /// - 当前照片在已加载窗口内、且新页大小不大于窗口：只改后续页大小
+    ///   （最常见：500 → 200 切网格），当前照片原地不动；
+    /// - 页变大：重取一次把窗口扩到新页大小（当前照片必然仍在新页内）；
+    /// - 当前照片不在已加载窗口（防御分支，例如页被别的路径整页换掉）：按新页
+    ///   大小整页对齐后重取覆盖它的那一页；超出单次上限则退回新页大小。
+    static func plan(
+        loadedCount: Int,
+        currentIndex: Int?,
+        newLimit: Int,
+        maxLimit: Int = 2_000
+    ) -> CullingPageContinuation {
+        let limit = min(maxLimit, max(1, newLimit))
+        guard loadedCount > 0 else { return .reload(limit: limit) }
+        if let currentIndex, currentIndex >= 0 {
+            if currentIndex < loadedCount {
+                // 窗口已经包含当前照片：页变小没必要重取（旧页是超集，多加载的
+                // 部分不影响正确性）；页变大才为了「翻片窗口」补数据。
+                return limit > loadedCount ? .reload(limit: limit) : .keepLoadedWindow
+            }
+            if let aligned = pageAlignedLimit(
+                covering: currentIndex, limit: limit, maxLimit: maxLimit) {
+                return .reload(limit: aligned)
+            }
+        }
+        return .reload(limit: limit)
     }
 }

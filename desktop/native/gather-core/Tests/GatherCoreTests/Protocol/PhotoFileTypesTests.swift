@@ -7,6 +7,7 @@
 
 import Foundation
 import Testing
+import GatherAnalysis
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherApplication
@@ -83,5 +84,41 @@ struct PhotoFileTypesTests {
                     "nef.", ".nefx", "ne f", ".dngx"] {
             #expect(!PhotoFileTypes.isRAW(ext), "不应判为 RAW：\(ext)")
         }
+    }
+
+    // MARK: - Wave5（F4）：单一「可解码 = 可导入 = 可索引」白名单
+
+    /// 三处必须引用同一份清单：解码（GatherAnalysis）/ 索引（GatherApplication）
+    /// 的 `supportedExtensions` 都是 `PhotoFileTypes.supportedExtensions` 的转发；
+    /// 摄取侧默认白名单是它的 dotless 形态（`IngestService.plan` 默认参数）。
+    @Test func supportedWhitelistIsSingleSource() {
+        let expected = PhotoFileTypes.rawExtensions
+            .union(PhotoFileTypes.bitmapExtensions)
+            .union(PhotoFileTypes.renderedExtensions)
+        #expect(PhotoFileTypes.supportedExtensions == expected)
+        #expect(PhotoFileTypes.sortedSupportedExtensions == expected.sorted())
+        #expect(RAWDecoder.supportedExtensions == expected)
+        #expect(IndexerService.supportedExtensions == expected)
+        // 历史漂移点：这些可解码的 RAW 必须在导入/索引白名单里（Wave5-F4）。
+        for ext in [".iiq", ".3fr", ".x3f", ".mrw", ".srf", ".fff",
+                    ".eip", ".erf", ".kdc", ".mos", ".mef"] {
+            #expect(PhotoFileTypes.isSupported(ext), "白名单缺 \(ext)")
+            #expect(RAWDecoder.supports(ext), "解码器不支持 \(ext)")
+        }
+        // 不支持的格式仍不支持（不偷偷把 GIF/BMP 收进来）。
+        for ext in ["gif", ".GIF", ".bmp", ".avif", ".jp2", "mov", ""] {
+            #expect(!PhotoFileTypes.isSupported(ext), "不应判为支持：\(ext)")
+        }
+    }
+
+    @Test func normalizedExtensionHandlesDotCaseAndWhitespace() {
+        #expect(PhotoFileTypes.normalizedExtension(".NEF") == "nef")
+        #expect(PhotoFileTypes.normalizedExtension(" cr2 ") == "cr2")
+        #expect(PhotoFileTypes.normalizedExtension("...jpg") == "jpg")
+        #expect(PhotoFileTypes.normalizedExtension(".") == nil)
+        #expect(PhotoFileTypes.normalizedExtension("") == nil)
+        #expect(PhotoFileTypes.isSupported("nef"))
+        #expect(PhotoFileTypes.isSupported(".NEF"))
+        #expect(PhotoFileTypes.isSupported(" .jpeg "))
     }
 }

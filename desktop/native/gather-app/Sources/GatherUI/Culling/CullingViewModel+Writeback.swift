@@ -240,6 +240,9 @@ extension CullingViewModel {
     /// 目标集：有选择集 → 选择集；否则当前照片。只改 C1 选中、不导入；脚本能力
     /// 不足时桥层退化为 open -a（**可能触发 C1 导入**），结果 method 已注明来源，
     /// 文案上必须区分，不能让用户以为只是改了选中。
+    /// Wave5（R12/R3）：桥层现在 select 前先 deselect（提示的"N 张"= C1 实际选中），
+    /// 且 notFound 时会按唯一父目录让 C1 切集合重试一次；仍 notFound 才提示
+    /// "不在 C1 当前集合"。
     public func showInCaptureOne() async {
         let paths = captureOneTargetPaths
         guard !paths.isEmpty else {
@@ -260,8 +263,9 @@ extension CullingViewModel {
                         "已在 Capture One 中显示 %lld 张照片",
                         params: ["\(outcome.paths.count)"])
                 } else {
+                    // R3：仍 notFound = 已尝试按唯一父目录切集合后，C1 当前集合仍不含这些照片。
                     notice = CullingNotice(
-                        "已在 Capture One 中显示 %lld 张，%lld 张不在当前目录",
+                        "已在 Capture One 中显示 %lld 张，%lld 张不在 C1 当前集合",
                         params: ["\(outcome.paths.count)", "\(outcome.notFound.count)"])
                 }
             case .workspace:
@@ -316,9 +320,13 @@ extension CullingViewModel {
     /// A3：C1 16.7 的 variant 只有布尔 pick、**没有 reject 位**，因此写回只表达 keep
     ///（picked → pick=true）；淘汰/未处理不写 pick（保留 C1 现值），**不写关键词**
     ///（G4：不污染 C1 词库）。
-    /// A1：只有**全部命中**（notFound/skipped 为空）bridge 才写 durable reload-ack；
-    /// 部分成功时给出可执行下一步，避免 confirm/finalize 在 C1 仍显示旧值时推进。
+    /// A1：只有**全部命中**（notFound/skipped/skippedMultiVariant 为空）bridge 才写
+    /// durable reload-ack；部分成功时给出可执行下一步，避免 confirm/finalize 在 C1
+    /// 仍显示旧值时推进。
     /// A4：items 只覆盖当前页；跨页选择会明确提示「仅当前页 N/M」，不再静默截断。
+    /// Wave5（R1/R3）：多 variant 不猜目标（bridge 整条跳过并回 skippedMultiVariant），
+    /// 用户需回 C1 选定变体后重试或改用「写回 XMP…」；notFound 表示 bridge 已尝试按
+    /// 唯一父目录让 C1 切集合仍找不到，提示写明「C1 当前集合未包含这些照片」。
     ///
     /// 收口口径（2026-11-11 已确认）：写的是 C1 catalog（权威），**不再** reload metadata
     ///（会把盘上旧 XMP 读回覆盖判断）；失败/未接线时统一提示可执行的下一步：
@@ -346,19 +354,41 @@ extension CullingViewModel {
                 notice = CullingNotice(
                     "仅当前页：已写回 %lld/%lld 张（其它页未写回；跨页请分批，或用「写回 XMP…」覆盖全部）",
                     params: ["\(report.written)", "\(selectedPhotoIds.count)"])
-            } else if !report.notFound.isEmpty || report.skipped > 0 {
+            } else if !report.skippedMultiVariant.isEmpty
+                        || !report.notFound.isEmpty || report.skipped > 0 {
                 // A1：部分成功不解除门禁（bridge 不写 durable ack），提示可执行下一步。
+                // R1/R3：多变体与"不在当前集合"是两种不同的下一步，逐项说清。
                 notice = CullingNotice(
-                    "已写回 %lld 个变体；%lld 个不在当前目录、%lld 张超上限未写回（未解除 C1 重载门禁：可改用「写回 XMP…」并手动 Load）",
-                    params: ["\(report.written)", "\(report.notFound.count)", "\(report.skipped)"])
+                    "已写回 %lld 个变体；%lld 张多变体未写回、%lld 张不在 C1 当前集合、%lld 张超上限未写回（未解除 C1 重载门禁）",
+                    params: [
+                        "\(report.written)",
+                        "\(report.skippedMultiVariant.count)",
+                        "\(report.notFound.count)",
+                        "\(report.skipped)",
+                    ])
+                if !report.skippedMultiVariant.isEmpty {
+                    // R1：多 variant 时目标不可判（不猜）；用户回 C1 选定变体后重试，或走文件级 XMP。
+                    errorMessage = CommandError.localized(
+                        "%lld 张多变体未写回：请在 C1 选择变体后重试，或改用写回 XMP（「写回 XMP…」）",
+                        params: ["\(report.skippedMultiVariant.count)"],
+                        diagnostic: report.skippedMultiVariant.joined(separator: "；"))
+                } else if !report.notFound.isEmpty {
+                    // R3：已尝试按唯一父目录 browse 切集合，仍找不到 = 当前集合不含这些照片。
+                    errorMessage = CommandError.localized(
+                        "C1 当前集合未包含这些照片（%lld 张）：已尝试让 C1 切换到目标目录；可改用「写回 XMP…」",
+                        params: ["\(report.notFound.count)"],
+                        diagnostic: report.notFound.joined(separator: "；"))
+                }
             } else {
                 notice = CullingNotice(
                     "已在 Capture One 中写回 %lld 个变体",
                     params: ["\(report.written)"])
             }
-            if !report.notFound.isEmpty || report.skipped > 0 {
+            if !report.skippedMultiVariant.isEmpty
+                || !report.notFound.isEmpty || report.skipped > 0 {
                 GatherLogger.log(
                     "c1.variant_writeback partial written=\(report.written)"
+                        + " skippedMultiVariant=\(report.skippedMultiVariant.count)"
                         + " notFound=\(report.notFound.count)"
                         + " skipped=\(report.skipped)（未解除 reload-ack 门禁）",
                     level: .warn)

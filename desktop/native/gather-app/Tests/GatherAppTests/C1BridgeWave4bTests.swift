@@ -1,6 +1,7 @@
 // desktop/native/gather-app/Tests/GatherAppTests/C1BridgeWave4bTests.swift
 // Wave4b / task-41 回归（C1 P2）：自动 reload 先 select 写盘照片、primary variant 回退文案、
 // malformed 行计数、latestScanJob 稳定选择、Hot Folder 安装判定、MetadataSyncBar 动作注入。
+// Wave5 / task-11：增补 R12「在 C1 中显示」的 deselect-first 契约（见下方 R12 套件）。
 //
 // 不连真 C1（注入 appleScriptRunner）、不跑 GUI；扫描 job 用 DTO 直接构造。
 import Foundation
@@ -107,6 +108,115 @@ struct C1BridgeWave4bSelectionFallbackTests {
         let snapshot = try await bridge.selectedVariantSnapshot()
         #expect(snapshot.malformedLines == 1)
         #expect(snapshot.paths.isEmpty)
+    }
+}
+
+// MARK: - R12：在 C1 中显示 = 替换选中（select 前先 deselect）
+
+/// Wave5（2026-11-11，Batch1 C1 写回正确性）R12 回归。
+///
+/// C1 的 select 是"加入当前集选中"（sdef:1956 "Add one or more variants to the current
+/// collection's selection"），旧脚本只加不减 → UI 提示"已在 C1 中显示 N 张"与 C1
+/// 实际选中（旧选中 + N）不符。sdef:1967 有配对的 deselect（直接参数同样是 document、
+/// variants 是具名参数），因此 select 前必须先清掉当前选中。
+@Suite("C1BridgeWave4b 在 C1 中选中（R12 deselect-first）")
+struct C1BridgeWave4bDeselectFirstTests {
+    @Test("select 脚本：先 deselect 当前选中，再 select（顺序固定）")
+    func deselectsBeforeSelect() throws {
+        let script = CaptureOneBridge.selectVariantsScript(
+            appName: "Capture One", paths: ["/shoot/a.cr2", "/shoot/b.cr2"])
+        // 当前选中经 application 级 selected variants 读出（与读取脚本同一对象归属）。
+        #expect(script.contains("set previousSelection to selected variants"))
+        #expect(script.contains("deselect targetDoc variants previousSelection"))
+        #expect(script.contains("select targetDoc variants variantsToSelect"))
+        let deselect = try #require(script.range(of: "deselect targetDoc variants previousSelection"))
+        let select = try #require(script.range(of: "select targetDoc variants variantsToSelect"))
+        #expect(deselect.lowerBound < select.lowerBound, "deselect 必须在 select 之前执行")
+    }
+
+    @Test("deselect 失败是受控降级：包在 try 里，不让整次「显示」变成脚本失败")
+    func deselectFailureIsControlled() throws {
+        let script = CaptureOneBridge.selectVariantsScript(
+            appName: "Capture One", paths: ["/shoot/a.cr2"])
+        // 清选中失败不能让 selectVariants 抛 C1_SCRIPT_FAILED（那会落到 open -a 导入）。
+        let guardRange = try #require(
+            script.range(of: "if (count of previousSelection) > 0 then"))
+        let deselectRange = try #require(
+            script.range(of: "deselect targetDoc variants previousSelection"))
+        let tryRange = try #require(script.range(
+            of: "try", range: guardRange.upperBound..<script.endIndex))
+        #expect(tryRange.lowerBound < deselectRange.lowerBound)
+        // 空选中/读不到选中时也走同一条受控路径（空列表按空处理，不报错）。
+        #expect(script.contains("set previousSelection to {}"))
+    }
+}
+
+
+// MARK: - Wave5 / R1+R3：写回报告 → UI 提示（多变体 / 不在当前集合）
+
+/// Wave5：报告字段 consumed by UI —— 多变体与「不在当前集合」必须是两句不同的可执行提示。
+/// 桥用固定报告替身：本套件只测报告 → UI 文案的映射，不碰脚本。
+private struct Wave5ReportBridge: CaptureOneBridging {
+    let report: C1VariantWritebackReport
+    func selectedPhotoPaths() async throws -> [String] { [] }
+    func reloadMetadata(sessionId: String) async throws {}
+    func checkHealth() async -> Result<String, CaptureOneBridgeError> { .success("fake") }
+    func preflight() async -> C1PreflightStatus {
+        C1PreflightStatus(
+            reachable: true, appRunning: true, automationAuthorized: true,
+            documentOpen: true, timedOut: false, appName: "Capture One")
+    }
+    nonisolated static func documentProbeScript(appName: String) -> String { "wave5:" + appName }
+    func writeVariantJudgements(
+        sessionId: String?,
+        items: [C1VariantWritebackItem]
+    ) async throws -> C1VariantWritebackReport { report }
+}
+
+@MainActor
+private func makeWave5CullingVM(bridge: Wave5ReportBridge) -> CullingViewModel {
+    CullingViewModel(
+        sessionId: "s1",
+        culling: B8CullingAPIStub(),
+        navigation: B8NavigationAPIStub(),
+        metadata: B6bMetadataAPIStub(),
+        jobs: B5bJobAPIStub(),
+        quality: B5bQualityAPIStub(),
+        captureOne: bridge)
+}
+
+@Suite("C1BridgeWave5 写回报告 → UI 提示（R1/R3）")
+@MainActor
+struct C1BridgeWave5WritebackNoticeTests {
+    @Test("R1：多变体未写回 → 明说「回 C1 选变体重试或写回 XMP」，且不谎报全成功")
+    func multiVariantNotice() async {
+        let bridge = Wave5ReportBridge(report: C1VariantWritebackReport(
+            written: 1, skippedMultiVariant: ["/shoot/b.cr2"]))
+        let vm = makeWave5CullingVM(bridge: bridge)
+        vm.page = b8CullingPage([b8CullingAsset("a"), b8CullingAsset("b")])
+        vm.selectedPhotoIds = ["a", "b"]
+        await vm.writeVariantJudgementsToCaptureOne()
+        // 可执行提示落在 errorMessage（notice 只报计数）。
+        #expect(vm.errorMessage?.code.contains("多变体未写回") == true)
+        #expect(vm.errorMessage?.params == ["1"])
+        guard case .text(let text)? = vm.notice?.payload else {
+            Issue.record("期望文本 notice，实际 \(String(describing: vm.notice))")
+            return
+        }
+        // 计数顺序：written / skippedMultiVariant / notFound / skipped。
+        #expect(text.params == ["1", "1", "0", "0"])
+        #expect(text.key.contains("多变体未写回"))
+    }
+
+    @Test("R3：notFound → 明说「C1 当前集合未包含这些照片」")
+    func notFoundNotice() async {
+        let bridge = Wave5ReportBridge(report: C1VariantWritebackReport(
+            written: 0, notFound: ["/shoot/a.cr2"]))
+        let vm = makeWave5CullingVM(bridge: bridge)
+        vm.page = b8CullingPage([b8CullingAsset("a")])
+        vm.selectedPhotoIds = ["a"]
+        await vm.writeVariantJudgementsToCaptureOne()
+        #expect(vm.errorMessage?.code.contains("C1 当前集合未包含这些照片") == true)
     }
 }
 

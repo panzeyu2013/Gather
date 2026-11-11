@@ -138,12 +138,7 @@ struct ExportDeliverySection: View {
                         .gatherButton(.secondary, size: .small)
                         .disabled(viewModel.isPublishing)
                     if let publish = viewModel.webDAVPublish {
-                        Text(publish.isSuccess
-                             ? l10n.format("已发布 %lld 个文件", publish.uploaded)
-                             : l10n.format("发布完成：成功 %lld，失败 %lld",
-                                           publish.uploaded, publish.failed.count))
-                            .font(GatherFont.secondary)
-                            .foregroundStyle(publish.isSuccess ? GatherTheme.successText : GatherTheme.errorText)
+                        publishStatus(publish)
                     }
                 }
                 .sheet(isPresented: $showWebDAV) {
@@ -165,6 +160,64 @@ struct ExportDeliverySection: View {
         .onChange(of: viewModel.deliveryRoot) { _, _ in
             viewModel.persistDeliveryRoot()
         }
+    }
+
+    /// 发布结果 + 客户链接（Wave5：S3 预签名 / WebDAV 静态入口）。
+    ///
+    /// 链接只在「发布成功 + 入口文件上传成功」时出现：不给客户一个 404 的链接。
+    /// secret 从不在链接里（S3 链接只含 accessKeyID + 签名，secret 不出现）。
+    @ViewBuilder
+    private func publishStatus(_ publish: WebDAVPublishSummary) -> some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+            Text(publish.isSuccess
+                 ? l10n.format("已发布 %lld 个文件", publish.uploaded)
+                 : l10n.format("发布完成：成功 %lld，失败 %lld",
+                               publish.uploaded, publish.failed.count))
+                .font(GatherFont.secondary)
+                .foregroundStyle(publish.isSuccess ? GatherTheme.successText : GatherTheme.errorText)
+            if publish.isSuccess, let link = publish.entryURL, let url = URL(string: link) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
+                    HStack(spacing: GatherMetrics.Space.s) {
+                        Text(l10n("客户链接"))
+                            .font(GatherFont.labelRegular)
+                        Spacer(minLength: 0)
+                        Button(l10n("复制链接")) {
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.setString(link, forType: .string)
+                        }
+                        .gatherButton(.tertiary, size: .small)
+                        Button(l10n("在浏览器中打开")) {
+                            NSWorkspace.shared.open(url)
+                        }
+                        .gatherButton(.tertiary, size: .small)
+                    }
+                    // 长 URL 用中间截断展示；完整值可选中/复制，避免撑坏 HStack。
+                    Text(link)
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    if let expiresAt = publish.entryURLExpiresAt,
+                       let expiry = Self.linkExpiryText(expiresAt, with: l10n) {
+                        Text(expiry)
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 预签名链接剩余时长文案（ISO-8601 → 「链接 X 小时后过期」；解析失败不显示，
+    /// 不猜一个假时长）。WebDAV 永久链接没有 entryURLExpiresAt，不会走这里。
+    static func linkExpiryText(_ expiresAt: String, with l10n: L10n) -> String? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        guard let date = formatter.date(from: expiresAt) else { return nil }
+        let hours = max(1, Int((date.timeIntervalSinceNow / 3600).rounded()))
+        return l10n.format("链接 %lld 小时后过期", hours)
     }
 
     /// 选择交付目录（异步面板：不阻塞主线程、不开嵌套 runloop）。

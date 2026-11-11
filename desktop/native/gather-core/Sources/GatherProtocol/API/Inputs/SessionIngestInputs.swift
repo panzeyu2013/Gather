@@ -20,14 +20,48 @@ public enum IngestDuplicatePolicy: String, Codable, CaseIterable, Equatable, Sen
     case replace
 }
 
-/// 摄取预检（只读）：让用户在按下「开始摄取」前看到三类计数。
+/// Wave5（F4）：源里被跳过的「不支持格式」统计。
+///
+/// `extensions` 的键是**归一化**扩展名（dotless、小写，如 `"gif"`/`"mov"`），
+/// 值是该扩展名被跳过的文件数；`count` 为各分组之和。`samplePaths` 保留前几个
+/// 源路径，供 UI 显示"具体哪些文件没进来"（最多 5 条，避免大卡把结果撑大）。
+public struct IngestUnsupportedFormats: Codable, Equatable, Sendable {
+    public var extensions: [String: Int]
+    public var samplePaths: [String]
+
+    /// 被跳过的文件总数（= 各分组之和；不参与编码）。
+    public var count: Int { extensions.values.reduce(0, +) }
+
+    public init(extensions: [String: Int] = [:], samplePaths: [String] = []) {
+        self.extensions = extensions
+        self.samplePaths = samplePaths
+    }
+
+    /// 段级兜底：旧载荷/未来缺键都按"没有不支持文件"解码，不抛错。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            extensions: try container.decodeIfPresent(
+                [String: Int].self, forKey: .extensions) ?? [:],
+            samplePaths: try container.decodeIfPresent(
+                [String].self, forKey: .samplePaths) ?? [])
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case extensions, samplePaths
+    }
+}
+
+/// 摄取预检（只读）：让用户在按下「开始摄取」前看到各类计数。
 ///
 /// - newCount：会复制并登记的新文件数；
 /// - libraryDuplicateCount：命中**全库**已登记照片（跨工作区）的文件数；
 /// - conflictCount：目标目录已有同名但内容不同的文件数（现有冲突语义）；
-/// - unreadableCount：不可读 / 越界 / 模板越界被拒的源数量。
+/// - unreadableCount：不可读 / 越界 / 模板越界被拒的源数量；
+/// - unsupportedFormats：源里被跳过的「不支持格式」（按扩展名分组 + 样例）。
 ///
-/// 三个计数在 skip 策略下的含义：new 会导入，libraryDuplicate 会被跳过，
+/// `totalCount` 是本次扫描到的文件总数（含被跳过的库内重复 / 冲突 / 不可读 /
+/// 不支持格式）。各计数在 skip 策略下的含义：new 会导入，libraryDuplicate 会被跳过，
 /// conflict 会被跳过；换成 coexist 时后两类都转为导入；换成 replace 时
 /// libraryDuplicate 里"同工作区且路径可替换"的部分转为覆盖写入。
 public struct SessionIngestPreview: Codable, Equatable, Sendable {
@@ -43,6 +77,8 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
     public var librarySkippedCount: Int
     /// Wave4a：按当前策略会被覆盖写入的库内重复数（replace 且同工作区+源根内）。
     public var replaceableCount: Int
+    /// Wave5（F4）：被跳过的「不支持格式」统计（扩展名分组 + 样例；旧载荷 = 空）。
+    public var unsupportedFormats: IngestUnsupportedFormats
 
     public init(
         totalCount: Int,
@@ -53,7 +89,8 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
         policy: IngestDuplicatePolicy,
         duplicateSamplePaths: [String] = [],
         librarySkippedCount: Int = 0,
-        replaceableCount: Int = 0
+        replaceableCount: Int = 0,
+        unsupportedFormats: IngestUnsupportedFormats = IngestUnsupportedFormats()
     ) {
         self.totalCount = totalCount
         self.newCount = newCount
@@ -64,6 +101,7 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
         self.duplicateSamplePaths = duplicateSamplePaths
         self.librarySkippedCount = librarySkippedCount
         self.replaceableCount = replaceableCount
+        self.unsupportedFormats = unsupportedFormats
     }
 
     /// 旧载荷（Wave3 之前）没有后两个字段：解码按 0 兜底，避免 IPC/持久化升级失败。
@@ -81,14 +119,17 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
             librarySkippedCount: try container.decodeIfPresent(
                 Int.self, forKey: .librarySkippedCount) ?? 0,
             replaceableCount: try container.decodeIfPresent(
-                Int.self, forKey: .replaceableCount) ?? 0
+                Int.self, forKey: .replaceableCount) ?? 0,
+            unsupportedFormats: try container.decodeIfPresent(
+                IngestUnsupportedFormats.self, forKey: .unsupportedFormats)
+                ?? IngestUnsupportedFormats()
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case totalCount, newCount, libraryDuplicateCount, conflictCount,
              unreadableCount, policy, duplicateSamplePaths,
-             librarySkippedCount, replaceableCount
+             librarySkippedCount, replaceableCount, unsupportedFormats
     }
 }
 
@@ -162,11 +203,14 @@ public struct SessionIngestResult: Codable, Equatable, Sendable {
     public var secondDestinationSkipped: Int?
     /// Wave4a：命中全库重复的源总数（与策略无关；旧载荷 nil = 未统计）。
     public var libraryDuplicateCount: Int?
+    /// Wave5（F4）：被跳过的「不支持格式」统计（nil = 旧任务结果未统计）。
+    public var unsupportedFormats: IngestUnsupportedFormats?
     public init(registered: Int, copiedButUnregistered: [String], skipped: [String],
                 unreadable: [String] = [], failed: [MetadataApplyFailureDTO],
                 libraryDuplicatesSkipped: Int? = nil, replaced: Int? = nil,
                 libraryDuplicateCount: Int? = nil,
-                secondDestinationSkipped: Int? = nil) {
+                secondDestinationSkipped: Int? = nil,
+                unsupportedFormats: IngestUnsupportedFormats? = nil) {
         self.registered = registered
         self.copiedButUnregistered = copiedButUnregistered
         self.skipped = skipped
@@ -176,5 +220,6 @@ public struct SessionIngestResult: Codable, Equatable, Sendable {
         self.replaced = replaced
         self.libraryDuplicateCount = libraryDuplicateCount
         self.secondDestinationSkipped = secondDestinationSkipped
+        self.unsupportedFormats = unsupportedFormats
     }
 }

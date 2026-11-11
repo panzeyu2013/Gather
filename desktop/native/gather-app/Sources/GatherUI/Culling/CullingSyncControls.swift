@@ -24,12 +24,14 @@ struct CullingSyncControls: View {
             Menu {
                 Button(l10n("评分")) { pendingAction = .writeback(.rating) }
                 Button(l10n("颜色标签")) { pendingAction = .writeback(.colorLabel) }
-                Button(l10n("挑片关键词")) { pendingAction = .writeback(.keyword) }
+                // Wave5 / N6：删除「挑片关键词」入口 —— 挑片判断不再用 culling:keep /
+                // culling:reject 关键词承载（C1 Load Metadata 会把它吸进自己的词库）。
+                // 判断的在线通道是下面的「在 Capture One 中写回判断（变体级）」。
             } label: {
                 Label(l10n("写回 XMP…"), systemImage: "square.and.arrow.up")
             }
             .disabled(!hasDecisions || isBusy)
-            .help(l10n("把已决策照片的当前评分/色标/挑片关键词写回 XMP"))
+            .help(l10n("把已决策照片的当前评分/色标写回 XMP（挑片关键词不写 XMP，避免污染 C1 词库）"))
             Divider()
             // G10：selectVariants 早已实现（API 有 / UI 无），这里给出唯一 UI 入口。
             // 放在同步菜单里：回 C1 看大图/调色是写回之后的下一步动作。

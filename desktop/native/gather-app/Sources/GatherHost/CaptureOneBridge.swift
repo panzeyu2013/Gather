@@ -13,6 +13,14 @@
 //     rating / color tag / pick / keywords，解析成 C1VariantJudgement（映射在应用层）；
 //   · 行式记录 + TAB 字段分隔 + 反斜杠转义（路径/关键词可含任意字符），畸形行跳过并
 //     计数而不是整批失败；脚本失败仍上浮，由导入侧降级为"仅按文件导入"。
+//
+// Wave5（2026-11-11，task-11 / Batch1 C1 写回正确性）：
+//   · R1：变体级写回**写前回读**每个 image 的 variant 数（variantCountReadScript）；
+//     恰好 1 个才写，多个不猜目标 → 报告 skippedMultiVariant；回读失败上浮不盲写；
+//   · R3：notFound 且照片在磁盘、父目录唯一时用 C1 browse（sdef:678-684）切集合后
+//     重读/重试一次；browse 失败只记 warn（不吞错、不谎报命中）；
+//   · R12：selectVariantsScript 在 select 前 deselect 当前选中（sdef:1967），
+//     "在 C1 中显示"的提示与 C1 实际选中一致。
 import Foundation
 import GatherProtocol
 import GatherUI
@@ -224,8 +232,11 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     ///    直接抛 C1_SCRIPT_FAILED、不兜底 —— 旧实现会把它当"未找到"（单路径）
     ///    或整批导入（多路径）。
     ///
-    /// 脚本成功但一条都没匹配（照片不在当前目录）：返回 appleScript + 全部 notFound，
-    /// **不** fallback —— 否则会把"不在当前目录"变成"导入一批新文件"。
+    /// 脚本成功后仍有 notFound（照片不在 C1 **当前集合**）：
+    /// - **R3（Wave5）**：若这些照片在磁盘上存在且父目录唯一 → `browse` 切到该目录，
+    ///   再**只对这些**重试一次（追加选中，不重复 deselect）；仍找不到才如实报 notFound；
+    /// - 一条都没匹配时**不** fallback `open -a` —— 否则会把"不在当前目录"变成
+    ///   "导入一批新文件"。
     public func selectVariants(paths: [String]) async throws -> C1SelectionOutcome {
         var seen = Set<String>()
         var requested: [String] = []
@@ -286,12 +297,40 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         if flags.count == requested.count {
             var selected: [String] = []
-            for (index, flag) in flags.enumerated() where flag == "1" {
-                selected.append(requested[index])
+            var missing: [String] = []
+            Self.splitSelectionReport(
+                flags: flags, requested: requested, selected: &selected, missing: &missing)
+            // R3（Wave5）：没匹配上的照片若在磁盘上存在且父目录唯一 → 让 C1 切到该目录，
+            // 然后**只重试这些**（deselectFirst=false：追加选中，不抹掉第一批已选中的照片；
+            // 整批重跑会因为脚本先 deselect 而把第一批从 C1 选中里清掉）。
+            if let directory = Self.singleParentDirectory(of: missing),
+               await browse(toDirectory: directory, appName: appName) {
+                do {
+                    let retryOutput = try await runAppleScript(
+                        Self.selectVariantsScript(
+                            appName: appName, paths: missing, deselectFirst: false))
+                    if let reported = Self.reportedScriptError(in: retryOutput) {
+                        throw CaptureOneBridgeError.scriptFailed(reported)
+                    }
+                    let retryFlags = retryOutput
+                        .split(whereSeparator: \.isNewline)
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    if retryFlags.count == missing.count {
+                        var retriedSelected: [String] = []
+                        var stillMissing: [String] = []
+                        Self.splitSelectionReport(
+                            flags: retryFlags, requested: missing,
+                            selected: &retriedSelected, missing: &stillMissing)
+                        selected.append(contentsOf: retriedSelected)
+                        missing = stillMissing
+                    }
+                } catch {
+                    // 切集合后重试失败：保留第一次的真实结果（不吞错：warn 带原因）。
+                    GatherLogger.log(
+                        "c1.select browse=\(directory) 重试失败: \(error)", level: .warn)
+                }
             }
-            notFound.append(contentsOf: requested.enumerated()
-                .filter { flags[$0.offset] != "1" }
-                .map { $0.element })
+            notFound.append(contentsOf: missing)
             return C1SelectionOutcome(
                 method: .appleScript, paths: selected,
                 notFound: notFound, appName: appName)
@@ -325,6 +364,41 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         return C1SelectionOutcome(
             method: .workspace(reason: reason), paths: paths,
             notFound: notFound, appName: appName)
+    }
+
+    /// R3：让 C1 切到目标目录（browse，sdef:678-684）。
+    ///
+    /// 失败**不吞错**：把目录与脚本报告的原因写 warn 日志并返回 false；调用方据此保留
+    /// notFound 如实上报（绝不把"切不过去"当成"照片找到了"）。
+    private func browse(toDirectory directory: String, appName: String) async -> Bool {
+        do {
+            let output = try await runAppleScript(
+                Self.browseScript(appName: appName, path: directory))
+            if let reported = Self.reportedScriptError(in: output) {
+                GatherLogger.log(
+                    "c1.browse 失败 directory=\(directory): \(reported)", level: .warn)
+                return false
+            }
+            return true
+        } catch {
+            GatherLogger.log(
+                "c1.browse 失败 directory=\(directory): \(error)", level: .warn)
+            return false
+        }
+    }
+
+    /// R1：写前回读每个 image 的 variant 数（一次脚本，行数与 paths 同序）。
+    ///
+    /// 脚本执行/解析失败一律上浮：拿不到变体数就无法安全判定目标，"盲写"正是本波要修的
+    /// P0（写错 variant 不可逆），因此宁可让 UI 提示改用「写回 XMP…」。
+    private func readVariantCounts(paths: [String], appName: String) async throws -> [Int] {
+        let output = try await runAppleScript(
+            Self.variantCountReadScript(appName: appName, paths: paths), timeout: 30)
+        guard let counts = Self.parseVariantCounts(output, expected: paths.count) else {
+            throw CaptureOneBridgeError.scriptFailed(
+                "unexpected variant count report: \(output)")
+        }
+        return counts
     }
 
     /// 旧版 C1 的脚本错误（语法/字典不支持）与"真的执行失败"要分开提示。
@@ -595,17 +669,44 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     /// C1 16.7 sdef 依据：
     /// - variant 没有 path，只能经 `parent image` 反查 `image.path`（`:1081`/`:1541`）；
     /// - select 命令的直接参数是 **document**，variant 是具名参数（`variant` /
-    ///   `variants`，`:1956-1966`）——旧脚本把 variant 当直接参数，16.7 会拒绝。
+    ///   `variants`，`:1956-1966`）——旧脚本把 variant 当直接参数，16.7 会拒绝；
+    /// - **R12（Wave5）**：select 的语义是"加入当前集选中"（`:1956` "Add one or more
+    ///   variants to the current collection's selection"），旧实现只加不减 → UI 提示
+    ///   "已在 C1 中显示 N 张"与 C1 实际选中（旧选中 + N）不符。sdef:1967 有配对的
+    ///   deselect（直接参数同样是 document、variants 是具名参数），因此 select 前先
+    ///   清掉当前选中，让"显示"= 真正替换选中。
     ///
     /// 输出：每条路径一行 "1"/"0"，与 paths 同序（调用方据此算 notFound）；
     /// `on error` 分支返回单行 `"error:<msg>"`，由 reportedScriptError(in:) 先筛出
     /// 并当脚本失败抛出（C7：不能被当"未找到"，也不能兜底 open -a）。
-    static func selectVariantsScript(appName: String, paths: [String]) -> String {
+    ///
+    /// - Parameter deselectFirst：true = 先清掉当前选中（默认；"在 C1 中显示"是替换语义）。
+    ///   false = 只追加选中，供 R3 的 browse 重试用（重试只带 notFound 的照片，
+    ///   清选中会把第一批已选中的照片从 C1 选中里抹掉）。
+    static func selectVariantsScript(
+        appName: String,
+        paths: [String],
+        deselectFirst: Bool = true
+    ) -> String {
         let literals = paths.map(appleScriptLiteral).joined(separator: ", ")
+        let deselectBlock = deselectFirst ? """
+            -- R12：select 只"加入"选中；先 deselect 当前选中，最终选中 = 本批命中项。
+            -- 读不到/清不掉选中是受控降级（继续 select），不让它把整次"显示"变成脚本失败。
+            set previousSelection to {}
+            try
+              set previousSelection to selected variants
+            end try
+            if (count of previousSelection) > 0 then
+              try
+                deselect targetDoc variants previousSelection
+              end try
+            end if
+        """ : ""
         return """
         tell application "\(appName)"
           try
             set targetDoc to current document
+        \(deselectBlock)
             set report to ""
             repeat with p in {\(literals)}
               -- variant 没有 path：按 parent image 的 path 在当前 collection 里找图片。
@@ -630,6 +731,136 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
           end try
         end tell
         """
+    }
+
+    /// R3（Wave5）：让 C1 把浏览集合切到指定目录（sdef:678-684，
+    /// `browse <document> to path <folder>`，cocoa key thePath）。
+    ///
+    /// 为什么需要：写回/选中/"在 C1 中显示"的作用域都是 C1 **当前集合**
+    /// （sdef:325-334 document 的 image 元素、:736），Gather 从不切换集合 → 跨集合
+    /// 一律 0 命中（notFound）且旧实现没有补救。这里只做"切集合"这一件事：
+    /// 切不切、切到哪个目录由调用方决定（**唯一父目录**才切，不猜）。
+    ///
+    /// 输出："1" = 已切；失败走 `on error` 返回 `error:<msg>`（调用方用
+    /// reportedScriptError 判定并记日志——切集合失败不得被当成"没找到"吞掉）。
+    static func browseScript(appName: String, path: String) -> String {
+        """
+        tell application "\(appName)"
+          try
+            set targetDoc to current document
+            browse targetDoc to path \(appleScriptLiteral(path))
+            return "1"
+          on error theErr
+            return "error:" & (theErr as text)
+          end try
+        end tell
+        """
+    }
+
+    /// R1（Wave5）只读脚本：一次读回每个 image 在**当前集合**里的 variant 数。
+    ///
+    /// 为什么必须先读：变体级写回的目标是启发式（已 pick 否则 variant 1），同一 image
+    /// 有多个 variant 时会改错目标且不可逆（96 号 §10 把"写错 variant"判 P0）。
+    /// 数量是唯一能安全判定的信号：
+    /// - 0 → 不在当前集合（notFound，可按父目录 browse 补救一次）；
+    /// - 1 → 唯一目标，维持原写回；
+    /// - >1 → 不猜目标，整条跳过（skippedMultiVariant），由用户回 C1 选变体后重试。
+    ///
+    /// C1 16.7 sdef 依据：document 的 image 元素 = 当前集合（`:325-334`、`:736`）；
+    /// variant 是 image 的子元素（`variants of theImage`），自身没有 path（`:1081`/`:1541`）。
+    /// 输出：每条请求路径一行十进制计数，与 paths 同序（解析见 parseVariantCounts）。
+    static func variantCountReadScript(appName: String, paths: [String]) -> String {
+        let literals = paths.map(appleScriptLiteral).joined(separator: ", ")
+        return """
+        tell application "\(appName)"
+          set targetDoc to current document
+          set report to ""
+          repeat with p in {\(literals)}
+            set matches to (every image of targetDoc whose path is p)
+            if (count of matches) > 0 then
+              set theImage to (item 1 of matches)
+              set report to report & ((count of (variants of theImage)) as text) & linefeed
+            else
+              set report to report & "0" & linefeed
+            end if
+          end repeat
+          return report
+        end tell
+        """
+    }
+
+    /// 写前回读报告解析：行数必须等于请求路径数、每行必须是非负整数；否则 nil
+    ///（形状不认识 = 脚本契约变了，调用方带原文抛 C1_SCRIPT_FAILED，绝不按"未知"盲写）。
+    static func parseVariantCounts(_ output: String, expected: Int) -> [Int]? {
+        let lines = output
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard lines.count == expected else { return nil }
+        var counts: [Int] = []
+        counts.reserveCapacity(lines.count)
+        for line in lines {
+            guard let count = Int(line), count >= 0 else { return nil }
+            counts.append(count)
+        }
+        return counts
+    }
+
+    /// R1 写前回读的分区（纯函数：C1BridgeWave3Tests 直接驱动）。
+    ///
+    /// counts 与 items 同序（parseVariantCounts 保证行数相等）；越界按"当前集合里没有"
+    /// 处理（保守：宁可 notFound 也不写错 variant）。
+    static func partitionVariantTargets(
+        items: [C1VariantWritebackItem],
+        counts: [Int]
+    ) -> C1VariantTargetPartition {
+        var result = C1VariantTargetPartition(writable: [], multiVariant: [], notFound: [])
+        for (index, item) in items.enumerated() {
+            let count = index < counts.count ? counts[index] : 0
+            if count == 0 {
+                result.notFound.append(item)
+            } else if count == 1 {
+                result.writable.append(item)
+            } else {
+                result.multiVariant.append(item.photoPath)
+            }
+        }
+        return result
+    }
+
+    /// R3：notFound 里**磁盘上存在**的照片的唯一父目录（nil = 不存在/不唯一 → 不切集合）。
+    ///
+    /// 为什么要求文件存在：切集合只对"C1 在看别的目录"有效；文件本身不在盘上时切过去
+    /// 也找不到，只会打断用户当前的 C1 视图。
+    static func singleParentDirectory(of paths: [String]) -> String? {
+        var directory: String?
+        for path in paths where FileManager.default.fileExists(atPath: path) {
+            let parent = TSPath.dirname(path)
+            guard !parent.isEmpty, parent != path else { return nil }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(
+                atPath: parent, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return nil
+            }
+            if let directory, directory != parent { return nil }
+            directory = parent
+        }
+        return directory
+    }
+
+    /// select 报告 → 命中/未命中（纯函数：与 flags 同序；非 "1" 一律按未命中，沿用旧口径）。
+    static func splitSelectionReport(
+        flags: [String],
+        requested: [String],
+        selected: inout [String],
+        missing: inout [String]
+    ) {
+        for (index, flag) in flags.enumerated() where index < requested.count {
+            if flag == "1" {
+                selected.append(requested[index])
+            } else {
+                missing.append(requested[index])
+            }
+        }
     }
 
     /// 脚本内部 on error 的报告前缀（与 selectVariantsScript 的 `"error:"` 返回值一致）。
@@ -898,8 +1129,19 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     /// 收口：写的是 C1 catalog 本身（已是权威），因此**不**再对同一 variant 调
     /// reload metadata（那会把盘上旧 XMP 读回、覆盖刚写入的判断）。**全部命中**时
     /// 才沿用 durable reload-ack（sessions.reload_acked_at），confirm/finalize 门禁
-    /// 照常放行；部分成功（notFound/skipped）不写 ack（A1：避免门禁误放行）。
+    /// 照常放行；部分成功（notFound/skipped/skippedMultiVariant）不写 ack
+    ///（A1：避免门禁误放行）。
     /// 离线/未运行时仍走原 XMP 写回（本方法不触碰 XMP）。
+    ///
+    /// Wave5（2026-11-11，task-11）补两层安全：
+    /// - **R1 写前回读**：先用只读脚本读每个 image 在当前集合里的 variant 数。
+    ///   0 → notFound；1 → 维持原写回；>1 → **不猜目标**，整条跳过并进
+    ///   skippedMultiVariant（写错 variant 不可逆，96 号 §10 判 P0）。
+    ///   回读脚本失败 = 拿不到目标信息，直接上浮 C1_SCRIPT_FAILED（绝不盲写）。
+    /// - **R3 作用域补救**：先写当前集合里能写的，再对 notFound（磁盘上存在、父目录
+    ///   唯一）让 C1 `browse` 切到该目录后**只重试这些**（重读一次变体数；仍 notFound
+    ///   才如实报，UI 提示"C1 当前集合未包含这些照片"）。browse 失败只记 warn，
+    ///   不吞错也不谎报成功。
     ///
     /// 【口径已确认 2026-11-11（Lead/产品批准）】**不要**把这里"修"成先 reload 再写/写后 reload：
     /// 变体级写回取代的是"写 XMP 再让 C1 Load"这条链路；若需要 XMP 权威（离线兜底），
@@ -935,26 +1177,58 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         guard !unique.isEmpty else {
             return C1VariantWritebackReport(written: 0, notFound: notFound, skipped: skipped)
         }
+
         let appName = try await captureOneApplicationName()
-        let output = try await runAppleScript(
-            Self.variantWritebackScript(appName: appName, items: unique), timeout: 30)
-        guard let flags = Self.parseVariantWritebackReport(output, expected: unique.count) else {
-            throw CaptureOneBridgeError.scriptFailed(
-                "unexpected variant writeback report: \(output)")
-        }
+        // R1：写前回读变体数（脚本失败上浮，绝不按"未知"盲写）。
+        let firstPartition = Self.partitionVariantTargets(
+            items: unique,
+            counts: try await readVariantCounts(
+                paths: unique.map(\.photoPath), appName: appName))
+        var multiVariant = firstPartition.multiVariant
         var written = 0
-        for (index, flag) in flags.enumerated() {
-            if flag == "1" {
-                written += 1
-            } else {
-                notFound.append(unique[index].photoPath)
+
+        // 第一批：写当前集合里**唯一 variant** 的目标（启发式此时等价于唯一目标）。
+        let first = try await writeVariantItems(firstPartition.writable, appName: appName)
+        written += first.written
+        notFound.append(contentsOf: first.notFound)
+
+        // R3：当前集合里没有的照片若磁盘上存在、父目录唯一 → 让 C1 browse 切到该目录，
+        // 然后**只重试这些**（重读一次变体数；已写的第一批不受影响）。只重试一次。
+        let missingItems = firstPartition.notFound
+        if !missingItems.isEmpty,
+           let directory = Self.singleParentDirectory(of: missingItems.map(\.photoPath)),
+           await browse(toDirectory: directory, appName: appName) {
+            var retried: C1VariantTargetPartition?
+            do {
+                retried = Self.partitionVariantTargets(
+                    items: missingItems,
+                    counts: try await readVariantCounts(
+                        paths: missingItems.map(\.photoPath), appName: appName))
+            } catch {
+                // 切集合后回读失败：保留第一次的 notFound（不吞错：日志带原文）。
+                GatherLogger.log(
+                    "c1.variant_writeback browse=\(directory) 回读失败: \(error)",
+                    level: .warn)
+                notFound.append(contentsOf: missingItems.map(\.photoPath))
             }
+            if let retried {
+                multiVariant.append(contentsOf: retried.multiVariant)
+                notFound.append(contentsOf: retried.notFound.map(\.photoPath))
+                // 第二批的写回脚本失败仍然上浮（不是"找不到"，不能混成 notFound）。
+                let second = try await writeVariantItems(retried.writable, appName: appName)
+                written += second.written
+                notFound.append(contentsOf: second.notFound)
+            }
+        } else {
+            notFound.append(contentsOf: missingItems.map(\.photoPath))
         }
+
         // A1：部分写回**不解门禁**。reload-acked 是会话级"C1 已看到新值"的断言
         // （DeliveryCoordinator.requireReloadAck 用它放行 confirm/finalize→清理备份），
-        // notFound/skipped 非空说明有请求没写进 C1；此时写 ack 会让交付在 C1 仍显示
-        // 旧值时被确认/清理。只有全部命中（且确有写入）才写 ack。
-        if written > 0, notFound.isEmpty, skipped == 0, let sessionId {
+        // notFound/skipped/skippedMultiVariant 非空说明有请求没写进 C1；此时写 ack 会让
+        // 交付在 C1 仍显示旧值时被确认/清理。只有全部命中（且确有写入）才写 ack。
+        if written > 0, notFound.isEmpty, skipped == 0,
+           multiVariant.isEmpty, let sessionId {
             // C1 catalog 已是权威值：写 durable ack 让 confirm/finalize 门禁放行，
             // 但绝不再触发 reload（会把旧 XMP 读回覆盖判断）。ack 写失败只记日志，
             // 不掩盖"C1 已写入"的事实（: ack 是会话级簿记，不是写入结果）。
@@ -964,10 +1238,42 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
             }
         }
         return C1VariantWritebackReport(
-            written: written, notFound: notFound, skipped: skipped)
+            written: written, notFound: notFound, skipped: skipped,
+            skippedMultiVariant: multiVariant)
+    }
+
+    /// 对一批**已确认唯一 variant** 的条目发一次写回脚本；逐条判定写入/未命中。
+    ///
+    /// 未命中（脚本回 "0"）如实进 notFound：回读到写入之间用户可能切了集合/删了图，
+    /// 这是真实结果，不重试也不假装成功。脚本/报告形状失败上浮 C1_SCRIPT_FAILED。
+    private func writeVariantItems(
+        _ items: [C1VariantWritebackItem],
+        appName: String
+    ) async throws -> (written: Int, notFound: [String]) {
+        guard !items.isEmpty else { return (0, []) }
+        let output = try await runAppleScript(
+            Self.variantWritebackScript(appName: appName, items: items), timeout: 30)
+        guard let flags = Self.parseVariantWritebackReport(output, expected: items.count) else {
+            throw CaptureOneBridgeError.scriptFailed(
+                "unexpected variant writeback report: \(output)")
+        }
+        var written = 0
+        var notFound: [String] = []
+        for (index, flag) in flags.enumerated() {
+            if flag == "1" {
+                written += 1
+            } else {
+                notFound.append(items[index].photoPath)
+            }
+        }
+        return (written, notFound)
     }
 
     /// 写回脚本（internal：脚本契约由 C1BridgeWave3Tests 文本断言）。
+    ///
+    /// 输入只包含**写前回读确认过**的单 variant image（Wave5 / R1：多 variant 已在
+    /// partitionVariantTargets 里整条跳过），因此下面的"已 pick 否则 variant 1"启发式
+    /// 只会落在唯一那个 variant 上，不再有"改错 variant"的风险。
     ///
     /// 输出：每条请求路径一行 "1"/"0"，与 items 同序（解析见 parseVariantWritebackReport）。
     static func variantWritebackScript(
@@ -1034,6 +1340,17 @@ struct C1VariantJudgementParseResult: Equatable {
     let judgements: [C1VariantJudgement]
     /// 无法解析的行原文：只进日志/诊断，导入侧不因畸形行失败。
     let malformedLines: [String]
+}
+
+/// R1 写前回读的分区结果（internal：C1BridgeWave3Tests 直接驱动纯函数）。
+///
+/// writable = 当前集合里恰好 1 个 variant（唯一目标，维持原写回）；
+/// multiVariant = 多个 variant（不猜目标，整条跳过）；
+/// notFound = 当前集合里没有（可按父目录 browse 补救一次）。
+struct C1VariantTargetPartition: Equatable {
+    var writable: [C1VariantWritebackItem]
+    var multiVariant: [String]
+    var notFound: [C1VariantWritebackItem]
 }
 
 

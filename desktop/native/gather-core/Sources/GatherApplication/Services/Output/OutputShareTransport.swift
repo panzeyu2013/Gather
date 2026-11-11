@@ -81,15 +81,22 @@ public struct OutputSharePublishResult: Equatable, Sendable {
     public var failed: [OutputSharePublishFailure]
     public var remoteRoot: String
     public var abortedOnAuth: Bool
+    /// Wave5：客户入口链接（画廊 `index.html`）；nil = 没有入口或入口未上传成功。
+    public var entryURL: String?
+    /// Wave5：入口链接到期（ISO-8601）；nil = 不过期（WebDAV 静态链接）。
+    public var entryURLExpiresAt: String?
 
     public init(
         uploaded: Int, failed: [OutputSharePublishFailure],
-        remoteRoot: String, abortedOnAuth: Bool
+        remoteRoot: String, abortedOnAuth: Bool,
+        entryURL: String? = nil, entryURLExpiresAt: String? = nil
     ) {
         self.uploaded = uploaded
         self.failed = failed
         self.remoteRoot = remoteRoot
         self.abortedOnAuth = abortedOnAuth
+        self.entryURL = entryURL
+        self.entryURLExpiresAt = entryURLExpiresAt
     }
 
     public var isSuccess: Bool { failed.isEmpty && !abortedOnAuth }
@@ -186,6 +193,7 @@ public struct WebDAVShareTransport: OutputShareTransport {
                 OutputSharePublishFailure(path: $0.path, reason: $0.reason)
             },
             remoteRoot: result.remoteRoot,
-            abortedOnAuth: result.abortedOnAuth)
+            abortedOnAuth: result.abortedOnAuth,
+            entryURL: result.entryURL)
     }
 }

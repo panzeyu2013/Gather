@@ -63,11 +63,12 @@ extension IndexerServiceError {
 /// 故标注 `@unchecked`（与同仓 MetadataSyncCoordinator/BatchCursor 一致）。
 public final class IndexerService: @unchecked Sendable {
     /// TS: SUPPORTED（index.service.ts 顶部）。
-    public static let supportedExtensions: Set<String> = [
-        ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
-        ".nef", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw",
-        ".tif", ".tiff", ".psd",
-    ]
+    ///
+    /// Wave5 / F4：**单一白名单**——与摄取（`IngestService`）和解码（`RAWDecoder`）
+    /// 共用 `PhotoFileTypes.supportedExtensions`（RAW + 位图 + 渲染位图的并集）。
+    /// 旧实现这里只有 20 项，比解码白名单窄，`.iiq/.3fr/.x3f/.mrw` 等会在
+    /// 「导入文件夹」扫描时被静默丢弃；现在三处由同一份清单驱动。
+    public static let supportedExtensions: Set<String> = PhotoFileTypes.supportedExtensions
     /// TS: WALK_CHANNEL_CAPACITY。
     public static let walkChannelCapacity = 256
     /// TS: IN_CHUNK_SIZE。

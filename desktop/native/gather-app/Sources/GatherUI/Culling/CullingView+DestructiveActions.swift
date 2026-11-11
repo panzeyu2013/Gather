@@ -49,7 +49,8 @@ enum PendingCullingAction: Identifiable {
             switch target {
             case .rating: return LocalizedText("写回评分到 XMP")
             case .colorLabel: return LocalizedText("写回颜色标签到 XMP")
-            case .keyword: return LocalizedText("写回挑片关键词到 XMP")
+            // Wave5 / N6：关键词写回已停用（不写 XMP，避免污染 C1 词库）。
+            case .keyword: return LocalizedText("挑片关键词写回（已停用）")
             }
         case .retryFailedWriteback: return LocalizedText("重试失败写回项")
         case .finalizeSync: return LocalizedText("保留 XMP 并结束同步")
@@ -81,7 +82,10 @@ extension CullingView {
             case .colorLabel:
                 return l10n.format("将把 %lld 张已决策照片的当前颜色标签写入 XMP 附属文件（会创建备份）。", viewModel.decidedPhotoCount)
             case .keyword:
-                return l10n.format("将把 %lld 张已决策照片的 culling:keep / culling:reject 关键词合并进 XMP（不覆盖其它关键词）。", viewModel.decidedPhotoCount)
+                // Wave5 / N6：挑片关键词写回已停用 —— 不再把 culling:keep / culling:reject
+                // 写进 XMP（C1 Load Metadata 后会污染它自己的词库）。入口已从
+                // CullingSyncControls 移除；这里保留不可达分支的实话文案，避免"看起来还能用"。
+                return l10n.format("挑片关键词写回已停用：不再把 culling:keep / culling:reject 写进 XMP（避免 C1 载入后污染它的词库）。")
             }
         case .retryFailedWriteback:
             return l10n.format("将重试 %lld 个失败写回项并覆盖对应 XMP 附属文件。", viewModel.failedSyncItems.count)

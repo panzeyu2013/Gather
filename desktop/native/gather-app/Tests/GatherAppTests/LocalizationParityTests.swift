@@ -302,6 +302,18 @@ struct LocalizationParityTests {
         "撤销本批…",
     ]
 
+    /// Wave5 / Batch1：C1 写回正确性文案迁移后**已被取代**的旧键。
+    /// 多变体/作用域/关键词写回停用后，旧提示不再有代码引用；保留 en 行（只 append），
+    /// 收口时随表行一起删除并清空本常量。
+    private static let supersededWave5Keys: Set<String> = [
+        "已写回 %lld 个变体；%lld 个不在当前目录、%lld 张超上限未写回（未解除 C1 重载门禁：可改用「写回 XMP…」并手动 Load）",
+        "已在 Capture One 中显示 %lld 张，%lld 张不在当前目录",
+        "把已决策照片的当前评分/色标/挑片关键词写回 XMP",
+        "挑片关键词",
+        "写回挑片关键词到 XMP",
+        "将把 %lld 张已决策照片的 culling:keep / culling:reject 关键词合并进 XMP（不覆盖其它关键词）。",
+    ]
+
     // MARK: - 测试
 
     @Test("错误码历史 %@ 模板按参数插值（B0/K0 新增码不得显示裸 %@）")
@@ -352,6 +364,7 @@ struct LocalizationParityTests {
         let allowed = Self.testPinnedOrphans
             .union(Self.supersededWave2Keys)
             .union(Self.supersededWave4cKeys)
+            .union(Self.supersededWave5Keys)
         let used = usedKeys()
         // R5-P1-2：plural 的单数条目（base + "#one"）不在源码字面量里，只能由
         // base key 的引用证明；base 不在用法的 #one 仍是孤儿（下一行会报红）。

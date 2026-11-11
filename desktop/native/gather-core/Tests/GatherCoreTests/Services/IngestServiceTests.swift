@@ -622,6 +622,64 @@ struct IngestServiceTests {
         #expect(!entries.contains { $0.contains(".gather-prev") }, "成功路径必须清理备份")
     }
 
+    // MARK: - Wave5（F4）：统一可导入白名单 + 不支持格式可见
+
+    @Test("Wave5-F4：.iiq/.3fr 等可解码 RAW 能进 plan，.gif/.mov 计入分组，sidecar 不算")
+    func planReportsUnsupportedFormatsAndAcceptsWideRawWhitelist() async throws {
+        let source = try makeSource(
+            [".DS_Store", "a.CR3", "b.IIQ", "c.3fr", "d.GIF", "e.mov", "f.xmp"],
+            contents: [:])
+        let dest = try makeDestination()
+        defer {
+            [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
+        let plan = try await service.plan(sourcePaths: [source], options: options)
+
+        #expect(plan.items.count == 3, "RAW 白名单必须覆盖 .CR3/.IIQ/.3fr")
+        #expect(plan.items.map { ($0.sourcePath as NSString).lastPathComponent }.sorted()
+            == ["a.CR3", "b.IIQ", "c.3fr"], "扩展名判定大小写不敏感")
+        // .gif/.mov 进统计；.xmp sidecar 与隐藏文件不算"用户想导入的照片"。
+        #expect(plan.unsupportedFormats.count == 2)
+        #expect(plan.unsupportedFormats.extensions["gif"] == 1)
+        #expect(plan.unsupportedFormats.extensions["mov"] == 1)
+        #expect(!plan.unsupportedFormats.extensions.keys.contains("xmp"))
+        #expect(!plan.unsupportedFormats.extensions.keys.contains("ds_store"))
+        #expect(plan.unsupportedFormats.samplePaths.count == 2, "样例最多保留前 5 个")
+    }
+
+    @Test("Wave5-F4：执行结果带出不支持格式统计（结果区可见）")
+    func executeCarriesUnsupportedFormats() async throws {
+        let source = try makeSource(["a.CR3", "b.gif"], contents: [:])
+        let dest = try makeDestination()
+        defer {
+            [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let options = IngestOptions(destinationRoot: dest, renameTemplate: "{orig}.{ext}")
+        let plan = try await service.plan(sourcePaths: [source], options: options)
+        let result = service.execute(plan, options: options)
+
+        #expect(result.copied.count == 1)
+        #expect(result.unsupportedFormats.count == 1)
+        #expect(result.unsupportedFormats.extensions["gif"] == 1)
+        #expect(result.unsupportedFormats.samplePaths.first?.hasSuffix("b.gif") == true)
+    }
+
+    @Test("Wave5-F4：预检 DTO 旧载荷缺键时 unsupportedFormats 按空解码")
+    func previewDecodesLegacyPayloadWithoutUnsupportedFormats() throws {
+        let legacy = #"""
+        {"totalCount":1,"newCount":1,"libraryDuplicateCount":0,
+         "conflictCount":0,"unreadableCount":0,"policy":"skip"}
+        """#
+        let preview = try JSONDecoder().decode(
+            SessionIngestPreview.self, from: Data(legacy.utf8))
+        #expect(preview.unsupportedFormats.count == 0)
+        #expect(preview.unsupportedFormats.extensions.isEmpty)
+        #expect(preview.unsupportedFormats.samplePaths.isEmpty)
+    }
+
 }
 
 /// P0 / C1：可注入的 EXIF 端口（只回拍摄日期与型号）。

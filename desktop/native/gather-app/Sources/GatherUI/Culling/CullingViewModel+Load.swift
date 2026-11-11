@@ -180,7 +180,13 @@ extension CullingViewModel {
         }
     }
 
-    func loadPage(reset: Bool) async {
+    /// 整页加载。
+    ///
+    /// - Parameter initialLimit: 重取首页时临时使用的页大小（nil = 用 pageLimit）。
+    ///   B2 用它做「切布局续页」：键集分页只有首页/下一页两种请求，要保住当前
+    ///   照片只能把首页请求放大到覆盖它的整页（见 CullingPageContinuation）；
+    ///   后续 loadMore 仍按 pageLimit 走。
+    func loadPage(reset: Bool, initialLimit: Int? = nil) async {
         guard !sessionId.isEmpty else {
             page = nil
             summary = nil
@@ -204,7 +210,7 @@ extension CullingViewModel {
                     ? selectedSimilarityGroupId : nil,
                 sort: sortMode,
                 cursor: cursor,
-                limit: pageLimit
+                limit: reset ? (initialLimit ?? pageLimit) : pageLimit
             )
             let nextPage = try await cullingAPI.page(query)
             guard generation == loadGeneration else { return }

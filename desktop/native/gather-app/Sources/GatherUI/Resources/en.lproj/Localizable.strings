@@ -2612,3 +2612,25 @@
 /* Wave4c task-48 */
 "有 %lld 项 C1 判断待重试（扫描未成功，写入可能被覆盖）" = "%lld C1 judgments are waiting to retry (scan did not succeed; writes may be overwritten)";
 "重试同步" = "Retry Sync";
+
+/* Wave5 / Batch1（C1 写回正确性 / 分享链接 / 格式白名单）：新增文案 */
+"已写回 %lld 个变体；%lld 张多变体未写回、%lld 张不在 C1 当前集合、%lld 张超上限未写回（未解除 C1 重载门禁）" = "Wrote %lld variants; %lld multi-variant photos skipped, %lld outside the current C1 collection, %lld over the limit (C1 reload gate not released)";
+"%lld 张多变体未写回：请在 C1 选择变体后重试，或改用写回 XMP（「写回 XMP…」）" = "%lld multi-variant photos were not written back: select a variant in Capture One and retry, or use “Write XMP…” instead";
+"C1 当前集合未包含这些照片（%lld 张）：已尝试让 C1 切换到目标目录；可改用「写回 XMP…」" = "The current Capture One collection does not contain %lld of these photos. Tried browsing C1 to the target folder; use “Write XMP…” instead if needed.";
+"已在 Capture One 中显示 %lld 张，%lld 张不在 C1 当前集合" = "Revealed %lld photos in Capture One; %lld are not in the current C1 collection";
+"把已决策照片的当前评分/色标写回 XMP（挑片关键词不写 XMP，避免污染 C1 词库）" = "Write the current rating/color label of decided photos to XMP (culling keywords are not written to XMP to avoid polluting the C1 keyword library)";
+"挑片关键词写回（已停用）" = "Culling keyword writeback (disabled)";
+"挑片关键词写回已停用：不再把 culling:keep / culling:reject 写进 XMP（避免 C1 载入后污染它的词库）。" = "Culling keyword writeback is disabled: culling:keep / culling:reject are no longer written to XMP (they polluted the C1 keyword library on load).";
+"客户链接" = "Client link";
+"复制链接" = "Copy Link";
+"在浏览器中打开" = "Open in Browser";
+"链接 %lld 小时后过期" = "Link expires in %lld hours";
+"不支持格式 %lld 个（%@），已跳过" = "%lld unsupported files skipped (%@)";
+
+/* Wave5 / Batch1（挑片：对比决策目标 + 浏览连续性） */
+"作用于全部选中 %lld 张" = "Apply to all %lld selected";
+"作用于全部选中照片" = "Apply to all selected photos";
+"对比/Survey 默认只写当前照片；打开后这一拍写到全部选中照片" = "Compare/Survey writes only the current photo by default; when enabled, this action applies to all selected photos.";
+"本次写入：当前照片" = "This write: current photo";
+"本次写入：全部选中 %lld 张" = "This write: all %lld selected";
+"本次写入目标：对比/Survey 默认只写当前照片，批量需打开左侧开关" = "Write target: Compare/Survey writes only the current photo by default; turn on the switch on the left for batch writes.";

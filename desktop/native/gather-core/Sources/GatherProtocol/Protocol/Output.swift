@@ -436,12 +436,30 @@ public struct WebDAVPublishSummary: Codable, Equatable, Sendable {
     public var failed: [WebDAVPublishFailureInfo]
     public var remoteRoot: String
     public var abortedOnAuth: Bool
+    /// Wave5：客户可打开的入口链接（画廊 `index.html`）。
+    /// - S3 通道：AWS SigV4 **query-string 预签名 GET**（URL 只含 accessKeyID 与签名，
+    ///   secret 不进 URL/日志；对象仍默认私有）；到期见 `entryURLExpiresAt`。
+    /// - WebDAV 通道：`endpoint + 远端目录 + index.html` 拼出的静态链接
+    ///   （要求服务器自身把 index.html 当目录首页或允许直接访问）。
+    /// nil = 本次发布没有画廊入口，或入口文件没有上传成功（不提供无效链接）。
+    public var entryURL: String?
+    /// Wave5：`entryURL` 的到期时间（ISO-8601）；nil = 永久链接（WebDAV）。
+    public var entryURLExpiresAt: String?
 
-    public init(uploaded: Int, failed: [WebDAVPublishFailureInfo], remoteRoot: String, abortedOnAuth: Bool) {
+    public init(
+        uploaded: Int,
+        failed: [WebDAVPublishFailureInfo],
+        remoteRoot: String,
+        abortedOnAuth: Bool,
+        entryURL: String? = nil,
+        entryURLExpiresAt: String? = nil
+    ) {
         self.uploaded = uploaded
         self.failed = failed
         self.remoteRoot = remoteRoot
         self.abortedOnAuth = abortedOnAuth
+        self.entryURL = entryURL
+        self.entryURLExpiresAt = entryURLExpiresAt
     }
 
     public var isSuccess: Bool { failed.isEmpty && !abortedOnAuth }

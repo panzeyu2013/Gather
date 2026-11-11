@@ -2,8 +2,16 @@
 // Wave3 / task-18 回归测试：变体级 C1 写回（脚本契约/报告解析/降级）、color tag 双向映射、
 // C1 Session 三目录识别与去重规划、Hot Folder 能力边界（不假装检测）。
 //
+// Wave5 / task-11（2026-11-11，Batch1 C1 写回正确性）增补：
+//   · R1 写前回读变体数（variantCountReadScript / parseVariantCounts /
+//     partitionVariantTargets + "多变体跳过不写 ack"的报告结构断言）；
+//   · R3 notFound 按唯一父目录 browse 后重试一次（browseScript + 两个行为用例：
+//     切集合后写回成功、browse 失败保留 notFound 且不写 ack）；
+//   · R12 select 前先 deselect（脚本文本断言；行为侧在 Wave4b 套件）。
+//
 // 全程不 spawn osascript（注入 CaptureOneBridge.appleScriptRunner），不连真 C1；
-// 目录识别用注入的目录列举接缝，不碰真实文件系统。
+// 目录识别用注入的目录列举接缝，不碰真实文件系统（R3 用例建临时目录，测完即删——
+// browse 重试要求照片与父目录真实存在）。
 import Foundation
 import Testing
 import GatherProtocol
@@ -69,22 +77,111 @@ struct C1BridgeWave3ScriptContractTests {
         #expect(script.contains("set color tag of targetVariant to 0"))
         #expect(!script.contains("set pick of targetVariant"))
     }
+
+    // MARK: - Wave5 / R1：写前回读变体数（只读）
+
+    @Test("R1：写前回读脚本只读 variant 数量（不改属性、不写关键词、不 reload）")
+    func variantCountReadScriptIsReadOnly() {
+        let script = CaptureOneBridge.variantCountReadScript(
+            appName: "Capture One", paths: ["/shoot/a.cr2"])
+        // 与写回脚本同一套路径匹配口径（variant 没有 path，经 parent image 反查）。
+        // 注意：回读脚本是**一次循环**读全部路径（路径在 repeat 列表里，不是逐条内联
+        // 到 whose 子句），因此断言"列表里有该路径 + 循环体按路径匹配"。
+        #expect(script.contains("repeat with p in {\"/shoot/a.cr2\"}"))
+        #expect(script.contains("every image of targetDoc whose path is p"))
+        #expect(script.contains("count of (variants of theImage)"))
+        // 只读：绝不写入任何属性/关键词，也不 reload（回读不能改 C1）。
+        #expect(!script.contains("set rating of"))
+        #expect(!script.contains("set color tag of"))
+        #expect(!script.contains("set pick of"))
+        #expect(!script.contains("apply keyword"))
+        #expect(!script.contains("reload metadata"))
+    }
+
+    @Test("R1：回读报告解析：行数=请求数、只接受非负整数，其它形状 nil")
+    func parsesVariantCounts() {
+        #expect(CaptureOneBridge.parseVariantCounts("1\n0\n3", expected: 3) == [1, 0, 3])
+        #expect(CaptureOneBridge.parseVariantCounts(" 2 \n", expected: 1) == [2])
+        // 行数不等 / 非整数 / 负数都是契约漂移：nil（调用方抛 C1_SCRIPT_FAILED，不盲写）。
+        #expect(CaptureOneBridge.parseVariantCounts("1", expected: 2) == nil)
+        #expect(CaptureOneBridge.parseVariantCounts("1\nx", expected: 2) == nil)
+        #expect(CaptureOneBridge.parseVariantCounts("1\n-1", expected: 2) == nil)
+    }
+
+    @Test("R1 分区：0→不在集合、1→唯一目标可写、多 variant→整条跳过（绝不猜目标）")
+    func partitionsVariantTargets() {
+        let items = [
+            C1VariantWritebackItem(photoPath: "/a.cr2", rating: 1, colorTag: 0, pick: nil),
+            C1VariantWritebackItem(photoPath: "/b.cr2", rating: 2, colorTag: 1, pick: true),
+            C1VariantWritebackItem(photoPath: "/c.cr2", rating: 3, colorTag: 2, pick: nil),
+        ]
+        let partition = CaptureOneBridge.partitionVariantTargets(items: items, counts: [1, 3, 0])
+        #expect(partition.writable.map(\.photoPath) == ["/a.cr2"])
+        #expect(partition.multiVariant == ["/b.cr2"])
+        #expect(partition.notFound.map(\.photoPath) == ["/c.cr2"])
+    }
+
+    // MARK: - Wave5 / R3：browse 切集合（sdef:678-684）
+
+    @Test("R3：browse 脚本按 sdef 契约（document 直接参数 + to path），失败回 error: 报告")
+    func browseScriptMatchesBrowseCommand() {
+        let script = CaptureOneBridge.browseScript(
+            appName: "Capture One", path: "/Volumes/Shoot/2026")
+        // sdef:678-684：browse 的直接参数是 document，folder 走具名参数 "to path"。
+        #expect(script.contains("current document"))
+        #expect(script.contains("browse targetDoc to path \"/Volumes/Shoot/2026\""))
+        // 失败必须写成 error: 报告（调用方据此记 warn，不吞错）。
+        #expect(script.contains("error:"))
+    }
 }
 
 // MARK: - 写回报告解析 + 降级
 
 private struct Wave3AckState { var ids: [String] = [] }
 
+/// 写前回读脚本里 `repeat with p in {路径, 路径…}` 的请求条目数。
+///
+/// 为什么不能数 `whose path is`：回读脚本是**一次循环**读全部路径（只有一处 whose
+/// 子句，路径在 repeat 列表），写回脚本才是逐条内联。按列表里的逗号数推断即可
+///（测试路径不含逗号；逗号在 AppleScript 字面量里才会出现，测试不构造这种路径）。
+private func wave3CountScriptPathCount(_ script: String) -> Int {
+    guard let start = script.range(of: "repeat with p in {"),
+          let end = script.range(of: "}", range: start.upperBound..<script.endIndex) else {
+        return 0
+    }
+    return script[start.upperBound..<end.lowerBound].split(separator: ",").count
+}
+
 private func makeWave3Bridge(
     ack: LockedBox<Wave3AckState>,
+    // R1（Wave5）：写前回读脚本的回复；默认每条请求都是单 variant（"1" × N）。
+    countLines: @escaping @Sendable (String) -> String = { script in
+        String(repeating: "1\n", count: wave3CountScriptPathCount(script))
+    },
     scriptOutput: @escaping @Sendable (String) throws -> String
 ) -> CaptureOneBridge {
     CaptureOneBridge(
         recordReloadAck: { sessionId in ack.lock.withLock { ack.ids.append(sessionId) } },
         appleScriptRunner: { script in
             if script.contains("System Events") { return "Capture One" }
+            // R1 写前回读：必须是只读的变体数脚本（写回脚本没有这个表达式）。
+            if script.contains("count of (variants of theImage)") { return countLines(script) }
+            // R3 切集合默认成功（需要真实目录的用例自己注入 browse 脚本回复）。
+            if script.contains("browse targetDoc to path") { return "1" }
             return try scriptOutput(script)
         })
+}
+
+/// R3 用例需要真实存在的目录与照片：browse 重试只对"文件在盘上、父目录唯一"生效。
+private func makeWave3PhotoDirectory() throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-wave5-c1-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory
+}
+
+private func removeWave3Directory(_ url: URL) {
+    do { try FileManager.default.removeItem(at: url) } catch { }
 }
 
 @Suite("C1BridgeWave3 写回报告与降级")
@@ -204,6 +301,162 @@ struct C1BridgeWave3WritebackTests {
             Issue.record("意外的错误类型：\(error)")
         }
     }
+
+    // MARK: - Wave5 / R1：多变体不猜目标
+
+    /// R1 的核心回归：同一 image 有多个 variant 时**不写**（写错 variant 不可逆），
+    /// 进 skippedMultiVariant，并且不写 durable reload-ack（门禁保持锁定）。
+    @Test("R1：多 variant 跳过（不猜目标）且不写 reload-ack；单 variant 照常写")
+    func multiVariantIsSkippedWithoutAck() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let bridge = makeWave3Bridge(
+            ack: ack,
+            countLines: { _ in "1\n3\n" }
+        ) { _ in "1" }
+        let report = try await bridge.writeVariantJudgements(
+            sessionId: "s1",
+            items: [
+                C1VariantWritebackItem(photoPath: "/shoot/a.cr2", rating: 4, colorTag: 0, pick: nil),
+                C1VariantWritebackItem(photoPath: "/shoot/b.cr2", rating: 4, colorTag: 0, pick: nil),
+            ])
+        #expect(report.written == 1)
+        #expect(report.skippedMultiVariant == ["/shoot/b.cr2"])
+        #expect(report.notFound.isEmpty)
+        #expect(ack.lock.withLock { ack.ids }.isEmpty,
+                "有请求未写进 C1（多变体跳过）时不得解除 reload-ack 门禁")
+    }
+
+    /// 全部都是多变体：一次写回脚本都不发，报告只有 skippedMultiVariant。
+    @Test("R1：全部多变体时不发写回脚本（只回报告）")
+    func allMultiVariantSkipsWriteScript() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let scripts = LockedBox(Wave3ScriptLog())
+        let bridge = CaptureOneBridge(
+            recordReloadAck: { sessionId in ack.lock.withLock { ack.ids.append(sessionId) } },
+            appleScriptRunner: { script in
+                scripts.lock.withLock { scripts.scripts.append(script) }
+                if script.contains("System Events") { return "Capture One" }
+                if script.contains("count of (variants of theImage)") { return "2\n2\n" }
+                return "1\n1"
+            })
+        let report = try await bridge.writeVariantJudgements(
+            sessionId: "s1",
+            items: [
+                C1VariantWritebackItem(photoPath: "/shoot/a.cr2", rating: 2, colorTag: 0, pick: nil),
+                C1VariantWritebackItem(photoPath: "/shoot/b.cr2", rating: 2, colorTag: 0, pick: nil),
+            ])
+        #expect(report.written == 0)
+        #expect(report.skippedMultiVariant == ["/shoot/a.cr2", "/shoot/b.cr2"])
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+        let all = scripts.lock.withLock { scripts.scripts }
+        #expect(!all.contains { $0.contains("set rating of targetVariant") },
+                "多 variant 时不得发出写回脚本")
+    }
+
+    /// R1 失败面：拿不到变体数 = 无法安全判定目标 → 上浮 C1_SCRIPT_FAILED，绝不盲写。
+    @Test("R1：写前回读失败上浮（不盲写、不写 ack）")
+    func variantCountFailurePropagates() async {
+        let ack = LockedBox(Wave3AckState())
+        let bridge = makeWave3Bridge(ack: ack, countLines: { _ in "not-a-count" }) { _ in "1" }
+        do {
+            _ = try await bridge.writeVariantJudgements(
+                sessionId: "s1",
+                items: [C1VariantWritebackItem(
+                    photoPath: "/shoot/a.cr2", rating: 1, colorTag: 0, pick: nil)])
+            Issue.record("回读形状不认识必须当脚本失败（不能盲写 variant）")
+        } catch let error as CaptureOneBridgeError {
+            guard case .scriptFailed(let message) = error else {
+                Issue.record("期望 scriptFailed，实际 \(error)")
+                return
+            }
+            #expect(message.contains("unexpected variant count report"))
+        } catch {
+            Issue.record("意外的错误类型：\(error)")
+        }
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+    }
+
+    // MARK: - Wave5 / R3：notFound → browse 唯一父目录后重试一次
+
+    /// R3 的核心回归：照片在盘上、父目录唯一、C1 当前集合不含它 → browse 切集合后
+    /// **重读一次变体数**再写回（用户点一次写回就能跨集合生效）。
+    @Test("R3：notFound 按唯一父目录 browse 后重写一次（成功写 + ack）")
+    func browsesToParentDirectoryAndWrites() async throws {
+        let directory = try makeWave3PhotoDirectory()
+        defer { removeWave3Directory(directory) }
+        let paths = [directory.appendingPathComponent("a.cr2").path,
+                     directory.appendingPathComponent("b.cr2").path]
+        for path in paths {
+            #expect(FileManager.default.createFile(atPath: path, contents: Data()))
+        }
+        let ack = LockedBox(Wave3AckState())
+        let logs = LockedBox(Wave3ScriptLog())
+        let bridge = CaptureOneBridge(
+            recordReloadAck: { sessionId in ack.lock.withLock { ack.ids.append(sessionId) } },
+            appleScriptRunner: { script in
+                logs.lock.withLock { logs.scripts.append(script) }
+                if script.contains("System Events") { return "Capture One" }
+                if script.contains("browse targetDoc to path") { return "1" }
+                if script.contains("count of (variants of theImage)") {
+                    // 第一次（切换前）两张都不在当前集合；browse 后回读为单 variant。
+                    let call = logs.lock.withLock { () -> Int in
+                        logs.countCalls += 1
+                        return logs.countCalls
+                    }
+                    return call == 1 ? "0\n0\n" : "1\n1\n"
+                }
+                return "1\n1"
+            })
+        let report = try await bridge.writeVariantJudgements(
+            sessionId: "s1",
+            items: paths.map {
+                C1VariantWritebackItem(photoPath: $0, rating: 4, colorTag: 0, pick: nil)
+            })
+        #expect(report.written == 2)
+        #expect(report.notFound.isEmpty)
+        #expect(ack.lock.withLock { ack.ids } == ["s1"])
+        let scripts = logs.lock.withLock { logs.scripts }
+        #expect(scripts.contains {
+            $0.contains("browse targetDoc to path \"\(directory.path)\"")
+        }, "切集合必须指向 notFound 的唯一父目录")
+    }
+
+    /// R3 失败面：browse 失败**不吞错** —— 不切集合、不重读、不写 ack，notFound 如实上报。
+    @Test("R3：browse 失败保留 notFound（不吞错、不写 ack）")
+    func browseFailureKeepsNotFound() async throws {
+        let directory = try makeWave3PhotoDirectory()
+        defer { removeWave3Directory(directory) }
+        let path = directory.appendingPathComponent("a.cr2").path
+        #expect(FileManager.default.createFile(atPath: path, contents: Data()))
+        let ack = LockedBox(Wave3AckState())
+        let logs = LockedBox(Wave3ScriptLog())
+        let bridge = CaptureOneBridge(
+            recordReloadAck: { sessionId in ack.lock.withLock { ack.ids.append(sessionId) } },
+            appleScriptRunner: { script in
+                logs.lock.withLock { logs.scripts.append(script) }
+                if script.contains("System Events") { return "Capture One" }
+                if script.contains("browse targetDoc to path") { return "error:Can't browse folder" }
+                if script.contains("count of (variants of theImage)") { return "0\n" }
+                return "1"
+            })
+        let report = try await bridge.writeVariantJudgements(
+            sessionId: "s1",
+            items: [C1VariantWritebackItem(photoPath: path, rating: 3, colorTag: 0, pick: nil)])
+        #expect(report.written == 0)
+        #expect(report.notFound == [path])
+        #expect(report.skippedMultiVariant.isEmpty)
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+        let scripts = logs.lock.withLock { logs.scripts }
+        #expect(scripts.contains { $0.contains("browse targetDoc to path") })
+        // browse 已经报错，不得再发写回脚本（没有目标可写）。
+        #expect(!scripts.contains { $0.contains("set rating of targetVariant") })
+    }
+}
+
+/// Wave5 用例的脚本记录器（LockedBox 的动态成员只能映射到 State 的具名属性）。
+private struct Wave3ScriptLog {
+    var scripts: [String] = []
+    var countCalls = 0
 }
 
 // MARK: - color tag 双向映射

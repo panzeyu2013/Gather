@@ -1284,4 +1284,104 @@ struct CullingViewModelAPITests {
         #expect(vm.lastTriageWritebackBatchId == "b-uncertain",
                 "回读失败但可能已写盘的批次必须可撤销")
     }
+
+    // MARK: - Wave5 批次 1：B1 决策目标 / B2 切布局续页
+
+    @Test("B1：对比/Survey 的决策只写当前照片，不批量写选择集")
+    func comparisonCommitTargetsCurrentPhotoOnly() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1"), vmAsset("p2"), vmAsset("p3")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        // 为构造 2 图对比先多选 p1/p2，当前仍是 p1。
+        // 旧实现：按 X 走选择集分支，把两张都标掉（20-culling-viewer §2 P1）。
+        vm.selectedPhotoIds = ["p1", "p2"]
+        vm.currentPhotoId = "p1"
+
+        await vm.commit(patch: CullingUpdatePatch(pickState: .rejected), currentOnly: true)
+        await vm.refreshTask?.value
+
+        let batchInputs = await api.batchUpdateInputs
+        let updateIds = await api.updateInputs.map(\.photoId)
+        #expect(batchInputs.isEmpty, "对比/Survey 不得把选择集当写入目标")
+        #expect(updateIds == ["p1"], "只写当前照片")
+        #expect(vm.selectedPhotoIds == ["p1", "p2"], "自动前进保留对比选择集（它只是画面）")
+        #expect(vm.currentPhotoId == "p2", "下一拍的目标随之移动")
+    }
+
+    @Test("B1：显式打开「作用于全部选中」后仍走批量分支")
+    func comparisonCommitWithExplicitBatchStillBatches() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage([vmAsset("p1"), vmAsset("p2"), vmAsset("p3")]))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        await vm.load()
+        vm.selectedPhotoIds = ["p1", "p2"]
+        vm.currentPhotoId = "p1"
+        await api.setBatchUpdateResults([
+            CullingUpdateResult(
+                states: [
+                    vmState("p1", revision: 2, pickState: .rejected),
+                    vmState("p2", revision: 2, pickState: .rejected),
+                ],
+                xmpPath: "/shoot/p1.xmp", syncStatus: .pending, historyOperationId: 21)
+        ])
+
+        // 开关打开 = 用户明确要求批量：不传 currentOnly，沿用旧的选择集分支。
+        await vm.commit(patch: CullingUpdatePatch(pickState: .rejected))
+        await vm.refreshTask?.value
+
+        let singleInputs = await api.updateInputs
+        let batchInputs = await api.batchUpdateInputs
+        #expect(singleInputs.isEmpty, "批量口径不得拆成逐张单拍")
+        #expect(batchInputs.map(\.photoIds) == [["p1", "p2"]])
+    }
+
+    @Test("B2：切布局页变小（500→200）保留已加载窗口与当前照片")
+    func layoutPageShrinkKeepsCurrentPhoto() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage((1...250).map { vmAsset("p\($0)") }))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        vm.applyPageLimit(500)
+        await vm.load()
+        // 第 221 张：超过网格的 200/页。旧实现 reset 后回退到第一张。
+        vm.currentPhotoId = "p221"
+        let queriesBefore = await api.pageQueries.count
+
+        await vm.setPageLimit(200)
+
+        #expect(vm.pageLimit == 200)
+        #expect(await api.pageQueries.count == queriesBefore, "页变小不该重取首页")
+        #expect(vm.currentPhotoId == "p221", "当前照片不能被踢回第一张")
+        #expect(vm.page?.assets.count == 250, "已加载窗口保持（不再整页 reset）")
+    }
+
+    @Test("B2：页变大时按新页大小重取首页并保住当前照片")
+    func layoutPageGrowReloadsWithNewLimit() async throws {
+        let api = StubCullingAPI()
+        await api.setPage(vmPage((1...250).map { vmAsset("p\($0)") }))
+        let vm = CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+        vm.applyPageLimit(200)
+        await vm.load()
+        vm.currentPhotoId = "p80"
+
+        await vm.setPageLimit(500)
+
+        let queries = await api.pageQueries
+        #expect(vm.pageLimit == 500)
+        #expect(queries.last?.limit == 500, "页变大重取一次，按新页大小")
+        #expect(queries.last?.cursor == nil, "重取的是首页")
+        #expect(vm.currentPhotoId == "p80", "当前照片仍在新的首页内")
+    }
 }

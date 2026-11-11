@@ -73,21 +73,11 @@ public enum RAWDecoderError: Error, Equatable {
 
 /// CoreImage/ImageIO 解码器（替代 sharp + sips，含 RAW）。
 public enum RAWDecoder {
-    /// sharp.supportedExtensions 全集（含 RAW）。
-    ///
-    /// P0-8（Wave1）：补 `.heic/.heif/.psd` —— 索引与导入早已接收三者
-    /// （IndexerService / IngestService / PhotoFileTypes），但解码白名单缺项，
-    /// 结果是 iPhone 直出的 HEIC 与交付稿 PSD 能进库、能计数，网格却是空白占位符。
-    /// ImageIO 对三者都有解码能力（HEIC 原生；PSD 取合成扁平图），并入同一白名单。
-    public static let supportedExtensions: Set<String> = [
-        ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp",
-        ".heic", ".heif", ".psd",
-        ".cr2", ".cr3", ".nef", ".nrw", ".arw",
-        ".raf", ".dng", ".orf", ".rw2", ".pef",
-        ".srw", ".srf", ".x3f", ".3fr", ".fff",
-        ".mef", ".mos", ".iiq", ".eip", ".erf",
-        ".kdc", ".mrw",
-    ]
+    /// **统一白名单**（Wave5 / F4）：直接引用 `PhotoFileTypes.supportedExtensions`，
+    /// 不再维护第二张字面量表。摄取 / 索引 / 解码三处由同一份清单驱动：
+    /// `IngestService` 与 `IndexerService` 曾各有一张更窄的 RAW 清单，导致
+    /// `.iiq/.3fr/.x3f/.mrw` 等可解码的 RAW 在导入时被静默跳过（P0-8 只修了解码侧）。
+    public static let supportedExtensions: Set<String> = PhotoFileTypes.supportedExtensions
 
     /// 由 ImageIO 按内容合成/解码的位图格式（P0-8）：
     /// HEIC/HEIF 是 iPhone 直出，PSD 取合成扁平图。
@@ -96,7 +86,7 @@ public enum RAWDecoder {
     static let compositeDecodeExtensions: Set<String> = [".heic", ".heif", ".psd"]
 
     public static func supports(_ ext: String) -> Bool {
-        supportedExtensions.contains(ext.lowercased())
+        PhotoFileTypes.isSupported(ext)
     }
 
     /// 读取图片尺寸；不可读时抛 RAWDecoderError（TS 语义：w/h <= 0 抛错）。
@@ -146,7 +136,7 @@ public enum RAWDecoder {
         quality: Double = 1.0
     ) throws -> RAWRegionDecodeResult {
         let ext = (path as NSString).pathExtension.lowercased()
-        guard !ext.isEmpty, supportedExtensions.contains(".\(ext)") else {
+        guard !ext.isEmpty, PhotoFileTypes.isSupported(ext) else {
             throw RAWDecoderError.unsupportedExtension(ext.isEmpty ? path : ".\(ext)")
         }
         #if canImport(CoreImage)
@@ -256,7 +246,7 @@ public enum RAWDecoder {
     /// 缩放解码公共路径：maxPixel <= 0 表示不缩放（全尺寸）。
     public static func decodeScaled(path: String, maxPixel: Int?, quality: Double) throws -> RAWDecodeResult {
         let ext = (path as NSString).pathExtension.lowercased()
-        guard !ext.isEmpty, supportedExtensions.contains(".\(ext)") else {
+        guard !ext.isEmpty, PhotoFileTypes.isSupported(ext) else {
             throw RAWDecoderError.unsupportedExtension(ext.isEmpty ? path : ".\(ext)")
         }
         let url = URL(fileURLWithPath: path)

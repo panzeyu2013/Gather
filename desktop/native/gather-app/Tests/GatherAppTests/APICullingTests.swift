@@ -479,9 +479,11 @@ struct APICullingTests {
             errors: [], failedItems: [], report: "Written: 1, Failed: 0, Skipped: 0"
         )
 
+        // Wave5 / N6：keyword 写回计划已为空（不再生成 culling:keep/reject），本用例只验证
+        // 「经 Confirmed 进入写回端口」，改用 .rating 取得非空计划（断言与 target 无关）。
         let result = try await fixture.api.writeback(
             Confirmed(
-                CullingWritebackInput(sessionId: fixture.sessionId, target: .keyword),
+                CullingWritebackInput(sessionId: fixture.sessionId, target: .rating),
                 source: .test
             )
         )

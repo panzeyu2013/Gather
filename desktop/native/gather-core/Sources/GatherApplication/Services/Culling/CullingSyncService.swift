@@ -90,7 +90,14 @@ public final class CullingSyncService {
     ///
     /// 计划的值来自唯一真相源：评分/色标读 photo_metadata_cache（用户设的 3 星就写
     /// 3 星，不是 keep→5/reject→1 的派生常量——execute 落盘后会按写入值刷新 cache，
-    /// 写派生常量会反过来污染真相源），关键词来自决策本身。
+    /// 写派生常量会反过来污染真相源）。
+    ///
+    /// Wave5 / N6（A3 的后续）：**不再**把决策写成 `culling:keep` / `culling:reject`
+    /// 关键词。关键词是 C1 词库的一部分：写进 XMP 后用户一旦在 C1 点 Load Metadata，
+    /// 这些内部词就进了 C1 自己的关键词库（10-c1-interop R13/N6）。挑片判断的在线
+    /// 通道是 CaptureOneBridge.writeVariantJudgements（variant 属性），文件级语义只走
+    /// 「写回 XMP…」的评分/色标；因此 target=.keyword 现在**没有可写内容**（计划为空
+    /// → 抛 CULLING_NO_DECISIONS，UI 入口已移除）。
     public func writeback(
         sessionId: String,
         target: CullingWritebackTarget,
@@ -339,7 +346,8 @@ public final class CullingSyncService {
         return CleanupResult(deletedCount: summary.deletedCount, errors: errors)
     }
     /// culling 写回计划：决策集 → 每照片的目标属性。
-    /// 评分/色标的值来自唯一真相源 photo_metadata_cache；关键词来自决策本身。
+    /// 评分/色标的值来自唯一真相源 photo_metadata_cache。
+    /// Wave5 / N6：target=.keyword 不再往计划里放任何条目（不再生成 culling:* 关键词）。
     private func buildCullingWritebackPlan(
         decisions: [CullingDecisionLiteRow],
         target: CullingWritebackTarget
@@ -366,9 +374,10 @@ public final class CullingSyncService {
                     label: label == .none ? "" : label.rawValue
                 )
             case .keyword:
-                plan[decision.photoId] = WritebackAttributes(
-                    keywords: ["culling:\(decision.decision)"]
-                )
+                // Wave5 / N6：旧实现写 ["culling:keep"/"culling:reject"]，C1 Load Metadata
+                // 后会进它自己的词库（污染）。挑片判断不再用关键词承载 → 计划里不放条目，
+                // 最终 plan 为空，writeback 抛 CULLING_NO_DECISIONS（UI 入口已移除）。
+                continue
             }
         }
         return plan

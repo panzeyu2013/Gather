@@ -1,6 +1,7 @@
 // desktop/native/gather-app/Sources/GatherUI/Culling/CullingComparison.swift
 // P2-3：对比网格的选片规则（纯函数，便于测试）。
 // 优先使用显式选中的 2/4 张；否则从当前照片向两侧取相邻，保持当前必在结果内。
+// B1：对比/Survey 的**决策目标**解析（多选只是构造画面的手段，不是写入目标）。
 import Foundation
 import GatherProtocol
 
@@ -76,5 +77,58 @@ enum CullingComparison {
             cursor -= 1
         }
         return result
+    }
+}
+
+// MARK: - 决策目标（B1：把「选片手段」和「写入目标」分开）
+
+/// 一次挑片决策要写到哪些照片。
+///
+/// 对比/Survey 里多选是**构造画面**的手段（要让两张非相邻片同屏，只能先选 2–9 张）；
+/// 旧实现把同一个选择集当成写入目标，于是「盯着 A 按 X」会标掉 B…I
+/// （20-culling-viewer §2 P1 / §3-1）。这里把两个语义拆开：由 View 用本文件
+/// 的纯函数解析出目标，再交给 CullingViewModel.commit(currentOnly:) 执行。
+enum CullingDecisionTarget: Equatable {
+    /// 只写当前照片（对比/Survey 的默认口径）。
+    case current(photoId: String)
+    /// 写整个选择集（网格/单图的原有口径，或用户显式打开开关时）。
+    case selection
+}
+
+enum CullingDecisionScope {
+    /// 对比类布局（2/3/4 图 + Survey）：多选用于构造画面，不默认批量写入。
+    ///
+    /// 查看器只有 compareCount/isSurvey 两个布局输入，用它判定；
+    /// survey 的选择集驱动格数在 2 张时 compareCount 也是 2，仍然算对比类。
+    static func isComparisonLayout(compareCount: Int, isSurvey: Bool) -> Bool {
+        isSurvey || compareCount > 1
+    }
+
+    /// 同上，按布局枚举判定（信息条/工具栏等已持有布局值的地方用它）。
+    static func isComparisonLayout(_ layout: CullingLayoutMode) -> Bool {
+        switch layout {
+        case .compare2, .compare3, .compare4, .survey: return true
+        case .single, .grid: return false
+        }
+    }
+
+    /// 解析本次决策的写入目标。
+    ///
+    /// - 对比类布局且「作用于全部选中 N 张」开关关闭：只写当前照片，**即使选择集
+    ///   非空**（选择集只决定画面里放哪几张）。
+    /// - 单图/网格，或开关显式打开：选择集非空则批量写选择集——批量入口保留给
+    ///   网格/检查器这类「多选即目标」的界面。
+    /// - 没有任何可写目标（无当前照片且无选择集）时返回 nil，调用方应 no-op。
+    static func target(
+        isComparisonLayout: Bool,
+        currentPhotoId: String?,
+        selectedPhotoIds: Set<String>,
+        writesToSelection: Bool
+    ) -> CullingDecisionTarget? {
+        if (!isComparisonLayout || writesToSelection), !selectedPhotoIds.isEmpty {
+            return .selection
+        }
+        guard let currentPhotoId else { return nil }
+        return .current(photoId: currentPhotoId)
     }
 }

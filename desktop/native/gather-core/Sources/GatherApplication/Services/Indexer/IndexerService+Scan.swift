@@ -131,6 +131,9 @@ extension IndexerService {
         var discovered = 0
         var added = 0
         var skipped = 0
+        // Wave5（F4）：不支持格式不再无声消失——按扩展名分组累积，扫描结束记一条
+        // 汇总日志（IndexScanResult 的 DTO 不在本任务写作用域内，先不做字段扩展）。
+        let unsupportedTally = UnsupportedFormatTally()
         // 内容变化的存量照片计数（连同 added/relinked/missing 驱动 index_seq）。
         var updatedExistingPhotos = 0
         // 提前声明：扫描中途取消/出错时 catch 路径需要判断是否发生过变更
@@ -412,7 +415,10 @@ extension IndexerService {
                         }
                         continue
                     }
-                    guard Self.supportedExtensions.contains(TSPath.extname(filepath).lowercased()) else { continue }
+                    guard PhotoFileTypes.isSupported(TSPath.extname(filepath)) else {
+                        unsupportedTally.record(filepath: filepath)
+                        continue
+                    }
                     // stat 失败（列举与 stat 之间消失）不得进入 discoveredSet，
                     // 否则末段永远不会把它对账为 missing（ghost photo）。
                     if (try? self.stat(filepath))?.isFile == true {
@@ -430,7 +436,9 @@ extension IndexerService {
                         isRoot: true,
                         excludedRoots: excludedRoots,
                         rejectsRoot: rejectsRoot,
-                        channel: channel
+                        channel: channel,
+                        // Wave5（F4）：并发生产者把"不支持格式"的路径回传统一记账。
+                        onUnsupported: { path in unsupportedTally.record(filepath: path) }
                     )
                     channel.close()
                 }
@@ -525,6 +533,8 @@ extension IndexerService {
                     timestamp: nowISOString()
                 )
             }
+            // Wave5（F4）：不支持格式汇总（日志可见；DTO 扩展留给后续任务）。
+            unsupportedTally.logSummary("metadata.scan")
             context?.updateProgress(JobProgressUpdate(current: discovered, total: discovered, phase: "index.done"))
             return IndexScanResult(
                 sessionId: sessionId,
@@ -560,7 +570,9 @@ extension IndexerService {
         isRoot: Bool,
         excludedRoots: [String],
         rejectsRoot: String?,
-        channel: WalkChannel
+        channel: WalkChannel,
+        /// Wave5（F4）：不支持扩展名的文件路径回调（扫描报告用；nil = 不统计）。
+        onUnsupported: (@Sendable (String) -> Void)? = nil
     ) async {
         let entries: [String]
         do {
@@ -582,9 +594,13 @@ extension IndexerService {
             if ScanPath.isDirectory(full) {
                 await traverse(
                     directory: full, isRoot: false, excludedRoots: excludedRoots,
-                    rejectsRoot: rejectsRoot, channel: channel)
-            } else if supportedExtensions.contains(TSPath.extname(name).lowercased()) {
+                    rejectsRoot: rejectsRoot, channel: channel,
+                    onUnsupported: onUnsupported)
+            } else if PhotoFileTypes.isSupported(TSPath.extname(name)) {
                 await channel.push(.file(full))
+            } else if let onUnsupported {
+                // Wave5（F4）：不支持的扩展名不再直接丢弃——交给统计（日志汇总）。
+                onUnsupported(full)
             }
         }
     }

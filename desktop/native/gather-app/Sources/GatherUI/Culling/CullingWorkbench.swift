@@ -24,6 +24,10 @@ struct CullingWorkbench: View {
     /// 专注模式切换（F 裸键在查看器内触发，按钮/菜单同入口）。
     var onToggleFocusMode: () -> Void = {}
 
+    /// B1：对比/Survey 的「作用于全部选中 N 张」开关（页面持有，默认关）。
+    /// 查看器只读它来解析决策目标；信息条以 Toggle 形式提供入口并回显目标。
+    @Binding var writesDecisionToSelection: Bool
+
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
@@ -70,10 +74,17 @@ struct CullingWorkbench: View {
                         isSurvey: layoutMode == .survey,
                         faceAlign: faceAlign,
                         isFocusMode: isFocusMode,
-                        onToggleFocusMode: onToggleFocusMode
+                        onToggleFocusMode: onToggleFocusMode,
+                        // B1：决策目标收窄到当前照片（除非用户显式打开批量开关）。
+                        writesDecisionToSelection: writesDecisionToSelection
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    CullingInfoBar(viewModel: viewModel, isBusy: isBusy)
+                    CullingInfoBar(
+                        viewModel: viewModel,
+                        isBusy: isBusy,
+                        layoutMode: layoutMode,
+                        writesDecisionToSelection: $writesDecisionToSelection
+                    )
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
