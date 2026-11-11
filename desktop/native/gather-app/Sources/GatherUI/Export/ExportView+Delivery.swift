@@ -18,10 +18,19 @@ struct PendingProofImport: Identifiable {
     let report: ClientSelectionImportReport
 }
 
+/// Wave5：独立发布目标（本地已生成目录 + 顶层产物白名单）。
+struct StandalonePublishSelection: Identifiable {
+    let id = UUID()
+    let localPath: String
+    let includePrefixes: [String]
+}
+
 struct ExportDeliverySection: View {
     let viewModel: ExportViewModel
     @Environment(\.languageStore) private var languageStore
     @State private var showWebDAV = false
+    /// Wave5：独立发布入口（不依赖本次交付内存结果）。
+    @State private var standalonePublish: StandalonePublishSelection?
     @State private var pendingDelivery: PendingDeliveryConfirmation?
     /// 校样导入结果（v2：勾选 + 评分/色标 + 评论 + 冲突）。
     @State private var pendingProofImport: PendingProofImport?
@@ -138,7 +147,7 @@ struct ExportDeliverySection: View {
                         .gatherButton(.secondary, size: .small)
                         .disabled(viewModel.isPublishing)
                     if let publish = viewModel.webDAVPublish {
-                        publishStatus(publish)
+                        SharePublishResultView(publish: publish)
                     }
                 }
                 .sheet(isPresented: $showWebDAV) {
@@ -152,6 +161,21 @@ struct ExportDeliverySection: View {
                         includePrefixes: Self.publishPrefixes(for: summary))
                 }
             }
+            // Wave5：独立发布入口——不依赖本次交付的内存结果；选任意已生成目录即可
+            // 重新发布（读取该目录的发布记录做 HEAD 差分/历史）。
+            HStack(spacing: GatherMetrics.Space.s) {
+                Button(l10n("发布已生成的交付包…")) { chooseStandalonePublish() }
+                    .gatherButton(.secondary, size: .small)
+                    .disabled(viewModel.isPublishing)
+                Spacer()
+            }
+            .sheet(item: $standalonePublish) { selection in
+                WebDAVPublishSheet(
+                    viewModel: viewModel,
+                    localPath: selection.localPath,
+                    includePrefixes: selection.includePrefixes,
+                    standalone: true)
+            }
         }
         .task { await viewModel.loadDeliveryRecipes() }
         .onChange(of: viewModel.deliveryRecipes) { _, _ in
@@ -162,62 +186,43 @@ struct ExportDeliverySection: View {
         }
     }
 
-    /// 发布结果 + 客户链接（Wave5：S3 预签名 / WebDAV 静态入口）。
-    ///
-    /// 链接只在「发布成功 + 入口文件上传成功」时出现：不给客户一个 404 的链接。
-    /// secret 从不在链接里（S3 链接只含 accessKeyID + 签名，secret 不出现）。
-    @ViewBuilder
-    private func publishStatus(_ publish: WebDAVPublishSummary) -> some View {
-        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
-            Text(publish.isSuccess
-                 ? l10n.format("已发布 %lld 个文件", publish.uploaded)
-                 : l10n.format("发布完成：成功 %lld，失败 %lld",
-                               publish.uploaded, publish.failed.count))
-                .font(GatherFont.secondary)
-                .foregroundStyle(publish.isSuccess ? GatherTheme.successText : GatherTheme.errorText)
-            if publish.isSuccess, let link = publish.entryURL, let url = URL(string: link) {
-                VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
-                    HStack(spacing: GatherMetrics.Space.s) {
-                        Text(l10n("客户链接"))
-                            .font(GatherFont.labelRegular)
-                        Spacer(minLength: 0)
-                        Button(l10n("复制链接")) {
-                            let pasteboard = NSPasteboard.general
-                            pasteboard.clearContents()
-                            pasteboard.setString(link, forType: .string)
-                        }
-                        .gatherButton(.tertiary, size: .small)
-                        Button(l10n("在浏览器中打开")) {
-                            NSWorkspace.shared.open(url)
-                        }
-                        .gatherButton(.tertiary, size: .small)
-                    }
-                    // 长 URL 用中间截断展示；完整值可选中/复制，避免撑坏 HStack。
-                    Text(link)
-                        .font(GatherFont.secondary)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                    if let expiresAt = publish.entryURLExpiresAt,
-                       let expiry = Self.linkExpiryText(expiresAt, with: l10n) {
-                        Text(expiry)
-                            .font(GatherFont.secondary)
-                            .foregroundStyle(.secondary)
-                    }
+    /// Wave5：独立发布——选择本地已生成的交付/画廊目录，交给同一发布面板。
+    private func chooseStandalonePublish() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = l10n("选择已生成的交付目录（例如 gallery 目录）")
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let prefixes = Self.publishPrefixes(forLocalDirectory: url.path)
+            Task { @MainActor in
+                guard !prefixes.isEmpty else {
+                    viewModel.errorMessage = CommandError.localized("这个目录里没有可发布的文件")
+                    return
                 }
+                standalonePublish = StandalonePublishSelection(
+                    localPath: url.path, includePrefixes: prefixes)
             }
         }
     }
 
-    /// 预签名链接剩余时长文案（ISO-8601 → 「链接 X 小时后过期」；解析失败不显示，
-    /// 不猜一个假时长）。WebDAV 永久链接没有 entryURLExpiresAt，不会走这里。
-    static func linkExpiryText(_ expiresAt: String, with l10n: L10n) -> String? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        guard let date = formatter.date(from: expiresAt) else { return nil }
-        let hours = max(1, Int((date.timeIntervalSinceNow / 3600).rounded()))
-        return l10n.format("链接 %lld 小时后过期", hours)
+    /// Wave5：独立发布的白名单 = 目录顶层条目（文件/目录名）。
+    ///
+    /// 跳过隐藏文件（含 `.gather-share-publish.json` 发布记录）与 `manifest-*`
+    /// （manifest 含本机绝对路径，按既有约定绝不外发）。
+    static func publishPrefixes(forLocalDirectory path: String) -> [String] {
+        let entries: [String]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(atPath: path)
+        } catch {
+            return []
+        }
+        return entries.filter { name in
+            if name.hasPrefix(".") { return false }
+            if name.hasPrefix("manifest") { return false }
+            return true
+        }.sorted()
     }
 
     /// 选择交付目录（异步面板：不阻塞主线程、不开嵌套 runloop）。

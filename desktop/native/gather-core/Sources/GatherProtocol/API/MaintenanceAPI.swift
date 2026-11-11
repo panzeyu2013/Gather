@@ -47,17 +47,33 @@ public struct LibraryExportResult: Codable, Equatable, Sendable {
     public var photoCount: Int
     public var collectionCount: Int
     public var skippedArchivedCount: Int
+    // Wave5（Batch3 / task-20）：组织资产分项计数（UI 据此说明"带走了哪些组织信息"）。
+    public var stackCount: Int
+    public var smartAlbumCount: Int
+    public var savedSearchCount: Int
+    public var personBindingCount: Int
+    public var duplicateGroupCount: Int
 
     public init(
         packagePath: String,
         photoCount: Int,
         collectionCount: Int,
-        skippedArchivedCount: Int = 0
+        skippedArchivedCount: Int = 0,
+        stackCount: Int = 0,
+        smartAlbumCount: Int = 0,
+        savedSearchCount: Int = 0,
+        personBindingCount: Int = 0,
+        duplicateGroupCount: Int = 0
     ) {
         self.packagePath = packagePath
         self.photoCount = photoCount
         self.collectionCount = collectionCount
         self.skippedArchivedCount = skippedArchivedCount
+        self.stackCount = stackCount
+        self.smartAlbumCount = smartAlbumCount
+        self.savedSearchCount = savedSearchCount
+        self.personBindingCount = personBindingCount
+        self.duplicateGroupCount = duplicateGroupCount
     }
 }
 
@@ -118,6 +134,32 @@ public struct LibraryImportReport: Codable, Equatable, Sendable {
     /// 导入后处于 pending、等待下一次索引扫描的照片数（= missingFiles 中实际登记的行数）。
     public var pendingCount: Int
 
+    // MARK: - Wave5（Batch3 / task-20）：组织资产分项计数
+
+    /// 重建的堆栈数（成员全部映射失败/为空的堆栈计入 skippedStacks）。
+    public var importedStacks: Int
+    /// 新建或按冲突策略更新的智能相册数。
+    public var importedSmartAlbums: Int
+    /// 导入的保存查询数（包内全局查询按新工作区作用域落地或按冲突策略处理）。
+    public var importedSavedSearches: Int
+    /// 重建的人物-照片绑定数（identity 按包内 personId → 同名身份 → 新建三级解析）。
+    public var importedPersonBindings: Int
+    /// 组织资产里引用不到目标 photoId / 无法解析的条目数（如堆栈成员、人物绑定）。
+    public var skippedUnmappedItems: Int
+    /// 包内的智能相册/保存查询因 criteria 无法解码而跳过数。
+    public var skippedBrokenCriteria: Int
+    /// 包内的堆栈因成员为空而跳过数。
+    public var skippedStacks: Int
+    /// 智能相册按冲突策略保留本地（未导入）数。
+    public var skippedSmartAlbums: Int
+    /// 保存查询按冲突策略保留本地（未导入）数。
+    public var skippedSavedSearches: Int
+    /// 重复组段：**不导入**（派生数据，重扫会重建）；这里记录包内条数供报告标注。
+    public var skippedDuplicateGroups: Int
+    /// 导入后入队的 metadata.scan job id（nil = 未入队：路径未变化且无待索引照片，
+    /// 或入队失败——失败只记日志，不让导入失败）。
+    public var scanJobId: String?
+
     public init(
         sessionId: String,
         importedPhotos: Int = 0,
@@ -131,7 +173,18 @@ public struct LibraryImportReport: Codable, Equatable, Sendable {
         coexisted: Int = 0,
         missingFiles: [String] = [],
         collectionIDMap: [String: String] = [:],
-        pendingCount: Int = 0
+        pendingCount: Int = 0,
+        importedStacks: Int = 0,
+        importedSmartAlbums: Int = 0,
+        importedSavedSearches: Int = 0,
+        importedPersonBindings: Int = 0,
+        skippedUnmappedItems: Int = 0,
+        skippedBrokenCriteria: Int = 0,
+        skippedStacks: Int = 0,
+        skippedSmartAlbums: Int = 0,
+        skippedSavedSearches: Int = 0,
+        skippedDuplicateGroups: Int = 0,
+        scanJobId: String? = nil
     ) {
         self.sessionId = sessionId
         self.importedPhotos = importedPhotos
@@ -146,6 +199,17 @@ public struct LibraryImportReport: Codable, Equatable, Sendable {
         self.missingFiles = missingFiles
         self.collectionIDMap = collectionIDMap
         self.pendingCount = pendingCount
+        self.importedStacks = importedStacks
+        self.importedSmartAlbums = importedSmartAlbums
+        self.importedSavedSearches = importedSavedSearches
+        self.importedPersonBindings = importedPersonBindings
+        self.skippedUnmappedItems = skippedUnmappedItems
+        self.skippedBrokenCriteria = skippedBrokenCriteria
+        self.skippedStacks = skippedStacks
+        self.skippedSmartAlbums = skippedSmartAlbums
+        self.skippedSavedSearches = skippedSavedSearches
+        self.skippedDuplicateGroups = skippedDuplicateGroups
+        self.scanJobId = scanJobId
     }
 }
 
@@ -254,7 +318,10 @@ public extension MaintenanceAPI {
 //   由 newRoot 重绑定，避免包体积与版权复制问题；
 // - 评分/色标/关键词/决策来自 photo_metadata_cache（rating/label/keywords）与
 //   culling_decisions.decision（pick 语义）；IPTC 以 JSON 文本原样搬运，跨版本不丢字段；
-// - formatVersion 只有 1；读到更高版本显式失败（不静默丢字段）。
+// - formatVersion = 2（Wave5 / Batch3）：新增组织资产段 stacks / smartAlbums /
+//   savedSearches / personBindings / duplicateGroups。**旧包（v1）仍可导入**：
+//   新增段用 decodeIfPresent 缺失即空（见 init(from:)），不因升级包格式 fail；
+// - 读到比当前更高的版本仍显式失败（不静默丢新字段）。
 
 public struct LibraryPackage: Codable, Equatable, Sendable {
     public var formatVersion: Int
@@ -263,14 +330,30 @@ public struct LibraryPackage: Codable, Equatable, Sendable {
     public var session: LibraryPackageSession
     public var collections: [LibraryPackageCollection]
     public var photos: [LibraryPackagePhoto]
+    // MARK: - Wave5（Batch3 / task-20）：组织资产（v2 新增；v1 包解码为空数组）
+    /// 堆栈：包内成员 photoId（有序）+ 名称 + 封面（封面不可移植时 nil，导入取首成员）。
+    public var stacks: [LibraryPackageStack]
+    /// 智能相册（库级资产，不带 sessionId）：criteria 以 JSON 文本原样搬运。
+    public var smartAlbums: [LibraryPackageSmartAlbum]
+    /// 保存查询（name + criteria JSON + 作用域标记）。
+    public var savedSearches: [LibraryPackageSavedSearch]
+    /// 人物-照片绑定：可移植部分只有 person 名 + photoId（face cluster id 不可移植）。
+    public var personBindings: [LibraryPackagePersonBinding]
+    /// 重复组：仅导出留档（成员 + 用户裁决）；导入不重建（派生数据，重扫会重建）。
+    public var duplicateGroups: [LibraryPackageDuplicateGroup]
 
     public init(
-        formatVersion: Int = 1,
+        formatVersion: Int = 2,
         app: String = "Gather",
         exportedAt: String,
         session: LibraryPackageSession,
         collections: [LibraryPackageCollection] = [],
-        photos: [LibraryPackagePhoto]
+        photos: [LibraryPackagePhoto],
+        stacks: [LibraryPackageStack] = [],
+        smartAlbums: [LibraryPackageSmartAlbum] = [],
+        savedSearches: [LibraryPackageSavedSearch] = [],
+        personBindings: [LibraryPackagePersonBinding] = [],
+        duplicateGroups: [LibraryPackageDuplicateGroup] = []
     ) {
         self.formatVersion = formatVersion
         self.app = app
@@ -278,6 +361,40 @@ public struct LibraryPackage: Codable, Equatable, Sendable {
         self.session = session
         self.collections = collections
         self.photos = photos
+        self.stacks = stacks
+        self.smartAlbums = smartAlbums
+        self.savedSearches = savedSearches
+        self.personBindings = personBindings
+        self.duplicateGroups = duplicateGroups
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case formatVersion, app, exportedAt, session, collections, photos
+        case stacks, smartAlbums, savedSearches, personBindings, duplicateGroups
+    }
+
+    /// **旧包兼容**：v1 包没有组织资产段。缺失键一律按空处理（不 fail），
+    /// 并把缺失的 formatVersion 当 1 读（v1 包一定写了它，这里只是防御）。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try container.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
+        app = try container.decodeIfPresent(String.self, forKey: .app) ?? "Gather"
+        exportedAt = try container.decodeIfPresent(String.self, forKey: .exportedAt) ?? ""
+        session = try container.decode(LibraryPackageSession.self, forKey: .session)
+        collections = try container.decodeIfPresent(
+            [LibraryPackageCollection].self, forKey: .collections) ?? []
+        photos = try container.decodeIfPresent(
+            [LibraryPackagePhoto].self, forKey: .photos) ?? []
+        stacks = try container.decodeIfPresent(
+            [LibraryPackageStack].self, forKey: .stacks) ?? []
+        smartAlbums = try container.decodeIfPresent(
+            [LibraryPackageSmartAlbum].self, forKey: .smartAlbums) ?? []
+        savedSearches = try container.decodeIfPresent(
+            [LibraryPackageSavedSearch].self, forKey: .savedSearches) ?? []
+        personBindings = try container.decodeIfPresent(
+            [LibraryPackagePersonBinding].self, forKey: .personBindings) ?? []
+        duplicateGroups = try container.decodeIfPresent(
+            [LibraryPackageDuplicateGroup].self, forKey: .duplicateGroups) ?? []
     }
 }
 
@@ -354,5 +471,139 @@ public struct LibraryPackagePhoto: Codable, Equatable, Sendable {
         self.decision = decision
         self.keywords = keywords
         self.descriptiveJSON = descriptiveJSON
+    }
+}
+
+// MARK: - Wave5（Batch3 / task-20）：包内组织资产段（formatVersion 2）
+
+/// 一个照片堆栈（组织资产）。
+///
+/// **折叠状态不可导出**：Gather 的折叠是纯视图态（没有持久列），包只带
+/// 「这个堆栈存在 / 叫什么 / 有哪些成员 / 封面是谁」。
+/// 封面与成员都只写入**本包里存在**的 photoId；导入时成员按 photoId→checksum
+/// 两级映射重绑，映射不到的成员计入 skippedUnmappedItems。
+public struct LibraryPackageStack: Codable, Equatable, Sendable {
+    /// 导出侧 stack id（导入会重建，不复用；仅用于报告/排错关联）。
+    public var id: String
+    public var name: String
+    /// 封面 photoId（不在包内成员里时置 nil；导入取首个成员）。
+    public var coverPhotoId: String?
+    /// 有序成员 photoId（= photo_stack_members.position 升序）。
+    public var photoIds: [String]
+
+    public init(id: String, name: String, coverPhotoId: String? = nil, photoIds: [String] = []) {
+        self.id = id
+        self.name = name
+        self.coverPhotoId = coverPhotoId
+        self.photoIds = photoIds
+    }
+}
+
+/// 一个智能相册（库级组织资产）。
+///
+/// criteria 用**原始 JSON 文本**搬运（与 IPTC 同一策略：跨版本不丢字段）；导入时
+/// 尝试解码成 FilterGroup 并重映射 collection/stack 规则的容器 id（导入后 id 会变），
+/// 解码失败则跳过并计入 skippedBrokenCriteria。
+public struct LibraryPackageSmartAlbum: Codable, Equatable, Sendable {
+    /// 导出侧 smart_album id（导入重建，不复用）。
+    public var id: String
+    public var name: String
+    public var description: String
+    /// FilterGroup JSON 文本（空/非法 → 导入跳过）。
+    public var criteriaJSON: String
+    public var sortBy: String
+    public var sortOrder: String
+    public var icon: String
+
+    public init(
+        id: String,
+        name: String,
+        description: String = "",
+        criteriaJSON: String = "{}",
+        sortBy: String = "date_taken",
+        sortOrder: String = "desc",
+        icon: String = "📁"
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.criteriaJSON = criteriaJSON
+        self.sortBy = sortBy
+        self.sortOrder = sortOrder
+        self.icon = icon
+    }
+}
+
+/// 一条保存查询（Gallery 筛选条保存的 criteria）。
+public struct LibraryPackageSavedSearch: Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    /// FilterGroup JSON 文本（空/非法 → 导入跳过）。
+    public var criteriaJSON: String
+    /// true = 全局查询（saved_searches.session_id IS NULL）；false = 本工作区作用域。
+    public var isGlobal: Bool
+
+    public init(id: String, name: String, criteriaJSON: String = "{}", isGlobal: Bool = false) {
+        self.id = id
+        self.name = name
+        self.criteriaJSON = criteriaJSON
+        self.isGlobal = isGlobal
+    }
+}
+
+/// 一条人物-照片绑定（face cluster → 身份 → 照片 的可移植投影）。
+///
+/// 只导可移植部分：**person 名 + photoId**（+ 本地 personId 供同库往返）。
+/// face cluster id / 人脸向量 / role_bindings 不导出（跨库不可靠映射）。
+public struct LibraryPackagePersonBinding: Codable, Equatable, Sendable {
+    public var photoId: String
+    /// 导出侧 persons.id（同库往返可直接命中；跨库按 personName 解析）。
+    public var personId: String
+    public var personName: String
+    public var confidence: Double
+
+    public init(photoId: String, personId: String, personName: String, confidence: Double = 0) {
+        self.photoId = photoId
+        self.personId = personId
+        self.personName = personName
+        self.confidence = confidence
+    }
+}
+
+/// 一个重复组（**仅导出留档**：导入不重建）。
+///
+/// 为什么导入不重建：duplicate_groups 是 duplicate.scan 的派生结果（checksum / 视觉 hash
+/// 聚类），重建必须由扫描产生；包内成员身份（photoId）在目标库会重映射，强行插入
+/// 会把陈旧分组伪装成扫描结果。用户的裁决（keep/resolution）随导出留档，
+/// 重扫时 DuplicateRepository.getMemberDecisions 会按 photo_id 继承（同库场景）。
+public struct LibraryPackageDuplicateGroup: Codable, Equatable, Sendable {
+    /// exact（checksum 分组）/ visual（视觉 hash 分组）等，原样搬运。
+    public var groupType: String
+    public var checksum: String?
+    public var hashHex: String?
+    public var members: [LibraryPackageDuplicateMember]
+
+    public init(
+        groupType: String,
+        checksum: String? = nil,
+        hashHex: String? = nil,
+        members: [LibraryPackageDuplicateMember] = []
+    ) {
+        self.groupType = groupType
+        self.checksum = checksum
+        self.hashHex = hashHex
+        self.members = members
+    }
+}
+
+public struct LibraryPackageDuplicateMember: Codable, Equatable, Sendable {
+    public var photoId: String
+    public var isKept: Bool
+    public var resolution: String?
+
+    public init(photoId: String, isKept: Bool = false, resolution: String? = nil) {
+        self.photoId = photoId
+        self.isKept = isKept
+        self.resolution = resolution
     }
 }

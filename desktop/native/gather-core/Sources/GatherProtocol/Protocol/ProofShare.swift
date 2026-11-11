@@ -75,6 +75,14 @@ public enum OutputShareValidationIssue: String, Codable, Equatable, Sendable {
     case remoteSubfolderInvalid
 }
 
+/// Wave5：发布跳过原因（HEAD 差分：远端与本地记录一致，无需重传）。
+///
+/// 只用于报告与 UI 文案；不改变失败/重试语义（跳过的文件视为已在远端就绪）。
+public enum OutputShareSkipReason: String, Codable, CaseIterable, Hashable, Sendable {
+    /// 本地文件与上次发布记录一致，且远端 HEAD 的 ETag/Content-Length 也一致。
+    case remoteUnchanged = "remoteUnchanged"
+}
+
 /// Wave3：发布失败分类（报告用；不新增 GatherErrorCode，避免动 Core.swift 穷尽枚举）。
 public enum OutputShareFailureCategory: String, Codable, CaseIterable, Hashable, Sendable {
     case auth

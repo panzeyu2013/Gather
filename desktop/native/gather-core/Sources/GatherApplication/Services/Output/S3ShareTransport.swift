@@ -34,15 +34,33 @@ public struct S3HTTPRequest: Equatable, Sendable {
 
 public struct S3HTTPResponse: Equatable, Sendable {
     public var status: Int
+    /// Wave5：响应头（小写键；HEAD 差分的 ETag/Content-Length、PUT 记录的 ETag 用）。
+    public var headers: [String: String]
 
-    public init(status: Int) {
+    public init(status: Int, headers: [String: String] = [:]) {
         self.status = status
+        self.headers = headers
     }
 
     public var isSuccess: Bool { (200...299).contains(status) }
     public var isAuthFailure: Bool { status == 401 || status == 403 }
     public var isNotFound: Bool { status == 404 }
     public var isTransient: Bool { status == 408 || status == 429 || (500...599).contains(status) }
+
+    /// 头值（键大小写不敏感；缺失 = nil）。
+    public func header(_ name: String) -> String? {
+        let key = name.lowercased()
+        if let value = headers[key] { return value }
+        return headers.first { $0.key.lowercased() == key }?.value
+    }
+
+    public var contentLength: Int64? {
+        header("content-length").flatMap { Int64($0) }
+    }
+
+    public var etag: String? {
+        header("etag")
+    }
 }
 
 /// 生产实现：URLSession（macOS Foundation）。不改全局 URLSession 配置。
@@ -69,7 +87,12 @@ public struct URLSessionS3HTTPTransport: S3HTTPTransport {
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        return S3HTTPResponse(status: http.statusCode)
+        var headers: [String: String] = [:]
+        for (key, value) in http.allHeaderFields {
+            guard let name = key as? String else { continue }
+            headers[name.lowercased()] = String(describing: value)
+        }
+        return S3HTTPResponse(status: http.statusCode, headers: headers)
     }
 }
 
@@ -462,9 +485,24 @@ public final class S3ShareTransport: OutputShareTransport {
             }
         }
         let rootLabel = Self.rootLabel(configuration)
+        let recordDirectory = OutputSharePublishRecordStore.directory(
+            forLocalPath: request.localPath)
+        let endpointSummary = S3ShareAddressing.canonicalEndpoint(
+            baseURL: configuration.endpoint, bucket: configuration.bucket,
+            region: configuration.region)
+        let previousEntry = OutputSharePublishRecordStore.matchingEntry(
+            in: OutputSharePublishRecordStore.load(atDirectory: recordDirectory),
+            transport: .s3,
+            endpointSummary: endpointSummary,
+            remoteFolder: configuration.keyPrefix,
+            bucket: configuration.bucket)
         var uploaded = 0
-        /// Wave5：成功上传的相对路径（只有入口文件真的传上去才给客户链接）。
-        var uploadedRelatives = Set<String>()
+        var skipped = 0
+        var skipReasons: [OutputShareSkipReason: Int] = [:]
+        /// Wave5：远端已就绪（上传成功或 HEAD 命中跳过）的相对路径。
+        var availableRelatives = Set<String>()
+        /// Wave5：本次发布后的远端文件表（写进发布记录，供下次 HEAD 差分）。
+        var fileRecords: [String: OutputSharePublishFileRecord] = [:]
         var failures: [OutputSharePublishFailure] = []
 
         // 发布前可写探测：PUT/DELETE 一个随机探针对象；失败分类后再决定是否继续。
@@ -524,6 +562,40 @@ public final class S3ShareTransport: OutputShareTransport {
         for (index, file) in files.enumerated() {
             try Task.checkCancellation()
             let key = Self.joinKey(prefix, file.relative)
+
+            // Wave5：HEAD Object 差分——本地与记录一致 + 远端 ETag/Content-Length 一致
+            // → 跳过上传。HEAD 失败/非 2xx 一律保守上传（不漏传）。
+            let localRecord = OutputSharePublishDiff.localFileRecord(
+                relative: file.relative, filePath: file.local)
+            let previousRecord = previousEntry.flatMap { $0.fileRecord(file.relative) }
+            if let localRecord, let previousRecord {
+                var headResponse: S3HTTPResponse?
+                do {
+                    headResponse = try await headObject(
+                        configuration: configuration, key: key)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    headResponse = nil
+                }
+                if let headResponse, headResponse.isSuccess,
+                   OutputSharePublishDiff.shouldSkip(
+                       previous: previousRecord, local: localRecord,
+                       remoteContentLength: headResponse.contentLength,
+                       remoteETag: headResponse.etag) {
+                    skipped += 1
+                    skipReasons[.remoteUnchanged, default: 0] += 1
+                    availableRelatives.insert(file.relative)
+                    fileRecords[file.relative] = OutputSharePublishFileRecord(
+                        relative: file.relative,
+                        size: localRecord.size, mtime: localRecord.mtime,
+                        etag: OutputSharePublishDiff.normalizedETag(headResponse.etag)
+                            ?? previousRecord.etag)
+                    onProgress?(index + 1, files.count)
+                    continue
+                }
+            }
+
             // Wave4b：本地文件读取失败必须报 LOCAL_IO（不是 NETWORK、不重试），
             // 与真实网络错误分开，避免把"文件没了"误诊成网络抖动。
             var data: Data
@@ -546,7 +618,13 @@ public final class S3ShareTransport: OutputShareTransport {
                     path: file.relative)
                 if response.isSuccess {
                     uploaded += 1
-                    uploadedRelatives.insert(file.relative)
+                    availableRelatives.insert(file.relative)
+                    if let localRecord {
+                        fileRecords[file.relative] = OutputSharePublishFileRecord(
+                            relative: file.relative,
+                            size: localRecord.size, mtime: localRecord.mtime,
+                            etag: OutputSharePublishDiff.normalizedETag(response.etag))
+                    }
                     onProgress?(index + 1, files.count)
                 } else if response.isAuthFailure {
                     failures.append(OutputSharePublishFailure(
@@ -569,14 +647,53 @@ public final class S3ShareTransport: OutputShareTransport {
             }
         }
         // Wave5：客户入口 = 画廊 index.html 的预签名 GET（对象仍默认私有；
-        // 入口没传成功就不给链接，避免"发布成功但客户打开 404"）。
+        // 入口在远端就绪即可——上传成功或差分跳过都算，避免 404 链接）。
         let entry = Self.entryLink(
             configuration: configuration, prefix: prefix,
-            files: files, uploaded: uploadedRelatives, now: now())
-        return OutputSharePublishResult(
+            files: files, available: availableRelatives, now: now())
+        let result = OutputSharePublishResult(
             uploaded: uploaded, failed: failures,
             remoteRoot: rootLabel, abortedOnAuth: false,
-            entryURL: entry?.url, entryURLExpiresAt: entry?.expiresAt)
+            entryURL: entry.map(\.url), entryURLExpiresAt: entry.map(\.expiresAt),
+            skipped: skipped, skipReasons: skipReasons)
+        // Wave5：发布成功才写记录（失败/中止不覆盖上一次可用基线）。
+        if result.isSuccess {
+            Self.appendPublishRecord(
+                OutputSharePublishEntry(
+                    publishedAt: OutputShareManifest.iso8601Now(now()),
+                    transport: .s3,
+                    endpointSummary: endpointSummary,
+                    remoteFolder: configuration.keyPrefix,
+                    bucket: configuration.bucket,
+                    entryURL: entry.map(\.url),
+                    uploaded: uploaded, skipped: skipped,
+                    failed: failures.count,
+                    files: fileRecords.values.sorted { $0.relative < $1.relative }),
+                atDirectory: recordDirectory)
+        }
+        return result
+    }
+
+    /// Wave5：HEAD Object（签名与 PUT 同源；不读 body）。
+    private func headObject(
+        configuration: S3Configuration, key: String
+    ) async throws -> S3HTTPResponse {
+        let request = try signedRequest(
+            configuration: configuration, method: "HEAD",
+            key: key, body: Data(), contentType: nil)
+        return try await transport.send(request)
+    }
+
+    /// Wave5：记录写失败只告警，不影响发布结果（记录是缓存，不是交付物）。
+    private static func appendPublishRecord(
+        _ entry: OutputSharePublishEntry, atDirectory directory: String
+    ) {
+        do {
+            try OutputSharePublishRecordStore.append(entry, atDirectory: directory)
+        } catch {
+            GatherLogger.log(
+                "s3 publish record write failed: \(error)", level: .warn)
+        }
     }
 
     /// Wave5：入口文件 → SigV4 预签名 GET URL + 到期时间（ISO-8601）。
@@ -586,11 +703,11 @@ public final class S3ShareTransport: OutputShareTransport {
         configuration: S3Configuration,
         prefix: String,
         files: [WebDAVPublisher.LocalFile],
-        uploaded: Set<String>,
+        available: Set<String>,
         now: Date
     ) -> (url: String, expiresAt: String)? {
         guard let relative = WebDAVPublisher.entryRelativePath(in: files),
-              uploaded.contains(relative) else { return nil }
+              available.contains(relative) else { return nil }
         let key = joinKey(prefix, relative)
         guard let address = S3ShareAddressing.address(
             baseURL: configuration.endpoint, bucket: configuration.bucket,

@@ -282,3 +282,118 @@ public extension LibraryPackageStore {
         }
     }
 }
+
+// MARK: - Wave5（Batch3 / task-20）：组织资产导出投影（显式列，不 SELECT *）
+
+/// 人物-照片绑定导出行（person_photos JOIN persons；只取可移植列）。
+public struct LibraryPackagePersonBindingRow: Equatable, Sendable {
+    public let photoId: String
+    public let personId: String
+    public let personName: String
+    public let confidence: Double
+
+    public init(photoId: String, personId: String, personName: String, confidence: Double) {
+        self.photoId = photoId
+        self.personId = personId
+        self.personName = personName
+        self.confidence = confidence
+    }
+}
+
+/// 重复组导出行（duplicate_groups 显式列 0-7）。
+public struct LibraryPackageDuplicateGroupRow: Equatable, Sendable {
+    public let id: Int64
+    public let groupType: String
+    public let checksum: String?
+    public let hashHex: String?
+    public let resolution: String?
+
+    public init(id: Int64, groupType: String, checksum: String?, hashHex: String?, resolution: String?) {
+        self.id = id
+        self.groupType = groupType
+        self.checksum = checksum
+        self.hashHex = hashHex
+        self.resolution = resolution
+    }
+}
+
+/// 重复组成员导出行（duplicate_group_members 显式列 0-7 的可移植子集）。
+public struct LibraryPackageDuplicateMemberRow: Equatable, Sendable {
+    public let groupId: Int64
+    public let photoId: String
+    public let isKept: Bool
+    public let resolution: String?
+
+    public init(groupId: Int64, photoId: String, isKept: Bool, resolution: String?) {
+        self.groupId = groupId
+        self.photoId = photoId
+        self.isKept = isKept
+        self.resolution = resolution
+    }
+}
+
+public extension LibraryPackageStore {
+    /// 某工作区的人物-照片绑定（person_photos 显式列 + persons.name）。
+    ///
+    /// 只返回仍在工作区（PhotoVisibility）的照片绑定：已淘汰/移出的照片不进包。
+    func personBindingRows(sessionId: String) throws -> [LibraryPackagePersonBindingRow] {
+        let rows = try connection.prepare("""
+            SELECT pp.photo_id, pp.person_id, COALESCE(pr.name, ''), pp.confidence
+              FROM person_photos pp
+              JOIN persons pr ON pr.id = pp.person_id
+              JOIN photos p ON p.id = pp.photo_id AND \(PhotoVisibility.visiblePredicate(alias: "p"))
+             WHERE pp.session_id = ?
+             ORDER BY pp.person_id, pp.photo_id
+            """).query([.text(sessionId)])
+        return rows.map { row in
+            LibraryPackagePersonBindingRow(
+                photoId: row[0].textValue ?? "",
+                personId: row[1].textValue ?? "",
+                personName: row[2].textValue ?? "",
+                confidence: row[3].doubleValue ?? 0
+            )
+        }
+    }
+
+    /// 某工作区的重复组（duplicate_groups 显式列：id/session_id/group_type/checksum/hash_hex/member_count/resolution/created_at）。
+    func duplicateGroupRows(sessionId: String) throws -> [LibraryPackageDuplicateGroupRow] {
+        let rows = try connection.prepare("""
+            SELECT id, session_id, group_type, checksum, hash_hex, member_count, resolution, created_at
+              FROM duplicate_groups
+             WHERE session_id = ?
+             ORDER BY id
+            """).query([.text(sessionId)])
+        return rows.map { row in
+            LibraryPackageDuplicateGroupRow(
+                id: row[0].intValue ?? 0,
+                groupType: row[2].textValue ?? "",
+                checksum: row[3].textValue,
+                hashHex: row[4].textValue,
+                resolution: row[6].textValue
+            )
+        }
+    }
+
+    /// 重复组成员（duplicate_group_members 显式列 + photos 可见性过滤）。
+    /// 列：id(0), group_id(1), photo_id(2), session_id(3), is_kept(4), file_size(5),
+    /// file_mtime(6), resolution(7)。
+    func duplicateGroupMemberRows(sessionId: String) throws -> [LibraryPackageDuplicateMemberRow] {
+        let rows = try connection.prepare("""
+            SELECT dm.id, dm.group_id, dm.photo_id, dm.session_id, dm.is_kept,
+                   dm.file_size, dm.file_mtime, dm.resolution
+              FROM duplicate_group_members dm
+              JOIN duplicate_groups dg ON dg.id = dm.group_id
+              JOIN photos p ON p.id = dm.photo_id AND \(PhotoVisibility.visiblePredicate(alias: "p"))
+             WHERE dg.session_id = ?
+             ORDER BY dm.group_id, dm.id
+            """).query([.text(sessionId)])
+        return rows.map { row in
+            LibraryPackageDuplicateMemberRow(
+                groupId: row[1].intValue ?? 0,
+                photoId: row[2].textValue ?? "",
+                isKept: (row[4].intValue ?? 0) != 0,
+                resolution: row[7].textValue
+            )
+        }
+    }
+}

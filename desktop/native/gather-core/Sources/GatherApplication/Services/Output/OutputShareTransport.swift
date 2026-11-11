@@ -85,11 +85,16 @@ public struct OutputSharePublishResult: Equatable, Sendable {
     public var entryURL: String?
     /// Wave5：入口链接到期（ISO-8601）；nil = 不过期（WebDAV 静态链接）。
     public var entryURLExpiresAt: String?
+    /// Wave5：HEAD 差分命中「远端未变」而跳过的文件数。
+    public var skipped: Int
+    /// Wave5：跳过原因 → 次数。
+    public var skipReasons: [OutputShareSkipReason: Int]
 
     public init(
         uploaded: Int, failed: [OutputSharePublishFailure],
         remoteRoot: String, abortedOnAuth: Bool,
-        entryURL: String? = nil, entryURLExpiresAt: String? = nil
+        entryURL: String? = nil, entryURLExpiresAt: String? = nil,
+        skipped: Int = 0, skipReasons: [OutputShareSkipReason: Int] = [:]
     ) {
         self.uploaded = uploaded
         self.failed = failed
@@ -97,6 +102,8 @@ public struct OutputSharePublishResult: Equatable, Sendable {
         self.abortedOnAuth = abortedOnAuth
         self.entryURL = entryURL
         self.entryURLExpiresAt = entryURLExpiresAt
+        self.skipped = skipped
+        self.skipReasons = skipReasons
     }
 
     public var isSuccess: Bool { failed.isEmpty && !abortedOnAuth }
@@ -167,9 +174,15 @@ public final class OutputSharePublisher: Sendable {
 public struct WebDAVShareTransport: OutputShareTransport {
     public let kind: OutputShareTransportKind = .webdav
     private let publisher: WebDAVPublisher
+    /// Wave5：HEAD 差分探针；nil = 不做差分（旧行为，全量上传）。
+    private let remoteProbe: (any WebDAVRemoteProbe)?
 
-    public init(publisher: WebDAVPublisher) {
+    public init(
+        publisher: WebDAVPublisher,
+        remoteProbe: (any WebDAVRemoteProbe)? = nil
+    ) {
         self.publisher = publisher
+        self.remoteProbe = remoteProbe
     }
 
     public func publish(
@@ -186,6 +199,7 @@ public struct WebDAVShareTransport: OutputShareTransport {
         let result = try await publisher.publish(
             localPath: request.localPath, configuration: configuration,
             includePrefixes: request.includePrefixes, share: request.share,
+            remoteProbe: remoteProbe,
             onProgress: onProgress)
         return OutputSharePublishResult(
             uploaded: result.uploaded,
@@ -194,6 +208,8 @@ public struct WebDAVShareTransport: OutputShareTransport {
             },
             remoteRoot: result.remoteRoot,
             abortedOnAuth: result.abortedOnAuth,
-            entryURL: result.entryURL)
+            entryURL: result.entryURL,
+            skipped: result.skipped,
+            skipReasons: result.skipReasons)
     }
 }

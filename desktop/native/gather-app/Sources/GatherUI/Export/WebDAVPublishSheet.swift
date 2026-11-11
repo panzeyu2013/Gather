@@ -5,6 +5,7 @@
 // 口令/到期只是静态校样页的纯前端门槛与提示，不是加密、也没有服务端强制。
 // 凭据：secret 只写 Keychain（S3 复用 WebDAV 凭据通道：endpoint + accessKeyID 作为键）；
 // 明文只在本面板内的 SecureField 里，不写日志、不进 share.json。
+import AppKit
 import SwiftUI
 import GatherProtocol
 
@@ -13,9 +14,15 @@ struct WebDAVPublishSheet: View {
     let localPath: String
     /// 本次交付的精确产物清单（空 = 无法确定，禁止发布）。
     let includePrefixes: [String]
+    /// Wave5：独立发布入口（不依赖本次交付的内存 result）：成功后不自动关闭。
+    var standalone: Bool = false
+    /// Wave5：显示发布历史（从交付目录的发布记录读取；跨重启可见）。
+    var showsHistory: Bool = true
     @Environment(\.languageStore) private var languageStore
     @Environment(\.dismiss) private var dismiss
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+    /// Wave5：本地发布记录（最近 5 次）。
+    @State private var history: [WebDAVPublishHistoryEntry] = []
 
     @State private var transport: OutputShareTransportKind = .webdav
     @State private var endpoint = ""
@@ -130,7 +137,9 @@ struct WebDAVPublishSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
-            Text(transport == .webdav ? l10n("发布到 WebDAV") : l10n("发布交付包"))
+            Text(standalone
+                 ? l10n("发布已生成的交付包")
+                 : (transport == .webdav ? l10n("发布到 WebDAV") : l10n("发布交付包")))
                 .font(GatherFont.sectionTitle)
             Text(l10n("凭据保存在钥匙串；只上传本次交付的产物，不会上传整个目录。"))
                 .font(GatherFont.secondary)
@@ -245,6 +254,13 @@ struct WebDAVPublishSheet: View {
             if let notice = viewModel.notice {
                 NativeBanner(text: l10n.resolve(notice), color: GatherTheme.warning)
             }
+            // Wave5：发布结果（含客户链接/跳过计数）与本次目录的发布历史。
+            if let result = viewModel.webDAVPublish {
+                SharePublishResultView(publish: result)
+            }
+            if showsHistory {
+                historySection
+            }
             HStack {
                 Spacer()
                 Button(l10n("取消")) {
@@ -276,8 +292,9 @@ struct WebDAVPublishSheet: View {
                                 && !sessionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 ? sessionToken.trimmingCharacters(in: .whitespacesAndNewlines)
                                 : nil)
-                        // 只有发布成功才关闭；失败/取消留在面板里看原因与分类（认证/网络/…）。
-                        if let result = viewModel.webDAVPublish, result.isSuccess { dismiss() }
+                        await refreshHistory()
+                        // 交付内发布成功后关闭；独立入口保留面板看结果/历史。
+                        if !standalone, let result = viewModel.webDAVPublish, result.isSuccess { dismiss() }
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -294,6 +311,135 @@ struct WebDAVPublishSheet: View {
             secret = ""
             sessionToken = ""
         }
+        .task { await refreshHistory() }
         .onDisappear { publishTask?.cancel() }
+    }
+
+    // MARK: - Wave5：发布历史
+
+    private func refreshHistory() async {
+        guard showsHistory else { return }
+        history = await viewModel.publishHistory(localPath: localPath)
+    }
+
+    @ViewBuilder
+    private var historySection: some View {
+        Divider()
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+            Text(l10n("发布历史")).font(GatherFont.labelRegular)
+            if history.isEmpty {
+                Text(l10n("暂无发布记录"))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.secondaryText)
+            } else {
+                ForEach(history, id: \.id) { entry in
+                    historyRow(entry)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func historyRow(_ entry: WebDAVPublishHistoryEntry) -> some View {
+        HStack(spacing: GatherMetrics.Space.s) {
+            Text(Self.historyTime(entry.publishedAt))
+                .font(GatherFont.secondary)
+                .foregroundStyle(GatherTheme.secondaryText)
+            Text(entry.transport == .s3 ? l10n("S3 兼容存储") : l10n("WebDAV"))
+                .font(GatherFont.secondary)
+            Text(entry.remoteFolder.isEmpty
+                 ? entry.endpointSummary
+                 : entry.endpointSummary + "/" + entry.remoteFolder)
+                .font(GatherFont.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(entry.endpointSummary)
+            Text(l10n.format("成功 %lld / 跳过 %lld / 失败 %lld",
+                             entry.uploaded, entry.skipped, entry.failed))
+                .font(GatherFont.secondary)
+                .foregroundStyle(entry.failed > 0 ? GatherTheme.errorText : GatherTheme.secondaryText)
+            Spacer(minLength: 0)
+            if let link = entry.entryURL, let url = URL(string: link) {
+                Button(l10n("打开链接")) { NSWorkspace.shared.open(url) }
+                    .gatherButton(.tertiary, size: .small)
+            }
+        }
+    }
+
+    /// 发布记录时间（ISO-8601 → 本地短格式；解析失败原样显示，不猜时间）。
+    static func historyTime(_ iso8601: String) -> String {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime]
+        guard let date = parser.date(from: iso8601) else { return iso8601 }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
+/// Wave5：发布结果 + 客户链接（交付结果区与发布面板共用）。
+///
+/// 链接只在「发布成功 + 入口在远端就绪」时出现：不给客户一个 404/403 的链接；
+/// S3 预签名链接显示剩余小时数，WebDAV 静态链接不过期。
+struct SharePublishResultView: View {
+    let publish: WebDAVPublishSummary
+    @Environment(\.languageStore) private var languageStore
+    private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+            Text(publish.isSuccess
+                 ? l10n.format("已发布 %lld 个文件", publish.uploaded)
+                 : l10n.format("发布完成：成功 %lld，失败 %lld",
+                               publish.uploaded, publish.failed.count))
+                .font(GatherFont.secondary)
+                .foregroundStyle(publish.isSuccess ? GatherTheme.successText : GatherTheme.errorText)
+            if publish.skipped > 0 {
+                Text(l10n.format("跳过 %lld 个文件（远端未变）", publish.skipped))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.secondaryText)
+            }
+            if publish.isSuccess, let link = publish.entryURL, let url = URL(string: link) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
+                    HStack(spacing: GatherMetrics.Space.s) {
+                        Text(l10n("客户链接"))
+                            .font(GatherFont.labelRegular)
+                        Spacer(minLength: 0)
+                        Button(l10n("复制链接")) {
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.setString(link, forType: .string)
+                        }
+                        .gatherButton(.tertiary, size: .small)
+                        Button(l10n("在浏览器中打开")) {
+                            NSWorkspace.shared.open(url)
+                        }
+                        .gatherButton(.tertiary, size: .small)
+                    }
+                    Text(link)
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    if let expiresAt = publish.entryURLExpiresAt,
+                       let expiry = Self.linkExpiryText(expiresAt, with: l10n) {
+                        Text(expiry)
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 预签名链接剩余时长文案（解析失败不显示，不猜假时长）。
+    static func linkExpiryText(_ expiresAt: String, with l10n: L10n) -> String? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        guard let date = formatter.date(from: expiresAt) else { return nil }
+        let hours = max(1, Int((date.timeIntervalSinceNow / 3600).rounded()))
+        return l10n.format("链接 %lld 小时后过期", hours)
     }
 }

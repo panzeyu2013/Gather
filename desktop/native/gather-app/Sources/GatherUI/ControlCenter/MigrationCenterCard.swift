@@ -72,7 +72,7 @@ struct MigrationCenterCard: View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("迁移与目录包"))
                 .font(GatherFont.sectionTitle)
-            Text(l10n("目录包不含原图：换机或合并时按新根目录重绑定相对路径；XMP 迁移只读已有 sidecar。"))
+            Text(l10n("目录包不含原图：换机或合并时按新根目录重绑定相对路径。携带：照片、集合、堆栈、智能相册、保存查询、人物绑定、重复组留档（堆栈折叠状态与人脸簇 ID 不可移植，按名/ID 重建）。XMP 迁移只读已有 sidecar。"))
                 .font(GatherFont.secondary)
                 .foregroundStyle(GatherTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -118,9 +118,12 @@ struct MigrationCenterCard: View {
             if let report = exportResult {
                 HStack(spacing: GatherMetrics.Space.s) {
                     Text(l10n.format(
-                        "已导出 %lld 张照片、%lld 个集合到：%@（归档跳过 %lld 张）",
+                        "已导出到：%@（照片 %lld、集合 %lld、堆栈 %lld、智能相册 %lld、保存查询 %lld、人物绑定 %lld、重复组 %lld；归档跳过 %lld 张）",
+                        report.packagePath,
                         report.photoCount, report.collectionCount,
-                        report.packagePath, report.skippedArchivedCount))
+                        report.stackCount, report.smartAlbumCount,
+                        report.savedSearchCount, report.personBindingCount,
+                        report.duplicateGroupCount, report.skippedArchivedCount))
                         .font(GatherFont.secondary)
                         .foregroundStyle(GatherTheme.secondaryText)
                         .textSelection(.enabled)
@@ -132,15 +135,27 @@ struct MigrationCenterCard: View {
                 }
             }
             if let report = importReport {
+                // Wave5（Batch3）：组织资产分项可见 —— Photo + Collections 之外，
+                // 堆栈/智能相册/保存查询/人物绑定各自独立计数，跳过项也写明原因分类。
                 Text(l10n.format(
-                    "导入完成：新增 %lld 张（待索引 %lld 张），评分 %lld，关键词 %lld，集合 %lld；photoId 去重 %lld，checksum 去重 %lld；保留本地 %lld，保留导入 %lld，并存 %lld。",
+                    "导入完成：新增 %lld 张（待索引 %lld 张），评分 %lld，关键词 %lld，集合 %lld，堆栈 %lld，智能相册 %lld，保存查询 %lld，人物绑定 %lld；photoId 去重 %lld，checksum 去重 %lld；保留本地 %lld，保留导入 %lld，并存 %lld；未映射跳过 %lld，criteria 无效跳过 %lld，重复组未导入 %lld。",
                     report.importedPhotos, report.pendingCount,
                     report.importedRatings, report.importedKeywords, report.importedCollections,
+                    report.importedStacks, report.importedSmartAlbums,
+                    report.importedSavedSearches, report.importedPersonBindings,
                     report.dedupedByPhotoID, report.dedupedByChecksum,
-                    report.conflictsKeptLocal, report.conflictsKeptImported, report.coexisted))
+                    report.conflictsKeptLocal, report.conflictsKeptImported, report.coexisted,
+                    report.skippedUnmappedItems, report.skippedBrokenCriteria,
+                    report.skippedDuplicateGroups))
                     .font(GatherFont.secondary)
                     .foregroundStyle(GatherTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
+                if report.scanJobId != nil {
+                    // B13：导入后已自动入队重索引（不再等"下次索引扫描"）。
+                    Text(l10n("已入队索引扫描（metadata.scan）：照片状态会在扫描完成后更新。"))
+                        .font(GatherFont.labelRegular)
+                        .foregroundStyle(GatherTheme.secondaryText)
+                }
             }
             if let report = migrationReport {
                 Text(l10n.format(
@@ -169,7 +184,7 @@ struct MigrationCenterCard: View {
             }
             Button(l10n("取消"), role: .cancel) { pendingImport = nil }
         } message: {
-            Text(l10n("导入会新建一个工作区并写入评分/关键词/集合，不会修改原图。"))
+            Text(l10n("导入会新建一个工作区并写入评分/关键词/集合/堆栈/智能相册/保存查询/人物绑定，不会修改原图。"))
         }
         .confirmationDialog(
             l10n("确认从 XMP 迁移？"),

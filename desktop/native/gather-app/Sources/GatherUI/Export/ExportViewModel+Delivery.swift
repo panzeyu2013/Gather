@@ -654,6 +654,16 @@ extension ExportViewModel {
         }
     }
 
+    /// Wave5：读取本地交付目录的发布历史（只读；失败退化为空态，不打断发布流程）。
+    public func publishHistory(localPath: String) async -> [WebDAVPublishHistoryEntry] {
+        do {
+            return try await exportAPI.publishHistory(
+                PublishHistoryInput(localPath: localPath))
+        } catch {
+            return []
+        }
+    }
+
     /// 分享参数校验问题 → 中文提示（与协议层 validationIssue 同一套判定）。
     private static func shareIssueMessage(_ issue: OutputShareValidationIssue) -> String {
         switch issue {

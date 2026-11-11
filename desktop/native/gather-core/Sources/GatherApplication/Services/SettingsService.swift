@@ -47,6 +47,8 @@ public final class SettingsService: @unchecked Sendable {
         "output.recipes",
         "output.deliveryRoot",
         "backup_dir",
+        // Wave5 batch3 / task-19：导入预设是用户创建的配置产物，reset 必须保留。
+        "ingest.presets",
     ]
 
     /// P1-1：设置仓储走 Persistence 端口（any SettingsRepository），具体 SQLite
@@ -193,6 +195,8 @@ public final class SettingsService: @unchecked Sendable {
         "similarity_cluster_convergence_interval",
         "similarity_decode_concurrency",
         "similarity_preview_max_dimension",
+        // Wave5 batch3 / task-19：最近使用的预设只是偏好（reset 回到"未选择"）。
+        "ingest.last_preset",
     ]
 
     /// 每个 known key 恰好落到一个 scope；未知键返回 nil（不静默按偏好处理）。

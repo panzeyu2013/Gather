@@ -312,6 +312,11 @@ struct LocalizationParityTests {
         "挑片关键词",
         "写回挑片关键词到 XMP",
         "将把 %lld 张已决策照片的 culling:keep / culling:reject 关键词合并进 XMP（不覆盖其它关键词）。",
+        // Wave5 / Batch3：迁移包组织资产文案升级后被取代的旧键。
+        "目录包不含原图：换机或合并时按新根目录重绑定相对路径；XMP 迁移只读已有 sidecar。",
+        "已导出 %lld 张照片、%lld 个集合到：%@（归档跳过 %lld 张）",
+        "导入完成：新增 %lld 张（待索引 %lld 张），评分 %lld，关键词 %lld，集合 %lld；photoId 去重 %lld，checksum 去重 %lld；保留本地 %lld，保留导入 %lld，并存 %lld。",
+        "导入会新建一个工作区并写入评分/关键词/集合，不会修改原图。",
     ]
 
     // MARK: - 测试

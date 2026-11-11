@@ -7,17 +7,31 @@
 // - 导入：按 photoId → checksum 两级去重，冲突策略显式（keepLocal/keepImported/coexist），
 //   按 newRoot 重绑定相对路径，评分/关键词/集合成员随行迁移。
 //
+// Wave5（Batch3 / task-20）：包格式 v2 带**组织资产**（见 MaintenanceAPI 的段 DTO）：
+// - 导出：stacks（StackRepo）/ smartAlbums（SmartAlbumRepo）/ savedSearches（SavedSearchRepo）
+//   / personBindings、duplicateGroups（LibraryPackageStore 的显式列投影）；
+// - 导入：堆栈/智能相册/保存查询/人物绑定按 photoId 映射重建（容器引用 collection/stack
+//   规则重写新 id）；重复组是派生数据**不重建**（报告标注 skipped）；映射不到的条目进
+//   skippedUnmappedItems，不猜不静默丢；
+// - 收尾：路径重绑定或有待索引照片时自动入队 metadata.scan（enqueueScan 接缝可注入）。
+//
 // 边界：本文件不持 SQL（用 LibraryPackageStore / 既有仓储），也不发 UI 事件；
 // 调用方（MaintenanceService → LiveMaintenanceAPI → ControlCenter）负责域广播。
 import Foundation
 import GatherProtocol
 import GatherPersistence
 
+/// 导入后入队 metadata.scan 的接缝（测试注入记录器；nil = 用 AnalysisJobRepo 真实入队）。
+public typealias LibraryScanEnqueuer = @Sendable (_ sessionId: String, _ requestedPaths: [String]) throws -> String
+
 public struct LibraryPackageService: Sendable {
     private let connection: DBConnection
+    /// 导入成功后的索引扫描入队接缝（nil = 生产实现）。
+    private let enqueueScan: LibraryScanEnqueuer?
 
-    public init(connection: DBConnection) {
+    public init(connection: DBConnection, enqueueScan: LibraryScanEnqueuer? = nil) {
         self.connection = connection
+        self.enqueueScan = enqueueScan
     }
 
     // MARK: - 导出
@@ -61,6 +75,17 @@ public struct LibraryPackageService: Sendable {
                 photoIds: members
             )
         }
+        // Wave5（Batch3 / task-20）：组织资产段。全部按**显式列**读（不 SELECT *），
+        // 只写入包内存在的 photoId（归档/未导出成员不写入，避免导入后指向虚空）。
+        let stacks = try Self.exportStacks(
+            sessionId: input.sessionId, exportedIDs: exportedIDs, repo: StackRepo(connection: connection))
+        let smartAlbums = try Self.exportSmartAlbums(repo: SmartAlbumRepo(connection: connection))
+        let savedSearches = try Self.exportSavedSearches(
+            sessionId: input.sessionId, repo: SavedSearchRepo(connection: connection))
+        let personBindings = try Self.exportPersonBindings(
+            sessionId: input.sessionId, exportedIDs: exportedIDs, store: store)
+        let duplicateGroups = try Self.exportDuplicateGroups(
+            sessionId: input.sessionId, exportedIDs: exportedIDs, store: store)
         let package = LibraryPackage(
             exportedAt: nowISOString(),
             session: LibraryPackageSession(
@@ -70,7 +95,12 @@ public struct LibraryPackageService: Sendable {
                 createdAt: session.createdAt
             ),
             collections: packageCollections,
-            photos: photos
+            photos: photos,
+            stacks: stacks,
+            smartAlbums: smartAlbums,
+            savedSearches: savedSearches,
+            personBindings: personBindings,
+            duplicateGroups: duplicateGroups
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
@@ -85,7 +115,12 @@ public struct LibraryPackageService: Sendable {
             packagePath: fileURL.path,
             photoCount: photos.count,
             collectionCount: packageCollections.count,
-            skippedArchivedCount: input.includeArchived ? 0 : archived
+            skippedArchivedCount: input.includeArchived ? 0 : archived,
+            stackCount: stacks.count,
+            smartAlbumCount: smartAlbums.count,
+            savedSearchCount: savedSearches.count,
+            personBindingCount: personBindings.count,
+            duplicateGroupCount: duplicateGroups.count
         )
     }
 
@@ -102,7 +137,9 @@ public struct LibraryPackageService: Sendable {
                 field: "packagePath", reason: "package is not a valid Gather library package")
         }
         // 更高版本包可能带当前无法解释的字段：显式失败，不静默丢数据。
-        guard package.formatVersion <= 1 else {
+        // Wave5：当前格式 = 2（组织资产段）；v1 旧包照常导入（缺段按空处理，见
+        // LibraryPackage.init(from:)），只有真正更高的版本才拒绝。
+        guard package.formatVersion <= 2 else {
             throw GatherError.invalidParameter(
                 field: "formatVersion",
                 reason: "unsupported package format version \(package.formatVersion)")
@@ -128,8 +165,10 @@ public struct LibraryPackageService: Sendable {
         }
 
         var report = LibraryImportReport(sessionId: newSession.id)
-        // 包内 photoId → 新库 photoId（集合成员映射用）。
+        // 包内 photoId → 新库 photoId（集合/堆栈/人物成员映射用）。
         var idMap: [String: String] = [:]
+        // 本次真正写入/回绑的绝对路径（组织资产导入后决定 metadata.scan 的扫描范围）。
+        var importedPaths: [String] = []
 
         for photo in package.photos {
             let absolute = try Self.absolutePath(
@@ -171,6 +210,7 @@ public struct LibraryPackageService: Sendable {
             }
 
             if shouldImport {
+                importedPaths.append(absolute)
                 if rebindExisting {
                     _ = try store.rebindImportedPhoto(
                         photoId: photo.photoId,
@@ -295,8 +335,385 @@ public struct LibraryPackageService: Sendable {
             report.collectionIDMap[packageCollection.id] = created.id
             report.importedCollections += 1
         }
+        // MARK: Wave5（Batch3 / task-20）：组织资产导入
+        //
+        // 统一口径：
+        // - 成员/引用一律经 idMap（包内 photoId → 新库 photoId，含 keepLocal 命中的本地 id）
+        //   重绑；映射不到的条目进 skippedUnmappedItems（不猜、不静默丢弃）；
+        // - 集合/堆栈的容器 id 导入后会变：智能相册/保存查询里 collection/stack 规则的
+        //   value 按 collectionIDMap / stackIDMap 重写（FilterGroup 是结构化 JSON，可安全遍历）；
+        // - face cluster id / role_bindings / 人脸向量不迁移（跨库不可靠，见 DTO 注释）。
+
+        let stacksRepo = StackRepo(connection: connection)
+        var stackIDMap: [String: String] = [:]
+        for packageStack in package.stacks {
+            let memberIds = packageStack.photoIds.compactMap { idMap[$0] }
+            report.skippedUnmappedItems += packageStack.photoIds.count - memberIds.count
+            guard !memberIds.isEmpty else {
+                report.skippedStacks += 1
+                continue
+            }
+            let created = try stacksRepo.create(
+                sessionId: newSession.id,
+                name: packageStack.name,
+                // 封面只在包内成员里取；封面映射不到时交给 StackRepo 取首成员。
+                coverPhotoId: packageStack.coverPhotoId.flatMap { idMap[$0] },
+                photoIds: memberIds)
+            stackIDMap[packageStack.id] = created.id
+            report.importedStacks += 1
+        }
+
+        // 智能相册（库级资产，无 sessionId）：同名按冲突策略处理，criteria 重写容器 id。
+        let smartAlbumRepo = SmartAlbumRepo(connection: connection)
+        var albumsByName: [String: SmartAlbumRow] = [:]
+        for album in try smartAlbumRepo.list() where albumsByName[album.name] == nil {
+            albumsByName[album.name] = album
+        }
+        for packageAlbum in package.smartAlbums {
+            guard let criteria = Self.decodeFilterGroup(packageAlbum.criteriaJSON) else {
+                report.skippedBrokenCriteria += 1
+                continue
+            }
+            let remapped = Self.remapCriteria(
+                criteria,
+                collectionIDMap: report.collectionIDMap,
+                stackIDMap: stackIDMap)
+            switch (albumsByName[packageAlbum.name], input.conflictPolicy) {
+            case (.some, .keepLocal):
+                report.skippedSmartAlbums += 1
+            case (.some(let row), .keepImported):
+                try smartAlbumRepo.update(id: row.id, data: SmartAlbumUpdateData(
+                    description: packageAlbum.description,
+                    filterCriteria: remapped,
+                    sortBy: packageAlbum.sortBy,
+                    sortOrder: packageAlbum.sortOrder,
+                    icon: packageAlbum.icon))
+                report.importedSmartAlbums += 1
+            default:
+                // 无同名（或 coexist 撞名）：新建；coexist 加后缀，避免用户看到两个同名条目。
+                let name = albumsByName[packageAlbum.name] == nil
+                    ? packageAlbum.name
+                    : Self.uniqueOrganizationName(
+                        base: packageAlbum.name, taken: Set(albumsByName.keys))
+                let created = try smartAlbumRepo.create(data: SmartAlbumCreateData(
+                    name: name,
+                    description: packageAlbum.description,
+                    filterCriteria: remapped,
+                    sortBy: packageAlbum.sortBy,
+                    sortOrder: packageAlbum.sortOrder,
+                    icon: packageAlbum.icon))
+                albumsByName[created.name] = created
+                report.importedSmartAlbums += 1
+            }
+        }
+
+        // 保存查询：包内全局查询按作用域还原；撞名按冲突策略（coexist 落新工作区作用域）。
+        let savedSearchRepo = SavedSearchRepo(connection: connection)
+        var globalSearchNames = Set(try savedSearchRepo.list(sessionId: nil).map(\.name))
+        for packageSearch in package.savedSearches {
+            guard let criteria = Self.decodeFilterGroup(packageSearch.criteriaJSON) else {
+                report.skippedBrokenCriteria += 1
+                continue
+            }
+            let remapped = Self.remapCriteria(
+                criteria,
+                collectionIDMap: report.collectionIDMap,
+                stackIDMap: stackIDMap)
+            if packageSearch.isGlobal {
+                if globalSearchNames.contains(packageSearch.name) {
+                    switch input.conflictPolicy {
+                    case .keepLocal:
+                        report.skippedSavedSearches += 1
+                        continue
+                    case .keepImported:
+                        _ = try savedSearchRepo.upsert(
+                            name: packageSearch.name, sessionId: nil, criteria: remapped)
+                    case .coexist:
+                        // 不覆盖别人的全局查询：撞名的全局查询落到新工作区作用域（加后缀）。
+                        let name = Self.uniqueOrganizationName(
+                            base: packageSearch.name, taken: globalSearchNames)
+                        _ = try savedSearchRepo.upsert(
+                            name: name, sessionId: newSession.id, criteria: remapped)
+                        report.importedSavedSearches += 1
+                        continue
+                    }
+                } else {
+                    _ = try savedSearchRepo.upsert(
+                        name: packageSearch.name, sessionId: nil, criteria: remapped)
+                    globalSearchNames.insert(packageSearch.name)
+                }
+            } else {
+                // 工作区作用域的保存查询随包迁移到新工作区（作用域不变）。
+                _ = try savedSearchRepo.upsert(
+                    name: packageSearch.name, sessionId: newSession.id, criteria: remapped)
+            }
+            report.importedSavedSearches += 1
+        }
+
+        // 人物绑定：身份按「包内 personId → 同名身份 → 新建」三级解析，照片经 idMap 映射。
+        // 不迁移 face cluster id / 人脸向量：那属跨库不可靠映射（见 DTO 注释）。
+        let personsRepo = PersonRepo(connection: connection)
+        var personIDByName: [String: String] = [:]
+        for person in try personsRepo.list() where personIDByName[person.name] == nil {
+            personIDByName[person.name] = person.id
+        }
+        var photosByPersonID: [String: [PersonPhotoInput]] = [:]
+        for binding in package.personBindings {
+            guard let targetPhotoId = idMap[binding.photoId] else {
+                report.skippedUnmappedItems += 1
+                continue
+            }
+            let name = binding.personName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else {
+                report.skippedUnmappedItems += 1
+                continue
+            }
+            let targetPersonId: String
+            if (try personsRepo.get(id: binding.personId)) != nil {
+                targetPersonId = binding.personId
+            } else if let existingID = personIDByName[name] {
+                targetPersonId = existingID
+            } else {
+                targetPersonId = try personsRepo.upsertByName(name: name)
+                personIDByName[name] = targetPersonId
+            }
+            photosByPersonID[targetPersonId, default: []].append(
+                PersonPhotoInput(
+                    photoId: targetPhotoId, faceBbox: [], confidence: binding.confidence))
+            report.importedPersonBindings += 1
+        }
+        for (personId, personPhotos) in photosByPersonID.sorted(by: { $0.key < $1.key }) {
+            try personsRepo.addPhotos(
+                personId: personId, sessionId: newSession.id, photos: personPhotos)
+        }
+
+        // 重复组：派生数据不重建（见 LibraryPackageDuplicateGroup 注释），只在报告标注。
+        report.skippedDuplicateGroups = package.duplicateGroups.count
+
         _ = try sessions.refreshPhotoCount(id: newSession.id)
+        // Wave5（B13）：导入后自动重索引 —— 路径重绑定（newRoot ≠ 包内 sourcePath）
+        // 或有待索引照片（missing → pending）时入队 metadata.scan。
+        // 入队失败只记日志：导入已落库，不因扫描任务失败而回滚。
+        let pathsChanged = effectiveRoot != package.session.sourcePath
+        if !importedPaths.isEmpty, pathsChanged || report.pendingCount > 0 {
+            do {
+                report.scanJobId = try Self.enqueueMetadataScan(
+                    sessionId: newSession.id,
+                    requestedPaths: Self.scanRoots(of: importedPaths),
+                    connection: connection,
+                    injected: enqueueScan)
+            } catch {
+                GatherLogger.log(
+                    "library package import: enqueue metadata.scan failed: \(error)",
+                    level: .warn)
+            }
+        }
         return report
+    }
+
+    // MARK: - 组织资产导出（Wave5 / Batch3）
+
+    /// 堆栈：只导出包内存在的成员（归档/未导出成员不写）；成员全不在包里 → 不导出。
+    static func exportStacks(
+        sessionId: String,
+        exportedIDs: Set<String>,
+        repo: StackRepo
+    ) throws -> [LibraryPackageStack] {
+        try repo.list(sessionId: sessionId).compactMap { row in
+            let memberIds = try repo.members(stackId: row.id)
+                .map(\.photoId)
+                .filter { exportedIDs.contains($0) }
+            guard !memberIds.isEmpty else { return nil }
+            let cover = row.coverPhotoId.flatMap { exportedIDs.contains($0) ? $0 : nil }
+            return LibraryPackageStack(
+                id: row.id, name: row.name, coverPhotoId: cover, photoIds: memberIds)
+        }
+    }
+
+    /// 智能相册（库级）：criteria 原样搬运为 JSON 文本（导入侧再解码/重映射）。
+    static func exportSmartAlbums(repo: SmartAlbumRepo) throws -> [LibraryPackageSmartAlbum] {
+        try repo.list().map { row in
+            LibraryPackageSmartAlbum(
+                id: row.id,
+                name: row.name,
+                description: row.description,
+                criteriaJSON: row.filterCriteria,
+                sortBy: row.sortBy,
+                sortOrder: row.sortOrder,
+                icon: row.icon)
+        }
+    }
+
+    /// 保存查询：全局（session_id IS NULL）+ 本工作区；criteria 编码成 JSON 文本。
+    static func exportSavedSearches(
+        sessionId: String,
+        repo: SavedSearchRepo
+    ) throws -> [LibraryPackageSavedSearch] {
+        try repo.list(sessionId: sessionId).map { row in
+            LibraryPackageSavedSearch(
+                id: row.id,
+                name: row.name,
+                criteriaJSON: Self.encodeFilterGroup(row.criteria),
+                isGlobal: row.sessionId == nil)
+        }
+    }
+
+    /// 人物绑定：只导**可移植部分**（person 名 + photoId + 置信度）。
+    static func exportPersonBindings(
+        sessionId: String,
+        exportedIDs: Set<String>,
+        store: LibraryPackageStore
+    ) throws -> [LibraryPackagePersonBinding] {
+        try store.personBindingRows(sessionId: sessionId).compactMap { row in
+            guard exportedIDs.contains(row.photoId), !row.personName.isEmpty else { return nil }
+            return LibraryPackagePersonBinding(
+                photoId: row.photoId,
+                personId: row.personId,
+                personName: row.personName,
+                confidence: row.confidence)
+        }
+    }
+
+    /// 重复组：只导出留档（导入不重建）；成员同样只取包内照片。
+    static func exportDuplicateGroups(
+        sessionId: String,
+        exportedIDs: Set<String>,
+        store: LibraryPackageStore
+    ) throws -> [LibraryPackageDuplicateGroup] {
+        let groups = try store.duplicateGroupRows(sessionId: sessionId)
+        let memberRows = try store.duplicateGroupMemberRows(sessionId: sessionId)
+        var membersByGroup: [Int64: [LibraryPackageDuplicateMember]] = [:]
+        for row in memberRows where exportedIDs.contains(row.photoId) {
+            membersByGroup[row.groupId, default: []].append(
+                LibraryPackageDuplicateMember(
+                    photoId: row.photoId, isKept: row.isKept, resolution: row.resolution))
+        }
+        return groups.compactMap { group in
+            guard let members = membersByGroup[group.id], !members.isEmpty else { return nil }
+            return LibraryPackageDuplicateGroup(
+                groupType: group.groupType,
+                checksum: group.checksum,
+                hashHex: group.hashHex,
+                members: members)
+        }
+    }
+
+    // MARK: - 组织资产导入工具（Wave5 / Batch3）
+
+    static func encodeFilterGroup(_ group: FilterGroup) -> String {
+        do {
+            let data = try JSONEncoder().encode(group)
+            return String(decoding: data, as: UTF8.self)
+        } catch {
+            GatherLogger.log(
+                "library package: encode filter criteria failed: \(error)", level: .debug)
+            return "{}"
+        }
+    }
+
+    /// 解码 criteria JSON；空/非法返回 nil（调用方计入 skippedBrokenCriteria，不建坏相册）。
+    static func decodeFilterGroup(_ json: String) -> FilterGroup? {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "{}" else { return nil }
+        guard let data = trimmed.data(using: .utf8) else { return nil }
+        do {
+            return try JSONDecoder().decode(FilterGroup.self, from: data)
+        } catch {
+            GatherLogger.log(
+                "library package: decode filter criteria failed: \(error)", level: .debug)
+            return nil
+        }
+    }
+
+    /// 容器引用重映射：collection/stack 规则的 value（字符串或数组）里的包内 id 换新 id。
+    ///
+    /// 只改这两个字段：其它字段（评级/日期/关键词/色标…）本身就是可移植值，原样保留。
+    static func remapCriteria(
+        _ group: FilterGroup,
+        collectionIDMap: [String: String],
+        stackIDMap: [String: String]
+    ) -> FilterGroup {
+        FilterGroup(
+            logic: group.logic,
+            conditions: group.conditions.map { condition in
+                switch condition {
+                case .group(let nested):
+                    return .group(remapCriteria(
+                        nested, collectionIDMap: collectionIDMap, stackIDMap: stackIDMap))
+                case .rule(let rule):
+                    let map: [String: String]
+                    switch rule.field {
+                    case FilterFields.collection: map = collectionIDMap
+                    case FilterFields.stack: map = stackIDMap
+                    default: return .rule(rule)
+                    }
+                    return .rule(FilterRule(
+                        field: rule.field,
+                        operator: rule.operator,
+                        value: Self.remapJSONValue(rule.value, map: map)))
+                }
+            })
+    }
+
+    static func remapJSONValue(_ value: JSONValue, map: [String: String]) -> JSONValue {
+        switch value {
+        case .string(let raw):
+            if let mapped = map[raw] { return .string(mapped) }
+            return value
+        case .array(let items):
+            return .array(items.map { remapJSONValue($0, map: map) })
+        default:
+            return value
+        }
+    }
+
+    /// 组织资产撞名时的后缀命名（智能相册/保存查询共用一套，便于用户识别来源）。
+    static func uniqueOrganizationName(base: String, taken: Set<String>) -> String {
+        let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = trimmed.isEmpty ? "导入的组织" : trimmed
+        var candidate = "\(resolved)（导入）"
+        var index = 2
+        while taken.contains(candidate) {
+            candidate = "\(resolved)（导入 \(index)）"
+            index += 1
+            if index > 50 { break }
+        }
+        return candidate
+    }
+
+    // MARK: - 导入后重索引（Wave5 / B13）
+
+    /// 索引扫描范围：导入照片的父目录去重排序（不把整个新根当作用域，避免重扫无关文件）。
+    static func scanRoots(of filepaths: [String]) -> [String] {
+        var seen = Set<String>()
+        var roots: [String] = []
+        for path in filepaths {
+            let parent = (path as NSString).deletingLastPathComponent
+            guard !parent.isEmpty, seen.insert(parent).inserted else { continue }
+            roots.append(parent)
+        }
+        return roots.sorted()
+    }
+
+    /// 入队 metadata.scan：注入优先（测试），否则走 AnalysisJobRepo 的真实建任务。
+    ///
+    /// 为什么直接建 job 而不持 JobService：本服务是 Application 层的纯函数式服务，
+    /// 不拥有执行器注册表；新 job 由常驻 JobService 的 watchdog（5s）pump 领取，
+    /// 与其它入口同一条队列/去重语义。新工作区的 dedupeKey 全新，不会继承别的
+    /// 会话的 checkpoint（继承只在同 dedupeKey 的历史终态行之间发生）。
+    static func enqueueMetadataScan(
+        sessionId: String,
+        requestedPaths: [String],
+        connection: DBConnection,
+        injected: LibraryScanEnqueuer?
+    ) throws -> String {
+        if let injected {
+            return try injected(sessionId, requestedPaths)
+        }
+        let params = JobCreateParams.metadataScan(
+            sessionId: sessionId,
+            requestedPaths: requestedPaths.isEmpty ? nil : requestedPaths)
+        return try AnalysisJobRepo(connection: connection).create(params).id
     }
 
     // MARK: - 路径与名称

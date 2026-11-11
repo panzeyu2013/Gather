@@ -104,7 +104,9 @@ public struct SessionIngestRunner {
             libraryDuplicateCount: result.libraryDuplicates.count,
             secondDestinationSkipped: result.secondSkipped.count,
             // Wave5（F4）：不支持格式的跳过统计随结果返回（旧任务载荷 = nil）。
-            unsupportedFormats: result.unsupportedFormats
+            unsupportedFormats: result.unsupportedFormats,
+            // Wave5 batch3：第二目的地"已复制"张数（校验开关在 UI 侧展示）。
+            secondDestinationCopied: result.secondCopied.count
         )
         // 取消发生在复制/登记之后：文件已经安全落地并登记，再把 Job 收成 cancelled。
         try context?.throwIfCancelled(forceDbCheck: true)
@@ -142,7 +144,12 @@ public struct SessionIngestRunner {
             replaceableCount: plan.replaced.count,
             // Wave5（F4）：预检阶段就把"不支持格式 N 个（按扩展名）"亮出来，
             // 用户在下「开始摄取」前就知道哪些文件不会进来。
-            unsupportedFormats: plan.unsupportedFormats
+            unsupportedFormats: plan.unsupportedFormats,
+            // Wave5 batch3：预检不再只有计数——给目标路径与冲突源的前 10 条样例。
+            targetSamplePaths: Array(
+                plan.items.filter { !$0.conflict }.prefix(10).map(\.destPath)),
+            conflictSamplePaths: Array(
+                plan.items.filter(\.conflict).prefix(10).map(\.sourcePath))
         )
     }
 

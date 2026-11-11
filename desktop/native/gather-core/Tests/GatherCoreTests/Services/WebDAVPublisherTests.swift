@@ -27,6 +27,22 @@ private actor FakeWebDAVTransport: WebDAVTransport {
 
 private struct FakeTransportError: Error {}
 
+/// Wave5：HEAD 差分探针（假实现；按顺序返回预设元信息）。
+private actor FakeHeadProbe: WebDAVRemoteProbe {
+    private(set) var urls: [URL] = []
+    private var responses: [WebDAVRemoteMetadata]
+
+    init(_ responses: [WebDAVRemoteMetadata] = []) {
+        self.responses = responses
+    }
+
+    func head(url: URL, headers: [String: String]) async throws -> WebDAVRemoteMetadata {
+        urls.append(url)
+        guard !responses.isEmpty else { return WebDAVRemoteMetadata(status: 200) }
+        return responses.removeFirst()
+    }
+}
+
 @Suite("WebDAV 发布")
 struct WebDAVPublisherTests {
     private func makeTree() throws -> String {
@@ -201,5 +217,102 @@ struct WebDAVPublisherTests {
         }
         #expect(filePuts.isEmpty,
                 "share.json 失败后不得上传任何文件: \(filePuts.map(\.url.path))")
+    }
+
+    // MARK: Wave5：HEAD 差分（发布记录）
+
+    @Test("Wave5 HEAD 差分：第二次发布全跳过、写发布记录、入口链接仍可用")
+    func headDiffSkipsUnchangedFiles() async throws {
+        let local = try makeTree()
+        defer {
+            do { try FileManager.default.removeItem(atPath: local) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let first = try await WebDAVPublisher(
+            transport: FakeWebDAVTransport([]), sleep: { _ in })
+            .publish(localPath: local, configuration: configuration())
+        #expect(first.isSuccess)
+        #expect(first.uploaded == 2)
+        #expect(FileManager.default.fileExists(
+            atPath: OutputSharePublishRecordStore.fileURL(atDirectory: local).path))
+
+        let probe = FakeHeadProbe([
+            WebDAVRemoteMetadata(status: 200, contentLength: 1, etag: "\"index\""),
+            WebDAVRemoteMetadata(status: 200, contentLength: 1, etag: "\"thumb\""),
+        ])
+        let secondTransport = FakeWebDAVTransport([])
+        let second = try await WebDAVPublisher(
+            transport: secondTransport, sleep: { _ in })
+            .publish(localPath: local, configuration: configuration(), remoteProbe: probe)
+        #expect(second.isSuccess)
+        #expect(second.uploaded == 0)
+        #expect(second.skipped == 2)
+        #expect(second.skipReasons[.remoteUnchanged] == 2)
+        #expect(second.entryURL != nil)
+        #expect(await secondTransport.requests.isEmpty,
+                "全部跳过时不应再发 MKCOL/PUT")
+        let record = try #require(
+            OutputSharePublishRecordStore.load(atDirectory: local))
+        #expect(record.history.count == 2)
+        #expect(record.history.first?.skipped == 2)
+    }
+
+    @Test("Wave5 HEAD 差分：本地改动的文件重传，其余跳过")
+    func headDiffUploadsChangedFile() async throws {
+        let local = try makeTree()
+        defer {
+            do { try FileManager.default.removeItem(atPath: local) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        _ = try await WebDAVPublisher(
+            transport: FakeWebDAVTransport([]), sleep: { _ in })
+            .publish(localPath: local, configuration: configuration())
+        try Data("changed".utf8).write(
+            to: URL(fileURLWithPath: local).appendingPathComponent("index.html"))
+        let probe = FakeHeadProbe([
+            WebDAVRemoteMetadata(status: 200, contentLength: 1),
+            WebDAVRemoteMetadata(status: 200, contentLength: 1),
+        ])
+        let transport = FakeWebDAVTransport([])
+        let result = try await WebDAVPublisher(
+            transport: transport, sleep: { _ in })
+            .publish(localPath: local, configuration: configuration(), remoteProbe: probe)
+        #expect(result.isSuccess)
+        #expect(result.uploaded == 1)
+        #expect(result.skipped == 1)
+        let requests = await transport.requests
+        let puts = requests.filter { $0.method == .put }
+        #expect(puts.count == 1)
+        #expect(puts.first?.url.path.contains("index.html") == true)
+    }
+
+    @Test("Wave5 HEAD 差分：远端缺失（404）→ 重传该文件")
+    func headDiffUploadsMissingRemoteFile() async throws {
+        let local = try makeTree()
+        defer {
+            do { try FileManager.default.removeItem(atPath: local) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        _ = try await WebDAVPublisher(
+            transport: FakeWebDAVTransport([]), sleep: { _ in })
+            .publish(localPath: local, configuration: configuration())
+        let probe = FakeHeadProbe([
+            WebDAVRemoteMetadata(status: 404),
+            WebDAVRemoteMetadata(status: 200, contentLength: 1),
+        ])
+        let transport = FakeWebDAVTransport([])
+        let result = try await WebDAVPublisher(
+            transport: transport, sleep: { _ in })
+            .publish(localPath: local, configuration: configuration(), remoteProbe: probe)
+        #expect(result.isSuccess)
+        #expect(result.uploaded == 1)
+        #expect(result.skipped == 1)
+        let requests = await transport.requests
+        let puts = requests.filter { $0.method == .put }
+        #expect(puts.count == 1)
+        #expect(puts.first?.url.path.contains("index.html") == true)
     }
 }

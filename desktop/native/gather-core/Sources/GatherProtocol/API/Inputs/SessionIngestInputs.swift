@@ -20,6 +20,69 @@ public enum IngestDuplicatePolicy: String, Codable, CaseIterable, Equatable, Sen
     case replace
 }
 
+/// Wave5 batch3（task-19）：可持久化的「导入预设」。
+///
+/// 一条预设 = 一次导入面板里需要反复填写的**配置**（改名模板 / 第二目的地 /
+/// 校验开关 / 重复处置）。落盘形态是 settings 键 `ingest.presets` 的 JSON 数组
+/// （见 `SettingsKey.ingestPresets`）；`metadataTemplateID` 是给"导入时套用
+/// 元数据模板"（40 号 N1）预留的字段，本批只做保存/回填，不在摄取执行期消费。
+public struct IngestPreset: Codable, Equatable, Identifiable, Sendable {
+    /// 稳定 id：选择/删除/最近使用（`ingest.last_preset`）都按它关联。
+    public var id: String
+    public var name: String
+    public var renameTemplate: String
+    /// nil/空 = 不写第二目的地。
+    public var secondDestinationRoot: String?
+    public var verifyChecksum: Bool
+    public var duplicatePolicy: IngestDuplicatePolicy
+    /// 预留：元数据模板 id（40 号「导入元数据预置」批次的接线点）。
+    public var metadataTemplateID: String?
+
+    public init(
+        id: String = UUID().uuidString.lowercased(),
+        name: String,
+        renameTemplate: String = "{yyyy}/{MM}/{dd}/{orig}-{seq:4}.{ext}",
+        secondDestinationRoot: String? = nil,
+        verifyChecksum: Bool = true,
+        duplicatePolicy: IngestDuplicatePolicy = .skip,
+        metadataTemplateID: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.renameTemplate = renameTemplate
+        self.secondDestinationRoot = secondDestinationRoot
+        self.verifyChecksum = verifyChecksum
+        self.duplicatePolicy = duplicatePolicy
+        self.metadataTemplateID = metadataTemplateID
+    }
+
+    /// 旧/手工编辑载荷兜底：缺 id 生成新 id，其余可选字段按默认值；
+    /// 只有 name 是必需字段（无名字的预设无法在 Picker 里选择）。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decodeIfPresent(String.self, forKey: .id)
+                ?? UUID().uuidString.lowercased(),
+            name: try container.decode(String.self, forKey: .name),
+            renameTemplate: try container.decodeIfPresent(
+                String.self, forKey: .renameTemplate)
+                ?? "{yyyy}/{MM}/{dd}/{orig}-{seq:4}.{ext}",
+            secondDestinationRoot: try container.decodeIfPresent(
+                String.self, forKey: .secondDestinationRoot),
+            verifyChecksum: try container.decodeIfPresent(
+                Bool.self, forKey: .verifyChecksum) ?? true,
+            duplicatePolicy: try container.decodeIfPresent(
+                IngestDuplicatePolicy.self, forKey: .duplicatePolicy) ?? .skip,
+            metadataTemplateID: try container.decodeIfPresent(
+                String.self, forKey: .metadataTemplateID))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, renameTemplate, secondDestinationRoot, verifyChecksum,
+             duplicatePolicy, metadataTemplateID
+    }
+}
+
 /// Wave5（F4）：源里被跳过的「不支持格式」统计。
 ///
 /// `extensions` 的键是**归一化**扩展名（dotless、小写，如 `"gif"`/`"mov"`），
@@ -79,6 +142,11 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
     public var replaceableCount: Int
     /// Wave5（F4）：被跳过的「不支持格式」统计（扩展名分组 + 样例；旧载荷 = 空）。
     public var unsupportedFormats: IngestUnsupportedFormats
+    /// Wave5 batch3：本次计划会写出的目标路径样例（最多 10 条；旧载荷 = 空）。
+    /// 让用户在按下「开始摄取」前核对"到底落到哪"，不再只有张数。
+    public var targetSamplePaths: [String]
+    /// Wave5 batch3：目标同名异内容的冲突源样例（最多 10 条；旧载荷 = 空）。
+    public var conflictSamplePaths: [String]
 
     public init(
         totalCount: Int,
@@ -90,7 +158,9 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
         duplicateSamplePaths: [String] = [],
         librarySkippedCount: Int = 0,
         replaceableCount: Int = 0,
-        unsupportedFormats: IngestUnsupportedFormats = IngestUnsupportedFormats()
+        unsupportedFormats: IngestUnsupportedFormats = IngestUnsupportedFormats(),
+        targetSamplePaths: [String] = [],
+        conflictSamplePaths: [String] = []
     ) {
         self.totalCount = totalCount
         self.newCount = newCount
@@ -102,6 +172,8 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
         self.librarySkippedCount = librarySkippedCount
         self.replaceableCount = replaceableCount
         self.unsupportedFormats = unsupportedFormats
+        self.targetSamplePaths = targetSamplePaths
+        self.conflictSamplePaths = conflictSamplePaths
     }
 
     /// 旧载荷（Wave3 之前）没有后两个字段：解码按 0 兜底，避免 IPC/持久化升级失败。
@@ -122,14 +194,19 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
                 Int.self, forKey: .replaceableCount) ?? 0,
             unsupportedFormats: try container.decodeIfPresent(
                 IngestUnsupportedFormats.self, forKey: .unsupportedFormats)
-                ?? IngestUnsupportedFormats()
+                ?? IngestUnsupportedFormats(),
+            targetSamplePaths: try container.decodeIfPresent(
+                [String].self, forKey: .targetSamplePaths) ?? [],
+            conflictSamplePaths: try container.decodeIfPresent(
+                [String].self, forKey: .conflictSamplePaths) ?? []
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case totalCount, newCount, libraryDuplicateCount, conflictCount,
              unreadableCount, policy, duplicateSamplePaths,
-             librarySkippedCount, replaceableCount, unsupportedFormats
+             librarySkippedCount, replaceableCount, unsupportedFormats,
+             targetSamplePaths, conflictSamplePaths
     }
 }
 
@@ -201,6 +278,9 @@ public struct SessionIngestResult: Codable, Equatable, Sendable {
     public var replaced: Int?
     /// Wave4a-F4：replace 项在第二目的地被跳过（无法按相对路径镜像）的张数。
     public var secondDestinationSkipped: Int?
+    /// Wave5 batch3：第二目的地**已复制**的张数（含崩溃恢复补拷；旧载荷 nil = 未统计）。
+    /// 校验开关是全局的（`verifyChecksum`），UI 用"已复制 N 张（已校验/未校验）"呈现。
+    public var secondDestinationCopied: Int?
     /// Wave4a：命中全库重复的源总数（与策略无关；旧载荷 nil = 未统计）。
     public var libraryDuplicateCount: Int?
     /// Wave5（F4）：被跳过的「不支持格式」统计（nil = 旧任务结果未统计）。
@@ -210,7 +290,8 @@ public struct SessionIngestResult: Codable, Equatable, Sendable {
                 libraryDuplicatesSkipped: Int? = nil, replaced: Int? = nil,
                 libraryDuplicateCount: Int? = nil,
                 secondDestinationSkipped: Int? = nil,
-                unsupportedFormats: IngestUnsupportedFormats? = nil) {
+                unsupportedFormats: IngestUnsupportedFormats? = nil,
+                secondDestinationCopied: Int? = nil) {
         self.registered = registered
         self.copiedButUnregistered = copiedButUnregistered
         self.skipped = skipped
@@ -221,5 +302,6 @@ public struct SessionIngestResult: Codable, Equatable, Sendable {
         self.libraryDuplicateCount = libraryDuplicateCount
         self.secondDestinationSkipped = secondDestinationSkipped
         self.unsupportedFormats = unsupportedFormats
+        self.secondDestinationCopied = secondDestinationCopied
     }
 }

@@ -63,6 +63,30 @@ public protocol WebDAVTransport: Sendable {
     func send(_ request: WebDAVRequest) async throws -> WebDAVResponse
 }
 
+/// Wave5：远端文件元信息（HEAD 差分用；只读）。
+public struct WebDAVRemoteMetadata: Equatable, Sendable {
+    public var status: Int
+    public var contentLength: Int64?
+    public var etag: String?
+
+    public init(status: Int, contentLength: Int64? = nil, etag: String? = nil) {
+        self.status = status
+        self.contentLength = contentLength
+        self.etag = etag
+    }
+
+    public var isSuccess: Bool { (200...299).contains(status) }
+    public var isNotFound: Bool { status == 404 }
+}
+
+/// Wave5：HEAD 探针端口（生产 = URLSession；测试 = 假实现）。
+///
+/// 差分是**保守**的：探针抛错/返回非 2xx 一律按"远端状态未知"处理 → 照常上传，
+/// 绝不因为一次 HEAD 失败就跳过文件。
+public protocol WebDAVRemoteProbe: Sendable {
+    func head(url: URL, headers: [String: String]) async throws -> WebDAVRemoteMetadata
+}
+
 public struct WebDAVPublishFailure: Equatable, Sendable {
     public var path: String
     public var reason: String
@@ -81,17 +105,25 @@ public struct WebDAVPublishResult: Equatable, Sendable {
     /// Wave5：客户入口链接（endpoint + 远端目录 + index.html）；nil = 没有入口
     /// 或入口文件未上传成功。WebDAV 链接不过期，故没有 entryURLExpiresAt。
     public var entryURL: String?
+    /// Wave5：HEAD 差分命中「远端未变」而跳过的文件数。
+    public var skipped: Int
+    /// Wave5：跳过原因 → 次数。
+    public var skipReasons: [OutputShareSkipReason: Int]
 
     public init(
         uploaded: Int, failed: [WebDAVPublishFailure],
         remoteRoot: String, abortedOnAuth: Bool,
-        entryURL: String? = nil
+        entryURL: String? = nil,
+        skipped: Int = 0,
+        skipReasons: [OutputShareSkipReason: Int] = [:]
     ) {
         self.uploaded = uploaded
         self.failed = failed
         self.remoteRoot = remoteRoot
         self.abortedOnAuth = abortedOnAuth
         self.entryURL = entryURL
+        self.skipped = skipped
+        self.skipReasons = skipReasons
     }
 
     public var isSuccess: Bool { failed.isEmpty && !abortedOnAuth }
@@ -157,6 +189,7 @@ public final class WebDAVPublisher: Sendable {
         configuration: WebDAVConfiguration,
         includePrefixes: [String]? = nil,
         share: OutputShareOptions? = nil,
+        remoteProbe: (any WebDAVRemoteProbe)? = nil,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) async throws -> WebDAVPublishResult {
         guard configuration.baseURL.scheme?.hasPrefix("http") == true else {
@@ -182,10 +215,23 @@ public final class WebDAVPublisher: Sendable {
             guard !files.isEmpty else { throw WebDAVError.noMatchingFiles }
         }
         let root = Self.joinRemote(configuration.baseURL, configuration.remoteFolder)
+        let recordDirectory = OutputSharePublishRecordStore.directory(forLocalPath: localPath)
+        let endpointSummary = OutputSharePublishRecordStore.endpointSummary(
+            configuration.baseURL.absoluteString)
+        let previousEntry = OutputSharePublishRecordStore.matchingEntry(
+            in: OutputSharePublishRecordStore.load(atDirectory: recordDirectory),
+            transport: .webdav,
+            endpointSummary: endpointSummary,
+            remoteFolder: configuration.remoteFolder,
+            bucket: nil)
         var uploaded = 0
-        /// Wave5：成功上传的相对路径。入口链接只在 `index.html` 真的传上去时才给，
-        /// 否则用户会拿到一个 404 的"客户链接"。
-        var uploadedRelatives = Set<String>()
+        var skipped = 0
+        var skipReasons: [OutputShareSkipReason: Int] = [:]
+        /// Wave5：远端已就绪（上传成功或 HEAD 命中跳过）的相对路径。
+        /// 入口链接只在这些文件里含 `index.html` 时才给，避免 404 链接。
+        var availableRelatives = Set<String>()
+        /// Wave5：本次发布后的远端文件表（写进发布记录，供下次 HEAD 差分）。
+        var fileRecords: [String: OutputSharePublishFileRecord] = [:]
         var failures: [WebDAVPublishFailure] = []
         var directoryCache = Set<String>()
 
@@ -275,6 +321,35 @@ public final class WebDAVPublisher: Sendable {
             // 取消立即止损：之前 catch 会把取消记成「单文件失败」继续传完剩下的文件，
             // 用户在面板上点取消后服务器仍会收到半套文件。
             try Task.checkCancellation()
+
+            // Wave5：HEAD 差分——本地与上次记录一致 + 远端 HEAD 一致 → 跳过上传。
+            // 探针缺失/失败/非 2xx 一律保守上传（宁可重传，不可漏传）。
+            let localRecord = OutputSharePublishDiff.localFileRecord(
+                relative: file.relative, filePath: file.local)
+            let previousRecord = previousEntry.flatMap { $0.fileRecord(file.relative) }
+            if let probe = remoteProbe, let localRecord, let previousRecord {
+                let remoteFile = Self.joinRemote(root, file.relative)
+                if let metadata = await Self.probe(
+                    probe, url: remoteFile,
+                    configuration: configuration),
+                   metadata.isSuccess,
+                   OutputSharePublishDiff.shouldSkip(
+                       previous: previousRecord, local: localRecord,
+                       remoteContentLength: metadata.contentLength,
+                       remoteETag: metadata.etag) {
+                    skipped += 1
+                    skipReasons[.remoteUnchanged, default: 0] += 1
+                    availableRelatives.insert(file.relative)
+                    fileRecords[file.relative] = OutputSharePublishFileRecord(
+                        relative: file.relative,
+                        size: localRecord.size, mtime: localRecord.mtime,
+                        etag: OutputSharePublishDiff.normalizedETag(metadata.etag)
+                            ?? previousRecord.etag)
+                    onProgress?(index + 1, files.count)
+                    continue
+                }
+            }
+
             let remoteDirectory = Self.joinRemote(root, (file.relative as NSString).deletingLastPathComponent)
             if !directoryCache.contains(remoteDirectory.path) {
                 // 逐级 MKCOL：深层目录的父目录可能不存在（409），一次 MKCOL 深路径会失败。
@@ -307,7 +382,10 @@ public final class WebDAVPublisher: Sendable {
                     url: remoteFile, data: data, path: file.relative, configuration: configuration)
                 if response.isSuccess {
                     uploaded += 1
-                    uploadedRelatives.insert(file.relative)
+                    availableRelatives.insert(file.relative)
+                    if let localRecord {
+                        fileRecords[file.relative] = localRecord
+                    }
                     onProgress?(index + 1, files.count)
                 } else if response.isAuthFailure {
                     failures.append(WebDAVPublishFailure(path: file.relative, reason: "HTTP \(response.status)"))
@@ -323,15 +401,58 @@ public final class WebDAVPublisher: Sendable {
                 failures.append(WebDAVPublishFailure(path: file.relative, reason: String(describing: error)))
             }
         }
-        // Wave5：客户入口链接（只有入口真的上传成功才给；scheme 在 publish 入口已校验）。
+        // Wave5：客户入口链接（入口在远端就绪即可——上传成功或差分跳过都算；
+        // scheme 在 publish 入口已校验）。
         let entryURL: String? = {
             guard let entry = Self.entryRelativePath(in: files),
-                  uploadedRelatives.contains(entry) else { return nil }
+                  availableRelatives.contains(entry) else { return nil }
             return Self.joinRemote(root, entry).absoluteString
         }()
-        return WebDAVPublishResult(
+        let result = WebDAVPublishResult(
             uploaded: uploaded, failed: failures, remoteRoot: root.path,
-            abortedOnAuth: false, entryURL: entryURL)
+            abortedOnAuth: false, entryURL: entryURL,
+            skipped: skipped, skipReasons: skipReasons)
+        // Wave5：发布成功才写记录（失败/中止不覆盖上一次可用基线）。
+        if result.isSuccess {
+            Self.appendPublishRecord(
+                OutputSharePublishEntry(
+                    publishedAt: OutputShareManifest.iso8601Now(),
+                    transport: .webdav,
+                    endpointSummary: endpointSummary,
+                    remoteFolder: configuration.remoteFolder,
+                    entryURL: entryURL,
+                    uploaded: uploaded, skipped: skipped,
+                    failed: failures.count,
+                    files: fileRecords.values.sorted { $0.relative < $1.relative }),
+                atDirectory: recordDirectory)
+        }
+        return result
+    }
+
+    /// Wave5：HEAD 探针容错——探针抛错视为"远端状态未知"，返回 nil 让调用方上传。
+    private static func probe(
+        _ probe: any WebDAVRemoteProbe,
+        url: URL,
+        configuration: WebDAVConfiguration
+    ) async -> WebDAVRemoteMetadata? {
+        do {
+            return try await probe.head(
+                url: url, headers: Self.headers(configuration: configuration))
+        } catch {
+            return nil
+        }
+    }
+
+    /// Wave5：记录写失败只告警，不影响发布结果（记录是缓存，不是交付物）。
+    private static func appendPublishRecord(
+        _ entry: OutputSharePublishEntry, atDirectory directory: String
+    ) {
+        do {
+            try OutputSharePublishRecordStore.append(entry, atDirectory: directory)
+        } catch {
+            GatherLogger.log(
+                "webdav publish record write failed: \(error)", level: .warn)
+        }
     }
 
     private enum DirectoryResult: Equatable {

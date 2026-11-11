@@ -67,3 +67,34 @@
 3. 受控值只在单张编辑器生效；批量面板/模板仍自由文本。
 4. 存量 qname 与 IPTC 2025.1 不一致（Iptc4xmpExt vs plus:ModelReleaseStatus）未动，需单独立项做兼容迁移。
 5. 浏览状态定位预算 2 万张，超出按找不到回退首张；参考对比模式不持久化。
+
+## Batch 3（task-15 ~ task-17）
+
+| task | 域 | owner | 结论 |
+| --- | --- | --- | --- |
+| task-15 | 交付发布二期 | bridge-organize | 发布成功写 .gather-share-publish.json（history + files size/mtime/etag）；WebDAV/S3 先 HEAD 差分，未变跳过并计数；交付页新增「发布已生成的交付包…」独立入口 + 最近 5 次历史 + 客户链接 |
+| task-16 | 导入一次配置 | ingest-export | IngestPreset（改名模板/第二目的地/校验/重复策略/metadataTemplateID）存 settings + Picker/保存/删除/回填；预检目标路径与冲突样例、失败全量展开 + 只重试失败项、第二目的地复制计数；摄取成功且 registered>0 调度 AI 初审 |
+| task-17 | 迁移包组织资产 | c1-fix | 包格式 v2：stacks/smartAlbums/savedSearches/personBindings/duplicateGroups 五段；旧 v1 缺段兼容；导入按 photoId 映射重建容器并重写 criteria 引用，未映射 skipped，重复组只留档；收尾自动入队 metadata.scan |
+
+### 关键设计取舍
+
+- 发布记录只在 result.isSuccess 时写（部分失败不覆盖上一次可用基线）；WebDAV 生产 transport 不返回 PUT 响应头，ETag 缺失时用 Content-Length + 本地 stat 兜底（proof.html 可能每轮重传，保守正确）。
+- 导入预设：ingest.presets 是用户内容（reset 保留），ingest.last_preset 是偏好；metadataTemplateID 只持久化/回填，未接线导入时套模板（后续批）。
+- 迁移包：face cluster id / 堆栈折叠状态不可移植，显式 skipped 并在报告/UI 标注；smartAlbums 全库导出、savedSearches 按作用域还原。
+- AI 初审摄取入口：用 SessionAPI 装饰器（TriageSchedulingSessionAPI）而非 WorkflowRegistry；以后新增绕过 rootDeps.session 的摄取入口需再接。
+
+### 验证（Lead 执行，2026-11-11）
+
+- 构建：gather-core / gather-app swift build --build-tests --disable-sandbox 均通过。
+- 测试：core 1921 / 282 + 串行 25 / 4 全绿；app 1112 / 157 全绿。
+- 门禁 14 项全绿（含 warnings）。
+- 基线记账：protocol-surface public_types 491→501、public_declarations 2948→3040、protocol_lines 16154→16574（发布历史/迁移段/导入预设 DTO）；cleanup try_optional 261→260（收紧，非增长）。
+- Lead 修：重复 stacks 声明、测试 async NSLock、孤儿/缺失 l10n、默认值断言、SavedSearchRepo 列表语义、entry? 造成的 try_optional 假阳性命名。
+
+### 未闭环/下一批
+
+1. 发布记录部分失败不写、WebDAV PUT ETag 缺失、S3 链接 TTL 仍 24h。
+2. metadataTemplateID 未在摄取后应用；批量面板/模板的受控值仍自由文本。
+3. 摄取入口 AI 调度依赖 SessionAPI 装饰器；WorkflowRegistry 层未统一。
+4. XMPPacketReader IIM-only fast-path 仍缺 2:40（外部 IIM 老文件在 fast-path 读不到 instructions）。
+5. 发布历史只在同一交付目录可见；跨目录/跨机器无全局历史（不做服务端）。

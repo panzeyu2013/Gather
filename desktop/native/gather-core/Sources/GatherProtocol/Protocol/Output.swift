@@ -445,6 +445,11 @@ public struct WebDAVPublishSummary: Codable, Equatable, Sendable {
     public var entryURL: String?
     /// Wave5：`entryURL` 的到期时间（ISO-8601）；nil = 永久链接（WebDAV）。
     public var entryURLExpiresAt: String?
+    /// Wave5：本次因「远端未变」而跳过的文件数（HEAD 差分命中发布记录）。
+    /// 跳过的文件仍视为已在远端就绪，会计入 `entryURL` 的可用性判断。
+    public var skipped: Int
+    /// Wave5：跳过原因 → 次数（raw value 见 `OutputShareSkipReason`；空 = 没有跳过）。
+    public var skipReasons: [String: Int]?
 
     public init(
         uploaded: Int,
@@ -452,7 +457,9 @@ public struct WebDAVPublishSummary: Codable, Equatable, Sendable {
         remoteRoot: String,
         abortedOnAuth: Bool,
         entryURL: String? = nil,
-        entryURLExpiresAt: String? = nil
+        entryURLExpiresAt: String? = nil,
+        skipped: Int = 0,
+        skipReasons: [String: Int]? = nil
     ) {
         self.uploaded = uploaded
         self.failed = failed
@@ -460,9 +467,63 @@ public struct WebDAVPublishSummary: Codable, Equatable, Sendable {
         self.abortedOnAuth = abortedOnAuth
         self.entryURL = entryURL
         self.entryURLExpiresAt = entryURLExpiresAt
+        self.skipped = skipped
+        self.skipReasons = skipReasons
     }
 
     public var isSuccess: Bool { failed.isEmpty && !abortedOnAuth }
+}
+
+/// Wave5：读取发布历史的输入（交付目录里读 `.gather-share-publish.json`）。
+public struct PublishHistoryInput: Codable, Equatable, Sendable {
+    /// 本地交付目录（或发布文件所在目录）。
+    public var localPath: String
+    /// 最多返回几条（1...20；默认 5）。
+    public var limit: Int
+
+    public init(localPath: String, limit: Int = 5) {
+        self.localPath = localPath
+        self.limit = limit
+    }
+}
+
+/// Wave5：一条发布历史（跨重启可见；来自交付目录里的发布记录文件）。
+///
+/// 不含文件清单与任何凭据：历史只用于「这次发到哪、结果如何、客户链接」。
+public struct WebDAVPublishHistoryEntry: Codable, Equatable, Hashable, Sendable {
+    public var publishedAt: String
+    public var transport: OutputShareTransportKind
+    /// 通道 + 远端根（已去掉 URL 里的 userinfo/query，无凭据）。
+    public var endpointSummary: String
+    public var remoteFolder: String
+    public var entryURL: String?
+    public var uploaded: Int
+    public var skipped: Int
+    public var failed: Int
+
+    public var id: String {
+        publishedAt + "|" + transport.rawValue + "|" + endpointSummary + "|" + remoteFolder
+    }
+
+    public init(
+        publishedAt: String,
+        transport: OutputShareTransportKind,
+        endpointSummary: String,
+        remoteFolder: String,
+        entryURL: String?,
+        uploaded: Int,
+        skipped: Int,
+        failed: Int
+    ) {
+        self.publishedAt = publishedAt
+        self.transport = transport
+        self.endpointSummary = endpointSummary
+        self.remoteFolder = remoteFolder
+        self.entryURL = entryURL
+        self.uploaded = uploaded
+        self.skipped = skipped
+        self.failed = failed
+    }
 }
 
 /// Wave3：发布失败分类（按 reason 推断，供 UI 报告"认证/网络/服务端/校验/本地 IO"）。

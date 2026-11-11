@@ -7,6 +7,10 @@
 // 3. 冲突策略 keepLocal / keepImported / coexist 的计数与落库差异；
 // 4. 外部 sidecar 迁移的两阶段评估（只补空字段；overwrite 才覆盖；计数口径）。
 //
+// Wave5（Batch3 / task-20）：包格式 v2 组织资产段 —— 导出/导入 round-trip（堆栈/智能相册/
+// 保存查询/人物绑定/重复组留档）、v1 旧包缺段兼容、photoId 映射失败的 skipped 计数、
+// 同名资产冲突策略、导入后 metadata.scan 入队（注入记录器）。
+//
 // 夹具：makeTestDB()（内存库 + 当前 schema）+ GatherTestSupport 的临时目录/文件。
 import Foundation
 import Testing
@@ -44,8 +48,13 @@ private struct StubXMPProvider: XMPProvider {
 @Suite("Wave3 目录包与外部迁移（task-24）")
 struct LibraryPackageServiceTests {
 
-    @Test("目录包 JSON 编解码往返（字段不丢）")
+    @Test("目录包 JSON 编解码往返（含组织资产段，formatVersion 2）")
     func packageCodecRoundTrip() throws {
+        let criteria = FilterGroup(logic: .and, conditions: [
+            .rule(FilterRule(
+                field: FilterFields.collection, operator: .eq, value: .string("c1"))),
+        ])
+        let criteriaJSON = LibraryPackageService.encodeFilterGroup(criteria)
         let package = LibraryPackage(
             exportedAt: "2026-11-11T00:00:00.000Z",
             session: LibraryPackageSession(
@@ -69,12 +78,32 @@ struct LibraryPackageServiceTests {
                     descriptiveJSON: "{}"
                 ),
                 LibraryPackagePhoto(photoId: "p2", relativePath: "b.cr3", filename: "b.cr3"),
-            ]
+            ],
+            stacks: [LibraryPackageStack(
+                id: "st1", name: "连拍", coverPhotoId: "p1", photoIds: ["p1", "p2"])],
+            smartAlbums: [LibraryPackageSmartAlbum(
+                id: "sa1", name: "精选智能", description: "按集合",
+                criteriaJSON: criteriaJSON, sortBy: "date_taken", sortOrder: "desc", icon: "⭐️")],
+            savedSearches: [LibraryPackageSavedSearch(
+                id: "ss1", name: "全局精选", criteriaJSON: criteriaJSON, isGlobal: true)],
+            personBindings: [LibraryPackagePersonBinding(
+                photoId: "p1", personId: "pe1", personName: "新娘", confidence: 0.9)],
+            duplicateGroups: [LibraryPackageDuplicateGroup(
+                groupType: "exact",
+                checksum: "abc",
+                members: [
+                    LibraryPackageDuplicateMember(photoId: "p1", isKept: true),
+                    LibraryPackageDuplicateMember(
+                        photoId: "p2", isKept: false, resolution: "keep_one"),
+                ])],
         )
         let data = try JSONEncoder().encode(package)
         let decoded = try JSONDecoder().decode(LibraryPackage.self, from: data)
         #expect(decoded == package)
-        #expect(decoded.formatVersion == 1)
+        #expect(decoded.formatVersion == 2)
+        #expect(decoded.stacks == package.stacks)
+        #expect(decoded.personBindings == package.personBindings)
+        #expect(decoded.duplicateGroups == package.duplicateGroups)
     }
 
     @Test("导出 → 导入：相对路径重绑定、评分/关键词/集合成员保留")
@@ -498,5 +527,345 @@ struct LibraryPackageServiceTests {
         }
         #expect(gather.code == .INVALID_PARAM)
         #expect(gather.params["field"] == "libraryPackage")
+    }
+}
+
+// MARK: - Wave5（Batch3 / task-20）：组织资产迁移
+
+/// metadata.scan 入队记录（注入替身；LockedBox 的动态成员只能映射到具名属性）。
+private struct Wave5ScanState {
+    var calls: [(sessionId: String, paths: [String])] = []
+}
+
+/// 源库组织资产夹具：3 张照片 + 集合 + 堆栈 + 智能相册(集合规则) + 保存查询(会话/全局)
+/// + 人物绑定 + 重复组，导出一个 v2 包。
+private struct OrgAssetSourceFixture {
+    let packagePath: String
+    let sourceRoot: String
+    let collectionId: String
+    let stackId: String
+    let exportResult: LibraryExportResult
+}
+
+private func makeOrgAssetSource() throws -> OrgAssetSourceFixture {
+    let db = try makeTestDB()
+    try insertSession(db, "s1")
+    let dir = try makeTempDir(prefix: "gather-org-src")
+    var paths: [String] = []
+    for (index, name) in ["a.jpg", "b.jpg", "c.jpg"].enumerated() {
+        paths.append(try writeTempFile(in: dir, name: name, content: Data("org-\(index)".utf8)))
+    }
+    for (index, path) in paths.enumerated() {
+        try insertPhoto(
+            db, id: "p\(index + 1)", sessionId: "s1", filepath: path, checksum: "c\(index + 1)")
+    }
+    _ = try db.prepare("UPDATE sessions SET source_path = ? WHERE id = ?")
+        .run([.text(dir), .text("s1")])
+    let collections = CollectionRepo(connection: db)
+    let collection = try collections.create(sessionId: "s1", name: "精选", sortOrder: nil)
+    _ = try collections.appendItems(collectionId: collection.id, photoIds: ["p1", "p2"])
+    let stack = try StackRepo(connection: db).create(
+        sessionId: "s1", name: "连拍", coverPhotoId: "p2", photoIds: ["p1", "p2"])
+    let collectionCriteria = FilterGroup(logic: .and, conditions: [
+        .rule(FilterRule(
+            field: FilterFields.collection, operator: .eq, value: .string(collection.id))),
+    ])
+    _ = try SmartAlbumRepo(connection: db).create(data: SmartAlbumCreateData(
+        name: "精选智能", description: "按集合", filterCriteria: collectionCriteria,
+        sortBy: "date_taken", sortOrder: "desc", icon: "⭐️"))
+    let savedSearches = SavedSearchRepo(connection: db)
+    let stackCriteria = FilterGroup(logic: .and, conditions: [
+        .rule(FilterRule(
+            field: FilterFields.stack, operator: .eq, value: .string(stack.id))),
+    ])
+    _ = try savedSearches.upsert(name: "本工作区栈", sessionId: "s1", criteria: stackCriteria)
+    _ = try savedSearches.upsert(name: "全局精选", sessionId: nil, criteria: collectionCriteria)
+    let persons = PersonRepo(connection: db)
+    let personId = try persons.upsertByName(name: "新娘")
+    try persons.addPhotos(personId: personId, sessionId: "s1", photos: [
+        PersonPhotoInput(photoId: "p1", faceBbox: [], confidence: 0.9),
+    ])
+    let duplicates = DuplicateRepo(connection: db)
+    let groupIds = try duplicates.insertGroups([DuplicateGroupInsert(
+        sessionId: "s1", groupType: "exact", checksum: "c1", hashHex: nil,
+        memberCount: 2, createdAt: "2026-01-01T00:00:00.000Z")])
+    try duplicates.insertMembers([
+        DuplicateMemberInsert(
+            groupId: groupIds[0], photoId: "p1", sessionId: "s1",
+            isKept: true, fileSize: nil, fileMtime: nil, resolution: nil),
+        DuplicateMemberInsert(
+            groupId: groupIds[0], photoId: "p2", sessionId: "s1",
+            isKept: false, fileSize: nil, fileMtime: nil, resolution: "keep_one"),
+    ])
+    let exported = try LibraryPackageService(connection: db).exportPackage(
+        LibraryExportInput(sessionId: "s1", destinationPath: dir))
+    return OrgAssetSourceFixture(
+        packagePath: exported.packagePath, sourceRoot: dir,
+        collectionId: collection.id, stackId: stack.id, exportResult: exported)
+}
+
+private func readPackageJSON(_ path: String) throws -> [String: Any] {
+    let data = try Data(contentsOf: URL(fileURLWithPath: path))
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw GatherError.invalidParameter(field: "package", reason: "fixture package invalid")
+    }
+    return object
+}
+
+private func writePackageJSON(_ object: [String: Any], to path: String) throws {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+}
+
+@Suite("Wave5 目录包组织资产（stacks/smartAlbums/savedSearches/personBindings）")
+struct LibraryPackageOrganizationAssetTests {
+    @Test("导出：组织资产段齐全（堆栈/智能相册/保存查询/人物绑定/重复组）")
+    func exportCarriesOrganizationAssets() throws {
+        let fixture = try makeOrgAssetSource()
+        let package = try JSONDecoder().decode(
+            LibraryPackage.self,
+            from: Data(contentsOf: URL(fileURLWithPath: fixture.packagePath)))
+        #expect(package.formatVersion == 2)
+        #expect(package.stacks.count == 1)
+        #expect(package.stacks[0].photoIds == ["p1", "p2"])
+        #expect(package.stacks[0].coverPhotoId == "p2")
+        #expect(package.smartAlbums.count == 1)
+        #expect(package.smartAlbums[0].name == "精选智能")
+        #expect(package.smartAlbums[0].criteriaJSON.contains(fixture.collectionId))
+        #expect(package.savedSearches.count == 2)
+        #expect(package.savedSearches.contains { $0.isGlobal && $0.name == "全局精选" })
+        #expect(package.savedSearches.contains { !$0.isGlobal && $0.name == "本工作区栈" })
+        #expect(package.personBindings.count == 1)
+        #expect(package.personBindings[0].photoId == "p1")
+        #expect(package.personBindings[0].personName == "新娘")
+        #expect(package.duplicateGroups.count == 1)
+        #expect(package.duplicateGroups[0].members.count == 2)
+    }
+
+    @Test("导出报告：分项计数（stacks/smartAlbums/savedSearches/personBindings/duplicateGroups）")
+    func exportResultCarriesSectionCounts() throws {
+        let result = try makeOrgAssetSource().exportResult
+        #expect(result.photoCount == 3)
+        #expect(result.collectionCount == 1)
+        #expect(result.stackCount == 1)
+        #expect(result.smartAlbumCount == 1)
+        #expect(result.savedSearchCount == 2)
+        #expect(result.personBindingCount == 1)
+        #expect(result.duplicateGroupCount == 1)
+    }
+
+    @Test("导入：组织资产按新 photoId 重建、容器引用重映射、重复组不导入、自动入队扫描")
+    func importRebuildsOrganizationAssets() throws {
+        let fixture = try makeOrgAssetSource()
+        let target = try makeTestDB()
+        let targetRoot = try makeTempDir(prefix: "gather-org-dst")
+        _ = try writeTempFile(in: targetRoot, name: "a.jpg")
+        _ = try writeTempFile(in: targetRoot, name: "b.jpg")
+        let scanCalls = LockedBox(Wave5ScanState())
+        let service = LibraryPackageService(connection: target, enqueueScan: { sessionId, paths in
+            scanCalls.lock.withLock { scanCalls.calls.append((sessionId: sessionId, paths: paths)) }
+            return "job-org"
+        })
+        let report = try target.transaction {
+            try service.importPackage(LibraryImportInput(
+                packagePath: fixture.packagePath,
+                newRoot: targetRoot,
+                sessionName: "组织迁移",
+                conflictPolicy: .coexist))
+        }
+        #expect(report.importedPhotos == 3)
+        #expect(report.importedStacks == 1)
+        #expect(report.importedSmartAlbums == 1)
+        #expect(report.importedSavedSearches == 2)
+        #expect(report.importedPersonBindings == 1)
+        #expect(report.skippedUnmappedItems == 0)
+        #expect(report.skippedDuplicateGroups == 1)
+        #expect(report.scanJobId == "job-org")
+        // 堆栈：成员映射到新库 photoId（目标库为空时 id 保留）。
+        let stacks = try StackRepo(connection: target).list(sessionId: report.sessionId)
+        let stack = try #require(stacks.first)
+        #expect(stack.name == "连拍")
+        let members = try StackRepo(connection: target)
+            .members(stackId: stack.id).map(\.photoId)
+        #expect(Set(members) == ["p1", "p2"])
+        // 智能相册：criteria 的集合引用换成新集合 id（旧 id 不再出现）。
+        let albums = try SmartAlbumRepo(connection: target).list()
+        let album = try #require(albums.first { $0.name == "精选智能" })
+        let newCollectionId = try #require(report.collectionIDMap[fixture.collectionId])
+        #expect(album.filterCriteria.contains(newCollectionId))
+        #expect(!album.filterCriteria.contains(fixture.collectionId))
+        // 保存查询：全局保留作用域；会话查询落新工作区，stack 规则引用新堆栈 id。
+        let searches = SavedSearchRepo(connection: target)
+        #expect(try searches.list(sessionId: nil).map(\.name) == ["全局精选"])
+        // list(sessionId:) 按仓储语义包含全局查询 + 本会话查询；按名字取本工作区那条。
+        let sessionSearches = try searches.list(sessionId: report.sessionId)
+        #expect(sessionSearches.map(\.name).contains("本工作区栈"))
+        let sessionSearch = try #require(sessionSearches.first { $0.name == "本工作区栈" })
+        let criteriaJSON = try JSONEncoder().encode(sessionSearch.criteria)
+        let criteriaText = String(decoding: criteriaJSON, as: UTF8.self)
+        #expect(criteriaText.contains(stack.id))
+        #expect(!criteriaText.contains(fixture.stackId))
+        // 人物绑定：身份按名重建、照片映射到新库行。
+        let bindings = try target.prepare("""
+            SELECT pp.photo_id, pr.name
+              FROM person_photos pp JOIN persons pr ON pr.id = pp.person_id
+            """).query()
+        #expect(bindings.count == 1)
+        #expect(bindings[0][0].textValue == "p1")
+        #expect(bindings[0][1].textValue == "新娘")
+        // 重复组：派生数据不重建。
+        #expect(try rowCount(target, "SELECT COUNT(*) FROM duplicate_groups") == 0)
+        // 入队扫描：requestedPaths = 导入照片的父目录（去重）。
+        let calls = scanCalls.lock.withLock { scanCalls.calls }
+        #expect(calls.count == 1)
+        #expect(calls[0].sessionId == report.sessionId)
+        #expect(calls[0].paths == [(targetRoot as NSString).standardizingPath])
+    }
+
+    @Test("v1 旧包缺组织资产段：解码为空、导入不 fail")
+    func legacyPackageWithoutOrganizationSections() throws {
+        let fixture = try makeOrgAssetSource()
+        var object = try readPackageJSON(fixture.packagePath)
+        object["formatVersion"] = 1
+        for key in ["stacks", "smartAlbums", "savedSearches", "personBindings", "duplicateGroups"] {
+            object.removeValue(forKey: key)
+        }
+        let legacyPath = (fixture.sourceRoot as NSString)
+            .appendingPathComponent("legacy-v1.gatherlib.json")
+        try writePackageJSON(object, to: legacyPath)
+
+        let decoded = try JSONDecoder().decode(
+            LibraryPackage.self, from: Data(contentsOf: URL(fileURLWithPath: legacyPath)))
+        #expect(decoded.formatVersion == 1)
+        #expect(decoded.stacks.isEmpty)
+        #expect(decoded.smartAlbums.isEmpty)
+        #expect(decoded.savedSearches.isEmpty)
+        #expect(decoded.personBindings.isEmpty)
+        #expect(decoded.duplicateGroups.isEmpty)
+
+        let target = try makeTestDB()
+        let targetRoot = try makeTempDir(prefix: "gather-org-legacy")
+        let report = try LibraryPackageService(connection: target).importPackage(
+            LibraryImportInput(packagePath: legacyPath, newRoot: targetRoot, sessionName: "旧包"))
+        #expect(report.importedPhotos == 3)
+        #expect(report.importedStacks == 0)
+        #expect(report.importedSmartAlbums == 0)
+        #expect(report.importedSavedSearches == 0)
+        #expect(report.importedPersonBindings == 0)
+        #expect(report.skippedDuplicateGroups == 0)
+    }
+
+    @Test("组织资产引用不到 photoId：计入 skippedUnmappedItems（不静默丢）")
+    func unmappedOrganizationReferencesAreCounted() throws {
+        let fixture = try makeOrgAssetSource()
+        var object = try readPackageJSON(fixture.packagePath)
+        guard var stacks = object["stacks"] as? [[String: Any]], !stacks.isEmpty else {
+            Issue.record("夹具包缺 stacks 段")
+            return
+        }
+        stacks[0]["photoIds"] = ["p1", "ghost-photo"]
+        object["stacks"] = stacks
+        let ghostBindings: [[String: Any]] = [[
+            "photoId": "ghost-photo",
+            "personId": "ghost-person",
+            "personName": "幽灵",
+            "confidence": 0.1,
+        ]]
+        object["personBindings"] = ghostBindings
+        let mutatedPath = (fixture.sourceRoot as NSString)
+            .appendingPathComponent("unmapped.gatherlib.json")
+        try writePackageJSON(object, to: mutatedPath)
+
+        let target = try makeTestDB()
+        let targetRoot = try makeTempDir(prefix: "gather-org-unmapped")
+        let report = try LibraryPackageService(connection: target, enqueueScan: { _, _ in "job-u" })
+            .importPackage(LibraryImportInput(
+                packagePath: mutatedPath, newRoot: targetRoot, sessionName: "未映射"))
+        #expect(report.skippedUnmappedItems == 2)
+        #expect(report.importedStacks == 1)
+        #expect(report.importedPersonBindings == 0)
+        let importedStacks = try StackRepo(connection: target).list(sessionId: report.sessionId)
+        let firstStack = try #require(importedStacks.first)
+        let memberIds = try StackRepo(connection: target)
+            .members(stackId: firstStack.id).map(\.photoId)
+        #expect(memberIds == ["p1"])
+    }
+
+    @Test("组织资产冲突策略：同名智能相册/全局保存查询按 keepLocal/keepImported/coexist")
+    func organizationConflictPolicies() throws {
+        let fixture = try makeOrgAssetSource()
+        let target = try makeTestDB()
+        // 目标库预置同名智能相册与同名全局保存查询（模拟"本机已有同名资产"）。
+        let empty = FilterGroup(logic: .and, conditions: [])
+        _ = try SmartAlbumRepo(connection: target).create(data: SmartAlbumCreateData(
+            name: "精选智能", filterCriteria: empty))
+        _ = try SavedSearchRepo(connection: target).upsert(
+            name: "全局精选", sessionId: nil, criteria: empty)
+        let root = try makeTempDir(prefix: "gather-org-conflict")
+        let service = LibraryPackageService(connection: target, enqueueScan: { _, _ in "job-c" })
+
+        // keepLocal：同名资产保留本地，不覆盖。
+        let keepLocal = try service.importPackage(LibraryImportInput(
+            packagePath: fixture.packagePath, newRoot: root,
+            sessionName: "keepLocal", conflictPolicy: .keepLocal))
+        #expect(keepLocal.importedSmartAlbums == 0)
+        #expect(keepLocal.skippedSmartAlbums == 1)
+        #expect(keepLocal.importedSavedSearches == 1)
+        #expect(keepLocal.skippedSavedSearches == 1)
+        let localAlbums = try SmartAlbumRepo(connection: target).list()
+        let keptAlbum = try #require(localAlbums.first { $0.name == "精选智能" })
+        #expect(!keptAlbum.filterCriteria.contains(fixture.collectionId))
+
+        // keepImported：同名智能相册的 criteria 换成包内（集合引用重映射到新 id）。
+        let keepImported = try service.importPackage(LibraryImportInput(
+            packagePath: fixture.packagePath, newRoot: root,
+            sessionName: "keepImported", conflictPolicy: .keepImported))
+        #expect(keepImported.importedSmartAlbums == 1)
+        #expect(keepImported.skippedSmartAlbums == 0)
+        let updatedAlbums = try SmartAlbumRepo(connection: target).list()
+        let updatedAlbum = try #require(updatedAlbums.first { $0.name == "精选智能" })
+        let importedCollectionId = try #require(
+            keepImported.collectionIDMap[fixture.collectionId])
+        #expect(updatedAlbum.filterCriteria.contains(importedCollectionId))
+
+        // coexist：新增带后缀的智能相册，不动既有同名条目。
+        let coexist = try service.importPackage(LibraryImportInput(
+            packagePath: fixture.packagePath, newRoot: root,
+            sessionName: "coexist", conflictPolicy: .coexist))
+        #expect(coexist.importedSmartAlbums == 1)
+        let coexistNames = try SmartAlbumRepo(connection: target).list().map(\.name)
+        #expect(coexistNames.contains("精选智能（导入）"))
+    }
+
+    @Test("导入后自动入队 metadata.scan：路径变化入队、原地导入跳过")
+    func importEnqueuesMetadataScan() throws {
+        let fixture = try makeOrgAssetSource()
+        // ① 迁到新盘（路径变化 + 文件缺失）→ 入队。
+        let moved = try makeTestDB()
+        let movedRoot = try makeTempDir(prefix: "gather-org-moved")
+        let box = LockedBox(Wave5ScanState())
+        let enqueued = try LibraryPackageService(connection: moved, enqueueScan: { sessionId, paths in
+            box.lock.withLock { box.calls.append((sessionId: sessionId, paths: paths)) }
+            return "job-moved"
+        }).importPackage(LibraryImportInput(
+            packagePath: fixture.packagePath, newRoot: movedRoot, sessionName: "迁到新盘"))
+        #expect(enqueued.scanJobId == "job-moved")
+        #expect(enqueued.pendingCount == 3)
+        let calls = box.lock.withLock { box.calls }
+        #expect(calls.count == 1)
+        #expect(calls[0].sessionId == enqueued.sessionId)
+        #expect(calls[0].paths == [(movedRoot as NSString).standardizingPath])
+
+        // ② 原地导入（newRoot = 包内 sourcePath）且文件都在 → 不入队。
+        let same = try makeTestDB()
+        let sameBox = LockedBox(Wave5ScanState())
+        let unchanged = try LibraryPackageService(connection: same, enqueueScan: { sessionId, paths in
+            sameBox.lock.withLock { sameBox.calls.append((sessionId: sessionId, paths: paths)) }
+            return "should-not-enqueue"
+        }).importPackage(LibraryImportInput(
+            packagePath: fixture.packagePath, newRoot: fixture.sourceRoot, sessionName: "原地"))
+        #expect(unchanged.pendingCount == 0)
+        #expect(unchanged.scanJobId == nil)
+        #expect(sameBox.lock.withLock { sameBox.calls }.isEmpty)
     }
 }

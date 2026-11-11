@@ -161,8 +161,11 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
                 remoteFolder: payload.remoteFolder,
                 includePrefixes: payload.includePrefixes,
                 share: payload.share)
+            // Wave5：生产路径挂 URLSession HEAD 探针，启用「远端未变则跳过」差分。
             let facade = OutputSharePublisher(transports: [
-                .webdav: WebDAVShareTransport(publisher: publisher),
+                .webdav: WebDAVShareTransport(
+                    publisher: publisher,
+                    remoteProbe: URLSessionWebDAVHeadProbe()),
             ])
             let result = try await facade.publish(request, onProgress: onProgress)
             return Self.summary(from: result)
@@ -211,16 +214,84 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
     }
 
     private static func summary(from result: OutputSharePublishResult) -> WebDAVPublishSummary {
-        WebDAVPublishSummary(
+        let reasons: [String: Int]? = result.skipReasons.isEmpty
+            ? nil
+            : Dictionary(uniqueKeysWithValues: result.skipReasons.map {
+                ($0.key.rawValue, $0.value)
+            })
+        return WebDAVPublishSummary(
             uploaded: result.uploaded,
             failed: result.failed.map { WebDAVPublishFailureInfo(path: $0.path, reason: $0.reason) },
             remoteRoot: result.remoteRoot,
             abortedOnAuth: result.abortedOnAuth,
             entryURL: result.entryURL,
-            entryURLExpiresAt: result.entryURLExpiresAt)
+            entryURLExpiresAt: result.entryURLExpiresAt,
+            skipped: result.skipped,
+            skipReasons: reasons)
+    }
+
+    // MARK: - Wave5：发布历史（读本地发布记录；不触网、不碰凭据）
+
+    public func publishHistory(
+        _ input: PublishHistoryInput
+    ) async throws -> [WebDAVPublishHistoryEntry] {
+        let path = input.localPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            throw GatherError(code: .INVALID_PARAM, params: [
+                "field": "localPath", "reason": "must not be empty",
+            ])
+        }
+        let limit = min(max(input.limit, 1), 20)
+        let directory = OutputSharePublishRecordStore.directory(forLocalPath: path)
+        guard let record = OutputSharePublishRecordStore.load(atDirectory: directory) else {
+            return []
+        }
+        return record.history.prefix(limit).map { entry in
+            WebDAVPublishHistoryEntry(
+                publishedAt: entry.publishedAt,
+                transport: entry.transport,
+                endpointSummary: entry.endpointSummary,
+                remoteFolder: entry.remoteFolder,
+                entryURL: entry.entryURL,
+                uploaded: entry.uploaded,
+                skipped: entry.skipped,
+                failed: entry.failed)
+        }
     }
 
     /// job 创建即终态 = dedupe 命中旧结果（缓存重放），不是本次新执行。
+    /// Wave5：WebDAV HEAD 探针（生产）：URLSession HEAD，读 ETag/Content-Length。
+    /// 认证头由 publisher 传入（Basic auth），本类型不持有凭据。
+    private struct URLSessionWebDAVHeadProbe: WebDAVRemoteProbe {
+        private let session: URLSession
+
+        init(session: URLSession = {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 30
+            configuration.timeoutIntervalForResource = 60
+            return URLSession(configuration: configuration)
+        }()) {
+            self.session = session
+        }
+
+        func head(url: URL, headers: [String: String]) async throws -> WebDAVRemoteMetadata {
+            var request = URLRequest(url: url)
+            request.httpMethod = "HEAD"
+            for (key, value) in headers {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            return WebDAVRemoteMetadata(
+                status: http.statusCode,
+                contentLength: http.value(forHTTPHeaderField: "Content-Length")
+                    .flatMap { Int64($0) },
+                etag: http.value(forHTTPHeaderField: "ETag"))
+        }
+    }
+
     static func isTerminalJobStatus(_ status: AnalysisJobStatus) -> Bool {
         switch status {
         case .succeeded, .failed, .cancelled, .interrupted:

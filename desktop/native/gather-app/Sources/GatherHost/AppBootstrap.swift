@@ -142,6 +142,8 @@ package final class AppBootstrap {
                 }
             }
         } catch {
+            // 装配失败时清掉预设桥，避免指向半初始化的 SettingsService。
+            IngestPresetBridge.settings = nil
             GatherLogger.log("bootstrap failed: \(error)", level: .error)
             // 旧库/损坏库给可执行的归档指引；其余错误仍走统一漏斗。
             if let unrecoverable = error as? RestoreUnrecoverableError {
@@ -177,6 +179,8 @@ package final class AppBootstrap {
         // 否则静态闭包会指向已 shutdown 的 JobService，状态也会残留到下一次启动。
         AITriageUIBridge.onSessionCreated = nil
         AITriageStatusStore.shared.reset()
+        // Wave5 batch3：预设桥同样不能指向已 shutdown 的 SettingsService。
+        IngestPresetBridge.settings = nil
         SessionDirectoryMonitor.shared.stopAll()
         if let maintenanceService {
             await maintenanceService.stopScheduler()
@@ -323,6 +327,9 @@ package final class AppBootstrap {
         let runtime = composition.runtime
         // B8.3b-2a：十六个 Live API 全部由组合根装配（禁止在这里 new 服务）。
         let appServices = AppServices.live(composition: composition)
+        // Wave5 batch3（task-19）：摄取面板的预设持久化接缝（GatherUI 不能 import
+        // GatherHost，也不该为一个面板改 CullingViewModel 的 30+ 测试构造点）。
+        IngestPresetBridge.settings = appServices.settings
         // 冷启动应用持久化界面语言：settings.ui_language 是唯一真相源；
         // 未设置时保持系统语言检测（不再「设置显示中文、界面是英文」）。
         // 4a-3a：写入口是 LanguageStore.seed（同步旧全局但不广播——启动阶段
@@ -451,6 +458,16 @@ package final class AppBootstrap {
                     }
                 }
             })
+        // Wave5 batch3（E1 的第七个入口）：摄取面板走 SessionAPI.ingest，
+        // 宿主把 UI 依赖里的 session 包一层：job 终态成功后调度自动初审
+        // （与其它六个导入入口同语义；失败/取消照原样抛出，不影响摄取）。
+        let sessionAPIForUI = TriageSchedulingSessionAPI(
+            base: appServices.session,
+            onIngestSucceeded: { sessionId in
+                Task { @MainActor in
+                    autoTriageScheduler.schedule(sessionId: sessionId)
+                }
+            })
         // Wave3 / task-21：Shortcuts / App Intents 运行时（只包既有 typed API；
         // scene 发布前安装，未完成启动时 intents 显式报 runtimeUnavailable）。
         let automationRuntime = GatherAutomationRuntime(
@@ -537,7 +554,8 @@ package final class AppBootstrap {
         // workspace 在首次 workspace(for:)/activate 时才由 SessionWorkspaceFactory
         // 构造（本步 RootView 尚未调用）。
         let rootDeps = RootShellDependencies(
-            session: appServices.session,
+            // Wave5 batch3：UI 侧 session 用装饰器（摄取成功后调度 AI 初审）。
+            session: sessionAPIForUI,
             job: appServices.job,
             settings: appServices.settings,
             culling: appServices.culling,
@@ -1295,5 +1313,66 @@ enum C1SessionDirectoryImport {
                 + " trash=\(plan.layout.trash != nil)",
             level: .info)
         return .directory(URL(fileURLWithPath: plan.scanRoot))
+    }
+}
+
+// MARK: - 摄取成功后的 AI 初审调度（Wave5 batch3 / task-19）
+
+/// 摄取成功后的自动初审调度装饰器（导入入口的第六个/第七个）。
+///
+/// 为什么在 SessionAPI 层装饰：摄取面板（GatherUI）只依赖 SessionAPI，不能 import
+/// GatherHost；而自动初审的调度器需要 JobService/DB/Settings。宿主把 UI 依赖里的
+/// session 包一层，只有 ingest 成功后触发回调：
+/// - **只在 success 且 registered > 0 时调度**：全被跳过（同一张卡重导）不做无用功；
+/// - 失败/取消照原样抛出（摄取结果不被调度污染），调度发生在返回之后（不增加延迟）；
+/// - 其它方法一律透传，不影响任何既有调用方。
+/// 与其它导入入口同语义：只调度、不等待；真正的 pipeline 仍在后台任务里。
+struct TriageSchedulingSessionAPI: SessionAPI {
+    let base: any SessionAPI
+    /// 摄取成功后的副作用（宿主注入 AITriageAutoScheduler.schedule；测试注入记录器）。
+    let onIngestSucceeded: @Sendable (String) -> Void
+
+    func list() async throws -> [SessionData] { try await base.list() }
+
+    func get(_ sessionId: String) async throws -> SessionData {
+        try await base.get(sessionId)
+    }
+
+    func create(_ input: SessionCreateInput) async throws -> SessionCreateResult {
+        try await base.create(input)
+    }
+
+    func update(_ input: SessionUpdateParams) async throws -> SessionData {
+        try await base.update(input)
+    }
+
+    func delete(_ input: Confirmed<SessionDeleteInput>) async throws {
+        try await base.delete(input)
+    }
+
+    func addPhotos(_ input: SessionAddPhotosInput) async throws -> AddPhotoResult {
+        try await base.addPhotos(input)
+    }
+
+    func ingest(_ input: Confirmed<SessionIngestInput>) async throws -> SessionIngestResult {
+        let result = try await base.ingest(input)
+        if result.registered > 0 {
+            onIngestSucceeded(input.value.sessionId)
+        }
+        return result
+    }
+
+    func previewIngest(_ input: SessionIngestInput) async throws -> SessionIngestPreview {
+        try await base.previewIngest(input)
+    }
+
+    func setSourceRoot(
+        _ input: Confirmed<SessionSetSourceRootInput>
+    ) async throws -> SessionData {
+        try await base.setSourceRoot(input)
+    }
+
+    func status(_ sessionId: String) async throws -> WorkspaceStatus {
+        try await base.status(sessionId)
     }
 }

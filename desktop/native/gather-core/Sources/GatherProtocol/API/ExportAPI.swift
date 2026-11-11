@@ -26,6 +26,18 @@ public protocol ExportAPI: Sendable {
         _ input: Confirmed<WebDAVPublishInput>,
         onProgress: (@Sendable (Int, Int) -> Void)?
     ) async throws -> WebDAVPublishSummary
+    /// Wave5：读取某本地交付目录的发布历史（最近 limit 条；无记录 = 空数组，不报错）。
+    /// 只读本地发布记录文件；不触网、不碰凭据。
+    func publishHistory(_ input: PublishHistoryInput) async throws -> [WebDAVPublishHistoryEntry]
     func cancel(_ sessionId: String) async throws -> Bool
     func report(_ input: ExportReportInput) async throws -> ReportData
+}
+
+// MARK: - 默认实现（既有 Stub / Preview 不必实现新方法）
+
+public extension ExportAPI {
+    /// 未实现时返回空历史（UI 的"发布历史"退化为空态），不伪造记录。
+    func publishHistory(_ input: PublishHistoryInput) async throws -> [WebDAVPublishHistoryEntry] {
+        []
+    }
 }

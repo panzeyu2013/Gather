@@ -66,6 +66,10 @@ public enum SettingsKey: String, CaseIterable, Sendable, Hashable {
     case triageEnabled = "triage_enabled"
     case outputRecipes = "output.recipes"
     case outputDeliveryRoot = "output.deliveryRoot"
+    // Wave5 batch3 / task-19：导入预设（JSON 数组，元素 = IngestPreset）与最近使用。
+    // presets 是用户内容（reset 保留）；last_preset 只是偏好（reset 回默认）。
+    case ingestPresets = "ingest.presets"
+    case ingestLastPresetID = "ingest.last_preset"
     case triageModelReview = "triage_model_review"
     case triageAutoApply = "triage_auto_apply"
     case triageAutoGenerate = "triage_auto_generate"
@@ -157,6 +161,8 @@ public enum SettingsKey: String, CaseIterable, Sendable, Hashable {
         case .triageEnabled: "0"
         case .outputRecipes: ""
         case .outputDeliveryRoot: ""
+        case .ingestPresets: "[]"
+        case .ingestLastPresetID: ""
         case .triageModelReview: "1"
         case .triageAutoApply: "0"
         case .triageAutoGenerate: "0"

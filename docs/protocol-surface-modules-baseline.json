@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-11-11T07:02:52Z",
+  "generated_at": "2026-11-11T07:24:48Z",
   "note": "模块级 public 面 ratchet；口径同 check-protocol-surface.sh（顶层 public 类型 + public 声明行）",
-  "public_types_gatherpersistence": 294,
-  "public_declarations_gatherpersistence": 2108,
+  "public_types_gatherpersistence": 297,
+  "public_declarations_gatherpersistence": 2128,
   "public_types_gatherdelivery": 28,
   "public_declarations_gatherdelivery": 148,
   "public_types_gatheranalysis": 71,
   "public_declarations_gatheranalysis": 393,
-  "public_types_gatherapplication": 252,
-  "public_declarations_gatherapplication": 1716,
+  "public_types_gatherapplication": 259,
+  "public_declarations_gatherapplication": 1769,
   "public_types_gathermetadataio": 5,
   "public_declarations_gathermetadataio": 26
 }

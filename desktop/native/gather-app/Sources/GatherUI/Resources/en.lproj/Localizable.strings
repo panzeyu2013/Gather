@@ -2663,3 +2663,46 @@
 "AI 初审：已跳过（%@）" = "AI triage: skipped (%@)";
 "AI 初审：未完成（%@）" = "AI triage: incomplete (%@)";
 "AI 初审：失败（%@）" = "AI triage: failed (%@)";
+
+/* Wave5 / Batch3（交付发布二期） */
+"发布历史" = "Publish History";
+"发布已生成的交付包" = "Publish an Existing Delivery";
+"发布已生成的交付包…" = "Publish an Existing Delivery…";
+"暂无发布记录" = "No publish history yet";
+"打开链接" = "Open Link";
+"选择已生成的交付目录（例如 gallery 目录）" = "Choose an existing delivery folder (for example a gallery folder)";
+
+/* Wave5 / Batch3（迁移包组织资产） */
+"目录包不含原图：换机或合并时按新根目录重绑定相对路径。携带：照片、集合、堆栈、智能相册、保存查询、人物绑定、重复组留档（堆栈折叠状态与人脸簇 ID 不可移植，按名/ID 重建）。XMP 迁移只读已有 sidecar。" = "The package does not contain originals: rebind relative paths to the new root when moving machines or merging. Carries: photos, collections, stacks, smart albums, saved searches, person bindings, duplicate groups (stack collapse state and face cluster IDs are not portable; rebuilt by name/ID). XMP migration only reads existing sidecars.";
+"已入队索引扫描（metadata.scan）：照片状态会在扫描完成后更新。" = "Index scan enqueued (metadata.scan): photo states update after the scan completes.";
+"已导出到：%@（照片 %lld、集合 %lld、堆栈 %lld、智能相册 %lld、保存查询 %lld、人物绑定 %lld、重复组 %lld；归档跳过 %lld 张）" = "Exported to: %@ (%lld photos, %lld collections, %lld stacks, %lld smart albums, %lld saved searches, %lld person bindings, %lld duplicate groups; %lld archived photos skipped)";
+"导入完成：新增 %lld 张（待索引 %lld 张），评分 %lld，关键词 %lld，集合 %lld，堆栈 %lld，智能相册 %lld，保存查询 %lld，人物绑定 %lld；photoId 去重 %lld，checksum 去重 %lld；保留本地 %lld，保留导入 %lld，并存 %lld；未映射跳过 %lld，criteria 无效跳过 %lld，重复组未导入 %lld。" = "Import complete: %lld photos added (%lld pending index), %lld ratings, %lld keyword updates, %lld collections, %lld stacks, %lld smart albums, %lld saved searches, %lld person bindings; deduped by photoId %lld, by checksum %lld; kept local %lld, kept imported %lld, coexisted %lld; skipped unmapped %lld, invalid criteria %lld, duplicate groups not imported %lld.";
+"导入会新建一个工作区并写入评分/关键词/集合/堆栈/智能相册/保存查询/人物绑定，不会修改原图。" = "Import creates a new workspace with ratings/keywords/collections/stacks/smart albums/saved searches/person bindings, and never modifies originals.";
+
+/* Wave5 / Batch3（导入预设与结果可见） */
+"导入预设" = "Import Preset";
+"自定义（当前值）" = "Custom (current values)";
+"保存当前为预设…" = "Save Current as Preset…";
+"删除预设" = "Delete Preset";
+"删除预设「%@」？" = "Delete preset “%@”?";
+"只删除预设，不改动照片或文件。" = "Only the preset is deleted; photos and files are untouched.";
+"预设名称" = "Preset Name";
+"预设名称不能为空" = "Preset name cannot be empty";
+"预设会保存改名模板、第二目的地、校验与重复处置。" = "The preset stores the rename template, second destination, checksum, and duplicate policy.";
+"最多保存 %lld 个导入预设" = "At most %lld import presets can be saved";
+"导入预设未接线（缺少 settings API）" = "Import presets are not wired (settings API missing)";
+"预设保存失败：%@" = "Failed to save preset: %@";
+"目标路径（前 %lld 个）" = "Target paths (first %lld)";
+"冲突源文件（前 %lld 个）" = "Conflicting source files (first %lld)";
+"收起失败" = "Hide failures";
+"只重试失败项" = "Retry failed only";
+"已重试失败项：新增登记 %lld 张" = "Retried failed items: %lld newly registered";
+"第二目的地已复制 %lld 张（%@）" = "Second destination: %lld copied (%@)";
+
+/* Wave5 / Batch3 补漏 */
+"失败 %lld 张" = "%lld failed";
+"成功 %lld / 跳过 %lld / 失败 %lld" = "Succeeded %lld / skipped %lld / failed %lld";
+"查看全部 %lld 条失败" = "Show all %lld failures";
+"跳过 %lld 个文件（远端未变）" = "Skipped %lld file(s) (unchanged remotely)";
+"预设 %lld" = "Preset %lld";
+"这个目录里没有可发布的文件" = "There are no publishable files in this folder.";

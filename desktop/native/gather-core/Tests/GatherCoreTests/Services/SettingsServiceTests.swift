@@ -187,6 +187,32 @@ struct SettingsServiceTests {
                 "未知键不得静默落到偏好 scope")
     }
 
+    // Wave5 batch3 / task-19：导入预设是用户内容（reset 保留），最近使用是偏好。
+    @Test("导入预设键：默认值/reset scope/分级 reset 语义")
+    func ingestPresetKeysAreClassified() throws {
+        let harness = try makeHarness()
+        // get() 只读已落库缓存，默认值从派生表取（getAll 合并默认值）。
+        #expect(SettingsService.getDefaults()["ingest.presets"] == "[]")
+        #expect(SettingsService.getDefaults()["ingest.last_preset"] == "")
+        #expect(harness.service.getAll()["ingest.presets"] == "[]")
+        #expect(SettingsService.resetScope(for: "ingest.presets") == .userContent)
+        #expect(SettingsService.resetScope(for: "ingest.last_preset") == .preference)
+
+        try harness.service.set(
+            "ingest.presets",
+            value: #"[{"id":"p1","name":"婚礼","renameTemplate":"{orig}.{ext}"}]"#)
+        try harness.service.set("ingest.last_preset", value: "p1")
+        // 旧入口 reset = 偏好 + 语言：预设保留，最近使用清空。
+        try harness.service.reset()
+        #expect(harness.service.get("ingest.presets").contains("婚礼"))
+        #expect(harness.service.get("ingest.last_preset") == "")
+
+        // 显式清用户内容才删除预设。
+        _ = try harness.service.reset(input: SettingsResetInput(
+            resetPreferences: false, resetUserContent: true, resetLanguage: false))
+        #expect(harness.service.get("ingest.presets") == "[]")
+    }
+
     // TS: 默认值表规模与关键值对齐；删除 14 个无消费者的旧 Node 缓存/C1/防抖键后为 49，
     // 之后随 P0/P1 迭代增补至 52；2026-10-27 增加 metadata.applyBatches.corrupt
     // （仅作批次 JSON 解析失败的留证，无 UI 消费者）→ 53；2026-10-28 增加
@@ -199,7 +225,8 @@ struct SettingsServiceTests {
         // #9：5 个幽灵键转正（import_concurrency / asset_read_mode / similarity_* 三个），
         // 默认值取其此前的调用点硬编码值（行为不变，只是从此可写）。
         // Wave3 / task-21：导出后命令钩子两个键（模板 + 超时）→ 75。
-        #expect(defaults.count == 75)
+        // Wave5 batch3 / task-19：导入预设 + 最近使用两个键 → 77。
+        #expect(defaults.count == 77)
         #expect(defaults["output.deliveryRoot"] == "")
         #expect(defaults["grid_default_sort"] == "import")
         #expect(defaults["grid_density"] == "m")

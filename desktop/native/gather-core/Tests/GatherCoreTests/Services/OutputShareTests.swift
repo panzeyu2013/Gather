@@ -47,6 +47,22 @@ private actor FakeWebDAVTransport: WebDAVTransport {
     }
 }
 
+/// Wave5：WebDAV HEAD 差分探针（假实现，返回预设元信息；不触网）。
+private actor FakeWebDAVProbe: WebDAVRemoteProbe {
+    private(set) var urls: [URL] = []
+    private var responses: [WebDAVRemoteMetadata]
+
+    init(_ responses: [WebDAVRemoteMetadata] = []) {
+        self.responses = responses
+    }
+
+    func head(url: URL, headers: [String: String]) async throws -> WebDAVRemoteMetadata {
+        urls.append(url)
+        guard !responses.isEmpty else { return WebDAVRemoteMetadata(status: 200) }
+        return responses.removeFirst()
+    }
+}
+
 /// 通道分派用的记录型传输（actor 天然 Sendable，不用 @unchecked）。
 private actor RecordingShareTransport: OutputShareTransport {
     private(set) var requests: [OutputSharePublishRequest] = []
@@ -953,6 +969,252 @@ host;x-amz-content-sha256;x-amz-date;x-amz-security-token;x-amz-storage-class
         #expect(result.entryURL
                 == "https://dav.example.com/dav/client/Wedding/gallery/index.html")
         #expect(result.entryURLExpiresAt == nil, "WebDAV 静态链接不过期")
+    }
+
+    // MARK: Wave5（Batch3）：发布记录 / HEAD 差分
+
+    @Test("Wave5 发布记录：round-trip / 最多 5 条 / endpoint 摘要无凭据")
+    func publishRecordRoundTrip() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-record-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(atPath: root.path) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        func entry(_ minute: Int) -> OutputSharePublishEntry {
+            OutputSharePublishEntry(
+                publishedAt: OutputShareManifest.iso8601Now(
+                    Date(timeIntervalSince1970: 1_800_000_000 + Double(minute * 60))),
+                transport: .s3,
+                endpointSummary: "https://photos.s3.us-east-1.amazonaws.com",
+                remoteFolder: "client",
+                bucket: "photos",
+                entryURL: "https://example.com/index.html",
+                uploaded: 1, skipped: minute, failed: 0,
+                files: [OutputSharePublishFileRecord(
+                    relative: "index.html", size: 10, mtime: 100,
+                    etag: "\"abc\"")])
+        }
+        for minute in 1...6 {
+            try OutputSharePublishRecordStore.append(entry(minute), atDirectory: root.path)
+        }
+        let record = try #require(OutputSharePublishRecordStore.load(atDirectory: root.path))
+        #expect(record.history.count == 5, "历史最多保留 5 条")
+        #expect(record.history.first?.skipped == 6, "最新在前")
+        #expect(record.history.last?.skipped == 2)
+        let matched = OutputSharePublishRecordStore.matchingEntry(
+            in: record, transport: .s3,
+            endpointSummary: "https://photos.s3.us-east-1.amazonaws.com",
+            remoteFolder: "client/", bucket: "photos")
+        #expect(matched != nil)
+        #expect(OutputSharePublishRecordStore.matchingEntry(
+            in: record, transport: .webdav,
+            endpointSummary: "https://dav.example.com", remoteFolder: "client",
+            bucket: nil) == nil)
+
+        #expect(OutputSharePublishRecordStore.endpointSummary(
+            "https://alice:secret@dav.example.com/dav/?token=abc#frag")
+                == "https://dav.example.com/dav")
+        #expect(OutputSharePublishRecordStore.endpointSummary("") == "")
+
+        // 缺记录 / 损坏记录 → nil（保守全量发布，不误跳过）。
+        #expect(OutputSharePublishRecordStore.load(
+            atDirectory: root.appendingPathComponent("missing").path) == nil)
+        try Data("{not json".utf8).write(
+            to: OutputSharePublishRecordStore.fileURL(atDirectory: root.path))
+        #expect(OutputSharePublishRecordStore.load(atDirectory: root.path) == nil)
+    }
+
+    @Test("Wave5 HEAD 差分判定：本地+远端都未变才跳过；ETag 优先、长度兜底")
+    func headDiffMatrix() {
+        let local = OutputSharePublishFileRecord(
+            relative: "a.jpg", size: 5, mtime: 10)
+        let previous = OutputSharePublishFileRecord(
+            relative: "a.jpg", size: 5, mtime: 10, etag: "\"abc\"")
+        #expect(OutputSharePublishDiff.shouldSkip(
+            previous: previous, local: local,
+            remoteContentLength: 5, remoteETag: "\"abc\""))
+        #expect(!OutputSharePublishDiff.shouldSkip(
+            previous: previous, local: local,
+            remoteContentLength: 5, remoteETag: "\"other\""),
+            "ETag 不一致必须重传")
+        let mtimeChanged = OutputSharePublishFileRecord(
+            relative: "a.jpg", size: 5, mtime: 11)
+        #expect(!OutputSharePublishDiff.shouldSkip(
+            previous: previous, local: mtimeChanged,
+            remoteContentLength: 5, remoteETag: "\"abc\""),
+            "本地 mtime 变了必须重传")
+        let noETag = OutputSharePublishFileRecord(
+            relative: "a.jpg", size: 5, mtime: 10)
+        #expect(OutputSharePublishDiff.shouldSkip(
+            previous: noETag, local: local,
+            remoteContentLength: 5, remoteETag: "\"whatever\""),
+            "没有记录 ETag 时 Content-Length 相同即可跳过")
+        #expect(!OutputSharePublishDiff.shouldSkip(
+            previous: noETag, local: local,
+            remoteContentLength: 6, remoteETag: nil))
+        #expect(OutputSharePublishDiff.normalizedETag("W/\"x\"") == "x")
+        #expect(OutputSharePublishDiff.normalizedETag("  ") == nil)
+    }
+
+    @Test("Wave5 S3 发布：HEAD 差分跳过未变文件、部分变更/远端缺失照常上传、写历史")
+    func s3PublishHeadDiffAndHistory() async throws {
+        let tree = try makeTree()
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .s3, endpoint: "",
+            accessKeyID: "AK", secret: "SK",
+            remoteFolder: "client/wedding", bucket: "photos", region: nil)
+
+        // 第一次：无记录 → 全量（探针 201/204 + 2 个 PUT）。
+        let firstTransport = FakeS3Transport()
+        let first = try await S3ShareTransport(
+            transport: firstTransport, sleep: { _ in }).publish(request, onProgress: nil)
+        #expect(first.isSuccess)
+        #expect(first.uploaded == 2)
+        #expect(first.skipped == 0)
+        let recordAfterFirst = try #require(
+            OutputSharePublishRecordStore.load(atDirectory: tree))
+        #expect(recordAfterFirst.history.count == 1)
+        #expect(recordAfterFirst.history.first?.files.count == 2)
+        #expect(recordAfterFirst.history.first?.entryURL != nil)
+
+        // 第二次：探针 + 2 个 HEAD 全同 → 全部跳过（只有探针 PUT 一次）。
+        let headIndex = S3HTTPResponse(
+            status: 200, headers: ["etag": "\"i\"", "content-length": "5"])
+        let headThumb = S3HTTPResponse(
+            status: 200, headers: ["etag": "\"t\"", "content-length": "5"])
+        let skipTransport = FakeS3Transport([
+            .success(S3HTTPResponse(status: 201)),
+            .success(S3HTTPResponse(status: 204)),
+            .success(headIndex),
+            .success(headThumb),
+        ])
+        let skippedResult = try await S3ShareTransport(
+            transport: skipTransport, sleep: { _ in }).publish(request, onProgress: nil)
+        #expect(skippedResult.isSuccess)
+        #expect(skippedResult.uploaded == 0)
+        #expect(skippedResult.skipped == 2)
+        #expect(skippedResult.skipReasons[.remoteUnchanged] == 2)
+        #expect(skippedResult.entryURL != nil, "跳过的入口文件仍可生成预签名链接")
+        let skipRequests = await skipTransport.requests
+        let skipPuts = skipRequests.filter { $0.method == "PUT" }
+        #expect(skipPuts.count == 1, "只有可写探针 PUT，文件全跳过")
+        let afterSkip = try #require(
+            OutputSharePublishRecordStore.load(atDirectory: tree))
+        #expect(afterSkip.history.count == 2)
+        #expect(afterSkip.history.first?.skipped == 2)
+
+        // 第三次：本地改一个文件 → 只重传它；另一个仍跳过。
+        try Data("index-changed".utf8).write(
+            to: URL(fileURLWithPath: tree).appendingPathComponent("index.html"))
+        let partialTransport = FakeS3Transport([
+            .success(S3HTTPResponse(status: 201)),
+            .success(S3HTTPResponse(status: 204)),
+            .success(S3HTTPResponse(status: 200)),
+            .success(S3HTTPResponse(status: 200)),
+            .success(S3HTTPResponse(
+                status: 200, headers: ["content-length": "5", "etag": "\"t\""])),
+        ])
+        let partial = try await S3ShareTransport(
+            transport: partialTransport, sleep: { _ in }).publish(request, onProgress: nil)
+        #expect(partial.isSuccess)
+        #expect(partial.uploaded == 1)
+        #expect(partial.skipped == 1)
+
+        // 第四次：远端缺 index → 重传；thumbs 仍跳过。
+        let missingTransport = FakeS3Transport([
+            .success(S3HTTPResponse(status: 201)),
+            .success(S3HTTPResponse(status: 204)),
+            .success(S3HTTPResponse(status: 404)),
+            .success(S3HTTPResponse(status: 200)),
+            .success(S3HTTPResponse(
+                status: 200, headers: ["content-length": "5", "etag": "\"t\""])),
+        ])
+        let missing = try await S3ShareTransport(
+            transport: missingTransport, sleep: { _ in }).publish(request, onProgress: nil)
+        #expect(missing.isSuccess)
+        #expect(missing.uploaded == 1)
+        #expect(missing.skipped == 1)
+    }
+
+    @Test("Wave5 WebDAV 发布：HEAD 差分跳过未变文件、写发布记录")
+    func webDAVPublishHeadDiffAndRecord() async throws {
+        let tree = try makeTree()
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let configuration = WebDAVConfiguration(
+            baseURL: URL(string: "https://dav.example.com/dav/")!,
+            username: "alice", password: "secret",
+            remoteFolder: "client/Wedding")
+        let first = try await WebDAVPublisher(
+            transport: FakeWebDAVTransport([]), sleep: { _ in })
+            .publish(localPath: tree, configuration: configuration)
+        #expect(first.isSuccess)
+        #expect(first.uploaded == 2)
+        let record = try #require(
+            OutputSharePublishRecordStore.load(atDirectory: tree))
+        #expect(record.history.count == 1)
+        #expect(record.history.first?.transport == OutputShareTransportKind.webdav)
+
+        let probe = FakeWebDAVProbe([
+            WebDAVRemoteMetadata(status: 200, contentLength: 5, etag: "\"i\""),
+            WebDAVRemoteMetadata(status: 200, contentLength: 5, etag: "\"t\""),
+        ])
+        let skipTransport = FakeWebDAVTransport([])
+        let skipped = try await WebDAVPublisher(
+            transport: skipTransport, sleep: { _ in })
+            .publish(localPath: tree, configuration: configuration, remoteProbe: probe)
+        #expect(skipped.isSuccess)
+        #expect(skipped.uploaded == 0)
+        #expect(skipped.skipped == 2)
+        #expect(skipped.entryURL != nil)
+        #expect(await skipTransport.requests.isEmpty, "全跳过时不应发 MKCOL/PUT")
+        #expect(await probe.urls.count == 2)
+        let afterSkip = try #require(
+            OutputSharePublishRecordStore.load(atDirectory: tree))
+        #expect(afterSkip.history.count == 2)
+        #expect(afterSkip.history.first?.skipped == 2)
+    }
+
+    @Test("Wave5 WebDAV 发布：远端缺失 → 只重传缺的文件")
+    func webDAVPublishHeadDiffRemoteMissingUploads() async throws {
+        let tree = try makeTree()
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let configuration = WebDAVConfiguration(
+            baseURL: URL(string: "https://dav.example.com/dav/")!,
+            username: "alice", password: "secret",
+            remoteFolder: "client/Wedding")
+        _ = try await WebDAVPublisher(
+            transport: FakeWebDAVTransport([]), sleep: { _ in })
+            .publish(localPath: tree, configuration: configuration)
+        let probe = FakeWebDAVProbe([
+            WebDAVRemoteMetadata(status: 404, contentLength: nil, etag: nil),
+            WebDAVRemoteMetadata(status: 200, contentLength: 5, etag: "\"t\""),
+        ])
+        let transport = FakeWebDAVTransport([])
+        let result = try await WebDAVPublisher(
+            transport: transport, sleep: { _ in })
+            .publish(localPath: tree, configuration: configuration, remoteProbe: probe)
+        #expect(result.isSuccess)
+        #expect(result.uploaded == 1)
+        #expect(result.skipped == 1)
+        let puts = await transport.requests.filter { $0.method == .put }
+        #expect(puts.count == 1)
+        #expect(puts.first?.url.path.contains("index.html") == true)
     }
 
     @Test("Wave5 WebDAV 发布：没有画廊入口时 entryURL 为 nil")

@@ -87,6 +87,9 @@ struct SettingsKeyTests {
         // Wave3 / task-21：导出后命令钩子（新键，oracle 追加；不改旧键默认值）。
         "export_post_command": "",
         "export_post_command_timeout_seconds": "30",
+        // Wave5 batch3 / task-19：导入预设 + 最近使用（同上：只追加新键）。
+        "ingest.presets": "[]",
+        "ingest.last_preset": "",
         // #9 转正的幽灵键（此前不在默认表里，永远读调用点硬编码默认值）。
         "import_concurrency": "8",
         "asset_read_mode": "dual",
