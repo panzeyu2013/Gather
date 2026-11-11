@@ -12,14 +12,37 @@ import GatherProtocol
 enum CullingLayoutMode: String, CaseIterable, Equatable {
     case single
     case compare2
+    /// 3 列并排（20-culling-browse #7：三选一时不再退化成 2+1 不对称布局）。
+    case compare3
     case compare4
+    /// Survey（#6）：N 张同屏，N 由当前选择集决定（2...9）；选择不足 2 张时
+    /// 回退"当前照片 + 邻接"补足，见 `effectiveCompareCount(selectionCount:)`。
+    case survey
     case grid
 
-    var compareCount: Int {
+    /// Survey 一次最多同屏的张数：超过 9 格单格就小于判读阈值，应该回网格。
+    static let surveyMaxCount = 9
+
+    /// 固定格数布局的格数；survey 的格数由选择集决定（nil = 需调用方给选择集）。
+    var fixedCompareCount: Int? {
         switch self {
         case .single, .grid: return 1
         case .compare2: return 2
+        case .compare3: return 3
         case .compare4: return 4
+        case .survey: return nil
+        }
+    }
+
+    /// 兼容旧调用点（没有选择集信息时的兜底）：survey 至少 2 张。
+    var compareCount: Int { fixedCompareCount ?? 2 }
+
+    /// 有效对比格数：survey = 当前选择集张数（夹在 2...surveyMaxCount），
+    /// 其余布局按固定格数（选择集不影响单/2/3/4 图/网格）。
+    func effectiveCompareCount(selectionCount: Int) -> Int {
+        switch self {
+        case .survey: return min(Self.surveyMaxCount, max(2, selectionCount))
+        default: return compareCount
         }
     }
 
@@ -27,7 +50,9 @@ enum CullingLayoutMode: String, CaseIterable, Equatable {
         switch self {
         case .single: return "单图"
         case .compare2: return "2 图"
+        case .compare3: return "3 图"
         case .compare4: return "4 图"
+        case .survey: return "多图对比"
         case .grid: return "网格"
         }
     }
@@ -36,9 +61,48 @@ enum CullingLayoutMode: String, CaseIterable, Equatable {
         switch self {
         case .single: return "rectangle"
         case .compare2: return "rectangle.split.2x1"
+        case .compare3: return "rectangle.split.3x1"
         case .compare4: return "rectangle.split.2x2"
+        case .survey: return "square.grid.2x2"
         case .grid: return "square.grid.3x3"
         }
+    }
+}
+
+/// 查看器格子网格换算（纯逻辑，可单测）：column/row 只由同屏张数决定，
+/// 与共享 scale/offset 无关——同步缩放语义不变。
+enum CullingViewerGridLayout {
+    /// 列数：1 张 1 列；2 张 2 列（并排）；3 张 3 列（真正 3 图）；4 张 2×2；
+    /// 5–9 张 3 列（Survey：每行 3 格，末行不满留空）。
+    static func columns(for count: Int) -> Int {
+        switch count {
+        case ..<2: return 1
+        case 2: return 2
+        case 3: return 3
+        case 4: return 2
+        default: return 3
+        }
+    }
+
+    static func rows(for count: Int, columns: Int? = nil) -> Int {
+        let safeCount = max(1, count)
+        let safeColumns = max(1, columns ?? Self.columns(for: safeCount))
+        return max(1, (safeCount + safeColumns - 1) / safeColumns)
+    }
+
+    /// 单格尺寸：容器减去 (列-1)/(行-1) 条间距后均分；退化输入钳到 ≥1pt。
+    static func cellSize(
+        container: CGSize,
+        columns: Int,
+        rows: Int,
+        spacing: CGFloat = GatherMetrics.Space.s
+    ) -> CGSize {
+        let safeColumns = max(1, columns)
+        let safeRows = max(1, rows)
+        let gap = max(0, spacing)
+        let width = (container.width - gap * CGFloat(safeColumns - 1)) / CGFloat(safeColumns)
+        let height = (container.height - gap * CGFloat(safeRows - 1)) / CGFloat(safeRows)
+        return CGSize(width: max(1, width), height: max(1, height))
     }
 }
 

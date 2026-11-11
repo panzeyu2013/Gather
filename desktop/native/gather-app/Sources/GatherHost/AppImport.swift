@@ -42,13 +42,19 @@ enum AppImport {
     /// Cut 4 / 4b-3：`l10n` 由调用方（宿主装配的闭包）在**动作发生时**从
     /// LanguageStore 取当前语言传入——本类型不读进程全局，默认建库名（"C1 导入
     /// M/D H:mm" / "导入照片"）因此跟随界面语言。
+    ///
+    /// Wave2 / G3：`afterCreate` 是「建库+照片行落库之后、importCompleted 之前」的
+    /// 可选钩子（默认 nil ⇒ 其余导入入口行为零变化）。C1 判断数据需要 sessionId 才
+    /// 能按路径映射，本入口因此提供这个接缝；钩子的失败**不得影响导入结果**
+    ///（额外数据是可选增强，导入已经成功）。
     @MainActor
     static func importFiles(
         _ files: [String],
         sessionAPI: any SessionAPI,
         source: String = "local",
         sourceLabel: String = "",
-        l10n: L10n
+        l10n: L10n,
+        afterCreate: (@MainActor (SessionCreateResult) async throws -> Void)? = nil
     ) async {
         let normalized = normalizeImportFilepaths(files)
         guard !normalized.isEmpty else { return }
@@ -78,6 +84,15 @@ enum AppImport {
             // P1（复审）：建库/加照片/入队走 typed API（nonisolated async，不在主线程）；
             // 入队失败由 LiveSessionAPI 补偿删除，不会留下“永远不会被扫描”的半成品。
             let result = try await sessionAPI.create(input)
+            // G3：可选后置钩子（C1 判断数据）。顺序刻意放在 importCompleted 通知之前，
+            // 但实现方必须自己异步化、立即返回（本入口不能因此变慢/失败）。
+            if let afterCreate {
+                do {
+                    try await afterCreate(result)
+                } catch {
+                    GatherLogger.log("import afterCreate hook failed: \(error)", level: .warn)
+                }
+            }
             // 任一目录作用域（单目录或目录+文件）都可能有异步索引，不能用 added==0 判空。
             let directoryImport = normalized.contains(where: isDirectory)
             let failedFiles = result.failedFiles

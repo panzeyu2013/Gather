@@ -92,6 +92,8 @@ enum CullingViewerZoom {
 struct CullingWorkbenchViewer: View {
     let viewModel: CullingViewModel
     let compareCount: Int
+    /// 是否 Survey 布局：选片规则从"当前 ± 邻接"改为"选择集驱动"（见 CullingComparison）。
+    var isSurvey: Bool = false
     let faceAlign: Bool
     /// 专注模式是否开启（状态由页面持有：隐藏检查器/折叠胶片条/窗口全屏）。
     var isFocusMode: Bool = false
@@ -106,11 +108,12 @@ struct CullingWorkbenchViewer: View {
     @State private var scale = 1.0
     /// 底层整图位图（基准档）：细节由可见区域层提供，底层不随缩放抬高。
     @State private var detailBaseSize = PhotoDetailTier.baseDimension
-    /// 最近一次单元格布局尺寸（A-6：细节层几何必须按单元格而非整窗计算）。
-    @State private var lastCellSize: CGSize = .zero
-    /// 可见区域细节层（去抖 150ms 后更新；缩放与平移都会改动它）。
-    @State private var detailTileState: PhotoViewerGeometry.DetailTile?
-    @State private var detailTileTask: Task<Void, Never>?
+    /// 每格最近一次布局尺寸（A-6：细节层几何必须按**各自**单元格算，不能共用）。
+    @State private var cellSizes: [String: CGSize] = [:]
+    /// 每格可见区域细节贴片（Wave2：#3 起非当前格也可能有；key = photoId）。
+    @State private var detailTiles: [String: PhotoViewerGeometry.DetailTile] = [:]
+    /// 每格贴片去抖任务（切图/缩放/切布局/离开时取消）。
+    @State private var detailTileTasks: [String: Task<Void, Never>] = [:]
     @State private var gestureScale = 1.0
     @State private var offset = CGSize.zero
     /// 本次拖拽开始时的位移基线（B-C2）：DragGesture.translation 是相对手势起点
@@ -169,16 +172,27 @@ struct CullingWorkbenchViewer: View {
     var body: some View {
         GeometryReader { geometry in
             let visible = comparisonAssets()
-            let cellGroups = groupCells(visible)
-            let columns = visible.count > 1 ? 2 : 1
-            let cellWidth = columns > 1 ? (geometry.size.width - 8) / 2 : geometry.size.width
-            let cellHeight = cellGroups.count > 1 ? (geometry.size.height - 8) / 2 : geometry.size.height
+            // Wave2（#6/#7）：列/行由同屏张数决定（1/2/3 列并排、4 图 2×2、
+            // Survey 最多 9 格 3 列）；所有格共用同一尺寸与一套 scale/offset，
+            // 同步缩放/平移语义不变。
+            let columns = CullingViewerGridLayout.columns(for: visible.count)
+            let rows = CullingViewerGridLayout.rows(for: visible.count, columns: columns)
+            let cellGroups = groupCells(visible, columns: columns)
+            let cellSize = CullingViewerGridLayout.cellSize(
+                container: geometry.size,
+                columns: columns,
+                rows: rows
+            )
+            // 预算/贴片策略按**实际同屏张数**（Survey 选择 9 张但页内只加载 3 张时，
+            // 按 3 格而不是 9 格给预算）。
+            let visibleCells = max(1, visible.count)
+            let detailBudget = PhotoDetailTier.budget(forVisibleCells: visibleCells)
             VStack(spacing: GatherMetrics.Space.s) {
                 ForEach(0..<cellGroups.count, id: \.self) { rowIndex in
                     HStack(spacing: GatherMetrics.Space.s) {
                         ForEach(cellGroups[rowIndex]) { cell in
-                            cellView(cell)
-                                .frame(width: cellWidth, height: cellHeight)
+                            cellView(cell, visibleCells: visibleCells, detailBudget: detailBudget)
+                                .frame(width: cellSize.width, height: cellSize.height)
                         }
                     }
                 }
@@ -240,15 +254,18 @@ struct CullingWorkbenchViewer: View {
 
                 // §3.9 叠加层开关：不绑定裸键（键位表在 Interaction/，
                 // 与现有 P/X/U/0-5 冲突风险由后续键位表统一分配）。
+                // Wave2（#8）：按钮 help 里写清键位（裸键只在查看器持焦点时生效）。
                 Button { toggleHistogram() } label: {
                     Image(systemName: "chart.bar.xaxis")
                 }
-                .help(l10n("直方图（基于预览）"))
-                .accessibilityLabel(l10n("直方图"))
+                .help(l10n("直方图（H）· 基于预览"))
+                // 无障碍标签保留既有「基于预览」措辞：直方图口径仍是 8bit 预览，
+                // 不能把它说成 RAW 口径（参考 20-culling-browse §2.2）。
+                .accessibilityLabel(l10n("直方图（基于预览）"))
                 Button { toggleFocusMask() } label: {
                     Image(systemName: "scope")
                 }
-                .help(l10n("合焦提示"))
+                .help(l10n("合焦提示（F）"))
                 .accessibilityLabel(l10n("合焦提示"))
                 Button { toggleCropFrame() } label: {
                     Image(systemName: "crop")
@@ -258,7 +275,7 @@ struct CullingWorkbenchViewer: View {
                 Button { toggleReference() } label: {
                     Image(systemName: "rectangle.on.rectangle")
                 }
-                .help(l10n("设为参考 / 取消参考"))
+                .help(l10n("设为参考 / 取消参考（R）"))
                 .accessibilityLabel(l10n("参考对比"))
                 if overlayState.hasReference {
                     Menu {
@@ -270,20 +287,37 @@ struct CullingWorkbenchViewer: View {
                     } label: {
                         Image(systemName: "rectangle.split.2x1")
                     }
-                    .help(l10n("对比模式"))
+                    .help(l10n("对比模式（C）"))
                     .accessibilityLabel(l10n("对比模式"))
                 }
+                // 键位可见性（#8「并在菜单/帮助中可见」）：一个只读的快捷键菜单，
+                // 与 onKeyPress 的分发同源（CullingViewerShortcutKey），不另造入口。
+                Menu {
+                    Button(l10n("直方图（H）· 基于预览")) { toggleHistogram() }
+                    Button(l10n("合焦提示（F）")) { toggleFocusMask() }
+                    Button(l10n("设为参考 / 取消参考（R）")) { toggleReference() }
+                        .accessibilityLabel(l10n("设为参考 / 取消参考"))
+                    Button(l10n("对比模式（C）")) { overlayState.cycleReferenceMode() }
+                        .disabled(!overlayState.hasReference)
+                    Divider()
+                    Button(l10n("适配窗口（⌘0）")) { resetTransform() }
+                    Button(l10n("实际像素（⌘1 或 ⌘⌥0）")) { zoomToActualPixels() }
+                } label: {
+                    Image(systemName: "keyboard")
+                }
+                .help(l10n("查看器快捷键"))
+                .accessibilityLabel(l10n("查看器快捷键"))
 
                 Divider().frame(height: 12)
 
                 // 专注模式（P1 无干扰单图）：隐藏检查器 + 折叠胶片条 + 窗口全屏。
-                // 裸键 F 在 onKeyPress 里同一入口；「显示」菜单也有一项。
+                // Wave2：裸 F 已还给合焦掩膜，专注模式改为 ⇧F（onKeyPress/菜单同入口）。
                 Button { onToggleFocusMode() } label: {
                     Image(systemName: isFocusMode
                         ? "arrow.down.right.and.arrow.up.left"
                         : "arrow.up.left.and.arrow.down.right")
                 }
-                .help(l10n(isFocusMode ? "退出专注模式" : "专注模式（F）"))
+                .help(l10n(isFocusMode ? "退出专注模式（⇧F）" : "专注模式（⇧F）"))
                 .accessibilityLabel(l10n(isFocusMode ? "退出专注模式" : "专注模式"))
             }
             .buttonStyle(.borderless)
@@ -332,11 +366,30 @@ struct CullingWorkbenchViewer: View {
             // 裸键决策：带 ⌘/⌥ 的组合交给系统（⌘X 不能变成“淘汰”）。
             guard !press.modifiers.contains(.command),
                   !press.modifiers.contains(.option) else { return .ignored }
-            switch press.characters.lowercased() {
-            case "f":
-                // 专注模式（隐藏检查器 / 折叠胶片条 / 窗口全屏）；「显示」菜单同入口。
-                onToggleFocusMode()
+            // Wave2（20-culling-browse #8）：叠加层/查看模式键位 H/F/R/C。
+            // 裸 F = 合焦掩膜（评审设计意图），⇧F = 专注模式（Wave1 的 F 让位，
+            // 「显示」菜单/查看器按钮的 help 同步标注 ⇧F）。
+            if let action = CullingViewerShortcutKey.action(
+                characters: press.characters,
+                shift: press.modifiers.contains(.shift)
+            ) {
+                switch action {
+                case .toggleHistogram:
+                    toggleHistogram()
+                case .toggleFocusMask:
+                    toggleFocusMask()
+                case .toggleFocusMode:
+                    onToggleFocusMode()
+                case .toggleReference:
+                    toggleReference()
+                case .cycleReferenceMode:
+                    // C 只在已设参考时有意义（未设参考时对比模式组本来就不显示）。
+                    guard overlayState.hasReference else { return .ignored }
+                    overlayState.cycleReferenceMode()
+                }
                 return .handled
+            }
+            switch press.characters.lowercased() {
             case " ":
                 Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }
                 return .handled
@@ -391,19 +444,24 @@ struct CullingWorkbenchViewer: View {
         }
         .onDisappear {
             stopWheelMonitor()
-            // 离开查看器（切网格/离开页面）立即取消未完成的预取。
+            // 离开查看器（切网格/离开页面）立即取消未完成的预取与贴片解码。
             viewModel.cancelNeighborPreload()
+            clearDetailTiles()
         }
         // 复用旧版 resetTransform 语义：对比模式切换 / 人脸对齐开关 / 翻页
         // 均显式复位缩放与位移（替代旧的 .id() 整树重建，避免焦点与监听扰动）。
         .onChange(of: compareCount) { _, _ in
             resetTransform()
+            // 格数变化（切 2/3/4/Survey）后旧贴片几何全部作废。
+            clearDetailTiles()
         }
         .onChange(of: faceAlign) { _, _ in
             resetTransform()
+            clearDetailTiles()
         }
         .onChange(of: viewModel.currentPhotoId) { _, _ in
             resetTransform()
+            clearDetailTiles()
             // 翻片/选片后重新调度 ±2 预取（去抖：连按只预热最后一张的邻张）。
             viewModel.scheduleNeighborPreload()
         }
@@ -411,9 +469,12 @@ struct CullingWorkbenchViewer: View {
         .onChange(of: viewModel.pageVersion) { _, _ in
             viewModel.scheduleNeighborPreload()
         }
-        // 可见区域细节层：缩放或平移停止 150ms 后重算「可见矩形」，只重解那一块。
-        .onChange(of: scale) { _, _ in scheduleDetailTileUpdate() }
-        .onChange(of: offset) { _, _ in scheduleDetailTileUpdate() }
+        // 可见区域细节层：缩放或平移停止 150ms 后重算每一格的「可见矩形」，
+        // 只重解那一块（Wave2：2 图/当前格/hover 格各自有贴片）。
+        .onChange(of: scale) { _, _ in scheduleDetailTileUpdateForVisibleCells() }
+        .onChange(of: offset) { _, _ in scheduleDetailTileUpdateForVisibleCells() }
+        // hover 进入新格：>2 图时要给它解贴片（当前+hover 策略）。
+        .onChange(of: hoveredCellId) { _, _ in scheduleDetailTileUpdateForVisibleCells() }
         // P1 下一波 §3.9：直方图（右下角，160×80）。
         .overlay(alignment: .bottomTrailing) {
             if overlayState.histogramVisible {
@@ -465,7 +526,10 @@ struct CullingWorkbenchViewer: View {
     }
 
     /// 对比单元格：黑底 + 缩放/平移手势 + 底部字幕条 + 徽标 + hover 主色描边 + 双击复位。
-    private func cellView(_ cell: ViewerCell) -> some View {
+    /// - Parameters:
+    ///   - visibleCells: 同屏总格数（贴片预算/可见性策略按它算，而不是布局固定格数）。
+    ///   - detailBudget: 本次同屏允许的单格解码档位上限。
+    private func cellView(_ cell: ViewerCell, visibleCells: Int, detailBudget: Int) -> some View {
         let asset = cell.asset
         return GeometryReader { cellGeometry in
             // A-6：单元格尺寸只经生命周期回调写状态（**不在 body 求值期间写 @State**，
@@ -473,15 +537,14 @@ struct CullingWorkbenchViewer: View {
             Color.clear
                 .frame(width: 0, height: 0)
                 .onAppear {
-                    if cell.asset.photo.id == currentAsset?.photo.id { lastCellSize = cellGeometry.size }
+                    cellSizes[cell.asset.photo.id] = cellGeometry.size
+                    scheduleDetailTileUpdate(for: cell.asset.photo.id)
                 }
                 .onChange(of: cellGeometry.size) { _, newSize in
-                    if cell.asset.photo.id == currentAsset?.photo.id {
-                        lastCellSize = newSize
-                        // A-6 残余（第二轮验证）：尺寸变化（拖窗口/切对比模式）后
-                        // 贴片几何也要重算，否则放大态下会错位到下次平移/缩放。
-                        scheduleDetailTileUpdate()
-                    }
+                    cellSizes[cell.asset.photo.id] = newSize
+                    // A-6 残余（第二轮验证）：尺寸变化（拖窗口/切布局）后贴片
+                    // 几何也要重算，否则放大态下会错位到下次平移/缩放。
+                    scheduleDetailTileUpdate(for: cell.asset.photo.id)
                 }
             // B-C1：人脸对齐必须按「fit 后的图像显示尺寸」算，并乘上缩放级。
             // 旧实现用单元格尺寸且漏乘 zoom → 竖构图两轴欠平移 1.6~2×，
@@ -495,9 +558,8 @@ struct CullingWorkbenchViewer: View {
                     zoom: max(2, scale)
                 )
             }()
-            // 对比模式按格数收窄解码预算：4 格各解 8192px 会瞬时吃掉约 1GB。
-            // 细节贴片与 onUnavailable 的整图高档位兜底必须共用同一个预算。
-            let detailBudget = PhotoDetailTier.budget(forVisibleCells: max(1, compareCount))
+            // 细节贴片与 onUnavailable 的整图高档位兜底共用同一个预算（由 body 按
+            // 实际同屏张数分配：4 格各解 8192px 会瞬时吃掉约 1GB）。
             let referenceAsset = overlayState.referencePhotoId.flatMap { id in
                 assets.first(where: { $0.photo.id == id })
             }
@@ -555,12 +617,17 @@ struct CullingWorkbenchViewer: View {
                     }
                     .allowsHitTesting(false)
                 }
-                // 可见区域细节层：按同一套几何算出「真正可见的图像矩形」，
-                // 只解码这一块（detailTileState 由缩放/平移变化去抖驱动）。
-                // A-6 残余（第二轮验证）：detailTileState 是整页唯一状态，其几何来自
-                // currentAsset；非当前格把「当前照片的可见区域」贴到别人的底图上会错位
-                //（宽高比不同时明显）。只让当前格渲染贴片。
-                if let tile = detailTileState, cell.asset.photo.id == currentAsset?.photo.id {
+                // 可见区域细节层：按**该格自己的**单元格尺寸与照片宽高算出「真正
+                // 可见的图像矩形」，只解码这一块（缩放/平移/尺寸变化去抖后更新）。
+                // Wave2（#3）：2 图并排时非当前格也贴片——否则并排判合焦在高倍下
+                // 只有当前格清晰，"哪张更实"根本没法比；3/4/Survey 只给当前+hover
+                // （见 CullingDetailTilePolicy，避免同时解 N 块细节打满解码闸门）。
+                if let tile = detailTiles[cell.asset.photo.id],
+                   CullingDetailTilePolicy.showsTile(
+                       compareCount: visibleCells,
+                       isCurrent: cell.asset.photo.id == currentAsset?.photo.id,
+                       isHovered: hoveredCellId == cell.id),
+                   tile.viewRect.width > 0, tile.viewRect.height > 0 {
                     PhotoDetailTileView(
                         path: asset.photo.filepath,
                         normalizedRect: tile.normalizedRect,
@@ -568,8 +635,10 @@ struct CullingWorkbenchViewer: View {
                             viewRect: tile.viewRect,
                             budgetDimension: detailBudget
                         ),
+                        // 整图高档位兜底只对当前格做：detailBaseSize 是全局基准，
+                        // 非当前格替换它会把所有格的底图一起抬高（内存失控）。
                         onUnavailable: {
-                            // 区域解码不可用 → 退回整图高档位（渐进档位逻辑保留为兜底）。
+                            guard cell.asset.photo.id == currentAsset?.photo.id else { return }
                             detailBaseSize = PhotoDetailTier.target(
                                 fitPoints: Self.fitPoints(
                                     imageSize: CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height)),
@@ -708,13 +777,15 @@ struct CullingWorkbenchViewer: View {
         }
     }
 
-    /// 对比网格按行分组（2 列；4 张 = 2x2，3 张 = 2+1）。
-    private func groupCells(_ visible: [CullingAsset]) -> [[ViewerCell]] {
+    /// 按给定的列数把同屏资产切成行（列数来自 CullingViewerGridLayout：
+    /// 2 图 = 2 列、3 图 = 3 列、4 图 = 2 列、Survey 最多 3 列）。
+    private func groupCells(_ visible: [CullingAsset], columns: Int) -> [[ViewerCell]] {
+        let safeColumns = max(1, columns)
         var groups: [[ViewerCell]] = []
         var row: [ViewerCell] = []
         for (order, asset) in visible.enumerated() {
             row.append(ViewerCell(id: asset.photo.id, order: order, asset: asset))
-            if row.count == 2 {
+            if row.count == safeColumns {
                 groups.append(row)
                 row = []
             }
@@ -723,10 +794,18 @@ struct CullingWorkbenchViewer: View {
         return groups
     }
 
-    /// P2-3：显式选中的 2/4 张优先；否则当前照片 ± 相邻，避免第 100 张对比
-    /// 列表第 1 张。
+    /// 单/2/3/4 图：显式选中的对应张数优先，否则当前照片 ± 相邻（避免第 100 张
+    /// 对比列表第 1 张）。Survey（#6）：张数由选择集决定，选片规则见
+    /// CullingComparison.surveyAssets（选择不足 2 张时回退当前 + 邻接补足）。
     private func comparisonAssets() -> [CullingAsset] {
-        CullingComparison.assets(
+        if isSurvey {
+            return CullingComparison.surveyAssets(
+                current: currentAsset,
+                assets: assets,
+                selectedIds: viewModel.selectedPhotoIds,
+                limit: compareCount)
+        }
+        return CullingComparison.assets(
             current: currentAsset,
             assets: assets,
             selectedIds: viewModel.selectedPhotoIds,
@@ -778,21 +857,35 @@ struct CullingWorkbenchViewer: View {
         dragStartOffset = .zero
     }
 
-    /// 缩放/平移停止后重算可见区域细节层（150ms 去抖：拖动过程不排重解码队列）。
-    private func scheduleDetailTileUpdate() {
-        // A-6（性能审计）：几何必须用**当前单元格**的尺寸与**当前照片**的宽高。
-        // 旧实现取 viewerProxy 整窗尺寸 + page.assets.first：2×2 对比时可见区域
-        // 按整窗算（面积最多 4 倍），并把第一张照片的宽高套到其它格（贴片错位）。
-        let size = lastCellSize
-        guard size.width > 0, size.height > 0, let asset = currentAsset else { return }
+    /// 缩放/平移/尺寸变化后重算**所有会显示贴片的格**的可见区域细节层
+    /// （逐格 150ms 去抖：拖动过程不排重解码队列）。Wave2（#3）：不再只算当前格。
+    private func scheduleDetailTileUpdateForVisibleCells() {
+        let visible = comparisonAssets()
+        let count = max(1, visible.count)
+        for asset in visible {
+            let isCurrent = asset.photo.id == currentAsset?.photo.id
+            let isHovered = asset.photo.id == hoveredCellId
+            guard CullingDetailTilePolicy.showsTile(
+                compareCount: count,
+                isCurrent: isCurrent,
+                isHovered: isHovered
+            ) else { continue }
+            scheduleDetailTileUpdate(for: asset.photo.id)
+        }
+    }
+
+    /// 为某一格重算细节贴片。几何用**该格自己的**单元格尺寸与该照片宽高；
+    /// 缩放/平移仍是全屏共享的一套（同步缩放语义不变）。
+    private func scheduleDetailTileUpdate(for photoId: String) {
+        guard let size = cellSizes[photoId],
+              size.width > 0, size.height > 0,
+              let asset = assets.first(where: { $0.photo.id == photoId }) else { return }
         let imageSize = CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height))
         let zoom = effectiveZoom
-        let pan = CGSize(
-            width: offset.width + (faceAlign ? currentAlignOffset(imageSize: imageSize, cellSize: size).width : 0),
-            height: offset.height + (faceAlign ? currentAlignOffset(imageSize: imageSize, cellSize: size).height : 0)
-        )
-        detailTileTask?.cancel()
-        detailTileTask = Task { @MainActor in
+        let align = faceAlign ? alignOffset(for: asset, imageSize: imageSize, cellSize: size) : .zero
+        let pan = CGSize(width: offset.width + align.width, height: offset.height + align.height)
+        detailTileTasks[photoId]?.cancel()
+        detailTileTasks[photoId] = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
             let tile = PhotoViewerGeometry.detailTile(
@@ -803,8 +896,15 @@ struct CullingWorkbenchViewer: View {
                 backingPixelBudget: detailBaseSize
             )
             // 缩回 1× 或细节层不再需要时清掉（避免留下过期贴片）。
-            detailTileState = tile
+            detailTiles[photoId] = tile
         }
+    }
+
+    /// 清掉所有在途/已落地的贴片（切图、切布局、离开查看器时调用）。
+    private func clearDetailTiles() {
+        for task in detailTileTasks.values { task.cancel() }
+        detailTileTasks.removeAll(keepingCapacity: true)
+        detailTiles.removeAll(keepingCapacity: true)
     }
 
     /// 当前渲染用的缩放级（人脸对齐时会把倍率抬到至少 2×）。
@@ -812,15 +912,22 @@ struct CullingWorkbenchViewer: View {
         faceAlign ? max(2, scale) : scale
     }
 
-    /// 当前人脸对齐位移（与 cellView 内计算的是同一个模型）。
-    private func currentAlignOffset(imageSize: CGSize, cellSize: CGSize) -> CGSize {
-        guard let asset = currentAsset, let face = asset.faceBboxes.first else { return .zero }
+    /// 某一格的人脸对齐位移（与 cellView 内计算的是同一个模型）。
+    private func alignOffset(for asset: CullingAsset, imageSize: CGSize, cellSize: CGSize) -> CGSize {
+        guard faceAlign, let face = asset.faceBboxes.first else { return .zero }
         return FaceAlign.offset(
             imageSize: imageSize,
             cellSize: cellSize,
             face: face,
             zoom: max(2, scale)
         )
+    }
+
+    /// 当前格最近一次布局尺寸（缩放提示/1:1 换算用）。
+    private var currentCellSize: CGSize? {
+        guard let id = currentAsset?.photo.id, let size = cellSizes[id],
+              size.width > 0, size.height > 0 else { return nil }
+        return size
     }
 
     /// 适配显示尺寸的最长边（pt）——与 contentMode .fit 的几何一致。
@@ -864,11 +971,10 @@ struct CullingWorkbenchViewer: View {
     /// 真 1:1：按源像素 / fitPoints（含屏幕 backingScale）反算相对 fit 的倍率。
     /// 源图尺寸未知（老库/未索引）时不做换算，保持当前缩放。
     private func zoomToActualPixels() {
-        guard let asset = currentAsset,
-              lastCellSize.width > 0, lastCellSize.height > 0,
+        guard let asset = currentAsset, let size = currentCellSize,
               let actual = CullingViewerZoom.actualPixelsScale(
                   sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
-                  fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: lastCellSize),
+                  fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: size),
                   backingScale: Self.backingScale())
         else { return }
         let next = CullingViewerZoom.clamp(actual, maximum: zoomMaximum)
@@ -877,30 +983,28 @@ struct CullingWorkbenchViewer: View {
         // 1:1 的语义是"看这张图的正中真实像素"：平移复位，避免沿用上一张的位移。
         offset = .zero
         dragStartOffset = .zero
-        scheduleDetailTileUpdate()
+        scheduleDetailTileUpdateForVisibleCells()
     }
 
     /// 缩放上限（fit 相对倍率）：既有 fit×8，必要时抬到实际像素档。
     private var zoomMaximum: Double {
-        guard let asset = currentAsset,
-              lastCellSize.width > 0, lastCellSize.height > 0 else {
+        guard let asset = currentAsset, let size = currentCellSize else {
             return CullingViewerZoom.baseMaximumScale
         }
         return CullingViewerZoom.maximumScale(
             sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
-            fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: lastCellSize),
+            fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: size),
             backingScale: Self.backingScale())
     }
 
     /// 缩放胶囊文案：fit 档**不显示**；其余按源像素口径（1:1 = 100%）。
     private var zoomHint: String? {
         guard effectiveZoom != CullingViewerZoom.fitScale else { return nil }
-        guard let asset = currentAsset,
-              lastCellSize.width > 0, lastCellSize.height > 0,
+        guard let asset = currentAsset, let size = currentCellSize,
               let percent = CullingViewerZoom.pixelPercent(
                   scale: effectiveZoom,
                   sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
-                  fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: lastCellSize),
+                  fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: size),
                   backingScale: Self.backingScale())
         else { return "\(Int(effectiveZoom * 100))%" }
         return "\(percent)%"
@@ -1097,7 +1201,7 @@ struct CullingWorkbenchViewer: View {
             zoom: 1
         )
         dragStartOffset = offset
-        scheduleDetailTileUpdate()
+        scheduleDetailTileUpdateForVisibleCells()
     }
 }
 

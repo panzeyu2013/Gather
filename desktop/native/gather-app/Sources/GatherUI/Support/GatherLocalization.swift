@@ -71,6 +71,7 @@ public enum GatherLocalization {
     "C1_SCRIPT_FAILED": "与 Capture One 通信失败，请重试。",
     "C1_SCRIPT_TIMEOUT": "与 Capture One 通信超时，请重试。",
     "C1_NO_SELECTED_PHOTOS": "请先在 Capture One 中选择至少一张照片",
+    "C1_JUDGEMENTS_UNAVAILABLE": "未能读取 Capture One 的判断数据，已按文件导入。",
     // V2 审计：GatherAppDelegate 在启动早期触发 C1 导入时会发这个码，
     // 此前不在表里 → 用户看到「发生未知错误」，而注释承诺的是「正在初始化」。
     "GATHER_BOOTSTRAPPING": "应用正在初始化，请稍候再试。",

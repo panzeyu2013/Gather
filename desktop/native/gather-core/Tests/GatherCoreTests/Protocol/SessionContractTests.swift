@@ -167,10 +167,11 @@ struct SessionContractTests {
         // P1-3 setSourceRoot 再补 1 个根目录排除照片码（SESSION_SOURCE_EXCLUDES_PHOTOS）
         // → 196；P1-4 再补 1 个预览过期码（FKW_PREVIEW_STALE）→ 197；P1-7 再补
         // CULLING_SELECTION_CHANGED → 198；METADATA_PREVIEW_STALE → 199；
-        // 摄取失败 4 码 → 203；模板批次 4 码 + 重复组 2 码 → 209。
+        // 摄取失败 4 码 → 203；模板批次 4 码 + 重复组 2 码 → 209；
+        // Wave2 G3：C1 判断读取降级码（C1_JUDGEMENTS_UNAVAILABLE）→ 210。
         // 增删错误码时必须同步此断言、ErrorCodeContractTests 的清单与
         // GatherLocalization.errorMessages（缺一即被交叉契约测试挡下）。
-        #expect(GatherErrorCode.allCases.count == 209)
+        #expect(GatherErrorCode.allCases.count == 210)
     }
 
     @Test func gatherErrorCodeRawValueMatchesCaseName() {

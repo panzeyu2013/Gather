@@ -53,3 +53,43 @@
 - task-14：AI 初审接入导入 + 场景标签闭环。
 - task-15：集合层级 + 集合运算 + 跨会话导入去重。
 - task-16：导出/交付规格补齐（图片水印/子目录/联系表参数）。
+
+---
+
+## 6. Wave 2 第一批（2026-11-11 同日，task-10 / task-12 / task-11）
+
+| 任务 | 缺口 | 修复要点 | 关键文件 |
+| --- | --- | --- | --- |
+| task-10 | 40 册 #3/#6（P0-6） | 交付配方编辑器：格式/质量/长边/色彩空间/DPI/锐化/文字水印/命名模板/子目录/联系表(行列+字段+caption)/画廊(尺寸+字段) 全可编辑；新建不再硬编码 85/2048；非法值中文校验并前置拦截；预检与 OutputService 映射同源 | `GatherUI/Export/ExportViewModel+Delivery.swift`、`ExportView+Delivery.swift` |
+| task-12 | 20 册 #3/#6/#7/#8 | 对比多格清晰（1–2 图全格贴可见区细节，3/4/Survey 当前+hover）；`PhotoDetailTier.budget` 按实际同屏张数动态（8192/6144/5120/4096/3200）；新增 `compare3` 与 `survey(n≤9)`；键位 裸 H/F/R/C，专注模式改 ⇧F | `Culling/CullingGrid.swift`、`CullingComparison.swift`、`CullingViewerParts.swift`、`CullingWorkbenchViewer.swift`、`Support/PhotoThumbnailView.swift` |
+| task-11 | 30 册 G3（P0-3） | C1 变体级读取：一次脚本读 selected variants 的 rating/color tag/pick/keywords → `C1SelectionSnapshot`；导入 `afterCreate` 钩子拿 sessionId → 后台等 `metadata.scan` 终态 → 落 `photo_metadata_cache`（rating>0/label/keywords 并集）与 `culling_decisions`(source=imported, 仅 pick=true→keep)，人工决策整张跳过；失败降级发新码 `C1_JUDGEMENTS_UNAVAILABLE` | `GatherProtocol/Protocol/C1.swift`、`Core.swift`、`GatherApplication/Services/C1/C1ImportJudgementService.swift`、`GatherHost/CaptureOneBridge.swift`、`AppImport.swift`、`AppBootstrap.swift` |
+
+**Lead 修复的 2 个编译/逻辑缺陷**（子代理静态自查未发现，构建/测试暴露）：
+1. `CullingGrid.swift` 参数名 `columns` 遮蔽同名静态函数 → `Self.columns(for:)`（编译错误）。
+2. `C1ImportJudgementService.mapColorTag(0)` 因返回类型是 Optional，`.none` 被解析成 `Optional.none(nil)` → 显式写 `CaptureOneColorLabel.none`（测试捕获）。
+3. `CullingSurveyLayoutTests` 一处字符串未插值（`"p($0)"`）导致闭包参数被忽略（测试编译错误）。
+
+### 验证证据（Lead 执行）
+
+- 构建：`gather-core`、`gather-app` `swift build --disable-sandbox` 无 error。
+- 测试：
+  - core `--filter "ErrorCodeContractTests|SessionContractTests"` → 12 tests / 2 suites passed。
+  - app `--filter "DeliveryRecipeEditorTests|CullingSurveyLayoutTests|ReviewFixTests|LocalizationParityTests|LayoutBudgetTests|B6bExportViewModelTests|Culling"` → **220 tests / 22 suites passed**。
+  - app `--filter "C1BridgeWave2|C1BridgeWave1|CullingSyncFlow|LocalizationParityTests|ErrorLocalizationCoverageTests|GatherAppDelegateTests|DeliveryRecipeEditorTests|CullingSurveyLayoutTests"` → **96 tests / 22 suites passed**。
+- 门禁（--strict 口径）：protocol-surface OK（重基线后）、design-system PASS、cleanup-ratchet OK、test-catalog OK、layering OK、warnings PASS。
+
+### 基线变更（第二批）
+
+| 基线 | 变更 | 原因 |
+| --- | --- | --- |
+| `docs/protocol-surface-baseline.json` | public_types 418 → **420**；public_declarations 2475 → **2487**；protocol_lines 12759 → 12811 | `C1VariantJudgement`/`C1SelectionSnapshot`、`GatherErrorCode.C1_JUDGEMENTS_UNAVAILABLE` |
+| `docs/protocol-surface-modules-baseline.json` | gatherapplication 200→**203** 类型 / 1330→**1361** 声明 | 新 `GatherApplication/Services/C1/` 公开服务 |
+
+### 遗留（第二批）
+
+1. C1 color tag 整数序（0=None…7=Purple）按 C1 UI 顺序推定，**sdef 无枚举，需真机核对 8 个色标**。
+2. 判断落库在 `metadata.scan` 之后（后台最多等 10 分钟，无进度提示）；应用在落库前退出会丢判断（重新导入可再读）。
+3. 同一路径集合的并发重复 C1 导入会共用/竞争同一快照 key（第二个退化为仅文件导入）。
+4. 配方 `destination` 现在双语义（绝对=旧配方原样 / 相对=交付根下子目录），协议注释仍是"绝对目录"，建议后续加 `subdirectory` 字段。
+5. 联系表/画廊参数是 run 级草稿（`SettingsKey` 是穷尽枚举，持久化需单独立项）。
+6. 2 图对比预算 5120→6144（判焦更实，峰值内存约 ×2）；Survey 上限 9。

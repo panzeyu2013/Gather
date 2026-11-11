@@ -7,6 +7,12 @@
 //   · reload metadata 按当前选中的 variant 逐个调用（sdef 的直接参数是 variant），
 //     无选中时抛 .noSelection 而不是盲发（G2）；
 //   · 以上均以本机 C1 16.7.8.16 的 CaptureOne.sdef 行号为依据，写在脚本注释里。
+//
+// Wave2（2026-11-11，task-11）加只读的判断数据导出（G3）：
+//   · selectedVariantSnapshot()：一次脚本读出当前选中 variant 的 parent image.path +
+//     rating / color tag / pick / keywords，解析成 C1VariantJudgement（映射在应用层）；
+//   · 行式记录 + TAB 字段分隔 + 反斜杠转义（路径/关键词可含任意字符），畸形行跳过并
+//     计数而不是整批失败；脚本失败仍上浮，由导入侧降级为"仅按文件导入"。
 import Foundation
 import GatherProtocol
 import GatherUI
@@ -101,6 +107,38 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
             .split(whereSeparator: \.isNewline)
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { $0.hasPrefix("/") && FileManager.default.fileExists(atPath: $0) }
+    }
+
+    /// 一次读取当前选中 variant 的路径 + 判断数据（Wave2 / G3，导入前使用）。
+    ///
+    /// 与 selectedPhotoPaths 的差异：同一 parent image 的多个 variant 各自一行判断，
+    /// 因此 judgements 里同一路径可出现多次（合并规则在应用层，协议层不预设）；
+    /// paths 去重保序、仍只保留存在且绝对路径的条目（与导入口径一致）。
+    ///
+    /// 脚本失败**上浮**（调用方据此降级为"仅按文件导入"）；本层不吞错、不伪造空快照。
+    public func selectedVariantSnapshot() async throws -> C1SelectionSnapshot {
+        let appName = try await captureOneApplicationName()
+        let output = try await runAppleScript(
+            Self.selectedVariantJudgementsScript(appName: appName))
+        let parsed = Self.parseVariantJudgements(output)
+        var judgements: [C1VariantJudgement] = []
+        var paths: [String] = []
+        var seen = Set<String>()
+        for judgement in parsed.judgements {
+            // 与 selectedPhotoPaths 同口径：只判绝对路径 + 存在性，不做 standardizingPath
+            //（后者会解析符号链接，把 /var/… 变成 /private/var/…；路径归一在下游
+            // ScanPath.canonical 统一做，导入链路与 DB 行都用同一口径）。
+            let path = judgement.photoPath
+            guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path) else { continue }
+            judgements.append(C1VariantJudgement(
+                photoPath: path,
+                rating: judgement.rating,
+                colorTag: judgement.colorTag,
+                pick: judgement.pick,
+                keywords: judgement.keywords))
+            if seen.insert(path).inserted { paths.append(path) }
+        }
+        return C1SelectionSnapshot(paths: paths, judgements: judgements)
     }
 
     /// 让 C1 重新读取**当前选中 variant** 的源文件元数据，成功后才写 durable ack。
@@ -611,6 +649,166 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     static func reloadedVariantCount(from output: String) -> Int? {
         Int(output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
+
+    // MARK: - G3：导出选中 variant 的判断数据（只读）
+
+    /// G3 只读脚本：导出当前选中 variant 的判断数据。
+    ///
+    /// C1 16.7 sdef 依据（本机 CaptureOne.sdef，16.7.8.16）：
+    /// - selected variants 是 application 属性（`:244-247`；前端文档浏览器的选中项）；
+    /// - 路径：variant 没有 path，路径在 parent image（`:1081`）的 path（`:1541`）；
+    /// - 判断：rating（`:1097`）、color tag（`:1096`）、pick（`:1084`）是 variant 属性；
+    /// - 关键词：variant 的 keyword 元素（`:1073`）→ keyword.name（`:966`）；
+    /// - 无文档时先取 current document 抛错（宿主归一到 C1_NO_DOCUMENT）。
+    ///
+    /// 输出契约：P 行 = TAB 分隔的 4 个带前缀字段（P=路径、R=rating、T=color tag、
+    /// K=pick 0/1）；W 行 = 一个关键词（挂到最近一条 P 记录）。值内的反斜杠 /
+    /// 换行 / 回车 / TAB 由 escapeField 转义（路径与关键词可含任意字符），解析见
+    /// parseVariantJudgements。转义只影响可读性，不改变 AppleScript 侧的数据语义。
+    static func selectedVariantJudgementsScript(appName: String) -> String {
+        #"""
+        on escapeField(theText)
+          set savedDelimiters to AppleScript's text item delimiters
+          set AppleScript's text item delimiters to "\\"
+          set parts to text items of theText
+          set AppleScript's text item delimiters to "\\\\"
+          set theText to parts as text
+          set AppleScript's text item delimiters to linefeed
+          set parts to text items of theText
+          set AppleScript's text item delimiters to "\\n"
+          set theText to parts as text
+          set AppleScript's text item delimiters to return
+          set parts to text items of theText
+          set AppleScript's text item delimiters to "\\r"
+          set theText to parts as text
+          set AppleScript's text item delimiters to tab
+          set parts to text items of theText
+          set AppleScript's text item delimiters to "\\t"
+          set theText to parts as text
+          set AppleScript's text item delimiters to savedDelimiters
+          return theText
+        end escapeField
+
+        tell application "\#(appName)"
+          set frontDocument to current document
+          set selectedVariantsList to selected variants
+          set output to ""
+          repeat with v in selectedVariantsList
+            set parentImage to parent image of v
+            set pickFlag to "0"
+            if pick of v then set pickFlag to "1"
+            set output to output & "P" & my escapeField(path of parentImage) & tab & "R" & (rating of v as text) & tab & "T" & (color tag of v as text) & tab & "K" & pickFlag & linefeed
+            repeat with k in (keywords of v)
+              set output to output & "W" & my escapeField(name of k) & linefeed
+            end repeat
+          end repeat
+          return output
+        end tell
+        """#
+    }
+
+    /// 解析 G3 只读脚本输出（纯函数：测试直接驱动，不执行脚本）。
+    ///
+    /// 畸形行（前缀不认识 / 缺字段 / 数字非法 / W 行前面没有 P 记录）跳过并计入
+    /// malformedLines：G3 的失败语义是「没有判断数据可映射」，而不是「整批失败」。
+    static func parseVariantJudgements(_ output: String) -> C1VariantJudgementParseResult {
+        var judgements: [C1VariantJudgement] = []
+        var malformed: [String] = []
+        var currentPath: String?
+        var currentRating = 0
+        var currentTag = 0
+        var currentPick = false
+        var currentKeywords: [String] = []
+
+        func flush() {
+            guard let path = currentPath, !path.isEmpty else { return }
+            // rating 只有 0…5 合法；越界按上下界钳制（不整行丢弃，评级仍是可用信号）。
+            judgements.append(C1VariantJudgement(
+                photoPath: path,
+                rating: max(0, min(5, currentRating)),
+                colorTag: currentTag,
+                pick: currentPick,
+                keywords: currentKeywords))
+        }
+
+        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            if line.isEmpty { continue }
+            switch line.first {
+            case "P":
+                flush()
+                currentPath = nil
+                currentKeywords = []
+                let fields = line.dropFirst()
+                    .split(separator: "\t", omittingEmptySubsequences: false)
+                    .map(String.init)
+                guard fields.count == 4,
+                      fields[1].hasPrefix("R"),
+                      fields[2].hasPrefix("T"),
+                      fields[3].hasPrefix("K"),
+                      let rating = Int(fields[1].dropFirst()),
+                      let tag = Int(fields[2].dropFirst()) else {
+                    malformed.append(line)
+                    continue
+                }
+                let pickRaw = String(fields[3].dropFirst())
+                guard pickRaw == "0" || pickRaw == "1" else {
+                    malformed.append(line)
+                    continue
+                }
+                currentPath = Self.unescapeVariantField(fields[0])
+                currentRating = rating
+                currentTag = tag
+                currentPick = pickRaw == "1"
+            case "W":
+                guard currentPath != nil else {
+                    malformed.append(line)
+                    continue
+                }
+                currentKeywords.append(
+                    Self.unescapeVariantField(String(line.dropFirst())))
+            default:
+                malformed.append(line)
+            }
+        }
+        flush()
+        return C1VariantJudgementParseResult(
+            judgements: judgements, malformedLines: malformed)
+    }
+
+    /// 还原脚本 escapeField 的转义：\\ → \、\n → 换行、\r → 回车、\t → TAB。
+    /// 未知转义原样保留（不吞数据；是否需要报错由调用方按诊断决定）。
+    static func unescapeVariantField(_ value: String) -> String {
+        var result = ""
+        var iterator = value.makeIterator()
+        while let character = iterator.next() {
+            guard character == "\\" else {
+                result.append(character)
+                continue
+            }
+            guard let escaped = iterator.next() else {
+                result.append("\\")
+                break
+            }
+            switch escaped {
+            case "\\": result.append("\\")
+            case "n": result.append("\n")
+            case "r": result.append("\r")
+            case "t": result.append("\t")
+            default:
+                result.append("\\")
+                result.append(escaped)
+            }
+        }
+        return result
+    }
+}
+
+/// G3 只读脚本的解析结果（internal：C1BridgeWave2Tests 直接驱动纯函数）。
+struct C1VariantJudgementParseResult: Equatable {
+    let judgements: [C1VariantJudgement]
+    /// 无法解析的行原文：只进日志/诊断，导入侧不因畸形行失败。
+    let malformedLines: [String]
 }
 
 

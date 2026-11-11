@@ -164,6 +164,11 @@ public enum GatherErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case C1_SCRIPT_TIMEOUT
     /// 导入时 Capture One 未选中任何照片（AppDelegate 通知载荷）。
     case C1_NO_SELECTED_PHOTOS
+    /// G3：能从 C1 读判断数据但读取失败（脚本/字典/无文档等）——导入**不阻塞**，
+    /// 退回仅按文件导入；UI 用本码提示「未能读取 C1 判断」。
+    /// 与 C1_SCRIPT_FAILED 的区别：后者是「桥接坏了」（用户操作失败），本码是
+    /// 「可选增强数据缺失」（导入已完成，判断数据没有带进来）。
+    case C1_JUDGEMENTS_UNAVAILABLE
     /// 宿主初始化尚未完成时触发 C1 导入（菜单在启动早期即可用，回调还没挂上）。
     /// 语义不是「Capture One 未配置」——UI 必须提示「正在初始化」，而不是未知错误。
     /// 收进枚举而不是裸字符串：app 侧有一条「文案表不得含枚举之外的码」的契约测试。

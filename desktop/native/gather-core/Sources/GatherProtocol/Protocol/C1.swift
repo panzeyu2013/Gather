@@ -102,6 +102,54 @@ public protocol CaptureOneBridging: Sendable {
     static func documentProbeScript(appName: String) -> String
 }
 
+// MARK: - C1 变体级判断（Wave2 / G3：导入前只读）
+
+/// 一个 C1 变体的判断数据（**原始读取值**，不做 Gather 侧映射）。
+///
+/// 为什么不在这里映射：C1 的 `color tag` 是裸整数（CaptureOne.sdef 只声明
+/// type=integer，没有枚举），`pick` 是布尔，`rating` 是 0…5 整数。到 Gather 的
+/// rating / 色标 / pickState 的映射属于应用层（GatherApplication 的
+/// C1ImportJudgementService），协议层只承载「从 C1 读到了什么」。
+public struct C1VariantJudgement: Equatable, Sendable {
+    /// parent image 的原始绝对路径（C1 sdef：`parent image` → `image.path`）。
+    public let photoPath: String
+    /// C1 variant 评级 0…5。
+    public let rating: Int
+    /// C1 color tag 原始整数（映射表在应用层；越界值降级为不写入）。
+    public let colorTag: Int
+    /// C1 variant 的 pick 标志（true = 已选中/挑中）。
+    public let pick: Bool
+    /// variant 当前的关键词（层级路径或扁平词，按 C1 原值）。
+    public let keywords: [String]
+
+    public init(photoPath: String, rating: Int, colorTag: Int, pick: Bool, keywords: [String]) {
+        self.photoPath = photoPath
+        self.rating = rating
+        self.colorTag = colorTag
+        self.pick = pick
+        self.keywords = keywords
+    }
+}
+
+/// 一次「从 C1 读当前选中」的完整快照：文件路径 + 变体级判断。
+///
+/// paths 与 judgements 同源（同一次脚本调用），避免两次读取之间 C1 选中项漂移；
+/// 只保留存在且为绝对路径的条目（与 selectedPhotoPaths 同口径）。
+/// 同一 parent image 可能有多个 variant ⇒ judgements 里同一路径可出现多次，
+/// 合并规则在应用层（C1ImportJudgementService），协议层不预设。
+public struct C1SelectionSnapshot: Equatable, Sendable {
+    /// 去重后的照片路径（按脚本输出顺序，与导入口径一致）。
+    public let paths: [String]
+    public let judgements: [C1VariantJudgement]
+
+    public init(paths: [String], judgements: [C1VariantJudgement]) {
+        self.paths = paths
+        self.judgements = judgements
+    }
+
+    public static let empty = C1SelectionSnapshot(paths: [], judgements: [])
+}
+
 /// C1 往返（手动 reload / 选中）的稳定错误。
 ///
 /// 为什么在协议层：原先定义在 GatherHost 的 C1RoundTripCoordinator，但

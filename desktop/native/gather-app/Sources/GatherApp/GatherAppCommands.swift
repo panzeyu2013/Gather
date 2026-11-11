@@ -61,7 +61,8 @@ package struct GatherAppCommands: Commands {
         CommandGroup(replacing: .sidebar) {
             commandButton(.toggleSidebar, copy: copy)
             if let focus = cullingFocusMode {
-                Button(focus.isActive ? l10n("退出专注模式（F）") : l10n("专注模式（F）")) {
+                // Wave2：裸 F 还给合焦掩膜，专注模式改为 ⇧F（标题同步 key）。
+                Button(focus.isActive ? l10n("退出专注模式（⇧F）") : l10n("专注模式（⇧F）")) {
                     focus.toggle()
                 }
                 // 网格布局没有单图专注语义 → 置灰而不是隐藏（入口可发现）。

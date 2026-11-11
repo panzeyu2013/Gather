@@ -54,11 +54,18 @@ public enum PhotoDetailTier {
     }
 
     /// 对比模式（同一屏 N 格）下的档位预算：格数越多，单格越不该申请超大解码。
+    ///
+    /// Wave2（20-culling-browse #3/#6）：多格现在**每格都可能解可见区贴片**
+    /// （2 图全给、3/4 图给当前+hover、Survey 最多 9 格），旧映射（2 格 5120、
+    /// 其余一律 4096）会让 3 格比 4 格还宽、5–9 格与 4 格同价。这里改成按格数
+    /// 单调递减：1 格仍是硬上限（单图判合焦要看真实像素），9 格只求"够判清晰"。
     public static func budget(forVisibleCells count: Int) -> Int {
         switch count {
-        case ..<2: return maxDimension
-        case 2: return 5120
-        default: return 4096
+        case ..<2: return maxDimension      // 8192：单图 / 单格对比
+        case 2: return 6144                 // 2 图并排是判焦主战场，预算给足
+        case 3: return 5120                 // 3 图三选一
+        case 4: return 4096                 // 4 图 2×2
+        default: return 3200                // 5–9 格 Survey：单格再大也看不出来
         }
     }
 }

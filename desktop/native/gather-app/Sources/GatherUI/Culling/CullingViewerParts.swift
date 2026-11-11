@@ -70,3 +70,41 @@ enum PanOffset {
         CGSize(width: start.width + translation.width, height: start.height + translation.height)
     }
 }
+
+/// 可见区细节贴片（tiled detail）的可见性策略（纯逻辑，可单测）。
+///
+/// Wave2（20-culling-browse #3）：旧实现只有当前格贴片——2 图并排判合焦时
+/// 非当前格是 2560px 基准位图放大，"并排比哪张更实"根本做不了。
+/// 新策略：1/2 图全给（判焦主战场）；3 图/4 图/Survey 只给当前 + hover
+/// （同时解 N 块细节会打满解码闸门，而多点同屏判读靠 hover 已经够）。
+enum CullingDetailTilePolicy {
+    static func showsTile(compareCount: Int, isCurrent: Bool, isHovered: Bool) -> Bool {
+        if compareCount <= 2 { return true }
+        return isCurrent || isHovered
+    }
+}
+
+/// 查看器裸键（+ 是否按着 ⇧）→ 叠加层/查看模式动作（纯逻辑，可单测）。
+///
+/// 键位来源：20-culling-browse #8 的 H/F/R/C。裸 F 在 Wave1 曾是「专注模式」，
+/// Wave2 按评审的设计意图把裸 F 还给**合焦掩膜**、专注模式改为 ⇧F：
+/// H = 直方图、F = 合焦掩膜、R = 设/取消参考、C = 对比模式循环（需已设参考）。
+enum CullingViewerShortcutKey {
+    enum Action: Equatable {
+        case toggleHistogram
+        case toggleFocusMask
+        case toggleFocusMode
+        case toggleReference
+        case cycleReferenceMode
+    }
+
+    static func action(characters: String, shift: Bool) -> Action? {
+        switch characters.lowercased() {
+        case "h": return .toggleHistogram
+        case "f": return shift ? .toggleFocusMode : .toggleFocusMask
+        case "r": return .toggleReference
+        case "c": return .cycleReferenceMode
+        default: return nil
+        }
+    }
+}

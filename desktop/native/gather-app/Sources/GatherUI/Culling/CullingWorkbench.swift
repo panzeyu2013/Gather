@@ -63,7 +63,11 @@ struct CullingWorkbench: View {
                 } else {
                     CullingWorkbenchViewer(
                         viewModel: viewModel,
-                        compareCount: layoutMode.compareCount,
+                        // Wave2（#6）：Survey 的张数由当前选择集决定（2...9）；
+                        // 2/3/4 图仍按固定格数（选择集不影响它们）。
+                        compareCount: layoutMode.effectiveCompareCount(
+                            selectionCount: viewModel.selectedPhotoIds.count),
+                        isSurvey: layoutMode == .survey,
                         faceAlign: faceAlign,
                         isFocusMode: isFocusMode,
                         onToggleFocusMode: onToggleFocusMode

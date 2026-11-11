@@ -2177,9 +2177,9 @@
 "实际像素" = "Actual Pixels";
 "实际像素（⌘1 或 ⌘⌥0）" = "Actual Pixels (⌘1 or ⌘⌥0)";
 "专注模式" = "Focus Mode";
-"专注模式（F）" = "Focus Mode (F)";
+"专注模式（⇧F）" = "Focus Mode (⇧F)";
 "退出专注模式" = "Exit Focus Mode";
-"退出专注模式（F）" = "Exit Focus Mode (F)";
+"退出专注模式（⇧F）" = "Exit Focus Mode (⇧F)";
 "正在写入挑片决策…" = "Saving culling decisions…";
 "按键已排队" = "Key queued";
 
@@ -2191,3 +2191,58 @@
 "输出锐化" = "Output Sharpening";
 "锐化半径" = "Sharpening Radius";
 "锐化强度" = "Sharpening Intensity";
+
+/* Wave2 task-12 */
+"直方图（H）· 基于预览" = "Histogram (H) · Preview-based";
+"合焦提示（F）" = "Focus Mask (F)";
+"设为参考 / 取消参考（R）" = "Set/Clear Reference (R)";
+"对比模式（C）" = "Compare Mode (C)";
+"查看器快捷键" = "Viewer Shortcuts";
+"3 图" = "3-up";
+"多图对比" = "Survey";
+
+/* Wave2 task-10 */
+"Caption 模板" = "Caption template";
+"DPI" = "DPI";
+"三档建议" = "Triage hint";
+"写入 DPI" = "Write DPI";
+"列数" = "Columns";
+"副标题" = "Subtitle";
+"取舍" = "Pick";
+"可用占位符：{date} {time} {counter} {original} {filename} {session}" = "Placeholders: {date} {time} {counter} {original} {filename} {session}";
+"可用占位符：{filename} {title} {rating} {label} {keywords} {date}" = "Placeholders: {filename} {title} {rating} {label} {keywords} {date}";
+"含画廊" = "Includes gallery";
+"大图长边" = "Large max edge";
+"子目录" = "Subdirectory";
+"子目录 %@" = "Subdirectory %@";
+"携带评分与关键词等元数据" = "Carry rating, keywords and other metadata";
+"文字水印" = "Text watermark";
+"显示取舍边框" = "Show pick border";
+"显示色标圆点" = "Show color label dot";
+"画廊参数" = "Gallery settings";
+"画廊字段" = "Gallery fields";
+"留空 = 使用配方名" = "Empty = use the recipe name";
+"留空使用工作区名" = "Empty = use the workspace name";
+"相对交付根；留空 = 使用配方名；支持 {session} {date} {time} {recipe}" = "Relative to the delivery root; empty = recipe name; supports {session} {date} {time} {recipe}";
+"缩略图长边" = "Thumbnail max edge";
+"联系表参数" = "Contact sheet settings";
+"联系表字段" = "Contact sheet fields";
+"行数" = "Rows";
+"配方参数有误" = "Recipe settings are invalid";
+"限制最长边" = "Limit max edge";
+"页脚" = "Footer";
+"配方名不能为空" = "Recipe name cannot be empty";
+"配方名不能重复" = "Recipe names must be unique";
+"原图格式只复制文件，不能设置质量、长边、水印、色彩空间、DPI 或锐化" = "Original format copies files only; quality, max edge, watermark, color space, DPI and sharpening cannot be set";
+"DPI 必须是 1 到 2400 之间的整数" = "DPI must be an integer between 1 and 2400";
+"锐化半径必须在 0.1 到 10 之间" = "Sharpening radius must be between 0.1 and 10";
+"锐化强度必须在 0 到 2 之间" = "Sharpening intensity must be between 0 and 2";
+"图片水印暂不支持，请使用文字水印" = "Image watermark is not supported yet; use a text watermark";
+"水印透明度必须在 0 到 1 之间" = "Watermark opacity must be between 0 and 1";
+"命名模式不能为空" = "Naming pattern cannot be empty";
+"命名模式不能包含路径分隔符" = "Naming pattern cannot contain path separators";
+"起始序号不能为负数" = "Start number cannot be negative";
+"子目录必须是交付根内的相对路径，且不能包含 .." = "Subdirectory must be a relative path inside the delivery root and cannot contain ..";
+"两个配方写入了同一个输出目录" = "Two recipes write to the same output folder";
+/* Wave2 task-11 */
+"未能读取 Capture One 的判断数据，已按文件导入。" = "Could not read judgment data from Capture One; imported files only.";

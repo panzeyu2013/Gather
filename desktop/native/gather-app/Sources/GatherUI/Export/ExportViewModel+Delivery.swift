@@ -3,6 +3,8 @@
 //
 // 配方持久化到 settings 的 output.recipes（空列表也会落盘，删除最后一个配方不会“复活”）；
 // 运行走 ExportAPI.runRecipes（job output.run，服务端逐配方执行）。
+// P0-6（Wave2）：配方编辑（字段更新 / 格式切换清理 / 中文校验 / 子目录解析）与
+// OutputRunInput 冻结（联系表/画廊参数、相对子目录 → 绝对路径）。
 import Foundation
 import GatherProtocol
 
@@ -79,6 +81,12 @@ extension ExportViewModel {
         return Self.defaultRecipes
     }
 
+    /// 新建配方的默认值（P0-6）：只是默认值 —— 创建后所有字段都能在配方编辑器里改
+    /// （旧实现是硬编码 85/2048 且不可编辑，这才是缺口本身）。
+    static let newRecipeDefaults = OutputRecipe(
+        name: "Recipe", format: .jpeg, quality: 85, maxDimension: 2048,
+        includeMetadata: true)
+
     public func addDeliveryRecipe() {
         guard deliveryRecipes.count < 32 else { return }
         hasLoadedDeliveryRecipes = true
@@ -88,9 +96,211 @@ extension ExportViewModel {
             index += 1
             name = "Recipe \(index)"
         }
-        deliveryRecipes.append(OutputRecipe(
-            name: name, format: .jpeg, quality: 85, maxDimension: 2048))
+        var recipe = Self.newRecipeDefaults
+        recipe.name = name
+        deliveryRecipes.append(recipe)
         persistDeliveryRecipes()
+    }
+
+    // MARK: - 配方编辑器（P0-6）
+
+    /// 统一编辑入口：按 id 改一条配方（找不到 id 时 no-op）。
+    ///
+    /// 所有编辑器控件都走它，而不是各自 firstIndex + 下标写：
+    /// ① 落盘由 ExportView+Delivery 的 .onChange(of: deliveryRecipes) 统一触发，
+    ///    避免每条控件自己调度防抖任务；② 行视图只拿得到配方快照，不会写错下标。
+    public func updateDeliveryRecipe(id: String, _ mutate: (inout OutputRecipe) -> Void) {
+        guard let index = deliveryRecipes.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&deliveryRecipes[index])
+    }
+
+    /// 切换格式时清掉该格式不成立的字段（P0-6 校验的一部分）：
+    /// - 原图 = 字节复制：质量/长边/水印/色彩空间/DPI/锐化都不成立；
+    /// - TIFF 不用 JPEG 质量参数；
+    /// - 回到 JPEG 时给一个可编辑的默认质量（不是写死的唯一值）。
+    public func setDeliveryRecipeFormat(id: String, format: ExportFormat) {
+        updateDeliveryRecipe(id: id) { recipe in
+            recipe.format = format
+            switch format {
+            case .original:
+                recipe.quality = nil
+                recipe.maxDimension = nil
+                recipe.watermark = nil
+                recipe.colorSpace = nil
+                recipe.dpi = nil
+                recipe.sharpening = nil
+            case .jpeg:
+                if recipe.quality == nil { recipe.quality = 85 }
+            case .tiff:
+                recipe.quality = nil
+            }
+        }
+    }
+
+    /// 水印字段编辑（内容/位置/透明度/字号）：没有水印时 no-op。
+    /// 嵌套 optional 的读改写收在 VM，UI 只传增量，不重复解包。
+    public func updateDeliveryWatermark(
+        id: String, _ mutate: (inout ExportWatermark) -> Void
+    ) {
+        updateDeliveryRecipe(id: id) { recipe in
+            guard var watermark = recipe.watermark else { return }
+            mutate(&watermark)
+            recipe.watermark = watermark
+        }
+    }
+
+    /// 锐化参数编辑（半径/强度）：没有锐化时 no-op。
+    public func updateDeliverySharpening(
+        id: String, _ mutate: (inout ExportSharpening) -> Void
+    ) {
+        updateDeliveryRecipe(id: id) { recipe in
+            guard var sharpening = recipe.sharpening else { return }
+            mutate(&sharpening)
+            recipe.sharpening = sharpening
+        }
+    }
+
+    /// 命名模板编辑（pattern/counterStart/dateFormat）。
+    public func updateDeliveryNaming(
+        id: String, _ mutate: (inout ExportNaming) -> Void
+    ) {
+        updateDeliveryRecipe(id: id) { recipe in
+            var naming = recipe.naming
+            mutate(&naming)
+            recipe.naming = naming
+        }
+    }
+
+    /// 单个配方的字段校验（行内红字 + 交付前置门禁共用）。
+    /// 返回中文字符串（即 l10n key），空数组 = 合法。
+    public func deliveryRecipeIssues(_ recipe: OutputRecipe) -> [String] {
+        var issues: [String] = []
+        if recipe.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues.append("配方名不能为空")
+        }
+        if recipe.format == .original {
+            // 原图格式只复制文件：转换类参数一律不成立（与 ExportService.validate 同口径）。
+            if recipe.quality != nil || recipe.maxDimension != nil || recipe.watermark != nil
+                || recipe.colorSpace != nil || recipe.dpi != nil || recipe.sharpening != nil {
+                issues.append("原图格式只复制文件，不能设置质量、长边、水印、色彩空间、DPI 或锐化")
+            }
+        } else {
+            if let quality = recipe.quality,
+               quality.rounded() != quality || quality < 1 || quality > 100 {
+                issues.append("JPEG 质量必须是 1 到 100 之间的整数")
+            }
+            if let dimension = recipe.maxDimension, dimension < 1 {
+                issues.append("最长边必须是大于等于 1 的整数")
+            }
+            if let dpi = recipe.dpi, dpi < 1 || dpi > 2400 {
+                issues.append("DPI 必须是 1 到 2400 之间的整数")
+            }
+            if let sharpening = recipe.sharpening {
+                if !sharpening.radius.isFinite || sharpening.radius < 0.1
+                    || sharpening.radius > 10 {
+                    issues.append("锐化半径必须在 0.1 到 10 之间")
+                }
+                if !sharpening.intensity.isFinite || sharpening.intensity < 0
+                    || sharpening.intensity > 2 {
+                    issues.append("锐化强度必须在 0 到 2 之间")
+                }
+            }
+            if let watermark = recipe.watermark {
+                if watermark.type != .text {
+                    issues.append("图片水印暂不支持，请使用文字水印")
+                }
+                if watermark.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    issues.append("水印文字不能为空")
+                }
+                if !watermark.opacity.isFinite || watermark.opacity < 0
+                    || watermark.opacity > 1 {
+                    issues.append("水印透明度必须在 0 到 1 之间")
+                }
+                if let fontSize = watermark.fontSize,
+                   !fontSize.isFinite || fontSize < 1 || fontSize > 1000 {
+                    issues.append("水印字号必须在 1 到 1000 之间")
+                }
+            }
+        }
+        let pattern = recipe.naming.pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        if pattern.isEmpty {
+            issues.append("命名模式不能为空")
+        }
+        if recipe.naming.pattern.contains("/")
+            || recipe.naming.pattern.contains("\\")
+            || recipe.naming.pattern.contains("\0") {
+            issues.append("命名模式不能包含路径分隔符")
+        }
+        if let counter = recipe.naming.counterStart, counter < 0 {
+            issues.append("起始序号不能为负数")
+        }
+        if !Self.isValidDeliveryDestination(recipe.destination) {
+            issues.append("子目录必须是交付根内的相对路径，且不能包含 ..")
+        }
+        return issues
+    }
+
+    /// 整批校验（交付前置门禁）：逐配方字段 + 跨配方唯一性。
+    /// - Parameter root: 交付根目录（把「空串 = 根/配方名」与相对子目录都解析成
+    ///   绝对路径后再判重，等价于 OutputService.resolveDestinations 的冲突口径）。
+    public func deliveryValidationIssues(root: String) -> [String] {
+        var issues: [String] = []
+        var seenNames = Set<String>()
+        var seenDestinations = Set<String>()
+        for recipe in deliveryRecipes {
+            issues.append(contentsOf: deliveryRecipeIssues(recipe))
+            let name = recipe.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty, !seenNames.insert(name.lowercased()).inserted {
+                issues.append("配方名不能重复")
+            }
+            let rawDestination = recipe.destination
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolved: String?
+            if rawDestination.isEmpty {
+                resolved = URL(fileURLWithPath: root)
+                    .appendingPathComponent(name.isEmpty ? recipe.id : name)
+                    .standardizedFileURL.path
+            } else {
+                resolved = resolvedDeliveryDestination(rawDestination, root: root)
+            }
+            if let resolved, !seenDestinations.insert(resolved).inserted {
+                issues.append("两个配方写入了同一个输出目录")
+            }
+        }
+        return issues
+    }
+
+    /// 配方输出目录解析（P0-6 子目录）：空串交给编排器（root/配方名）；
+    /// 绝对路径原样（旧配方兼容）；相对子目录拼到交付根下。
+    /// 非法相对路径返回 nil（由 deliveryRecipeIssues 给出中文提示）。
+    func resolvedDeliveryDestination(_ destination: String, root: String) -> String? {
+        let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.hasPrefix("/") { return trimmed }
+        guard Self.isValidRelativeSubdirectory(trimmed) else { return nil }
+        return URL(fileURLWithPath: root)
+            .appendingPathComponent(trimmed)
+            .standardizedFileURL.path
+    }
+
+    /// 相对子目录是否安全：不能绝对、不能含 ..、空段、反斜杠或空字符。
+    /// 空串合法（= 使用 root/配方名）。允许 {session}/{recipe}/{date}/{time} 占位符。
+    static func isValidRelativeSubdirectory(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        guard !trimmed.hasPrefix("/"), !trimmed.contains("\\"), !trimmed.contains("\0") else {
+            return false
+        }
+        let components = trimmed.split(separator: "/", omittingEmptySubsequences: false)
+        return components.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    /// 配方目录字段的整体合法性：空串、绝对路径（旧配方）或安全相对子目录。
+    static func isValidDeliveryDestination(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        if trimmed.hasPrefix("/") { return true }
+        return isValidRelativeSubdirectory(trimmed)
     }
 
     public func removeDeliveryRecipe(id: String) {
@@ -122,7 +332,8 @@ extension ExportViewModel {
         }
     }
 
-    private func persistDeliveryRecipes() {
+    /// 配方落盘（internal：配方编辑器测试直接调用，避免依赖 400ms 防抖定时器）。
+    func persistDeliveryRecipes() {
         // P0：未完成首次载入前不得落盘——否则会把「尚未读到的空数组」覆盖用户配方。
         guard let settingsAPI, hasLoadedDeliveryRecipes else { return }
         let json: String
@@ -272,7 +483,14 @@ extension ExportViewModel {
     }
 
     /// P2-1：先把交付参数校验/冻结成输入，交给确认 sheet；确认前不执行。
-    public func prepareDeliveryInput() async -> OutputRunInput? {
+    ///
+    /// - Parameters:
+    ///   - contactSheetOptions / galleryOptions: 联系表/画廊参数（P0-6 可配）。
+    ///     为 nil = 使用默认值（标题回落工作区名），保持升级前行为；页面传编辑器草稿。
+    public func prepareDeliveryInput(
+        contactSheetOptions: OutputContactSheetOptions? = nil,
+        galleryOptions: OutputGalleryOptions? = nil
+    ) async -> OutputRunInput? {
         guard !isDelivering else { return nil }
         let root = effectiveDeliveryRoot
         guard !root.isEmpty else {
@@ -289,8 +507,17 @@ extension ExportViewModel {
             errorMessage = CommandError.localized("请选择要交付的照片")
             return nil
         }
+        // P0-6：交付前置门禁——非法配方参数在这里显式中断并给中文原因，
+        // 而不是让 OutputService/ExportService 跑到一半才失败。
+        if let first = deliveryValidationIssues(root: root).first {
+            errorMessage = CommandError.localized(first)
+            return nil
+        }
         persistDeliveryRecipes()
-        return makeDeliveryInput(root: root)
+        return makeDeliveryInput(
+            root: root,
+            contactSheetOptions: contactSheetOptions,
+            galleryOptions: galleryOptions)
     }
 
 
@@ -317,11 +544,21 @@ extension ExportViewModel {
                 format: recipe.format,
                 quality: recipe.quality,
                 maxDimension: recipe.maxDimension,
+                // P0-6：预检必须与 OutputService.run 的映射同源，否则确认 sheet 报的
+                // 结果与真正执行的参数不同（配方编辑器里改色彩空间/DPI/锐化就失配）。
+                colorSpace: recipe.colorSpace,
+                dpi: recipe.dpi,
+                sharpening: recipe.sharpening,
                 tiffCompression: recipe.format == .tiff ? .lzw : nil,
                 watermark: recipe.watermark,
                 naming: recipe.naming,
                 includeXmp: recipe.includeXmp || recipe.includeMetadata,
-                destination: input.destinationRoot)
+                // 与 OutputService.resolveDestinations 同口径：配方自带目录用它，
+                // 否则用交付根（编排器再补 root/<配方名>）。旧实现一律用交付根，
+                // 多配方写到不同子目录时预检的重名/空间诊断会与实际执行不一致。
+                destination: recipe.destination.isEmpty
+                    ? input.destinationRoot
+                    : recipe.destination)
             do {
                 let preview = try await exportAPI.preview(
                     ExportInput(sessionId: input.sessionId, options: options))
@@ -371,10 +608,24 @@ extension ExportViewModel {
         }
     }
 
-    private func makeDeliveryInput(root: String) -> OutputRunInput {
+    /// 冻结成 OutputRunInput（确认前唯一构造点）。
+    ///
+    /// P0-6：这里把**编辑器记法**翻译成协议契约：
+    /// - 相对子目录（配方 destination 不以 / 开头）→ 拼到交付根下的绝对路径
+    ///   （OutputRunInput/OutputRecipe 的 destination 契约要求绝对路径）；
+    /// - 联系表/画廊参数取编辑器草稿，nil 时回退默认值（标题回落工作区名）。
+    func makeDeliveryInput(
+        root: String,
+        contactSheetOptions: OutputContactSheetOptions?,
+        galleryOptions: OutputGalleryOptions?
+    ) -> OutputRunInput {
         // 开关直接落到每条配方的 artifacts：编排层只按 artifacts 建联系表/画廊。
         let recipes = deliveryRecipes.map { recipe -> OutputRecipe in
             var updated = recipe
+            // 相对子目录 → 绝对路径；非法值已被 prepareDeliveryInput 前置门禁拦下。
+            if let resolved = resolvedDeliveryDestination(recipe.destination, root: root) {
+                updated.destination = resolved
+            }
             var artifacts = Set(updated.artifacts)
             if deliveryIncludeContactSheet {
                 artifacts.insert(.contactSheet)
@@ -397,13 +648,32 @@ extension ExportViewModel {
             destinationRoot: root,
             recipes: recipes,
             contactSheet: deliveryIncludeContactSheet
-                ? OutputContactSheetOptions(
-                    title: sessionName ?? "", subtitle: "", footer: "", columns: 4, rows: 5)
+                ? resolvedContactSheetOptions(contactSheetOptions)
                 : nil,
             gallery: deliveryIncludeGallery
-                ? OutputGalleryOptions(
-                    title: sessionName ?? "Gallery", subtitle: "", footer: "",
-                    thumbnailMaxDimension: 480, largeMaxDimension: 1600)
+                ? resolvedGalleryOptions(galleryOptions)
                 : nil)
+    }
+
+    /// 联系表参数：未传 = 默认值；标题留空回落工作区名（与升级前行为一致）。
+    private func resolvedContactSheetOptions(
+        _ options: OutputContactSheetOptions?
+    ) -> OutputContactSheetOptions {
+        var value = options ?? OutputContactSheetOptions()
+        if value.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            value.title = sessionName ?? ""
+        }
+        return value
+    }
+
+    /// 画廊参数：未传 = 默认值；标题留空回落工作区名（与升级前行为一致）。
+    private func resolvedGalleryOptions(
+        _ options: OutputGalleryOptions?
+    ) -> OutputGalleryOptions {
+        var value = options ?? OutputGalleryOptions()
+        if value.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            value.title = sessionName ?? "Gallery"
+        }
+        return value
     }
 }

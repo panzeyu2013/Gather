@@ -378,6 +378,9 @@ package final class AppBootstrap {
             sessionAPI: appServices.session,
             runtime: runtime,
             captureOneBridge: c1RoundTrip,
+            // Wave2 / G3：判断数据要读具体桥（C1SelectionSnapshot 只在 CaptureOneBridge
+            // 上；协议面只管 UI 既有能力，不把导入专用读取扩进 CaptureOneBridging）。
+            captureOneJudgements: { try await captureOneBridge.selectedVariantSnapshot() },
             // Cut 4 / 4b-3：语言唯一来源随装配交给 Delegate（导入面板
             // 没有 environment，只能在动作发生时读同一个 store）。
             languageStore: languageStore
@@ -496,6 +499,7 @@ package final class AppBootstrap {
         sessionAPI: any SessionAPI,
         runtime: AppRuntime,
         captureOneBridge: any CaptureOneBridging,
+        captureOneJudgements: @escaping @Sendable () async throws -> C1SelectionSnapshot,
         languageStore: LanguageStore
     ) {
         guard let delegate else { return }
@@ -512,22 +516,56 @@ package final class AppBootstrap {
                 )
             }
         }
+        // Wave2 / G3：C1 判断数据的待应用队列（导入成功后按路径集合取回）。
+        // 为什么按路径集合做 key 而不是单个 pending：两次 C1 导入可能在 await 之间
+        // 交错（各自独立 Task），只存一份会把 A 的判断应用到 B 的新会话；
+        // 两个回调都在 MainActor 上执行，同文件集共用同一份快照（内容一致、幂等）。
+        let pendingJudgements = C1PendingJudgements()
+
         delegate.onCaptureOneImportFiles = { files in
             // 对齐旧版 App.tsx c1:plugin-import：C1 导入保留
             // capture-one 来源标记与「C1 导入 M/D H:mm」命名。
             let l10n = languageStore.l10n
+            // 快照在这里同步取回：AppImport 的 onCaptureOneImport 一定先于本回调执行。
+            let judgements = pendingJudgements.take(paths: files)
+            let database = composition.db
             Task {
                 await AppImport.importFiles(
                     files,
                     sessionAPI: sessionAPI,
                     source: "capture-one",
                     sourceLabel: l10n("Capture One 文件"),
-                    l10n: l10n
+                    l10n: l10n,
+                    afterCreate: { result in
+                        // 钩子必须立即返回：真正落库在后台 Task 里（要先等 metadata.scan
+                        // 终态，否则扫描把 photo_metadata_cache 的 rating/关键词覆盖回 XMP 值）。
+                        guard !judgements.isEmpty else { return }
+                        C1JudgementImport.scheduleApply(
+                            database: database,
+                            sessionId: result.session.id,
+                            judgements: judgements)
+                    }
                 )
             }
         }
         delegate.onCaptureOneImport = {
-            try await captureOneBridge.selectedPhotoPaths()
+            do {
+                let snapshot = try await captureOneJudgements()
+                pendingJudgements.store(snapshot.paths, judgements: snapshot.judgements)
+                return snapshot.paths
+            } catch {
+                // G3 降级：判断数据是可选增强，绝不能让"读不到判断"变成"导入失败"。
+                // 退回旧行为（只按文件导入），并用独立错误码提示未能读取判断数据。
+                do {
+                    let paths = try await captureOneBridge.selectedPhotoPaths()
+                    NotificationCenter.default.post(
+                        name: GatherAppNotification.captureOneError,
+                        object: GatherErrorCode.C1_JUDGEMENTS_UNAVAILABLE.rawValue)
+                    return paths
+                } catch {
+                    throw error
+                }
+            }
         }
     }
 
@@ -547,6 +585,82 @@ package final class AppBootstrap {
             return stored.isEmpty ? nil : stored
         } catch {
             return nil
+        }
+    }
+}
+
+// MARK: - C1 判断数据导入（Wave2 / G3）
+
+/// C1 判断快照的待应用队列：按「归一化路径集合」暂存，等 onCaptureOneImportFiles 取回。
+///
+/// key 用路径集合而不是 sessionId：读快照时还没有 session（新建工作区），而两次 C1
+/// 导入可能在 await 之间交错（各自独立 Task）；按文件集关联，A 的判断不会被应用到 B 的
+/// 新会话。两个回调都在 MainActor 上执行，因此不需要锁；同文件集的并发导入共用同一份
+/// 快照（内容一致、幂等）。
+@MainActor
+final class C1PendingJudgements {
+    private var byPathSet: [String: [C1VariantJudgement]] = [:]
+
+    func store(_ paths: [String], judgements: [C1VariantJudgement]) {
+        // 上限防御：用户连续取消/失败导入时不留无限增长的残留（超过 8 批直接清空，
+        // 代价只是丢掉还没被消费的旧判断——导入仍会正常进行）。
+        if byPathSet.count >= 8 { byPathSet.removeAll() }
+        byPathSet[Self.key(paths: paths)] = judgements
+    }
+
+    func take(paths: [String]) -> [C1VariantJudgement] {
+        byPathSet.removeValue(forKey: Self.key(paths: paths)) ?? []
+    }
+
+    static func key(paths: [String]) -> String {
+        paths.map(ScanPath.canonical).sorted().joined(separator: "\u{1F}")
+    }
+}
+
+/// C1 判断的落库调度：导入钩子里只调度、不等待（导入返回速度不变）。
+enum C1JudgementImport {
+    /// 后台等本会话 metadata.scan 终态，再把 C1 rating/色标/pick/关键词写进新会话。
+    ///
+    /// 为什么不能立即写：metadata.scan 的 MetadataExtractionService 用整行 upsert 覆盖
+    /// photo_metadata_cache（XMP 无 rating 时写回 0 / 空关键词），先写的判断会被清掉。
+    /// 等待有上限（服务内默认 10 分钟），超时/取消也会落库并写日志（判断不丢）。
+    static func scheduleApply(
+        database: DBConnection,
+        sessionId: String,
+        judgements: [C1VariantJudgement]
+    ) {
+        Task.detached(priority: .utility) {
+            let cache = MetadataCacheRepo(connection: database)
+            let service = C1ImportJudgementService(
+                photos: PhotoRepo(connection: database),
+                cache: cache,
+                decisions: CullingDecisionRepo(connection: database),
+                keywordIndex: KeywordIndexSync(
+                    index: KeywordRepo(connection: database),
+                    metadata: cache),
+                transactions: database)
+            let report = await service.applyAfterIndexing(
+                sessionId: sessionId,
+                judgements: judgements,
+                scanStatus: { id in
+                    try AnalysisJobRepo(connection: database)
+                        .latestScanJob(sessionId: id)?.status
+                })
+            GatherLogger.log(
+                "c1.judgements session=\(sessionId) applied=\(report.applied)"
+                    + " missing=\(report.missing) ratings=\(report.ratings)"
+                    + " labels=\(report.labels) keeps=\(report.keeps)"
+                    + " keywords=\(report.keywords)"
+                    + " manualPreserved=\(report.preservedManualDecisions)"
+                    + " waited=\(report.waitedForIndexing) timedOut=\(report.indexingTimedOut)"
+                    + " errors=\(report.errors.count)",
+                level: report.errors.isEmpty ? .info : .warn)
+            guard report.applied > 0 else { return }
+            await MainActor.run {
+                // 广播挑片域变更：已挂载的挑片页/图库据此重拉星级、色标与决策。
+                GatherEventCenter.postDomainChange(
+                    .culling, sessionId: sessionId, origin: "c1-import-judgements")
+            }
         }
     }
 }
