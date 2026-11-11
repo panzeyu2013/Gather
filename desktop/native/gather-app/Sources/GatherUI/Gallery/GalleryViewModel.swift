@@ -274,6 +274,10 @@ public final class GalleryViewModel: SessionPageModel {
     var stackFoldVersion = 0
     /// 可加入的集合（AlbumAPI 未接线时为空）。
     public internal(set) var collections: [CollectionSummary] = []
+    /// 会话内的堆栈列表（命名/加入/重命名菜单用；AlbumAPI 未接线时为空）。
+    public internal(set) var stacks: [StackSummary] = []
+    /// 堆栈写命令的并发守卫（加入/移出/重命名/取消堆叠共用一个写通道）。
+    public internal(set) var isStackBusy = false
     public internal(set) var metadataDetail: PhotoMetadataDetail?
     private var metadataRequestID = 0
 

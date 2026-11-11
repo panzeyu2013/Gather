@@ -92,6 +92,45 @@ struct OutputServiceTests {
         #expect(decoded.recipes.count == 2)
     }
 
+    /// P0-5 / Wave1：配方里的色彩空间/DPI/锐化必须真的进到成片
+    ///（OutputRecipe → ExportOptions 的映射不是死字段）。
+    @Test("配方输出规格（色彩空间/DPI/锐化）透传到成片")
+    func recipeOutputSpecsReachExportOptions() throws {
+        let (db, sessionId, source, _) = try makeFixture()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-output-spec-" + UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: source)
+            try? FileManager.default.removeItem(atPath: root.path)
+        }
+        let service = OutputService(exportService: ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            reports: ExportReportRepo(connection: db)))
+        let input = OutputRunInput(
+            sessionId: sessionId,
+            destinationRoot: root.path,
+            recipes: [OutputRecipe(
+                name: "Print P3",
+                format: .jpeg,
+                quality: 95,
+                colorSpace: .displayP3,
+                dpi: 300,
+                sharpening: ExportSharpening(radius: 1, intensity: 0.4))])
+        let summary = try service.run(input: input)
+        #expect(summary.totalExported == 2)
+        let destination = try #require(summary.recipes.first?.destination)
+        let output = URL(fileURLWithPath: destination).appendingPathComponent("IMG_0.jpg")
+        let sourceRef = try #require(CGImageSourceCreateWithURL(output as CFURL, nil))
+        let properties = try #require(
+            CGImageSourceCopyPropertiesAtIndex(sourceRef, 0, nil) as? [CFString: Any])
+        #expect((properties[kCGImagePropertyDPIWidth] as? NSNumber)?.intValue == 300)
+        let image = try #require(CGImageSourceCreateImageAtIndex(sourceRef, 0, nil))
+        let spaceName = try #require(image.colorSpace?.name as String?)
+        #expect(spaceName == (CGColorSpace.displayP3 as String))
+        #expect(image.width == 24 && image.height == 18, "锐化不得改变尺寸")
+    }
+
     @Test("配方勾选联系表：产出 PDF 并写进结果")
     func producesContactSheet() throws {
         let (db, sessionId, source, _) = try makeFixture()

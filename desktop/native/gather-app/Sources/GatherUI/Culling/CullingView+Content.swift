@@ -57,7 +57,10 @@ extension CullingView {
                         density: densityBinding,
                         faceAlign: $faceAlign,
                         pendingAction: $pendingAction,
-                        conflictChoices: $conflictChoices
+                        conflictChoices: $conflictChoices,
+                        filmstripExpanded: $filmstripExpanded,
+                        isFocusMode: isFocusMode,
+                        onToggleFocusMode: { toggleFocusMode() }
                     )
                 }
             } else if let error = viewModel.errorMessage {

@@ -24,6 +24,16 @@ import Foundation
 import AppKit
 import GatherProtocol
 
+/// 一次「重新关联存储卷」的结果。
+///
+/// fileCount = 服务端实际改写的文件数。0 是**有意义**的结果（新目录里没有匹配到
+/// 文件），必须让用户看见，而不是静默刷新后当作成功。
+struct LibraryRelinkOutcome: Equatable, Sendable {
+    let oldRoot: String
+    let newRoot: String
+    let fileCount: Int
+}
+
 /// TS: Library/index.tsx 筛选表单状态（useState 组，字符串语义对齐
 /// <option value>：'' = 未筛选）。
 public struct LibraryFilterState: Equatable, Sendable {
@@ -314,6 +324,11 @@ public final class LibraryViewModel {
     public internal(set) var metadataOrphans: [MetadataOrphan] = []
     public internal(set) var assetVolumes: [AssetVolumeData] = []
     public internal(set) var isSupportBusy = false
+    /// 最近一次「重新关联存储卷」的结果（nil = 没有可展示的结果）。
+    ///
+    /// 只存语义（新旧根 + 实际改写的文件数），文案在渲染期按语言解析：
+    /// 与 actionError 同一纪律，VM 不持有本地化字符串。
+    var lastRelink: LibraryRelinkOutcome?
     /// 筛选表单（视图双向绑定；字段变更须经 onFilterChanged 提交）。
     public var filter = LibraryFilterState()
     /// 选中工作区（'' = 全部工作区，对齐 TS sessionFilter）。

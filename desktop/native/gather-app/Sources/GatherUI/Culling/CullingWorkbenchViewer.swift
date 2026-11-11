@@ -9,6 +9,72 @@
 import SwiftUI
 import GatherProtocol
 
+// MARK: - 缩放换算（纯逻辑，可单测）
+
+/// 查看器缩放口径：`scale` 是**相对 fit** 的倍率（1 = 适配窗口）。
+///
+/// 旧实现把它当"百分比"用：fit 时也显示 100%、⌘0 写"实际大小"却执行 fit 复位
+/// （20-culling-browse #2）。这里补上真 1:1 的换算——让 1 个源像素落在 1 个
+/// 屏幕**物理**像素上（Retina 要除 backingScale），百分比也按这个口径显示。
+enum CullingViewerZoom {
+    /// fit 档（相对倍率 1.0）。
+    static let fitScale = 1.0
+    /// 既有缩放范围上限（fit 的 8 倍）：没有 1:1 需求时行为不变。
+    static let baseMaximumScale = 8.0
+
+    /// 实际像素（1:1）倍率：按「源像素 / (fit 点数 × 屏幕缩放)」反算。
+    ///
+    /// 图像本身小于 fit 尺寸时（小图放大到铺满）反算结果 < 1，收敛回 fit：
+    /// 此时 fit 已经是"比 1:1 更大"，没有更小的合法档位。
+    static func actualPixelsScale(
+        sourceMaxDimension: Int,
+        fitPoints: Double,
+        backingScale: Double
+    ) -> Double? {
+        guard sourceMaxDimension > 0, fitPoints > 0, fitPoints.isFinite,
+              backingScale > 0, backingScale.isFinite else { return nil }
+        let raw = Double(sourceMaxDimension) / (fitPoints * backingScale)
+        guard raw.isFinite, raw > 0 else { return nil }
+        return max(fitScale, raw)
+    }
+
+    /// 缩放上限：至少保留既有 fit×8；实际像素档更高时抬高到它，
+    /// 否则大图在窄窗口里永远碰不到 1:1（"真 1:1"名存实亡）。
+    static func maximumScale(
+        sourceMaxDimension: Int,
+        fitPoints: Double,
+        backingScale: Double
+    ) -> Double {
+        guard let actual = actualPixelsScale(
+            sourceMaxDimension: sourceMaxDimension,
+            fitPoints: fitPoints,
+            backingScale: backingScale
+        ) else { return baseMaximumScale }
+        return max(baseMaximumScale, actual)
+    }
+
+    /// 收敛到 [fitScale, maximum]；非法值回落到 fit。
+    static func clamp(_ scale: Double, maximum: Double = baseMaximumScale) -> Double {
+        guard scale.isFinite else { return fitScale }
+        let upper = maximum.isFinite && maximum > fitScale ? maximum : baseMaximumScale
+        return min(upper, max(fitScale, scale))
+    }
+
+    /// 当前缩放相对源像素的百分比（1:1 = 100%）；不可算时 nil（胶囊隐藏）。
+    static func pixelPercent(
+        scale: Double,
+        sourceMaxDimension: Int,
+        fitPoints: Double,
+        backingScale: Double
+    ) -> Int? {
+        guard sourceMaxDimension > 0, fitPoints > 0, fitPoints.isFinite,
+              backingScale > 0, backingScale.isFinite, scale.isFinite else { return nil }
+        let ratio = scale * fitPoints * backingScale / Double(sourceMaxDimension)
+        guard ratio.isFinite, ratio > 0 else { return nil }
+        return Int((ratio * 100).rounded())
+    }
+}
+
 /// 工作台内嵌查看器：对齐旧版查看器核心能力——1/2/4 张对比（4 张为 2x2 网格）、
 /// 滚轮缩放（1.15/0.87，范围 1..8）+ 任意缩放级拖拽平移 + 双击复位 + zoomHint、
 /// 每格字幕（文件名 + 来源 + 星级/未评级）+ 保留/淘汰徽标 + 无脸徽标 + 质量徽标。
@@ -27,6 +93,11 @@ struct CullingWorkbenchViewer: View {
     let viewModel: CullingViewModel
     let compareCount: Int
     let faceAlign: Bool
+    /// 专注模式是否开启（状态由页面持有：隐藏检查器/折叠胶片条/窗口全屏）。
+    var isFocusMode: Bool = false
+    /// 专注模式切换：F 裸键挂在查看器上（查看器是页面里唯一始终存在且持有焦点的
+    /// 控件），实际的面板折叠/全屏动作由页面执行。
+    var onToggleFocusMode: () -> Void = {}
 
     /// Cut 4 / 4b-1：质量失败原因在渲染期按当前语言解析。
     @Environment(\.languageStore) private var languageStore
@@ -117,15 +188,20 @@ struct CullingWorkbenchViewer: View {
         .background(GatherTheme.viewerChrome)
         .clipped()
         .overlay(alignment: .top) {
-            // 缩放提示（对齐旧版 zoomHint：居中胶囊，百分比 + 操作提示）。
-            Text("\(Int(effectiveScale * 100))%")
-                .font(GatherFont.label)
-                .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.9))
-                .padding(.horizontal, GatherMetrics.Space.s)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(GatherTheme.viewerSurface.opacity(0.85)))
-                .padding(.top, GatherMetrics.Space.s)
-                .help(l10n("滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放"))
+            // 缩放提示（对齐旧版 zoomHint）：只在**离开 fit** 后显示，百分比按
+            // 「1 源像素 = 1 屏幕像素 = 100%」口径换算——1:1 时正好 100%，
+            // 不再出现「fit 也写 100%」的名不副实（20-culling-browse #2）。
+            if let zoomHint {
+                Text(zoomHint)
+                    .font(GatherFont.label)
+                    .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.9))
+                    .padding(.horizontal, GatherMetrics.Space.s)
+                    .padding(.vertical, GatherMetrics.Space.xxs)
+                    .background(Capsule().fill(GatherTheme.viewerSurface.opacity(0.85)))
+                    .padding(.top, GatherMetrics.Space.s)
+                    .monospacedDigit()
+                    .help(l10n("滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放"))
+            }
         }
         .overlay(alignment: .bottomLeading) {
             // 可见缩放控件承载 ⌘−/⌘0/⌘= 快捷键（取代零尺寸全透明的隐藏按钮）。
@@ -141,8 +217,17 @@ struct CullingWorkbenchViewer: View {
                     Image(systemName: "1.magnifyingglass")
                 }
                 .keyboardShortcut("0", modifiers: .command)
-                .help(l10n("实际大小（⌘0）"))
-                .accessibilityLabel(l10n("实际大小"))
+                .help(l10n("适配窗口（⌘0）"))
+                .accessibilityLabel(l10n("适配窗口"))
+
+                // 真 1:1：裸 1 已是「1 星」评级（见 onKeyPress），不能占；因此绑 ⌘1，
+                // ⌘⌥0 在 onKeyPress 里作为同一动作的第二入口。
+                Button { zoomToActualPixels() } label: {
+                    Image(systemName: "arrow.up.left.and.down.right.magnifyingglass")
+                }
+                .keyboardShortcut("1", modifiers: .command)
+                .help(l10n("实际像素（⌘1 或 ⌘⌥0）"))
+                .accessibilityLabel(l10n("实际像素"))
 
                 Button { zoomIn() } label: {
                     Image(systemName: "plus.magnifyingglass")
@@ -188,6 +273,18 @@ struct CullingWorkbenchViewer: View {
                     .help(l10n("对比模式"))
                     .accessibilityLabel(l10n("对比模式"))
                 }
+
+                Divider().frame(height: 12)
+
+                // 专注模式（P1 无干扰单图）：隐藏检查器 + 折叠胶片条 + 窗口全屏。
+                // 裸键 F 在 onKeyPress 里同一入口；「显示」菜单也有一项。
+                Button { onToggleFocusMode() } label: {
+                    Image(systemName: isFocusMode
+                        ? "arrow.down.right.and.arrow.up.left"
+                        : "arrow.up.left.and.arrow.down.right")
+                }
+                .help(l10n(isFocusMode ? "退出专注模式" : "专注模式（F）"))
+                .accessibilityLabel(l10n(isFocusMode ? "退出专注模式" : "专注模式"))
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
@@ -224,10 +321,22 @@ struct CullingWorkbenchViewer: View {
             default:
                 break
             }
+            // ⌘⌥0 = 实际像素（⌘0 已修正为「适配窗口」；⌘1 另绑在可见按钮上）。
+            // ⌘⌥ 组合不会被系统快捷键占用，因此能在 onKeyPress 里收口。
+            if press.characters == "0",
+               press.modifiers.contains(.command),
+               press.modifiers.contains(.option) {
+                zoomToActualPixels()
+                return .handled
+            }
             // 裸键决策：带 ⌘/⌥ 的组合交给系统（⌘X 不能变成“淘汰”）。
             guard !press.modifiers.contains(.command),
                   !press.modifiers.contains(.option) else { return .ignored }
             switch press.characters.lowercased() {
+            case "f":
+                // 专注模式（隐藏检查器 / 折叠胶片条 / 窗口全屏）；「显示」菜单同入口。
+                onToggleFocusMode()
+                return .handled
             case " ":
                 Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }
                 return .handled
@@ -277,9 +386,13 @@ struct CullingWorkbenchViewer: View {
         })
         .onAppear {
             startWheelMonitor()
+            // P0-4：进入查看器即为当前照片调度邻张预取（去抖后只跑最后一次）。
+            viewModel.scheduleNeighborPreload()
         }
         .onDisappear {
             stopWheelMonitor()
+            // 离开查看器（切网格/离开页面）立即取消未完成的预取。
+            viewModel.cancelNeighborPreload()
         }
         // 复用旧版 resetTransform 语义：对比模式切换 / 人脸对齐开关 / 翻页
         // 均显式复位缩放与位移（替代旧的 .id() 整树重建，避免焦点与监听扰动）。
@@ -291,6 +404,12 @@ struct CullingWorkbenchViewer: View {
         }
         .onChange(of: viewModel.currentPhotoId) { _, _ in
             resetTransform()
+            // 翻片/选片后重新调度 ±2 预取（去抖：连按只预热最后一张的邻张）。
+            viewModel.scheduleNeighborPreload()
+        }
+        // 页集合变化（筛选/排序/翻页/决策回显）同样要重算邻张；已缓存的不重解。
+        .onChange(of: viewModel.pageVersion) { _, _ in
+            viewModel.scheduleNeighborPreload()
         }
         // 可见区域细节层：缩放或平移停止 150ms 后重算「可见矩形」，只重解那一块。
         .onChange(of: scale) { _, _ in scheduleDetailTileUpdate() }
@@ -566,7 +685,7 @@ struct CullingWorkbenchViewer: View {
             .gesture(
                 MagnificationGesture()
                     .onChanged { value in
-                        scale = min(8, max(1, gestureScale * value))
+                        scale = CullingViewerZoom.clamp(gestureScale * value, maximum: zoomMaximum)
                     }
                     .onEnded { _ in
                         gestureScale = scale
@@ -731,15 +850,69 @@ struct CullingWorkbenchViewer: View {
     //   不可用时作为兜底，见 cellView 的 onUnavailable 回调。）
 
     private func zoomIn() {
-        let next = min(8, max(1, scale * 1.15))
+        let next = CullingViewerZoom.clamp(scale * 1.15, maximum: zoomMaximum)
         scale = next
         gestureScale = next
     }
 
     private func zoomOut() {
-        let next = min(8, max(1, scale * (1 / 1.15)))
+        let next = CullingViewerZoom.clamp(scale * (1 / 1.15), maximum: zoomMaximum)
         scale = next
         gestureScale = next
+    }
+
+    /// 真 1:1：按源像素 / fitPoints（含屏幕 backingScale）反算相对 fit 的倍率。
+    /// 源图尺寸未知（老库/未索引）时不做换算，保持当前缩放。
+    private func zoomToActualPixels() {
+        guard let asset = currentAsset,
+              lastCellSize.width > 0, lastCellSize.height > 0,
+              let actual = CullingViewerZoom.actualPixelsScale(
+                  sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
+                  fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: lastCellSize),
+                  backingScale: Self.backingScale())
+        else { return }
+        let next = CullingViewerZoom.clamp(actual, maximum: zoomMaximum)
+        scale = next
+        gestureScale = next
+        // 1:1 的语义是"看这张图的正中真实像素"：平移复位，避免沿用上一张的位移。
+        offset = .zero
+        dragStartOffset = .zero
+        scheduleDetailTileUpdate()
+    }
+
+    /// 缩放上限（fit 相对倍率）：既有 fit×8，必要时抬到实际像素档。
+    private var zoomMaximum: Double {
+        guard let asset = currentAsset,
+              lastCellSize.width > 0, lastCellSize.height > 0 else {
+            return CullingViewerZoom.baseMaximumScale
+        }
+        return CullingViewerZoom.maximumScale(
+            sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
+            fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: lastCellSize),
+            backingScale: Self.backingScale())
+    }
+
+    /// 缩放胶囊文案：fit 档**不显示**；其余按源像素口径（1:1 = 100%）。
+    private var zoomHint: String? {
+        guard effectiveZoom != CullingViewerZoom.fitScale else { return nil }
+        guard let asset = currentAsset,
+              lastCellSize.width > 0, lastCellSize.height > 0,
+              let percent = CullingViewerZoom.pixelPercent(
+                  scale: effectiveZoom,
+                  sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
+                  fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: lastCellSize),
+                  backingScale: Self.backingScale())
+        else { return "\(Int(effectiveZoom * 100))%" }
+        return "\(percent)%"
+    }
+
+    private func imageSize(of asset: CullingAsset) -> CGSize {
+        CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height))
+    }
+
+    /// 屏幕物理像素/点；取不到时按 2（Retina）保守换算。
+    private static func backingScale() -> Double {
+        Double(NSScreen.main?.backingScaleFactor ?? 2)
     }
 
     // MARK: 滚轮缩放（对齐旧版 onWheel：向上 1.15、向下 0.87，范围 1..8）
@@ -766,7 +939,9 @@ struct CullingWorkbenchViewer: View {
               let proxy = viewerProxy, proxy.window === window else { return }
         let point = proxy.convert(event.locationInWindow, from: nil)
         guard proxy.bounds.contains(point) else { return }
-        let next = min(8, max(1, scale * (event.scrollingDeltaY < 0 ? 1.15 : 0.87)))
+        let next = CullingViewerZoom.clamp(
+            scale * (event.scrollingDeltaY < 0 ? 1.15 : 0.87),
+            maximum: zoomMaximum)
         guard next != scale else { return }
         scale = next
         gestureScale = next

@@ -1,6 +1,12 @@
 // Capture One 宿主桥：只负责显式用户操作，不自动读取、刷新或清理元数据。
 // AppleScript 错误在这里归一化为稳定错误码，页面才能在 reload 成功后才放行
 // confirm_sync/cleanup。
+//
+// Wave1（2026-11-11，task-6）修 P0-1/P0-2 的脚本契约：
+//   · 选中读取改成 application 级 selected variants + parent image.path（G1）；
+//   · reload metadata 按当前选中的 variant 逐个调用（sdef 的直接参数是 variant），
+//     无选中时抛 .noSelection 而不是盲发（G2）；
+//   · 以上均以本机 C1 16.7.8.16 的 CaptureOne.sdef 行号为依据，写在脚本注释里。
 import Foundation
 import GatherProtocol
 import GatherUI
@@ -69,12 +75,23 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     }
 
     private let recordReloadAck: (String) throws -> Void
+    /// AppleScript 执行接缝（nil = 真跑 osascript）。
+    ///
+    /// 为什么需要：脚本契约（对象归属/直接参数类型）与错误语义（无选中不盲发、
+    /// 失败不吞）是本域最容易回归的部分，而真机验证要触发 TCC 自动化授权。
+    /// 注入假运行器后，这些语义可以在单测里直接断言，运行时仍走 osascript。
+    private let appleScriptRunner: (@Sendable (String) async throws -> String)?
 
     /// - Parameter recordReloadAck：Capture One 脚本成功后的持久 ack 写入。
     ///   生产由组合根的 AppRuntime.recordReloadAck 提供（同一 SessionRepo
     ///   写库语义）；测试可注入空实现/闭包。B8.3b-2b 起不再接收命令面。
-    public init(recordReloadAck: @escaping (String) throws -> Void = { _ in }) {
+    /// - Parameter appleScriptRunner：AppleScript 执行接缝（仅测试注入）。
+    public init(
+        recordReloadAck: @escaping (String) throws -> Void = { _ in },
+        appleScriptRunner: (@Sendable (String) async throws -> String)? = nil
+    ) {
         self.recordReloadAck = recordReloadAck
+        self.appleScriptRunner = appleScriptRunner
     }
 
     public func selectedPhotoPaths() async throws -> [String] {
@@ -86,10 +103,23 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
             .filter { $0.hasPrefix("/") && FileManager.default.fileExists(atPath: $0) }
     }
 
+    /// 让 C1 重新读取**当前选中 variant** 的源文件元数据，成功后才写 durable ack。
+    ///
+    /// G2 契约：C1 16.7 sdef 里 reload metadata 的直接参数是 variant
+    /// （CaptureOne.sdef:1852-1855；document 不在可响应对象里），因此脚本对
+    /// 选中项逐个调用。没有选中项时脚本返回 0，这里抛 .noSelection —— 绝不
+    /// 向 document 盲发、也不在脚本失败时伪造 ack（否则 confirm/finalize 会在
+    /// 假 ack 上继续推进）。
     public func reloadMetadata(sessionId: String) async throws {
         let appName = try await captureOneApplicationName()
-        _ = try await runAppleScript(Self.reloadMetadataScript(appName: appName))
-        // C1 需要一个短暂窗口读取 XMP；只有脚本成功才写入 durable ack。
+        let output = try await runAppleScript(Self.reloadMetadataScript(appName: appName))
+        guard let reloaded = Self.reloadedVariantCount(from: output) else {
+            // 脚本成功但报告形状不认识：C1 字典/脚本行为变了的信号，必须保留原文。
+            throw CaptureOneBridgeError.scriptFailed(
+                "unexpected reload metadata report: \(output)")
+        }
+        guard reloaded > 0 else { throw CaptureOneBridgeError.noSelection }
+        // C1 需要一个短暂窗口读取 XMP；只有脚本成功且确有变体被重载才写入 durable ack。
         try await Task.sleep(for: .milliseconds(500))
         try recordReloadAck(sessionId)
     }
@@ -98,8 +128,9 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     ///
     /// 顺序：
     /// 1. 过滤非法/不存在的路径 → notFound（不 fallback：绝不因为"文件不在"而触发导入）；
-    /// 2. AppleScript 逐路径 `whose path is "<posix>"` 匹配后 select（AppleScript 没有
-    ///    `in {…}` 集合字面量，必须单值比较；路径按 AppleScript 字符串规则转义）；
+    /// 2. AppleScript 按 image.path 逐路径匹配（variant 没有 path，只能经 parent
+    ///    image 反查），再按 sdef 的 select 契约（直接参数是 document、variant/
+    ///    variants 是具名参数，CaptureOne.sdef:1956-1966）一次选中该图片的 variant；
     /// 3. 脚本语法/字典不可用（C1 版本太老）或 osascript 执行失败 → `open -a <app>`
     ///    （等价 NSWorkspace.open，**可能触发 C1 导入**），结果里 method 标明来源。
     ///    例外（C7）：脚本内部 `on error` 的 `error:<msg>` 报告就是**执行失败**，
@@ -139,7 +170,7 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
                 Self.selectVariantsScript(appName: appName, paths: requested))
         } catch let error as CaptureOneBridgeError {
             switch error {
-            case .notRunning, .notAuthorized, .noDocument, .timedOut:
+            case .notRunning, .notAuthorized, .noDocument, .noSelection, .timedOut:
                 // 应用状态问题不是脚本能力问题：原样抛出，让 UI 显示预检原因。
                 throw error
             case .scriptFailed(let message):
@@ -314,7 +345,11 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     }
 
     private func runAppleScript(_ script: String, timeout: TimeInterval = 15) async throws -> String {
-        try await runProcess(executable: "/usr/bin/osascript", arguments: ["-e", script], timeout: timeout)
+        // 测试接缝优先：假运行器只替代脚本执行，不改变调用方可见的错误语义。
+        if let appleScriptRunner {
+            return try await appleScriptRunner(script)
+        }
+        return try await runProcess(executable: "/usr/bin/osascript", arguments: ["-e", script], timeout: timeout)
     }
 
     /// 运行子进程并返回 stdout（internal：问题 7 的验收测试直接驱动大输出场景）。
@@ -383,12 +418,22 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         classifyMessage(String(describing: error))
     }
 
-    private static func classifyMessage(_ message: String) -> CaptureOneBridgeError {
+    /// 把 osascript 的 stderr 归一化为稳定错误。
+    ///
+    /// internal（非 private）：C1BridgeWave1Tests 直接断言无文档措辞的归一结果
+    /// ——这是"脚本失败不得被当成没选中"契约的一半，必须可测。
+    static func classifyMessage(_ message: String) -> CaptureOneBridgeError {
         let lowercased = message.lowercased()
         if lowercased.contains("-1743") || lowercased.contains("not authorized") || lowercased.contains("not authorised") {
             return .notAuthorized
         }
         if lowercased.contains("no document") || lowercased.contains("no current document") {
+            return .noDocument
+        }
+        // osascript 对 `current document` 取不到时的常见措辞（"Can't get current
+        // document."）：同样归一到 C1_NO_DOCUMENT，让 UI 提示"先打开目录"而不是
+        // 笼统的 C1_SCRIPT_FAILED（G1 之后脚本会先取 current document 做探针）。
+        if lowercased.contains("current document") {
             return .noDocument
         }
         if lowercased.contains("-1712") || lowercased.contains("timed out") {
@@ -418,30 +463,46 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         name.range(of: #"^Capture One( [A-Za-z0-9 ._+()$-]*)?$"#, options: .regularExpression) != nil
     }
 
-    private static func selectedVariantsScript(appName: String) -> String {
+    /// 读取 C1 当前选中的 variant 路径（G1）。
+    ///
+    /// C1 16.7 sdef 依据（本机 CaptureOne.sdef，16.7.8.16）：
+    /// - selected variants 是 **application** 属性（code csev，`:244-247`，
+    ///   "List of selected variants in the front document's browser"）；
+    ///   标了 deprecated，但 16.7 里它是唯一能一次读出多个选中项的对象面
+    ///   （application 级的 `primary variant` 只有单选，`:253`）；
+    /// - variant **没有 path**：路径在 `parent image`（`:1081`）的 `path`
+    ///   （image.path，`:1541`，"The full path to the original image file"）。
+    ///
+    /// 旧脚本写成 `selected variants of current document`（对象归属错）并取
+    /// `path of img`（variant 无该属性），在 16.7 上必然报错；旧实现再用
+    /// `on error return ""` 把错误吞成"没有选中照片"，用户只会看到"请先选照片"。
+    /// 现在**不吞错**：脚本失败由 osascript 非零退出上浮为 C1_SCRIPT_FAILED。
+    static func selectedVariantsScript(appName: String) -> String {
         """
         tell application "\(appName)"
-          try
-            set output to ""
-            set selectedImages to selected variants of current document
-            repeat with img in selectedImages
-              set output to output & (path of img as text) & linefeed
-            end repeat
-            return output
-          on error
-            return ""
-          end try
+          -- 无文档时先在这里抛错（宿主归一到 C1_NO_DOCUMENT），不被当成"没有选中"。
+          set frontDocument to current document
+          set selectedVariantsList to selected variants
+          set output to ""
+          repeat with v in selectedVariantsList
+            set parentImage to parent image of v
+            set output to output & (path of parentImage) & linefeed
+          end repeat
+          return output
         end tell
         """
     }
 
     /// 按路径逐个匹配后 select（§3.10.2）。
     ///
+    /// C1 16.7 sdef 依据：
+    /// - variant 没有 path，只能经 `parent image` 反查 `image.path`（`:1081`/`:1541`）；
+    /// - select 命令的直接参数是 **document**，variant 是具名参数（`variant` /
+    ///   `variants`，`:1956-1966`）——旧脚本把 variant 当直接参数，16.7 会拒绝。
+    ///
     /// 输出：每条路径一行 "1"/"0"，与 paths 同序（调用方据此算 notFound）；
     /// `on error` 分支返回单行 `"error:<msg>"`，由 reportedScriptError(in:) 先筛出
     /// 并当脚本失败抛出（C7：不能被当"未找到"，也不能兜底 open -a）。
-    /// 为什么单值比较：AppleScript 没有 `in {…}` 集合字面量，`whose path is X`
-    /// 只能一次一个值；这也是 TS 侧同款脚本的形状。
     static func selectVariantsScript(appName: String, paths: [String]) -> String {
         let literals = paths.map(appleScriptLiteral).joined(separator: ", ")
         return """
@@ -450,11 +511,17 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
             set targetDoc to current document
             set report to ""
             repeat with p in {\(literals)}
-              set matches to (every variant of targetDoc whose path is p)
+              -- variant 没有 path：按 parent image 的 path 在当前 collection 里找图片。
+              set matches to (every image of targetDoc whose path is p)
               if (count of matches) > 0 then
-                repeat with v in matches
-                  select v
+                set variantsToSelect to {}
+                repeat with img in matches
+                  repeat with v in (variants of img)
+                    set end of variantsToSelect to v
+                  end repeat
                 end repeat
+                -- sdef：select 的直接参数是 document，variant/variants 是具名参数。
+                select targetDoc variants variantsToSelect
                 set report to report & "1" & linefeed
               else
                 set report to report & "0" & linefeed
@@ -513,12 +580,36 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     static let openExecutable = "/usr/bin/open"
     static let openTimeout: TimeInterval = 15
 
-    private static func reloadMetadataScript(appName: String) -> String {
+    /// G2 的 reload 脚本：按当前选中的 variant 逐个 reload。
+    ///
+    /// C1 16.7 sdef 依据：reload metadata（`:1852-1855`）"Reload a variant's source
+    /// file metadata"，直接参数是 **variant**，命令只声明在 variant 类上响应
+    /// （`:1176`）—— document 级调用在 16.7 上不成立（旧脚本正是如此）。
+    /// 没有选中项时不向任何对象盲发：直接返回 "0"，宿主映射成 C1_NO_SELECTED_PHOTOS。
+    ///
+    /// 输出：已重载的 variant 数量（十进制字符串）。
+    static func reloadMetadataScript(appName: String) -> String {
         """
         tell application "\(appName)"
-          reload metadata of current document
+          set frontDocument to current document
+          set selectedVariantsList to selected variants
+          set selectedCount to count of selectedVariantsList
+          if selectedCount = 0 then return "0"
+          repeat with v in selectedVariantsList
+            reload metadata v
+          end repeat
+          return (selectedCount as text)
         end tell
         """
+    }
+
+    /// reload 脚本输出 → 已重载的 variant 数；nil = 报告形状不认识（契约不匹配）。
+    ///
+    /// 为什么要区分 nil 与 0：0 是"C1 里没有选中项"的明确语义（→ .noSelection），
+    /// 而无法解析的输出说明脚本被旧/新版 C1 改写了——那是脚本契约失败，必须带
+    /// 原文上浮，不能用"没选中"掩盖。
+    static func reloadedVariantCount(from output: String) -> Int? {
+        Int(output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }
 

@@ -17,7 +17,26 @@ struct CullingWorkbench: View {
     @Binding var faceAlign: Bool
     @Binding var pendingAction: PendingCullingAction?
     @Binding var conflictChoices: [String: MetadataConflictChoice]
-    @State private var filmstripExpanded = true
+    /// 胶片条展开态由页面持有：专注模式要程序化折叠，退出时按进入前状态恢复。
+    @Binding var filmstripExpanded: Bool
+    /// 专注模式（只对查看器布局生效；网格布局不受影响）。
+    var isFocusMode = false
+    /// 专注模式切换（F 裸键在查看器内触发，按钮/菜单同入口）。
+    var onToggleFocusMode: () -> Void = {}
+
+    @Environment(\.languageStore) private var languageStore
+    private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+
+    /// 忙碌文案（nil = 不显示角标）。P0-4 要求"不再静默丢键"，因此这里必须有
+    /// 可见反馈，而不是等照片状态莫名其妙变了才发现。
+    /// 只覆盖三类：按键排队 / 决策写入 / 页面加载——质量分析等后台任务有自己的
+    /// 进度控件，不能借用"正在写入挑片决策"的语义。
+    private var busyText: String? {
+        if viewModel.hasPendingCommit { return l10n("按键已排队") }
+        if viewModel.isCommitting { return l10n("正在写入挑片决策…") }
+        if viewModel.isLoading { return l10n("加载中…") }
+        return nil
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,13 +64,24 @@ struct CullingWorkbench: View {
                     CullingWorkbenchViewer(
                         viewModel: viewModel,
                         compareCount: layoutMode.compareCount,
-                        faceAlign: faceAlign
+                        faceAlign: faceAlign,
+                        isFocusMode: isFocusMode,
+                        onToggleFocusMode: onToggleFocusMode
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     CullingInfoBar(viewModel: viewModel, isBusy: isBusy)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // P0-4 忙碌角标：加载/提交/排队期间浮在查看器右上角（不占布局高度，
+            // 不挤压照片）。网格布局的既有行为不受影响。
+            .overlay(alignment: .topTrailing) {
+                if let busyText, layoutMode != .grid {
+                    CullingWorkbenchBusyBadge(text: busyText)
+                        .padding(GatherMetrics.Space.s)
+                        .transition(.opacity)
+                }
+            }
             .overlay(alignment: .bottomTrailing) {
                 // 浮动冲突面板（对齐旧版 .conflictPanel 定位：右下、infoBar 之上；
                 // 宽度不超过 540，且不超过窗口可用宽 - 32）。
@@ -78,5 +108,27 @@ struct CullingWorkbench: View {
             }
             CullingFilmstrip(viewModel: viewModel, isExpanded: $filmstripExpanded)
         }
+    }
+}
+
+/// 工作台忙碌角标（P0-4）：加载 / 决策提交 / 按键排队时的可见反馈。
+/// 浮在照片之上属功能层：用查看器深色胶囊保证在任何照片上都可读。
+private struct CullingWorkbenchBusyBadge: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: GatherMetrics.Space.xs) {
+            ProgressView()
+                .controlSize(.mini)
+                .tint(GatherTheme.viewerTextPrimary)
+            Text(text)
+                .font(GatherFont.label)
+                .foregroundStyle(GatherTheme.viewerTextPrimary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, GatherMetrics.Space.s)
+        .padding(.vertical, GatherMetrics.Space.xs)
+        .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.85)))
+        .accessibilityElement(children: .combine)
     }
 }

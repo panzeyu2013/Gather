@@ -875,6 +875,20 @@
 "读取目录失败" = "Failed to read the directory";
 "冲突项目必须选择保留当前 XMP 或恢复写入前状态" = "For conflicting items you must choose to keep the current XMP or restore the pre-writeback state";
 "仍有未完成、失败或冲突的 XMP 项目，不能确认同步" = "Some XMP items are still pending, failed, or conflicting; you cannot confirm sync yet";
+/* Wave1 task-6 */
+"在 Capture One 中显示" = "Show in Capture One";
+"在 Capture One 中选中这些照片；只改变选中，不导入" = "Select these photos in Capture One; changes the selection only, no import";
+"我已在 Capture One 手动加载元数据" = "I loaded metadata manually in Capture One";
+"在 Capture One 手动执行 Load Metadata 后点击；记录重载确认，解除确认/结束同步的门禁" = "Click after running Load Metadata manually in Capture One; records the reload confirmation so confirm/finalize are unblocked";
+"让 Capture One 重新读取本次写回（对 C1 当前选中的照片生效）" = "Make Capture One re-read this writeback (applies to the photos currently selected in C1)";
+"已记录手动加载，可以确认同步" = "Manual load recorded; you can confirm the sync";
+"已记录：你在 Capture One 中手动加载了元数据，现在可以确认同步" = "Recorded: you loaded metadata manually in Capture One; you can now confirm the sync";
+"请先选择照片（或让当前照片可见）" = "Select photos first (or make the current photo visible)";
+"「在 Capture One 中显示」未接线" = "“Show in Capture One” is not wired up";
+"已在 Capture One 中显示 %lld 张照片" = "Showing %lld photos in Capture One";
+"已在 Capture One 中显示 %lld 张，%lld 张不在当前目录" = "Showing %lld photos in Capture One; %lld of them are not in the current folder";
+"已在 Capture One 中打开 %lld 张照片（可能触发导入）" = "Opened %lld photos in Capture One (may trigger an import)";
+"Capture One 没有选中的照片：点「同步… → 在 Capture One 中显示」把照片选中后再试" = "No photos are selected in Capture One: use “Sync…” → “Show in Capture One” to select them, then try again";
 "请先在 Capture One 中加载元数据并确认同步，再执行清理" = "Load metadata in Capture One and confirm sync before cleaning up";
 "XMP 已被其他软件修改，不能自动恢复或删除" = "The XMP was modified by another application and cannot be automatically restored or deleted";
 "原始 XMP 备份不存在" = "The original XMP backup does not exist";
@@ -1230,8 +1244,6 @@
 "在分析、审核、写回之间切换" = "Switch between analyze, review and write-back";
 "在访达中显示" = "Reveal in Finder";
 "在访达中显示该模型所在目录" = "Reveal the model directory in Finder";
-"实际大小" = "Actual size";
-"实际大小（⌘0）" = "Actual size (⌘0)";
 "对新增照片运行人脸检测与聚类" = "Run face detection and clustering on new photos";
 "将删除智能相册「%@」及其筛选规则。只删除相册规则，不会删除任何照片文件。" = "Deletes the smart album “%@” and its filter rules. Only the album rule is removed; no photo files are deleted.";
 "将把「%@」与「%@」合并为同一个资产（RAW + JPEG 变体）：图库与导出中只保留一个条目，另一个作为变体保留在磁盘上。" = "Merges “%@” and “%@” into a single asset (RAW + JPEG variant): only one entry appears in the gallery and exports, while the other stays on disk as a variant.";
@@ -2142,3 +2154,40 @@
 "删除已确认交付的备份与交付记录；XMP 文件保留" = "Deletes backups and delivery rows for confirmed deliveries; XMP files are kept";
 "已清理 %lld 份备份，保留 %lld，跳过 %lld" = "Cleaned %lld backups, retained %lld, skipped %lld";
 "已清理 %lld 份交付，保留 %lld，跳过 %lld" = "Cleaned %lld deliveries, retained %lld, skipped %lld";
+
+/* Wave1 task-9 */
+"堆栈" = "Stack";
+"加入堆栈" = "Add to Stack";
+"移出堆栈" = "Remove from Stack";
+"从「%@」移出 %lld 张" = "Remove from “%@”: %lld photos";
+"重命名堆栈" = "Rename Stack";
+"取消堆叠" = "Unstack";
+"取消堆叠？" = "Unstack?";
+"会把这一堆的 %lld 张照片拆回独立显示；照片文件不会被删除。" = "Splits these %lld photos back into individual items; photo files are not deleted.";
+"未命名堆栈" = "Untitled Stack";
+"堆栈名称" = "Stack Name";
+"堆栈名称不能为空。" = "The stack name cannot be empty.";
+"取消堆叠需要确认。" = "Unstacking requires confirmation.";
+"已重新关联 %lld 个文件：%@" = "%lld files re-linked: %@";
+"已更新根目录映射，但新目录下没有匹配到文件：%@" = "Root folder mapping updated, but no files matched under the new folder: %@";
+
+/* Wave1 task-8 */
+"适配窗口" = "Fit to Window";
+"适配窗口（⌘0）" = "Fit to Window (⌘0)";
+"实际像素" = "Actual Pixels";
+"实际像素（⌘1 或 ⌘⌥0）" = "Actual Pixels (⌘1 or ⌘⌥0)";
+"专注模式" = "Focus Mode";
+"专注模式（F）" = "Focus Mode (F)";
+"退出专注模式" = "Exit Focus Mode";
+"退出专注模式（F）" = "Exit Focus Mode (F)";
+"正在写入挑片决策…" = "Saving culling decisions…";
+"按键已排队" = "Key queued";
+
+/* Wave1 task-7 */
+"色彩空间" = "Color Space";
+"不转换" = "No conversion";
+"分辨率（DPI）" = "Resolution (DPI)";
+"不写入" = "Not written";
+"输出锐化" = "Output Sharpening";
+"锐化半径" = "Sharpening Radius";
+"锐化强度" = "Sharpening Intensity";

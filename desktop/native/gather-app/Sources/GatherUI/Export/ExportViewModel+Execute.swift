@@ -145,6 +145,21 @@ extension ExportViewModel {
         } else {
             throw GatherError(code: .EXPORT_MAX_DIMENSION_INVALID)
         }
+        // P0-5：色彩空间 / DPI / 输出锐化。原图格式只做字节复制，三项一律不发送
+        //（界面也不渲染这些控件，这里再兜一层，避免直改状态绕过 UI 时写出非法组合）。
+        let parsedDPI: Int?
+        let trimmedDPI = dpi.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !transformsAllowed || trimmedDPI.isEmpty {
+            parsedDPI = nil
+        } else if let value = Int(trimmedDPI.prefix(while: \.isNumber)), value >= 1, value <= 2400 {
+            parsedDPI = value
+        } else {
+            throw GatherError(code: .EXPORT_PARAMS_INVALID, params: ["field": "dpi"])
+        }
+        let sharpening: ExportSharpening? = transformsAllowed && outputSharpeningEnabled
+            ? ExportSharpening(
+                radius: outputSharpeningRadius, intensity: outputSharpeningIntensity)
+            : nil
         return ExportOptions(
             scope: scope,
             selectedPhotoIds: scope == .selected ? selectedPhotoIds.sorted() : nil,
@@ -152,6 +167,9 @@ extension ExportViewModel {
             format: format,
             quality: parsedQuality,
             maxDimension: parsedDimension,
+            colorSpace: transformsAllowed ? outputColorSpace : nil,
+            dpi: parsedDPI,
+            sharpening: sharpening,
             tiffCompression: format == .tiff ? tiffCompression : nil,
             // 对齐 TS export.tsx:67-75：watermarkEnabled && watermarkText 才发送；
             // 勾选但文本为空时不发 watermark，不再以 EXPORT_WATERMARK_TEXT_EMPTY 阻断。

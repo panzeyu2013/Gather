@@ -16,6 +16,8 @@ package struct GatherAppCommands: Commands {
     let installed: Set<AppCommand>
     /// 挑片页可见时的自建历史栈；其他页面为 nil → 保留系统撤销/重做。
     @FocusedValue(\.cullingHistory) private var cullingHistory
+    /// 挑片页专注模式（P1 无干扰单图）：「显示」菜单入口；nil = 不在挑片页。
+    @FocusedValue(\.cullingFocusMode) private var cullingFocusMode
     /// 侧栏是否展开：菜单标题按真实状态取「隐藏侧栏/显示侧栏」。
     @FocusedValue(\.sidebarExpanded) private var sidebarExpanded: Bool?
     /// 当前场景已安装 handler 的命令集合（RootView 注入，随安装/清理更新）。
@@ -54,9 +56,17 @@ package struct GatherAppCommands: Commands {
             commandButton(.captureOneImport, copy: copy)
         }
 
-        // 显示菜单：侧栏显隐（⌘⌥S），与 NavigationSplitView 的列可见性联动。
+        // 显示菜单：侧栏显隐（⌘⌥S）+ 挑片页专注模式（F 裸键在查看器内，
+        // 菜单项负责可发现性与无键盘操作；裸键不占菜单快捷键，避免输入框吞字）。
         CommandGroup(replacing: .sidebar) {
             commandButton(.toggleSidebar, copy: copy)
+            if let focus = cullingFocusMode {
+                Button(focus.isActive ? l10n("退出专注模式（F）") : l10n("专注模式（F）")) {
+                    focus.toggle()
+                }
+                // 网格布局没有单图专注语义 → 置灰而不是隐藏（入口可发现）。
+                .disabled(!focus.canToggle)
+            }
         }
 
         // 窗口菜单：单窗口场景关窗后（⌘W）应用内仍能重新打开主窗口；

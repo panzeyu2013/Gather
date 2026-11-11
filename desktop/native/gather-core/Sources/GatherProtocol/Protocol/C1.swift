@@ -13,6 +13,13 @@
 //
 // recordReloadAck 不在协议里：它是 CaptureOneBridge.init 注入的持久化闭包
 // （生产为 AppRuntime.recordReloadAck），不是 UI 可调用的能力成员。
+//
+// Wave1（2026-11-11，task-6）在 G1/G2 上补齐两处：
+//   · CaptureOneBridgeError 增加 .noSelection —— C1 16.7 sdef 里 reload metadata
+//     的直接参数是 variant，本机没有选中项时"没有可重载的对象"，必须显式报错
+//     而不是盲发（码值复用 C1_NO_SELECTED_PHOTOS：同为"请在 C1 中选照片"）；
+//   · 补 CodedError 一致性：码值仍取 GatherErrorCode（单一事实源），同时让
+//     C1RoundTripCoordinator 的失败提示拿得到具体码，不再一律显示 C1_SCRIPT_FAILED。
 
 /// TS: C1HealthLite —— 四层预检布尔位 + 超时标记（c1-preflight.ts 形状）。
 public struct C1PreflightStatus: Equatable, Sendable {
@@ -43,22 +50,32 @@ public struct C1PreflightStatus: Equatable, Sendable {
 
 /// Capture One 桥的稳定错误。码值统一取 GatherErrorCode（单一事实源：
 /// UI 按码取本地化文案，枚举外的裸字符串会绕过本地化并逃过交叉契约测试）。
-public enum CaptureOneBridgeError: Error, Equatable, CustomStringConvertible, Sendable {
+public enum CaptureOneBridgeError: Error, Equatable, CustomStringConvertible, Sendable, CodedError {
     case notRunning
     case noDocument
     case notAuthorized
     case timedOut
+    /// C1 当前没有选中的 variant。
+    ///
+    /// 语义：reload metadata 在 C1 16.7 sdef 里的直接参数是 variant
+    /// （CaptureOne.sdef:1852-1855），没有选中项时不存在可重载对象。此时不允许
+    /// "假装成功"，也不允许退化成 document 级盲发——直接报码，让用户先在 C1
+    /// 选片（或用「在 Capture One 中显示」把照片选中）。
+    case noSelection
     case scriptFailed(String)
 
-    public var description: String {
+    public var code: GatherErrorCode {
         switch self {
-        case .notRunning: return GatherErrorCode.C1_NOT_RUNNING.rawValue
-        case .noDocument: return GatherErrorCode.C1_NO_DOCUMENT.rawValue
-        case .notAuthorized: return GatherErrorCode.C1_NOT_AUTHORIZED.rawValue
-        case .timedOut: return GatherErrorCode.C1_SCRIPT_TIMEOUT.rawValue
-        case .scriptFailed: return GatherErrorCode.C1_SCRIPT_FAILED.rawValue
+        case .notRunning: return .C1_NOT_RUNNING
+        case .noDocument: return .C1_NO_DOCUMENT
+        case .notAuthorized: return .C1_NOT_AUTHORIZED
+        case .timedOut: return .C1_SCRIPT_TIMEOUT
+        case .noSelection: return .C1_NO_SELECTED_PHOTOS
+        case .scriptFailed: return .C1_SCRIPT_FAILED
         }
     }
+
+    public var description: String { code.rawValue }
 }
 
 /// UI 依赖的 Capture One 能力面（实现：CaptureOneBridge，在 GatherHost）。
@@ -68,8 +85,14 @@ public enum CaptureOneBridgeError: Error, Equatable, CustomStringConvertible, Se
 /// 替身，且 Host 与 UI 不再互相 import。
 public protocol CaptureOneBridging: Sendable {
     /// 当前文档中用户已选中的 variant 路径（仅存在的绝对路径）。
+    ///
+    /// C1 16.7 sdef 依据：selected variants 是 **application** 属性（当前文档
+    /// 浏览器里的选中项），variant 本身没有 path，路径在 parent image 的 path。
     func selectedPhotoPaths() async throws -> [String]
-    /// 触发 Capture One reload metadata，成功后才写 durable ack。
+    /// 让 Capture One 重新读取当前选中 variant 的源文件元数据，成功后才写 durable ack。
+    ///
+    /// C1 16.7 sdef 依据：reload metadata 的直接参数是 **variant**（per-variant），
+    /// 没有选中项时抛 .noSelection（不盲发、不写 ack）。
     func reloadMetadata(sessionId: String) async throws
     /// System Events 进程探测 + 应用名解析。
     func checkHealth() async -> Result<String, CaptureOneBridgeError>
@@ -77,4 +100,38 @@ public protocol CaptureOneBridging: Sendable {
     func preflight() async -> C1PreflightStatus
     /// 文档探针脚本文本（预检与设置页健康检查共用）。
     static func documentProbeScript(appName: String) -> String
+}
+
+/// C1 往返（手动 reload / 选中）的稳定错误。
+///
+/// 为什么在协议层：原先定义在 GatherHost 的 C1RoundTripCoordinator，但
+/// GatherUI 的 CullingViewModel 必须按码上屏（reload 失败提示），而 GatherUI
+/// 不得 import GatherHost（build.sh 分层检查）。Wave1 / task-6 起上移到这里，
+/// code 仍取 GatherErrorCode 的 rawValue（单一事实源）。
+public enum C1RoundTripError: Error, Equatable, CustomStringConvertible, Sendable {
+    /// 预检不通过（手动 reload 用）：按缺什么给最贴近的既有码值。
+    case preflightUnavailable(appRunning: Bool, documentOpen: Bool)
+    case bridgeFailed(code: String, message: String)
+
+    public var code: String {
+        switch self {
+        case .preflightUnavailable(let appRunning, let documentOpen):
+            if !appRunning { return GatherErrorCode.C1_NOT_RUNNING.rawValue }
+            if !documentOpen { return GatherErrorCode.C1_NO_DOCUMENT.rawValue }
+            return GatherErrorCode.C1_NOT_AUTHORIZED.rawValue
+        case .bridgeFailed(let code, _):
+            return code
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .preflightUnavailable(let appRunning, let documentOpen):
+            let detail = !appRunning ? "Capture One 未运行"
+                : (!documentOpen ? "Capture One 未打开文档" : "自动化权限不可用")
+            return code + ": " + detail
+        case .bridgeFailed(let code, let message):
+            return message.isEmpty ? code : code + ": " + message
+        }
+    }
 }

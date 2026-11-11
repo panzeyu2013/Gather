@@ -27,10 +27,14 @@ extension GalleryViewModel {
     }
 
 
-    /// 堆栈折叠索引（AlbumAPI 未接线/失败时保持空索引，不影响网格）。
+    /// 堆栈折叠索引 + 堆栈列表（AlbumAPI 未接线/失败时保持空数据，不影响网格）。
+    ///
+    /// 两个查询分开 try：堆栈列表失败不应把已经拿到的折叠索引一起丢掉
+    /// （网格徽标比「加入堆栈」菜单更重要）。
     func refreshStackFolds() async {
         guard let albumAPI else {
             stackFolds = StackFoldIndex()
+            stacks = []
             stackFoldVersion &+= 1
             return
         }
@@ -41,6 +45,11 @@ extension GalleryViewModel {
             filteredCache = nil
         } catch {
             GatherLogger.log("stack folds load failed: \(error)", level: .debug)
+        }
+        do {
+            stacks = try await albumAPI.stacks(sessionId)
+        } catch {
+            GatherLogger.log("stack list load failed: \(error)", level: .debug)
         }
     }
 
@@ -84,6 +93,81 @@ extension GalleryViewModel {
             _ = try await albumAPI.createStack(
                 StackCreateInput(sessionId: sessionId, photoIds: photoIds))
             // #11：集合/堆栈是库级数据（侧栏与图库行集合都读它），必须发 .library。
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
+            await refreshStackFolds()
+        } catch {
+            actionError = CommandError(error)
+        }
+    }
+
+    /// 重命名堆栈。空白名在本地拒绝：不发命令、也不伪造服务端成功。
+    func renameStack(stackId: String, name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            actionError = CommandError.localized("堆栈名称不能为空。")
+            return
+        }
+        guard let albumAPI, !isStackBusy else { return }
+        isStackBusy = true
+        defer { isStackBusy = false }
+        do {
+            try await albumAPI.updateStack(
+                StackUpdateInput(stackId: stackId, name: trimmed))
+            actionError = nil
+            // #11：堆栈是库级数据（网格徽标/「加入堆栈」菜单/图库行都读它）。
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
+            await refreshStackFolds()
+        } catch {
+            actionError = CommandError(error)
+        }
+    }
+
+    /// 把照片加入已有堆栈（一张照片只属于一个堆栈，服务端会摘掉旧归属）。
+    func addToStack(stackId: String, photoIds: [String]) async {
+        guard !photoIds.isEmpty, let albumAPI, !isStackBusy else { return }
+        isStackBusy = true
+        defer { isStackBusy = false }
+        do {
+            _ = try await albumAPI.addStackMembers(
+                StackMembersInput(stackId: stackId, photoIds: photoIds))
+            actionError = nil
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
+            await refreshStackFolds()
+        } catch {
+            actionError = CommandError(error)
+        }
+    }
+
+    /// 把照片移出堆栈；堆栈被摘空时由服务端一并删除。
+    func removeFromStack(stackId: String, photoIds: [String]) async {
+        guard !photoIds.isEmpty, let albumAPI, !isStackBusy else { return }
+        isStackBusy = true
+        defer { isStackBusy = false }
+        do {
+            _ = try await albumAPI.removeStackMembers(
+                StackMembersInput(stackId: stackId, photoIds: photoIds))
+            actionError = nil
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
+            await refreshStackFolds()
+        } catch {
+            actionError = CommandError(error)
+        }
+    }
+
+    /// 取消堆叠（破坏性：解散这一堆的堆栈记录与折叠，不动照片文件）。
+    /// confirmed 只能来自视图的确认分支（gatherDestructiveConfirm）。
+    func dissolveStack(stackId: String, confirmed: Bool) async {
+        guard confirmed else {
+            actionError = CommandError.localized("取消堆叠需要确认。")
+            return
+        }
+        guard let albumAPI, !isStackBusy else { return }
+        isStackBusy = true
+        defer { isStackBusy = false }
+        do {
+            try await albumAPI.deleteStack(
+                Confirmed(StackDeleteInput(stackId: stackId), source: .userDialog))
+            actionError = nil
             GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
             await refreshStackFolds()
         } catch {

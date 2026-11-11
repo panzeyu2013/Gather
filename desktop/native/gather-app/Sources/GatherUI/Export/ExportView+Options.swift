@@ -85,6 +85,48 @@ struct ExportOptionsSection: View {
                     .labelsHidden()
                 }
             }
+            // P0-5 / Wave1：输出规格（色彩空间 / DPI / 输出锐化）。
+            // 与最长边、水印同一门控：原图格式是字节复制，不提供转换控件。
+            if viewModel.transformsAllowed {
+                LabeledContent(l10n("色彩空间")) {
+                    Picker(l10n("色彩空间"), selection: $viewModel.outputColorSpace) {
+                        Text(l10n("不转换")).tag(ExportColorSpace?.none)
+                        Text("sRGB").tag(Optional(ExportColorSpace.sRGB))
+                        Text("Display P3").tag(Optional(ExportColorSpace.displayP3))
+                        Text("Adobe RGB (1998)").tag(Optional(ExportColorSpace.adobeRGB1998))
+                    }
+                    .labelsHidden()
+                }
+                LabeledContent(l10n("分辨率（DPI）")) {
+                    TextField(l10n("不写入"), text: $viewModel.dpi)
+                        .labelsHidden()
+                        .frame(width: 120)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityLabel(l10n("分辨率（DPI）"))
+                        .onSubmit { viewModel.commitDPI() }
+                }
+                Toggle(l10n("输出锐化"), isOn: $viewModel.outputSharpeningEnabled)
+                if viewModel.outputSharpeningEnabled {
+                    LabeledContent(l10n("锐化半径")) {
+                        HStack(spacing: GatherMetrics.Space.controlGap) {
+                            Slider(value: $viewModel.outputSharpeningRadius, in: 0.5...3, step: 0.5)
+                                .accessibilityLabel(l10n("锐化半径"))
+                            Text(String(format: "%.1f", viewModel.outputSharpeningRadius))
+                                .font(GatherFont.mono)
+                                .frame(width: 42, alignment: .trailing)
+                        }
+                    }
+                    LabeledContent(l10n("锐化强度")) {
+                        HStack(spacing: GatherMetrics.Space.controlGap) {
+                            Slider(value: $viewModel.outputSharpeningIntensity, in: 0.1...1.5, step: 0.1)
+                                .accessibilityLabel(l10n("锐化强度"))
+                            Text(String(format: "%.1f", viewModel.outputSharpeningIntensity))
+                                .font(GatherFont.mono)
+                                .frame(width: 42, alignment: .trailing)
+                        }
+                    }
+                }
+            }
             Toggle(l10n("复制 XMP 附属文件"), isOn: $viewModel.includeXmp)
             if viewModel.transformsAllowed {
                 Toggle(l10n("添加文字水印"), isOn: $viewModel.watermarkEnabled)

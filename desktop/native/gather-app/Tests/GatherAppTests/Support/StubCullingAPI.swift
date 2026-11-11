@@ -174,6 +174,9 @@ private struct B8CullingState {
     var cleanupError: (any Error)?
     var finalizeError: (any Error)?
     var confirmSyncError: (any Error)?
+    /// Wave1 / G2：手动 reload ack 的调用记录与可注入错误。
+    var acknowledgeManualReloadCalls: [String] = []
+    var acknowledgeManualReloadError: (any Error)?
     var responseDelay = Duration.zero
 
     var pageQueries: [CullingPageQuery] = []
@@ -317,6 +320,16 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
     var confirmSyncResult: Bool {
         get { box.lock.withLock { box.confirmSyncResult } }
         set { box.lock.withLock { box.confirmSyncResult = newValue } }
+    }
+
+    /// Wave1 / G2：手动 reload ack 的调用记录。
+    var acknowledgeManualReloadCalls: [String] {
+        box.lock.withLock { box.acknowledgeManualReloadCalls }
+    }
+
+    var acknowledgeManualReloadError: (any Error)? {
+        get { box.lock.withLock { box.acknowledgeManualReloadError } }
+        set { box.lock.withLock { box.acknowledgeManualReloadError = newValue } }
     }
 
     var pageError: (any Error)? {
@@ -672,6 +685,17 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
         }
         if let error { throw error }
         return result
+    }
+
+    // Wave1 / G2：手动 reload ack（默认成功；记录 sessionId，可注入错误）。
+    func acknowledgeManualReload(_ sessionId: String) async throws -> Bool {
+        try await delayIfNeeded()
+        let error: (any Error)? = box.lock.withLock {
+            box.acknowledgeManualReloadCalls.append(sessionId)
+            return box.acknowledgeManualReloadError
+        }
+        if let error { throw error }
+        return true
     }
 
     // P0 / T0：可配置返回/错误，并记录入参。

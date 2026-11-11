@@ -55,6 +55,21 @@ public final class CullingViewModel: SessionPageModel {
     /// 决策提交的串行链（L1 核心循环）：挑片是 2–3 拍/秒的工作流，并发提交会在
     /// 同一张照片上带着过期 `expectedRevision` 撞冲突。见 `commit(patch:shouldAdvance:)`。
     @ObservationIgnored var commitChain: Task<Void, Never>?
+    /// P0-4 单槽 pending commit：加载/翻页期间按下的决策先登记在这里，加载结束
+    /// 补执行最后一次（后到覆盖先到）。不再静默丢键（见 `commit(patch:shouldAdvance:)`）。
+    var pendingCommit: PendingCullingCommit?
+    /// 有排队未执行的按键：工作台忙碌角标据此显示「按键已排队」。
+    var hasPendingCommit: Bool { pendingCommit != nil }
+    /// 决策提交链正在执行（含排队等待）：工作台细进度条/角标据此显示。
+    var isCommitting = false
+    /// commit() 的 latest-wins 代数：只有最后一拍结束才复位 isCommitting。
+    @ObservationIgnored var commitGeneration = 0
+    /// 邻张预取任务（P0-4）：去抖后为当前照片 ±2 预热；切图/退出/隐藏时取消。
+    @ObservationIgnored var preloadTask: Task<Void, Never>?
+    /// 已向宿主发过预取命令的路径：同一页内不重复发（换页/关闭时清空）。
+    @ObservationIgnored var hostPreloadedPaths: Set<String> = []
+    /// 邻张预取去抖（毫秒）：连按 → 只在停顿后为最后一张调度（测试可调小）。
+    var preloadDebounceMilliseconds = 120
     public internal(set) var isKeywordBusy = false
     public internal(set) var keywordError: CommandError?
     public internal(set) var keywordPreview: WritebackPreview?
@@ -372,12 +387,18 @@ public final class CullingViewModel: SessionPageModel {
         guard visible else {
             qualityPollTask?.cancel()
             qualityPollTask = nil
+            // 隐藏页不再预取：未完成的邻张预取立即取消（避免隐藏期占解码名额）。
+            preloadTask?.cancel()
+            preloadTask = nil
             return
         }
         flushDeferredDomainRefresh()
         if let qualityJob, Self.isQualityJobActive(qualityJob.status) {
             startQualityPolling(job: qualityJob)
         }
+        // 页面可见即补一次邻张预取：查看器的 onAppear 早于页面级 setPageVisible
+        // 时就可能被 isActive 门禁挡掉，这里保证"进入页面后一定有预热"。
+        scheduleNeighborPreload()
     }
 
     /// 关闭：取消本 VM 持有的长生命周期 Task（刷新 + 画质轮询）。
@@ -390,6 +411,11 @@ public final class CullingViewModel: SessionPageModel {
         refreshTask = nil
         qualityPollTask?.cancel()
         qualityPollTask = nil
+        // 关闭是终态：未完成的邻张预取与排队按键一并清掉，避免会话结束后再写盘。
+        preloadTask?.cancel()
+        preloadTask = nil
+        pendingCommit = nil
+        isCommitting = false
     }
 
     private static func isQualityJobActive(_ status: AnalysisJobStatus) -> Bool {

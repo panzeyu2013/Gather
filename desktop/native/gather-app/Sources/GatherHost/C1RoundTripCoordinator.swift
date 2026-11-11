@@ -86,33 +86,9 @@ public enum C1RoundTripOutcome: Equatable, Sendable {
     case failed(code: String, message: String)
 }
 
-public enum C1RoundTripError: Error, Equatable, CustomStringConvertible, Sendable {
-    /// 预检不通过（手动 reload 用）：按缺什么给最贴近的既有码值。
-    case preflightUnavailable(appRunning: Bool, documentOpen: Bool)
-    case bridgeFailed(code: String, message: String)
-
-    public var code: String {
-        switch self {
-        case .preflightUnavailable(let appRunning, let documentOpen):
-            if !appRunning { return GatherErrorCode.C1_NOT_RUNNING.rawValue }
-            if !documentOpen { return GatherErrorCode.C1_NO_DOCUMENT.rawValue }
-            return GatherErrorCode.C1_NOT_AUTHORIZED.rawValue
-        case .bridgeFailed(let code, _):
-            return code
-        }
-    }
-
-    public var description: String {
-        switch self {
-        case .preflightUnavailable(let appRunning, let documentOpen):
-            let detail = !appRunning ? "Capture One 未运行"
-                : (!documentOpen ? "Capture One 未打开文档" : "自动化权限不可用")
-            return code + ": " + detail
-        case .bridgeFailed(let code, let message):
-            return message.isEmpty ? code : code + ": " + message
-        }
-    }
-}
+// C1RoundTripError 已上移到 GatherProtocol/Protocol/C1.swift（Wave1 / task-6）：
+// UI 的 CullingViewModel 要按码上屏，但 GatherUI 不得 import GatherHost
+//（build.sh 的分层检查），所以这个错误类型必须待在两端都能依赖的协议层。
 
 // MARK: - 协调器
 

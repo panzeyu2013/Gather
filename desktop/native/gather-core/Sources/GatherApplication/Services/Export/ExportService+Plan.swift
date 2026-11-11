@@ -280,6 +280,24 @@ extension ExportService {
         if options.format == .original, options.maxDimension != nil || options.watermark != nil {
             throw ExportServiceError.originalTransformNotAllowed
         }
+        // P0-5 / Wave1：色彩空间/DPI/输出锐化同样要求重编码 —— 「保持原格式」
+        // 是字节复制，不能同时携带这些转换。参数面用 EXPORT_PARAMS_INVALID
+        //（原码文案只提到尺寸/水印，避免给用户一条与操作不符的提示）。
+        if options.format == .original,
+           options.colorSpace != nil || options.dpi != nil || options.sharpening != nil {
+            throw GatherError(code: .EXPORT_PARAMS_INVALID, params: ["field": "outputSpec"])
+        }
+        if let dpi = options.dpi, dpi < 1 || dpi > 2400 {
+            throw GatherError(code: .EXPORT_PARAMS_INVALID, params: ["field": "dpi"])
+        }
+        if let sharpening = options.sharpening {
+            // 半径/强度都必须有限且落在可实现区间：NaN/Inf 会让模糊窗口计算崩。
+            guard sharpening.radius.isFinite, sharpening.radius >= 0.1, sharpening.radius <= 10,
+                  sharpening.intensity.isFinite,
+                  sharpening.intensity >= 0, sharpening.intensity <= 2 else {
+                throw GatherError(code: .EXPORT_PARAMS_INVALID, params: ["field": "sharpening"])
+            }
+        }
         guard !options.naming.pattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ExportServiceError.namingEmpty
         }

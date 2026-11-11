@@ -119,6 +119,11 @@ public final class OutputService: @unchecked Sendable {
                 format: recipe.format,
                 quality: recipe.quality,
                 maxDimension: recipe.maxDimension,
+                // P0-5 / Wave1：配方里的输出规格（色彩空间/DPI/输出锐化）逐字段透传，
+                // 否则配方编辑器写入的参数在交付链路上是死字段。
+                colorSpace: recipe.colorSpace,
+                dpi: recipe.dpi,
+                sharpening: recipe.sharpening,
                 tiffCompression: recipe.format == .tiff ? .lzw : nil,
                 watermark: recipe.watermark,
                 naming: recipe.naming,

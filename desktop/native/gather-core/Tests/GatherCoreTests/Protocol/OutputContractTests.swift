@@ -105,4 +105,37 @@ struct OutputContractTests {
         #expect(decoded == recipe)
         #expect(OutputArtifactKind.allCases.count >= 2)
     }
+
+    // MARK: - P0-5（Wave1）：配方输出规格
+
+    @Test func outputRecipeOutputSpecsRoundTrip() throws {
+        let recipe = OutputRecipe(
+            id: "r2",
+            name: "Print 300dpi",
+            format: .tiff,
+            quality: nil,
+            maxDimension: nil,
+            colorSpace: .adobeRGB1998,
+            dpi: 300,
+            sharpening: ExportSharpening(radius: 2, intensity: 0.8),
+            naming: ExportNaming(pattern: "{original}"),
+            includeXmp: false,
+            includeMetadata: true,
+            destination: "",
+            artifacts: [.photos])
+        let data = try JSONEncoder().encode(recipe)
+        #expect(try JSONDecoder().decode(OutputRecipe.self, from: data) == recipe)
+    }
+
+    /// 旧版持久化的配方 JSON 没有新键：必须照常解码（nil = 保持原行为），
+    /// 否则升级一次就把用户所有交付配方读废。
+    @Test func outputRecipeDecodesLegacyPayloadWithoutOutputSpecs() throws {
+        let legacy = #"{"id":"r1","name":"Web","format":"jpeg","quality":80,"naming":{"pattern":"{original}"},"includeXmp":false,"includeMetadata":true,"destination":"","artifacts":["photos"]}"#
+        let decoded = try JSONDecoder().decode(OutputRecipe.self, from: Data(legacy.utf8))
+        #expect(decoded.name == "Web")
+        #expect(decoded.colorSpace == nil)
+        #expect(decoded.dpi == nil)
+        #expect(decoded.sharpening == nil)
+        #expect(decoded.artifacts == [.photos])
+    }
 }

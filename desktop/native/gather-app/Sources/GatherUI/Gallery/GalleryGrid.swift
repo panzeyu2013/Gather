@@ -187,10 +187,9 @@ extension GalleryView {
                         }
                     }
                 }
-                Button(l10n("新建堆栈")) {
-                    Task { await viewModel.createStack(photoIds: targetIds) }
-                }
-                .disabled(targetIds.count < 2)
+                // Wave1：堆栈不再只有「新建」——加入/移出/重命名/取消堆叠与
+                // 选择栏的「堆栈」菜单共用同一份条目（见 GalleryStackActions）。
+                stackMenuItems(for: targetIds)
                 Divider()
             }
             if let url = GalleryView.finderURL(for: photo) {

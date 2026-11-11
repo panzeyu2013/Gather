@@ -4,6 +4,12 @@
 import Foundation
 import GatherProtocol
 
+/// 加载期间被排队的单拍决策（P0-4）：只保留最后一次按键。
+struct PendingCullingCommit: Equatable {
+    var patch: CullingUpdatePatch
+    var shouldAdvance: Bool
+}
+
 extension CullingViewModel {
     private func applyDecisionStates(_ states: [AssetCullingState]) {
         guard let page else { return }
@@ -348,6 +354,10 @@ extension CullingViewModel {
         // 连按三拍时第二、三拍会同时挂在第一拍上，第一拍结束后两者各自建 Task
         // 并发提交（R1 复评：仍带同一 expectedRevision 撞冲突）。
         let previous = commitChain
+        commitGeneration &+= 1
+        let generation = commitGeneration
+        // 未落地即视为忙碌：工作台据此画细进度条/角标（最后一拍结束才熄灭）。
+        isCommitting = true
         let task = Task { @MainActor [weak self] in
             await previous?.value
             guard let self else { return }
@@ -355,10 +365,31 @@ extension CullingViewModel {
         }
         commitChain = task
         await task.value
+        if generation == commitGeneration { isCommitting = false }
+    }
+
+    /// 加载期间按下的决策：登记到单槽队列（后到覆盖先到），加载结束补执行
+    /// 最后一拍。语义见 `flushPendingCommit()` 与 `CullingViewModel.pendingCommit`。
+    func queuePendingCommit(_ pending: PendingCullingCommit) {
+        pendingCommit = pending
+    }
+
+    /// 加载结束后补执行排队的那一拍（幂等：无排队 = 无操作）。
+    /// 只重放**最后一次**按键，不叠加中途意图——重放早先拍会写到已前进的照片上。
+    func flushPendingCommit() async {
+        guard let pending = pendingCommit else { return }
+        pendingCommit = nil
+        await commit(patch: pending.patch, shouldAdvance: pending.shouldAdvance)
     }
 
     private func performCommit(patch: CullingUpdatePatch, shouldAdvance: Bool) async {
-        guard !isLoading else { return }
+        guard !isLoading else {
+            // P0-4：旧实现在这里静默 return——连按 P/X 只有第一拍生效，用户当 bug。
+            // 改为单槽排队：加载结束立刻执行最后一次，既不丢键也不会把中途的
+            // 模糊意图叠加写盘。
+            queuePendingCommit(PendingCullingCommit(patch: patch, shouldAdvance: shouldAdvance))
+            return
+        }
         guard !selectedPhotoIds.isEmpty else {
             guard let asset = currentAsset else { return }
             let nextId = shouldAdvance && autoAdvance ? nextPhotoId(after: asset.photo.id) : nil

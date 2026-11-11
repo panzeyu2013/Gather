@@ -294,6 +294,7 @@ extension GalleryView {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .disabled(viewModel.selectedIds.isEmpty)
+            stackMenu
             Button(l10n("导出所选")) {
                 navigator?.openExport(
                     viewModel.sessionId,

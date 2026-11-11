@@ -108,6 +108,16 @@ public final class ExportViewModel: SessionPageModel {
     public var includeXmp = true
     public var namingPattern = "{original}"
     public var tiffCompression: ExportTiffCompression = .lzw
+    // P0-5 / Wave1 输出规格：色彩空间 / DPI / 输出锐化。
+    // 三者都是「可选覆盖」：nil / 空串 / 关闭 = 保持旧行为（不转换、不写 DPI、不锐化）。
+    /// 目标色彩空间；nil = 不转换（保留原片色彩）。
+    public var outputColorSpace: ExportColorSpace?
+    /// DPI 文本：空 = 不写入成片元数据；回车提交时钳制到 1...2400。
+    public var dpi = ""
+    /// 输出锐化（unsharp mask）开关与参数：半径按输出像素、强度 0-2。
+    public var outputSharpeningEnabled = false
+    public var outputSharpeningRadius: Double = 1
+    public var outputSharpeningIntensity: Double = 0.5
     public var watermarkEnabled = false
     public var watermarkText = ""
     public var watermarkPosition: ExportWatermarkPosition = .bottomRight
@@ -352,6 +362,14 @@ public final class ExportViewModel: SessionPageModel {
         let trimmed = maxDimension.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value = Int(trimmed.prefix(while: \.isNumber)) else { return }
         maxDimension = String(max(1, value))
+    }
+
+    /// P0-5：DPI 输入提交时钳制到 1...2400（分辨率是整数，超界值没有意义）。
+    /// 非数字输入保持原值，由 exportOptions() 的显式校验给出错误码。
+    public func commitDPI() {
+        let trimmed = dpi.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int(trimmed.prefix(while: \.isNumber)) else { return }
+        dpi = String(min(max(value, 1), 2400))
     }
 
     /// 对齐旧版 export.tsx:277：字号输入 min=8 max=200，非法输入回退 24。

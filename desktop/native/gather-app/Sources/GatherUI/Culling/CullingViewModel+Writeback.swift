@@ -140,17 +140,64 @@ extension CullingViewModel {
     /// 后台的自动 reload 并发，也不会绕过失败抑制/观测。未注入时退回桥直连（旧行为）。
     public func reloadCaptureOne() async {
         do {
-            try await reloadMetadataThroughRoundTrip()
-            // 桥接层已耐久写入 sessions.reload_acked_at；内存值只是投影，
-            // 随后 refreshSyncStatus 会从耐久字段重建（冷启动同样有效）。
-            reloadAcked = true
+            try await reloadCaptureOneThrowing()
             notice = CullingNotice("Capture One 已重新加载元数据，现在可以确认同步")
-            clearC1AutoReloadFailure()
-            postMetadataChange()
-            await refreshSyncStatus()
+            errorMessage = nil
         } catch {
-            errorMessage = CommandError(error)
+            errorMessage = c1CommandError(error)
         }
+    }
+
+    /// reload 的抛错版本（G9：元数据/模板写回页也走同一条串行队列）。
+    ///
+    /// 状态同步（reloadAcked 投影 + 领域广播）收在这里：手动按钮与元数据状态条
+    /// 共用同一实现，不会出现"按钮置位了但别的页面没收到"。错误统一转成
+    /// CommandError（调用方只需上屏，不再猜错误类型）。
+    func reloadCaptureOneThrowing() async throws {
+        do {
+            try await reloadMetadataThroughRoundTrip()
+        } catch {
+            throw c1CommandError(error)
+        }
+        // 桥接层已耐久写入 sessions.reload_acked_at；内存值只是投影，
+        // 随后 refreshSyncStatus 会从耐久字段重建（冷启动同样有效）。
+        reloadAcked = true
+        clearC1AutoReloadFailure()
+        postMetadataChange()
+        GatherEventCenter.shared.postC1SyncStatusChange(sessionId: sessionId)
+        await refreshSyncStatus()
+    }
+
+    /// P0 / G2：reload 失败的人工兜底 —— 用户已在 C1 执行 Load Metadata，显式记 ack。
+    ///
+    /// 门禁语义是"Capture One 还没看到新值"；用户亲眼确认 C1 已加载后，
+    /// 这是解除 confirm/finalize 死锁（XMP_CONFIRM_REQUIRES_SYNC）的唯一出口。
+    public func acknowledgeManualReload() async {
+        do {
+            try await acknowledgeManualReloadThrowing()
+            notice = CullingNotice(
+                "已记录：你在 Capture One 中手动加载了元数据，现在可以确认同步")
+            errorMessage = nil
+        } catch {
+            errorMessage = c1CommandError(error)
+        }
+    }
+
+    /// 手动 ack 的抛错版本（G9 元数据状态条自己上屏错误）。
+    ///
+    /// 写的是 sessions.reload_acked_at（与脚本成功同一列），并广播给其它页面
+    ///（C1 状态胶囊/设置页都订阅 c1-sync-status）。
+    func acknowledgeManualReloadThrowing() async throws {
+        do {
+            _ = try await cullingAPI.acknowledgeManualReload(sessionId)
+        } catch {
+            throw c1CommandError(error)
+        }
+        reloadAcked = true
+        clearC1AutoReloadFailure()
+        postMetadataChange()
+        GatherEventCenter.shared.postC1SyncStatusChange(sessionId: sessionId)
+        await refreshSyncStatus()
     }
 
     /// reload 的唯一出口：协调器优先，桥直连兜底。
@@ -169,6 +216,14 @@ extension CullingViewModel {
               let failure = coordinator.currentAutoReloadFailure(),
               failure.sessionId == sessionId else { return }
         notice = nil
+        // G2：reload 是 per-variant 的，C1 里没有选中项时脚本必然无从执行。
+        // 这时给出可执行的下一步（先把照片交给 C1 选中，再重载），而不是笼统的"手动 Load"。
+        if failure.code == GatherErrorCode.C1_NO_SELECTED_PHOTOS.rawValue {
+            errorMessage = CommandError.localized(
+                "Capture One 没有选中的照片：点「同步… → 在 Capture One 中显示」把照片选中后再试",
+                diagnostic: failure.message)
+            return
+        }
         errorMessage = CommandError.localized(
             "Capture One 未自动重载（%@），请在 C1 手动 Load Metadata",
             params: [failure.code],
@@ -179,6 +234,77 @@ extension CullingViewModel {
     public func clearC1AutoReloadFailure() {
         (captureOne as? any C1RoundTripReloading)?.clearAutoReloadFailure()
     }
+
+    /// P1 / G10：在 Capture One 中选中这些照片（selectVariants 早已实现，此前无 UI 入口）。
+    ///
+    /// 目标集：有选择集 → 选择集；否则当前照片。只改 C1 选中、不导入；脚本能力
+    /// 不足时桥层退化为 open -a（**可能触发 C1 导入**），结果 method 已注明来源，
+    /// 文案上必须区分，不能让用户以为只是改了选中。
+    public func showInCaptureOne() async {
+        let paths = captureOneTargetPaths
+        guard !paths.isEmpty else {
+            errorMessage = CommandError.localized("请先选择照片（或让当前照片可见）")
+            return
+        }
+        guard let roundTrip = captureOne as? any C1RoundTripExtending else {
+            errorMessage = CommandError.localized("「在 Capture One 中显示」未接线")
+            return
+        }
+        do {
+            let outcome = try await roundTrip.selectVariants(paths: paths)
+            errorMessage = nil
+            switch outcome.method {
+            case .appleScript:
+                if outcome.notFound.isEmpty {
+                    notice = CullingNotice(
+                        "已在 Capture One 中显示 %lld 张照片",
+                        params: ["\(outcome.paths.count)"])
+                } else {
+                    notice = CullingNotice(
+                        "已在 Capture One 中显示 %lld 张，%lld 张不在当前目录",
+                        params: ["\(outcome.paths.count)", "\(outcome.notFound.count)"])
+                }
+            case .workspace:
+                notice = CullingNotice(
+                    "已在 Capture One 中打开 %lld 张照片（可能触发导入）",
+                    params: ["\(outcome.paths.count)"])
+            }
+        } catch {
+            errorMessage = c1CommandError(error)
+        }
+    }
+
+    /// C1 选中目标：有选择集用选择集（保持页面顺序），否则当前照片；去重保序。
+    var captureOneTargetPaths: [String] {
+        let assets = page?.assets ?? []
+        let targets: [CullingAsset]
+        if !selectedPhotoIds.isEmpty {
+            targets = assets.filter { selectedPhotoIds.contains($0.photo.id) }
+        } else if let currentAsset {
+            targets = [currentAsset]
+        } else {
+            targets = []
+        }
+        var seen = Set<String>()
+        return targets.compactMap { asset in
+            let path = (asset.photo.filepath as NSString).standardizingPath
+            guard path.hasPrefix("/"), seen.insert(path).inserted else { return nil }
+            return path
+        }
+    }
+
+    /// C1 错误 → UI 错误载体（码值搬运的唯一出口）。
+    ///
+    /// C1RoundTripError 不满足 CodedError（code 是 String），CommandError 的既有
+    /// 分支也认不出它；不显式转码会退化成 NSError 的英文描述（界面只剩通用文案）。
+    private func c1CommandError(_ error: Error) -> CommandError {
+        if let command = error as? CommandError { return command }
+        if let roundTrip = error as? C1RoundTripError {
+            return CommandError(code: roundTrip.code, diagnostic: roundTrip.description)
+        }
+        return CommandError(error)
+    }
+
     public func confirmSync() async {
         do {
             _ = try await cullingAPI.confirmSync(sessionId)

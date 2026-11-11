@@ -154,13 +154,19 @@ extension LibraryViewModel {
     }
 
     /// 重新关联存储卷根（破坏性：改写该根下全部文件的路径记录）。
+    ///
+    /// Wave1：把服务端返回的改写文件数落进 `lastRelink`，页面顶部据此显示
+    /// 「已重新关联 N 个文件」/「0 个匹配」——原实现丢弃返回值，用户点完确认
+    /// 只能靠"离线计数有没有变"猜结果。
     public func relinkVolume(root oldRoot: String, newRoot: String, confirmed: Bool) async {
         await performSupportMutation {
-            _ = try await self.provider.relinkAssetRoot(
+            let rewritten = try await self.provider.relinkAssetRoot(
                 oldRoot: oldRoot,
                 newRoot: newRoot,
                 confirmed: confirmed
             )
+            self.lastRelink = LibraryRelinkOutcome(
+                oldRoot: oldRoot, newRoot: newRoot, fileCount: rewritten)
             self.assetVolumes = try await self.provider.listAssetVolumes()
             Self.postLibraryChange()
             await self.reload()

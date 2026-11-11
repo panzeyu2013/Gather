@@ -33,6 +33,16 @@ public struct CullingView: View {
     @State var pendingAction: PendingCullingAction?
     @State var conflictChoices: [String: MetadataConflictChoice] = [:]
     @State var faceAlign = false
+    /// 专注模式（P1 无干扰单图）：隐藏检查器 + 折叠胶片条 + 窗口全屏。
+    /// F 裸键（查看器 onKeyPress）与「显示」菜单共用 toggleFocusMode 一个入口。
+    @State var isFocusMode = false
+    /// 胶片条展开态：从工作台内部上提到页面，专注模式才能程序化折叠并恢复。
+    @State var filmstripExpanded = true
+    /// 进入专注模式前的面板状态（退出时原样恢复，不假设用户之前是展开的）。
+    @State private var inspectorBeforeFocus = true
+    @State private var filmstripBeforeFocus = true
+    /// 进入前的窗口全屏状态：原本就全屏时，退出专注模式不该把系统全屏一起退掉。
+    @State private var wasFullScreenBeforeFocus = false
     @SceneStorage("culling.layout") private var layoutRaw = CullingLayoutMode.single.rawValue
     /// 空串 = 本窗口未设置，回落到设置 grid_density（VM 默认值）。
     @SceneStorage("culling.gridDensity") private var densityRaw = ""
@@ -166,6 +176,71 @@ public struct CullingView: View {
             undo: { routeHistory(redo: false) },
             redo: { routeHistory(redo: true) }
         ))
+        // P1 无干扰单图：「显示」菜单的专注模式入口；F 裸键在查看器里同入口。
+        .focusedSceneValue(\.cullingFocusMode, CullingFocusModeActions(
+            isActive: isFocusMode,
+            canToggle: layoutMode != .grid,
+            toggle: { toggleFocusMode() }
+        ))
+        // 切到网格布局：专注模式没有单图语义，退出并恢复面板（不改网格既有行为）。
+        .onChange(of: layoutMode) { _, mode in
+            if mode == .grid, isFocusMode { exitFocusMode() }
+        }
+        // 用户用 ESC/绿灯自己退出系统全屏：专注模式面板必须同步恢复，
+        // 否则会卡在「检查器/胶片条都消失，但又不是专注模式」的中间态。
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
+            restorePanelsAfterFocus()
+        }
+        // 离开挑片页：专注模式必须收口（否则整窗全屏 + 面板隐藏会带到别的页面）。
+        .onDisappear {
+            if isFocusMode { exitFocusMode() }
+        }
+    }
+
+    // MARK: - 专注模式（P1：全屏 / 无干扰单图）
+
+    /// 专注模式切换：F 裸键（查看器）/「显示」菜单 / 查看器放大镜行的小按钮同一入口。
+    func toggleFocusMode() {
+        // 网格布局的"专注"没有意义；保持既有网格行为完全不变。
+        guard layoutMode != .grid else { return }
+        if isFocusMode {
+            exitFocusMode()
+        } else {
+            enterFocusMode()
+        }
+    }
+
+    /// 进入专注模式：记下面板状态 → 隐藏检查器 + 折叠胶片条 + 请求窗口全屏。
+    private func enterFocusMode() {
+        inspectorBeforeFocus = showInspector
+        filmstripBeforeFocus = filmstripExpanded
+        let window = NSApp.keyWindow
+        wasFullScreenBeforeFocus = window?.styleMask.contains(.fullScreen) ?? false
+        isFocusMode = true
+        showInspector = false
+        filmstripExpanded = false
+        if !wasFullScreenBeforeFocus {
+            window?.toggleFullScreen(nil)
+        }
+    }
+
+    /// 退出专注模式：恢复面板；只有「本次进入时请求的全屏」才退回窗口模式。
+    private func exitFocusMode() {
+        guard isFocusMode else { return }
+        restorePanelsAfterFocus()
+        if !wasFullScreenBeforeFocus,
+           let window = NSApp.keyWindow,
+           window.styleMask.contains(.fullScreen) {
+            window.toggleFullScreen(nil)
+        }
+    }
+
+    /// 只恢复面板（系统全屏被 ESC 退出时也走这里；不碰全屏状态，避免二次切换）。
+    private func restorePanelsAfterFocus() {
+        guard isFocusMode else { return }
+        isFocusMode = false
+        showInspector = inspectorBeforeFocus
+        filmstripExpanded = filmstripBeforeFocus
     }
 
     /// 文本框聚焦时把 ⌘Z/⇧⌘Z 交还 field editor，避免误撤销挑片决策。

@@ -46,6 +46,15 @@ public struct OutputRecipe: Codable, Equatable, Identifiable, Sendable {
     public var format: ExportFormat
     public var quality: Double?
     public var maxDimension: Int?
+    /// P0-5 / Wave1：与 ExportOptions 同名的输出规格字段（配方编辑器 W1-4 写入，
+    /// 交付编排器 OutputService 逐字段透传给 ExportOptions）。
+    ///
+    /// 三个字段都是可选的：旧版持久化的配方 JSON 没有这些键，合成 `init(from:)`
+    /// 对 optional 走 decodeIfPresent → nil = 保持原行为（不转换色彩/不写 DPI/不锐化），
+    /// 老数据照常解码，不需要 schema 迁移。
+    public var colorSpace: ExportColorSpace?
+    public var dpi: Int?
+    public var sharpening: ExportSharpening?
     public var watermark: ExportWatermark?
     public var naming: ExportNaming
     public var includeXmp: Bool
@@ -60,6 +69,9 @@ public struct OutputRecipe: Codable, Equatable, Identifiable, Sendable {
         format: ExportFormat = .jpeg,
         quality: Double? = 85,
         maxDimension: Int? = nil,
+        colorSpace: ExportColorSpace? = nil,
+        dpi: Int? = nil,
+        sharpening: ExportSharpening? = nil,
         watermark: ExportWatermark? = nil,
         naming: ExportNaming = ExportNaming(pattern: "{original}"),
         includeXmp: Bool = false,
@@ -72,6 +84,9 @@ public struct OutputRecipe: Codable, Equatable, Identifiable, Sendable {
         self.format = format
         self.quality = quality
         self.maxDimension = maxDimension
+        self.colorSpace = colorSpace
+        self.dpi = dpi
+        self.sharpening = sharpening
         self.watermark = watermark
         self.naming = naming
         self.includeXmp = includeXmp

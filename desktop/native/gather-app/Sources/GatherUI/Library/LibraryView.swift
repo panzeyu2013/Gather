@@ -92,6 +92,20 @@ package struct LibraryView: View {
           && viewModel.activeFilterCount == 0)
     }
 
+    /// 卷重连结果文案：0 个匹配是**需要用户注意**的结果（多为一根目录选错），
+    /// 不能和成功混为一句话。
+    private func relinkNoticeText(_ relink: LibraryRelinkOutcome) -> String {
+        if relink.fileCount > 0 {
+            return l10n.format(
+                "已重新关联 %lld 个文件：%@",
+                relink.fileCount,
+                "\(relink.oldRoot) → \(relink.newRoot)")
+        }
+        return l10n.format(
+            "已更新根目录映射，但新目录下没有匹配到文件：%@",
+            "\(relink.oldRoot) → \(relink.newRoot)")
+    }
+
     /// 窗口副标题：加载完成后显示库存摘要，避免固定营销句占满标题栏。
     private var browseSubtitle: String {
         guard viewModel.phase == .loaded else {
@@ -115,6 +129,18 @@ package struct LibraryView: View {
                     .padding(.top, GatherMetrics.Space.m)
                     .transition(.opacity)
             }
+            // Wave1：卷重连结果（成功）单独一条语义色横幅；错误仍走上面的
+            // actionError 通道，两条不抢同一行。
+            if let relink = viewModel.lastRelink {
+                NativeBanner(
+                    text: relinkNoticeText(relink),
+                    color: GatherTheme.success,
+                    onDismiss: { viewModel.lastRelink = nil }
+                )
+                .padding(.horizontal, GatherMetrics.Layout.pageGutter)
+                .padding(.top, GatherMetrics.Space.m)
+                .transition(.opacity)
+            }
             // 空库且无筛选时，筛选条 / 状态条不占首屏：只留一个整页空态。
             if showsBrowseChrome {
                 filterBar
@@ -123,7 +149,7 @@ package struct LibraryView: View {
             }
             content
         }
-        .gatherAnimatePresence(viewModel.actionError != nil)
+        .gatherAnimatePresence(viewModel.actionError != nil || viewModel.lastRelink != nil)
         // 页面 chrome：frame / 表面 / 标题 / 副标题统一由 GatherPage 骨架提供。
         .gatherPage(title: l10n("全局图库"), subtitle: browseSubtitle)
         // 文件名搜索：内容区搜索框（不用 .searchable toolbar 形态）。

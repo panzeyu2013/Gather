@@ -118,6 +118,44 @@ struct ExportContractTests {
         #expect(try JSONDecoder().decode(ExportWatermark.self, from: data) == watermark)
         #expect(Set(try jsonKeys(of: data)) == ["type", "content", "position", "opacity"])
     }
+
+    // MARK: - P0-5（Wave1）：色彩空间 / DPI / 输出锐化
+
+    @Test func exportOutputSpecsRoundTrip() throws {
+        let original = ExportOptions(
+            scope: .session,
+            format: .jpeg,
+            quality: 90,
+            maxDimension: 2048,
+            colorSpace: .displayP3,
+            dpi: 300,
+            sharpening: ExportSharpening(radius: 1.2, intensity: 0.6),
+            naming: ExportNaming(pattern: "{original}"),
+            includeXmp: false,
+            destination: "/u/out"
+        )
+        let data = try JSONEncoder().encode(original)
+        #expect(try JSONDecoder().decode(ExportOptions.self, from: data) == original)
+        #expect(Set(try jsonKeys(of: data)).isSuperset(of: ["colorSpace", "dpi", "sharpening"]))
+    }
+
+    /// 旧载荷（job checkpoint / 旧客户端）没有三个新键：必须解码成 nil = 旧行为。
+    @Test func exportOptionsDecodesLegacyPayloadWithoutOutputSpecs() throws {
+        let legacy = #"{"scope":"session","format":"jpeg","quality":90,"naming":{"pattern":"{original}"},"includeXmp":false,"destination":"/u/out"}"#
+        let decoded = try JSONDecoder().decode(ExportOptions.self, from: Data(legacy.utf8))
+        #expect(decoded.colorSpace == nil)
+        #expect(decoded.dpi == nil)
+        #expect(decoded.sharpening == nil)
+    }
+
+    @Test func exportColorSpaceRawValuesAreFrozen() {
+        // 持久化在配方 JSON / job checkpoint 里：rawValue 改名等于破坏兼容。
+        #expect(ExportColorSpace.sRGB.rawValue == "sRGB")
+        #expect(ExportColorSpace.displayP3.rawValue == "display-p3")
+        #expect(ExportColorSpace.adobeRGB1998.rawValue == "adobe-rgb-1998")
+        #expect(ExportColorSpace.allCases.count == 3)
+    }
+
     // MARK: - Results
 
     @Test func exportPreviewRoundTrip() throws {

@@ -20,12 +20,20 @@ struct MetadataSyncBar: View {
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+    /// G9：本状态条也要能走 C1 的 reload + 手动 ack 通道。
+    ///
+    /// 为什么不新开一条旁路：C1 通道属于会话工作区的挑片 VM（组合根把协调器接到
+    /// 那上面），同一会话复用它的串行队列与 ack 语义，才不会与自动 reload 打架。
+    @Environment(\.sessionWorkspace) private var workspace
 
     @State private var state: MetadataDeliveryState?
     @State private var isBusy = false
     @State private var errorText: String?
     @State private var resultText: String?
     @State private var showFinalizeConfirm = false
+    /// C1 reload/ack 动作的忙碌位（与本状态条自己的 confirm/finalize 分开：
+    /// 两种动作的粒度不同，共用一个会更早把按钮禁掉）。
+    @State private var isC1ActionBusy = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
@@ -43,6 +51,9 @@ struct MetadataSyncBar: View {
                     Text(l10n("待 C1 重载"))
                         .font(.caption)
                         .foregroundStyle(GatherTheme.warningText)
+                }
+                if awaitingReloadAck, workspace?.culling != nil {
+                    c1ActionButtons
                 }
                 if awaitingReloadAck {
                     Button(l10n("确认同步")) { Task { await confirm() } }
@@ -121,6 +132,62 @@ struct MetadataSyncBar: View {
                 state?.backupCount ?? 0,
                 backupText))
         }
+    }
+
+    // MARK: - C1 通道（G9：元数据/模板写回与挑片页一致）
+
+    /// 写盘后让 C1 重载 + 手动 Load 的显式 ack。
+    ///
+    /// 两个动作都复用挑片 VM 的抛错版本：与自动 reload 同一串行队列，成功/失败
+    /// 由本状态条自己上屏（不写挑片页的 notice/errorMessage）。
+    @ViewBuilder
+    private var c1ActionButtons: some View {
+        Button(l10n("在 Capture One 中加载元数据")) { Task { await reloadInCaptureOne() } }
+            .gatherButton(.secondary, size: .small)
+            .disabled(isBusy || isC1ActionBusy)
+            .help(l10n("让 Capture One 重新读取本次写回（对 C1 当前选中的照片生效）"))
+        Button(l10n("我已在 Capture One 手动加载元数据")) {
+            Task { await acknowledgeManualLoad() }
+        }
+        .gatherButton(.secondary, size: .small)
+        .disabled(isBusy || isC1ActionBusy)
+        .help(l10n("在 Capture One 手动执行 Load Metadata 后点击；记录重载确认，解除确认/结束同步的门禁"))
+    }
+
+    private func reloadInCaptureOne() async {
+        guard let culling = workspace?.culling, !isC1ActionBusy else { return }
+        isC1ActionBusy = true
+        defer { isC1ActionBusy = false }
+        do {
+            try await culling.reloadCaptureOneThrowing()
+            errorText = nil
+            resultText = l10n("Capture One 已重新加载元数据，现在可以确认同步")
+            await refresh()
+        } catch {
+            errorText = c1ErrorText(error)
+        }
+    }
+
+    private func acknowledgeManualLoad() async {
+        guard let culling = workspace?.culling, !isC1ActionBusy else { return }
+        isC1ActionBusy = true
+        defer { isC1ActionBusy = false }
+        do {
+            try await culling.acknowledgeManualReloadThrowing()
+            errorText = nil
+            resultText = l10n("已记录手动加载，可以确认同步")
+            await refresh()
+        } catch {
+            errorText = c1ErrorText(error)
+        }
+    }
+
+    /// C1 动作错误 → 渲染期文案（VM 已把错误转成 CommandError 载体）。
+    private func c1ErrorText(_ error: Error) -> String {
+        if let command = error as? CommandError {
+            return CommandErrorText.resolve(command, with: l10n)
+        }
+        return APIErrorPresentation.message(for: error, with: l10n)
     }
 
     // MARK: - 派生显示

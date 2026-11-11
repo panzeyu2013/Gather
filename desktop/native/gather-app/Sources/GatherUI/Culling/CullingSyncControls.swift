@@ -30,10 +30,25 @@ struct CullingSyncControls: View {
             }
             .disabled(!hasDecisions || isBusy)
             .help(l10n("把已决策照片的当前评分/色标/挑片关键词写回 XMP"))
+            Divider()
+            // G10：selectVariants 早已实现（API 有 / UI 无），这里给出唯一 UI 入口。
+            // 放在同步菜单里：回 C1 看大图/调色是写回之后的下一步动作。
+            Button(l10n("在 Capture One 中显示")) { Task { await viewModel.showInCaptureOne() } }
+                .disabled(isBusy)
+                .help(l10n("在 Capture One 中选中这些照片；只改变选中，不导入"))
             if (viewModel.syncStatus?.written ?? 0) > 0 {
                 Button(l10n("在 Capture One 中加载元数据")) { Task { await viewModel.reloadCaptureOne() } }
                     .disabled(!viewModel.canLoadMetadata || isBusy)
                     .help(syncLoadHint)
+                // G2：脚本失败/没有选中项时 confirm 会被 reload-ack 门禁永久挡住；
+                // 用户在 C1 手动 Load Metadata 后由这里显式写 ack（唯一兜底出口）。
+                if !viewModel.reloadAcked {
+                    Button(l10n("我已在 Capture One 手动加载元数据")) {
+                        Task { await viewModel.acknowledgeManualReload() }
+                    }
+                    .disabled(isBusy)
+                    .help(l10n("在 Capture One 手动执行 Load Metadata 后点击；记录重载确认，解除确认/结束同步的门禁"))
+                }
                 Button(l10n("已在 Capture One 加载")) { Task { await viewModel.confirmSync() } }
                     .disabled(!viewModel.canConfirmSync || isBusy)
                     .help(syncConfirmHint)

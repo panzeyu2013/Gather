@@ -17,6 +17,16 @@ extension ExportViewModel {
         let selectedKey = scope == .selected
             ? selectedPhotoIds.sorted().joined(separator: ",")
             : "-"
+        // P0-5 / Wave1：色彩空间 / DPI / 输出锐化不改变文件集合，但改变成片字节
+        //（与 watermark 同理）——不纳入指纹就无法在计划区提示「参数已变」。
+        let trimmedDPI = dpi.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outputSpecKey = [
+            outputColorSpace?.rawValue ?? "cs:-",
+            transformsAllowed && !trimmedDPI.isEmpty ? "dpi:\(trimmedDPI)" : "dpi:-",
+            outputSharpeningEnabled && transformsAllowed
+                ? "sh:\(outputSharpeningRadius):\(outputSharpeningIntensity)"
+                : "sh:-",
+        ].joined(separator: ",")
         return [
             scope.rawValue,
             selectedKey,
@@ -26,6 +36,7 @@ extension ExportViewModel {
             namingPattern,
             includeXmp ? "xmp:1" : "xmp:0",
             watermarkKey,
+            outputSpecKey,
         ].joined(separator: "|")
     }
 

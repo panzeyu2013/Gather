@@ -54,6 +54,10 @@ package struct GalleryView: View {
     /// P1 下一波 §3.7.3：保存查询的命名 sheet 与草稿名。
     @State var showSaveSearchPrompt = false
     @State var savedSearchName = ""
+    /// Wave1：堆栈重命名草稿与两个延迟目标（重命名 sheet / 取消堆叠确认）。
+    @State var pendingStackRename: PendingStackRename?
+    @State var stackRenameText = ""
+    @State var pendingStackDissolve: PendingStackDissolve?
     /// 生产装配（Cut 4 / 4a-2a-2）：VM 来自会话工作区（workspace.gallery），
     /// 外壳不再维护 gallery 单槽，也不再在导航时替换 VM。
     ///
@@ -193,6 +197,26 @@ package struct GalleryView: View {
         .sheet(isPresented: $showSaveSearchPrompt) {
             saveSearchPromptSheet
         }
+        // Wave1：堆栈重命名（非破坏性：按下即改，失败走页面横幅）。
+        .sheet(item: $pendingStackRename) { _ in
+            stackRenameSheet
+        }
+        // Wave1：取消堆叠是破坏性动作——与集合/资产关联同一套确认通道，
+        // Confirmed 只从 onConfirm 分支构造。
+        .gatherDestructiveConfirm(
+            pending: $pendingStackDissolve,
+            title: l10n("取消堆叠？"),
+            confirmLabel: { _ in l10n("取消堆叠") },
+            message: { pending in
+                l10n.format(
+                    "会把这一堆的 %lld 张照片拆回独立显示；照片文件不会被删除。",
+                    pending.memberCount)
+            },
+            onConfirm: { pending in
+                Task { await viewModel.dissolveStack(stackId: pending.stackId, confirmed: true) }
+            },
+            onCancel: { _ in }
+        )
         .task(id: viewModel.sessionId) {
             await viewModel.refreshSavedSearches()
         }

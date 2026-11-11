@@ -215,6 +215,8 @@ extension CullingViewModel {
                 // 都有显式 removeAll；这里保留跨页选择，提交时再按可见性收窄。
                 loadedPhotoIds = newIds
                 page = nextPage
+                // 页集合整体换掉：宿主侧预取记录随之失效，新邻张才能重新预热。
+                hostPreloadedPaths.removeAll(keepingCapacity: true)
                 if let current = currentPhotoId, !newIds.contains(current) {
                     currentPhotoId = nextPage.assets.first?.photo.id
                 }
@@ -302,6 +304,13 @@ extension CullingViewModel {
             // 续页失败要留重试入口：sentinel 已出现不会再 onAppear。
             if !reset { loadMoreFailed = true }
             errorMessage = CommandError(error)
+        }
+        // P0-4：加载结束（isLoading 必须**先**显式复位，flush 里的 performCommit
+        // 才会真正执行）后补执行加载期间排队的那一拍。generation 被更新的加载
+        // 超越时保持 isLoading，由新的那次加载负责补执行。
+        if generation == loadGeneration {
+            isLoading = false
+            await flushPendingCommit()
         }
     }
     func filtersForCurrentState() -> CullingFilters? {

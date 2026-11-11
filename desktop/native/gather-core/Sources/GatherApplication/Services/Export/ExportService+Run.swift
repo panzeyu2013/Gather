@@ -261,9 +261,14 @@ extension ExportService {
               let image = CGImageSourceCreateImageAtIndex(sourceRef, 0, nil) else {
             throw ExportServiceError.rawConvertUnsupported
         }
-        let outputImage = try applyingWatermark(image, watermark: options.watermark)
+        // P0-5 / Wave1：输出锐化在**最终输出像素**上做（缩图之后），只改灰度过渡、
+        // 不改尺寸；没有锐化参数时原样返回（旧路径逐字节不变）。
+        let sharpened = try applyingOutputSharpening(image, sharpening: options.sharpening)
+        // 色彩空间转换与文字水印共用一次目标空间重绘；两者都没要求时原样返回。
+        let outputImage = try rendering(
+            sharpened, colorSpace: options.colorSpace, watermark: options.watermark)
         let type: CFString = options.format == .jpeg ? "public.jpeg" as CFString : "public.tiff" as CFString
-        let properties: [CFString: Any]
+        var properties: [CFString: Any]
         if options.format == .jpeg {
             properties = [kCGImageDestinationLossyCompressionQuality: (options.quality ?? 85) / 100]
         } else {
@@ -273,7 +278,20 @@ extension ExportService {
             case .lzw: compression = 5
             case .deflate: compression = 8
             }
-            properties = [kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: compression] as CFDictionary]
+            var tiff: [CFString: Any] = [kCGImagePropertyTIFFCompression: compression]
+            // TIFF 的 DPI 真相在 TIFF 段（印前工具多读 XResolution/ResolutionUnit），
+            // 顶层 kCGImagePropertyDPI* 下面也写一份，兼容按顶层读的消费者。
+            if let dpi = options.dpi {
+                tiff[kCGImagePropertyTIFFXResolution] = dpi
+                tiff[kCGImagePropertyTIFFYResolution] = dpi
+                tiff[kCGImagePropertyTIFFResolutionUnit] = 2
+            }
+            properties = [kCGImagePropertyTIFFDictionary: tiff as CFDictionary]
+        }
+        if let dpi = options.dpi {
+            // P0-5：JPEG 的 JFIF density 与 TIFF 顶层分辨率都认这两个键。
+            properties[kCGImagePropertyDPIWidth] = dpi
+            properties[kCGImagePropertyDPIHeight] = dpi
         }
         guard let destinationRef = CGImageDestinationCreateWithURL(destination as CFURL, type, 1, nil) else {
             throw ExportServiceError.formatUnsupported
@@ -378,17 +396,28 @@ extension ExportService {
         #endif
     }
 
-    private func applyingWatermark(_ image: CGImage, watermark: ExportWatermark?) throws -> CGImage {
-        guard let watermark else { return image }
+    /// 输出重绘：把图渲染进目标色彩空间，可选叠加文字水印（P0-5 / Wave1）。
+    ///
+    /// - 色彩空间与水印都没要求：**原样返回**（既有路径不变，不做无谓重编码）。
+    /// - colorSpace 非 nil：重绘进目标 profile，JPEG/TIFF 因此携带对应 ICC。
+    /// - 水印沿用旧实现的文字排版/位置/透明度语义；未指定目标空间时沿用原片
+    ///   空间（旧实现固定 DeviceRGB，会把带 profile 的原片降级成"未校色"）。
+    private func rendering(
+        _ image: CGImage,
+        colorSpace: ExportColorSpace?,
+        watermark: ExportWatermark?
+    ) throws -> CGImage {
+        guard colorSpace != nil || watermark != nil else { return image }
         let width = image.width
         let height = image.height
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let targetSpace = resolvedColorSpace(colorSpace, fallback: image)
         guard let context = CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8,
-            bytesPerRow: 0, space: colorSpace,
+            bytesPerRow: 0, space: targetSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { throw ExportServiceError.formatUnsupported }
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let watermark else { return context.makeImage() ?? image }
         context.setAlpha(CGFloat(watermark.opacity))
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         let font = CGFont("Helvetica" as CFString)
@@ -415,6 +444,126 @@ extension ExportService {
         context.textPosition = CGPoint(x: max(0, x), y: max(0, y))
         CTLineDraw(line, context)
         return context.makeImage() ?? image
+    }
+
+    /// 目标色彩空间：显式指定优先，否则沿用原片 profile（缺失时 DeviceRGB）。
+    private func resolvedColorSpace(_ colorSpace: ExportColorSpace?, fallback image: CGImage) -> CGColorSpace {
+        switch colorSpace {
+        case .sRGB: return CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        case .displayP3: return CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
+        case .adobeRGB1998: return CGColorSpace(name: CGColorSpace.adobeRGB1998) ?? CGColorSpaceCreateDeviceRGB()
+        case nil: return image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        }
+    }
+
+    /// 输出锐化（unsharp mask，P0-5 / Wave1）：out = orig + intensity × (orig − blur)。
+    ///
+    /// 模糊用可分离盒式平均近似高斯：不引入 GPU/CoreImage 依赖、结果确定，
+    /// 单测能在任意机器复现；半径按输出像素解释（UI 0.5-3）。只处理 RGB：
+    /// 尺寸与 alpha 不变，非不透明像素仍满足 premultiplied 约束。
+    /// 没有锐化参数 / 强度为 0 时原样返回（既有路径字节不变）。
+    private func applyingOutputSharpening(
+        _ image: CGImage,
+        sharpening: ExportSharpening?
+    ) throws -> CGImage {
+        guard let sharpening, sharpening.intensity > 0 else { return image }
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return image }
+        // 缓冲必须是 RGB 空间（下面按 RGBA 8-bit 解释内存）；灰度/CMYK 源退 DeviceRGB。
+        let bufferSpace = image.colorSpace?.model == .rgb
+            ? (image.colorSpace ?? CGColorSpaceCreateDeviceRGB())
+            : CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+            | CGBitmapInfo.byteOrder32Big.rawValue
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        do {
+            // 先渲进缓冲；context 在代码块结束时释放，之后才能安全改写数组内存。
+            guard let context = CGContext(
+                data: &pixels, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow, space: bufferSpace, bitmapInfo: bitmapInfo
+            ) else { throw ExportServiceError.formatUnsupported }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        let radius = max(1, Int(sharpening.radius.rounded()))
+        let blurred = Self.boxBlurRGBA(pixels, width: width, height: height, radius: radius)
+        let amount = min(max(sharpening.intensity, 0), 2)
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let alpha = Int(pixels[index + 3])
+            for channel in 0..<3 {
+                let original = Double(pixels[index + channel])
+                let smooth = Double(blurred[index + channel])
+                var value = Int((original + amount * (original - smooth)).rounded())
+                value = min(max(value, 0), 255)
+                // premultiplied 约束：半透明像素的通道不得大于 alpha。
+                if alpha < 255 { value = min(value, alpha) }
+                pixels[index + channel] = UInt8(value)
+            }
+        }
+        do {
+            guard let context = CGContext(
+                data: &pixels, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow, space: bufferSpace, bitmapInfo: bitmapInfo
+            ), let output = context.makeImage() else {
+                throw ExportServiceError.formatUnsupported
+            }
+            return output
+        }
+    }
+
+    /// 可分离盒式模糊（水平 + 垂直各一遍）近似高斯，RGBA 8-bit，边缘按夹取处理。
+    /// 滑动窗口使单遍复杂度 O(像素)，半径按输出像素解释。
+    private static func boxBlurRGBA(
+        _ pixels: [UInt8],
+        width: Int,
+        height: Int,
+        radius: Int
+    ) -> [UInt8] {
+        guard radius > 0, width > 0, height > 0 else { return pixels }
+        let window = radius * 2 + 1
+        var horizontal = [UInt8](repeating: 0, count: pixels.count)
+        for y in 0..<height {
+            let row = y * width * 4
+            var sums = [Int](repeating: 0, count: 4)
+            for offset in -radius...radius {
+                let x = min(max(offset, 0), width - 1)
+                let p = row + x * 4
+                for channel in 0..<4 { sums[channel] += Int(pixels[p + channel]) }
+            }
+            for x in 0..<width {
+                let p = row + x * 4
+                for channel in 0..<4 { horizontal[p + channel] = UInt8(sums[channel] / window) }
+                let removeX = min(max(x - radius, 0), width - 1)
+                let addX = min(max(x + radius + 1, 0), width - 1)
+                for channel in 0..<4 {
+                    sums[channel] += Int(pixels[row + addX * 4 + channel])
+                        - Int(pixels[row + removeX * 4 + channel])
+                }
+            }
+        }
+        var output = [UInt8](repeating: 0, count: pixels.count)
+        for x in 0..<width {
+            let column = x * 4
+            var sums = [Int](repeating: 0, count: 4)
+            for offset in -radius...radius {
+                let y = min(max(offset, 0), height - 1)
+                let p = y * width * 4 + column
+                for channel in 0..<4 { sums[channel] += Int(horizontal[p + channel]) }
+            }
+            for y in 0..<height {
+                let p = y * width * 4 + column
+                for channel in 0..<4 { output[p + channel] = UInt8(sums[channel] / window) }
+                let removeY = min(max(y - radius, 0), height - 1)
+                let addY = min(max(y + radius + 1, 0), height - 1)
+                let remove = removeY * width * 4 + column
+                let add = addY * width * 4 + column
+                for channel in 0..<4 {
+                    sums[channel] += Int(horizontal[add + channel]) - Int(horizontal[remove + channel])
+                }
+            }
+        }
+        return output
     }
 #endif
 

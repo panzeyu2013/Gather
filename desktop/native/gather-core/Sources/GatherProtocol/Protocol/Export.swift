@@ -34,6 +34,33 @@ public enum ExportTiffCompression: String, Codable, CaseIterable, Equatable, Sen
     case deflate
 }
 
+/// 导出目标色彩空间（P0-5 / Wave1 新增，无 TS 对应）。
+///
+/// `nil`（ExportOptions.colorSpace 缺省）= 不转换，保持原片色彩（旧行为）。
+/// 非 nil 时转码链把像素重绘进目标色彩空间，并让 JPEG/TIFF 携带对应 ICC profile。
+public enum ExportColorSpace: String, Codable, CaseIterable, Equatable, Sendable {
+    case sRGB = "sRGB"
+    case displayP3 = "display-p3"
+    /// Adobe RGB 1998（印厂/杂志交付）。
+    case adobeRGB1998 = "adobe-rgb-1998"
+}
+
+/// 输出锐化参数（P0-5 / Wave1 新增，无 TS 对应）。
+///
+/// 语义是 unsharp mask：在**最终输出像素**上做（缩图之后），只改灰度过渡、
+/// 不改尺寸。`nil`（ExportOptions.sharpening 缺省）= 不锐化（旧行为）。
+public struct ExportSharpening: Codable, Equatable, Sendable {
+    /// 模糊半径（输出像素）。0.5-1 适合屏幕缩图，1-3 适合打印。
+    public var radius: Double
+    /// 强度（0-2）：0 = 不锐化，越大边缘对比越强。
+    public var intensity: Double
+
+    public init(radius: Double = 1, intensity: Double = 0.5) {
+        self.radius = radius
+        self.intensity = intensity
+    }
+}
+
 // TS: watermark.type（export.ts 内联联合 'text' | 'image'）
 public enum ExportWatermarkType: String, Codable, CaseIterable, Equatable, Sendable {
     case text
@@ -86,6 +113,13 @@ public struct ExportOptions: Codable, Equatable, Sendable {
     public var format: ExportFormat
     public var quality: Double? // TS: quality?
     public var maxDimension: Int? // TS: maxDimension?
+    /// P0-5 / Wave1：目标色彩空间；nil = 不转换（保持原片色彩）。
+    public var colorSpace: ExportColorSpace?
+    /// P0-5 / Wave1：写入成片元数据的 DPI（JPEG JFIF density / TIFF resolution）；
+    /// nil = 不写。
+    public var dpi: Int?
+    /// P0-5 / Wave1：输出锐化（unsharp mask）；nil = 不锐化。
+    public var sharpening: ExportSharpening?
     public var tiffCompression: ExportTiffCompression? // TS: tiffCompression?
     public var watermark: ExportWatermark? // TS: watermark?
     public var naming: ExportNaming
@@ -99,6 +133,9 @@ public struct ExportOptions: Codable, Equatable, Sendable {
         format: ExportFormat,
         quality: Double? = nil,
         maxDimension: Int? = nil,
+        colorSpace: ExportColorSpace? = nil,
+        dpi: Int? = nil,
+        sharpening: ExportSharpening? = nil,
         tiffCompression: ExportTiffCompression? = nil,
         watermark: ExportWatermark? = nil,
         naming: ExportNaming,
@@ -111,6 +148,9 @@ public struct ExportOptions: Codable, Equatable, Sendable {
         self.format = format
         self.quality = quality
         self.maxDimension = maxDimension
+        self.colorSpace = colorSpace
+        self.dpi = dpi
+        self.sharpening = sharpening
         self.tiffCompression = tiffCompression
         self.watermark = watermark
         self.naming = naming

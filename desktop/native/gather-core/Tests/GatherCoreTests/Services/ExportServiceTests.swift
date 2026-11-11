@@ -553,6 +553,185 @@ struct ExportServiceTests {
             ?? (iptc[kCGImagePropertyIPTCCaptionAbstract] as? String)
         #expect(caption == "交付保真测试")
     }
+
+    // MARK: - P0-5（Wave1）：色彩空间 / DPI / 输出锐化
+
+    /// 生成「灰底 + 中央白块」JPEG，供锐化对比用（边缘对比度可量化）。
+    private func makeEdgeJPEG(width: Int, height: Int) throws -> CGImage {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try #require(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(gray: 0.5, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let inset = width / 4
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(
+            x: inset, y: inset, width: width - inset * 2, height: height - inset * 2))
+        return try #require(context.makeImage())
+    }
+
+    /// 读成片某点的 RGB（0-255）：用于断言输出锐化真的改变了边缘过渡。
+    private func pixel(of image: CGImage, x: Int, y: Int) -> (r: Int, g: Int, b: Int)? {
+        var buffer = [UInt8](repeating: 0, count: 4)
+        guard let context = CGContext(
+            data: &buffer, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(image, in: CGRect(
+            x: -CGFloat(x), y: -CGFloat(y), width: CGFloat(image.width), height: CGFloat(image.height)))
+        return (Int(buffer[0]), Int(buffer[1]), Int(buffer[2]))
+    }
+
+    @Test func exportWritesColorSpaceDPIAndSharpening() throws {
+        let db = try makeExportDatabase()
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-export-spec-source-" + UUID().uuidString, isDirectory: true)
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-export-spec-out-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        let input = source.appendingPathComponent("photo.jpg")
+        let image = try makeEdgeJPEG(width: 64, height: 48)
+        let data = NSMutableData()
+        let destinationRef = try #require(CGImageDestinationCreateWithData(
+            data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destinationRef, image, nil)
+        #expect(CGImageDestinationFinalize(destinationRef))
+        try (data as Data).write(to: input)
+
+        let session = try SessionRepo(connection: db).create(
+            name: "Spec", source: "local", sourcePath: source.path)
+        try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
+        let service = ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            connection: db)
+
+        // JPEG：Display P3 + 300dpi + 锐化；尺寸必须不变（锐化不改尺寸）。
+        let jpegOptions = ExportOptions(
+            scope: .session,
+            format: .jpeg,
+            quality: 95,
+            maxDimension: 64,
+            colorSpace: .displayP3,
+            dpi: 300,
+            sharpening: ExportSharpening(radius: 1.5, intensity: 0.8),
+            naming: ExportNaming(pattern: "{original}"),
+            includeXmp: false,
+            destination: destination.path)
+        #expect(try service.execute(sessionId: session.id, options: jpegOptions).exported == 1)
+        let jpegURL = destination.appendingPathComponent("photo.jpg")
+        let jpegSource = try #require(CGImageSourceCreateWithURL(jpegURL as CFURL, nil))
+        let jpegProps = try #require(
+            CGImageSourceCopyPropertiesAtIndex(jpegSource, 0, nil) as? [CFString: Any])
+        #expect((jpegProps[kCGImagePropertyDPIWidth] as? NSNumber)?.intValue == 300)
+        #expect((jpegProps[kCGImagePropertyDPIHeight] as? NSNumber)?.intValue == 300)
+        let jpegImage = try #require(CGImageSourceCreateImageAtIndex(jpegSource, 0, nil))
+        let jpegSpaceName = try #require(jpegImage.colorSpace?.name as String?)
+        #expect(jpegSpaceName == (CGColorSpace.displayP3 as String))
+        #expect(jpegImage.width == 64 && jpegImage.height == 48, "锐化不得改变尺寸")
+
+        // TIFF：Adobe RGB 1998 + 240dpi；DPI 要同时落进 TIFF 段（印前工具认 XResolution）。
+        let tiffDestination = destination.appendingPathComponent("tiff")
+        let tiffOptions = ExportOptions(
+            scope: .session,
+            format: .tiff,
+            maxDimension: 64,
+            colorSpace: .adobeRGB1998,
+            dpi: 240,
+            sharpening: ExportSharpening(radius: 1, intensity: 0.5),
+            tiffCompression: ExportTiffCompression.none,
+            naming: ExportNaming(pattern: "{original}"),
+            includeXmp: false,
+            destination: tiffDestination.path)
+        #expect(try service.execute(sessionId: session.id, options: tiffOptions).exported == 1)
+        let tiffURL = tiffDestination.appendingPathComponent("photo.tiff")
+        let tiffSource = try #require(CGImageSourceCreateWithURL(tiffURL as CFURL, nil))
+        let tiffProps = try #require(
+            CGImageSourceCopyPropertiesAtIndex(tiffSource, 0, nil) as? [CFString: Any])
+        #expect((tiffProps[kCGImagePropertyDPIWidth] as? NSNumber)?.intValue == 240)
+        let tiffDict = try #require(tiffProps[kCGImagePropertyTIFFDictionary] as? [CFString: Any])
+        #expect((tiffDict[kCGImagePropertyTIFFXResolution] as? NSNumber)?.intValue == 240)
+        #expect((tiffDict[kCGImagePropertyTIFFResolutionUnit] as? NSNumber)?.intValue == 2)
+        let tiffImage = try #require(CGImageSourceCreateImageAtIndex(tiffSource, 0, nil))
+        let tiffSpaceName = try #require(tiffImage.colorSpace?.name as String?)
+        #expect(tiffSpaceName == (CGColorSpace.adobeRGB1998 as String))
+        #expect(tiffImage.width == 64 && tiffImage.height == 48, "锐化不得改变尺寸")
+    }
+
+    /// 输出锐化真的作用在边缘：白块外侧相邻像素在被锐化后应明显更暗（undershoot）。
+    @Test func outputSharpeningIncreasesEdgeContrast() throws {
+        let db = try makeExportDatabase()
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-export-sharp-source-" + UUID().uuidString, isDirectory: true)
+        let plainDestination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-export-sharp-plain-" + UUID().uuidString, isDirectory: true)
+        let sharpDestination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-export-sharp-on-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: plainDestination)
+            try? FileManager.default.removeItem(at: sharpDestination)
+        }
+        let input = source.appendingPathComponent("edge.jpg")
+        let image = try makeEdgeJPEG(width: 96, height: 96)
+        let data = NSMutableData()
+        let destinationRef = try #require(CGImageDestinationCreateWithData(
+            data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destinationRef, image,
+            [kCGImageDestinationLossyCompressionQuality: 1.0] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destinationRef))
+        try (data as Data).write(to: input)
+
+        let session = try SessionRepo(connection: db).create(
+            name: "Sharp", source: "local", sourcePath: source.path)
+        try seedExportPhoto(db, sessionId: session.id, photoId: "p1", filepath: input.path)
+        let service = ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            connection: db)
+        func options(destination: String, sharpening: ExportSharpening?) -> ExportOptions {
+            ExportOptions(
+                scope: .session,
+                format: .tiff,
+                maxDimension: 96,
+                sharpening: sharpening,
+                tiffCompression: ExportTiffCompression.none,
+                naming: ExportNaming(pattern: "{original}"),
+                includeXmp: false,
+                destination: destination)
+        }
+        #expect(try service.execute(
+            sessionId: session.id,
+            options: options(destination: plainDestination.path, sharpening: nil)).exported == 1)
+        #expect(try service.execute(
+            sessionId: session.id,
+            options: options(
+                destination: sharpDestination.path,
+                sharpening: ExportSharpening(radius: 2, intensity: 1.5))).exported == 1)
+
+        let plainSource = try #require(CGImageSourceCreateWithURL(
+            plainDestination.appendingPathComponent("edge.tiff") as CFURL, nil))
+        let sharpSource = try #require(CGImageSourceCreateWithURL(
+            sharpDestination.appendingPathComponent("edge.tiff") as CFURL, nil))
+        let plainImage = try #require(CGImageSourceCreateImageAtIndex(plainSource, 0, nil))
+        let sharpImage = try #require(CGImageSourceCreateImageAtIndex(sharpSource, 0, nil))
+        #expect(plainImage.width == sharpImage.width && plainImage.height == sharpImage.height)
+        // 白块从 24px 开始（inset = 96/4）；看外缘第 2 个像素（x = 22），避开 JPEG 振铃。
+        let centerY = 48
+        let plainOutside = try #require(pixel(of: plainImage, x: 22, y: centerY))
+        let sharpOutside = try #require(pixel(of: sharpImage, x: 22, y: centerY))
+        #expect(
+            sharpOutside.r + sharpOutside.g + sharpOutside.b
+                < plainOutside.r + plainOutside.g + plainOutside.b - 30,
+            "输出锐化应压暗边缘外侧像素：plain=\(plainOutside) sharp=\(sharpOutside)")
+    }
 #endif
 
     /// 第四轮审计 #5（MED）：{time} 占位符 12h/24h 不一致。

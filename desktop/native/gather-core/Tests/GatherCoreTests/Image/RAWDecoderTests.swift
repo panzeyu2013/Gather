@@ -72,8 +72,135 @@ struct RAWDecoderTests {
         }
         #expect(!RAWDecoder.supports(".gif"))
         #expect(!RAWDecoder.supports(".bmp"))
-        #expect(!RAWDecoder.supports(".heic"))
+        // P0-8（Wave1）规格变更：HEIC/HEIF/PSD 原先不在白名单里（旧断言是
+        // !supports(".heic")），但索引/导入早已接收它们 —— 那是"能导入却解不出
+        // 缩略图"的缺陷本身，不是规格。修复后三者必须支持。
+        #expect(RAWDecoder.supports(".heic"))
+        #expect(RAWDecoder.supports(".HEIF"))
+        #expect(RAWDecoder.supports(".psd"))
         #expect(!RAWDecoder.supports(""))
+    }
+
+    // ── P0-8（Wave1）：HEIC/HEIF/PSD 解码兜底 ──
+
+    /// 生成纯色 HEIC：HEIF 编码在 macOS 上由 ImageIO 原生提供。
+    private func makeHEIC(width: Int, height: Int) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-rawdecoder-\(UUID().uuidString).heic")
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw TestError("CGContext failed") }
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.6, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        guard let image = context.makeImage() else { throw TestError("makeImage failed") }
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            data, UTType.heic.identifier as CFString, 1, nil
+        ) else { throw TestError("HEIC 编码不可用") }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { throw TestError("HEIC finalize failed") }
+        try (data as Data).write(to: url)
+        return url
+    }
+
+    /// 生成最小合法 PSD（v1、RGB、8bit、无图层、未压缩平面数据）。
+    /// ImageIO 读 PSD 时给的是**合成扁平图**，与交付稿在 Finder/PS 里看到的一致。
+    private func makePSD(width: Int, height: Int) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-rawdecoder-\(UUID().uuidString).psd")
+        var data = Data()
+        func u16(_ value: UInt16) {
+            data.append(UInt8(value >> 8))
+            data.append(UInt8(value & 0xFF))
+        }
+        func u32(_ value: UInt32) {
+            data.append(UInt8((value >> 24) & 0xFF))
+            data.append(UInt8((value >> 16) & 0xFF))
+            data.append(UInt8((value >> 8) & 0xFF))
+            data.append(UInt8(value & 0xFF))
+        }
+        data.append(contentsOf: Array("8BPS".utf8))
+        u16(1)                                   // version
+        data.append(contentsOf: [UInt8](repeating: 0, count: 6))
+        u16(3)                                   // channels
+        u32(UInt32(height))
+        u32(UInt32(width))
+        u16(8)                                   // depth
+        u16(3)                                   // RGB
+        u32(0)                                   // color mode data length
+        u32(0)                                   // image resources length
+        u32(0)                                   // layer/mask info length
+        u16(0)                                   // compression: raw
+        for channel in 0..<3 {
+            for index in 0..<(width * height) {
+                data.append(UInt8((channel == 0 ? 200 : 40) + (index % 10)))
+            }
+        }
+        try data.write(to: url)
+        return url
+    }
+
+    @Test func heicDecodesThumbnailAndPreview() throws {
+        let url = try makeHEIC(width: 640, height: 480)
+        defer { cleanup([url]) }
+        let dims = try RAWDecoder.getDimensions(path: url.path)
+        #expect(dims.width == 640 && dims.height == 480)
+        let thumb = try RAWDecoder.getThumbnail(path: url.path, size: 128)
+        #expect(thumb.format == "jpeg")
+        #expect(thumb.width <= 128 && thumb.height <= 128)
+        #expect(thumb.buffer.count > 2 && thumb.buffer[0] == 0xFF && thumb.buffer[1] == 0xD8)
+        let preview = try RAWDecoder.getPreview(path: url.path, maxDimension: 2048)
+        #expect(preview.width == 640 && preview.height == 480, "预览不得放大")
+    }
+
+    @Test func psdDecodesCompositeImage() throws {
+        let url = try makePSD(width: 320, height: 240)
+        defer { cleanup([url]) }
+        let dims = try RAWDecoder.getDimensions(path: url.path)
+        #expect(dims.width == 320 && dims.height == 240)
+        let thumb = try RAWDecoder.getThumbnail(path: url.path, size: 64)
+        #expect(thumb.format == "jpeg")
+        #expect(thumb.width <= 64 && thumb.height <= 64)
+        #expect(thumb.width > 0 && thumb.height > 0)
+    }
+
+    @Test func compositeFormatDecodeFailureReportsUnsupportedExtension() throws {
+        for ext in [".psd", ".heic", ".heif"] {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("gather-rawdecoder-corrupt-\(UUID().uuidString)\(ext)")
+            try Data("not an image at all".utf8).write(to: url)
+            defer { cleanup([url]) }
+            // 不崩溃：声明支持但解不出来时按 unsupportedExtension 上报。
+            #expect(throws: RAWDecoderError.unsupportedExtension(ext)) {
+                _ = try RAWDecoder.getThumbnail(path: url.path, size: 64)
+            }
+        }
+    }
+
+    /// 直解兜底（P0-8）：缩略图 API 失败时整图解码 → 方向摆正 → 缩放。
+    @Test func fullImageFallbackScalesAndAppliesOrientation() throws {
+        // orientation 6 = 顺时针 90°：像素 480x640，摆正后 640x480。
+        let url = try makeJPEG(width: 480, height: 640, orientation: 6)
+        defer { cleanup([url]) }
+        let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let unscaled = try #require(RAWDecoder.fallbackImage(from: source, maxPixel: nil))
+        #expect(unscaled.width == 640 && unscaled.height == 480, "兜底路径必须摆正方向")
+        let scaled = try #require(RAWDecoder.fallbackImage(from: source, maxPixel: 100))
+        #expect(max(scaled.width, scaled.height) == 100, "兜底路径只缩小到 maxPixel")
+        #expect(scaled.width == 100 && scaled.height == 75, "摆正后是横构图 640x480 → 100x75")
+    }
+
+    /// PSD 合成图同样能走直解兜底（无内嵌缩略图时主路径可能失败）。
+    @Test func fallbackDecodesPSDComposite() throws {
+        let url = try makePSD(width: 200, height: 100)
+        defer { cleanup([url]) }
+        let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let image = try #require(RAWDecoder.fallbackImage(from: source, maxPixel: 50))
+        #expect(max(image.width, image.height) == 50)
+        #expect(image.width == 50 && image.height == 25)
     }
 
     // ── getDimensions ──

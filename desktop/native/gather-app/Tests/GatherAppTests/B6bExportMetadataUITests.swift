@@ -70,6 +70,38 @@ struct B6bExportViewModelTests {
         #expect(viewModel.namingPreview(with: L10n(language: .en)) == "Workspace-IMG_1234.Extension")
     }
 
+    /// P0-5 / Wave1：三个输出规格控件必须真正进入 ExportOptions 与计划指纹；
+    /// 原图格式（字节复制）不得携带任何转换参数。
+    @Test("P0-5：色彩空间/DPI/输出锐化进入 ExportOptions 与计划指纹")
+    func outputSpecsFlowIntoOptionsAndPlanSignature() throws {
+        let (viewModel, _) = makeViewModel()
+        viewModel.format = .jpeg
+        viewModel.outputColorSpace = .displayP3
+        viewModel.dpi = "300"
+        viewModel.outputSharpeningEnabled = true
+        viewModel.outputSharpeningRadius = 1.5
+        viewModel.outputSharpeningIntensity = 0.8
+        let options = try viewModel.exportOptions()
+        #expect(options.colorSpace == .displayP3)
+        #expect(options.dpi == 300)
+        #expect(options.sharpening == ExportSharpening(radius: 1.5, intensity: 0.8))
+
+        // 改参数必须改变计划指纹（否则计划区不会重算、确认弹窗拿旧参数）。
+        let signature = viewModel.planSignature
+        viewModel.outputColorSpace = .sRGB
+        #expect(viewModel.planSignature != signature, "色彩空间变化必须重算计划")
+        let srgbSignature = viewModel.planSignature
+        viewModel.dpi = "240"
+        #expect(viewModel.planSignature != srgbSignature, "DPI 变化必须重算计划")
+
+        // 原图格式：只做字节复制，三项一律不发送。
+        viewModel.format = .original
+        let original = try viewModel.exportOptions()
+        #expect(original.colorSpace == nil)
+        #expect(original.dpi == nil)
+        #expect(original.sharpening == nil)
+    }
+
     @Test("execute：确认弹窗冻结的参数原样下发，source = userDialog")
     func executeUsesFrozenConfirmedInput() async throws {
         let (viewModel, export) = makeViewModel()

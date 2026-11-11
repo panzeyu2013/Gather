@@ -1,5 +1,6 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/CullingAPI.swift
-// Cut 1 / 阶段 1A：挑片域协议（24 个方法；P0 / A1 追加 selection，P1-7 追加 updateSelection）。
+// Cut 1 / 阶段 1A：挑片域协议（25 个方法；P0 / A1 追加 selection，P1-7 追加
+// updateSelection，Wave1 追加 acknowledgeManualReload）。
 //
 // 职责：挑片分页/历史栈/单张与批量决策/分组/摘要/同步状态/写回与清理。
 // 对应命令（19 条）：culling.list_page / history / apply_history / update /
@@ -60,6 +61,17 @@ public protocol CullingAPI: Sendable {
     func cleanup(_ input: Confirmed<SessionReference>) async throws -> CleanupResult
     func finalizeSync(_ input: Confirmed<SessionReference>) async throws -> MetadataSyncSummary
     func confirmSync(_ sessionId: String) async throws -> Bool
+
+    /// P0 / G2：用户声明"我已在 Capture One 手动 Load Metadata"。
+    ///
+    /// 为什么需要：reload ack 原先只能由 AppleScript 成功写入，而
+    /// `reload metadata` 是对 per-variant 的（C1 16.7 sdef），脚本失败/没有显著
+    /// 选中项时 confirm/finalize 会永久卡在 XMP_CONFIRM_REQUIRES_SYNC。这个入口
+    /// 让用户在 C1 里执行 Load Metadata 后显式写 `sessions.reload_acked_at`，
+    /// 门禁于是有兜底（语义是**用户声明**，不是"脚本成功"的替代品）。
+    ///
+    /// 非破坏性：只写会话的 reload ack 列；与 confirmSync 同级的会话级写入。
+    func acknowledgeManualReload(_ sessionId: String) async throws -> Bool
 }
 
 public extension CullingAPI {
@@ -88,5 +100,15 @@ public extension CullingAPI {
         _ = input
         throw GatherError.invalidParameter(
             field: "applyTriageCalibration", reason: "calibration API not wired")
+    }
+
+    /// 未接线（Preview/测试替身）：显式失败。
+    ///
+    /// 不能静默返回 true：reload-ack 门禁会因此被伪造的 ack 骗过，
+    /// confirm/finalize 在 C1 仍是旧值时就推进状态。
+    func acknowledgeManualReload(_ sessionId: String) async throws -> Bool {
+        _ = sessionId
+        throw GatherError.invalidParameter(
+            field: "acknowledgeManualReload", reason: "manual reload ack API not wired")
     }
 }

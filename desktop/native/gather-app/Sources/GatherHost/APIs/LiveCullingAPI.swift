@@ -26,6 +26,8 @@
 //   DeliveryCoordinator 再统一状态机），本文件不提前改语义（R6）；
 // - syncStatus 额外补 reloadAckedAt（旧命令面 在 JSON 层临时补的键），由
 //   SessionRepo 读 session.reload_acked_at，输出收敛为 CullingSyncStatus。
+// - Wave1（task-6）新增 acknowledgeManualReload：只写 reload-ack 列（G2 的
+//   "我已在 C1 手动 Load Metadata" 兜底），不伪造脚本成功，也不碰交付状态机。
 // - 非域错误（DBError 中已经写成错误码的 message）沿用 LiveAPIErrorMapping 的
 //   收敛口径；其余错误原样抛出（D-030 的通用文案兜底约定）。
 
@@ -486,6 +488,25 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
             try await cullingService.confirmSync(sessionId: id)
             return true
         }
+    }
+
+    /// P0 / G2：手动 Load Metadata 的显式 ack（写 sessions.reload_acked_at）。
+    ///
+    /// 只写持久列、不触发 AppleScript：用户已在 C1 里执行 Load Metadata 是前提，
+    /// Gather 无法验证也不该假装验证——它是**用户声明**，用来解除 §5.4-2 的
+    /// reload-ack 死锁（DeliveryCoordinator.requireReloadAck 读同一列）。
+    /// 返回 false 只在会话不存在时可能出现（此时报 SESSION_NOT_FOUND，不写孤儿列）。
+    public func acknowledgeManualReload(_ sessionId: String) async throws -> Bool {
+        let id = try LiveAPIInput.requireSessionId(sessionId)
+        guard let sessionRepo else {
+            throw GatherError.invalidParameter(
+                field: "sessionRepo", reason: "手动重载确认未接线（缺少 sessionRepo）")
+        }
+        let changed = try map {
+            try sessionRepo.setReloadAckedAt(sessionId: id, iso: nowISOString())
+        }
+        guard changed else { throw GatherError(code: .SESSION_NOT_FOUND) }
+        return true
     }
 
     // MARK: - 校验与错误映射

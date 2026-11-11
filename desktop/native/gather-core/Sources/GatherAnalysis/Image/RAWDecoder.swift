@@ -74,14 +74,26 @@ public enum RAWDecoderError: Error, Equatable {
 /// CoreImage/ImageIO 解码器（替代 sharp + sips，含 RAW）。
 public enum RAWDecoder {
     /// sharp.supportedExtensions 全集（含 RAW）。
+    ///
+    /// P0-8（Wave1）：补 `.heic/.heif/.psd` —— 索引与导入早已接收三者
+    /// （IndexerService / IngestService / PhotoFileTypes），但解码白名单缺项，
+    /// 结果是 iPhone 直出的 HEIC 与交付稿 PSD 能进库、能计数，网格却是空白占位符。
+    /// ImageIO 对三者都有解码能力（HEIC 原生；PSD 取合成扁平图），并入同一白名单。
     public static let supportedExtensions: Set<String> = [
         ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp",
+        ".heic", ".heif", ".psd",
         ".cr2", ".cr3", ".nef", ".nrw", ".arw",
         ".raf", ".dng", ".orf", ".rw2", ".pef",
         ".srw", ".srf", ".x3f", ".3fr", ".fff",
         ".mef", ".mos", ".iiq", ".eip", ".erf",
         ".kdc", ".mrw",
     ]
+
+    /// 由 ImageIO 按内容合成/解码的位图格式（P0-8）：
+    /// HEIC/HEIF 是 iPhone 直出，PSD 取合成扁平图。
+    /// 这些格式的缩略图 API 可能因容器特性失败，失败时走「整图解码 → 缩放」兜底；
+    /// 两条路都走不通按 unsupportedExtension 上报（UI 走占位符，不崩）。
+    static let compositeDecodeExtensions: Set<String> = [".heic", ".heif", ".psd"]
 
     public static func supports(_ ext: String) -> Bool {
         supportedExtensions.contains(ext.lowercased())
@@ -200,7 +212,15 @@ public enum RAWDecoder {
                 return filter.outputImage
             }
         }
-        return CIImage(contentsOf: url, options: [.applyOrientationProperty: true])
+        if let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) {
+            return image
+        }
+        // P0-8：CIImage 不认的位图（典型是 PSD 的合成扁平图）退回 ImageIO 直解，
+        // 再包成 CIImage 供区域裁剪。该兜底不带方向变换：PSD 没有 EXIF 方向语义。
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let decoded = makeImage(from: source, maxPixel: nil)
+                ?? fallbackImage(from: source, maxPixel: nil) else { return nil }
+        return CIImage(cgImage: decoded)
     }
     #endif
 
@@ -210,7 +230,8 @@ public enum RAWDecoder {
     public static func pixels9x8(path: String, maxPixel: Int? = nil) -> [UInt8]? {
         let url = URL(fileURLWithPath: path)
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = makeImage(from: source, maxPixel: maxPixel) else { return nil }
+              let image = makeImage(from: source, maxPixel: maxPixel)
+                ?? fallbackImage(from: source, maxPixel: maxPixel) else { return nil }
         let width = 9
         let height = 8
         var pixels = [UInt8](repeating: 0, count: width * height)
@@ -242,7 +263,15 @@ public enum RAWDecoder {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             throw RAWDecoderError.cannotOpenSource(path)
         }
-        guard let image = makeImage(from: source, maxPixel: maxPixel) else {
+        // P0-8：缩略图 API 失败时退回「整图解码 → 缩放」兜底（HEIC/HEIF/PSD
+        // 这类由 ImageIO 按内容合成的格式，容器里没有内嵌缩略图时最常触发）。
+        guard let image = makeImage(from: source, maxPixel: maxPixel)
+            ?? fallbackImage(from: source, maxPixel: maxPixel) else {
+            // 声明支持却解不出来的 HEIC/HEIF/PSD 按"扩展名不受支持"上报：
+            // 上层（网格/查看器）据此走占位符，而不是把 noImage 当崩溃扩散。
+            if compositeDecodeExtensions.contains(".\(ext)") {
+                throw RAWDecoderError.unsupportedExtension(".\(ext)")
+            }
             throw RAWDecoderError.noImage(path)
         }
         let width = image.width
@@ -267,6 +296,53 @@ public enum RAWDecoder {
             kCGImageSourceShouldCacheImmediately: true,
         ]
         return CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary)
+    }
+
+    /// CGImageSource 直解兜底（P0-8）：整图解码 → 按 EXIF 方向摆正 → 缩到 maxPixel。
+    ///
+    /// 只在主路径 `CGImageSourceCreateThumbnailAtIndex` 返回 nil 时才走：
+    /// HEIC/HEIF/PSD 这类容器没有内嵌缩略图时，缩略图 API 可能直接失败，
+    /// 而整图解码（ImageIO 会合成 PSD 的扁平图）仍然可用。
+    /// 方向用 CoreImage 的 EXIF 语义摆正，与缩略图主路径的 WithTransform 一致；
+    /// 只缩小不放大（maxPixel 大于原图时保持原始像素）。
+    static func fallbackImage(from source: CGImageSource, maxPixel: Int?) -> CGImage? {
+        let options: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
+        guard let full = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        let orientation = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+            .flatMap { $0[kCGImagePropertyOrientation] as? Int } ?? 1
+        #if canImport(CoreImage)
+        var image = CIImage(cgImage: full)
+        if orientation != 1 {
+            image = image.oriented(forExifOrientation: Int32(orientation))
+        }
+        if let maxPixel {
+            let longest = max(image.extent.width, image.extent.height)
+            if longest > CGFloat(max(maxPixel, 1)) {
+                let scale = CGFloat(max(maxPixel, 1)) / longest
+                image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            }
+        }
+        let rect = image.extent.integral
+        guard rect.width >= 1, rect.height >= 1 else { return nil }
+        return regionContext.createCGImage(image, from: rect)
+        #else
+        guard let maxPixel else { return full }
+        let longest = max(full.width, full.height)
+        guard longest > max(maxPixel, 1) else { return full }
+        let scale = CGFloat(max(maxPixel, 1)) / CGFloat(longest)
+        let width = max(1, Int((CGFloat(full.width) * scale).rounded()))
+        let height = max(1, Int((CGFloat(full.height) * scale).rounded()))
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(full, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+        #endif
     }
 
     private static func encodeJPEG(_ image: CGImage, quality: Double) -> Data? {
