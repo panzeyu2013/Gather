@@ -60,7 +60,15 @@ struct SimilarityOperatingPoint: Equatable {
 
 struct SimilarityClassBreakdown: Equatable {
     let kind: SimilarityAnnotationClass
+    /// 该类别自己的 pair 视图：类内 pair + 任一侧属于该类的跨类 pair（负数来源）。
     let point: SimilarityOperatingPoint
+
+    /// 该类在标注里是否有"应合并"的正样本（只有 merge 组才可能有）。
+    /// false 时 recall/FN 无定义（separate 类本来就没有"应合并"），不能当 0 展示。
+    var hasPositivePairs: Bool { point.confusion.actualPositive > 0 }
+
+    /// 有没有"被判合并"的样本（决定 precision / 过度合并率是否有定义）。
+    var hasPredictedMerges: Bool { point.confusion.predictedPositive > 0 }
 }
 
 /// 聚类级结果：groundTruth 分区 vs 预测分区的对比。
@@ -126,14 +134,30 @@ enum SimilarityMetrics {
         return curve.max { lhs, rhs in (lhs.f1 ?? -1) < (rhs.f1 ?? -1) }
     }
 
-    /// 按四类拆分的 pair 指标（同一阈值下逐类看 precision/recall，回答
+    /// 按四类拆分的 pair 指标（同一阈值下逐类看 precision/过度合并，回答
     /// "embedding 在连拍上有用、在不同人物上反而更糟吗"）。
+    ///
+    /// 口径（E1 修复）：每类的 pair 视图 = 类内 pair + **任一侧属于该类的跨类 pair**。
+    /// 只用类内 pair 会退化——merge 类（burst）类内全是正样本 → precision 恒 1；
+    /// separate 类类内全是负样本 → recall 无定义、precision 恒 0。
+    /// 引入跨类 pair 作负样本后：merge 类能算出真实 precision（被误并的跨类对会拉低），
+    /// separate 类能算出真实的过度合并率；separate 类仍无"应合并"样本，recall 由
+    /// `hasPositivePairs` 标注为无定义（报告显示 n/a，不当 0）。
     static func breakdown(
-        pairs: [SimilarityPairSample], threshold: Double
+        pairs: [SimilarityPairSample],
+        threshold: Double,
+        classByPhoto: [String: SimilarityAnnotationClass]
     ) -> [SimilarityClassBreakdown] {
         var byKind: [SimilarityAnnotationClass: [SimilarityPairSample]] = [:]
-        for pair in pairs where !pair.crossGroup {
-            byKind[pair.kind, default: []].append(pair)
+        for pair in pairs {
+            let leftKind = classByPhoto[pair.idA]
+            let rightKind = classByPhoto[pair.idB]
+            guard leftKind != nil || rightKind != nil else { continue }
+            if let leftKind { byKind[leftKind, default: []].append(pair) }
+            // 跨类 pair 同时进入两侧类别的视图（类内 pair 两侧同类，只记一次）。
+            if let rightKind, rightKind != leftKind {
+                byKind[rightKind, default: []].append(pair)
+            }
         }
         return byKind.keys.sorted { $0.rawValue < $1.rawValue }.map { key in
             SimilarityClassBreakdown(
@@ -351,6 +375,47 @@ enum SimilarityMetrics {
         try expect(strict.underMergedTruthClusters >= 1,
                    "高阈值应出现漏合并，实际 \(strict.underMergedTruthClusters)")
         try expect(strict.overMergedTruthClusters == 0, "高阈值不应过度合并")
+
+        // E1 回归：分类视图必须含跨类负样本，否则 merge 类 precision 恒 1 / separate 类恒 0。
+        // 合成：burst 内一对应合并（0.95）；burst × separate 的跨类对 0.93 = 误并；
+        // separate 类内一对 0.96 = 该类的过度合并。阈值 0.9 时全部被判合并。
+        let classPairs: [SimilarityPairSample] = [
+            SimilarityPairSample(
+                idA: "m1", idB: "m2", similarity: 0.95, shouldMerge: true, kind: .burst),
+            SimilarityPairSample(
+                idA: "m1", idB: "s1", similarity: 0.93, shouldMerge: false,
+                kind: .burst, crossGroup: true),
+            SimilarityPairSample(
+                idA: "s1", idB: "s2", similarity: 0.96, shouldMerge: false,
+                kind: .sameSceneDifferentPeople),
+        ]
+        let classByPhoto: [String: SimilarityAnnotationClass] = [
+            "m1": .burst, "m2": .burst,
+            "s1": .sameSceneDifferentPeople, "s2": .sameSceneDifferentPeople,
+        ]
+        let classView = breakdown(
+            pairs: classPairs, threshold: 0.9, classByPhoto: classByPhoto)
+        let burstView = classView.first { $0.kind == .burst }
+        try expect(burstView?.point.confusion.truePositive == 1, "burst 类 TP 应为 1")
+        try expect(
+            burstView?.point.confusion.falsePositive == 1,
+            "burst 类必须把跨类误并计入 precision 分母（否则 precision 恒 1）")
+        try expect(
+            abs((burstView?.point.precision ?? 0) - 0.5) < 1e-9,
+            "burst precision 应为 0.5（1 TP / (1 TP + 1 跨类 FP)），实际 "
+                + String(describing: burstView?.point.precision))
+        try expect(burstView?.hasPositivePairs == true, "burst 类应有正样本")
+        let peopleView = classView.first { $0.kind == .sameSceneDifferentPeople }
+        try expect(
+            peopleView?.hasPositivePairs == false,
+            "separate 类没有任何\"应合并\"样本 → recall 无定义")
+        try expect(
+            peopleView?.point.confusion.falsePositive == 2,
+            "separate 类视图应含类内 FP + 跨类 FP，实际 "
+                + String(describing: peopleView?.point.confusion.falsePositive))
+        try expect(
+            abs((peopleView?.point.overMergeRate ?? -1) - 1.0) < 1e-9,
+            "separate 类过度合并率应为 1.0（2 个预测合并全部是错并）")
     }
 
     private static func self_curve(pairs: [SimilarityPairSample]) -> [SimilarityOperatingPoint] {

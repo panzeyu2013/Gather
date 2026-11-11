@@ -44,12 +44,24 @@ struct SimilarityFailureSample {
     let pathB: String
 }
 
+/// 基线在"产品当前口径"下的工作点（k = 允许的汉明位数）。
+struct SimilarityProductionPoint {
+    let bits: Int
+    let note: String
+    let point: SimilarityOperatingPoint
+}
+
 struct SimilarityBaselineReport {
     let sourceLabel: String
     let thresholds: [Double]
     let curve: [SimilarityOperatingPoint]
     let recommended: SimilarityOperatingPoint?
-    let productionPoint: SimilarityOperatingPoint?
+    /// 与主通道同口径的 pair 数（两侧可因缺向量不同；报告必须显示才可比）。
+    let pairCount: Int
+    let skippedPairCount: Int
+    let minPrecision: Double
+    /// k<=4（重复检测）与 k<=10（相似页分组的默认阈值）两档都报，避免只挑最弱基线。
+    let productionPoints: [SimilarityProductionPoint]
     let clusters: SimilarityClusterEvaluation
 }
 
@@ -62,6 +74,8 @@ struct SimilarityEvalReport {
     let pairCount: Int
     let positivePairCount: Int
     let crossGroupPairCount: Int
+    /// 缺少向量被跳过的 pair 数（评估透明度：样本不能静默丢）。
+    let skippedPairCount: Int
     let vectorFailures: [String]
     let thresholds: [Double]
     let curve: [SimilarityOperatingPoint]
@@ -201,7 +215,7 @@ enum SimilarityEvalCLI {
             print("similarity-eval self-test: FAIL — \(error)")
             return 1
         }
-        print("similarity-eval self-test: PASS（pair 指标 / 阈值曲线 / 聚类过度合并 / 标注解码 / 向量数学）")
+        print("similarity-eval self-test: PASS（pair 指标 / 阈值曲线 / 聚类过度合并 / 分类表现 / 标注解码 / 向量数学）")
         return 0
     }
 
@@ -234,6 +248,44 @@ enum SimilarityEvalCLI {
             throw SimilarityEvalCLIError.io("annotation CSV 解码自检失败")
         }
         try set.validate()
+
+        // 负例 1（P2）：同一张照片出现在两个组 → 校验必须显式失败（ground truth 会互相覆盖）。
+        let duplicateAcrossGroups = SimilarityAnnotationSet(
+            version: SimilarityAnnotationSet.currentVersion,
+            generatedBy: "self-test",
+            groups: [
+                SimilarityAnnotationGroup(
+                    id: "g1", kind: .burst, groundTruth: .merge,
+                    photos: ["/tmp/a.CR3", "/tmp/b.CR3"]),
+                SimilarityAnnotationGroup(
+                    id: "g2", kind: .sameSceneDifferentPeople, groundTruth: .separate,
+                    photos: ["/tmp/b.CR3", "/tmp/c.CR3"]),
+            ])
+        var duplicateRejected = false
+        do {
+            try duplicateAcrossGroups.validate()
+        } catch {
+            duplicateRejected = true
+        }
+        guard duplicateRejected else {
+            throw SimilarityEvalCLIError.io("跨组重复照片未被校验拦截")
+        }
+
+        // 负例 2（P2）：CSV 坏行（只有 3 列）不能静默跳过。
+        let badCSV = """
+        group_id,class,ground_truth,photo_path
+        g1,burst,merge,/tmp/a.CR3
+        g1,burst,/tmp/b.CR3
+        """
+        var badRowRejected = false
+        do {
+            _ = try SimilarityAnnotationSet.parseCSV(text: badCSV, separator: ",")
+        } catch {
+            badRowRejected = true
+        }
+        guard badRowRejected else {
+            throw SimilarityEvalCLIError.io("CSV 坏行未被校验拦截")
+        }
     }
 
     private static func selfTestVectorMath() throws {
@@ -312,13 +364,15 @@ enum SimilarityEvalCLI {
         let truth = truthPartition(groups: groups)
         let clusters = SimilarityMetrics.clusterEvaluation(
             truthGroupByPhoto: truth, pairs: built.pairs, threshold: threshold)
-        let breakdown = SimilarityMetrics.breakdown(pairs: built.pairs, threshold: threshold)
+        let breakdown = SimilarityMetrics.breakdown(
+            pairs: built.pairs, threshold: threshold, classByPhoto: built.kindByPhoto)
         let failures = failureSamples(pairs: built.pairs, threshold: threshold)
 
         var baseline: SimilarityBaselineReport?
         if options.source == .featureprint, options.withBaseline {
             baseline = try buildBaseline(
-                groups: groups, photos: photos, limitPairs: options.limitPairs)
+                groups: groups, photos: photos, limitPairs: options.limitPairs,
+                minPrecision: options.minPrecision)
         }
 
         let report = SimilarityEvalReport(
@@ -330,6 +384,7 @@ enum SimilarityEvalCLI {
             pairCount: built.pairs.count,
             positivePairCount: built.pairs.filter(\.shouldMerge).count,
             crossGroupPairCount: built.pairs.filter(\.crossGroup).count,
+            skippedPairCount: built.skipped,
             vectorFailures: primary.failures,
             thresholds: thresholds,
             curve: curve,
@@ -437,6 +492,9 @@ enum SimilarityEvalCLI {
 
     private struct PairBuild {
         let pairs: [SimilarityPairSample]
+        /// photoId → 所属标注组类别（分类视图的负数来源；E1）。
+        let kindByPhoto: [String: SimilarityAnnotationClass]
+        /// 因缺向量被跳过的 pair 数（必须进报告：评估不能静默丢样本）。
         let skipped: Int
     }
 
@@ -449,8 +507,10 @@ enum SimilarityEvalCLI {
         var pairs: [SimilarityPairSample] = []
         var skipped = 0
         var withinCount = 0
+        var kindByPhoto: [String: SimilarityAnnotationClass] = [:]
         for group in groups {
             let photos = group.photos
+            for photo in photos { kindByPhoto[photo] = group.kind }
             guard photos.count >= 2 else { continue }
             for first in 0..<(photos.count - 1) {
                 for second in (first + 1)..<photos.count {
@@ -499,7 +559,7 @@ enum SimilarityEvalCLI {
                 }
             }
         }
-        return PairBuild(pairs: pairs, skipped: skipped)
+        return PairBuild(pairs: pairs, kindByPhoto: kindByPhoto, skipped: skipped)
     }
 
     /// 聚类级评估的 ground truth 分区：merge 组共享 id；separate 组每张独立。
@@ -548,7 +608,7 @@ enum SimilarityEvalCLI {
     }
 
     private static func buildBaseline(
-        groups: [ResolvedGroup], photos: [String], limitPairs: Int?
+        groups: [ResolvedGroup], photos: [String], limitPairs: Int?, minPrecision: Double
     ) throws -> SimilarityBaselineReport {
         var loaded = LoadedVectors()
         let hashes = awaitHashes(paths: photos)
@@ -562,22 +622,39 @@ enum SimilarityEvalCLI {
         }
         let thresholds = SimilarityVectors.dHashThresholds()
         let curve = SimilarityMetrics.curve(pairs: built.pairs, thresholds: thresholds)
+        // 与主通道同目标精确率（E2/P2：不能一边 0.95 一边用户目标，否则推荐点不可比）。
         let recommended = SimilarityMetrics.recommendedPoint(
-            curve: curve, minPrecision: 0.95)
-        // 产品当前视觉重复阈值：汉明距离 <= 4（DuplicateService 默认），换算成相似度。
-        let productionSimilarity = SimilarityVectors.similarity(hammingDistance: 4)
-        let production = SimilarityMetrics.operatingPoint(
-            pairs: built.pairs, threshold: productionSimilarity)
+            curve: curve, minPrecision: minPrecision)
+        // 产品口径有两档，都要报（只报 k<=4 会把基线挑成最弱的一档）：
+        // - k<=4：重复检测（DuplicateService 默认视觉重复阈值）；
+        // - k<=10：相似页分组默认阈值（WorkflowRegistry 的 similarity.analyze 缺省）。
+        let productionPoints = [
+            SimilarityProductionPoint(
+                bits: 4, note: "重复检测默认阈值（DuplicateService）",
+                point: SimilarityMetrics.operatingPoint(
+                    pairs: built.pairs,
+                    threshold: SimilarityVectors.similarity(hammingDistance: 4))),
+            SimilarityProductionPoint(
+                bits: 10, note: "相似页分组默认阈值（similarity.analyze）",
+                point: SimilarityMetrics.operatingPoint(
+                    pairs: built.pairs,
+                    threshold: SimilarityVectors.similarity(hammingDistance: 10))),
+        ]
         let truth = truthPartition(groups: groups)
+        let fallbackThreshold = recommended?.threshold
+            ?? SimilarityVectors.similarity(hammingDistance: 4)
         let clusters = SimilarityMetrics.clusterEvaluation(
             truthGroupByPhoto: truth, pairs: built.pairs,
-            threshold: recommended?.threshold ?? productionSimilarity)
+            threshold: fallbackThreshold)
         return SimilarityBaselineReport(
-            sourceLabel: "dHash（汉明距离，产品基线阈值 k<=4）",
+            sourceLabel: "dHash（汉明距离；产品基线两档 k<=4 / k<=10）",
             thresholds: thresholds,
             curve: curve,
             recommended: recommended,
-            productionPoint: production,
+            pairCount: built.pairs.count,
+            skippedPairCount: built.skipped,
+            minPrecision: minPrecision,
+            productionPoints: productionPoints,
             clusters: clusters)
     }
 
@@ -601,7 +678,8 @@ enum SimilarityEvalCLI {
         lines.append("- 数据集指纹（sha256）：`\(report.datasetHash)`")
         lines.append("- 组 / 照片 / pair：\(report.groupCount) / \(report.photoCount) / \(report.pairCount)"
             + "（正样本 \(report.positivePairCount)，跨组负样本 \(report.crossGroupPairCount)）")
-        lines.append("- 向量失败（解码/Vision/超时）：\(report.vectorFailures.count) 张")
+        lines.append("- 向量失败（解码/Vision/超时）：\(report.vectorFailures.count) 张；"
+            + "缺向量被跳过的 pair：\(report.skippedPairCount)")
         if !report.vectorFailures.isEmpty {
             let firstFailed = report.vectorFailures.prefix(5)
                 .map { ($0 as NSString).lastPathComponent }
@@ -648,14 +726,21 @@ enum SimilarityEvalCLI {
         lines.append("")
         lines.append("## 分类表现（推荐阈值）")
         lines.append("")
-        lines.append("| 类别 | precision | recall | F1 | TP | FP | FN |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|")
+        lines.append("| 类别 | precision | recall | 过度合并率 | predicted | TP | FP | FN |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
         for item in report.breakdown {
-            lines.append("| \(item.kind.chineseLabel) | \(format(item.point.precision))"
-                + " | \(format(item.point.recall)) | \(format(item.point.f1))"
+            // E1：只输出有定义的量——没有正样本的类（separate 类）不显示 recall（不当 0）。
+            let recallCell = item.hasPositivePairs ? format(item.point.recall) : "n/a（无应合并样本）"
+            let precisionCell = item.hasPredictedMerges ? format(item.point.precision) : "n/a"
+            lines.append("| \(item.kind.chineseLabel) | \(precisionCell)"
+                + " | \(recallCell) | \(formatPercent(item.point.overMergeRate))"
+                + " | \(item.point.confusion.predictedPositive)"
                 + " | \(item.point.confusion.truePositive) | \(item.point.confusion.falsePositive)"
                 + " | \(item.point.confusion.falseNegative) |")
         }
+        lines.append("")
+        lines.append("> 分类口径：每类 = 类内 pair + 任一侧属于该类的跨类 pair（负样本来源）。"
+            + "merge 类看 recall/precision；separate 类没有\"应合并\"样本，recall 无定义，看过度合并率即可。")
         lines.append("")
         lines.append("## 失败样例（前 5）")
         lines.append("")
@@ -682,12 +767,17 @@ enum SimilarityEvalCLI {
         if let baseline = report.baseline {
             lines.append("## 基线对照（\(baseline.sourceLabel)）")
             lines.append("")
+            lines.append("- baseline pair 数：\(baseline.pairCount)（跳过 \(baseline.skippedPairCount)）；"
+                + "推荐目标 precision ≥ \(formatPercent(baseline.minPrecision))")
+            lines.append("")
             lines.append("| 工作点 | precision | recall | F1 | 过度合并率 |")
             lines.append("|---|---:|---:|---:|---:|")
-            if let production = baseline.productionPoint {
-                lines.append("| 产品阈值 k<=4 | \(format(production.precision))"
-                    + " | \(format(production.recall)) | \(format(production.f1))"
-                    + " | \(formatPercent(production.overMergeRate)) |")
+            for production in baseline.productionPoints {
+                lines.append("| \(production.note)（k<=\(production.bits)）"
+                    + " | \(format(production.point.precision))"
+                    + " | \(format(production.point.recall))"
+                    + " | \(format(production.point.f1))"
+                    + " | \(formatPercent(production.point.overMergeRate)) |")
             }
             if let best = baseline.recommended {
                 lines.append("| dHash 最佳 F1（阈值 \(format(best.threshold))）"
@@ -751,6 +841,7 @@ enum SimilarityEvalCLI {
             "pairCount": report.pairCount,
             "positivePairCount": report.positivePairCount,
             "crossGroupPairCount": report.crossGroupPairCount,
+            "skippedPairCount": report.skippedPairCount,
             "vectorFailureCount": report.vectorFailures.count,
             "vectorFailures": report.vectorFailures,
             "minPrecision": report.minPrecision,
@@ -764,9 +855,16 @@ enum SimilarityEvalCLI {
             "breakdown": report.breakdown.map { item in
                 [
                     "class": item.kind.rawValue,
+                    "hasPositivePairs": item.hasPositivePairs,
                     "precision": optionalNumber(item.point.precision),
-                    "recall": optionalNumber(item.point.recall),
-                    "f1": optionalNumber(item.point.f1),
+                    // 无正样本的类 recall 无定义 → null（不是 0）。
+                    "recall": item.hasPositivePairs
+                        ? optionalNumber(item.point.recall) : NSNull(),
+                    "overMergeRate": optionalNumber(item.point.overMergeRate),
+                    "predictedMerges": item.point.confusion.predictedPositive,
+                    "truePositive": item.point.confusion.truePositive,
+                    "falsePositive": item.point.confusion.falsePositive,
+                    "falseNegative": item.point.confusion.falseNegative,
                     "threshold": item.point.threshold,
                 ] as [String: Any]
             },
@@ -777,7 +875,17 @@ enum SimilarityEvalCLI {
         if let baseline = report.baseline {
             var baselineObject: [String: Any] = [
                 "source": baseline.sourceLabel,
+                "pairCount": baseline.pairCount,
+                "skippedPairCount": baseline.skippedPairCount,
+                "minPrecision": baseline.minPrecision,
                 "curve": baseline.curve.map(point),
+                "productionPoints": baseline.productionPoints.map { production in
+                    [
+                        "bits": production.bits,
+                        "note": production.note,
+                        "point": point(production.point),
+                    ] as [String: Any]
+                },
                 "clusters": [
                     "adjustedRandIndex": baseline.clusters.adjustedRandIndex,
                     "overMergedTruthClusters": baseline.clusters.overMergedTruthClusters,
@@ -785,7 +893,6 @@ enum SimilarityEvalCLI {
                 ] as [String: Any],
             ]
             baselineObject["recommended"] = optionalPoint(baseline.recommended)
-            baselineObject["production"] = optionalPoint(baseline.productionPoint)
             object["baseline"] = baselineObject
         }
         do {

@@ -240,14 +240,23 @@ public final class WebDAVPublisher: Sendable {
                         uploaded: uploaded, failed: failures, remoteRoot: root.path,
                         abortedOnAuth: true)
                 } else {
+                    // Wave4a-C1（fail-closed）：share.json 写失败时绝不能继续传
+                    // 校样页/画廊 —— 否则客户端拿不到口令/到期配置，proof 页会
+                    // 退回“无门槛”放行。这里直接中止，整个发布判失败。
                     failures.append(WebDAVPublishFailure(
                         path: "share.json", reason: "HTTP \(response.status)"))
+                    return WebDAVPublishResult(
+                        uploaded: uploaded, failed: failures,
+                        remoteRoot: root.path, abortedOnAuth: false)
                 }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 failures.append(WebDAVPublishFailure(
                     path: "share.json", reason: String(describing: error)))
+                return WebDAVPublishResult(
+                    uploaded: uploaded, failed: failures,
+                    remoteRoot: root.path, abortedOnAuth: false)
             }
         }
 

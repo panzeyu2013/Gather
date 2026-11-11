@@ -245,6 +245,14 @@ public struct CollectionSidebar: View {
                 Text(l10n("差集（第一个减去其余）")).tag(CollectionSetOperation.difference)
             }
             .labelsHidden()
+            if combineOperation == .difference,
+               let minuend = collections.first(where: { combineSelected.contains($0.id) }) {
+                // Wave4a：差集语义依赖顺序，明确标出"谁是被减数"（按侧栏顺序取第一个）。
+                Text(l10n.format("「%@」减去其余已选集合（按侧栏顺序）", minuend.name))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(l10n("结果会保存成一个新的手动集合，可继续拖拽排序。"))
                 .font(GatherFont.secondary)
                 .foregroundStyle(GatherTheme.secondaryText)
@@ -548,8 +556,28 @@ public struct CollectionSidebar: View {
         }
     }
 
-    private var collapsedPaths: Set<String> {
+    /// Wave4a：折叠状态按工作区隔离——同一窗口切换工作区时，同名路径不应互相串。
+    /// 存储格式：每行 `<scope>\u{0}<path>`（路径段不允许控制字符，分隔安全）。
+    private var collapsedScope: String {
+        sessionId ?? "global"
+    }
+
+    private var collapsedEntries: Set<String> {
         Set(collapsedPathsRaw.split(separator: "\n").map(String.init).filter { !$0.isEmpty })
+    }
+
+    private var collapsedPaths: Set<String> {
+        let prefix = collapsedScope + "\u{0}"
+        return Set(collapsedEntries.compactMap { entry in
+            entry.hasPrefix(prefix) ? String(entry.dropFirst(prefix.count)) : nil
+        })
+    }
+
+    private func writeCollapsedPaths(_ paths: Set<String>) {
+        let prefix = collapsedScope + "\u{0}"
+        let others = collapsedEntries.filter { !$0.hasPrefix(prefix) }
+        let entries = others + paths.map { prefix + $0 }
+        collapsedPathsRaw = entries.sorted().joined(separator: "\n")
     }
 
     private func expansionBinding(for path: String) -> Binding<Bool> {
@@ -562,7 +590,7 @@ public struct CollectionSidebar: View {
                 } else {
                     next.insert(path)
                 }
-                collapsedPathsRaw = next.sorted().joined(separator: "\n")
+                writeCollapsedPaths(next)
             }
         )
     }
@@ -575,7 +603,7 @@ public struct CollectionSidebar: View {
         for depth in 1..<segments.count {
             next.remove(segments.prefix(depth).joined(separator: "/"))
         }
-        collapsedPathsRaw = next.sorted().joined(separator: "\n")
+        writeCollapsedPaths(next)
     }
 
     // MARK: - 重命名 / 移动 sheet

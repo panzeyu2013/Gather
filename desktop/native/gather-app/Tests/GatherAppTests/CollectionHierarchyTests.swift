@@ -243,4 +243,15 @@ struct CollectionTreeTests {
         #expect(CollectionPathInput.normalizedPath(" 客户A / 精选 ")
                 == "客户A/精选")
     }
+
+    @Test("历史非规范名可经重命名规范化（Wave4a：A//B → A/B）")
+    func renameNormalizesLegacyName() throws {
+        let (db, service) = try makeCurationService()
+        let repo = CollectionRepo(connection: db)
+        let legacy = try repo.create(sessionId: "s1", name: "A//B", sortOrder: nil)
+        try service.renameCollection(
+            CollectionRenameInput(collectionId: legacy.id, name: "A/B"))
+        let updated = try repo.get(id: legacy.id)
+        #expect(updated?.name == "A/B", "规范化后必须真正落库，而不是当 no-op 返回")
+    }
 }

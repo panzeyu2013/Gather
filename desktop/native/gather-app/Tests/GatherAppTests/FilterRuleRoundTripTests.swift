@@ -150,6 +150,22 @@ struct FilterRuleRoundTripTests {
         #expect(try execute(group, fixture: fixture) == ["p1"])
     }
 
+    @Test func catalogCoversRestoreLeftoverFields() {
+        // restore 会把未识别规则塞进 rules（GalleryViewModel+Filters.swift）；这些
+        // 字段必须在目录里，否则高级编辑器呈现为空白且无法修复。
+        for field in ["person", "volume", "directory", "has_duplicates", "has_face"] {
+            #expect(FilterFieldCatalog.field(field) != nil, "缺字段 \(field)")
+        }
+        #expect(FilterFieldCatalog.operators(
+            forField: "has_duplicates", kind: .boolean) == [.eq])
+        #expect(FilterFieldCatalog.operators(
+            forField: "has_face", kind: .boolean).contains(.neq))
+        #expect(FilterFieldCatalog.operators(
+            forField: "person", kind: .text).contains(.containsAny))
+        // 未知字段返回 nil → 视图走"保留原条件 + 提示"的只读分支。
+        #expect(FilterFieldCatalog.field("legacy_unknown_field") == nil)
+    }
+
     @Test func removeConditionKeepsGroupConsistent() throws {
         var group = FilterGroup(logic: .and, conditions: [
             .rule(FilterRule(field: "filename", operator: .contains, value: .string("a"))),

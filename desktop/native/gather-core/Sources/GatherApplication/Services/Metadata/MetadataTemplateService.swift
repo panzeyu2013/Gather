@@ -366,6 +366,7 @@ public final class MetadataTemplateService: Sendable {
         let uniqueIds = photoIds.filter { seen.insert($0).inserted }
         let scope = MetadataVariableScope(client: template.client)
         var previews: [MetadataPhotoPreview] = []
+        var failures: [MetadataTemplatePreviewFailure] = []
         var changedPhotos = 0
         var changedFields = 0
         var conflictFields = 0
@@ -373,11 +374,16 @@ public final class MetadataTemplateService: Sendable {
             let detail = try metadata.photoDetail(photoId: photoId)
             let disk: DescriptiveMetadata?
             do {
-                disk = try await metadata.diskAttributes(photoPath: detail.filepath).descriptive
+                disk = try await metadata.diskAttributes(
+                    photoPath: detail.filepath).descriptive
             } catch {
-                // 读不到盘 = 未知：planner 视为未知（不判冲突），与 apply 的 catch
-                // 不同——apply 写盘前读不到会整张失败；预览只做展示，不能因此崩。
-                disk = nil
+                // D4（task-31 review）：读盘失败必须与 apply 同源——apply 会把这张
+                // 标 failed、不写盘；预览不能把它当"未知→可写"（旧实现 disk=nil 时
+                // planner 不判冲突，用户看到可写、点应用才失败）。
+                // 逐张返回 failed；UI 见到 failed 即禁用应用。
+                failures.append(MetadataTemplatePreviewFailure(
+                    photoId: photoId, message: String(describing: error)))
+                continue
             }
             let photo = MetadataVariablePhoto(
                 filename: detail.filename,
@@ -411,7 +417,8 @@ public final class MetadataTemplateService: Sendable {
             templateId: template.id, templateName: template.name,
             totalPhotos: uniqueIds.count, changedPhotos: changedPhotos,
             changedFields: changedFields, conflictFields: conflictFields,
-            photos: previews, previewToken: nil)
+            photos: previews, previewToken: nil,
+            failed: failures.isEmpty ? nil : failures)
     }
 
     /// 撤销：按 before 反向写；已撤销的批次拒绝重复回滚。

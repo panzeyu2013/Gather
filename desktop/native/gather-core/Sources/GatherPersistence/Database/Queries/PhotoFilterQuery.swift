@@ -468,8 +468,13 @@ public final class PhotoFilterQuery {
             }
         }
         if parts.isEmpty {
-            // Wave2：空组（含空 NOT 组）= 无约束。编辑器删光子条件不该把整页筛选
-            // 变成"什么都不显示"。
+            // Wave4a（Review P2-10）：空 AND/OR 组 = 无约束（删除条件不应变成空集）；
+            // 空 NOT 组按逻辑取反 = "没有任何条件满足" → 1=0（NOT(TRUE)=FALSE）。
+            // 与 FilterLogic.not 文档一致：编辑器把 NOT 组删光时，筛选明确为空，
+            // 而不是静默回到全量。
+            if group.logic == .not {
+                return FilterWhereClause(sql: "1=0", params: [])
+            }
             return FilterWhereClause(sql: "", params: [])
         }
         switch group.logic {

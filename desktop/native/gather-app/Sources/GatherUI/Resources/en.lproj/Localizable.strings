@@ -880,6 +880,19 @@
 
 /* Wave3 task-24 */
 
+/* Wave4a task-40 */
+"重复处置" = "Duplicate Handling";
+"跳过库内已存在的照片" = "Skip photos already in the library";
+"并存（再存一份）" = "Keep both (import another copy)";
+"覆盖库内已存在的照片" = "Replace photos already in the library";
+"按 SHA-256 命中全库已登记照片；覆盖仅限同一工作区且原路径在源根内，否则退化为跳过。" = "Matches photos already in the library by SHA-256. Replace only applies within the same workspace and when the original path is inside the source root; otherwise it falls back to skip.";
+"预检中…" = "Previewing…";
+"预检：新增 %lld 张，库内重复 %lld 张（会跳过 %lld 张 / 可覆盖 %lld 张），目标冲突 %lld 张，不可读 %lld 个" = "Preview: %lld new, %lld already in library (%lld will be skipped / %lld replaceable), %lld destination conflicts, %lld unreadable";
+"重复样例：%@" = "Duplicate samples: %@";
+"命中库内重复 %lld 张（跳过 %lld / 覆盖 %lld）" = "%lld photos already in library (%lld skipped / %lld replaced)";
+"第二目的地跳过 %lld 张（替换项无法按相对路径镜像）" = "%lld photos skipped for the second destination (replace targets cannot be mirrored by relative path)";
+"「%@」减去其余已选集合（按侧栏顺序）" = "\"%@\" minus the other selected collections (in sidebar order)";
+
 /* Wave2 收尾 task-27 */
 "集合名称或路径" = "Collection Name or Path";
 "用 / 表示层级，例如 客户A/精选；开头/结尾/连续的分隔符与非法字符会被拒绝。" = "Use / to express nesting, e.g. ClientA/Selects. Leading, trailing or doubled separators and invalid characters are rejected.";
@@ -910,7 +923,6 @@
 "用 XMP 覆盖本地已有评分/色标/关键词" = "Overwrite existing rating/label/keywords with XMP values";
 "已导出 %lld 张照片、%lld 个集合到：%@（归档跳过 %lld 张）" = "Exported %lld photos and %lld collections to: %@ (%lld archived skipped)";
 "导入完成：新增 %lld 张（待索引 %lld 张），评分 %lld，关键词 %lld，集合 %lld；photoId 去重 %lld，checksum 去重 %lld；保留本地 %lld，保留导入 %lld，并存 %lld。" = "Import complete: %lld photos added (%lld pending index), %lld ratings, %lld with keywords, %lld collections; deduped by photoId %lld, by checksum %lld; kept local %lld, kept imported %lld, coexisted %lld.";
-"XMP 迁移完成：扫描 %lld 张，发现 sidecar %lld，写入 %lld 张；冲突 %lld 条（按字段计），缺 rating/label/keywords %lld/%lld/%lld，失败 %lld。" = "XMP migration complete: scanned %lld, %lld sidecars found, %lld photos updated; %lld field-level conflicts, missing rating/label/keywords %lld/%lld/%lld, failed %lld.";
 "确认导入目录包？" = "Import the library package?";
 "开始导入" = "Start Import";
 "导入会新建一个工作区并写入评分/关键词/集合，不会修改原图。" = "Import creates a new workspace and writes ratings/keywords/collections; original files are never modified.";
@@ -2431,9 +2443,7 @@
 /* Wave3 task-18 */
 "Capture One Hot Folder 未检测：C1 不提供读取该设置的接口；若该目录被 C1 监视，导入或移出可能重复。" = "Capture One Hot Folder undetected: C1 does not expose a way to read that setting; if C1 watches this folder, imports or moves may be duplicated.";
 "在 Capture One 中写回判断（变体级）" = "Write Judgments to Capture One (per Variant)";
-"把当前选择集（无选择时当前照片）的星级/色标/保留-淘汰按 variant 写回 C1；不写关键词" = "Write the current selection's rating/color label/keep-reject to C1 per variant (current photo when nothing is selected); no keywords are written";
 "已在 Capture One 中写回 %lld 个变体" = "Wrote %lld variants in Capture One";
-"已写回 %lld 个变体，%lld 个不在当前目录" = "Wrote %lld variants; %lld were not in the current folder";
 "C1 Session：已识别 Capture/Selects/Trash，仅导入 Capture" = "C1 Session: Capture/Selects/Trash recognized; only Capture is imported";
 "Trash 中的淘汰件不会被导入或复活；Selects 不与 Capture 重复导入；目录角色仅作标注，不改写 C1" = "Items in Trash are not imported or revived; Selects is not imported twice; folder roles are annotations only and C1 is never modified";
 /* Wave3 task-18 */
@@ -2555,3 +2565,32 @@
 "子条件组" = "Condition subgroup";
 "集合成员" = "Collection member";
 "堆栈成员" = "Stack member";
+/* Wave4a task-35 */
+"仅当前页：已写回 %lld/%lld 张（其它页未写回；跨页请分批，或用「写回 XMP…」覆盖全部）" = "Current page only: %lld/%lld written (other pages are not written; write in batches or use “Write XMP…” for all)";
+"已写回 %lld 个变体；%lld 个不在当前目录、%lld 张超上限未写回（未解除 C1 重载门禁：可改用「写回 XMP…」并手动 Load）" = "Wrote %lld variants; %lld not in this folder and %lld beyond the batch limit were not written (C1 reload gate stays locked: use “Write XMP…” and Load Metadata manually)";
+"C1 Session：扫描根是 Session 根，Trash 可能已被导入（仅新导入入口只扫 Capture）" = "C1 Session: scan root is the session root, so Trash may already be imported (only new imports scan Capture)";
+"旧会话/未重定向入口不会自动迁移；如需排除 Trash，请用「导入文件夹/新建工作区」重新导入，或按目录自行核查" = "Existing sessions and non-redirected entries are not migrated automatically; re-import via “Import Folder/New Workspace” to exclude Trash, or review folders manually";
+"已识别 Capture One Session：只索引 Capture（Trash/Selects 不导入）" = "Capture One session detected: only Capture is indexed (Trash/Selects are not imported)";
+"写回星级/色标/保留（keep）到 C1 当前页；C1 无淘汰位（淘汰不写回），跨页请分批" = "Write rating/color label/keep to C1 for the current page; C1 has no reject flag (rejects are not written back), so write other pages in batches";
+
+/* Wave4a task-36 */
+"加载完成后目标已变化，已丢弃加载期间排队的操作" = "The target changed after loading finished, so the queued action was discarded.";
+
+/* Wave4 task-37 */
+"Session Token（可选，临时凭据）" = "Session Token (optional, temporary credentials)";
+"临时凭据（IAM role/SSO）需要 Session Token；它只进钥匙串，不落 settings/日志。" = "Temporary credentials (IAM role/SSO) require a session token. It is stored only in the keychain, never in settings or logs.";
+
+/* Wave4a task-38 */
+"未知筛选字段：%@" = "Unknown filter field: %@";
+"该条件来自保存查询/智能相册；编辑器原样保留，不会静默丢弃。删除后可重新添加。" = "This condition came from a saved search or smart album; the editor keeps it as-is instead of silently dropping it. Delete it and re-add if needed.";
+"%lld 张照片读盘失败，预览不完整，禁止应用：" = "%lld photos could not be read from disk; the preview is incomplete, so applying is disabled:";
+"有重复" = "Has duplicates";
+
+/* Wave4a / task-39（E2）：场景标签写回批级撤销 */
+"没有可撤销的写回批次（先写回一次或重启后重新写回）" = "There is no writeback batch to undo (write once first, or redo the writeback after restart).";
+"本次撤销范围：上一次写回实际改动的 %lld 张照片。" = "Undo scope: the %lld photos actually changed by the last writeback.";
+
+/* Wave4a 收口补漏（Lead） */
+"%@：%@" = "%@: %@";
+
+"XMP 迁移完成：扫描 %lld 张，发现 sidecar %lld，写入 %lld 张；冲突 %lld 条（按字段计），越界 rating 跳过 %lld，缺 rating/label/keywords %lld/%lld/%lld，失败 %lld。" = "XMP migration complete: scanned %lld, %lld sidecars found, %lld photos updated; %lld field-level conflicts, %lld out-of-range ratings skipped, missing rating/label/keywords %lld/%lld/%lld, failed %lld.";

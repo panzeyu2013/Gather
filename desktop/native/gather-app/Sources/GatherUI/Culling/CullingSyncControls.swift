@@ -41,7 +41,7 @@ struct CullingSyncControls: View {
                 Task { await viewModel.writeVariantJudgementsToCaptureOne() }
             }
             .disabled(isBusy)
-            .help(l10n("把当前选择集（无选择时当前照片）的星级/色标/保留-淘汰按 variant 写回 C1；不写关键词"))
+            .help(l10n("写回星级/色标/保留（keep）到 C1 当前页；C1 无淘汰位（淘汰不写回），跨页请分批"))
             if (viewModel.syncStatus?.written ?? 0) > 0 {
                 Button(l10n("在 Capture One 中加载元数据")) { Task { await viewModel.reloadCaptureOne() } }
                     .disabled(!viewModel.canLoadMetadata || isBusy)

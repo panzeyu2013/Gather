@@ -412,18 +412,37 @@ public final class SemanticIndex {
             scanned: scan.scanned, skipped: scan.skipped + seedSkipped)
     }
 
-    /// 等权平均向量（空输入/长度不一致 → nil；长度不一致只取第一个维度的那批）。
+    /// 等权平均向量：**先 L2 归一化再平均**（cosine 的尺度不变性只保证尺度不变，
+    /// 不保证等权——直接平均会让范数大的种子主导方向）。
+    ///
+    /// - 空输入 / 全部零向量 → nil；
+    /// - 维度不一致：只取第一个有效向量的维度那一批（其余跳过，与旧行为一致）；
+    /// - 返回值为"单位向量的均值"（未再做一次归一化：调用方只用它算 cosine，
+    ///   幅度不影响结果，但保留幅度便于未来做距离型指标）。
     public static func averageVector(_ vectors: [[Float]]) -> [Float]? {
-        guard let first = vectors.first, !first.isEmpty else { return nil }
-        var sum = [Float](repeating: 0, count: first.count)
+        var sum: [Float]?
         var used = 0
-        for vector in vectors where vector.count == first.count {
-            for index in vector.indices { sum[index] += vector[index] }
+        for vector in vectors {
+            guard !vector.isEmpty else { continue }
+            if let existing = sum, existing.count != vector.count { continue }
+            let norm = Self.l2Norm(vector)
+            guard norm > 0 else { continue }
+            if sum == nil { sum = [Float](repeating: 0, count: vector.count) }
+            guard var total = sum, total.count == vector.count else { continue }
+            for index in vector.indices { total[index] += vector[index] / norm }
+            sum = total
             used += 1
         }
-        guard used > 0 else { return nil }
+        guard let total = sum, used > 0 else { return nil }
         let divisor = Float(used)
-        return sum.map { $0 / divisor }
+        return total.map { $0 / divisor }
+    }
+
+    /// L2 范数（cosine 归一化用）。
+    static func l2Norm(_ vector: [Float]) -> Float {
+        var squares: Float = 0
+        for value in vector { squares += value * value }
+        return squares.squareRoot()
     }
 
     // MARK: 标签匹配（文搜）

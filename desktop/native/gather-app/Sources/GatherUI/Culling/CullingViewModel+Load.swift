@@ -420,5 +420,13 @@ extension CullingViewModel {
         captureOneSessionLayout = sessionSourcePath.flatMap {
             C1SessionDirectoryResolver.detect(root: $0)
         }
+        // A5：扫描根是否就是 Capture（重定向后为 true；Session 根为 false，UI 不得宣称
+        // "仅导入 Capture"，否则会掩盖 Trash 被历史导入扫进图库的事实）。
+        if let layout = captureOneSessionLayout, let source = sessionSourcePath {
+            captureOneSessionScanIsCaptureOnly =
+                ScanPath.canonical(layout.scanRoot) == ScanPath.canonical(source)
+        } else {
+            captureOneSessionScanIsCaptureOnly = false
+        }
     }
 }

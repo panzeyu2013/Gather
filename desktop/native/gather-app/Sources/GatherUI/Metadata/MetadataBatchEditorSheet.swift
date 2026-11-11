@@ -25,6 +25,29 @@ struct MetadataBatchEditorSheet: View {
 
     private static let maxPhotos = 200
 
+    /// 盘上值的可信度：availability 为 nil（未接线/读不到）→ 未知；没有 sidecar
+    /// 且盘上描述性为空 → 未知（导入包的照片 cache 有 IPTC，不代表盘上有值）；
+    /// 其余（有 sidecar，或 JPEG 内嵌有值）→ 已知。
+    struct DiskState: Sendable {
+        let descriptive: DescriptiveMetadata
+        let known: Bool
+    }
+
+    nonisolated static func diskState(
+        availability: DiskDescriptiveAvailability?,
+        fallback: DescriptiveMetadata
+    ) -> DiskState {
+        guard let availability else {
+            return DiskState(descriptive: fallback, known: false)
+        }
+        if availability.sidecarExists || !availability.descriptive.isEmpty {
+            return DiskState(descriptive: availability.descriptive, known: true)
+        }
+        // 未知时仍把缓存当基线（清空/写值要能看出"当前值"），但 known=false
+        // 让 planner 不把 cache≠disk 误判成外部改动。
+        return DiskState(descriptive: fallback, known: false)
+    }
+
     @State private var loaded: [LoadedPhoto] = []
     @State private var isLoading = true
     @State private var loadWarning: String?
@@ -364,7 +387,8 @@ struct MetadataBatchEditorSheet: View {
         struct LoadResult: Sendable {
             let index: Int
             let detail: PhotoMetadataDetail?
-            let disk: DescriptiveMetadata?
+            let disk: DescriptiveMetadata
+            let diskKnown: Bool
             let error: String?
         }
         // 有界并发（8）：每批一次 TaskGroup，避免 200 张同时读盘把 IO 队列打满。
@@ -381,11 +405,18 @@ struct MetadataBatchEditorSheet: View {
                     group.addTask {
                         do {
                             let detail = try await api.metadata(photoId)
-                            let disk = try await api.diskDescriptive(photoId)
-                            return LoadResult(index: index, detail: detail, disk: disk, error: nil)
+                            let availability = try await api.diskDescriptiveAvailability(
+                                photoId: photoId)
+                            let state = Self.diskState(
+                                availability: availability, fallback: detail.descriptive)
+                            return LoadResult(
+                                index: index, detail: detail, disk: state.descriptive,
+                                diskKnown: state.known, error: nil)
                         } catch {
-                            return LoadResult(index: index, detail: nil, disk: nil,
-                                              error: String(describing: error))
+                            return LoadResult(
+                                index: index, detail: nil,
+                                disk: DescriptiveMetadata(), diskKnown: false,
+                                error: String(describing: error))
                         }
                     }
                 }
@@ -407,8 +438,8 @@ struct MetadataBatchEditorSheet: View {
             loadedPhotos.append(LoadedPhoto(
                 photoId: detail.photoId,
                 cache: detail.descriptive,
-                disk: result.disk ?? detail.descriptive,
-                diskKnown: result.disk != nil,
+                disk: result.disk,
+                diskKnown: result.diskKnown,
                 filename: detail.filename,
                 camera: detail.exif.cameraModel,
                 dateTaken: detail.exif.dateTaken))

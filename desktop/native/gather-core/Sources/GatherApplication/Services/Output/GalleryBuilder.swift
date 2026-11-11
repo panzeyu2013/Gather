@@ -514,6 +514,9 @@ public enum GalleryBuilder {
       var shareState = null;
       var needsGate = false;
       var gateVerified = false;
+      // Wave4a-C2：到期只读；C1：share.json 读不到时 fail-closed（http 发布）。
+      var expired = false;
+      var shareLoadFailed = false;
       var gate = document.getElementById('password-gate');
       var gateInput = document.getElementById('gate-password');
       var gateSubmit = document.getElementById('gate-submit');
@@ -598,8 +601,15 @@ public enum GalleryBuilder {
             + '（到期后页面只读；没有服务端强制，文件不会自动删除）。';
         }
         if (!isNaN(expires) && Date.now() > expires) {
+          expired = true;
           setLocked('分享已于 ' + share.expiresAt
             + ' 到期，当前为只读状态（没有服务端强制，文件仍可访问）。');
+          // C2：到期后连「重新下载 selection.json」也禁用（submit 里另有 early return）。
+          var expiredDownload = document.getElementById('download');
+          if (expiredDownload) {
+            expiredDownload.disabled = true;
+            expiredDownload.textContent = '已过期（只读）';
+          }
         }
         if (share && share.passwordHash) {
           needsGate = true;
@@ -736,6 +746,9 @@ public enum GalleryBuilder {
       }
 
       function submit() {
+        // C2：到期后只读；C1：share.json 不可读时锁定。两者都在此 early return，
+        // 防止通过控制台/快捷键绕过按钮 disabled 生成提交文件。
+        if (expired || shareLoadFailed) { return; }
         // 口令门未通过时不得提交（纯前端门槛；防止绕过 disabled 直接调函数）。
         if (needsGate && !gateVerified) { return; }
         var items = cells.map(function (cell) {
@@ -774,10 +787,24 @@ public enum GalleryBuilder {
       // 提交后锁定（本地记录）+ 分享过期后禁止提交（share.json 可选；取不到就不管）。
       var submittedAt = readJSON(SUBMITTED_KEY, null);
       if (submittedAt) { setLocked('已提交，可重新下载。'); }
+      // C1：http(s) 发布却读不到 share.json —— 保持门槛关闭（fail-closed），
+      // 不再退回“无口令/无到期”的放行页；file:// 本地预览保留旧回退。
+      function handleShareUnavailable() {
+        if (window.location.protocol === 'file:') {
+          document.body.classList.remove('gate-pending');
+          return;
+        }
+        shareLoadFailed = true;
+        setActionsDisabled(true);
+        if (note) {
+          note.hidden = false;
+          note.textContent = '无法读取分享配置（share.json 缺失或不可访问）：'
+            + '页面已锁定，请重新发布或联系摄影师。';
+        }
+      }
       function loadShare(paths, index) {
         if (!window.fetch || index >= paths.length) {
-          // 旧分享包 / file:// 打开：拿不到 share.json 就按旧行为放行（无口令门）。
-          document.body.classList.remove('gate-pending');
+          handleShareUnavailable();
           return;
         }
         window.fetch(paths[index], { cache: 'no-store' }).then(function (response) {

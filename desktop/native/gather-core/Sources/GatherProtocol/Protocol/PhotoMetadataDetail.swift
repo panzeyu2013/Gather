@@ -96,3 +96,20 @@ public struct PhotoMetadataDetail: Codable, Equatable, Sendable {
     /// 已填写的描述性字段数（面板标题用）。
     public var filledDescriptiveCount: Int { descriptive.nonNilFieldCount }
 }
+
+/// D3（task-31 review）：盘上描述性元数据的"是否可信"伴生信息。
+///
+/// 为什么需要它：批量直改要区分「盘上确实是空」与「盘上没有可读的 sidecar /
+/// 缓存是唯一来源」——后者与缓存比较会把导入包的 IPTC 误判成外部改动。
+/// - `descriptive`：盘上读到的描述性元数据（含 JPEG 内嵌），读不到时为空结构；
+/// - `sidecarExists`：同路径 .xmp 是否存在；false 时 UI 还要结合 descriptive
+///   是否为空判断（JPEG 内嵌无 sidecar 但 disk 值可信）。
+public struct DiskDescriptiveAvailability: Codable, Equatable, Sendable {
+    public var descriptive: DescriptiveMetadata
+    public var sidecarExists: Bool
+
+    public init(descriptive: DescriptiveMetadata, sidecarExists: Bool) {
+        self.descriptive = descriptive
+        self.sidecarExists = sidecarExists
+    }
+}

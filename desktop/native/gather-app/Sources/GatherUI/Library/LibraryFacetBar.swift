@@ -40,10 +40,10 @@ struct LibraryFacetBar: View {
             "year": filter.year,
             "label": filter.label,
             "keyword": filter.keyword,
-            // Wave2 / task-14：scene 走 keyword_path 子树（不是扁平 keyword 文本），
-            // person 复用图库既有的"人物"字段（contains 规则）。
+            // Wave2 / task-14：scene 走 keyword_path 子树（不是扁平 keyword 文本）；
+            // Wave4a / task-39：person 用**精确** facet 字段（eq），与自由文本 contains 分开。
             "scene": filter.scene,
-            "person": filter.person,
+            "person": filter.personFacet,
         ]
     }
 
@@ -56,7 +56,10 @@ struct LibraryFacetBar: View {
         case "label": filter.label = value
         case "keyword": filter.keyword = value
         case "scene": filter.scene = value
-        case "person": filter.person = value
+        case "person":
+            filter.personFacet = value
+            // facet 选人时清空自由文本，避免两个 person 条件互相干扰（eq 优先）。
+            if !value.isEmpty { filter.person = "" }
         default: break
         }
     }

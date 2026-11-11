@@ -39,6 +39,10 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
     public var policy: IngestDuplicatePolicy
     /// 命中全库重复的路径（最多 20 条，供 UI 展示样例；不含隐私以外信息）。
     public var duplicateSamplePaths: [String]
+    /// Wave4a：按当前策略会被跳过的库内重复数（skip 或 replace 不可用时退化）。
+    public var librarySkippedCount: Int
+    /// Wave4a：按当前策略会被覆盖写入的库内重复数（replace 且同工作区+源根内）。
+    public var replaceableCount: Int
 
     public init(
         totalCount: Int,
@@ -47,7 +51,9 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
         conflictCount: Int,
         unreadableCount: Int,
         policy: IngestDuplicatePolicy,
-        duplicateSamplePaths: [String] = []
+        duplicateSamplePaths: [String] = [],
+        librarySkippedCount: Int = 0,
+        replaceableCount: Int = 0
     ) {
         self.totalCount = totalCount
         self.newCount = newCount
@@ -56,6 +62,33 @@ public struct SessionIngestPreview: Codable, Equatable, Sendable {
         self.unreadableCount = unreadableCount
         self.policy = policy
         self.duplicateSamplePaths = duplicateSamplePaths
+        self.librarySkippedCount = librarySkippedCount
+        self.replaceableCount = replaceableCount
+    }
+
+    /// 旧载荷（Wave3 之前）没有后两个字段：解码按 0 兜底，避免 IPC/持久化升级失败。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            totalCount: try container.decode(Int.self, forKey: .totalCount),
+            newCount: try container.decode(Int.self, forKey: .newCount),
+            libraryDuplicateCount: try container.decode(Int.self, forKey: .libraryDuplicateCount),
+            conflictCount: try container.decode(Int.self, forKey: .conflictCount),
+            unreadableCount: try container.decode(Int.self, forKey: .unreadableCount),
+            policy: try container.decode(IngestDuplicatePolicy.self, forKey: .policy),
+            duplicateSamplePaths: try container.decodeIfPresent(
+                [String].self, forKey: .duplicateSamplePaths) ?? [],
+            librarySkippedCount: try container.decodeIfPresent(
+                Int.self, forKey: .librarySkippedCount) ?? 0,
+            replaceableCount: try container.decodeIfPresent(
+                Int.self, forKey: .replaceableCount) ?? 0
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case totalCount, newCount, libraryDuplicateCount, conflictCount,
+             unreadableCount, policy, duplicateSamplePaths,
+             librarySkippedCount, replaceableCount
     }
 }
 
@@ -125,9 +158,15 @@ public struct SessionIngestResult: Codable, Equatable, Sendable {
     public var libraryDuplicatesSkipped: Int?
     /// Wave2：按 replace 策略覆盖写入的张数。
     public var replaced: Int?
+    /// Wave4a-F4：replace 项在第二目的地被跳过（无法按相对路径镜像）的张数。
+    public var secondDestinationSkipped: Int?
+    /// Wave4a：命中全库重复的源总数（与策略无关；旧载荷 nil = 未统计）。
+    public var libraryDuplicateCount: Int?
     public init(registered: Int, copiedButUnregistered: [String], skipped: [String],
                 unreadable: [String] = [], failed: [MetadataApplyFailureDTO],
-                libraryDuplicatesSkipped: Int? = nil, replaced: Int? = nil) {
+                libraryDuplicatesSkipped: Int? = nil, replaced: Int? = nil,
+                libraryDuplicateCount: Int? = nil,
+                secondDestinationSkipped: Int? = nil) {
         self.registered = registered
         self.copiedButUnregistered = copiedButUnregistered
         self.skipped = skipped
@@ -135,5 +174,7 @@ public struct SessionIngestResult: Codable, Equatable, Sendable {
         self.failed = failed
         self.libraryDuplicatesSkipped = libraryDuplicatesSkipped
         self.replaced = replaced
+        self.libraryDuplicateCount = libraryDuplicateCount
+        self.secondDestinationSkipped = secondDestinationSkipped
     }
 }

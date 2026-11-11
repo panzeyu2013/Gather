@@ -18,10 +18,17 @@ private final class TemplateIOXMP: XMPProvider, @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: MetadataWriteAttributes] = [:]
     private(set) var writeCount = 0
+    private var readError: Error?
 
     func seed(_ path: String, _ attributes: MetadataWriteAttributes) {
         lock.lock(); defer { lock.unlock() }
         storage[path] = attributes
+    }
+
+    /// D4 回归：让下一次读盘抛错，模拟 sidecar 损坏/权限。
+    func failReads(_ error: Error) {
+        lock.lock(); defer { lock.unlock() }
+        readError = error
     }
 
     func attributes(_ path: String) -> MetadataWriteAttributes {
@@ -30,7 +37,15 @@ private final class TemplateIOXMP: XMPProvider, @unchecked Sendable {
     }
 
     func readKeywords(photoPath: String) async throws -> [String] { [] }
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes { attributes(photoPath) }
+    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
+        try throwReadErrorIfNeeded()
+        return attributes(photoPath)
+    }
+
+    private func throwReadErrorIfNeeded() throws {
+        lock.lock(); defer { lock.unlock() }
+        if let readError { throw readError }
+    }
 
     func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {
         write(photoPath: photoPath, attributes: attributes)
@@ -438,6 +453,35 @@ struct MetadataTemplateServiceIOTests {
             sequence: 1)
         #expect(expansion.isResolved)
         #expect(expansion.fields.caption == "{note} ACME")
+    }
+
+    @Test("preview 与 apply 读盘失败同源：failed 逐张返回，apply 同样失败")
+    func previewReadFailureMatchesApply() async throws {
+        let fx = try makeFixture()
+        defer { fx.cleanup() }
+        _ = try fx.templates.save(MetadataTemplate(
+            id: "t-read-fail", name: "读盘失败",
+            fields: DescriptiveMetadata(title: "新标题"),
+            createdAt: "", updatedAt: ""), now: "2026-10-26T00:00:00Z")
+        fx.xmp.failReads(NSError(domain: "TemplateIOTest", code: 1))
+
+        // D4：preview 不能把它当"未知→可写"，必须逐张报 failed（UI 据此禁用应用）。
+        let preview = try await fx.service.preview(
+            templateId: "t-read-fail", photoIds: [fx.photoId])
+        #expect(preview.totalPhotos == 1)
+        #expect(preview.hasReadFailures)
+        #expect(preview.failed?.count == 1)
+        #expect(preview.failed?.first?.photoId == fx.photoId)
+        #expect(preview.photos.isEmpty, "读盘失败的照片不产出预检条目")
+        #expect(preview.changedFields == 0)
+
+        // apply 侧同一故障：整张失败、不写盘（与 preview 的分类同源）。
+        let applied = try await fx.service.apply(
+            templateId: "t-read-fail", photoIds: [fx.photoId],
+            now: "2026-10-26T00:00:00Z")
+        #expect(applied.written.isEmpty)
+        #expect(applied.failed.count == 1)
+        #expect(fx.xmp.writeCount == 0)
     }
 
     @Test("旧模板 JSON 缺 client：解码为 nil，行为不变")

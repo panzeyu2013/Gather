@@ -86,7 +86,51 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
                 "field": "baseURL", "reason": "must be http(s)",
             ])
         }
-        return try saveCredential(url, input.username, input.password)
+        return try saveCredential(
+            url, input.username,
+            Self.packStoredCredential(
+                secret: input.password, sessionToken: input.sessionToken))
+    }
+
+    // MARK: - 分享凭据打包（secret + 可选 session token 同一条 Keychain item）
+
+    private struct StoredShareCredential: Codable {
+        var secret: String
+        var sessionToken: String?
+    }
+
+    /// 把 secret（+可选 session token）打包成一条 Keychain 字符串。
+    ///
+    /// 不新增 Keychain schema/不改 WebDAV 凭据存储实现：无 token 时仍存旧格式明文
+    ///（旧凭据/旧版本读回逐字兼容）；有 token 时存 JSON 对象（包含 secret）。
+    static func packStoredCredential(secret: String, sessionToken: String?) -> String {
+        let token = (sessionToken ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return secret }
+        let payload = StoredShareCredential(secret: secret, sessionToken: token)
+        do {
+            let data = try JSONEncoder().encode(payload)
+            guard let text = String(data: data, encoding: .utf8) else { return secret }
+            return text
+        } catch {
+            // 打包失败时退回旧格式（secret 仍然只进 Keychain；token 会丢失，
+            // 发布端会因缺 token 得到可诊断的 403，而不是静默发错凭据）。
+            return secret
+        }
+    }
+
+    /// 解包 Keychain 字符串：旧格式明文 → secret，token = nil；新格式 JSON → 两者。
+    static func unpackStoredCredential(_ stored: String) -> (secret: String, sessionToken: String?) {
+        guard stored.hasPrefix("{"), let data = stored.data(using: .utf8) else {
+            return (stored, nil)
+        }
+        do {
+            let decoded = try JSONDecoder().decode(StoredShareCredential.self, from: data)
+            let token = decoded.sessionToken?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (decoded.secret, token?.isEmpty == true ? nil : token)
+        } catch {
+            return (stored, nil)
+        }
     }
 
     public func publish(
@@ -104,7 +148,8 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
                 ])
             }
             let url = try Self.requireHTTPURL(payload.baseURL)
-            let password = webDAVCredentialLookup?(url, payload.username) ?? ""
+            let stored = webDAVCredentialLookup?(url, payload.username) ?? ""
+            let password = Self.unpackStoredCredential(stored).secret
             let configuration = WebDAVConfiguration(
                 baseURL: url, username: payload.username,
                 password: password, remoteFolder: payload.remoteFolder)
@@ -124,16 +169,21 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
             let canonicalEndpoint = S3ShareAddressing.canonicalEndpoint(
                 baseURL: payload.baseURL, bucket: bucket, region: payload.region)
             let credentialURL = try Self.requireHTTPURL(canonicalEndpoint)
-            let secret = webDAVCredentialLookup?(credentialURL, payload.username) ?? ""
+            let stored = webDAVCredentialLookup?(credentialURL, payload.username) ?? ""
+            let credential = Self.unpackStoredCredential(stored)
+            let inputToken = (payload.sessionToken ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let sessionToken = inputToken.isEmpty ? credential.sessionToken : inputToken
             let request = OutputSharePublishRequest(
                 localPath: payload.localPath,
                 transport: .s3,
                 endpoint: payload.baseURL,
                 accessKeyID: payload.username,
-                secret: secret,
+                secret: credential.secret,
                 remoteFolder: payload.remoteFolder,
                 bucket: bucket,
                 region: payload.region,
+                sessionToken: sessionToken,
                 includePrefixes: payload.includePrefixes,
                 share: payload.share)
             let s3 = s3ShareTransport ?? S3ShareTransport()
@@ -163,6 +213,34 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
             failed: result.failed.map { WebDAVPublishFailureInfo(path: $0.path, reason: $0.reason) },
             remoteRoot: result.remoteRoot,
             abortedOnAuth: result.abortedOnAuth)
+    }
+
+    /// job 创建即终态 = dedupe 命中旧结果（缓存重放），不是本次新执行。
+    static func isTerminalJobStatus(_ status: AnalysisJobStatus) -> Bool {
+        switch status {
+        case .succeeded, .failed, .cancelled, .interrupted:
+            return true
+        case .queued, .running, .cancelling:
+            return false
+        }
+    }
+
+    /// 导出后钩子的执行判据（Wave4a-C3）。
+    ///
+    /// 只在「本次确实新跑完一次成功交付」时执行：取消、manifest 写失败、
+    /// 有失败配方、manifest 路径为空、dedupe 缓存重放 — 全部不执行，
+    /// 避免用户命令（上传/同步类）在失败或重复结果上产生错误/重复副作用。
+    static func shouldRunPostCommand(
+        for result: OutputRunSummary, cachedReplay: Bool
+    ) -> Bool {
+        guard !cachedReplay else { return false }
+        guard result.cancelled != true else { return false }
+        guard result.manifestError == nil else { return false }
+        guard result.totalFailed == 0 else { return false }
+        guard !result.manifestPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        return true
     }
 
     public func preview(_ input: ExportInput) async throws -> ExportPreview {
@@ -261,14 +339,19 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
                 scopeId: sessionId,
                 dedupeKey: dedupe,
                 checkpoint: ["outputRun": .bool(true), "input": encoded]))
+            // dedupe 命中「已终态」job 时 create 直接返回旧行：这是缓存重放，
+            // 钩子的外部副作用不能重复执行（见 shouldRunPostCommand）。
+            let cachedReplay = Self.isTerminalJobStatus(job.status)
             let decoded: OutputRunSummary? = try await self.jobService.waitForResult(jobId: job.id)
             guard let decoded else {
                 throw JobServiceError.jobFailed(job.id, "empty output.run result")
             }
             var result = decoded
             // Wave3 / task-21：整套交付成功后执行用户配置的钩子。
-            // 取消跑不执行（产物不完整）；钩子失败只进结果与日志，不改交付结论。
-            if result.cancelled != true, let postCommand {
+            // 判据（Wave4a-C3）：非取消、manifest 成功、无失败配方、manifest 路径有效，
+            // 且不是 dedupe 缓存重放；钩子失败只进结果与日志，不改交付结论。
+            if Self.shouldRunPostCommand(for: result, cachedReplay: cachedReplay),
+               let postCommand {
                 if let outcome = await postCommand.runIfConfigured(
                     sessionId: payload.sessionId,
                     destinationRoot: payload.destinationRoot,

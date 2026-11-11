@@ -26,6 +26,8 @@ public struct OutputSharePublishRequest: Equatable, Sendable {
     public var remoteFolder: String
     public var bucket: String?
     public var region: String?
+    /// S3 可选 STS/Session Token（WebDAV 忽略；只来自 Keychain/内存）。
+    public var sessionToken: String?
     public var includePrefixes: [String]?
     public var share: OutputShareOptions?
 
@@ -38,6 +40,7 @@ public struct OutputSharePublishRequest: Equatable, Sendable {
         remoteFolder: String,
         bucket: String? = nil,
         region: String? = nil,
+        sessionToken: String? = nil,
         includePrefixes: [String]? = nil,
         share: OutputShareOptions? = nil
     ) {
@@ -49,6 +52,7 @@ public struct OutputSharePublishRequest: Equatable, Sendable {
         self.remoteFolder = remoteFolder
         self.bucket = bucket
         self.region = region
+        self.sessionToken = sessionToken
         self.includePrefixes = includePrefixes
         self.share = share
     }

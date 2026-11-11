@@ -188,6 +188,8 @@ public struct SemanticKeywordService {
         var applied = 0
         var added = 0
         var failed: [String] = []
+        // E2：这批**实际写到**的照片，随结果返回给 UI 作为撤销 scope（真批级撤销）。
+        var appliedPhotoIds: [String] = []
         for (key, photoIds) in groups {
             let keywordList = key.split(separator: "\u{1F}").map(String.init)
             do {
@@ -200,6 +202,7 @@ public struct SemanticKeywordService {
                 }
                 applied += photoIds.count
                 added += keywordList.count * photoIds.count
+                appliedPhotoIds.append(contentsOf: photoIds)
             } catch {
                 failed.append(contentsOf: photoIds)
             }
@@ -208,6 +211,7 @@ public struct SemanticKeywordService {
         return SemanticKeywordApplyResult(
             sessionId: input.sessionId,
             appliedPhotos: applied,
+            appliedPhotoIds: appliedPhotoIds.sorted(),
             skippedPhotos: skipped,
             keywordsAdded: added,
             keywordsRemoved: 0,
@@ -221,23 +225,36 @@ public struct SemanticKeywordService {
         var applied = 0
         var removed = 0
         var failed: [String] = []
+        var appliedPhotoIds: [String] = []
+        // 按"要移除的路径集合"分组：同集合照片合并成一次交付（与 apply 对称），
+        // 避免大会话 undo 逐张预检 + flush（P2）。
+        var groups: [String: [String]] = [:]
         for photoId in scope {
             let owned = try keywords.photoKeywordPaths(photoId: photoId)
                 .filter { Self.isUnder($0, root: root) }
             guard !owned.isEmpty else { continue }
+            let key = owned.joined(separator: "\u{1F}")
+            groups[key, default: []].append(photoId)
+        }
+        for (key, photoIds) in groups {
+            let removedPaths = key.split(separator: "\u{1F}").map(String.init)
             do {
                 _ = try await metadata.applyKeywordDelta(
-                    photoIds: [photoId], added: [], removed: owned)
-                _ = try? indexSync.syncFromCache(photoId: photoId)
-                applied += 1
-                removed += owned.count
+                    photoIds: photoIds, added: [], removed: removedPaths)
+                for photoId in photoIds {
+                    _ = try? indexSync.syncFromCache(photoId: photoId)
+                }
+                applied += photoIds.count
+                removed += removedPaths.count * photoIds.count
+                appliedPhotoIds.append(contentsOf: photoIds)
             } catch {
-                failed.append(photoId)
+                failed.append(contentsOf: photoIds)
             }
         }
         return SemanticKeywordApplyResult(
             sessionId: sessionId,
             appliedPhotos: applied,
+            appliedPhotoIds: appliedPhotoIds.sorted(),
             skippedPhotos: max(0, scope.count - applied - failed.count),
             keywordsAdded: 0,
             keywordsRemoved: removed,

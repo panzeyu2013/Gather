@@ -270,14 +270,29 @@ struct APISessionTests {
         #expect(ingestJob.dedupeKey.hasPrefix("ingest.run:\(session.session.id):"))
 
         // 崩溃恢复：新会话的 destination 已有同内容文件、但该会话没有照片登记。
-        // plan 会把它归入 alreadyPresent；runner 必须登记，否则文件永久留在 _ingest。
+        // Wave4a/F1 起跨会话去重对所有已回填 checksum 生效：默认 .skip 会把这份
+        // 源判成"库内重复"（UI 会显示分类计数），因此恢复场景显式用 .coexist
+        // 才会走 alreadyPresent → 登记；两种口径都在这里钉住。
+        let skipSession = try await fixture.sessionAPI.create(
+            SessionCreateInput(name: "ingest-dedupe-skip", sourcePath: workspace.path))
+        let skipped = try await fixture.sessionAPI.ingest(
+            Confirmed(try SessionIngestInput(
+                sessionId: skipSession.session.id,
+                sourcePaths: [sourceFile],
+                destinationRoot: workspace.path,
+                duplicatePolicy: .skip))
+        )
+        #expect(skipped.registered == 0, "默认 .skip：跨会话重复源不登记")
+        #expect(skipped.libraryDuplicatesSkipped == 1)
+
         let second = try await fixture.sessionAPI.create(
             SessionCreateInput(name: "ingest-recovery", sourcePath: workspace.path))
         let recovered = try await fixture.sessionAPI.ingest(
             Confirmed(try SessionIngestInput(
                 sessionId: second.session.id,
                 sourcePaths: [sourceFile],
-                destinationRoot: workspace.path))
+                destinationRoot: workspace.path,
+                duplicatePolicy: .coexist))
         )
         #expect(recovered.registered == 1,
                 "alreadyPresent 必须登记，不能只登记 copied")

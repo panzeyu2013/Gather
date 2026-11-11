@@ -164,10 +164,16 @@ public struct CurationService: Sendable {
         let row = try requireCollection(input.collectionId)
         let target = try CurationPath.parse(input.name)
         let current = CurationPath.parseLenient(row.name)
-        guard target.fullName != current.fullName else { return }
-        guard !current.isAncestor(of: target) else {
-            throw CurationError.invalidName(
-                "cannot move a collection into its own subtree")
+        // Wave4a：历史非规范名（如 `A//B`、段首尾多空格）规范化后可能与输入相等；
+        // 此时仍要落库成规范名（否则用户无法通过重命名把旧名修干净）。
+        // 判据用"库里的原始名"：只有原始名已经是规范名时才 no-op。
+        if target.fullName == current.fullName {
+            guard row.name != target.fullName else { return }
+        } else {
+            guard !current.isAncestor(of: target) else {
+                throw CurationError.invalidName(
+                    "cannot move a collection into its own subtree")
+            }
         }
         let all = try collections.list(sessionId: row.sessionId)
         var moves: [(id: String, oldName: String, newName: String)] = []

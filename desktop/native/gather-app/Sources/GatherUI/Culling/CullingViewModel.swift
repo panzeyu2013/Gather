@@ -285,9 +285,12 @@ public final class CullingViewModel: SessionPageModel {
     /// P1 / D：会话域（摄取登记用）。nil = 未接线，摄取入口报错而不是静默失败。
     var sessionAPI: (any SessionAPI)?
     /// Wave3 / G6：会话源路径与 C1 Session 三目录识别结果。
-    /// 只用于 UI 标注（Capture/Selects/Trash 角色）；导入范围的重定向在宿主导入阶段完成。
+    /// 只用于 UI 标注（Capture/Selects/Trash 角色）；导入范围的重定向在导入入口完成。
     public internal(set) var sessionSourcePath: String?
     public internal(set) var captureOneSessionLayout: C1SessionLayout?
+    /// A5：会话实际扫描根是否已是 Capture 子目录（true = Trash/Selects 不会被扫进图库）。
+    /// 旧入口（历史会话/未重定向）为 false —— UI 不得宣称"仅导入 Capture"。
+    public internal(set) var captureOneSessionScanIsCaptureOnly = false
 
     public var metadataDetail: PhotoMetadataDetail?
     /// latest-wins 代数：快速翻页时只落最后一次请求的结果。

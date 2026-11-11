@@ -14,10 +14,22 @@ struct SemanticSearchSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+    /// 命中照片的可读名（E5）：调用方注入（挑片页用 page.assets 的 filename）。
+    private let nameFor: (String) -> String
+    /// 命中照片的跳转（E5）：点击即选中并定位到该照片，回得到网格。
+    private let onSelect: (String) -> Void
 
-    init(api: any PhotoAPI, sessionId: String, seedPhotoIds: [String]) {
+    init(
+        api: any PhotoAPI,
+        sessionId: String,
+        seedPhotoIds: [String],
+        nameFor: @escaping (String) -> String = { $0 },
+        onSelect: @escaping (String) -> Void = { _ in }
+    ) {
         _model = State(initialValue: SemanticSearchSheetModel(
             api: api, sessionId: sessionId, seedPhotoIds: seedPhotoIds))
+        self.nameFor = nameFor
+        self.onSelect = onSelect
     }
 
     var body: some View {
@@ -48,9 +60,14 @@ struct SemanticSearchSheet: View {
             },
             confirmRole: { action in action == .undo ? .destructive : nil },
             message: { action in
-                action == .undo
-                    ? l10n("只移除 AI 场景标签这一棵子树下的关键词，不动人工/人脸/相似度来源的关键词。")
-                    : l10n("会把场景标签写成层级关键词并进入交付链（XMP）。可整批撤销。")
+                if action == .undo {
+                    let scope = l10n.format(
+                        "本次撤销范围：上一次写回实际改动的 %lld 张照片。",
+                        Int64(model.lastWriteScopePhotoIds.count))
+                    return l10n("只移除 AI 场景标签这一棵子树下的关键词，不动人工/人脸/相似度来源的关键词。")
+                        + "\n" + scope
+                }
+                return l10n("会把场景标签写成层级关键词并进入交付链（XMP）。可整批撤销。")
             },
             onConfirm: { action in
                 pendingWriteback = nil
@@ -145,25 +162,33 @@ struct SemanticSearchSheet: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                     ForEach(model.hits, id: \.photoId) { hit in
-                        HStack(spacing: GatherMetrics.Space.s) {
-                            VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
-                                Text(hit.photoId)
-                                    .font(GatherFont.labelRegular)
-                                    .lineLimit(1)
-                                if !hit.matchedLabels.isEmpty {
-                                    Text(hit.matchedLabels.joined(separator: " · "))
-                                        .font(GatherFont.secondary)
-                                        .foregroundStyle(.secondary)
+                        Button {
+                            // E5：点结果 = 选中并定位这张照片，然后关闭面板回网格。
+                            onSelect(hit.photoId)
+                            dismiss()
+                        } label: {
+                            HStack(spacing: GatherMetrics.Space.s) {
+                                VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
+                                    Text(nameFor(hit.photoId))
+                                        .font(GatherFont.labelRegular)
                                         .lineLimit(1)
+                                    if !hit.matchedLabels.isEmpty {
+                                        Text(hit.matchedLabels.joined(separator: " · "))
+                                            .font(GatherFont.secondary)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                                if let similarity = hit.similarity {
+                                    Text(String(format: "%.0f%%", similarity * 100))
+                                        .font(GatherFont.secondary.monospacedDigit())
+                                        .foregroundStyle(.secondary)
                                 }
                             }
-                            Spacer()
-                            if let similarity = hit.similarity {
-                                Text(String(format: "%.0f%%", similarity * 100))
-                                    .font(GatherFont.secondary.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                         .padding(.vertical, GatherMetrics.Space.xxs)
                     }
                 }

@@ -152,12 +152,15 @@ public struct IngestOptions: Equatable, Sendable {
     /// 别的会话登记路径」这件事上做猜测。
     public var sessionId: String
     public var sessionSourceRoot: String
+    /// Wave4a-F2：预检（previewIngest）走只读路径——不写 checksum 回填、不产生副作用。
+    public var previewOnly: Bool
 
     public init(destinationRoot: String, renameTemplate: String = "{yyyy}/{MM}/{dd}/{orig}-{seq:4}.{ext}",
                 secondDestinationRoot: String? = nil, verifyChecksum: Bool = true,
                 moveInsteadOfCopy: Bool = false,
                 duplicatePolicy: IngestDuplicatePolicy = .skip,
-                sessionId: String = "", sessionSourceRoot: String = "") {
+                sessionId: String = "", sessionSourceRoot: String = "",
+                previewOnly: Bool = false) {
         self.destinationRoot = destinationRoot
         self.renameTemplate = renameTemplate
         self.secondDestinationRoot = secondDestinationRoot
@@ -166,6 +169,7 @@ public struct IngestOptions: Equatable, Sendable {
         self.duplicatePolicy = duplicatePolicy
         self.sessionId = sessionId
         self.sessionSourceRoot = sessionSourceRoot
+        self.previewOnly = previewOnly
     }
 }
 
@@ -198,12 +202,16 @@ public struct IngestResult: Equatable, Sendable {
     public var librarySkipped: [String]
     /// Wave2：按 replace 策略覆盖写入的目标路径。
     public var replaced: [String]
+    /// Wave4a-F4：replace 项在第二目的地被跳过（replace 目标是库内原路径，
+    /// 不在 destinationRoot 内，无法按相对路径镜像；显式报告而不是静默少一份）。
+    public var secondSkipped: [String]
     public init(copied: [String], skipped: [String], unreadable: [String] = [],
                 secondCopied: [String], failed: [IngestFailure],
                 alreadyPresent: [String] = [],
                 libraryDuplicates: [String] = [],
                 librarySkipped: [String] = [],
-                replaced: [String] = []) {
+                replaced: [String] = [],
+                secondSkipped: [String] = []) {
         self.copied = copied
         self.skipped = skipped
         self.unreadable = unreadable
@@ -213,6 +221,7 @@ public struct IngestResult: Equatable, Sendable {
         self.libraryDuplicates = libraryDuplicates
         self.librarySkipped = librarySkipped
         self.replaced = replaced
+        self.secondSkipped = secondSkipped
     }
     /// 登记阶段要扫描的目录（等于成功落地的父目录集合）。
     public var registeredDirectories: [String] {
@@ -331,7 +340,10 @@ public final class IngestService: @unchecked Sendable {
             "jpg", "jpeg", "tif", "tiff", "png", "webp", "heic", "heif", "psd",
         ],
         existingChecksums: [String: String] = [:],
-        libraryDuplicates: [String: SessionService.LibraryDuplicateTarget] = [:]
+        libraryDuplicates: [String: SessionService.LibraryDuplicateTarget] = [:],
+        /// Wave4a-F2：库内候选的大小集合。非空时只有 size 命中的源才值得 SHA-256
+        /// （预检不再对整卡逐张哈希；大小不同必不是同内容）。
+        libraryCandidateSizes: Set<Int> = []
     ) async throws -> IngestPlan {
         var items: [IngestItem] = []
         var skipped: [String] = []
@@ -375,12 +387,21 @@ public final class IngestService: @unchecked Sendable {
                 // Wave2（task-15）：先去重再读 EXIF（重导同一张卡时，被跳过的文件
                 // 不必做 ImageIO 解析）。
                 // 优先级：全库（跨工作区）索引 > 会话内索引。两者都只比较 SHA-256。
-                let probedChecksum: String? = {
+                // Wave4a-F2：预检只对「size 命中库内候选」的源做哈希（原实现只要库内
+                // 有指纹就整卡逐张 SHA-256，预检成本≈复制）。会话内索引没有大小表，
+                // 保留旧口径（existingChecksums 非空才哈希）。
+                let needsProbe: Bool = {
                     guard !libraryDuplicates.isEmpty || !existingChecksums.isEmpty else {
-                        return nil
+                        return false
                     }
-                    return try? checksum(file)
+                    if !libraryDuplicates.isEmpty,
+                       !libraryCandidateSizes.isEmpty,
+                       !libraryCandidateSizes.contains(size) {
+                        return !existingChecksums.isEmpty
+                    }
+                    return true
                 }()
+                let probedChecksum: String? = needsProbe ? (try? checksum(file)) : nil
                 if let sum = probedChecksum {
                     if !libraryDuplicates.isEmpty, let target = libraryDuplicates[sum] {
                         libraryDuplicatePaths.append(file)
@@ -516,6 +537,8 @@ public final class IngestService: @unchecked Sendable {
         var copied: [String] = []
         var skipped: [String] = []
         var secondCopied: [String] = []
+        /// Wave4a-F4：replace 项无法镜像到第二目的地，显式记账。
+        var secondSkipped: [String] = []
         var failed: [IngestFailure] = []
         /// Wave2（task-15）：replace 策略下实际覆盖写入的目标路径。
         var replacedDestinations: [String] = []
@@ -606,6 +629,11 @@ public final class IngestService: @unchecked Sendable {
                 }
 
                 if let second = options.secondDestinationRoot {
+                    // Wave4a-F4：replace 的 destPath 是库内原路径（不在 destinationRoot
+                    // 内），第二目的地无法按相对路径镜像；跳过并记录，不按意外路径写。
+                    if item.replaceExisting {
+                        secondSkipped.append(item.destPath)
+                    } else {
                     let target = try secondDestinationPath(
                         for: item.destPath, destinationRoot: options.destinationRoot, secondRoot: second)
                     try fileManager.createDirectory(
@@ -617,7 +645,7 @@ public final class IngestService: @unchecked Sendable {
                     // 用 transfer（<dest>.gather-part → rename）而不是裸 copyItem：
                     // 半成品只可能落在我们自己的临时文件名上，目标路径出现即代表成功，
                     // 回滚标记只在成功后置位（不会删掉并发写者刚建好的文件）。
-                    try transfer(item.destPath, to: target, move: false, verify: false)
+                    try transfer(item.destPath, to: target, move: false, verify: options.verifyChecksum)
                     secondPath = target
                     secondCopyStarted = true
                     if item.sidecarPath != nil {
@@ -634,11 +662,12 @@ public final class IngestService: @unchecked Sendable {
                                 // 这是第二目的地里最后一个可失败步骤：transfer 失败时
                                 // 半成品只落在 .gather-part 且由 transfer 清理，无需回滚。
                                 try transfer(
-                                    destSidecar, to: secondSidecar, move: false, verify: false)
+                                    destSidecar, to: secondSidecar, move: false, verify: options.verifyChecksum)
                             }
                         }
                     }
                     secondCopied.append(target)
+                    }
                 }
                 if let backup = replaceBackup {
                     // 所有步骤（照片 + sidecar + 第二副本）都成功后才丢弃旧文件备份。
@@ -718,7 +747,7 @@ public final class IngestService: @unchecked Sendable {
                         try fileManager.createDirectory(
                             atPath: (target as NSString).deletingLastPathComponent,
                             withIntermediateDirectories: true)
-                        try transfer(dest, to: target, move: false, verify: false)
+                        try transfer(dest, to: target, move: false, verify: options.verifyChecksum)
                         secondCopied.append(target)
                     }
                     let destSidecar = (dest as NSString).deletingPathExtension + ".xmp"
@@ -732,7 +761,7 @@ public final class IngestService: @unchecked Sendable {
                             try fileManager.createDirectory(
                                 atPath: (targetSidecar as NSString).deletingLastPathComponent,
                                 withIntermediateDirectories: true)
-                            try transfer(destSidecar, to: targetSidecar, move: false, verify: false)
+                            try transfer(destSidecar, to: targetSidecar, move: false, verify: options.verifyChecksum)
                         }
                     }
                 } catch {
@@ -751,7 +780,8 @@ public final class IngestService: @unchecked Sendable {
             alreadyPresent: plan.alreadyPresent,
             libraryDuplicates: plan.libraryDuplicates,
             librarySkipped: plan.librarySkipped,
-            replaced: replacedDestinations)
+            replaced: replacedDestinations,
+            secondSkipped: secondSkipped)
         // 自动初审的唯一触发点在 WorkflowRegistry（GatherApplication）（ingest 完整收尾后入队），
         // 本服务只负责复制/登记，不持有 job/会话依赖。
         return result

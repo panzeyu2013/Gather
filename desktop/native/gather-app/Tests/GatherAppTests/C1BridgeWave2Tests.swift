@@ -351,10 +351,10 @@ struct C1BridgeWave2ApplyTests {
             == CullingDecisionSource.manual.rawValue)
     }
 
-    @Test("applyAfterIndexing：扫描终态后才写；超时也落库并标记 timedOut")
+    @Test("applyAfterIndexing：仅 succeeded 才写；超时/失败/取消跳过并记 reason（A2）")
     func waitsForScanWithTimeoutFallback() async throws {
         let fixture = try Wave2JudgementFixture()
-        // 1) 扫描已终态：不等待、不超时。
+        // 1) 扫描已 succeeded：不等待、立即落库。
         let done = await fixture.service.applyAfterIndexing(
             sessionId: fixture.sessionId,
             judgements: fixture.judgements(),
@@ -365,8 +365,9 @@ struct C1BridgeWave2ApplyTests {
         #expect(!done.indexingTimedOut)
         #expect(!done.waitedForIndexing)
         #expect(done.applied == 2)
+        #expect(done.skippedReason == nil)
 
-        // 2) 永远 running：超时降级（判断仍落库）。
+        // 2) 永远 running：超时 → A2 不落库（旧实现落库后会被下一次成功扫描清掉）。
         let timedOut = await fixture.service.applyAfterIndexing(
             sessionId: fixture.sessionId,
             judgements: fixture.judgements(),
@@ -376,9 +377,21 @@ struct C1BridgeWave2ApplyTests {
             sleep: { _ in })
         #expect(timedOut.indexingTimedOut)
         #expect(timedOut.waitedForIndexing)
-        #expect(timedOut.applied == 2)
+        #expect(timedOut.applied == 0)
+        #expect(timedOut.skippedReason != nil)
 
-        // 3) 先 running 后 succeeded：等到终态。
+        // 3) 后续终态非 succeeded：同样不落库（缓存保持扫描值）。
+        let failed = await fixture.service.applyAfterIndexing(
+            sessionId: fixture.sessionId,
+            judgements: fixture.judgements(),
+            scanStatus: { _ in AnalysisJobStatus.failed.rawValue },
+            pollInterval: .milliseconds(10),
+            timeout: .seconds(1),
+            sleep: { _ in })
+        #expect(failed.applied == 0)
+        #expect(failed.skippedReason?.contains(AnalysisJobStatus.failed.rawValue) == true)
+
+        // 4) 先 running 后 succeeded：等到终态。
         let sequence = LockedBox(Wave2ScanSequence(statuses: [
             AnalysisJobStatus.running.rawValue,
             AnalysisJobStatus.succeeded.rawValue,
@@ -395,6 +408,41 @@ struct C1BridgeWave2ApplyTests {
         #expect(waited.waitedForIndexing)
         #expect(!waited.indexingTimedOut)
         #expect(waited.applied == 2)
+    }
+
+    /// A2 回归：失败/取消/中断终态，以及等待被取消，都不得写 cache（否则后续成功扫描会覆盖）。
+    @Test("A2：非 succeeded 终态与等待取消都不落库")
+    func skipsWhenScanNotSucceeded() async throws {
+        let fixture = try Wave2JudgementFixture()
+        let blocked = [
+            AnalysisJobStatus.failed.rawValue,
+            AnalysisJobStatus.cancelled.rawValue,
+            AnalysisJobStatus.interrupted.rawValue,
+        ]
+        for status in blocked {
+            let report = await fixture.service.applyAfterIndexing(
+                sessionId: fixture.sessionId,
+                judgements: fixture.judgements(),
+                scanStatus: { _ in status },
+                pollInterval: .milliseconds(10),
+                timeout: .seconds(1),
+                sleep: { _ in })
+            #expect(report.applied == 0)
+            #expect(report.skippedReason == "metadata.scan \(status)")
+            // 未落库 = cache 行不存在或 rating 仍为 0（A2：非 succeeded 一律不写）。
+            let cacheRow = try fixture.cache.get(fixture.photoIds[0])
+            #expect((cacheRow?.rating ?? 0) == 0)
+        }
+        // 等待被取消（应用退出/会话关闭）：同样不落库。
+        let cancelled = await fixture.service.applyAfterIndexing(
+            sessionId: fixture.sessionId,
+            judgements: fixture.judgements(),
+            scanStatus: { _ in AnalysisJobStatus.running.rawValue },
+            pollInterval: .milliseconds(10),
+            timeout: .seconds(1),
+            sleep: { _ in throw CancellationError() })
+        #expect(cancelled.applied == 0)
+        #expect(cancelled.skippedReason == "cancelled while waiting metadata.scan")
     }
 
     @Test("空判断：不写任何表，isEmpty")

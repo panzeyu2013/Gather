@@ -135,6 +135,17 @@ struct MetadataTemplateSheet: View {
                             .font(GatherFont.label)
                             .foregroundStyle(.secondary)
                     }
+                    if preview.hasReadFailures {
+                        Text(l10n.format("%lld 张照片读盘失败，预览不完整，禁止应用：",
+                                         preview.readFailureCount))
+                            .font(GatherFont.label)
+                            .foregroundStyle(GatherTheme.warningText)
+                        ForEach((preview.failed ?? []).prefix(8), id: \.photoId) { failure in
+                            Text(l10n.format("%@：%@", failure.photoId, failure.message))
+                                .font(GatherFont.label)
+                                .foregroundStyle(GatherTheme.warningText)
+                        }
+                    }
                     if preview.hasUnresolvedVariables {
                         Text(l10n.format("%lld 处模板变量未解析，禁止应用：",
                                          preview.unresolvedVariableCount))
@@ -168,7 +179,8 @@ struct MetadataTemplateSheet: View {
                 Button(l10n("应用到选中照片")) { Task { await runApply() } }
                     .gatherButton(.primary)
                     .disabled(preview == nil || (preview?.changedFields ?? 0) == 0
-                              || (preview?.hasUnresolvedVariables ?? false) || isBusy)
+                              || (preview?.hasUnresolvedVariables ?? false)
+                              || (preview?.hasReadFailures ?? false) || isBusy)
                 Spacer()
                 if let appliedBatchId {
                     Button(l10n("撤销此次套用")) { showUndoConfirm = true }
@@ -393,6 +405,11 @@ struct MetadataTemplateSheet: View {
     private func runApply() async {
         guard let id = selectedId else { return }
         // 服务端会拒绝（二次校验），这里先拦一层：预览已逐字段列出未解析变量。
+        if preview?.hasReadFailures == true {
+            errorText = l10n.format("%lld 张照片读盘失败，预览不完整，禁止应用：",
+                                    preview?.readFailureCount ?? 0)
+            return
+        }
         if preview?.hasUnresolvedVariables == true {
             errorText = l10n.format("%lld 处模板变量未解析，禁止应用：",
                                     preview?.unresolvedVariableCount ?? 0)

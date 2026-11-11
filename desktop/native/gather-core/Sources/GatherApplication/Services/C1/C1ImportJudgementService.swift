@@ -13,8 +13,8 @@
 // photo_metadata_cache；XMP/sidecar 里没有 rating 时它会写回 0 / 空关键词。若我们在
 // 扫描前写 C1 判断，扫描会把它清掉（且扫描的缓存指纹会认为行"已过期"重抽）。
 // 因此默认入口 applyAfterIndexing 先等本会话 metadata.scan 到终态再落库；
-// 等待有上限（默认 10 分钟），超时/取消也会落库并记入报告（判断不丢，只是可能被
-// 仍在跑的扫描覆盖，报告里看得见）。
+// 等待有上限（默认 10 分钟）；**只有扫描成功才落库**（A2：失败/取消/超时跳过并在
+// report.skippedReason 里记原因，避免判断写入后被下一次成功扫描清掉）。
 import Foundation
 import GatherPersistence
 import GatherProtocol
@@ -44,7 +44,8 @@ public enum C1ImportJudgementMapping {
     /// （CaptureOne.sdef:1084），没有 reject 位；把"未挑中"当淘汰会把整批未评级的
     /// 照片误标成淘汰。淘汰判定（G4 的 pick/reject 往返）不在本波。
     public static func mapPick(_ pick: Bool) -> PickState {
-        pick ? .picked : .unreviewed
+        // 单一事实源：C1 无 reject 位，读回 false 只能当未处理（C1PickMapping，A3）。
+        C1PickMapping.pickState(from: pick)
     }
 
     /// C1 decision 字符串（culling_decisions.decision）→ 同 mapPick 的口径。
@@ -139,8 +140,11 @@ public struct C1ImportJudgementReport: Equatable, Sendable {
     public var unmappedColorTags: Int
     /// 是否等待过 metadata.scan（false = 调用时已终态/未等）。
     public var waitedForIndexing: Bool
-    /// 等待扫描是否超时（true = 判断已落库，但之后仍可能被在跑扫描覆盖）。
+    /// 等待扫描是否超时（A2 后：超时=不落库，见 skippedReason）。
     public var indexingTimedOut: Bool
+    /// 非 nil = 本次**没有落库**及原因（A2：metadata.scan 非 succeeded/超时/取消）。
+    /// 调用方据此记日志/决定是否在成功扫描后重试。
+    public var skippedReason: String?
     /// 逐张失败原因（已按"单张失败不影响其余"隔离；只进日志/诊断）。
     public var errors: [String]
 
@@ -155,6 +159,7 @@ public struct C1ImportJudgementReport: Equatable, Sendable {
         unmappedColorTags: Int = 0,
         waitedForIndexing: Bool = false,
         indexingTimedOut: Bool = false,
+        skippedReason: String? = nil,
         errors: [String] = []
     ) {
         self.applied = applied
@@ -167,6 +172,7 @@ public struct C1ImportJudgementReport: Equatable, Sendable {
         self.unmappedColorTags = unmappedColorTags
         self.waitedForIndexing = waitedForIndexing
         self.indexingTimedOut = indexingTimedOut
+        self.skippedReason = skippedReason
         self.errors = errors
     }
 
@@ -209,7 +215,7 @@ public struct C1ImportJudgementService {
     ///   - scanStatus: 本会话最新 metadata.scan 的状态（nil = 还没有 job）；
     ///     生产 = `AnalysisJobRepo.latestScanJob(sessionId:)?.status`。
     ///   - pollInterval: 轮询间隔；
-    ///   - timeout: 等待上限（超时也会落库：判断不能丢，报告标记 indexingTimedOut）；
+    ///   - timeout: 等待上限。超时**不落库**（A2：扫描可能仍在跑并覆盖判断），报告记 skippedReason；
     ///   - sleep: 睡眠接缝（测试注入 no-op，避免真等）。
     public func applyAfterIndexing(
         sessionId: String,
@@ -221,29 +227,64 @@ public struct C1ImportJudgementService {
     ) async -> C1ImportJudgementReport {
         var waited = false
         var timedOut = false
+        var cancelled = false
+        var terminalStatus: String? = nil
         var elapsed: Duration = .zero
         while true {
             // do/catch 而不是 try?：cleanup ratchet 的 try_optional 指标只降不升（Sources 口径）。
             let status: String?
             do { status = try scanStatus(sessionId) } catch { status = nil }
-            if let status, Self.isTerminalScanStatus(status) { break }
+            if let status, Self.isTerminalScanStatus(status) {
+                terminalStatus = status
+                break
+            }
             if elapsed >= timeout {
                 timedOut = true
-                GatherLogger.log(
-                    "c1.judgements session=\(sessionId) 等待 metadata.scan 超时（\(timeout)），"
-                        + "先落库：之后仍在跑的扫描可能覆盖 rating/关键词",
-                    level: .warn)
                 break
             }
             do {
                 try await sleep(pollInterval)
             } catch {
-                // 取消（应用退出/会话关闭）：不等了，仍然落库（尽力而为）。
+                // 取消（应用退出/会话关闭）：不再等待，也不落库（A2）。
+                cancelled = true
                 break
             }
             waited = true
             elapsed += pollInterval
         }
+
+        // A2：只在 metadata.scan **succeeded** 后落库。
+        //
+        // 为什么不能对 failed/cancelled/timeout 落库：判断写入的是
+        // photo_metadata_cache 的增量列（rating/label/keywords），而扫描的整行 upsert
+        // 会用 XMP 值覆盖这些列（MetadataExtractionService 以 file_size/file_mtime 指纹
+        // 判定 stale；判断行若在扫描失败时套上 NULL 指纹，下一次成功扫描必然重抽并整行
+        // 覆盖 → C1 的星级/色标/关键词被静默清掉）。宁可不落库（判断仍留在 C1 源与
+        // pending 报告里），也不能静默丢。
+        let skippedReason: String?
+        if let terminalStatus {
+            skippedReason = terminalStatus == AnalysisJobStatus.succeeded.rawValue
+                ? nil
+                : "metadata.scan \(terminalStatus)"
+        } else if timedOut {
+            skippedReason = "timed out waiting metadata.scan"
+        } else if cancelled {
+            skippedReason = "cancelled while waiting metadata.scan"
+        } else {
+            skippedReason = "metadata.scan not observed"
+        }
+        if let skippedReason {
+            var report = C1ImportJudgementReport()
+            report.skippedReason = skippedReason
+            report.waitedForIndexing = waited
+            report.indexingTimedOut = timedOut
+            GatherLogger.log(
+                "c1.judgements session=\(sessionId) skipped: \(skippedReason)"
+                    + " judgements=\(judgements.count)（等成功扫描后重试）",
+                level: .warn)
+            return report
+        }
+
         var report: C1ImportJudgementReport
         do {
             report = try apply(sessionId: sessionId, judgements: judgements)

@@ -571,7 +571,8 @@ extension ExportViewModel {
         includePrefixes: [String],
         allowDownload: Bool,
         proofPassword: String? = nil,
-        expiresAt: String? = nil
+        expiresAt: String? = nil,
+        sessionToken: String? = nil
     ) async {
         guard !isPublishing else { return }
         guard !includePrefixes.isEmpty else {
@@ -615,8 +616,11 @@ extension ExportViewModel {
                 } else {
                     credentialEndpoint = endpoint
                 }
+                // S3 临时凭据：session token 与 secret 同一条 Keychain item（Host 打包）。
+                let token = transport == .s3 ? sessionToken : nil
                 _ = try await exportAPI.saveWebDAVCredential(WebDAVCredentialInput(
-                    baseURL: credentialEndpoint, username: accessKeyID, password: secret))
+                    baseURL: credentialEndpoint, username: accessKeyID,
+                    password: secret, sessionToken: token))
             }
             webDAVPublish = try await exportAPI.publish(
                 Confirmed(WebDAVPublishInput(
@@ -626,6 +630,7 @@ extension ExportViewModel {
                     transport: transport,
                     bucket: bucket,
                     region: region,
+                    sessionToken: transport == .s3 ? sessionToken : nil,
                     share: share)),
                 // 外层闭包显式弱持有：内层 Task 的 [weak self] 与外层的强捕获不一致
                 // （#ImplicitStrongCapture），也避免发布流程被闭包延长 VM 生命周期。

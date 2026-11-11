@@ -162,6 +162,51 @@ struct FacetSemanticDimensionTests {
         #expect(result[.camera] == [])
     }
 
+    @Test("person 维精确口径：facet 数与 eq 网格数一致，contains 会多带同前缀姓名（E3）")
+    func personFacetMatchesGridCount() throws {
+        let db = try makeDB()
+        // 追加"张三丰"（与"张三"同前缀）：p5 只有张三丰，没有任何其它人会命中。
+        _ = try db.prepare("""
+            INSERT INTO persons (id, name, keywords, thumbnail_base64, notes, created_at, updated_at)
+            VALUES ('per-3', '张三丰', '[]', '', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+            """).run([])
+        _ = try db.prepare("""
+            INSERT INTO photos (id, session_id, asset_id, filepath, filename, status, created_at, updated_at)
+            VALUES ('p5', ?, NULL, '/tmp/p5.CR3', 'p5.CR3', 'ready',
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+            """).run([.text(sessionId)])
+        _ = try db.prepare("""
+            INSERT INTO person_photos (person_id, photo_id, session_id, face_bbox, confidence, created_at)
+            VALUES ('per-3', 'p5', ?, '{}', 0.9, '2026-01-01T00:00:00Z')
+            """).run([.text(sessionId)])
+
+        let query = FacetQuery(connection: db)
+        let empty = FilterGroup(logic: .and, conditions: [])
+        let buckets = counts(try query.buckets(
+            sessionId: sessionId, criteria: empty, dimension: .person))
+        #expect(buckets["张三"] == 2)
+        #expect(buckets["张三丰"] == 1, "facet 桶按完整姓名精确分组")
+
+        // facet 选择走精确匹配（LibraryFacetBar → personFacet → .eq）：网格数必须等于桶数。
+        let eqCriteria = FilterGroup(logic: .and, conditions: [
+            .rule(FilterRule(
+                field: FacetDimension.person.field, operator: .eq, value: .string("张三"))),
+        ])
+        let eqRows = try query.filterQuery.filterPhotos(
+            sessionId: sessionId, criteria: eqCriteria)
+        #expect(eqRows.count == buckets["张三"], "facet 数 ≠ 网格数就是回归")
+
+        // 旧行为（自由文本 contains / LIKE 子串）会把"张三丰"一起带出来——正是 E3 的错位来源；
+        // 保留这条断言，防止有人把 facet 选择改回 contains。
+        let containsCriteria = FilterGroup(logic: .and, conditions: [
+            .rule(FilterRule(
+                field: FacetDimension.person.field, operator: .contains, value: .string("张三"))),
+        ])
+        let containsRows = try query.filterQuery.filterPhotos(
+            sessionId: sessionId, criteria: containsCriteria)
+        #expect(containsRows.count == 3, "contains 会命中张三(2)+张三丰(1)")
+    }
+
     @Test("维度与图库字段的映射固定（scene → keyword_path，person → person）")
     func dimensionFields() {
         #expect(FacetDimension.scene.field == FilterFields.keywordPath)

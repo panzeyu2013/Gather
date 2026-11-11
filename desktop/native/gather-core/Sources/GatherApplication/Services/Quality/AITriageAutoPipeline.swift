@@ -53,23 +53,28 @@ public struct AITriageAutoPipeline: Sendable {
         public var listJobs: @Sendable () throws -> [AnalysisJobData]
         /// 入队 quality.score（photoIds 缺省 = 会话全部照片）。
         public var enqueueQualityJob: @Sendable (String) throws -> AnalysisJobData
-        /// 调 TriageService.generate。`@MainActor`：TriageService 不是 Sendable，
-        /// 由宿主在 MainActor 上构造闭包（与挑片页 generateTriage 的既有隔离一致：
-        /// 那条路径本来也在 MainActor 上调同一个服务）。
-        public var generateTriage: @MainActor @Sendable (String) async throws -> TriageSummary
+        /// 调 TriageService.generate。
+        ///
+        /// Wave4a / task-39（E4）：**不再标 @MainActor**——宿主用专用 actor 承载
+        /// 非 Sendable 的 TriageService，本闭包在 actor 上排队执行，不占主线程。
+        public var generateTriage: @Sendable (String) async throws -> TriageSummary
         /// 调 TriageService.apply（source=.automation；幂等/门禁由服务侧保证）。
-        public var applyTriage: @MainActor @Sendable (TriageApplyInput) async throws -> TriageApplyResult
+        public var applyTriage: @Sendable (TriageApplyInput) async throws -> TriageApplyResult
         /// triage_auto_apply（默认关）。
         public var autoApplyEnabled: @Sendable () -> Bool
+        /// triage_enabled（E4）：关闭时整条自动初审（含 quality.score 入队）直接 skipped，
+        /// 不做无用的完整质量/模型分析。
+        public var triageEnabled: @Sendable () -> Bool
         /// 轮询间隔（测试注入 no-op）。
         public var poll: @Sendable () async throws -> Void
 
         public init(
             listJobs: @escaping @Sendable () throws -> [AnalysisJobData],
             enqueueQualityJob: @escaping @Sendable (String) throws -> AnalysisJobData,
-            generateTriage: @escaping @MainActor @Sendable (String) async throws -> TriageSummary,
-            applyTriage: @escaping @MainActor @Sendable (TriageApplyInput) async throws -> TriageApplyResult,
+            generateTriage: @escaping @Sendable (String) async throws -> TriageSummary,
+            applyTriage: @escaping @Sendable (TriageApplyInput) async throws -> TriageApplyResult,
             autoApplyEnabled: @escaping @Sendable () -> Bool,
+            triageEnabled: @escaping @Sendable () -> Bool,
             poll: @escaping @Sendable () async throws -> Void
         ) {
             self.listJobs = listJobs
@@ -77,6 +82,7 @@ public struct AITriageAutoPipeline: Sendable {
             self.generateTriage = generateTriage
             self.applyTriage = applyTriage
             self.autoApplyEnabled = autoApplyEnabled
+            self.triageEnabled = triageEnabled
             self.poll = poll
         }
     }
@@ -102,6 +108,11 @@ public struct AITriageAutoPipeline: Sendable {
             }
             guard !Task.isCancelled else {
                 return AITriageAutoOutcome(stage: .stopped, reason: "cancelled")
+            }
+
+            // E4：triage 关闭时不做无用功（quality + model review 都要解码，成本高）。
+            guard deps.triageEnabled() else {
+                return AITriageAutoOutcome(stage: .skipped, reason: "triage-disabled")
             }
 
             // ② 确保 quality.score 在跑（已有活跃 job 就复用，避免重复解码）。

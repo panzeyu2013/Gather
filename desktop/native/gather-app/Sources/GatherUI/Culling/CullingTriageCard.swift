@@ -101,7 +101,15 @@ struct CullingTriageCard: View {
                 SemanticSearchSheet(
                     api: photoAPI,
                     sessionId: viewModel.sessionId,
-                    seedPhotoIds: semanticSeedPhotoIds)
+                    seedPhotoIds: semanticSeedPhotoIds,
+                    nameFor: { id in
+                        viewModel.page?.assets.first { $0.photo.id == id }?.photo.filename
+                            ?? String(id.prefix(8))
+                    },
+                    onSelect: { id in
+                        viewModel.gridClick(id, modifiers: [])
+                        layoutMode = .grid
+                    })
             }
         }
         .task(id: showCalibration) {

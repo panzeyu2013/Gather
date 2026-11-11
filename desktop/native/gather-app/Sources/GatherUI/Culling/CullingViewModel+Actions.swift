@@ -5,9 +5,20 @@ import Foundation
 import GatherProtocol
 
 /// 加载期间被排队的单拍决策（P0-4）：只保留最后一次按键。
+///
+/// Wave4a / B1：除了补丁本身，还冻结按键落下的**目标快照**。加载期间页面/筛选/
+/// 范围可能整体换掉（currentPhotoId 回退到新页首张、选择集被清空），重放时如果
+/// 直接按"当前"执行会把标记写到用户没看过的照片上；flush 时快照不一致就丢弃。
 struct PendingCullingCommit: Equatable {
     var patch: CullingUpdatePatch
     var shouldAdvance: Bool
+    /// 单张决策的目标（selectedPhotoIds 为空时 = 入队时的 currentAsset.photo.id）；
+    /// 选择集决策时留 nil（目标由 targetSelection 表达）。
+    var targetPhotoId: String?
+    /// 入队时的选择集快照。
+    var targetSelection: Set<String>
+    /// 入队时的服务端范围快照（⌘A 的 scope/filters/hash）；与 targetSelection 一起比较。
+    var targetServerSnapshot: CullingSelectionSnapshot?
 }
 
 extension CullingViewModel {
@@ -375,10 +386,22 @@ extension CullingViewModel {
     }
 
     /// 加载结束后补执行排队的那一拍（幂等：无排队 = 无操作）。
+    ///
     /// 只重放**最后一次**按键，不叠加中途意图——重放早先拍会写到已前进的照片上。
+    /// Wave4a / B1：重放前先比对入队时的目标快照；页面/筛选/范围变化导致目标
+    /// 已不是同一批照片时**丢弃**（宁可丢这一拍，也不把标记写到用户没看过的照片上），
+    /// 并给可见 notice——不回到"静默丢键"。
     func flushPendingCommit() async {
         guard let pending = pendingCommit else { return }
         pendingCommit = nil
+        let selectionUnchanged = pending.targetSelection == selectedPhotoIds
+            && pending.targetServerSnapshot == selectionSnapshot
+        let photoUnchanged = pending.targetPhotoId == nil
+            || pending.targetPhotoId == currentAsset?.photo.id
+        guard selectionUnchanged, photoUnchanged else {
+            notice = CullingNotice("加载完成后目标已变化，已丢弃加载期间排队的操作")
+            return
+        }
         await commit(patch: pending.patch, shouldAdvance: pending.shouldAdvance)
     }
 
@@ -386,8 +409,14 @@ extension CullingViewModel {
         guard !isLoading else {
             // P0-4：旧实现在这里静默 return——连按 P/X 只有第一拍生效，用户当 bug。
             // 改为单槽排队：加载结束立刻执行最后一次，既不丢键也不会把中途的
-            // 模糊意图叠加写盘。
-            queuePendingCommit(PendingCullingCommit(patch: patch, shouldAdvance: shouldAdvance))
+            // 模糊意图叠加写盘。Wave4a / B1：同时冻结目标快照，flush 时目标变了就丢弃。
+            let targets = selectedPhotoIds
+            queuePendingCommit(PendingCullingCommit(
+                patch: patch,
+                shouldAdvance: shouldAdvance,
+                targetPhotoId: targets.isEmpty ? currentAsset?.photo.id : nil,
+                targetSelection: targets,
+                targetServerSnapshot: selectionSnapshot))
             return
         }
         guard !selectedPhotoIds.isEmpty else {

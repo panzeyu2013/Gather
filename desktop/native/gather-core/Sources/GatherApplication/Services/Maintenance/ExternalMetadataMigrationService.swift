@@ -76,7 +76,12 @@ public struct ExternalMetadataMigrationService: Sendable {
 
             if let desired = attributes.rating {
                 let desiredValue = Int64(desired.rounded())
-                if desiredValue != candidate.rating {
+                // D2（task-31 review）：Lightroom 的 -1（reject）以及异常的 6 都会
+                // 触发 photo_metadata_cache 的 CHECK(0...5)，旧实现会让整个迁移事务
+                // 回滚。evaluate 阶段丢弃该 rating 并计数，label/keywords 照常处理。
+                if !(0...5).contains(desiredValue) {
+                    report.skippedInvalidRating += 1
+                } else if desiredValue != candidate.rating {
                     if candidate.rating > 0 && !overwriteExisting {
                         report.conflicts += 1
                     } else {

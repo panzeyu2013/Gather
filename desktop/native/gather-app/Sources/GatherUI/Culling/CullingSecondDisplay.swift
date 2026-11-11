@@ -243,12 +243,22 @@ private struct CullingSecondDisplayCanvas: View {
                 container: CGSize(width: geometry.size.width, height: gridHeight),
                 columns: columns,
                 rows: rows)
+            // Wave4a / B3：第二屏也按同屏格数分配细节贴片预算（与主查看器同源）。
+            let visibleCount = max(1, visible.count)
+            let detailBudget = PhotoDetailTier.budget(forVisibleCells: visibleCount)
             VStack(spacing: .zero) {
                 VStack(spacing: GatherMetrics.Space.s) {
                     ForEach(0..<groups.count, id: \.self) { rowIndex in
                         HStack(spacing: GatherMetrics.Space.s) {
                             ForEach(groups[rowIndex]) { cell in
-                                cellView(cell)
+                                CullingMirrorCell(
+                                    asset: cell.asset,
+                                    isCurrent: cell.asset.photo.id == currentAsset?.photo.id,
+                                    cellSize: cellSize,
+                                    zoom: zoom,
+                                    offset: offset,
+                                    visibleCount: visibleCount,
+                                    detailBudget: detailBudget)
                                     .frame(width: cellSize.width, height: cellSize.height)
                             }
                         }
@@ -261,53 +271,6 @@ private struct CullingSecondDisplayCanvas: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .clipped()
-    }
-
-    private func cellView(_ cell: ViewerCell) -> some View {
-        let asset = cell.asset
-        let isCurrent = asset.photo.id == currentAsset?.photo.id
-        return ZStack(alignment: .bottom) {
-            PhotoThumbnailView(
-                path: asset.photo.filepath,
-                size: PhotoDetailTier.baseDimension,
-                preview: true,
-                contentMode: .fit,
-                placeholderSurface: GatherTheme.viewerSurface,
-                placeholderTextColor: GatherTheme.viewerTextSecondary
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .scaleEffect(zoom)
-            .offset(offset)
-            .allowsHitTesting(false)
-            HStack(spacing: GatherMetrics.Space.s) {
-                Text(asset.photo.filename).lineLimit(1)
-                Spacer(minLength: 0)
-                Text(asset.state.rating > 0 ? "\(Int(asset.state.rating))★" : l10n("未评级"))
-            }
-            .font(GatherFont.secondary)
-            .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.92))
-            .padding(.horizontal, GatherMetrics.Space.xs)
-            .padding(.vertical, GatherMetrics.Space.xxs)
-            .frame(maxWidth: .infinity)
-            .background(GatherTheme.viewerSurface.opacity(0.9))
-            if isCurrent {
-                Text(l10n("当前"))
-                    .font(GatherFont.label)
-                    .foregroundStyle(GatherTheme.viewerTextPrimary)
-                    .padding(.horizontal, GatherMetrics.Space.xs)
-                    .padding(.vertical, GatherMetrics.Space.xxs)
-                    .background(Capsule().fill(GatherTheme.accent.opacity(0.85)))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(GatherMetrics.Space.xs)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .background(GatherTheme.viewerBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: GatherTheme.Radius.media, style: .continuous)
-                .stroke(isCurrent ? GatherTheme.accent.opacity(0.65) : GatherTheme.viewerSurface, lineWidth: 1)
-        )
     }
 
     private var footer: some View {
@@ -348,5 +311,200 @@ private struct CullingSecondDisplayCanvas: View {
         }
         if !row.isEmpty { groups.append(row) }
         return groups
+    }
+}
+// MARK: - 第二屏镜像贴片（Wave4a / B3）
+
+/// 第二屏镜像贴片的纯逻辑（可单测）。
+///
+/// 与主查看器共用同一套几何与预算来源：`PhotoViewerGeometry.detailTile`（可见区
+/// 归一化矩形 + 视图落位）、`PhotoViewerGeometry.tilePixelSize`（目标像素）、
+/// `PhotoDetailTier.budget(forVisibleCells:)`（同屏格数收窄预算）。
+///
+/// 与主查看器的唯一差别来自第二屏的只读语义：没有 hover/手势，因此 >2 格时只给
+/// 当前格贴片（主查看器是"当前 + hover"），避免镜像窗口一次解 N 块细节。
+enum CullingSecondDisplayMirror {
+    static func showsTile(visibleCount: Int, isCurrent: Bool) -> Bool {
+        CullingDetailTilePolicy.showsTile(
+            compareCount: max(1, visibleCount),
+            isCurrent: isCurrent,
+            isHovered: false)
+    }
+
+    /// 该格在当前 zoom/offset 下的可见区贴片；nil = 2560 基准位图已够（fit 档）。
+    static func tile(
+        asset: CullingAsset,
+        cellSize: CGSize,
+        zoom: Double,
+        offset: CGSize
+    ) -> PhotoViewerGeometry.DetailTile? {
+        PhotoViewerGeometry.detailTile(
+            imageSize: CGSize(
+                width: Double(asset.photo.width),
+                height: Double(asset.photo.height)),
+            viewSize: cellSize,
+            zoom: zoom,
+            panOffset: offset,
+            backingPixelBudget: PhotoDetailTier.baseDimension)
+    }
+
+    /// 区域解码目标像素（随同屏格数收窄，与主查看器的 detailBudget 同源）。
+    static func targetPixel(
+        tile: PhotoViewerGeometry.DetailTile,
+        budgetDimension: Int
+    ) -> Int {
+        PhotoViewerGeometry.tilePixelSize(
+            viewRect: tile.viewRect,
+            budgetDimension: budgetDimension)
+    }
+}
+
+/// 第二屏只读画布的单格：基准位图 + 共享 zoom/offset + 可见区细节贴片。
+///
+/// 细节贴片用 `.task(id:)` 做 150ms 去抖（缩放/平移过程中不排重解码，键变化自动
+/// 取消上一次任务）；贴片只画不接手势，第二屏仍然是纯展示。
+private struct CullingMirrorCell: View {
+    let asset: CullingAsset
+    let isCurrent: Bool
+    let cellSize: CGSize
+    let zoom: Double
+    let offset: CGSize
+    /// 同屏总格数（贴片可见性与预算按它算，与主查看器一致）。
+    let visibleCount: Int
+    /// 本次同屏允许的单格解码档位上限。
+    let detailBudget: Int
+
+    @Environment(\.languageStore) private var languageStore
+    private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+    @State private var tile: PhotoViewerGeometry.DetailTile?
+
+    init(
+        asset: CullingAsset,
+        isCurrent: Bool,
+        cellSize: CGSize,
+        zoom: Double,
+        offset: CGSize,
+        visibleCount: Int,
+        detailBudget: Int
+    ) {
+        self.asset = asset
+        self.isCurrent = isCurrent
+        self.cellSize = cellSize
+        self.zoom = zoom
+        self.offset = offset
+        self.visibleCount = visibleCount
+        self.detailBudget = detailBudget
+    }
+
+    /// 贴片任务键：路径/几何/缩放/平移/布局任一变化都重算并取消旧任务。
+    private struct TileTaskKey: Hashable {
+        let path: String
+        let width: Double
+        let height: Double
+        let zoom: Double
+        let offsetWidth: Double
+        let offsetHeight: Double
+        let visibleCount: Int
+        let isCurrent: Bool
+    }
+
+    private var tileTaskKey: TileTaskKey {
+        TileTaskKey(
+            path: asset.photo.filepath,
+            width: Double(cellSize.width),
+            height: Double(cellSize.height),
+            zoom: zoom,
+            offsetWidth: Double(offset.width),
+            offsetHeight: Double(offset.height),
+            visibleCount: visibleCount,
+            isCurrent: isCurrent)
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            // 基准位图：立即显示、负责构图；放大后的真实像素由下面的细节层补。
+            PhotoThumbnailView(
+                path: asset.photo.filepath,
+                size: PhotoDetailTier.baseDimension,
+                preview: true,
+                contentMode: .fit,
+                placeholderSurface: GatherTheme.viewerSurface,
+                placeholderTextColor: GatherTheme.viewerTextSecondary
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .scaleEffect(zoom)
+            .offset(offset)
+            .allowsHitTesting(false)
+            // 可见区细节层：只在需要（zoom>1 且超过基准位图分辨率）且策略允许时渲染。
+            if let tile,
+               CullingSecondDisplayMirror.showsTile(
+                   visibleCount: visibleCount, isCurrent: isCurrent) {
+                PhotoDetailTileView(
+                    path: asset.photo.filepath,
+                    normalizedRect: tile.normalizedRect,
+                    targetPixel: CullingSecondDisplayMirror.targetPixel(
+                        tile: tile, budgetDimension: detailBudget),
+                    onUnavailable: nil
+                )
+                .frame(width: max(0, tile.viewRect.width), height: max(0, tile.viewRect.height))
+                .position(x: tile.viewRect.midX, y: tile.viewRect.midY)
+                .allowsHitTesting(false)
+            }
+            HStack(spacing: GatherMetrics.Space.s) {
+                Text(asset.photo.filename).lineLimit(1)
+                Spacer(minLength: 0)
+                Text(asset.state.rating > 0
+                     ? "\(Int(asset.state.rating))★"
+                     : l10n("未评级"))
+            }
+            .font(GatherFont.secondary)
+            .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.92))
+            .padding(.horizontal, GatherMetrics.Space.xs)
+            .padding(.vertical, GatherMetrics.Space.xxs)
+            .frame(maxWidth: .infinity)
+            .background(GatherTheme.viewerSurface.opacity(0.9))
+            if isCurrent {
+                Text(l10n("当前"))
+                    .font(GatherFont.label)
+                    .foregroundStyle(GatherTheme.viewerTextPrimary)
+                    .padding(.horizontal, GatherMetrics.Space.xs)
+                    .padding(.vertical, GatherMetrics.Space.xxs)
+                    .background(Capsule().fill(GatherTheme.accent.opacity(0.85)))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(GatherMetrics.Space.xs)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .background(GatherTheme.viewerBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: GatherTheme.Radius.media, style: .continuous)
+                .stroke(isCurrent ? GatherTheme.accent.opacity(0.65) : GatherTheme.viewerSurface, lineWidth: 1)
+        )
+        .task(id: tileTaskKey) {
+            await updateTile()
+        }
+    }
+
+    /// 与主查看器一致的 150ms 去抖：平移/缩放过程不排重解码；任务取消即退出。
+    private func updateTile() async {
+        guard CullingSecondDisplayMirror.showsTile(
+            visibleCount: visibleCount, isCurrent: isCurrent) else {
+            tile = nil
+            return
+        }
+        // 回到 fit 档立即清掉细节层，避免旧贴片在新缩放级上多显示 150ms。
+        guard zoom > 1 else {
+            tile = nil
+            return
+        }
+        do {
+            try await Task.sleep(for: .milliseconds(150))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled else { return }
+        tile = CullingSecondDisplayMirror.tile(
+            asset: asset, cellSize: cellSize, zoom: zoom, offset: offset)
     }
 }

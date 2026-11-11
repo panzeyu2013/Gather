@@ -78,6 +78,7 @@ private func makeSummary(fingerprint: String = "fp-1") -> TriageSummary {
 private func makePipeline(
     feed: FakeJobFeed,
     autoApply: Bool,
+    triageEnabled: Bool = true,
     summary: TriageSummary = makeSummary(),
     maxPolls: Int = 10
 ) -> AITriageAutoPipeline {
@@ -87,7 +88,6 @@ private func makePipeline(
             feed.recordEnqueue(sessionId)
             return makeJob(id: "q1", type: .qualityScore, status: .queued)
         },
-        // 上下文类型是 @MainActor @Sendable：闭包自动继承 MainActor 隔离。
         generateTriage: { sessionId in
             feed.recordGenerate(sessionId)
             return summary
@@ -97,6 +97,7 @@ private func makePipeline(
             return TriageApplyResult(appliedPhotos: 2)
         },
         autoApplyEnabled: { autoApply },
+        triageEnabled: { triageEnabled },
         poll: { feed.advance() })
     return AITriageAutoPipeline(deps: deps, maxPolls: maxPolls)
 }
@@ -190,6 +191,20 @@ struct AITriageAutoPipelineTests {
         #expect(outcome.stage == .stopped)
         #expect(outcome.reason == "index-not-succeeded")
         #expect(feed.enqueued.isEmpty)
+    }
+
+    @Test("triage_enabled=0 → 直接 skipped：不入队质量、不生成、不应用（E4）")
+    func triageDisabledSkips() async {
+        let feed = FakeJobFeed([
+            [makeJob(id: "scan", type: .metadataScan, status: .succeeded)],
+        ])
+        let outcome = await makePipeline(feed: feed, autoApply: true, triageEnabled: false)
+            .run(sessionId: "s1")
+        #expect(outcome.stage == .skipped)
+        #expect(outcome.reason == "triage-disabled")
+        #expect(feed.enqueued.isEmpty, "关闭 triage 时不应再排 quality job（省掉整段解码）")
+        #expect(feed.generated.isEmpty)
+        #expect(feed.applied.isEmpty)
     }
 
     @Test("没有任何 job（空会话/立即返回）→ 视索引为就绪，直接排质量")

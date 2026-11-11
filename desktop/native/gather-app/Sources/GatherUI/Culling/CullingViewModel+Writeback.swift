@@ -311,9 +311,14 @@ extension CullingViewModel {
     ///
     /// 与「写回 XMP…」的分工：C1 运行中时直接写 catalog 的 variant 属性（rating/
     /// color tag/pick），无需等 Load Metadata；C1 未运行/脚本不可用时仍走 XMP 写回
-    ///（同一个菜单，行为不变）。pick 用 C1 原生布尔位表达 keep/reject，**不写关键词**
-    ///（G4：不污染 C1 词库）。写回成功后 bridge 已写入 durable reload-ack，
-    /// confirm/finalize 门禁照常放行。
+    ///（同一个菜单，行为不变）。
+    ///
+    /// A3：C1 16.7 的 variant 只有布尔 pick、**没有 reject 位**，因此写回只表达 keep
+    ///（picked → pick=true）；淘汰/未处理不写 pick（保留 C1 现值），**不写关键词**
+    ///（G4：不污染 C1 词库）。
+    /// A1：只有**全部命中**（notFound/skipped 为空）bridge 才写 durable reload-ack；
+    /// 部分成功时给出可执行下一步，避免 confirm/finalize 在 C1 仍显示旧值时推进。
+    /// A4：items 只覆盖当前页；跨页选择会明确提示「仅当前页 N/M」，不再静默截断。
     ///
     /// 收口口径（2026-11-11 已确认）：写的是 C1 catalog（权威），**不再** reload metadata
     ///（会把盘上旧 XMP 读回覆盖判断）；失败/未接线时统一提示可执行的下一步：
@@ -324,6 +329,7 @@ extension CullingViewModel {
             errorMessage = CommandError.localized("请先选择照片（或让当前照片可见）")
             return
         }
+        let crossPage = variantWritebackCrossPageCount
         do {
             let report = try await captureOne.writeVariantJudgements(
                 sessionId: sessionId, items: items)
@@ -335,18 +341,26 @@ extension CullingViewModel {
                 return
             }
             errorMessage = nil
-            if report.notFound.isEmpty {
+            if crossPage > 0 {
+                // A4：跨页选择只写当前页；明确提示剩余张数（不再静默截断）。
+                notice = CullingNotice(
+                    "仅当前页：已写回 %lld/%lld 张（其它页未写回；跨页请分批，或用「写回 XMP…」覆盖全部）",
+                    params: ["\(report.written)", "\(selectedPhotoIds.count)"])
+            } else if !report.notFound.isEmpty || report.skipped > 0 {
+                // A1：部分成功不解除门禁（bridge 不写 durable ack），提示可执行下一步。
+                notice = CullingNotice(
+                    "已写回 %lld 个变体；%lld 个不在当前目录、%lld 张超上限未写回（未解除 C1 重载门禁：可改用「写回 XMP…」并手动 Load）",
+                    params: ["\(report.written)", "\(report.notFound.count)", "\(report.skipped)"])
+            } else {
                 notice = CullingNotice(
                     "已在 Capture One 中写回 %lld 个变体",
                     params: ["\(report.written)"])
-            } else {
-                notice = CullingNotice(
-                    "已写回 %lld 个变体，%lld 个不在当前目录",
-                    params: ["\(report.written)", "\(report.notFound.count)"])
             }
-            if report.skipped > 0 {
+            if !report.notFound.isEmpty || report.skipped > 0 {
                 GatherLogger.log(
-                    "c1.variant_writeback skipped=\(report.skipped)（超过单次上限，需分批）",
+                    "c1.variant_writeback partial written=\(report.written)"
+                        + " notFound=\(report.notFound.count)"
+                        + " skipped=\(report.skipped)（未解除 reload-ack 门禁）",
                     level: .warn)
             }
         } catch {
@@ -372,7 +386,8 @@ extension CullingViewModel {
     /// 写回目标：选择集（保持页面顺序）或当前照片；路径去重保序。
     ///
     /// rating/colorLabel/pickState 都取当前资产的决策状态（缓存投影），不查库：
-    /// 用户看到什么就写回什么。unreviewed 不写 pick（避免把 C1 已有 pick 清掉）。
+    /// 用户看到什么就写回什么。A3：pick 只表达 keep（picked→true）；淘汰/未处理
+    /// 一律不写（C1PickMapping，避免写 false 取消 C1 已有 pick）。
     var variantWritebackItems: [C1VariantWritebackItem] {
         let assets = page?.assets ?? []
         let targets: [CullingAsset]
@@ -388,18 +403,19 @@ extension CullingViewModel {
             let path = asset.photo.filepath
             guard path.hasPrefix("/"),
                   seen.insert(ScanPath.canonical(path)).inserted else { return nil }
-            let pick: Bool?
-            switch asset.state.pickState {
-            case .picked: pick = true
-            case .rejected: pick = false
-            case .unreviewed: pick = nil
-            }
             return C1VariantWritebackItem(
                 photoPath: path,
                 rating: Int(asset.state.rating.rounded()),
                 colorTag: C1ColorTagMapping.rawValue(for: asset.state.colorLabel),
-                pick: pick)
+                pick: C1PickMapping.pickToWrite(for: asset.state.pickState))
         }
+    }
+
+    /// A4：选择集里不在当前页、本次不会写回的张数（0 = 无跨页截断）。
+    var variantWritebackCrossPageCount: Int {
+        guard !selectedPhotoIds.isEmpty else { return 0 }
+        let pageIds = Set((page?.assets ?? []).map(\.photo.id))
+        return selectedPhotoIds.subtracting(pageIds).count
     }
 
     public func confirmSync() async {

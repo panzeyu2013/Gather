@@ -149,7 +149,8 @@ public enum SingleImagePrintLayoutEngine {
     ///
     /// - 非法源尺寸（0/NaN）时退化为"铺满可用区"，不返回 0 宽图像框
     ///   （宁可画大也不要产出一张空白 PDF）；
-    /// - custom 尺寸夹进页内（允许覆盖离白区域，但不越出纸张）。
+    /// - custom 尺寸也夹进 **contentRect**（「离白」对两种摆放方式一视同仁：
+    ///   Wave4a / B2 修复前 custom 只夹到纸张、会压过页边距，与面板参数矛盾）。
     public static func layout(
         imageSize: CGSize,
         options: SingleImagePrintOptions
@@ -161,11 +162,11 @@ public enum SingleImagePrintLayoutEngine {
         case .fitToPage:
             imageRect = aspectFit(source: imageSize, in: content)
         case .custom:
-            let width = min(max(1, options.customImageSize.width), pageSize.width)
-            let height = min(max(1, options.customImageSize.height), pageSize.height)
+            let width = min(max(1, options.customImageSize.width), content.width)
+            let height = min(max(1, options.customImageSize.height), content.height)
             imageRect = CGRect(
-                x: (pageSize.width - width) / 2,
-                y: (pageSize.height - height) / 2,
+                x: content.midX - width / 2,
+                y: content.midY - height / 2,
                 width: width,
                 height: height
             )

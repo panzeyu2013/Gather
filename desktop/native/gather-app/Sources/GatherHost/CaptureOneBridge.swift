@@ -813,12 +813,15 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     /// 流程：路径 → `every image of targetDoc whose path is p`，取该 image 的 variants；
     /// 目标 variant = 已 pick 的那个，否则 position 1；**只写目标 variant**，
     /// 同一 image 其余 variant 原值不动（G5：多 variant 不互相覆盖）。
-    /// 写属性：rating / color tag / pick（pick 原生布尔位表达 keep/reject，
-    /// 不写任何关键词 —— G4 明确禁止用 culling:keep 污染 C1 词库）。
+    /// 写属性：rating / color tag / pick。**A3：pick 只表达 keep**（写 true）；
+    /// reject/unreviewed 一律不写 pick —— C1 16.7 sdef 没有 reject 位（:1084），
+    /// 写 false 会取消 C1 已有的 pick 且读回只能当 unreviewed（不可逆）。
+    /// 不写任何关键词：G4 明确禁止用 culling:keep 污染 C1 词库。
     ///
     /// 收口：写的是 C1 catalog 本身（已是权威），因此**不**再对同一 variant 调
-    /// reload metadata（那会把盘上旧 XMP 读回、覆盖刚写入的判断）。成功写入后沿用
-    /// durable reload-ack（sessions.reload_acked_at），confirm/finalize 门禁照常放行；
+    /// reload metadata（那会把盘上旧 XMP 读回、覆盖刚写入的判断）。**全部命中**时
+    /// 才沿用 durable reload-ack（sessions.reload_acked_at），confirm/finalize 门禁
+    /// 照常放行；部分成功（notFound/skipped）不写 ack（A1：避免门禁误放行）。
     /// 离线/未运行时仍走原 XMP 写回（本方法不触碰 XMP）。
     ///
     /// 【口径已确认 2026-11-11（Lead/产品批准）】**不要**把这里"修"成先 reload 再写/写后 reload：
@@ -870,7 +873,11 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
                 notFound.append(unique[index].photoPath)
             }
         }
-        if written > 0, let sessionId {
+        // A1：部分写回**不解门禁**。reload-acked 是会话级"C1 已看到新值"的断言
+        // （DeliveryCoordinator.requireReloadAck 用它放行 confirm/finalize→清理备份），
+        // notFound/skipped 非空说明有请求没写进 C1；此时写 ack 会让交付在 C1 仍显示
+        // 旧值时被确认/清理。只有全部命中（且确有写入）才写 ack。
+        if written > 0, notFound.isEmpty, skipped == 0, let sessionId {
             // C1 catalog 已是权威值：写 durable ack 让 confirm/finalize 门禁放行，
             // 但绝不再触发 reload（会把旧 XMP 读回覆盖判断）。ack 写失败只记日志，
             // 不掩盖"C1 已写入"的事实（: ack 是会话级簿记，不是写入结果）。
@@ -907,8 +914,10 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
                 "        set rating of targetVariant to \(rating)",
                 "        set color tag of targetVariant to \(tag)",
             ]
-            if let pick = item.pick {
-                lines.append("        set pick of targetVariant to \(pick ? "true" : "false")")
+            // A3：C1 无 reject 位 → 只写 keep（true）。false 视为"不写"：
+            // 保留 C1 现值比写入一个不可逆的 false 更安全（淘汰不写回 C1）。
+            if item.pick == true {
+                lines.append("        set pick of targetVariant to true")
             }
             lines.append(contentsOf: [
                 "        set report to report & \"1\" & linefeed",

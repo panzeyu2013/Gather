@@ -612,7 +612,9 @@ package final class AppBootstrap {
         // 只取三个 Sendable 服务（JobService/SettingsService 已是 @unchecked Sendable，
         // TriageService 经 actor 桥），不把整个 AppComposition 拖进后台任务。
         let autoTriageJobService = composition.jobService
-        let autoTriageTriageService = composition.triageService
+        // E4：不再捕获非 Sendable 的 TriageService —— 后台 actor 只用 Sendable 的
+        // DBConnection + SettingsService 自己构造同口径服务实例。
+        let autoTriageDatabase = composition.db
         let autoTriageSettings = composition.settingsService
         delegate.onImportFiles = { files in
             let l10n = languageStore.l10n
@@ -626,7 +628,7 @@ package final class AppBootstrap {
                         AITriageImportTrigger.schedule(
                             sessionId: result.session.id,
                             jobService: autoTriageJobService,
-                            triageService: autoTriageTriageService,
+                            database: autoTriageDatabase,
                             settings: autoTriageSettings)
                     }
                 )
@@ -657,7 +659,7 @@ package final class AppBootstrap {
                         AITriageImportTrigger.schedule(
                             sessionId: result.session.id,
                             jobService: autoTriageJobService,
-                            triageService: autoTriageTriageService,
+                            database: autoTriageDatabase,
                             settings: autoTriageSettings)
                         // 钩子必须立即返回：真正落库在后台 Task 里（要先等 metadata.scan
                         // 终态，否则扫描把 photo_metadata_cache 的 rating/关键词覆盖回 XMP 值）。
@@ -756,7 +758,8 @@ enum C1JudgementImport {
     ///
     /// 为什么不能立即写：metadata.scan 的 MetadataExtractionService 用整行 upsert 覆盖
     /// photo_metadata_cache（XMP 无 rating 时写回 0 / 空关键词），先写的判断会被清掉。
-    /// 等待有上限（服务内默认 10 分钟），超时/取消也会落库并写日志（判断不丢）。
+    /// 等待有上限（服务内默认 10 分钟）；仅扫描成功才落库（A2），否则跳过并在日志/report
+    /// 记 skippedReason（失败/取消/超时写入会被后续成功扫描的整行 upsert 清掉）。
     static func scheduleApply(
         database: DBConnection,
         sessionId: String,
@@ -786,8 +789,9 @@ enum C1JudgementImport {
                     + " keywords=\(report.keywords)"
                     + " manualPreserved=\(report.preservedManualDecisions)"
                     + " waited=\(report.waitedForIndexing) timedOut=\(report.indexingTimedOut)"
+                    + " skippedReason=\(report.skippedReason ?? "-")"
                     + " errors=\(report.errors.count)",
-                level: report.errors.isEmpty ? .info : .warn)
+                level: report.errors.isEmpty && report.skippedReason == nil ? .info : .warn)
             guard report.applied > 0 else { return }
             await MainActor.run {
                 // 广播挑片域变更：已挂载的挑片页/图库据此重拉星级、色标与决策。
@@ -800,6 +804,48 @@ enum C1JudgementImport {
 
 // MARK: - Wave2 / task-14：导入后自动初审
 
+/// Wave4a / task-39（E4）：把 triage 的 generate/apply 移出 MainActor。
+///
+/// TriageService 不是 Sendable，且持有 gate 缓存/串行锁；由本 actor **自己**用
+/// Sendable 句柄（DBConnection + SettingsService）构造同口径实例，pipeline 只通过
+/// actor 方法访问 → 生成/应用在 actor 执行器上跑，不占主线程，也不新增逃逸口注解。
+///
+/// 注意：这是与组合根不同的第二个实例（只服务导入后自动初审）；gate 缓存 TTL 2s 独立，
+/// 影响仅限于"刚生成完页面可能短暂拿旧门控"，随页面重载收敛。
+actor AITriageBackgroundWorker {
+    private let database: DBConnection
+    private let settings: SettingsService
+    private var service: TriageService?
+
+    init(database: DBConnection, settings: SettingsService) {
+        self.database = database
+        self.settings = settings
+    }
+
+    private func resolvedService() -> TriageService {
+        if let service { return service }
+        // 与 CompositionCore 的构造保持同一口径（TriagePolicy.fromSettings + triage_enabled）。
+        let created = TriageService(
+            repository: TriageRepo(connection: database),
+            decisions: CullingDecisionRepo(connection: database),
+            history: CullingHistoryRepo(connection: database),
+            transactions: database,
+            policyProvider: { [settings] in TriagePolicy.fromSettings(settings) },
+            enabledProvider: { [settings] in settings.bool(.triageEnabled) },
+            feedback: TriageFeedbackRepo(connection: database))
+        service = created
+        return created
+    }
+
+    func generate(sessionId: String) throws -> TriageSummary {
+        try resolvedService().generate(sessionId: sessionId)
+    }
+
+    func apply(_ input: TriageApplyInput) throws -> TriageApplyResult {
+        try resolvedService().apply(Confirmed(input, source: .automation))
+    }
+}
+
 /// 导入完成后调度自动初审（默认关：triage_auto_generate=0 时直接返回，行为与旧版一致）。
 ///
 /// 边界：
@@ -808,36 +854,57 @@ enum C1JudgementImport {
 /// - 进度与取消走既有 JobService：quality.score 是普通 job，控制中心可见可取消；
 ///   用户取消该 job → pipeline 观察终态后停止，不会继续生成建议。
 enum AITriageImportTrigger {
-    /// @MainActor：闭包要捕获非 Sendable 的 TriageService（与调用点同为 MainActor），
-    /// 同时 Task.detached 只带走 Sendable 的 pipeline（不新增 @unchecked Sendable）。
+    /// @MainActor：只做调度（读设置 + 建 actor + 起 detached 任务）；
+    /// 真正耗时的 generate/apply 在 `AITriageBackgroundWorker` actor 上执行（E4）。
     @MainActor
     static func schedule(
         sessionId: String,
         jobService: JobService,
-        triageService: TriageService,
+        database: DBConnection,
         settings: SettingsService
     ) {
         guard settings.bool(.triageAutoGenerate) else { return }
+        guard settings.bool(.triageEnabled) else {
+            // triage 关闭：整条自动初审（含 quality 入队）直接跳过，不做无用解码。
+            // 记一行日志便于排查"开了 auto_generate 却没反应"（triage_enabled 默认 0）。
+            GatherLogger.log(
+                "ai.auto-triage session=\(sessionId) stage=skipped reason=triage-disabled",
+                level: .info)
+            return
+        }
+        let worker = AITriageBackgroundWorker(database: database, settings: settings)
         let deps = AITriageAutoPipeline.Dependencies(
             listJobs: { try jobService.list(status: nil, includeCheckpoint: false) },
             enqueueQualityJob: { scopeId in
-                try jobService.create(JobCreateParams(
+                let baseKey = "quality.score:\(scopeId):auto-import-triage"
+                // AnalysisJobRepo.create 默认继承同 dedupeKey 上一终态行的 checkpoint：
+                // 同会话二次触发会带上旧 `photoIds` 只分析旧照片（P2/E4 附带修复）。
+                // 有历史终态行时换一个一次性 key，等价于"不继承旧 checkpoint"。
+                let dedupeKey: String
+                do {
+                    if try jobService.latestTerminalCheckpoint(dedupeKey: baseKey) == nil {
+                        dedupeKey = baseKey
+                    } else {
+                        dedupeKey = baseKey + ":" + UUID().uuidString
+                    }
+                } catch {
+                    dedupeKey = baseKey
+                }
+                return try jobService.create(JobCreateParams(
                     type: .qualityScore,
                     scopeType: "session",
                     scopeId: scopeId,
-                    // 固定 key：一个会话只接一条自动初审链；重复导入到同一会话时
-                    // JobService 的 dedupeKey 语义会复用而不是再排一条。
-                    dedupeKey: "quality.score:\(scopeId):auto-import-triage"))
+                    dedupeKey: dedupeKey))
             },
-            // TriageService 不是 Sendable：闭包标 @MainActor，与挑片页
-            // CullingViewModel.generateTriage 的既有隔离一致（同一服务、同一线程域）。
+            // 生成/应用都在后台 actor 上（E4）；闭包本身是 @Sendable，不占主线程。
             generateTriage: { scopeId in
-                try triageService.generate(sessionId: scopeId)
+                try await worker.generate(sessionId: scopeId)
             },
             applyTriage: { input in
-                try triageService.apply(Confirmed(input, source: .automation))
+                try await worker.apply(input)
             },
             autoApplyEnabled: { settings.bool(.triageAutoApply) },
+            triageEnabled: { settings.bool(.triageEnabled) },
             poll: { try await Task.sleep(for: .milliseconds(500)) }
         )
         let pipeline = AITriageAutoPipeline(deps: deps)
@@ -934,23 +1001,28 @@ final class CaptureOneBridgeFacade: CaptureOneBridging, C1RoundTripReloading, C1
     }
 }
 
-/// C1 Session 根目录导入的扫描根重定向（Wave3 / G6）。
+/// C1 Session 根目录导入的扫描根重定向（Wave3 / G6，A5 起与新建工作区共用同一 helper）。
 ///
 /// C1 Session 根 = Capture（原始）+ Selects（挑中/移动后的文件）+ Trash（淘汰）。
 /// 把根当普通目录递归会让 Trash 淘汰件"复活"成普通资产，并在 Capture/Selects 之间
 /// 产生重复。这里识别到 session 结构后**只把 Capture 交给后续导入**（会话 source_path
 /// = Capture → 监听/摄取也在 Capture 内；Trash 不扫；Selects 因不扫描而不重复）。
+/// 识别/重定向规则在 `C1SessionDirectoryResolver.importPlan`（协议层，Host 与
+/// GatherUI 的新建工作区面板共用）；本类型只做 ImportFolderSelection 适配。
 /// 已知边界：Selects 中与 Capture 不同名的文件（C1 "Move to Selects" 移动过）本次
 /// 不会导入——完整覆盖需要索引器支持按目录排除/去重（不在本波范围，见汇报）。
 enum C1SessionDirectoryImport {
     static func redirect(_ selection: ImportFolderSelection) -> ImportFolderSelection {
         guard case .directory(let url) = selection else { return selection }
-        guard let layout = C1SessionDirectoryResolver.detect(root: url.path),
-              layout.isCaptureOneSession else { return selection }
+        guard let plan = C1SessionDirectoryResolver.importPlan(root: url.path) else {
+            return selection
+        }
         GatherLogger.log(
-            "c1.session import scanRoot=\(layout.scanRoot)"
-                + " selects=\(layout.selects != nil) trash=\(layout.trash != nil)",
+            "c1.session import scanRoot=\(plan.scanRoot)"
+                + " originalRoot=\(plan.originalRoot)"
+                + " selects=\(plan.layout.selects != nil)"
+                + " trash=\(plan.layout.trash != nil)",
             level: .info)
-        return .directory(URL(fileURLWithPath: layout.scanRoot))
+        return .directory(URL(fileURLWithPath: plan.scanRoot))
     }
 }

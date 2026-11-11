@@ -172,6 +172,15 @@ public struct ExternalMigrationReport: Codable, Equatable, Sendable {
     public var missingKeywords: Int
     /// 读取失败的路径（sidecar 损坏 / 权限）。
     public var failed: [String]
+    /// D2：XMP rating 越界（如 Lightroom 的 -1 / 6）被跳过的张数。
+    /// 旧 JSON 没有该键 → 解码为 0（见 init(from:)）。
+    public var skippedInvalidRating: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case scanned, sidecarsFound, applied, conflicts
+        case missingRating, missingLabel, missingKeywords, failed
+        case skippedInvalidRating
+    }
 
     public init(
         scanned: Int = 0,
@@ -181,7 +190,8 @@ public struct ExternalMigrationReport: Codable, Equatable, Sendable {
         missingRating: Int = 0,
         missingLabel: Int = 0,
         missingKeywords: Int = 0,
-        failed: [String] = []
+        failed: [String] = [],
+        skippedInvalidRating: Int = 0
     ) {
         self.scanned = scanned
         self.sidecarsFound = sidecarsFound
@@ -191,6 +201,23 @@ public struct ExternalMigrationReport: Codable, Equatable, Sendable {
         self.missingLabel = missingLabel
         self.missingKeywords = missingKeywords
         self.failed = failed
+        self.skippedInvalidRating = skippedInvalidRating
+    }
+
+    /// 兼容旧 JSON：没有 skippedInvalidRating 键按 0 处理（不因新增统计字段
+    /// 让旧迁移报告/测试夹具解码失败）。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scanned = try container.decode(Int.self, forKey: .scanned)
+        sidecarsFound = try container.decode(Int.self, forKey: .sidecarsFound)
+        applied = try container.decode(Int.self, forKey: .applied)
+        conflicts = try container.decode(Int.self, forKey: .conflicts)
+        missingRating = try container.decode(Int.self, forKey: .missingRating)
+        missingLabel = try container.decode(Int.self, forKey: .missingLabel)
+        missingKeywords = try container.decode(Int.self, forKey: .missingKeywords)
+        failed = try container.decode([String].self, forKey: .failed)
+        skippedInvalidRating = try container.decodeIfPresent(
+            Int.self, forKey: .skippedInvalidRating) ?? 0
     }
 }
 

@@ -42,12 +42,24 @@ private func row(
 
 @Suite("多选平均向量检索")
 struct SemanticMultiSeedTests {
-    @Test("平均向量：等维求均值、空输入 nil、维数不一致只取首维那批")
+    @Test("平均向量：L2 归一化后等权平均、空输入 nil、维数不一致只取首维那批")
     func averageVector() {
         #expect(SemanticIndex.averageVector([]) == nil)
         let mean = SemanticIndex.averageVector([[1, 0], [0, 1]])
         #expect(mean?[0] == 0.5 && mean?[1] == 0.5)
-        #expect(SemanticIndex.averageVector([[1, 2], [3, 4, 5]]) == [1, 2])
+        #expect(SemanticIndex.averageVector([[0, 0], [0, 0]]) == nil, "全零向量没有方向")
+
+        // P2 回归：两个种子范数不同（10 vs 1）时也必须等权——
+        // 归一化后各贡献 (1,0) 与 (0,1)，均值方向 = (0.5, 0.5)。
+        let unequalNorms = SemanticIndex.averageVector([[10, 0], [0, 1]])
+        #expect(abs((unequalNorms?[0] ?? 0) - 0.5) < 1e-5)
+        #expect(abs((unequalNorms?[1] ?? 0) - 0.5) < 1e-5)
+
+        // 维数不一致：只保留首维那批（[1,2] 归一化后 = (0.4472, 0.8944)）。
+        let mismatched = SemanticIndex.averageVector([[1, 2], [3, 4, 5]])
+        #expect(abs((mismatched?[0] ?? 0) - 0.4472136) < 1e-5)
+        #expect(abs((mismatched?[1] ?? 0) - 0.8944272) < 1e-5)
+        #expect(mismatched?.count == 2)
     }
 
     @Test("多选检索：种子被排除、按与平均向量的余弦降序、阈值过滤")

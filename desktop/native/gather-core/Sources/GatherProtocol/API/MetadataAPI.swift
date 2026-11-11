@@ -54,6 +54,9 @@ public protocol MetadataAPI: Sendable {
     /// P0 / B2：**盘上**当前描述性元数据（含 JPEG 内嵌 IPTC），编辑器初值用。
     /// 不能拿缓存当初值：缓存落后时用户会看到旧值，保存会静默覆盖外部改动。
     func diskDescriptive(_ photoId: String) async throws -> DescriptiveMetadata
+    /// D3（task-31 review）：盘上描述性元数据 + sidecar 存在性；nil = 未接线/未知。
+    /// 批量直改用它判断 diskKnown（避免把"仅缓存"的导入照片判成外部改动）。
+    func diskDescriptiveAvailability(photoId: String) async throws -> DiskDescriptiveAvailability?
     /// 撤销：按批次记录反向写；已撤销的批次拒绝重复回滚。
     func undoTemplate(_ input: Confirmed<MetadataTemplateUndoInput>) async throws -> MetadataTemplateApplyOutcome
 
@@ -179,6 +182,15 @@ public struct MetadataCleanupSummary: Codable, Equatable, Sendable {
 // MARK: - Wave2 / 词库默认实现（未接线：显式失败，不返回可被误读成"空词库"的结果）
 
 public extension MetadataAPI {
+    /// D3：未接线的实现返回 nil（= 未知）；批量直改据此置 diskKnown=false，
+    /// 不会把"读不到盘"误判成"盘上已知为空"。
+    func diskDescriptiveAvailability(
+        photoId: String
+    ) async throws -> DiskDescriptiveAvailability? {
+        _ = photoId
+        return nil
+    }
+
     func keywordLibrary(_ query: KeywordLibraryQuery) async throws -> [KeywordLibraryNode] {
         _ = query
         throw GatherError.invalidParameter(

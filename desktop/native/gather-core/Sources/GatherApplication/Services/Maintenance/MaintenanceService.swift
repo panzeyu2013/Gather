@@ -423,12 +423,23 @@ public actor MaintenanceService {
 
     // MARK: - Wave3（task-24）：目录迁移
 
+    /// P2-3（task-31 review）：目录包操作的非业务错误不再一律伪装成
+    /// diagnosticsExportFailed（UI 会显示"诊断导出失败"误导排障）。保留原始错误到
+    /// 日志，上抛带 libraryPackage 字段的 INVALID_PARAM。
+    static func libraryPackageFailure(_ error: Error) -> Error {
+        GatherLogger.log(
+            "library package operation failed: \(error)", level: .warn)
+        return GatherError.invalidParameter(
+            field: "libraryPackage", reason: String(describing: error))
+    }
+
     /// 导出目录包（只读库 + 写一个 JSON 文件；不打包原图、不改照片与 XMP）。
     public func exportLibraryPackage(
         _ input: LibraryExportInput
     ) async throws -> LibraryExportResult {
         guard let database else {
-            throw MaintenanceError.diagnosticsExportFailed("database unavailable")
+            throw GatherError.invalidParameter(
+                field: "libraryPackage", reason: "database unavailable")
         }
         do {
             return try database.read { connection in
@@ -439,7 +450,7 @@ public actor MaintenanceService {
         } catch let gather as GatherError {
             throw gather
         } catch {
-            throw MaintenanceError.diagnosticsExportFailed("\(error)")
+            throw Self.libraryPackageFailure(error)
         }
     }
 
@@ -448,7 +459,8 @@ public actor MaintenanceService {
         _ input: LibraryImportInput
     ) async throws -> LibraryImportReport {
         guard let database else {
-            throw MaintenanceError.diagnosticsExportFailed("database unavailable")
+            throw GatherError.invalidParameter(
+                field: "libraryPackage", reason: "database unavailable")
         }
         do {
             return try database.write { connection in
@@ -459,7 +471,7 @@ public actor MaintenanceService {
         } catch let gather as GatherError {
             throw gather
         } catch {
-            throw MaintenanceError.diagnosticsExportFailed("\(error)")
+            throw Self.libraryPackageFailure(error)
         }
     }
 

@@ -85,12 +85,17 @@ struct FilterWave2QueryTests {
         #expect(clause.params == [.text("c1"), .text("c2")])
     }
 
-    @Test("空 NOT 组 = 无约束（编辑器删光子条件不应变成空集）")
-    func emptyNotGroupIsUnconstrained() throws {
+    @Test("空 NOT 组 = 1=0（NOT(TRUE)=FALSE；Review P2-10）")
+    func emptyNotGroupMatchesNothing() throws {
         let query = PhotoFilterQuery(connection: try makeQueryTestDB())
         let clause = try query.whereClause(FilterGroup(logic: .not, conditions: []))
-        #expect(clause.sql.isEmpty)
+        #expect(clause.sql == "1=0")
         #expect(clause.params.isEmpty)
+        // 空 AND/OR 组仍是"无约束"（删除条件不应把筛选变成空集）。
+        let andClause = try query.whereClause(FilterGroup(logic: .and, conditions: []))
+        #expect(andClause.sql.isEmpty)
+        let orClause = try query.whereClause(FilterGroup(logic: .or, conditions: []))
+        #expect(orClause.sql.isEmpty)
     }
 
     @Test("集合成员：eq / neq / in / contains_all / exists 的 SQL 形状")

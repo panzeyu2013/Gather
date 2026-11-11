@@ -197,6 +197,9 @@ public struct SemanticKeywordApplyInput: Codable, Equatable, Sendable {
 public struct SemanticKeywordApplyResult: Codable, Equatable, Sendable {
     public var sessionId: String
     public var appliedPhotos: Int
+    /// 本批**实际写到**的照片 id（E2）：UI 保存后作为撤销 scope 回传，
+    /// 让"撤销本批"只清本批写过的照片，而不是整个会话的 root 子树。
+    public var appliedPhotoIds: [String]
     public var skippedPhotos: Int
     public var keywordsAdded: Int
     public var keywordsRemoved: Int
@@ -207,6 +210,7 @@ public struct SemanticKeywordApplyResult: Codable, Equatable, Sendable {
     public init(
         sessionId: String,
         appliedPhotos: Int,
+        appliedPhotoIds: [String] = [],
         skippedPhotos: Int,
         keywordsAdded: Int,
         keywordsRemoved: Int,
@@ -215,6 +219,7 @@ public struct SemanticKeywordApplyResult: Codable, Equatable, Sendable {
     ) {
         self.sessionId = sessionId
         self.appliedPhotos = appliedPhotos
+        self.appliedPhotoIds = appliedPhotoIds
         self.skippedPhotos = skippedPhotos
         self.keywordsAdded = keywordsAdded
         self.keywordsRemoved = keywordsRemoved

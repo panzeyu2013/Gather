@@ -21,6 +21,8 @@ struct WebDAVPublishSheet: View {
     @State private var endpoint = ""
     @State private var username = ""
     @State private var secret = ""
+    /// S3 可选 STS/Session Token（与 secret 同一条 Keychain item；WebDAV 不用）。
+    @State private var sessionToken = ""
     @State private var remoteFolder = "gather"
     @State private var bucket = ""
     @State private var region = "us-east-1"
@@ -166,7 +168,12 @@ struct WebDAVPublishSheet: View {
                     .textFieldStyle(.roundedBorder)
                 SecureField(l10n("Secret Access Key"), text: $secret)
                     .textFieldStyle(.roundedBorder)
+                SecureField(l10n("Session Token（可选，临时凭据）"), text: $sessionToken)
+                    .textFieldStyle(.roundedBorder)
                 Text(l10n("留空 = 沿用已保存的凭据"))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.secondaryText)
+                Text(l10n("临时凭据（IAM role/SSO）需要 Session Token；它只进钥匙串，不落 settings/日志。"))
                     .font(GatherFont.secondary)
                     .foregroundStyle(GatherTheme.secondaryText)
                 TextField(l10n("远端前缀"), text: $remoteFolder)
@@ -264,7 +271,11 @@ struct WebDAVPublishSheet: View {
                             includePrefixes: includePrefixes,
                             allowDownload: allowDownload,
                             proofPassword: proofPassword.isEmpty ? nil : proofPassword,
-                            expiresAt: proofExpiresAt)
+                            expiresAt: proofExpiresAt,
+                            sessionToken: transport == .s3
+                                && !sessionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? sessionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+                                : nil)
                         // 只有发布成功才关闭；失败/取消留在面板里看原因与分类（认证/网络/…）。
                         if let result = viewModel.webDAVPublish, result.isSuccess { dismiss() }
                     }

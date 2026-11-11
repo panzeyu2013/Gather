@@ -130,9 +130,20 @@ struct SimilarityAnnotationSet {
     /// 不能"静默少算"（评估物的第一要求是可复现）。
     func validate() throws {
         var seenGroups = Set<String>()
+        // P2/E1 前置：同一张照片出现在两个组会让 truthPartition 后写覆盖先写，
+        // ground truth 被静默改写 → 必须显式失败。
+        var photoOwner: [String: String] = [:]
         for group in groups {
             guard seenGroups.insert(group.id).inserted else {
                 throw SimilarityAnnotationError.invalidGroup(group.id, "group id 重复")
+            }
+            for photo in group.photos {
+                let key = (photo as NSString).standardizingPath
+                if let owner = photoOwner[key], owner != group.id {
+                    throw SimilarityAnnotationError.invalidGroup(
+                        group.id, "照片同时出现在组 \(owner) 与本组（ground truth 会互相覆盖）")
+                }
+                photoOwner[key] = group.id
             }
             guard !group.photos.isEmpty else {
                 throw SimilarityAnnotationError.invalidGroup(group.id, "photos 为空")
@@ -218,12 +229,18 @@ struct SimilarityAnnotationSet {
         var kindById: [String: SimilarityAnnotationClass] = [:]
         var truthById: [String: SimilarityGroundTruth] = [:]
         var photosById: [String: [String]] = [:]
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        // 坏行不能静默丢（会悄悄改变 ground truth 的组/样本量）：先计数，最后整体失败。
+        var badLines: [Int] = []
+        for (lineIndex, rawLine) in text
+            .split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.isEmpty || line.hasPrefix("#") { continue }
             let cells = line.components(separatedBy: separator)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            if cells.count < 4 { continue }
+            if cells.count < 4 {
+                badLines.append(lineIndex + 1)
+                continue
+            }
             if cells[0].lowercased() == "group" || cells[0].lowercased() == "group_id" { continue }
             let groupId = cells[0]
             let kindRaw = cells[1]
@@ -246,6 +263,12 @@ struct SimilarityAnnotationSet {
             kindById[groupId] = kind
             truthById[groupId] = truth
             photosById[groupId, default: []].append(photoPath)
+        }
+        if !badLines.isEmpty {
+            let preview = badLines.prefix(5).map(String.init).joined(separator: "、")
+            throw SimilarityAnnotationError.unreadable(
+                "CSV 有 \(badLines.count) 行格式不合法（需要 4 列；行号 \(preview)"
+                    + (badLines.count > 5 ? "…" : "") + "）: \(origin)")
         }
         guard !order.isEmpty else {
             throw SimilarityAnnotationError.unreadable(

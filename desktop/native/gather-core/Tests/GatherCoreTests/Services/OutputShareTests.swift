@@ -391,4 +391,100 @@ struct OutputShareTests {
         let failure = try #require(result.failed.first)
         #expect(failure.category == .auth, "reason: \(failure.reason)")
     }
+
+    @Test("S3：share.json 写失败即中止，不再上传文件（Wave4a-C1 fail-closed）")
+    func s3ShareManifestFailureAbortsUpload() async throws {
+        let tree = try makeTree()
+        defer { try? FileManager.default.removeItem(atPath: tree) }
+        // 探针 PUT 201 → DELETE 204 → share.json 500（maxAttempts=2，重试一次后返回）。
+        let transport = FakeS3Transport([
+            .success(S3HTTPResponse(status: 201)),
+            .success(S3HTTPResponse(status: 204)),
+            .success(S3HTTPResponse(status: 500)),
+            .success(S3HTTPResponse(status: 500)),
+        ])
+        let publisher = S3ShareTransport(
+            transport: transport, maxAttempts: 2, sleep: { _ in })
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .s3, endpoint: "https://s3.example.com",
+            accessKeyID: "AK", secret: "SK", remoteFolder: "p",
+            bucket: "photos", region: "us-east-1",
+            includePrefixes: ["thumbs"],
+            share: OutputShareOptions(expiresAt: futureExpiry()))
+        let result = try await publisher.publish(request, onProgress: nil)
+        #expect(result.uploaded == 0)
+        #expect(!result.abortedOnAuth)
+        #expect(result.failed.contains { $0.path == "share.json" })
+        let requests = await transport.requests
+        #expect(!requests.contains { $0.url.absoluteString.contains("/thumbs/") },
+                "share.json 失败后不得上传任何文件")
+    }
+
+    @Test("S3 STS：session token 参与签名并作为 x-amz-security-token 上送（Wave4a-C4）")
+    func s3SessionTokenParticipatesInSignature() async throws {
+        let tree = try makeTree()
+        defer { try? FileManager.default.removeItem(atPath: tree) }
+        let transport = FakeS3Transport()
+        let publisher = S3ShareTransport(transport: transport, sleep: { _ in })
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .s3, endpoint: "",
+            accessKeyID: "AK", secret: "SK", remoteFolder: "p",
+            bucket: "photos", region: "us-east-1",
+            sessionToken: "TOKEN-XYZ",
+            includePrefixes: ["thumbs"],
+            share: OutputShareOptions(expiresAt: futureExpiry()))
+        _ = try await publisher.publish(request, onProgress: nil)
+        let puts = await transport.requests.filter { $0.method == "PUT" }
+        #expect(!puts.isEmpty)
+        for put in puts {
+            #expect(put.headers["x-amz-security-token"] == "TOKEN-XYZ")
+            let authorization = put.headers["Authorization"] ?? ""
+            #expect(authorization.contains("x-amz-security-token"),
+                    "SignedHeaders 必须包含 session token: \(authorization)")
+        }
+        // 固定输入下：带 token 的签名与不带 token 的签名不同（token 确实参与计算）。
+        let headers = [
+            "host": "photos.s3.us-east-1.amazonaws.com",
+            "x-amz-content-sha256": S3SigV4.sha256Hex(Data()),
+            "x-amz-date": "20261111T000000Z",
+        ]
+        var tokenHeaders = headers
+        tokenHeaders["x-amz-security-token"] = "TOKEN-XYZ"
+        let baseSignature = S3SigV4.signature(
+            secretAccessKey: "SK", date: "20261111", region: "us-east-1",
+            timestamp: "20261111T000000Z", method: "PUT",
+            canonicalURI: "/p/share.json", headers: headers,
+            payloadHash: S3SigV4.sha256Hex(Data()))
+        let tokenSignature = S3SigV4.signature(
+            secretAccessKey: "SK", date: "20261111", region: "us-east-1",
+            timestamp: "20261111T000000Z", method: "PUT",
+            canonicalURI: "/p/share.json", headers: tokenHeaders,
+            signedHeaders: S3SigV4.signedHeaderNames + ["x-amz-security-token"],
+            payloadHash: S3SigV4.sha256Hex(Data()))
+        #expect(baseSignature != tokenSignature)
+    }
+
+    @Test("SigV4：canonical header 去首尾/折叠连续空白（Wave4a-C4 规范对齐）")
+    func sigV4CanonicalHeaderWhitespace() {
+        #expect(S3SigV4.canonicalHeaderValue("  a   b  ") == "a b")
+        #expect(S3SigV4.canonicalHeaderValue("a\tb\nc") == "a b c")
+        let cleanHost = "examplebucket.s3.amazonaws.com"
+        let spacedHost = "  examplebucket.s3.amazonaws.com  "
+        let payloadHash = S3SigV4.sha256Hex(Data())
+        let cleanHeaders = [
+            "host": cleanHost,
+            "x-amz-content-sha256": payloadHash,
+            "x-amz-date": "20261111T000000Z",
+        ]
+        var spacedHeaders = cleanHeaders
+        spacedHeaders["host"] = spacedHost
+        let cleanRequest = S3SigV4.canonicalRequest(
+            method: "GET", canonicalURI: "/test.txt", headers: cleanHeaders,
+            payloadHash: payloadHash)
+        let spacedRequest = S3SigV4.canonicalRequest(
+            method: "GET", canonicalURI: "/test.txt", headers: spacedHeaders,
+            payloadHash: payloadHash)
+        #expect(cleanRequest.contains("host:\(cleanHost)\n"))
+        #expect(cleanRequest == spacedRequest, "首尾空白必须归一后再参与签名")
+    }
 }

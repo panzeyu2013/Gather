@@ -59,7 +59,7 @@ struct PrintLayoutTests {
         #expect(layout.contentRect.contains(layout.imageRect))
     }
 
-    @Test("单图 custom：自定义图像框居中；超页尺寸被夹进纸张")
+    @Test("单图 custom：自定义图像框居中；超大尺寸被夹进「离白」后的可用区")
     func singleCustomSizeClamped() {
         let centered = SingleImagePrintLayoutEngine.layout(
             imageSize: CGSize(width: 4000, height: 3000),
@@ -67,12 +67,41 @@ struct PrintLayoutTests {
                 sizing: .custom, customImageSize: CGSize(width: 288, height: 432)))
         #expect(centered.imageRect == CGRect(x: 153.5, y: 205, width: 288, height: 432))
 
+        // Wave4a / B2：custom 也必须尊重「离白」，超大框夹到 contentRect 而不是纸张。
         let oversized = SingleImagePrintLayoutEngine.layout(
             imageSize: CGSize(width: 4000, height: 3000),
             options: singleOptions(
                 sizing: .custom, customImageSize: CGSize(width: 2000, height: 2000)))
-        #expect(oversized.imageRect == CGRect(x: 0, y: 0, width: 595, height: 842),
-                "自定义尺寸再大也不能越出纸张")
+        #expect(oversized.imageRect == oversized.contentRect,
+                "自定义尺寸再大也只能铺满可用区，不能压过页边距")
+        #expect(oversized.imageRect.minX >= 28 && oversized.imageRect.minY >= 28)
+    }
+
+    @Test("单图 custom：大边距下小框仍夹在 contentRect 内（B2 回归）")
+    func singleCustomRespectsLargeMargins() {
+        let margins = PrintMargins(top: 100, bottom: 100, leading: 100, trailing: 100)
+        let layout = SingleImagePrintLayoutEngine.layout(
+            imageSize: CGSize(width: 4000, height: 3000),
+            options: SingleImagePrintOptions(
+                margins: margins,
+                sizing: .custom,
+                customImageSize: CGSize(width: 1000, height: 1000)))
+        #expect(layout.contentRect == CGRect(x: 100, y: 100, width: 395, height: 642))
+        #expect(layout.imageRect == layout.contentRect,
+                "1000×1000 超出可用区时必须夹到 contentRect")
+        #expect(layout.imageRect.minX >= 100 && layout.imageRect.maxY <= 742)
+
+        // 小框在可用区内居中（不贴纸张边）。
+        let small = SingleImagePrintLayoutEngine.layout(
+            imageSize: CGSize(width: 4000, height: 3000),
+            options: SingleImagePrintOptions(
+                margins: margins,
+                sizing: .custom,
+                customImageSize: CGSize(width: 200, height: 200)))
+        let content = layout.contentRect
+        #expect(small.imageRect == CGRect(
+            x: content.midX - 100, y: content.midY - 100,
+            width: 200, height: 200))
     }
 
     @Test("单图边框：边框矩形 = 图像框外扩 borderWidth（外沿）")

@@ -118,6 +118,53 @@ struct CullingCommitQueueTests {
         #expect(!viewModel.hasPendingCommit)
     }
 
+    @Test("目标照片在加载期间变化：flush 丢弃排队按键（不写到新照片）")
+    func flushDropsQueuedCommitWhenTargetPhotoChanged() async {
+        let (viewModel, culling) = makeStack()
+        viewModel.isLoading = true
+        await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
+        #expect(viewModel.pendingCommit?.targetPhotoId == "p1", "入队时必须冻结当时的目标照片")
+
+        // 模拟加载把当前照片换成另一张（筛选/范围变化后回退到新页首张）。
+        viewModel.currentPhotoId = "p2"
+        viewModel.isLoading = false
+        await viewModel.flushPendingCommit()
+
+        #expect(culling.updateInputs.isEmpty, "目标已变时必须丢弃，不能把 X 写到 p2")
+        #expect(viewModel.pendingCommit == nil)
+        #expect(viewModel.notice != nil, "丢弃必须可见（notice），不能回到静默丢键")
+    }
+
+    @Test("目标照片未变化：flush 仍按原目标执行（B1 回归）")
+    func flushReplaysWhenTargetPhotoUnchanged() async {
+        let (viewModel, culling) = makeStack()
+        viewModel.isLoading = true
+        await viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected))
+        viewModel.isLoading = false
+        await viewModel.flushPendingCommit()
+
+        #expect(culling.updateInputs.count == 1)
+        #expect(culling.updateInputs.first?.photoId == "p1")
+        #expect(culling.updateInputs.first?.patch.pickState == .rejected)
+    }
+
+    @Test("选择集在加载期间变化：flush 丢弃排队按键")
+    func flushDropsQueuedCommitWhenSelectionChanged() async {
+        let (viewModel, culling) = makeStack()
+        viewModel.selectedPhotoIds = ["p1", "p2"]
+        viewModel.isLoading = true
+        await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked))
+        #expect(viewModel.pendingCommit?.targetSelection == ["p1", "p2"])
+
+        viewModel.selectedPhotoIds = ["p2"]
+        viewModel.isLoading = false
+        await viewModel.flushPendingCommit()
+
+        #expect(culling.updateInputs.isEmpty, "选择集已变时不得按新选择重放")
+        #expect(culling.batchUpdateInputs.isEmpty)
+        #expect(viewModel.notice != nil)
+    }
+
     @Test("shutdown 清空排队按键（会话结束后不再写盘）")
     func shutdownClearsPendingCommit() async {
         let (viewModel, _) = makeStack()

@@ -177,8 +177,11 @@ public struct C1SelectionSnapshot: Equatable, Sendable {
 ///
 /// - rating：0…5（越界会被钳制）；
 /// - colorTag：C1 color tag 原始整数（映射见 C1ColorTagMapping）；
-/// - pick：nil = 本次不写（Gather 未处理）；true = keep；false = reject。
-///   C1 只有布尔 pick 位，因此 keep/reject 用 pick 写、**不写任何关键词**（旧实现用
+/// - pick：**只表达 keep**（A3）。`true` = 写 pick=true；`nil`/`false` = 本次不写 pick。
+///   原因：C1 16.7 sdef 的 variant 只有布尔 `pick`（CaptureOne.sdef:1084），**没有
+///   reject 位**；写 pick=false 会把"未挑中"变成"取消已 pick"的破坏性动作，且读回
+///   只能映射成 unreviewed（C1ImportJudgementMapping.mapPick），单向不可逆。
+///   因此淘汰（reject）**不写回 C1**（UI 文案需说明），也**不写任何关键词**（旧实现用
 ///   culling:keep 关键词会污染 C1 词库，G4 明确禁止）。
 public struct C1VariantWritebackItem: Equatable, Sendable {
     public var photoPath: String
@@ -265,6 +268,23 @@ public enum C1ColorTagMapping {
     }
 }
 
+/// Gather pick 状态 ↔ C1 `pick` 布尔位的**单向约定**（A3，唯一事实源）。
+///
+/// C1 没有 reject 位：写回只表达 keep（pick=true）；淘汰/未处理一律不写（保留 C1 现值）。
+/// 读回语义保持 Wave2 的保守口径：pick=true → keep，pick=false → unreviewed
+///（不把"没有 pick"当淘汰，否则 C1 里未评级照片会被整批误杀）。
+public enum C1PickMapping {
+    /// Gather pick 状态 → 要写入 C1 的 pick（nil = 不写，A3）。
+    public static func pickToWrite(for state: PickState) -> Bool? {
+        state == .picked ? true : nil
+    }
+
+    /// C1 pick 读回 → Gather pick 状态（false = 未挑中，不推断为淘汰）。
+    public static func pickState(from pick: Bool) -> PickState {
+        pick ? .picked : .unreviewed
+    }
+}
+
 // MARK: - Wave3：C1 Session 三目录识别（G6）
 
 /// C1 Session 的目录角色（Capture/Selects/Trash；Output 仅标注）。
@@ -325,6 +345,30 @@ public struct C1SessionLayout: Equatable, Sendable {
     }
 }
 
+/// 导入规划：用户选中的目录 → 实际扫描/入库根（A5 共享 helper）。
+///
+/// 为什么放在协议层：菜单"导入文件夹"（Host）与"新建工作区"（GatherUI）两条入口
+/// 都要用同一套识别/重定向规则，避免一条入口把 Trash 扫回来。纯数据 + 纯逻辑，
+/// 无 I/O、无 UI 依赖。
+public struct C1SessionImportPlan: Equatable, Sendable {
+    /// 用户选择的原始目录（C1 Session 根，或 `<root>/Capture`）。
+    public let originalRoot: String
+    /// 识别出的 C1 Session 布局（root 已归一到 session 根）。
+    public let layout: C1SessionLayout
+
+    public init(originalRoot: String, layout: C1SessionLayout) {
+        self.originalRoot = originalRoot
+        self.layout = layout
+    }
+
+    /// 实际扫描/入库根：C1 Session 只用 Capture（Trash 不扫、Selects 不重复扫）。
+    public var scanRoot: String { layout.scanRoot }
+    /// 扫描根是否已经是 Capture 子目录（true = 该工作区不会扫到 Trash）。
+    public var scansCaptureOnly: Bool {
+        layout.capture != nil && layout.scanRoot == layout.capture
+    }
+}
+
 /// C1 Session 目录识别与去重规划（纯逻辑：目录列举走注入接缝，单测不碰真 C1/FS）。
 public enum C1SessionDirectoryResolver {
     /// 目录列举接缝：返回该目录下的**直接子项名**；不可读返回 nil。
@@ -360,6 +404,20 @@ public enum C1SessionDirectoryResolver {
             return layout
         }
         return nil
+    }
+
+    /// A5：导入规划（用户选中目录 → 安全扫描根）。普通目录返回 nil（调用方保持旧行为）。
+    ///
+    /// 两条入口必须共用：菜单"导入文件夹"（Host）与"新建工作区"（GatherUI）。
+    public static func importPlan(
+        root: String,
+        listDirectory: DirectoryLister = C1SessionDirectoryResolver.fileManagerLister
+    ) -> C1SessionImportPlan? {
+        guard let layout = detect(root: root, listDirectory: listDirectory),
+              layout.isCaptureOneSession else { return nil }
+        return C1SessionImportPlan(
+            originalRoot: ScanPath.canonical(root),
+            layout: layout)
     }
 
     /// 只按目录名匹配（大小写不敏感：C1 用首字母大写，用户目录可能被改名）。

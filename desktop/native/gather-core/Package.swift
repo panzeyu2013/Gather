@@ -76,7 +76,7 @@ let package = Package(
         // P0 / T0：真实集质量门 CLI（只读打开库 + 纯函数评估；不写建议/决策/XMP）。
         .executableTarget(
             name: "GatherTriageEval",
-            dependencies: ["GatherProtocol", "GatherPersistence", "GatherApplication"],
+            dependencies: ["GatherProtocol", "GatherPersistence", "GatherApplication", "GatherAnalysis"],
             path: "Sources/GatherTriageEval",
             swiftSettings: swift6Settings
         ),

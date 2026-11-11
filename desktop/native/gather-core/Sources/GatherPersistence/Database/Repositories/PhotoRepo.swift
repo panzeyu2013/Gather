@@ -415,19 +415,31 @@ public final class PhotoRepo: Sendable {
         return photos
     }
 
-    /// Wave2（task-15）：全库导入去重 —— 已算出校验和的照片指纹。
+    /// 全库指纹（跨会话导入去重 / replace 目标定位）。只读。
     ///
-    /// 只读；matchingSizes 非空时按块 IN 预筛（去重的预筛口径：大小不同必不
-    /// 是同内容）。空集合 = 不限大小（调用方明确要全库时）。
-    /// 不做 LIMIT：去重判定的正确性优先于截断，行数在照片量级。
+    /// matchingSizes 非空时已回填行按块 IN 预筛（大小不同必不是同内容）；
+    /// 空集合 = 不限大小（调用方明确要全库时）。未回填行按 unhashedLimit 截断——
+    /// 它们只有 filepath，size 由 Application 侧 stat 后再决定是否哈希。
+    ///
+    /// - Wave4a-F5：只返回**可见**行（archived_at IS NULL）——已淘汰移出（_rejects）
+    ///   的照片不参与去重，也不能被 replace 策略覆盖。
+    /// - Wave4a-F1：除已回填 checksum 的行外，**同时返回未回填**（checksum = ''）的
+    ///   可见行（checksum 空、size 0）。懒索引常态下只查已回填会让跨工作区去重整体
+    ///   失效；Application 侧对这些候选先 stat 做 size 预筛、命中才 SHA-256 并回填。
+    /// 未回填候选带上限（避免一次摄取把整库逐张 stat）。上限是**实现细节**，不进
+    /// 协议签名：PhotoRepository 的 requirement 是一参数版本，额外参数会让
+    /// PhotoRepo 的 conformance 失配（默认参数不参与函数类型）。
+    private static let unhashedFingerprintLimit = 500
+
     public func libraryFingerprints(
         matchingSizes: Set<Int>
     ) throws -> [LibraryPhotoFingerprint] {
+        let visible = PhotoVisibility.visiblePredicate(alias: "")
         let base = """
             SELECT id, session_id, filepath, checksum,
                    checksum_file_size, checksum_file_mtime_ms
               FROM photos
-             WHERE checksum != ''
+             WHERE checksum != '' AND \(visible)
             """
         var rows: [DBRow] = []
         if matchingSizes.isEmpty {
@@ -441,6 +453,14 @@ public final class PhotoRepo: Sendable {
                 ).query(chunk.map { DBValue.int(Int64($0)) }))
             }
         }
+        rows.append(contentsOf: try connection.prepare("""
+            SELECT id, session_id, filepath, checksum,
+                   checksum_file_size, checksum_file_mtime_ms
+              FROM photos
+             WHERE checksum = '' AND \(visible)
+             ORDER BY rowid
+             LIMIT ?
+            """).query([.int(Int64(Self.unhashedFingerprintLimit))]))
         return rows.map { row in
             LibraryPhotoFingerprint(
                 photoId: row[0].textValue ?? "",

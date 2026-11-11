@@ -230,36 +230,137 @@ public final class SessionService {
         public let photoId: String
         public let sessionId: String
         public let filepath: String
+        /// 库内文件大小（未回填行在 Application 侧 stat 后补上；用于预检的 size 预筛）。
+        /// Wave4a-F2：plan 据此只对 size 命中的源做 SHA-256，不再整卡逐张哈希。
+        public let fileSize: Int
 
-        public init(photoId: String, sessionId: String, filepath: String) {
+        public init(
+            photoId: String, sessionId: String, filepath: String, fileSize: Int = 0
+        ) {
             self.photoId = photoId
             self.sessionId = sessionId
             self.filepath = filepath
+            self.fileSize = fileSize
         }
     }
 
-    /// 全库（跨工作区）已登记照片的校验和索引：checksum → 最早登记的一份。
+    /// 全库（跨工作区）已登记照片的校验和索引：checksum → 一份代表行。
     ///
     /// 与 photoChecksums 的分工：那个是**会话内**去重（同一张卡重复摄取）；
     /// 这个是跨工作区去重（同一批素材在别的 Gather 工作区里已经有了一份）。
-    /// 只覆盖已回填 checksum 的行；懒索引遗留的空校验和由 checksum.backfill 补齐。
+    ///
+    /// Wave4a-F1：懒索引常态下大部分行的 checksum 还没回填，旧实现只查已回填行 →
+    /// 跨工作区去重整体失效。现在对「未回填的可见行」先 stat 做 size 预筛，命中
+    /// matchingSizes 才 SHA-256；摄取路径顺手回填，下一次直接读 checksum。
+    ///
+    /// Wave4a-F2：预检（previewIngest）调用时 allowChecksumBackfill=false —— 只读索引，
+    /// 不写库（预检不得产生副作用）。
+    ///
+    /// - Parameter matchingSizes: 本次源文件大小集合（空 = 不预筛，全部候选都算）。
+    /// - Parameter allowChecksumBackfill: 是否把算出的 checksum 回写 photos。
     func libraryPhotoDuplicates(
-        matchingSizes: Set<Int>
+        matchingSizes: Set<Int>,
+        allowChecksumBackfill: Bool = true
     ) throws -> [String: LibraryDuplicateTarget] {
         var result: [String: LibraryDuplicateTarget] = [:]
+        var unhashed: [LibraryPhotoFingerprint] = []
         for row in try photoRepo.libraryFingerprints(matchingSizes: matchingSizes) {
-            guard !row.checksum.isEmpty, result[row.checksum] == nil else { continue }
+            guard !row.checksum.isEmpty else {
+                unhashed.append(row)
+                continue
+            }
+            guard result[row.checksum] == nil else { continue }
             result[row.checksum] = LibraryDuplicateTarget(
                 photoId: row.photoId,
                 sessionId: row.sessionId,
-                filepath: row.filepath
+                filepath: row.filepath,
+                fileSize: row.fileSize
             )
+        }
+        // 未回填候选：stat 做 size 预筛，命中才读整文件哈希。
+        for row in unhashed {
+            let attrs: [FileAttributeKey: Any]
+            do {
+                attrs = try FileManager.default.attributesOfItem(atPath: row.filepath)
+            } catch {
+                // 文件不在（卷未挂载/已移动）：该行本轮无法参与去重，跳过。
+                continue
+            }
+            let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+            if !matchingSizes.isEmpty, !matchingSizes.contains(size) { continue }
+            do {
+                let sum = try FileHasher.sha256File(row.filepath)
+                if result[sum] == nil {
+                    result[sum] = LibraryDuplicateTarget(
+                        photoId: row.photoId,
+                        sessionId: row.sessionId,
+                        filepath: row.filepath,
+                        fileSize: size
+                    )
+                }
+                if allowChecksumBackfill {
+                    let mtimeMs = (attrs[.modificationDate] as? Date)
+                        .map { $0.timeIntervalSince1970 * 1000 } ?? 0
+                    do {
+                        try photoRepo.updateChecksum(
+                            photoId: row.photoId, checksum: sum,
+                            fileSize: size, fileMtimeMs: mtimeMs)
+                    } catch {
+                        GatherLogger.log(
+                            "library dedupe checksum backfill failed for (row.photoId): (error)",
+                            level: .debug)
+                    }
+                }
+            } catch {
+                GatherLogger.log(
+                    "library dedupe checksum skipped for (row.photoId): (error)",
+                    level: .debug)
+            }
         }
         return result
     }
 
+    /// Wave4a-F3：replace 覆盖写入后刷新库内行的指纹（checksum / size / mtime）。
+    ///
+    /// replace 的目标是既有照片的 filepath，登记走 addPhotos 的 INSERT OR IGNORE，
+    /// 不会重算哈希；不刷新会让库内指纹与文件内容不一致（跨会话去重、重复检测、
+    /// 交付 manifest 校验都依赖它）。
+    ///
+    /// - Returns: 实际刷新的行数（找不到路径/读不到文件的跳过）。
+    @discardableResult
+    func refreshPhotoFingerprints(
+        sessionId: String, filepaths: [String]
+    ) throws -> Int {
+        guard !filepaths.isEmpty else { return 0 }
+        var photoIdByPath: [String: String] = [:]
+        for row in try photoRepo.getBySessionProjection(sessionId: sessionId) {
+            photoIdByPath[row.filepath] = row.id
+        }
+        var refreshed = 0
+        for filepath in Set(filepaths) {
+            guard let photoId = photoIdByPath[filepath] else { continue }
+            do {
+                let attrs = try FileManager.default.attributesOfItem(atPath: filepath)
+                let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+                let mtimeMs = (attrs[.modificationDate] as? Date)
+                    .map { $0.timeIntervalSince1970 * 1000 } ?? 0
+                let sum = try FileHasher.sha256File(filepath)
+                try photoRepo.updateChecksum(
+                    photoId: photoId, checksum: sum, fileSize: size, fileMtimeMs: mtimeMs)
+                refreshed += 1
+            } catch {
+                GatherLogger.log(
+                    "refreshPhotoFingerprints skipped (filepath): (error)", level: .warn)
+            }
+        }
+        return refreshed
+    }
+
+    /// Wave4a-F2：allowChecksumBackfill=false 时只读索引（预检用），不改库。
     public func photoChecksums(
-        sessionId: String, matchingSizes: Set<Int>? = nil
+        sessionId: String,
+        matchingSizes: Set<Int>? = nil,
+        allowChecksumBackfill: Bool = true
     ) throws -> [String: String] {
         var result: [String: String] = [:]
         for row in try photoRepo.getBySessionProjection(sessionId: sessionId) {
@@ -284,6 +385,9 @@ public final class SessionService {
                     result[sum] = row.id
                     let mtimeMs = (attrs[.modificationDate] as? Date)
                         .map { $0.timeIntervalSince1970 * 1000 } ?? 0
+                    if !allowChecksumBackfill {
+                        continue
+                    }
                     do {
                         try photoRepo.updateChecksum(
                             photoId: row.id, checksum: sum,

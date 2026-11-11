@@ -7,6 +7,7 @@
 import Foundation
 import Testing
 import GatherProtocol
+@testable import GatherApplication
 @testable import GatherHost
 import GatherTestSupport
 
@@ -29,19 +30,34 @@ struct C1BridgeWave3ScriptContractTests {
         #expect(script.contains("variant 1 of theImage"))
     }
 
-    @Test("只写目标 variant 的三个属性；不写关键词、不调 reload metadata")
+    @Test("只写目标 variant 的属性；不写关键词、不调 reload metadata")
     func writesOnlyTargetVariantProperties() {
         let script = script([
-            C1VariantWritebackItem(photoPath: "/shoot/a.cr2", rating: 4, colorTag: 4, pick: false),
+            C1VariantWritebackItem(photoPath: "/shoot/a.cr2", rating: 4, colorTag: 4, pick: true),
         ])
         #expect(script.contains("set rating of targetVariant to 4"))
         #expect(script.contains("set color tag of targetVariant to 4"))
-        #expect(script.contains("set pick of targetVariant to false"))
+        #expect(script.contains("set pick of targetVariant to true"))
         // G4：pick/reject 用 C1 原生布尔位表达，绝不写关键词污染词库。
         #expect(!script.contains("apply keyword"))
         #expect(!script.contains("culling:keep"))
         // 写的是 catalog 本身，不触发 reload metadata（会把盘上旧 XMP 读回覆盖）。
         #expect(!script.contains("reload metadata"))
+    }
+
+    /// A3：C1 只有布尔 pick、没有 reject 位。写回**只表达 keep**：
+    /// reject（false 旧口径）与 unreviewed 都不写 pick，保留 C1 现值。
+    @Test("A3：reject/unreviewed 不写 pick（C1 无 reject 位，keep-only）")
+    func writesPickOnlyForKeep() {
+        let rejectScript = script([
+            C1VariantWritebackItem(photoPath: "/shoot/r.cr2", rating: 0, colorTag: 0, pick: false),
+        ])
+        #expect(!rejectScript.contains("set pick"))
+        let unreviewedScript = script([
+            C1VariantWritebackItem(photoPath: "/shoot/u.cr2", rating: 2, colorTag: 1, pick: nil),
+        ])
+        #expect(!unreviewedScript.contains("set pick"))
+        #expect(unreviewedScript.contains("set rating of targetVariant to 2"))
     }
 
     @Test("unreviewed 不写 pick；rating 越界钳制；非法 color tag 回落 None(0)")
@@ -81,8 +97,26 @@ struct C1BridgeWave3WritebackTests {
         #expect(CaptureOneBridge.parseVariantWritebackReport("1\nx", expected: 2) == nil)
     }
 
-    @Test("写回：按行统计 written/notFound，并写 durable reload-ack")
-    func writesAndAcks() async throws {
+    @Test("A1：全部命中才写 durable reload-ack")
+    func writesAndAcksOnlyWhenFullyWritten() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let bridge = makeWave3Bridge(ack: ack) { _ in "1\n1" }
+        let report = try await bridge.writeVariantJudgements(
+            sessionId: "s1",
+            items: [
+                C1VariantWritebackItem(photoPath: "/shoot/a.cr2", rating: 3, colorTag: 1, pick: true),
+                C1VariantWritebackItem(photoPath: "/shoot/b.cr2", rating: 0, colorTag: 0, pick: nil),
+            ])
+        #expect(report.written == 2)
+        #expect(report.notFound.isEmpty)
+        #expect(report.skipped == 0)
+        #expect(ack.lock.withLock { ack.ids } == ["s1"])
+    }
+
+    /// A1 回归：部分成功**不得**写 ack（旧实现 written>0 即 ack，会让 confirm/finalize 在
+    /// C1 仍显示旧值时推进并清理备份）。
+    @Test("A1：部分 notFound 不写 reload-ack（门禁保持锁定）")
+    func partialWritebackDoesNotAck() async throws {
         let ack = LockedBox(Wave3AckState())
         let bridge = makeWave3Bridge(ack: ack) { _ in "1\n0" }
         let report = try await bridge.writeVariantJudgements(
@@ -93,8 +127,27 @@ struct C1BridgeWave3WritebackTests {
             ])
         #expect(report.written == 1)
         #expect(report.notFound == ["/shoot/b.cr2"])
-        #expect(report.skipped == 0)
-        #expect(ack.lock.withLock { ack.ids } == ["s1"])
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+    }
+
+    /// A1 回归：超单次上限被跳过（skipped>0）同样不解门禁。
+    @Test("A1：超上限 skipped 不写 reload-ack")
+    func skippedItemsDoNotAck() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let bridge = makeWave3Bridge(ack: ack) { _ in
+            (0..<CaptureOneBridge.maxVariantWritebackItems)
+                .map { _ in "1" }
+                .joined(separator: "\n")
+        }
+        let items = (0...CaptureOneBridge.maxVariantWritebackItems).map { index in
+            C1VariantWritebackItem(
+                photoPath: "/shoot/p\(index).cr2", rating: 1, colorTag: 0, pick: nil)
+        }
+        let report = try await bridge.writeVariantJudgements(sessionId: "s1", items: items)
+        #expect(report.written == CaptureOneBridge.maxVariantWritebackItems)
+        #expect(report.skipped == 1)
+        #expect(report.notFound.isEmpty)
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
     }
 
     @Test("无 sessionId 不写 ack；非法路径进 notFound；脚本失败上浮")
@@ -172,6 +225,32 @@ struct C1BridgeWave3ColorTagTests {
     }
 }
 
+// MARK: - A3：pick/reject 往返（keep-only 约定）
+
+@Suite("C1BridgeWave3 pick 往返（A3 keep-only）")
+struct C1BridgeWave3PickRoundTripTests {
+    @Test("写回只表达 keep：picked→true；reject/unreviewed→nil（不写）")
+    func writesKeepOnly() {
+        #expect(C1PickMapping.pickToWrite(for: .picked) == true)
+        #expect(C1PickMapping.pickToWrite(for: .rejected) == nil)
+        #expect(C1PickMapping.pickToWrite(for: .unreviewed) == nil)
+    }
+
+    @Test("往返：keep 可逆；reject 不写回 C1，读回只能是 unreviewed（不误杀）")
+    func roundTripKeepsOnly() {
+        // keep：写 true → 读回 picked（可逆）。
+        let keep = C1PickMapping.pickToWrite(for: .picked)
+        #expect(keep == true)
+        #expect(C1PickMapping.pickState(from: keep ?? false) == .picked)
+        // reject：不写 → C1 保持原值；即使读到 false 也只能当 unreviewed。
+        #expect(C1PickMapping.pickToWrite(for: .rejected) == nil)
+        #expect(C1PickMapping.pickState(from: false) == .unreviewed)
+        // 与导入侧同一事实源（Wave2 mapPick 委托 C1PickMapping）。
+        #expect(C1ImportJudgementMapping.mapPick(true) == .picked)
+        #expect(C1ImportJudgementMapping.mapPick(false) == .unreviewed)
+    }
+}
+
 // MARK: - C1 Session 三目录识别（G6）
 
 private func wave3Lister(_ tree: [String: [String]]) -> C1SessionDirectoryResolver.DirectoryLister {
@@ -235,6 +314,31 @@ struct C1BridgeWave3SessionDirectoryTests {
         let layout = try #require(C1SessionDirectoryResolver.detect(root: root, listDirectory: lister))
         #expect(layout.capture == root + "/capture")
         #expect(layout.scanRoot == root + "/capture")
+    }
+
+    // A5：两条导入入口（导入文件夹 / 新建工作区）共用同一规划。
+    @Test("A5 importPlan：Session 根 → 扫描根 Capture；普通目录 → nil")
+    func importPlanRedirectsSessionRoot() throws {
+        let plan = try #require(C1SessionDirectoryResolver.importPlan(
+            root: Self.sessionRoot, listDirectory: wave3Lister(tree)))
+        #expect(plan.originalRoot == Self.sessionRoot)
+        #expect(plan.layout.root == Self.sessionRoot)
+        #expect(plan.scanRoot == Self.sessionRoot + "/Capture")
+        #expect(plan.scansCaptureOnly)
+        #expect(plan.layout.isCaptureOneSession)
+        #expect(C1SessionDirectoryResolver.importPlan(
+            root: "/tmp/plain", listDirectory: wave3Lister(["/tmp/plain": ["sub"]])) == nil)
+    }
+
+    @Test("A5 importPlan：传入 Capture 子目录也能上溯，扫描根仍是 Capture")
+    func importPlanAcceptsCaptureSubdirectory() throws {
+        let capture = Self.sessionRoot + "/Capture"
+        let plan = try #require(C1SessionDirectoryResolver.importPlan(
+            root: capture, listDirectory: wave3Lister(tree)))
+        #expect(plan.originalRoot == capture)
+        #expect(plan.layout.root == Self.sessionRoot)
+        #expect(plan.scanRoot == capture)
+        #expect(plan.scansCaptureOnly)
     }
 
     @Test("Selects 去重：按文件名大小写不敏感，Capture 优先")

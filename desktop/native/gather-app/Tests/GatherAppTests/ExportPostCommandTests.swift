@@ -14,6 +14,7 @@ import Foundation
 import Testing
 @testable import GatherApplication
 @testable import GatherProtocol
+@testable import GatherHost
 
 @Suite("导出后命令钩子")
 struct ExportPostCommandTests {
@@ -86,5 +87,81 @@ struct ExportPostCommandTests {
         let decoded = try JSONDecoder().decode(
             OutputRunSummary.self, from: Data(contentsOf: manifest))
         #expect(decoded.postCommand == outcome)
+    }
+
+    // MARK: - Wave4a-C3：钩子执行条件（成功 + 非 dedupe 缓存重放）
+
+    private func summary(
+        failed: Int = 0, manifestError: String? = nil, cancelled: Bool? = nil,
+        manifestPath: String = "/tmp/m.json"
+    ) -> OutputRunSummary {
+        OutputRunSummary(
+            runId: "r1", sessionId: "s1", manifestPath: manifestPath,
+            createdAt: "2026-11-11T00:00:00Z",
+            recipes: [OutputRecipeResult(
+                recipeId: "rx", name: "r", destination: "/tmp",
+                exported: 1, failed: failed, skipped: 0)],
+            manifestError: manifestError, cancelled: cancelled)
+    }
+
+    @Test("C3：只在成功且非 dedupe 缓存重放时执行钩子")
+    func postCommandRunsOnlyOnFreshSuccess() {
+        #expect(LiveExportAPI.shouldRunPostCommand(
+            for: summary(), cachedReplay: false))
+        #expect(!LiveExportAPI.shouldRunPostCommand(
+            for: summary(), cachedReplay: true))
+        #expect(!LiveExportAPI.shouldRunPostCommand(
+            for: summary(failed: 1), cachedReplay: false))
+        #expect(!LiveExportAPI.shouldRunPostCommand(
+            for: summary(manifestError: "disk full"), cachedReplay: false))
+        #expect(!LiveExportAPI.shouldRunPostCommand(
+            for: summary(cancelled: true), cachedReplay: false))
+        #expect(!LiveExportAPI.shouldRunPostCommand(
+            for: summary(manifestPath: "   "), cachedReplay: false))
+        #expect(LiveExportAPI.isTerminalJobStatus(.succeeded))
+        #expect(LiveExportAPI.isTerminalJobStatus(.failed))
+        #expect(LiveExportAPI.isTerminalJobStatus(.cancelled))
+        #expect(!LiveExportAPI.isTerminalJobStatus(.queued))
+        #expect(!LiveExportAPI.isTerminalJobStatus(.running))
+        #expect(!LiveExportAPI.isTerminalJobStatus(.cancelling))
+    }
+
+    // MARK: - Wave4a-C4：secret + session token 同一条 Keychain item
+
+    @Test("C4：session token 与 secret 打包/解包，旧明文凭据兼容")
+    func credentialEnvelopeRoundTrip() {
+        #expect(LiveExportAPI.packStoredCredential(
+            secret: "s3cr3t", sessionToken: nil) == "s3cr3t")
+        #expect(LiveExportAPI.packStoredCredential(
+            secret: "s3cr3t", sessionToken: "  ") == "s3cr3t")
+        let packed = LiveExportAPI.packStoredCredential(
+            secret: "s3cr3t", sessionToken: "TOKEN")
+        #expect(packed.hasPrefix("{"))
+        let unpacked = LiveExportAPI.unpackStoredCredential(packed)
+        #expect(unpacked.secret == "s3cr3t")
+        #expect(unpacked.sessionToken == "TOKEN")
+        let legacy = LiveExportAPI.unpackStoredCredential("plain-password")
+        #expect(legacy.secret == "plain-password")
+        #expect(legacy.sessionToken == nil)
+    }
+
+    // MARK: - Wave4a-C5：处理取消不再阻塞到超时
+
+    @Test("C5：取消 run 立即终止进程，不阻塞到超时")
+    func cancellationTerminatesProcess() async {
+        let started = Date()
+        let task = Task {
+            await ExportPostCommandRunner.run(
+                ExportPostCommandConfiguration(
+                    template: "/bin/sleep 5", timeoutSeconds: 30),
+                sessionId: "s", destinationRoot: "/tmp", manifestPath: "/tmp/m.json")
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+        task.cancel()
+        let outcome = await task.value
+        #expect(Date().timeIntervalSince(started) < 3,
+                "取消必须及时返回，而不是等 30s 超时")
+        #expect(outcome.timedOut == false)
+        #expect(outcome.error == "cancelled")
     }
 }

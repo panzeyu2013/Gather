@@ -3,6 +3,7 @@
 
 import Foundation
 import Testing
+import GatherProtocol
 @testable import GatherApplication
 
 private actor FakeWebDAVTransport: WebDAVTransport {
@@ -162,5 +163,43 @@ struct WebDAVPublisherTests {
                 localPath: local, configuration: configuration(),
                 includePrefixes: ["no-such-dir"])
         }
+    }
+
+    @Test("strict 发布：share.json 写失败即中止，不再上传校样/画廊（Wave4a-C1 fail-closed）")
+    func shareManifestFailureAbortsUpload() async throws {
+        let local = try makeTree()
+        defer { try? FileManager.default.removeItem(atPath: local) }
+        // 探针 MKCOL×3 → 探针 PUT → DELETE → 清单 MKCOL×3 → share.json 返回 500。
+        let transport = FakeWebDAVTransport([
+            .success(WebDAVResponse(status: 201)),
+            .success(WebDAVResponse(status: 201)),
+            .success(WebDAVResponse(status: 201)),
+            .success(WebDAVResponse(status: 201)),
+            .success(WebDAVResponse(status: 204)),
+            .success(WebDAVResponse(status: 201)),
+            .success(WebDAVResponse(status: 201)),
+            .success(WebDAVResponse(status: 201)),
+            .success(WebDAVResponse(status: 500)),
+            .success(WebDAVResponse(status: 500)),
+            .success(WebDAVResponse(status: 500)),
+        ])
+        let publisher = WebDAVPublisher(transport: transport, sleep: { _ in })
+        let result = try await publisher.publish(
+            localPath: local, configuration: configuration(),
+            includePrefixes: ["thumbs"],
+            share: OutputShareOptions(allowDownload: false))
+        #expect(result.uploaded == 0)
+        #expect(!result.abortedOnAuth)
+        #expect(result.failed.contains {
+            $0.path == "share.json" && $0.reason.contains("500")
+        })
+        let requests = await transport.requests
+        let filePuts = requests.filter {
+            $0.method == .put
+                && !$0.url.path.contains("share.json")
+                && !$0.url.path.contains(".gather-write-probe")
+        }
+        #expect(filePuts.isEmpty,
+                "share.json 失败后不得上传任何文件: \(filePuts.map(\.url.path))")
     }
 }

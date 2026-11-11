@@ -106,17 +106,27 @@ public enum ExportPostCommandRunner {
     // MARK: - 执行
 
     /// 执行钩子；永不抛错（所有失败都折叠成 Outcome）。
+    ///
+    /// Wave4a-C5：不再用 Thread.sleep 轮询/阻塞等待退出；改为
+    /// terminationHandler + CheckedContinuation 等进程结束，超时用 Task.sleep
+    /// 驱动 SIGTERM→2s→SIGKILL，调用方（导出流程）不会被钩子阻塞 600s。
     public static func run(
         _ configuration: ExportPostCommandConfiguration,
         sessionId: String,
         destinationRoot: String,
         manifestPath: String
     ) async -> OutputPostCommandOutcome {
-        await Task.detached(priority: .utility) {
-            execute(
+        let task = Task.detached(priority: .utility) {
+            await execute(
                 configuration, sessionId: sessionId,
                 destinationRoot: destinationRoot, manifestPath: manifestPath)
-        }.value
+        }
+        // 调用方取消（导出取消）要能传递到 detached 执行任务，触发 terminate。
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     static func execute(
@@ -124,7 +134,7 @@ public enum ExportPostCommandRunner {
         sessionId: String,
         destinationRoot: String,
         manifestPath: String
-    ) -> OutputPostCommandOutcome {
+    ) async -> OutputPostCommandOutcome {
         let template = configuration.template
         guard let expanded = arguments(
             template: template, sessionId: sessionId,
@@ -180,39 +190,48 @@ public enum ExportPostCommandRunner {
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
         let startedAt = Date()
-        do {
-            try process.run()
-        } catch {
-            return OutputPostCommandOutcome(
-                command: template,
-                error: "failed to launch: " + String(describing: error))
-        }
-
-        let deadline = startedAt.addingTimeInterval(configuration.timeoutSeconds)
-        var timedOut = false
-        while process.isRunning {
-            if Date() >= deadline {
-                timedOut = true
-                process.terminate()
-                break
+        let timeoutFlag = HookTimeoutFlag()
+        let timeoutTask = Task.detached(priority: .utility) {
+            do {
+                try await Task.sleep(
+                    nanoseconds: UInt64(configuration.timeoutSeconds * 1_000_000_000))
+            } catch {
+                return
             }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        // 被 terminate 后给 2 秒收尾；仍不退出则升级 SIGKILL，避免钩子把导出流程挂死。
-        if timedOut {
-            let killDeadline = Date().addingTimeInterval(2)
-            while process.isRunning && Date() < killDeadline {
-                Thread.sleep(forTimeInterval: 0.05)
+            guard process.isRunning else { return }
+            await timeoutFlag.markFired()
+            process.terminate()
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                return
             }
             if process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
             }
         }
-        process.waitUntilExit()
+        let launch = await withTaskCancellationHandler {
+            await launchAndWait(process)
+        } onCancel: {
+            if process.isRunning { process.terminate() }
+        }
+        timeoutTask.cancel()
+        let timedOut = await timeoutFlag.isFired
         let durationMilliseconds = max(
             0, Int(Date().timeIntervalSince(startedAt) * 1000))
-
         let tail = outputTail(stdout: stdoutURL, stderr: stderrURL)
+        if let launchError = launch.launchError {
+            return OutputPostCommandOutcome(
+                command: template, durationMilliseconds: durationMilliseconds,
+                error: "failed to launch: " + launchError,
+                outputTail: tail)
+        }
+        if Task.isCancelled, !timedOut {
+            return OutputPostCommandOutcome(
+                command: template, exitCode: nil, timedOut: false,
+                durationMilliseconds: durationMilliseconds,
+                error: "cancelled", outputTail: tail)
+        }
         if timedOut {
             return OutputPostCommandOutcome(
                 command: template, exitCode: nil, timedOut: true,
@@ -220,12 +239,30 @@ public enum ExportPostCommandRunner {
                 error: "timed out after \(Int(configuration.timeoutSeconds))s",
                 outputTail: tail)
         }
-        let exitCode = Int(process.terminationStatus)
+        let exitCode = Int(launch.status ?? 0)
         return OutputPostCommandOutcome(
             command: template, exitCode: exitCode, timedOut: false,
             durationMilliseconds: durationMilliseconds,
             error: exitCode == 0 ? nil : "command exited with status \(exitCode)",
             outputTail: tail)
+    }
+
+    /// 等待进程结束（terminationHandler + continuation，不阻塞线程）。
+    private static func launchAndWait(
+        _ process: Process
+    ) async -> (status: Int32?, launchError: String?) {
+        await withCheckedContinuation { continuation in
+            process.terminationHandler = { finished in
+                continuation.resume(returning: (finished.terminationStatus, nil))
+            }
+            do {
+                try process.run()
+                // 取消在 launch 前到达时 onCancel 可能已跑过（那时还没进程），补一次。
+                if Task.isCancelled { process.terminate() }
+            } catch {
+                continuation.resume(returning: (nil, String(describing: error)))
+            }
+        }
     }
 
     static func outputTail(stdout: URL, stderr: URL) -> String? {
@@ -277,4 +314,15 @@ public enum ExportPostCommandRunner {
             return false
         }
     }
+}
+
+/// 钩子超时标记（actor 天然 Sendable，无需额外并发标注）。
+private actor HookTimeoutFlag {
+    private var fired = false
+
+    func markFired() {
+        fired = true
+    }
+
+    var isFired: Bool { fired }
 }

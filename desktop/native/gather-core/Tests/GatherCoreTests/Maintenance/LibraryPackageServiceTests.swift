@@ -444,4 +444,59 @@ struct LibraryPackageServiceTests {
         #expect(row?[0].textValue == expectedPath)
         #expect(row?[1].textValue == dir, "空 newRoot 的工作区源根也应回退到包内 sourcePath")
     }
+
+    @Test("XMP 迁移：越界 rating(-1/6) 跳过并计数，不触发约束回滚")
+    func externalMigrationSkipsInvalidRatings() async throws {
+        let db = try makeTestDB()
+        try insertSession(db, "s1")
+        let dir = try makeTempDir(prefix: "gather-invalid-rating")
+        let photo = try writeTempFile(in: dir, name: "a.cr3", content: Data("a".utf8))
+        _ = try writeTempFile(in: dir, name: "a.xmp", content: Data("<x/>".utf8))
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: photo, checksum: "c1")
+        let candidates = try LibraryPackageStore(connection: db)
+            .migrationCandidates(sessionId: "s1")
+
+        let negative = ExternalMetadataMigrationService(xmp: StubXMPProvider(
+            attributes: MetadataWriteAttributes(rating: -1)))
+        let negativeEval = await negative.evaluate(
+            candidates: candidates, overwriteExisting: false)
+        #expect(negativeEval.report.skippedInvalidRating == 1)
+        #expect(negativeEval.updates.isEmpty, "越界 rating 不进入写入队列")
+        // apply 空更新也不抛错（旧实现在此会 CHECK 失败并回滚整批）。
+        try db.transaction {
+            try ExternalMetadataMigrationService.apply(
+                updates: negativeEval.updates, connection: db)
+        }
+
+        let tooHigh = ExternalMetadataMigrationService(xmp: StubXMPProvider(
+            attributes: MetadataWriteAttributes(rating: 6)))
+        let highEval = await tooHigh.evaluate(
+            candidates: candidates, overwriteExisting: false)
+        #expect(highEval.report.skippedInvalidRating == 1)
+        #expect(highEval.updates.isEmpty)
+    }
+
+    @Test("ExternalMigrationReport 旧 JSON 缺 skippedInvalidRating 仍可解码")
+    func migrationReportDecodesLegacyJSON() throws {
+        let json = """
+            {"scanned":2,"sidecarsFound":1,"applied":1,"conflicts":0,
+             "missingRating":1,"missingLabel":1,"missingKeywords":1,"failed":[]}
+            """
+        let report = try JSONDecoder().decode(
+            ExternalMigrationReport.self, from: Data(json.utf8))
+        #expect(report.scanned == 2)
+        #expect(report.skippedInvalidRating == 0)
+    }
+
+    @Test("库包非业务错误映射为 libraryPackage/INVALID_PARAM")
+    func libraryPackageFailureMapping() {
+        let mapped = MaintenanceService.libraryPackageFailure(
+            NSError(domain: "LibraryPackageTest", code: 42))
+        guard let gather = mapped as? GatherError else {
+            Issue.record("应映射为 GatherError")
+            return
+        }
+        #expect(gather.code == .INVALID_PARAM)
+        #expect(gather.params["field"] == "libraryPackage")
+    }
 }

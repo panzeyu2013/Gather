@@ -112,13 +112,34 @@ public enum S3SigV4 {
     ) -> String {
         let names = signedHeaders.map { $0.lowercased() }.sorted()
         let canonicalHeaders = names.map { name in
-            let value = (headers[name] ?? "").trimmingCharacters(in: .whitespaces)
+            let value = canonicalHeaderValue(headers[name] ?? "")
             return "\(name):\(value)\n"
         }.joined()
         return [
             method.uppercased(), canonicalURI, canonicalQueryString,
             canonicalHeaders, names.joined(separator: ";"), payloadHash,
         ].joined(separator: "\n")
+    }
+
+    /// AWS SigV4 canonical header 值归一：去首尾空白 + 连续空白折叠成单个空格。
+    ///
+    /// 规范要求对每个参与签名的 header 做 trim + 顺序空白压缩；我们自己的请求头
+    /// 都不含内部空白，但公开的签名 API 必须按规范归一，否则外部调用方传入
+    /// 带多余空白的值会出现「本地能签、服务器拒签」的隐蔽不一致。
+    public static func canonicalHeaderValue(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var output = ""
+        var pendingSpace = false
+        for character in trimmed {
+            if character == " " || character == "\t" || character == "\n" || character == "\r" {
+                pendingSpace = true
+                continue
+            }
+            if pendingSpace, !output.isEmpty { output.append(" ") }
+            pendingSpace = false
+            output.append(character)
+        }
+        return output
     }
 
     public static func stringToSign(
@@ -186,10 +207,13 @@ public struct S3Configuration: Equatable, Sendable {
     public var accessKeyID: String
     public var secretAccessKey: String
     public var keyPrefix: String
+    /// 可选 STS/Session Token；存在时作为 x-amz-security-token 交给签名。
+    public var sessionToken: String?
 
     public init(
         endpoint: String, bucket: String, region: String?,
-        accessKeyID: String, secretAccessKey: String, keyPrefix: String
+        accessKeyID: String, secretAccessKey: String, keyPrefix: String,
+        sessionToken: String? = nil
     ) {
         self.endpoint = endpoint
         self.bucket = bucket
@@ -197,6 +221,7 @@ public struct S3Configuration: Equatable, Sendable {
         self.accessKeyID = accessKeyID
         self.secretAccessKey = secretAccessKey
         self.keyPrefix = keyPrefix
+        self.sessionToken = sessionToken
     }
 }
 
@@ -308,14 +333,22 @@ public final class S3ShareTransport: OutputShareTransport {
                 if response.isSuccess {
                     uploaded += 1
                 } else {
+                    // Wave4a-C1（fail-closed）：share.json 写失败即中止，
+                    // 不把校样页/画廊传到“无口令/无到期配置”的服务器状态。
                     failures.append(OutputSharePublishFailure(
                         path: "share.json", reason: "HTTP \(response.status)"))
+                    return OutputSharePublishResult(
+                        uploaded: uploaded, failed: failures,
+                        remoteRoot: rootLabel, abortedOnAuth: false)
                 }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 failures.append(OutputSharePublishFailure(
                     path: "share.json", reason: Self.sanitizedNetworkReason(error)))
+                return OutputSharePublishResult(
+                    uploaded: uploaded, failed: failures,
+                    remoteRoot: rootLabel, abortedOnAuth: false)
             }
         }
 
@@ -370,7 +403,7 @@ public final class S3ShareTransport: OutputShareTransport {
             endpoint: request.endpoint.trimmingCharacters(in: .whitespacesAndNewlines),
             bucket: bucket, region: region.isEmpty ? nil : region,
             accessKeyID: request.accessKeyID, secretAccessKey: request.secret,
-            keyPrefix: request.remoteFolder)
+            keyPrefix: request.remoteFolder, sessionToken: request.sessionToken)
     }
 
     private static func rootLabel(_ configuration: S3Configuration) -> String {
@@ -404,21 +437,30 @@ public final class S3ShareTransport: OutputShareTransport {
         let payloadHash = S3SigV4.sha256Hex(body)
         let timestamp = S3SigV4.timestamp(now)
         let date = S3SigV4.dateStamp(now)
-        let headers: [String: String] = [
+        var headers: [String: String] = [
             "host": address.host,
             "x-amz-content-sha256": payloadHash,
             "x-amz-date": timestamp,
         ]
+        // Wave4a-C4：临时凭据（STS/Session Token）必须显式上送并参与签名；
+        // 没有 token 时签名头集合保持旧的三项（旧行为逐字节不变）。
+        var signedHeaders = S3SigV4.signedHeaderNames
+        if let token = configuration.sessionToken, !token.isEmpty {
+            headers["x-amz-security-token"] = token
+            signedHeaders.append("x-amz-security-token")
+        }
         let effectiveRegion = configuration.region ?? S3ShareAddressing.defaultRegion
         let scope = S3SigV4.scope(date: date, region: effectiveRegion)
         let signature = S3SigV4.signature(
             secretAccessKey: configuration.secretAccessKey,
             date: date, region: effectiveRegion, timestamp: timestamp,
             method: method, canonicalURI: address.canonicalURI,
-            headers: headers, payloadHash: payloadHash)
+            headers: headers, signedHeaders: signedHeaders,
+            payloadHash: payloadHash)
         var requestHeaders = headers
         requestHeaders["Authorization"] = S3SigV4.authorizationHeader(
-            accessKeyID: configuration.accessKeyID, scope: scope, signature: signature)
+            accessKeyID: configuration.accessKeyID, scope: scope,
+            signature: signature, signedHeaders: signedHeaders)
         if let contentType { requestHeaders["Content-Type"] = contentType }
         return S3HTTPRequest(
             method: method, url: address.url, headers: requestHeaders, body: body)

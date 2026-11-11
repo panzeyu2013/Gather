@@ -72,6 +72,20 @@ public struct SessionIngestRunner {
                 GatherLogger.log("ingest register failed: \(error)", level: .warn)
             }
         }
+        // Wave4a-F3：replace 覆盖的是既有照片的 filepath，登记走 INSERT OR IGNORE
+        // 不会重算哈希；这里刷新库内指纹（checksum/size/mtime），否则后续跨会话去重、
+        // 重复检测、交付 manifest 都会读到与文件内容不符的旧校验和。
+        if !result.replaced.isEmpty {
+            do {
+                let refreshed = try sessionService.refreshPhotoFingerprints(
+                    sessionId: payload.sessionId, filepaths: result.replaced)
+                GatherLogger.log(
+                    "ingest replace refreshed fingerprints: \(refreshed)", level: .debug)
+            } catch {
+                GatherLogger.log(
+                    "ingest replace fingerprint refresh failed: \(error)", level: .warn)
+            }
+        }
         let ingestResult = SessionIngestResult(
             registered: registered,
             copiedButUnregistered: unregistered,
@@ -86,7 +100,9 @@ public struct SessionIngestRunner {
                     retryable: $0.retryable)
             },
             libraryDuplicatesSkipped: result.librarySkipped.count,
-            replaced: result.replaced.count
+            replaced: result.replaced.count,
+            libraryDuplicateCount: result.libraryDuplicates.count,
+            secondDestinationSkipped: result.secondSkipped.count
         )
         // 取消发生在复制/登记之后：文件已经安全落地并登记，再把 Job 收成 cancelled。
         try context?.throwIfCancelled(forceDbCheck: true)
@@ -104,16 +120,22 @@ public struct SessionIngestRunner {
     /// - unreadableCount = 不可读 / 越界 / 模板越界被拒的源数量。
     public func preview(_ payload: SessionIngestInput) async throws -> SessionIngestPreview {
         let session = try requireSession(payload)
-        let options = try makeOptions(payload: payload, session: session)
+        // Wave4a-F2：预检走只读路径（不回填 checksum）。
+        let options = try makeOptions(payload: payload, session: session, previewOnly: true)
         let plan = try await planFor(payload: payload, options: options)
         return SessionIngestPreview(
-            totalCount: plan.items.count + plan.skipped.count + plan.unreadable.count,
-            newCount: plan.items.count,
+            // 口径修正（Review P2）：total 计入被 skip 策略跳过的库内重复；
+            // new 排除冲突项（目标同名异内容，执行期会跳过，不算"新增"）。
+            totalCount: plan.items.count + plan.skipped.count
+                + plan.unreadable.count + plan.librarySkipped.count,
+            newCount: plan.items.filter { !$0.conflict }.count,
             libraryDuplicateCount: plan.libraryDuplicates.count,
             conflictCount: plan.conflictCount,
             unreadableCount: plan.unreadable.count,
             policy: payload.duplicatePolicy,
-            duplicateSamplePaths: Array(plan.libraryDuplicates.prefix(20))
+            duplicateSamplePaths: Array(plan.libraryDuplicates.prefix(20)),
+            librarySkippedCount: plan.librarySkipped.count,
+            replaceableCount: plan.replaced.count
         )
     }
 
@@ -133,7 +155,7 @@ public struct SessionIngestRunner {
 
     /// 目的地 / 第二目的地校验 + 计划参数（Wave2 起携带去重策略与会话源根）。
     private func makeOptions(
-        payload: SessionIngestInput, session: SessionData
+        payload: SessionIngestInput, session: SessionData, previewOnly: Bool = false
     ) throws -> IngestOptions {
         let base = URL(fileURLWithPath: session.sourcePath)
             .resolvingSymlinksInPath().path
@@ -170,7 +192,8 @@ public struct SessionIngestRunner {
             verifyChecksum: payload.verifyChecksum,
             duplicatePolicy: payload.duplicatePolicy,
             sessionId: payload.sessionId,
-            sessionSourceRoot: session.sourcePath
+            sessionSourceRoot: session.sourcePath,
+            previewOnly: previewOnly
         )
     }
 
@@ -180,17 +203,25 @@ public struct SessionIngestRunner {
     ) async throws -> IngestPlan {
         var existing: [String: String] = [:]
         var library: [String: SessionService.LibraryDuplicateTarget] = [:]
+        var libraryCandidateSizes = Set<Int>()
         do {
             let sourceSizes = ingestService.sourceSizes(sourcePaths: payload.sourcePaths)
             existing = try sessionService.photoChecksums(
                 sessionId: payload.sessionId,
-                matchingSizes: sourceSizes.isEmpty ? nil : sourceSizes)
-            library = try sessionService.libraryPhotoDuplicates(matchingSizes: sourceSizes)
+                matchingSizes: sourceSizes.isEmpty ? nil : sourceSizes,
+                allowChecksumBackfill: !options.previewOnly)
+            // Wave4a-F1/F2：未回填 checksum 的视觉照片也参与跨会话去重（懒算+回填）；
+            // 预检（previewOnly）只读，不回填。
+            library = try sessionService.libraryPhotoDuplicates(
+                matchingSizes: sourceSizes,
+                allowChecksumBackfill: !options.previewOnly)
+            libraryCandidateSizes = Set(library.values.map(\.fileSize))
         } catch {
             GatherLogger.log("ingest checksum lookup failed: \(error)", level: .warn)
         }
         return try await ingestService.plan(
             sourcePaths: payload.sourcePaths, options: options,
-            existingChecksums: existing, libraryDuplicates: library)
+            existingChecksums: existing, libraryDuplicates: library,
+            libraryCandidateSizes: libraryCandidateSizes)
     }
 }

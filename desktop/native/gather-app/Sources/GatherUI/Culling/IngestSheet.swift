@@ -20,6 +20,11 @@ struct IngestSheet: View {
     @State private var renameTemplate = "{yyyy}/{MM}/{dd}/{orig}-{seq:4}.{ext}"
     @State private var secondRoot = ""
     @State private var verifyChecksum = true
+    /// Wave4a-L1：跨工作区重复的处置策略（随摄取输入下传，缺省与旧行为一致 = skip）。
+    @State private var duplicatePolicy: IngestDuplicatePolicy = .skip
+    /// Wave4a-L1：预检结果（只读；不复制文件）与进行中状态。
+    @State private var preview: SessionIngestPreview?
+    @State private var isPreviewing = false
     @State private var isRunning = false
     @State private var result: SessionIngestResult?
     @State private var errorText: String?
@@ -92,6 +97,51 @@ struct IngestSheet: View {
 
             Toggle(l10n("复制后校验校验和"), isOn: $verifyChecksum)
 
+            // Wave4a-L1：重复处置三选一 + 只读预检（此前把库内重复静默跳过，用户看不到）。
+            LabeledContent(l10n("重复处置")) {
+                Picker(l10n("重复处置"), selection: $duplicatePolicy) {
+                    Text(l10n("跳过库内已存在的照片")).tag(IngestDuplicatePolicy.skip)
+                    Text(l10n("并存（再存一份）")).tag(IngestDuplicatePolicy.coexist)
+                    Text(l10n("覆盖库内已存在的照片")).tag(IngestDuplicatePolicy.replace)
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
+            Text(l10n("按 SHA-256 命中全库已登记照片；覆盖仅限同一工作区且原路径在源根内，否则退化为跳过。"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(GatherTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: GatherMetrics.Space.s) {
+                Button(isPreviewing ? l10n("预检中…") : l10n("预检")) {
+                    Task { await runPreview() }
+                }
+                .gatherButton(.secondary, size: .small)
+                .disabled(isPreviewing || isRunning || sources.isEmpty
+                          || destinationRoot.isEmpty || rootMissing)
+                Spacer(minLength: 0)
+            }
+            if let preview {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+                    Text(l10n.format(
+                        "预检：新增 %lld 张，库内重复 %lld 张（会跳过 %lld 张 / 可覆盖 %lld 张），目标冲突 %lld 张，不可读 %lld 个",
+                        preview.newCount, preview.libraryDuplicateCount,
+                        preview.librarySkippedCount, preview.replaceableCount,
+                        preview.conflictCount, preview.unreadableCount))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(GatherTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !preview.duplicateSamplePaths.isEmpty {
+                        Text(l10n.format("重复样例：%@",
+                            preview.duplicateSamplePaths.prefix(3).joined(separator: "、")))
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(GatherTheme.secondaryText)
+                            .lineLimit(3)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+
             if isRunning {
                 HStack(spacing: GatherMetrics.Space.s) {
                     ProgressView().controlSize(.small)
@@ -119,6 +169,21 @@ struct IngestSheet: View {
                     Text(l10n.format("无法读取/越界被拒绝：%lld 个", result.unreadable.count))
                         .font(.caption)
                         .foregroundStyle(.orange)
+                }
+                // Wave4a-L1：按 libraryDuplicates / librarySkipped / replaced 分类展示。
+                if let duplicates = result.libraryDuplicateCount, duplicates > 0 {
+                    Text(l10n.format("命中库内重复 %lld 张（跳过 %lld / 覆盖 %lld）",
+                                     duplicates,
+                                     result.libraryDuplicatesSkipped ?? 0,
+                                     result.replaced ?? 0))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(GatherTheme.secondaryText)
+                }
+                if let secondSkipped = result.secondDestinationSkipped, secondSkipped > 0 {
+                    Text(l10n.format("第二目的地跳过 %lld 张（替换项无法按相对路径镜像）",
+                                     secondSkipped))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(GatherTheme.secondaryText)
                 }
                 if !result.copiedButUnregistered.isEmpty {
                     Text(l10n.format("已复制但未登记：%lld 张", result.copiedButUnregistered.count))
@@ -173,6 +238,32 @@ struct IngestSheet: View {
         }
     }
 
+    /// Wave4a-L1：只读预检（不复制文件、不建 job），结果只用于展示。
+    private func runPreview() async {
+        guard let sessionAPI = viewModel.sessionAPI else {
+            errorText = l10n("摄取未接线（缺少 session API）")
+            return
+        }
+        isPreviewing = true
+        errorText = nil
+        preview = nil
+        defer { isPreviewing = false }
+        do {
+            let input = try SessionIngestInput(
+                sessionId: viewModel.sessionId,
+                sourcePaths: sources,
+                destinationRoot: destinationRoot,
+                renameTemplate: renameTemplate,
+                secondDestinationRoot: secondRoot.isEmpty ? nil : secondRoot,
+                verifyChecksum: verifyChecksum,
+                duplicatePolicy: duplicatePolicy
+            )
+            preview = try await sessionAPI.previewIngest(input)
+        } catch {
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+        }
+    }
+
     private func run() async {
         isRunning = true
         errorText = nil
@@ -192,7 +283,8 @@ struct IngestSheet: View {
                 destinationRoot: destinationRoot,
                 renameTemplate: renameTemplate,
                 secondDestinationRoot: secondRoot.isEmpty ? nil : secondRoot,
-                verifyChecksum: verifyChecksum
+                verifyChecksum: verifyChecksum,
+                duplicatePolicy: duplicatePolicy
             )
             guard let sessionAPI = viewModel.sessionAPI else {
                 errorText = l10n("摄取未接线（缺少 session API）")

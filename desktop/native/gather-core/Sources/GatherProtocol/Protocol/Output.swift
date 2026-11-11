@@ -389,6 +389,10 @@ public struct WebDAVPublishInput: Codable, Equatable, Sendable {
     public var bucket: String?
     /// S3 通道：region（WebDAV 忽略；nil 默认 us-east-1）。
     public var region: String?
+    /// S3 通道：可选 STS/Session Token（WebDAV 忽略）。
+    /// 临时凭据（IAM role / SSO / STS）必须带；签名时作为 x-amz-security-token 参与。
+    /// 持久化位置同 secret：只进 Keychain（与 secret 打包存储），不落 settings/日志。
+    public var sessionToken: String?
     /// 分享策略：allowDownload=false 只传 thumbs + 校样页（不传 large/成片）。
     /// nil = 保守默认（不允许下载大图）。
     ///
@@ -401,6 +405,7 @@ public struct WebDAVPublishInput: Codable, Equatable, Sendable {
         transport: OutputShareTransportKind? = nil,
         bucket: String? = nil,
         region: String? = nil,
+        sessionToken: String? = nil,
         share: OutputShareOptions? = nil
     ) {
         self.localPath = localPath
@@ -411,6 +416,7 @@ public struct WebDAVPublishInput: Codable, Equatable, Sendable {
         self.transport = transport
         self.bucket = bucket
         self.region = region
+        self.sessionToken = sessionToken
         self.share = share
     }
 }
@@ -467,11 +473,18 @@ public struct WebDAVCredentialInput: Codable, Equatable, Sendable {
     public var baseURL: String
     public var username: String
     public var password: String
+    /// S3 可选 STS/Session Token（WebDAV 忽略）。Host 侧与 password 打包进同一条
+    /// Keychain item（不新增 schema/不落库）；明文同样只在内存与 Keychain。
+    public var sessionToken: String?
 
-    public init(baseURL: String, username: String, password: String) {
+    public init(
+        baseURL: String, username: String, password: String,
+        sessionToken: String? = nil
+    ) {
         self.baseURL = baseURL
         self.username = username
         self.password = password
+        self.sessionToken = sessionToken
     }
 }
 

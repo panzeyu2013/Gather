@@ -453,6 +453,21 @@ public final class LiveMetadataAPI: MetadataAPI {
         }
     }
 
+    /// D3：批量直改需要的"盘上是否可信"伴生信息；sidecar 不存在时不能把
+    /// 空结构当成"已知空"（导入包的照片 cache 有 IPTC 但盘上无 sidecar）。
+    public func diskDescriptiveAvailability(
+        photoId: String
+    ) async throws -> DiskDescriptiveAvailability? {
+        try await mapAsync {
+            let detail = try metadataService.photoDetail(photoId: photoId)
+            let attributes = try await metadataService.diskAttributes(photoPath: detail.filepath)
+            let sidecar = TSPath.xmpSidecarPath(detail.filepath)
+            return DiskDescriptiveAvailability(
+                descriptive: attributes.descriptive ?? DescriptiveMetadata(),
+                sidecarExists: FileManager.default.fileExists(atPath: sidecar))
+        }
+    }
+
     public func applyDescriptive(
         _ input: Confirmed<MetadataInlineApplyInput>
     ) async throws -> MetadataTemplateApplyOutcome {

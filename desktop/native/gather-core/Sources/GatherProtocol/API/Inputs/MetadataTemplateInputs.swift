@@ -198,6 +198,20 @@ public struct MetadataPhotoPreview: Codable, Equatable, Sendable {
     }
 }
 
+/// D4（task-31 review）：预览阶段逐张读盘失败（与 apply 的 failed 同源）。
+///
+/// 可选字段 failed 保证旧 JSON（没有该键）仍能解码；UI 有 failed 时禁用应用，
+/// 避免"预览显示可写、点应用才失败"。
+public struct MetadataTemplatePreviewFailure: Codable, Equatable, Sendable {
+    public var photoId: String
+    public var message: String
+
+    public init(photoId: String, message: String) {
+        self.photoId = photoId
+        self.message = message
+    }
+}
+
 public struct MetadataTemplatePreviewResult: Codable, Equatable, Sendable {
     public var templateId: String
     public var templateName: String
@@ -208,10 +222,14 @@ public struct MetadataTemplatePreviewResult: Codable, Equatable, Sendable {
     public var photos: [MetadataPhotoPreview]
     /// 预览身份；apply 时服务端按当前模板/照片集复算。
     public var previewToken: String?
+    /// 读盘失败的照片（nil/空 = 全部成功；旧 JSON 缺键解码为 nil）。
+    public var failed: [MetadataTemplatePreviewFailure]?
+
     public init(
         templateId: String, templateName: String, totalPhotos: Int, changedPhotos: Int,
         changedFields: Int, conflictFields: Int, photos: [MetadataPhotoPreview],
-        previewToken: String? = nil
+        previewToken: String? = nil,
+        failed: [MetadataTemplatePreviewFailure]? = nil
     ) {
         self.templateId = templateId
         self.templateName = templateName
@@ -221,6 +239,7 @@ public struct MetadataTemplatePreviewResult: Codable, Equatable, Sendable {
         self.conflictFields = conflictFields
         self.photos = photos
         self.previewToken = previewToken
+        self.failed = failed
     }
 
     /// 变量未解析总数（UI 禁用「应用」与逐字段提示共用）。
@@ -229,6 +248,10 @@ public struct MetadataTemplatePreviewResult: Codable, Equatable, Sendable {
     }
 
     public var hasUnresolvedVariables: Bool { unresolvedVariableCount > 0 }
+
+    /// 读盘失败张数（UI 禁用「应用」；与 apply 的 failed 同源语义）。
+    public var readFailureCount: Int { failed?.count ?? 0 }
+    public var hasReadFailures: Bool { readFailureCount > 0 }
 }
 
 /// P1 / B3：批次摘要（不含快照明细，撤销只认 id）。

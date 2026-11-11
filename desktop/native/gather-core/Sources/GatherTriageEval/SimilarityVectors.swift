@@ -10,6 +10,7 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import GatherApplication
+import GatherAnalysis
 
 enum SimilarityVectorSource: String {
     case featureprint
@@ -66,43 +67,11 @@ enum SimilarityVectors {
         }
     }
 
-    // MARK: - dHash（像素 provider 与 RAWDecoder.pixels9x8 同算法）
-
-    /// 9x8 灰度网格（72 字节，top-down 行序）。只读复制自
-    /// GatherAnalysis/Image/RAWDecoder.swift:230-254 的实现——评估工具不新增 target
-    /// 依赖（GatherTriageEval 不 link GatherAnalysis），基线哈希的"算法"仍是产品那套。
-    static func pixels9x8(path: String) -> [UInt8]? {
-        guard let source = CGImageSourceCreateWithURL(
-            URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: dHashThumbnailSize,
-            kCGImageSourceShouldCacheImmediately: true,
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(
-            source, 0, thumbnailOptions as CFDictionary)
-            ?? CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        let width = 9
-        let height = 8
-        var pixels = [UInt8](repeating: 0, count: width * height)
-        guard let colorSpace = CGColorSpaceCreateDeviceGray() as CGColorSpace?,
-              let context = CGContext(
-                  data: &pixels, width: width, height: height,
-                  bitsPerComponent: 8, bytesPerRow: width, space: colorSpace,
-                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-        context.interpolationQuality = .high
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1, y: -1)
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return pixels
-    }
-
     /// 批量 dHash：复用 GatherApplication 的 computeVisualHashes（与 DuplicateService 同一入口）。
     static func dHashes(paths: [String]) async -> [String: UInt64] {
         let rows = paths.map { (id: $0, filepath: $0) }
         let computed = await computeVisualHashes(photos: rows) { path, _ in
-            pixels9x8(path: path)
+            RAWDecoder.pixels9x8(path: path)
         }
         var result: [String: UInt64] = [:]
         for (path, hex) in computed {

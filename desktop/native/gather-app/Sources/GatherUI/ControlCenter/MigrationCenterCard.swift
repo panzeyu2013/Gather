@@ -144,10 +144,10 @@ struct MigrationCenterCard: View {
             }
             if let report = migrationReport {
                 Text(l10n.format(
-                    "XMP 迁移完成：扫描 %lld 张，发现 sidecar %lld，写入 %lld 张；冲突 %lld 条（按字段计），缺 rating/label/keywords %lld/%lld/%lld，失败 %lld。",
+                    "XMP 迁移完成：扫描 %lld 张，发现 sidecar %lld，写入 %lld 张；冲突 %lld 条（按字段计），越界 rating 跳过 %lld，缺 rating/label/keywords %lld/%lld/%lld，失败 %lld。",
                     report.scanned, report.sidecarsFound, report.applied,
-                    report.conflicts, report.missingRating, report.missingLabel,
-                    report.missingKeywords, report.failed.count))
+                    report.conflicts, report.skippedInvalidRating, report.missingRating,
+                    report.missingLabel, report.missingKeywords, report.failed.count))
                     .font(GatherFont.secondary)
                     .foregroundStyle(GatherTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -254,11 +254,19 @@ struct MigrationCenterCard: View {
                 Confirmed(input, source: .userDialog))
             importReport = report
             // 导入整包会新增照片/集合：本函数体内直接发 library 域事件（门禁要求）。
-            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
+            // P2（task-31 review）：import 新建的是 report.sessionId 工作区；用当前
+            // sessionId 发事件会让按 session 过滤的页面收不到，新库必须手动刷新。
+            GatherEventCenter.postDomainChange(
+                .library, sessionId: Self.importEventSessionId(report))
             notifyLibraryChanged()
         } catch {
             actionError = CommandError(error)
         }
+    }
+
+    /// 导入完成后的 library 事件目标：**新建工作区**的 id，不是发起导入的当前工作区。
+    static func importEventSessionId(_ report: LibraryImportReport) -> String {
+        report.sessionId
     }
 
     // MARK: - XMP 迁移

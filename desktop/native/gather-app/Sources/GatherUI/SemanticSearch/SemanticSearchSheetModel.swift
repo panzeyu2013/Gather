@@ -37,6 +37,9 @@ final class SemanticSearchSheetModel {
     var notice: String?
     /// 写回后建议的撤销入口是否可用（有写入才显示）。
     var canUndoWriteback = false
+    /// 上一次"写回"实际落到的照片 id（服务端返回，E2）：撤销时作为 photoIds 回传，
+    /// 让"撤销本批"只清本批写过的照片，而不是整个会话的 AI 场景子树。
+    private(set) var lastWriteScopePhotoIds: [String] = []
 
     init(api: any PhotoAPI, sessionId: String, seedPhotoIds: [String]) {
         self.api = api
@@ -108,27 +111,45 @@ final class SemanticSearchSheetModel {
     }
 
     /// 写回/撤销（调用方已确认；Confirmed 在调用点构造，API 不得自己补确认）。
+    ///
+    /// 写回 = 会话范围（与预览一致）；撤销 = **上一次写回实际改动的照片集合**（服务端回传
+    /// `appliedPhotoIds`），不再清整个会话的 root 子树（E2 破坏性误删修复）。
     func applyWriteback(_ action: WritebackAction, l10n: L10n) async {
+        let undoScope = lastWriteScopePhotoIds
+        if action == .undo && undoScope.isEmpty {
+            notice = l10n("没有可撤销的写回批次（先写回一次或重启后重新写回）")
+            return
+        }
         await run {
-            let input = Confirmed(SemanticKeywordApplyInput(
+            var applyInput = SemanticKeywordApplyInput(
                 sessionId: self.sessionId,
-                remove: action == .undo))
-            let result = try await self.api.applySemanticKeywords(input)
+                remove: action == .undo)
+            if action == .undo {
+                applyInput.photoIds = undoScope
+            }
+            let result = try await self.api.applySemanticKeywords(Confirmed(applyInput))
             // 写回/撤销改的是关键词数据：发 metadata 域事件让已挂载页刷新。
             GatherEventCenter.postDomainChange(.metadata, sessionId: self.sessionId)
-            self.canUndoWriteback = result.keywordsAdded > 0 || result.keywordsRemoved > 0
             if action == .undo {
+                self.lastWriteScopePhotoIds = []
+                self.canUndoWriteback = false
                 self.notice = l10n.format(
                     "已撤销 %lld 个场景关键词", Int64(result.keywordsRemoved))
-            } else if result.failedPhotoIds.isEmpty {
-                self.notice = l10n.format(
-                    "已写回 %lld 个关键词（%lld 张）",
-                    Int64(result.keywordsAdded), Int64(result.appliedPhotos))
             } else {
-                self.notice = l10n.format(
-                    "已写回 %lld 个关键词（%lld 张，%lld 张失败）",
-                    Int64(result.keywordsAdded), Int64(result.appliedPhotos),
-                    Int64(result.failedPhotoIds.count))
+                self.lastWriteScopePhotoIds = result.appliedPhotoIds
+                self.canUndoWriteback = !result.appliedPhotoIds.isEmpty
+            }
+            if action == .write {
+                if result.failedPhotoIds.isEmpty {
+                    self.notice = l10n.format(
+                        "已写回 %lld 个关键词（%lld 张）",
+                        Int64(result.keywordsAdded), Int64(result.appliedPhotos))
+                } else {
+                    self.notice = l10n.format(
+                        "已写回 %lld 个关键词（%lld 张，%lld 张失败）",
+                        Int64(result.keywordsAdded), Int64(result.appliedPhotos),
+                        Int64(result.failedPhotoIds.count))
+                }
             }
             // 写回后刷新计划：第二次预览的 totalAdditions 应为 0（幂等的 UI 证据）。
             if let refreshed = try? await self.api.semanticKeywordPlan(

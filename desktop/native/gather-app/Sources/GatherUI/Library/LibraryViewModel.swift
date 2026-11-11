@@ -48,6 +48,10 @@ public struct LibraryFilterState: Equatable, Sendable {
     /// Wave2 / task-14：场景标签 bucket 值（facet 维 `scene`；选择规则是
     /// `keyword_path starts_with "AI|场景|<value>"`，不是扁平 keyword contains）。
     public var scene = ""
+    /// Wave4a / task-39（E3）：person facet 的**精确**桶值（persons.name）。
+    /// 与自由文本 `person` 分开：文本走 contains（用户模糊搜），facet 必须走 eq，
+    /// 否则点"张三"会把"张三丰"也带进网格（facet 数 ≠ 网格数）。
+    public var personFacet = ""
     public var duplicates = ""
     public var recentDays = ""
     // P1 / C：facet 维（单值选择；空串 = 不限）
@@ -118,8 +122,12 @@ public func buildLibraryCriteria(_ state: LibraryFilterState) -> FilterGroup {
     if !state.volume.isEmpty {
         add("volume", .eq, .string(state.volume))
     }
+    let personFacet = state.personFacet.trimmingCharacters(in: .whitespaces)
     let person = state.person.trimmingCharacters(in: .whitespaces)
-    if !person.isEmpty {
+    if !personFacet.isEmpty {
+        // E3：facet 桶值是精确姓名 → eq；不能复用文本字段的 contains（LIKE 子串）。
+        add("person", .eq, .string(personFacet))
+    } else if !person.isEmpty {
         add("person", .contains, .string(person))
     }
     // Wave2 / task-14：scene facet 的选择必须等价于 FacetQuery.scene 的计数口径

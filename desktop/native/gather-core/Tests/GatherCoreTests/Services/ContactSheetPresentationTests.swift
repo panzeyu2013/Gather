@@ -299,4 +299,40 @@ struct ContactSheetPresentationTests {
         #expect(proofJS.contains("version: 2"))
         #expect(proofJS.contains("LEGACY_KEY"), "v1 勾选要能迁移")
     }
+
+    @Test("proof 页 fail-closed / 到期只读守卫（Wave4a-C1/C2）")
+    func proofPageFailClosedGuards() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-gallery-guards-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("IMG_0001.jpg").path
+        try makeSheetJPEG(at: source)
+        var presentation = item()
+        presentation.photoId = "p1"
+        presentation.filePath = source
+        presentation.filename = "IMG_0001.jpg"
+        _ = try GalleryBuilder.build(
+            items: [GalleryItem(presentation: presentation)],
+            options: GalleryOptions(title: "婚礼", fields: [.rating, .label, .pick]),
+            destination: directory.appendingPathComponent("gallery"))
+
+        let proofHTML = try String(
+            contentsOf: directory.appendingPathComponent("gallery/proof.html"),
+            encoding: .utf8)
+        #expect(proofHTML.contains("gate-pending"), "初始内容必须默认不可见（拿到配置再放行）")
+
+        let proofJS = try String(
+            contentsOf: directory.appendingPathComponent("gallery/proof.js"),
+            encoding: .utf8)
+        // C2：到期后 submit early return + 下载按钮 disable。
+        #expect(proofJS.contains("var expired = false;"))
+        #expect(proofJS.contains("if (expired || shareLoadFailed) { return; }"))
+        #expect(proofJS.contains("expiredDownload.disabled = true;"))
+        // C1：http(s) 拿不到 share.json 时保持门槛关闭；file:// 本地预览保留旧回退。
+        #expect(proofJS.contains("var shareLoadFailed = false;"))
+        #expect(proofJS.contains("function handleShareUnavailable()"))
+        #expect(proofJS.contains("shareLoadFailed = true;"))
+        #expect(proofJS.contains("window.location.protocol === 'file:'"))
+    }
 }
