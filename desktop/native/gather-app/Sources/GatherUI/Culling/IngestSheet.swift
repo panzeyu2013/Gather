@@ -93,7 +93,10 @@ struct IngestSheet: View {
             }
 
             // Wave3 / G12：C1 若把目标目录设为 Hot Folder 会与摄取重复（检测不到，只提示）。
-            C1HotFolderNotice()
+            // P2（Wave4b）：只在装了 C1 的机器展示（没装 C1 的用户看到的是噪音）。
+            if viewModel.captureOne.c1Installed {
+                C1HotFolderNotice()
+            }
 
             Toggle(l10n("复制后校验校验和"), isOn: $verifyChecksum)
 

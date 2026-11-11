@@ -352,10 +352,31 @@ package final class AppBootstrap {
             settings: appServices.settings
         )
 
+        // P2（Wave4b）：自动 reload 前先 select「本次写盘」的照片，否则 C1 选中项通常
+        // 不在这些照片上 → reload 必然 .noSelection 并被失败抑制（回路断点）。路径来自
+        // delivery 行（status=written）→ DeliveryRepo.photoPath；读取失败/未接线时返回
+        // 空数组，bridge 退回旧行为（直接 reload）。
+        let writtenPhotoPaths: (String) throws -> [String] = { sessionId in
+            let lifecycle = MetadataLifecycleRepo(connection: runtime.db)
+            let deliveries = DeliveryRepo(connection: runtime.db)
+            var paths: [String] = []
+            var seen = Set<String>()
+            for row in try lifecycle.projections(sessionId: sessionId)
+            where row.status == DeliveryStatus.written.rawValue {
+                guard let delivery = try deliveries.get(row.xmpPath),
+                      !delivery.photoPath.isEmpty else { continue }
+                if seen.insert(delivery.photoPath).inserted {
+                    paths.append(delivery.photoPath)
+                }
+            }
+            return paths
+        }
         // Capture One reload ack 走唯一 runtime（采集成功前不写持久标记）。
-        let captureOneBridge = CaptureOneBridge(recordReloadAck: { sessionId in
-            try runtime.recordReloadAck(sessionId: sessionId)
-        })
+        let captureOneBridge = CaptureOneBridge(
+            recordReloadAck: { sessionId in
+                try runtime.recordReloadAck(sessionId: sessionId)
+            },
+            writtenPhotoPaths: writtenPhotoPaths)
         CaptureOneBridge.shared = captureOneBridge
         // P1：自动 reload 协调器（手动/自动共用串行队列；C1 未运行时 preflight 会跳过）。
         // P1-10：再注入"本机是否装了 C1"（与组合根门禁同一份 C1Installation 判定）。
@@ -675,6 +696,13 @@ package final class AppBootstrap {
         delegate.onCaptureOneImport = {
             do {
                 let snapshot = try await captureOneJudgements()
+                // P2（Wave4b）：畸形行不再静默丢弃（契约漂移要能在日志里看见）。
+                if snapshot.malformedLines > 0 {
+                    GatherLogger.log(
+                        "c1.judgements parse malformedLines=\(snapshot.malformedLines)"
+                            + " paths=\(snapshot.paths.count)（可能 C1 字典/脚本契约变化）",
+                        level: .warn)
+                }
                 pendingJudgements.store(snapshot.paths, judgements: snapshot.judgements)
                 return snapshot.paths
             } catch {
@@ -779,8 +807,15 @@ enum C1JudgementImport {
                 sessionId: sessionId,
                 judgements: judgements,
                 scanStatus: { id in
-                    try AnalysisJobRepo(connection: database)
-                        .latestScanJob(sessionId: id)?.status
+                    // P2（Wave4b）：latestScanJob 只按 updated_at DESC，同毫秒并列时顺序不定。
+                    // 轮询阶段先看活跃扫描（廉价、与排序无关）；没有活跃扫描时才做一次
+                    // (updatedAt, id) 全序选择，避免等错 job 的终态。
+                    let repo = AnalysisJobRepo(connection: database)
+                    if try !repo.activeJobIDs(type: .metadataScan, scopeId: id).isEmpty {
+                        return AnalysisJobStatus.running.rawValue
+                    }
+                    let jobs = try repo.list(includeCheckpoint: false)
+                    return C1ScanJobSelection.latestScanStatus(jobs: jobs, sessionId: id)
                 })
             GatherLogger.log(
                 "c1.judgements session=\(sessionId) applied=\(report.applied)"
@@ -873,28 +908,18 @@ enum AITriageImportTrigger {
             return
         }
         let worker = AITriageBackgroundWorker(database: database, settings: settings)
+        // Wave4b：一条导入链一个批次 nonce —— dedupeKey 唯一，`AnalysisJobRepo.create` 的
+        // 默认 `inheritCheckpoint` 不会命中上一批终态行（旧 photoIds 会只分析旧照片）。
+        let batchNonce = UUID().uuidString
         let deps = AITriageAutoPipeline.Dependencies(
             listJobs: { try jobService.list(status: nil, includeCheckpoint: false) },
             enqueueQualityJob: { scopeId in
-                let baseKey = "quality.score:\(scopeId):auto-import-triage"
-                // AnalysisJobRepo.create 默认继承同 dedupeKey 上一终态行的 checkpoint：
-                // 同会话二次触发会带上旧 `photoIds` 只分析旧照片（P2/E4 附带修复）。
-                // 有历史终态行时换一个一次性 key，等价于"不继承旧 checkpoint"。
-                let dedupeKey: String
-                do {
-                    if try jobService.latestTerminalCheckpoint(dedupeKey: baseKey) == nil {
-                        dedupeKey = baseKey
-                    } else {
-                        dedupeKey = baseKey + ":" + UUID().uuidString
-                    }
-                } catch {
-                    dedupeKey = baseKey
-                }
-                return try jobService.create(JobCreateParams(
+                try jobService.create(JobCreateParams(
                     type: .qualityScore,
                     scopeType: "session",
                     scopeId: scopeId,
-                    dedupeKey: dedupeKey))
+                    dedupeKey: AITriageAutoPipeline.qualityJobDedupeKey(
+                        scopeId: scopeId, batchNonce: batchNonce)))
             },
             // 生成/应用都在后台 actor 上（E4）；闭包本身是 @Sendable，不占主线程。
             generateTriage: { scopeId in
@@ -905,6 +930,12 @@ enum AITriageImportTrigger {
             },
             autoApplyEnabled: { settings.bool(.triageAutoApply) },
             triageEnabled: { settings.bool(.triageEnabled) },
+            cancelQualityJob: { jobId in
+                _ = try jobService.cancel(jobId)
+            },
+            log: { message in
+                GatherLogger.log(message, level: .info)
+            },
             poll: { try await Task.sleep(for: .milliseconds(500)) }
         )
         let pipeline = AITriageAutoPipeline(deps: deps)
@@ -919,7 +950,9 @@ enum AITriageImportTrigger {
                     + " applied=\(outcome.applied?.appliedPhotos ?? 0)"
                     + " reason=\(outcome.reason ?? "-")",
                 level: .info)
-            guard let applied = outcome.applied, applied.appliedPhotos > 0 else { return }
+            // Wave4b：auto-generate-only（triage_auto_apply=0）也要广播——之前只在
+            // appliedPhotos>0 时发，页面看不到"已生成建议"；现在只要生成成功（done）就刷新。
+            guard outcome.stage == .done else { return }
             // 已挂载的挑片/图库据此重拉建议与决策（与 C1 判断落库同一广播口径）。
             await MainActor.run {
                 GatherEventCenter.postDomainChange(
@@ -941,11 +974,17 @@ enum AITriageImportTrigger {
 final class CaptureOneBridgeFacade: CaptureOneBridging, C1RoundTripReloading, C1RoundTripExtending {
     private let coordinator: C1RoundTripCoordinator
     private let bridge: CaptureOneBridge
+    /// 协议要求是同步 nonisolated 属性；在 MainActor 门面上按 init 时快照实现，
+    /// 避免"@MainActor 类型满足非隔离协议要求"触发 ConformanceIsolation。
+    private nonisolated let c1InstalledSnapshot: Bool
 
     init(coordinator: C1RoundTripCoordinator, bridge: CaptureOneBridge) {
         self.coordinator = coordinator
         self.bridge = bridge
+        self.c1InstalledSnapshot = bridge.c1Installed
     }
+
+    nonisolated var c1Installed: Bool { c1InstalledSnapshot }
 
     // MARK: CaptureOneBridging（reloadMetadata 同时满足 C1RoundTripReloading 的同签名要求）
 
@@ -975,6 +1014,8 @@ final class CaptureOneBridgeFacade: CaptureOneBridging, C1RoundTripReloading, C1
     ) async throws -> C1VariantWritebackReport {
         try await bridge.writeVariantJudgements(sessionId: sessionId, items: items)
     }
+
+    /// P2（Wave4b）：转发具体桥的本机安装判定（Hot Folder 提示 gate）。
 
     // MARK: C1RoundTripReloading
 

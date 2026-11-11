@@ -881,6 +881,10 @@
 /* Wave3 task-24 */
 
 /* Wave4a task-40 */
+
+/* Wave4b task-45 */
+"被减数" = "Minuend";
+"被减数「%@」减去其余已选集合" = "Minuend \"%@\" minus the other selected collections";
 "重复处置" = "Duplicate Handling";
 "跳过库内已存在的照片" = "Skip photos already in the library";
 "并存（再存一份）" = "Keep both (import another copy)";
@@ -891,7 +895,6 @@
 "重复样例：%@" = "Duplicate samples: %@";
 "命中库内重复 %lld 张（跳过 %lld / 覆盖 %lld）" = "%lld photos already in library (%lld skipped / %lld replaced)";
 "第二目的地跳过 %lld 张（替换项无法按相对路径镜像）" = "%lld photos skipped for the second destination (replace targets cannot be mirrored by relative path)";
-"「%@」减去其余已选集合（按侧栏顺序）" = "\"%@\" minus the other selected collections (in sidebar order)";
 
 /* Wave2 收尾 task-27 */
 "集合名称或路径" = "Collection Name or Path";
@@ -2594,3 +2597,10 @@
 "%@：%@" = "%@: %@";
 
 "XMP 迁移完成：扫描 %lld 张，发现 sidecar %lld，写入 %lld 张；冲突 %lld 条（按字段计），越界 rating 跳过 %lld，缺 rating/label/keywords %lld/%lld/%lld，失败 %lld。" = "XMP migration complete: scanned %lld, %lld sidecars found, %lld photos updated; %lld field-level conflicts, %lld out-of-range ratings skipped, missing rating/label/keywords %lld/%lld/%lld, failed %lld.";
+
+/* Wave4b / task-44：场景标签写回计划明细截断提示 */
+"（照片明细仅返回前 %lld 张，计数为全量）" = "(Photo details are limited to the first %lld entries; counts cover all photos.)";
+
+/* Wave4b task-42 */
+"当前版本按纵向版面排版；需要横向请选择更宽的纸张（如 10 × 8 英寸）。" = "This version prints in portrait; choose a wider paper (e.g. 10 × 8 in) for landscape.";
+"选择集超过上限：本次只打印前 %lld 张，另有 %lld 张未包含。" = "Selection exceeds the limit: only the first %lld photos will print; %lld more are excluded.";

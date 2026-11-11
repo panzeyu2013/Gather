@@ -87,6 +87,54 @@ public enum GatherDeepLink {
     }
 }
 
+/// Dock/激活重开时「打开主窗口」的进程级桥（Wave4b / P2-16）。
+///
+/// applicationShouldHandleReopen 在 delegate 里没有 SwiftUI 环境，无法直接
+/// openWindow(id:)；GatherApp 在主窗口内容出现时装一个闭包进来，delegate 在
+/// 找不到主窗口（例如第二屏还开着时 ⌘W 关掉了主窗口）时用它恢复主窗口场景。
+@MainActor
+public final class GatherReopenBridge {
+    public static let shared = GatherReopenBridge()
+
+    private var handler: (() -> Void)?
+
+    private init() {}
+
+    /// 由 GatherApp 的窗口内容安装（重复安装 = 覆盖，窗口重建后重新装）。
+    public func install(_ handler: @escaping () -> Void) {
+        self.handler = handler
+    }
+
+    /// 注销（测试或窗口拆除后调用；未注册时静默）。
+    public func uninstall() {
+        handler = nil
+    }
+
+    /// 请求打开主窗口；桥未安装时静默（保持旧行为，不崩）。
+    public func reopenMainWindow() {
+        handler?()
+    }
+}
+
+/// Dock 重开决策（Wave4b / P2-16；纯逻辑可单测）。
+///
+/// 旧实现的 guard !flag else { return true } 让第二屏常驻时 hasVisibleWindows
+/// 恒为 true：⌘W 关掉主窗口后点 Dock 直接返回，主窗口永远不回来。新语义只看
+/// 「主窗口是否存在」——存在就前置；不存在就请求 SwiftUI 重新打开主窗口场景。
+public enum GatherReopenPolicy {
+    public enum Action: Equatable, Sendable {
+        /// 主窗口还在（可能最小化/被第二屏挡住）：解除最小化并前置。
+        case focusMainWindow
+        /// 主窗口已不存在：请求 SwiftUI 重开主窗口场景。
+        case requestMainWindowOpen
+    }
+
+    public static func action(hasMainWindow: Bool, hasVisibleWindows: Bool) -> Action {
+        _ = hasVisibleWindows
+        return hasMainWindow ? .focusMainWindow : .requestMainWindowOpen
+    }
+}
+
 @MainActor
 public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
     public var onImportFiles: (([String]) -> Void)? {
@@ -130,20 +178,30 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 单窗口 scene 的 Dock 重开路径：⌘W 之后点击 Dock 图标时把主窗口带回前台。
-    /// 只认 `GatherWindowID.main` 派生的窗口（SwiftUI Window scene 的标识形如
-    /// `main-AppWindow-1`），避免把同时打开的「设置」窗当前台；找不到主窗口时
-    /// 返回 true 交给 SwiftUI 自己的重开逻辑，不额外造窗口。应用内的显式入口
-    /// 是「显示主窗口」命令（openWindow(id: GatherWindowID.main)）。
+    ///
+    /// 只认 GatherWindowID.main 派生的窗口（SwiftUI Window scene 的标识形如
+    /// main-AppWindow-1），避免把同时打开的「设置」窗当前台。Wave4b / P2-16：
+    /// 不再以 hasVisibleWindows 提前返回——第二屏常驻时它恒为 true，会把「主窗口
+    /// 已被 ⌘W 关掉」的情况吞掉。主窗口不存在时经 GatherReopenBridge 请求 SwiftUI
+    /// 重开主窗口场景；应用内的显式入口仍是「显示主窗口」命令。
     public func applicationShouldHandleReopen(
         _ sender: NSApplication, hasVisibleWindows flag: Bool
     ) -> Bool {
-        guard !flag else { return true }
-        guard let main = sender.windows.first(where: {
+        let main = sender.windows.first(where: {
             $0.identifier?.rawValue.hasPrefix(GatherWindowID.main) == true
-        }) else { return true }
-        if main.isMiniaturized { main.deminiaturize(nil) }
-        main.makeKeyAndOrderFront(nil)
-        return true
+        })
+        switch GatherReopenPolicy.action(
+            hasMainWindow: main != nil, hasVisibleWindows: flag
+        ) {
+        case .focusMainWindow:
+            guard let main else { return true }
+            if main.isMiniaturized { main.deminiaturize(nil) }
+            main.makeKeyAndOrderFront(nil)
+            return true
+        case .requestMainWindowOpen:
+            GatherReopenBridge.shared.reopenMainWindow()
+            return true
+        }
     }
 
     public func application(_ application: NSApplication, open urls: [URL]) {

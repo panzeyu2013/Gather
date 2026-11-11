@@ -210,12 +210,13 @@ enum SimilarityEvalCLI {
         do {
             try SimilarityMetrics.selfTest()
             try selfTestAnnotationDecoder()
+            try selfTestPairBuildParity()
             try selfTestVectorMath()
         } catch {
             print("similarity-eval self-test: FAIL — \(error)")
             return 1
         }
-        print("similarity-eval self-test: PASS（pair 指标 / 阈值曲线 / 聚类过度合并 / 分类表现 / 标注解码 / 向量数学）")
+        print("similarity-eval self-test: PASS（pair 指标 / 阈值曲线 / 聚类过度合并 / 分类表现 / 标注解码 / pair 构建口径 / 向量数学）")
         return 0
     }
 
@@ -285,6 +286,97 @@ enum SimilarityEvalCLI {
         }
         guard badRowRejected else {
             throw SimilarityEvalCLIError.io("CSV 坏行未被校验拦截")
+        }
+
+        // datasetHash 稳定性（Wave4b）：同内容 → 同 hash（组顺序/解码入口无关）；
+        // kind/version 变化必须变 hash（报告"结论对应哪份标注"才可信）。
+        let hashA = set.datasetHash()
+        guard try SimilarityAnnotationSet.parseCSV(text: csv, separator: ",").datasetHash()
+            == hashA else {
+            throw SimilarityEvalCLIError.io("datasetHash 对同内容不稳定")
+        }
+        let reordered = SimilarityAnnotationSet(
+            version: SimilarityAnnotationSet.currentVersion,
+            generatedBy: "self-test",
+            groups: Array(set.groups.reversed()))
+        guard reordered.datasetHash() == hashA else {
+            throw SimilarityEvalCLIError.io("datasetHash 不应随组顺序变化")
+        }
+        let changedKind = SimilarityAnnotationSet(
+            version: SimilarityAnnotationSet.currentVersion,
+            generatedBy: "self-test",
+            groups: [
+                SimilarityAnnotationGroup(
+                    id: set.groups[0].id, kind: .sameSceneDifferentPeople,
+                    groundTruth: set.groups[0].groundTruth, photos: set.groups[0].photos),
+                set.groups[1],
+            ])
+        guard changedKind.datasetHash() != hashA else {
+            throw SimilarityEvalCLIError.io("datasetHash 未包含 class（标注变了 hash 没变）")
+        }
+        let changedVersion = SimilarityAnnotationSet(
+            version: SimilarityAnnotationSet.currentVersion + 1,
+            generatedBy: set.generatedBy,
+            groups: set.groups)
+        guard changedVersion.datasetHash() != hashA else {
+            throw SimilarityEvalCLIError.io("datasetHash 未包含 version")
+        }
+    }
+
+    /// primary/baseline pair 构建口径（Wave4b）：两条通道共用 `buildPairs`，向量齐全时
+    /// pair 数必须一致；缺向量必须进 `skipped` 而不是静默消失（报告因此可比）。
+    private static func selfTestPairBuildParity() throws {
+        let groups = [
+            ResolvedGroup(
+                id: "g1", kind: .burst, groundTruth: .merge,
+                photos: ["a", "b", "c"]),
+            ResolvedGroup(
+                id: "g2", kind: .sameSceneDifferentPeople, groundTruth: .separate,
+                photos: ["d", "e"]),
+        ]
+        var full = LoadedVectors()
+        full.feature = [
+            "a": [1, 0], "b": [0.9, 0.1], "c": [1, 0.2],
+            "d": [0.1, 1], "e": [0.2, 1],
+        ]
+        let built = buildPairs(
+            groups: groups, vectors: full, source: .featureprint, limitPairs: nil)
+        // g1 内 3 对 + g2 内 1 对 + 跨组 3×2=6 对。
+        guard built.pairs.count == 10, built.skipped == 0 else {
+            throw SimilarityEvalCLIError.io(
+                "pair 构建数量不对：\(built.pairs.count)（skipped \(built.skipped)）")
+        }
+        guard built.kindByPhoto["e"] == .sameSceneDifferentPeople else {
+            throw SimilarityEvalCLIError.io("kindByPhoto 未覆盖全部照片（分类视图会丢类）")
+        }
+        let again = buildPairs(
+            groups: groups, vectors: full, source: .featureprint, limitPairs: nil)
+        guard again.pairs.count == built.pairs.count, again.skipped == 0 else {
+            throw SimilarityEvalCLIError.io("同一输入两次 pair 构建不一致（报告不可复现）")
+        }
+        // 缺一张向量：命中 a 的 2 个组内 pair + 2 个跨组 pair 必须进 skipped。
+        var missing = full
+        missing.feature["a"] = nil
+        let partial = buildPairs(
+            groups: groups, vectors: missing, source: .featureprint, limitPairs: nil)
+        guard partial.pairs.count == 6, partial.skipped == 4 else {
+            throw SimilarityEvalCLIError.io(
+                "缺向量时 pair 计数不对：\(partial.pairs.count)（skipped \(partial.skipped)）")
+        }
+        // 另一条通道（dHash）在向量齐全时 pair 数必须与 primary 一致，基线才可比。
+        var hashes = LoadedVectors()
+        hashes.hash = ["a": 0, "b": 0, "c": 0, "d": UInt64.max, "e": UInt64.max]
+        let baseline = buildPairs(
+            groups: groups, vectors: hashes, source: .dhash, limitPairs: nil)
+        guard baseline.pairs.count == built.pairs.count, baseline.skipped == 0 else {
+            throw SimilarityEvalCLIError.io(
+                "baseline 与 primary 的 pair 数不一致：\(baseline.pairs.count) vs \(built.pairs.count)")
+        }
+        // 跨组预算不足时只截断跨组 pair，组内 pair 不丢。
+        let capped = buildPairs(
+            groups: groups, vectors: full, source: .featureprint, limitPairs: 2)
+        guard capped.pairs.allSatisfy({ !$0.crossGroup }) else {
+            throw SimilarityEvalCLIError.io("limitPairs 不足时不应保留跨组 pair")
         }
     }
 

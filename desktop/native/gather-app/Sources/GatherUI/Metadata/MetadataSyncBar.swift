@@ -14,9 +14,21 @@
 import SwiftUI
 import GatherProtocol
 
+/// G9 状态条的 C1 动作通道（reload + 手动 ack）。
+///
+/// P2（Wave4b）：之前只从 `\.sessionWorkspace` 环境取挑片 VM；状态条在无工作区的
+/// 容器（预览/嵌入/未来元数据页）渲染时两个按钮直接消失，用户只能回到挑片页解
+/// 门禁。改成可注入：检查器把 VM 的抛错动作直接传进来，环境工作区作为回退。
+struct MetadataSyncBarC1Actions {
+    let reload: @MainActor () async throws -> Void
+    let acknowledgeManualLoad: @MainActor () async throws -> Void
+}
+
 struct MetadataSyncBar: View {
     let sessionId: String
     let api: any MetadataAPI
+    /// P2（Wave4b）：C1 动作（nil = 未注入，回退到环境里的会话工作区）。
+    let c1Actions: MetadataSyncBarC1Actions?
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
@@ -25,6 +37,27 @@ struct MetadataSyncBar: View {
     /// 为什么不新开一条旁路：C1 通道属于会话工作区的挑片 VM（组合根把协调器接到
     /// 那上面），同一会话复用它的串行队列与 ack 语义，才不会与自动 reload 打架。
     @Environment(\.sessionWorkspace) private var workspace
+
+    init(
+        sessionId: String,
+        api: any MetadataAPI,
+        c1Actions: MetadataSyncBarC1Actions? = nil
+    ) {
+        self.sessionId = sessionId
+        self.api = api
+        self.c1Actions = c1Actions
+    }
+
+    /// 本状态条是否有可用的 C1 动作通道（注入优先，环境工作区回退）。
+    @MainActor var c1ActionsAvailable: Bool { effectiveC1Actions != nil }
+
+    @MainActor private var effectiveC1Actions: MetadataSyncBarC1Actions? {
+        if let c1Actions { return c1Actions }
+        guard let culling = workspace?.culling else { return nil }
+        return MetadataSyncBarC1Actions(
+            reload: { try await culling.reloadCaptureOneThrowing() },
+            acknowledgeManualLoad: { try await culling.acknowledgeManualReloadThrowing() })
+    }
 
     @State private var state: MetadataDeliveryState?
     @State private var isBusy = false
@@ -52,7 +85,7 @@ struct MetadataSyncBar: View {
                         .font(.caption)
                         .foregroundStyle(GatherTheme.warningText)
                 }
-                if awaitingReloadAck, workspace?.culling != nil {
+                if awaitingReloadAck, effectiveC1Actions != nil {
                     c1ActionButtons
                 }
                 if awaitingReloadAck {
@@ -155,11 +188,11 @@ struct MetadataSyncBar: View {
     }
 
     private func reloadInCaptureOne() async {
-        guard let culling = workspace?.culling, !isC1ActionBusy else { return }
+        guard let actions = effectiveC1Actions, !isC1ActionBusy else { return }
         isC1ActionBusy = true
         defer { isC1ActionBusy = false }
         do {
-            try await culling.reloadCaptureOneThrowing()
+            try await actions.reload()
             errorText = nil
             resultText = l10n("Capture One 已重新加载元数据，现在可以确认同步")
             await refresh()
@@ -169,11 +202,11 @@ struct MetadataSyncBar: View {
     }
 
     private func acknowledgeManualLoad() async {
-        guard let culling = workspace?.culling, !isC1ActionBusy else { return }
+        guard let actions = effectiveC1Actions, !isC1ActionBusy else { return }
         isC1ActionBusy = true
         defer { isC1ActionBusy = false }
         do {
-            try await culling.acknowledgeManualReloadThrowing()
+            try await actions.acknowledgeManualLoad()
             errorText = nil
             resultText = l10n("已记录手动加载，可以确认同步")
             await refresh()
@@ -211,7 +244,16 @@ struct MetadataSyncBar: View {
     /// 只在"C1 待重载"时出现：门禁生效 + 仍有已写盘未确认的行。
     private var awaitingReloadAck: Bool {
         guard let state else { return false }
-        return state.requiresReloadAck && state.written > 0
+        return Self.shouldWaitForReloadAck(
+            requiresReloadAck: state.requiresReloadAck, written: state.written)
+    }
+
+    /// P2（Wave4b）："待 C1 重载"判定。
+    ///
+    /// Service 侧 requiresReloadAck 已经改成"门禁生效且 ack 缺失"（之前是 gateEnabled，
+    /// ack 后仍显示待重载）；这里再要求有已写盘未确认行，避免 0 行时出现按钮。
+    static func shouldWaitForReloadAck(requiresReloadAck: Bool, written: Int) -> Bool {
+        requiresReloadAck && written > 0
     }
 
     // MARK: - 动作

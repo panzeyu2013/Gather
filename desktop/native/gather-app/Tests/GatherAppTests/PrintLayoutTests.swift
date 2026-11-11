@@ -104,16 +104,21 @@ struct PrintLayoutTests {
             width: 200, height: 200))
     }
 
-    @Test("单图边框：边框矩形 = 图像框外扩 borderWidth（外沿）")
+    @Test("单图边框：中心线外扩 borderWidth/2，可见框贴图像外沿、厚度 = 输入值")
     func singleBorderOutset() {
         let layout = SingleImagePrintLayoutEngine.layout(
             imageSize: CGSize(width: 4000, height: 3000),
             options: singleOptions(borderWidth: 4))
         let border = layout.borderRect
         #expect(border != nil)
-        #expect(abs((border?.width ?? 0) - (layout.imageRect.width + 8)) < 0.001)
-        #expect(abs((border?.height ?? 0) - (layout.imageRect.height + 8)) < 0.001)
+        // Wave4b / P2-15：描边以路径为中心；路径外扩 w/2 后整条线正好落在
+        // 图像外侧 0..w，可见厚度等于用户输入值（旧实现外扩 w → 厚 1.5w 且有缝）。
+        #expect(abs((border?.width ?? 0) - (layout.imageRect.width + 4)) < 0.001)
+        #expect(abs((border?.height ?? 0) - (layout.imageRect.height + 4)) < 0.001)
         #expect(abs((border?.midX ?? 0) - layout.imageRect.midX) < 0.001)
+        let innerEdge = (border?.minX ?? 0) + 2
+        #expect(abs(innerEdge - layout.imageRect.minX) < 0.001,
+                "边框内沿必须贴住图像外沿（不再留 w/2 空隙）")
     }
 
     @Test("单图退化输入：源尺寸非法时铺满可用区；超大边距把可用区钳到 ≥1pt")
@@ -232,6 +237,53 @@ struct PrintLayoutTests {
             itemCount: 1, options: multiOptions(captionHeight: 0))[0].cells[0]
         #expect(noCaption.captionRect.height == 0)
         #expect(abs(noCaption.imageRect.height - noCaption.cellRect.height) < 0.001)
+    }
+
+    @Test("多页：极小自定义纸 + 大页眉页脚时行列被收窄，格子不越出纸张/离白")
+    func multiTinyPaperClampsGrid() {
+        let options = MultiPagePrintOptions(
+            paper: .custom,
+            customPageSize: CGSize(width: 100, height: 100),
+            // 20pt 离白 + 24pt 页眉 + 16pt 页脚：网格区只剩 20pt，4 行装不下。
+            margins: PrintMargins(top: 20, bottom: 20, leading: 20, trailing: 20),
+            columns: 4,
+            rows: 4,
+            cellSpacing: 8,
+            captionHeight: 16,
+            headerHeight: 24,
+            footerHeight: 16,
+            headerText: "H",
+            footerText: "F")
+
+        // Wave4b / P2-14：请求 4×4 在这张纸上装不下 → 行列收窄，但分页口径一致。
+        let grid = MultiPagePrintLayoutEngine.fittedGrid(options: options)
+        #expect(grid.columns < 4 || grid.rows < 4)
+        let perPage = MultiPagePrintLayoutEngine.perPage(options: options)
+        #expect(perPage == grid.columns * grid.rows)
+
+        let pages = MultiPagePrintLayoutEngine.pages(itemCount: 10, options: options)
+        let expectedPages = (10 + perPage - 1) / perPage
+        #expect(pages.count == expectedPages)
+
+        let content = SingleImagePrintLayoutEngine.contentRect(
+            pageSize: options.pageSize, margins: options.margins)
+        for page in pages {
+            for cell in page.cells {
+                #expect(cell.cellRect.minX >= content.minX - 0.001)
+                #expect(cell.cellRect.maxX <= content.maxX + 0.001,
+                        "格子不得画到纸张/离白之外（旧实现会排到负坐标）")
+                #expect(cell.cellRect.minY >= content.minY - 0.001)
+                #expect(cell.cellRect.maxY <= content.maxY + 0.001)
+            }
+        }
+    }
+
+    @Test("多页：正常纸张的请求行列不被收窄（回归）")
+    func multiFittedGridKeepsNormalLayout() {
+        let grid = MultiPagePrintLayoutEngine.fittedGrid(options: multiOptions())
+        #expect(grid.columns == 3)
+        #expect(grid.rows == 2)
+        #expect(MultiPagePrintLayoutEngine.perPage(options: multiOptions()) == 6)
     }
 
     @Test("多页：空输入 0 页；行列非法值被收敛")

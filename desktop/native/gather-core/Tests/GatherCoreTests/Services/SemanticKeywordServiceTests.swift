@@ -79,6 +79,38 @@ struct SemanticKeywordServiceTests {
         #expect(second.items.allSatisfy { $0.alreadyPresent })
     }
 
+    @Test("计划明细按 maxItems 截断，计数仍是全量（Wave4b）")
+    func buildPlanTruncatesItems() throws {
+        let labels: [String: [SemanticLabel]] = [
+            "p1": [label("beach", 0.9)],
+            "p2": [label("wedding", 0.9)],
+            "p3": [label("sunset", 0.9)],
+        ]
+        let scope = ["p1", "p2", "p3"]
+        let full = try SemanticKeywordService.buildPlan(
+            sessionId: "s1", root: "AI|场景", scope: scope,
+            labelsByPhoto: labels,
+            currentPaths: { _ in [] },
+            maxLabelsPerPhoto: 6,
+            maxItems: 0,
+            semanticsAvailable: true)
+        #expect(full.items.count == 3)
+        #expect(full.itemsTruncated == false)
+
+        let truncated = try SemanticKeywordService.buildPlan(
+            sessionId: "s1", root: "AI|场景", scope: scope,
+            labelsByPhoto: labels,
+            currentPaths: { _ in [] },
+            maxLabelsPerPhoto: 6,
+            maxItems: 1,
+            semanticsAvailable: true)
+        #expect(truncated.items.count == 1, "明细上限生效")
+        #expect(truncated.itemsTruncated, "截断必须显式标记（UI 提示明细不全）")
+        #expect(truncated.totalAdditions == 3, "计数必须按全量算")
+        #expect(truncated.photosWithLabels == 3)
+        #expect(truncated.items.first?.photoId == "p1", "截断保留 scope 顺序")
+    }
+
     @Test("语义索引缺失时计划带 unavailableReason（UI 显示原因，不当错误）")
     func planWithoutSemantics() {
         let plan = SemanticKeywordService.buildPlan(

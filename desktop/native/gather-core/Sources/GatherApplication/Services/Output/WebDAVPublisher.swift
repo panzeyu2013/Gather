@@ -475,7 +475,9 @@ public final class WebDAVPublisher: Sendable {
             return allowDownload && ["jpg", "jpeg", "png", "webp"].contains(ext)
         }
         guard ["html", "css", "js", "json", "pdf"].contains(ext) else { return false }
-        if name.hasPrefix("manifest-") || name == "share.json" || name.hasPrefix("contact-sheet-") {
+        // Wave4b：manifest-* 永不进分享产物（含本机绝对路径/审计信息；白名单缺失时
+        // 也绝不能把它当"可公开产物"上传）。share.json / 联系表仍属于分享产物。
+        if name == "share.json" || name.hasPrefix("contact-sheet-") {
             return true
         }
         let galleryLevel = parents.isEmpty || parents == ["gallery"]

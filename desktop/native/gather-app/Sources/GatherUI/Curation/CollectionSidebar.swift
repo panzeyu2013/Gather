@@ -88,6 +88,8 @@ public struct CollectionSidebar: View {
     @State private var combineName = ""
     @State private var combineOperation: CollectionSetOperation = .union
     @State private var combineSelected: Set<String> = []
+    /// Wave4b：差集时显式选择「被减数」（其余已选集合 = 减去项）。nil = 取第一个已选。
+    @State private var combineMinuendId: String?
     /// 新建集合失败（sheet 内展示，保留已输入名称，弹窗不关）。
     @State private var actionError: CommandError?
     /// Wave2 收尾（task-27）：重命名/移动 sheet 的目标与草稿。
@@ -245,10 +247,24 @@ public struct CollectionSidebar: View {
                 Text(l10n("差集（第一个减去其余）")).tag(CollectionSetOperation.difference)
             }
             .labelsHidden()
-            if combineOperation == .difference,
-               let minuend = collections.first(where: { combineSelected.contains($0.id) }) {
-                // Wave4a：差集语义依赖顺序，明确标出"谁是被减数"（按侧栏顺序取第一个）。
-                Text(l10n.format("「%@」减去其余已选集合（按侧栏顺序）", minuend.name))
+            if combineOperation == .difference, combineSelectedCollections.count >= 2 {
+                // Wave4b：差集显式「被减数 − 减去」。被减数单选，其余已选集合作为减去项；
+                // 顺序不再依赖侧栏列表顺序（之前用户无法指定谁是被减数）。
+                Picker(l10n("被减数"), selection: combineMinuendBinding()) {
+                    ForEach(combineSelectedCollections) { collection in
+                        Text(collection.name).tag(Optional(collection.id))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                // 显式解包再查找：避免 String 与 String? 的可选提升比较。
+                let minuendName: String = {
+                    guard let id = combineMinuendResolvedId,
+                          let match = combineSelectedCollections.first(where: { $0.id == id })
+                    else { return "" }
+                    return match.name
+                }()
+                Text(l10n.format("被减数「%@」减去其余已选集合", minuendName))
                     .font(GatherFont.secondary)
                     .foregroundStyle(GatherTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -314,6 +330,26 @@ public struct CollectionSidebar: View {
             && !combineName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// 当前参与运算的集合（按侧栏顺序，仅用于展示/兜底）。
+    private var combineSelectedCollections: [CollectionSummary] {
+        collections.filter { combineSelected.contains($0.id) }
+    }
+
+    /// 被减数解析：显式选择还在已选集合里就用它，否则回退第一个已选。
+    private var combineMinuendResolvedId: String? {
+        if let combineMinuendId, combineSelected.contains(combineMinuendId) {
+            return combineMinuendId
+        }
+        return combineSelectedCollections.first?.id
+    }
+
+    private func combineMinuendBinding() -> Binding<String?> {
+        Binding(
+            get: { combineMinuendResolvedId },
+            set: { combineMinuendId = $0 }
+        )
+    }
+
     private func combineBinding(for collectionId: String) -> Binding<Bool> {
         Binding(
             get: { combineSelected.contains(collectionId) },
@@ -330,6 +366,7 @@ public struct CollectionSidebar: View {
     private func openCombineSheet() {
         // 默认勾选前两个集合（最常见的 2 集合运算），并按并集预填默认名。
         combineSelected = Set(collections.prefix(2).map(\.id))
+        combineMinuendId = nil
         combineOperation = .union
         combineName = l10n.format(
             "%@ 合集",
@@ -341,8 +378,12 @@ public struct CollectionSidebar: View {
     private func combineCollections() async {
         guard let album = services.album, let sessionId else { return }
         let name = combineName.trimmingCharacters(in: .whitespacesAndNewlines)
-        // 选中顺序影响差集语义（第一个是被减数）：按侧栏列表顺序取，保证可预期。
-        let ordered = collections.map(\.id).filter { combineSelected.contains($0) }
+        // Wave4b：差集 = 被减数 − 其余已选；被减数由 UI 显式选择（未选时回退第一个）。
+        // 并/交仍按侧栏顺序（顺序不影响结果）。
+        var ordered = collections.map(\.id).filter { combineSelected.contains($0) }
+        if combineOperation == .difference, let minuend = combineMinuendResolvedId {
+            ordered = [minuend] + ordered.filter { $0 != minuend }
+        }
         guard !name.isEmpty, ordered.count >= 2 else { return }
         isWorking = true
         actionError = nil

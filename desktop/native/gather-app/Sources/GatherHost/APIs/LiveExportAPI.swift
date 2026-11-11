@@ -150,13 +150,21 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
             let url = try Self.requireHTTPURL(payload.baseURL)
             let stored = webDAVCredentialLookup?(url, payload.username) ?? ""
             let password = Self.unpackStoredCredential(stored).secret
-            let configuration = WebDAVConfiguration(
-                baseURL: url, username: payload.username,
-                password: password, remoteFolder: payload.remoteFolder)
-            let result = try await publisher.publish(
-                localPath: payload.localPath, configuration: configuration,
-                includePrefixes: payload.includePrefixes, share: payload.share,
-                onProgress: onProgress)
+            // Wave4b：生产路径统一走 OutputSharePublisher facade（校验/分派/结果分类
+            // 与 S3 同源），WebDAV 仍由既有 WebDAVPublisher 执行上传/重试/探针。
+            let request = OutputSharePublishRequest(
+                localPath: payload.localPath,
+                transport: .webdav,
+                endpoint: payload.baseURL,
+                accessKeyID: payload.username,
+                secret: password,
+                remoteFolder: payload.remoteFolder,
+                includePrefixes: payload.includePrefixes,
+                share: payload.share)
+            let facade = OutputSharePublisher(transports: [
+                .webdav: WebDAVShareTransport(publisher: publisher),
+            ])
+            let result = try await facade.publish(request, onProgress: onProgress)
             return Self.summary(from: result)
         case .s3:
             let bucket = (payload.bucket ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -187,14 +195,9 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
                 includePrefixes: payload.includePrefixes,
                 share: payload.share)
             let s3 = s3ShareTransport ?? S3ShareTransport()
-            let result = try await s3.publish(request, onProgress: onProgress)
-            return WebDAVPublishSummary(
-                uploaded: result.uploaded,
-                failed: result.failed.map {
-                    WebDAVPublishFailureInfo(path: $0.path, reason: $0.reason)
-                },
-                remoteRoot: result.remoteRoot,
-                abortedOnAuth: result.abortedOnAuth)
+            let facade = OutputSharePublisher(transports: [.s3: s3])
+            let result = try await facade.publish(request, onProgress: onProgress)
+            return Self.summary(from: result)
         }
     }
 
@@ -207,7 +210,7 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         return url
     }
 
-    private static func summary(from result: WebDAVPublishResult) -> WebDAVPublishSummary {
+    private static func summary(from result: OutputSharePublishResult) -> WebDAVPublishSummary {
         WebDAVPublishSummary(
             uploaded: result.uploaded,
             failed: result.failed.map { WebDAVPublishFailureInfo(path: $0.path, reason: $0.reason) },
@@ -356,7 +359,15 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
                     sessionId: payload.sessionId,
                     destinationRoot: payload.destinationRoot,
                     manifestPath: result.manifestPath) {
-                    result.postCommand = outcome
+                    // Wave4b 脱敏：runner 内部已把原始 outcome 写进 manifest；
+                    // 这里再以脱敏后的副本覆盖一次（命令模板/输出尾部可能含 token）。
+                    // 未命中敏感模式时 outcome 不变，无需二次写盘。
+                    let redacted = OutputPostCommandRedaction.redacted(outcome)
+                    if redacted != outcome {
+                        ExportPostCommandRunner.attach(
+                            redacted, toManifestAt: result.manifestPath)
+                    }
+                    result.postCommand = redacted
                 }
             }
             return result

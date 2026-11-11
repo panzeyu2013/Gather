@@ -20,6 +20,9 @@ public enum SemanticKeywordPath {
     public static let maxLabelsPerPhoto = 6
     /// 标签规范化后的最大长度（Vision 标识符可能很长，keyword 列有上限）。
     public static let maxLabelLength = 40
+    /// UI 预览最多返回多少条"逐张明细"（Wave4b：2 万张会话的 plan.items 会占满 IPC/内存；
+    /// 计数仍是全量，只有明细截断并由 `itemsTruncated` 标注）。
+    public static let maxDisplayedPlanItems = 500
 }
 
 public struct SemanticSearchQuery: Codable, Equatable, Sendable {
@@ -111,17 +114,22 @@ public struct SemanticKeywordPlanInput: Codable, Equatable, Sendable {
     public var root: String
     /// 单张最多写回几个标签（Vision top-8 里取前 N）。
     public var maxLabelsPerPhoto: Int
+    /// 逐张明细上限（0 = 不截断；UI 预览传 `SemanticKeywordPath.maxDisplayedPlanItems`）。
+    /// 只截断 `plan.items`，`totalAdditions` 等计数始终按全量算。
+    public var maxItems: Int
 
     public init(
         sessionId: String,
         photoIds: [String]? = nil,
         root: String = SemanticKeywordPath.scene,
-        maxLabelsPerPhoto: Int = SemanticKeywordPath.maxLabelsPerPhoto
+        maxLabelsPerPhoto: Int = SemanticKeywordPath.maxLabelsPerPhoto,
+        maxItems: Int = 0
     ) {
         self.sessionId = sessionId
         self.photoIds = photoIds
         self.root = root
         self.maxLabelsPerPhoto = maxLabelsPerPhoto
+        self.maxItems = max(0, maxItems)
     }
 }
 
@@ -148,6 +156,8 @@ public struct SemanticKeywordPlan: Codable, Equatable, Sendable {
     public var photosWithoutLabels: Int
     /// 需要新增的关键词条数（已存在的已扣除）。
     public var totalAdditions: Int
+    /// `items` 是否被 `maxItems` 截断（计数仍是全量；UI 用来说明"明细不全"）。
+    public var itemsTruncated: Bool
     /// 无法生成计划的原因（语义索引未建立 / 未接线）：UI 显示，不当错误。
     public var unavailableReason: String?
 
@@ -158,6 +168,7 @@ public struct SemanticKeywordPlan: Codable, Equatable, Sendable {
         photosWithLabels: Int,
         photosWithoutLabels: Int,
         totalAdditions: Int,
+        itemsTruncated: Bool = false,
         unavailableReason: String? = nil
     ) {
         self.sessionId = sessionId
@@ -166,6 +177,7 @@ public struct SemanticKeywordPlan: Codable, Equatable, Sendable {
         self.photosWithLabels = photosWithLabels
         self.photosWithoutLabels = photosWithoutLabels
         self.totalAdditions = totalAdditions
+        self.itemsTruncated = itemsTruncated
         self.unavailableReason = unavailableReason
     }
 }

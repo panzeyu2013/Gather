@@ -14,6 +14,23 @@
 import Foundation
 import GatherProtocol
 
+/// 停止/跳过原因（Wave4b / task-44：reason 字符串集中一处，宿主日志与测试断言同一口径）。
+public enum AITriageStopReason {
+    public static let indexTimeout = "index-timeout"
+    public static let indexNotSucceeded = "index-not-succeeded"
+    public static let qualityTimeout = "quality-timeout"
+    public static let qualityEnqueueFailed = "quality-enqueue-failed"
+    /// 质量 job 因取消/中断结束：`quality-cancelled` / `quality-interrupted`。
+    public static func qualityEnded(_ status: AnalysisJobStatus) -> String {
+        "quality-\(status.rawValue)"
+    }
+    public static let qualityFailed = "quality-failed"
+    /// waitForQuality 不会返回 .waiting（循环只在非 waiting 时返回）；保留常量给穷尽分支。
+    public static let qualityWaitTimeout = "quality-wait-timeout"
+    public static let cancelled = "cancelled"
+    public static let triageDisabled = "triage-disabled"
+}
+
 /// 自动初审的编排结果（宿主只用来日志/广播，不参与业务判断）。
 public struct AITriageAutoOutcome: Equatable, Sendable {
     public enum Stage: String, Equatable, Sendable {
@@ -65,6 +82,11 @@ public struct AITriageAutoPipeline: Sendable {
         /// triage_enabled（E4）：关闭时整条自动初审（含 quality.score 入队）直接 skipped，
         /// 不做无用的完整质量/模型分析。
         public var triageEnabled: @Sendable () -> Bool
+        /// 超时后请求取消 quality.score job（Wave4b：停止等待但 job 还在后台解码 → 明确取消）。
+        /// 取消失败不影响结果（只记日志）。
+        public var cancelQualityJob: @Sendable (String) async throws -> Void
+        /// 结构化日志（宿主传 GatherLogger；测试注入记录器）。
+        public var log: @Sendable (String) -> Void
         /// 轮询间隔（测试注入 no-op）。
         public var poll: @Sendable () async throws -> Void
 
@@ -75,6 +97,8 @@ public struct AITriageAutoPipeline: Sendable {
             applyTriage: @escaping @Sendable (TriageApplyInput) async throws -> TriageApplyResult,
             autoApplyEnabled: @escaping @Sendable () -> Bool,
             triageEnabled: @escaping @Sendable () -> Bool,
+            cancelQualityJob: @escaping @Sendable (String) async throws -> Void,
+            log: @escaping @Sendable (String) -> Void,
             poll: @escaping @Sendable () async throws -> Void
         ) {
             self.listJobs = listJobs
@@ -83,6 +107,8 @@ public struct AITriageAutoPipeline: Sendable {
             self.applyTriage = applyTriage
             self.autoApplyEnabled = autoApplyEnabled
             self.triageEnabled = triageEnabled
+            self.cancelQualityJob = cancelQualityJob
+            self.log = log
             self.poll = poll
         }
     }
@@ -101,24 +127,31 @@ public struct AITriageAutoPipeline: Sendable {
         do {
             // ① 等 metadata.scan 终态：目录导入的照片由索引 job 发现，扫完才有 photoIds。
             guard let scanReady = try await waitForScan(sessionId: sessionId) else {
-                return AITriageAutoOutcome(stage: .stopped, reason: "index-timeout")
+                deps.log("ai.auto-triage session=\(sessionId) stage=stopped reason="
+                    + AITriageStopReason.indexTimeout)
+                return AITriageAutoOutcome(
+                    stage: .stopped, reason: AITriageStopReason.indexTimeout)
             }
             if case .stopped(let reason) = scanReady {
                 return AITriageAutoOutcome(stage: .stopped, reason: reason)
             }
             guard !Task.isCancelled else {
-                return AITriageAutoOutcome(stage: .stopped, reason: "cancelled")
+                return AITriageAutoOutcome(stage: .stopped, reason: AITriageStopReason.cancelled)
             }
 
             // E4：triage 关闭时不做无用功（quality + model review 都要解码，成本高）。
             guard deps.triageEnabled() else {
-                return AITriageAutoOutcome(stage: .skipped, reason: "triage-disabled")
+                deps.log("ai.auto-triage session=\(sessionId) stage=skipped reason="
+                    + AITriageStopReason.triageDisabled)
+                return AITriageAutoOutcome(
+                    stage: .skipped, reason: AITriageStopReason.triageDisabled)
             }
 
             // ② 确保 quality.score 在跑（已有活跃 job 就复用，避免重复解码）。
             let qualityJobId = try await ensureQualityJob(sessionId: sessionId)
             guard let qualityJobId else {
-                return AITriageAutoOutcome(stage: .stopped, reason: "quality-enqueue-failed")
+                return AITriageAutoOutcome(
+                    stage: .stopped, reason: AITriageStopReason.qualityEnqueueFailed)
             }
 
             // ③ 等 quality 终态。
@@ -128,14 +161,24 @@ public struct AITriageAutoPipeline: Sendable {
             case .waiting:
                 // waitForQuality 的循环只在非 waiting 时返回；这里只是穷尽兜底。
                 return AITriageAutoOutcome(
-                    stage: .stopped, qualityJobId: qualityJobId, reason: "quality-wait-timeout")
+                    stage: .stopped, qualityJobId: qualityJobId,
+                    reason: AITriageStopReason.qualityWaitTimeout)
             case .failed(let reason):
+                // Wave4b：超时/失败时显式请求取消 job（否则它会继续在后台解码，
+                // 用户既看不到结果也收不回 CPU）；取消失败只记日志。
+                if reason == AITriageStopReason.qualityTimeout {
+                    await cancelQualityJobBestEffort(qualityJobId, sessionId: sessionId)
+                }
+                deps.log("ai.auto-triage session=\(sessionId) stage=stopped"
+                    + " quality=\(qualityJobId) reason=\(reason)")
                 return AITriageAutoOutcome(
                     stage: .stopped, qualityJobId: qualityJobId, reason: reason)
             }
 
             guard !Task.isCancelled else {
-                return AITriageAutoOutcome(stage: .stopped, qualityJobId: qualityJobId, reason: "cancelled")
+                return AITriageAutoOutcome(
+                    stage: .stopped, qualityJobId: qualityJobId,
+                    reason: AITriageStopReason.cancelled)
             }
 
             // ④ 生成建议（triage_auto_generate 的语义：到了这里就一定要生成一次）。
@@ -155,10 +198,22 @@ public struct AITriageAutoPipeline: Sendable {
             return AITriageAutoOutcome(
                 stage: .done, qualityJobId: qualityJobId, summary: summary, applied: applied)
         } catch is CancellationError {
-            return AITriageAutoOutcome(stage: .stopped, reason: "cancelled")
+            return AITriageAutoOutcome(stage: .stopped, reason: AITriageStopReason.cancelled)
         } catch {
             return AITriageAutoOutcome(stage: .stopped, reason: "failed: \(error)")
         }
+    }
+
+    /// quality.score 的 dedupeKey（Wave4b）：**按导入批次唯一**。
+    ///
+    /// 为什么不用固定 key：`AnalysisJobRepo.create` 对同 dedupeKey 的活跃行做去重、
+    /// 对终态行默认 `inheritCheckpoint: true` —— 固定 key 在"同会话二次导入/重试"时
+    /// 会把上一批的 `photoIds` 合并进新 job 的 checkpoint，只分析旧照片。
+    /// 批次 nonce 由宿主每次调度生成；空 nonce 退化为旧 key（兼容测试/旧调用）。
+    public static func qualityJobDedupeKey(scopeId: String, batchNonce: String) -> String {
+        let nonce = batchNonce.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !nonce.isEmpty else { return "quality.score:\(scopeId):auto-import-triage" }
+        return "quality.score:\(scopeId):auto-import-triage:\(nonce)"
     }
 
     // MARK: - 纯判定（测试直接驱动）
@@ -176,7 +231,7 @@ public struct AITriageAutoPipeline: Sendable {
             return .ready
         case .failed, .cancelled, .interrupted:
             // 索引失败时没有可信的 photoIds：不硬跑质量分析（会得到 0 张）。
-            return .stopped("index-not-succeeded")
+            return .stopped(AITriageStopReason.indexNotSucceeded)
         }
     }
 
@@ -197,9 +252,9 @@ public struct AITriageAutoPipeline: Sendable {
         case .succeeded:
             return .succeeded
         case .failed:
-            return .failed("quality-failed")
+            return .failed(AITriageStopReason.qualityFailed)
         case .cancelled, .interrupted:
-            return .failed("quality-\(job.status.rawValue)")
+            return .failed(AITriageStopReason.qualityEnded(job.status))
         }
     }
 
@@ -240,7 +295,20 @@ public struct AITriageAutoPipeline: Sendable {
         do {
             return try deps.enqueueQualityJob(sessionId).id
         } catch {
+            // Wave4b：入队失败不能静默（之前只返回 nil，日志里看不出链路断在哪）。
+            deps.log("ai.auto-triage session=\(sessionId) stage=stopped reason="
+                + AITriageStopReason.qualityEnqueueFailed + " error=\(error)")
             return nil
+        }
+    }
+
+    /// 超时后取消 quality.score（best-effort：失败只记日志，不改变停止结果）。
+    private func cancelQualityJobBestEffort(_ jobId: String, sessionId: String) async {
+        do {
+            try await deps.cancelQualityJob(jobId)
+            deps.log("ai.auto-triage session=\(sessionId) quality=\(jobId) cancel=requested")
+        } catch {
+            deps.log("ai.auto-triage session=\(sessionId) quality=\(jobId) cancel=failed error=\(error)")
         }
     }
 
@@ -251,6 +319,6 @@ public struct AITriageAutoPipeline: Sendable {
             if state != .waiting { return state }
             try await deps.poll()
         }
-        return .failed("quality-timeout")
+        return .failed(AITriageStopReason.qualityTimeout)
     }
 }

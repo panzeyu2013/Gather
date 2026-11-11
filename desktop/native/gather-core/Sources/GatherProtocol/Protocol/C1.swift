@@ -117,6 +117,9 @@ public protocol CaptureOneBridging: Sendable {
         sessionId: String?,
         items: [C1VariantWritebackItem]
     ) async throws -> C1VariantWritebackReport
+    /// P2（Wave4b）：本机是否安装 Capture One（同步、轻量；Hot Folder 提示等只在装了 C1
+    /// 时展示）。默认 false = 未接线，UI 不应据此宣称任何 C1 能力。
+    var c1Installed: Bool { get }
 }
 
 // MARK: - C1 变体级判断（Wave2 / G3：导入前只读）
@@ -158,10 +161,18 @@ public struct C1SelectionSnapshot: Equatable, Sendable {
     /// 去重后的照片路径（按脚本输出顺序，与导入口径一致）。
     public let paths: [String]
     public let judgements: [C1VariantJudgement]
+    /// 脚本输出里无法解析的行数（0 = 全部按契约解析）。
+    /// P2（Wave4b）：旧实现静默丢弃畸形行，契约漂移不可见；现在进快照由调用方 warn 日志。
+    public let malformedLines: Int
 
-    public init(paths: [String], judgements: [C1VariantJudgement]) {
+    public init(
+        paths: [String],
+        judgements: [C1VariantJudgement],
+        malformedLines: Int = 0
+    ) {
         self.paths = paths
         self.judgements = judgements
+        self.malformedLines = malformedLines
     }
 
     public static let empty = C1SelectionSnapshot(paths: [], judgements: [])
@@ -301,8 +312,9 @@ public enum C1SessionDirectoryRole: String, Equatable, Sendable {
 ///
 /// 为什么需要：C1 Session 的根目录包含 Capture（原始）、Selects（挑中/移动后的文件）、
 /// Trash（淘汰）。把根目录当普通目录递归会把 Trash 淘汰件"复活"成普通资产，并在
-/// Capture/Selects 之间产生重复。本布局给出**只扫 Capture** 的安全根与排除清单；
-/// Selects 与 Capture 的同名去重规则见 `dedupe(captureFiles:selectsFiles:)`。
+/// Capture/Selects 之间产生重复。本布局给出**只扫 Capture** 的安全根与排除清单。
+/// P2（Wave4b）：Selects 不入扫描根，因此不需要「同名去重」——该 helper 没有生产
+/// 调用点，已删除（承诺与实现对齐）。
 public struct C1SessionLayout: Equatable, Sendable {
     public let root: String
     public let capture: String?
@@ -442,29 +454,6 @@ public enum C1SessionDirectoryResolver {
             output: byRole["output"])
     }
 
-    /// Selects 与 Capture 去重：按**文件名**（basename，大小写不敏感）去重，Capture 优先。
-    ///
-    /// C1 "Move to Selects" 会移动文件（只在一侧出现 → 必须保留）；若用户复制过，
-    /// 两侧同名（只剩 Capture 优先 → 不重复导入）。返回需导入的文件 + 被判定为重复的数量。
-    public static func dedupe(
-        captureFiles: [String],
-        selectsFiles: [String]
-    ) -> (files: [String], skippedDuplicates: Int) {
-        var seen = Set<String>()
-        var files: [String] = []
-        var skipped = 0
-        for file in captureFiles {
-            let key = (file as NSString).lastPathComponent.lowercased()
-            guard seen.insert(key).inserted else { skipped += 1; continue }
-            files.append(file)
-        }
-        for file in selectsFiles {
-            let key = (file as NSString).lastPathComponent.lowercased()
-            guard seen.insert(key).inserted else { skipped += 1; continue }
-            files.append(file)
-        }
-        return (files, skipped)
-    }
 }
 
 // MARK: - Wave3：C1 Hot Folder 的**能力边界**（G12）
@@ -496,6 +485,9 @@ public extension CaptureOneBridging {
         _ = items
         return .unsupported("variant writeback not wired")
     }
+
+    /// 默认未接线：不知道本机是否装了 C1（UI 的 Hot Folder 提示据此隐藏）。
+    public var c1Installed: Bool { false }
 }
 /// C1 往返（手动 reload / 选中）的稳定错误。
 ///

@@ -324,6 +324,11 @@ private struct CullingSecondDisplayCanvas: View {
 /// 与主查看器的唯一差别来自第二屏的只读语义：没有 hover/手势，因此 >2 格时只给
 /// 当前格贴片（主查看器是"当前 + hover"），避免镜像窗口一次解 N 块细节。
 enum CullingSecondDisplayMirror {
+    /// 第二屏基准位图档位（Wave4b / P2-9）：镜像窗口通常另开一块屏，用 1280
+    /// 而不是主查看器 2560——降低与主查看器争抢共享解码闸（limit 4）的时长与
+    /// 内存；fit 档略软可接受（第二屏用于构图/选片），zoom>1 的判焦由细节贴片补。
+    static let baseBitmapSize = 1280
+
     static func showsTile(visibleCount: Int, isCurrent: Bool) -> Bool {
         CullingDetailTilePolicy.showsTile(
             compareCount: max(1, visibleCount),
@@ -331,7 +336,7 @@ enum CullingSecondDisplayMirror {
             isHovered: false)
     }
 
-    /// 该格在当前 zoom/offset 下的可见区贴片；nil = 2560 基准位图已够（fit 档）。
+    /// 该格在当前 zoom/offset 下的可见区贴片；nil = 1280 基准位图已够（fit 档）。
     static func tile(
         asset: CullingAsset,
         cellSize: CGSize,
@@ -345,7 +350,7 @@ enum CullingSecondDisplayMirror {
             viewSize: cellSize,
             zoom: zoom,
             panOffset: offset,
-            backingPixelBudget: PhotoDetailTier.baseDimension)
+            backingPixelBudget: baseBitmapSize)
     }
 
     /// 区域解码目标像素（随同屏格数收窄，与主查看器的 detailBudget 同源）。
@@ -425,7 +430,7 @@ private struct CullingMirrorCell: View {
             // 基准位图：立即显示、负责构图；放大后的真实像素由下面的细节层补。
             PhotoThumbnailView(
                 path: asset.photo.filepath,
-                size: PhotoDetailTier.baseDimension,
+                size: CullingSecondDisplayMirror.baseBitmapSize,
                 preview: true,
                 contentMode: .fit,
                 placeholderSurface: GatherTheme.viewerSurface,

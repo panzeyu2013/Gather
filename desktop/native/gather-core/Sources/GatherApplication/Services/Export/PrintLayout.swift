@@ -171,8 +171,12 @@ public enum SingleImagePrintLayoutEngine {
                 height: height
             )
         }
+        // 边框是"贴着图像外沿、可见厚度 = borderWidth"的框（Wave4b / P2-15）：
+        // 描边以路径为中心，所以路径只外扩 borderWidth/2——整条线正好落在
+        // 图像外侧 0..borderWidth 之间；旧实现外扩整个 borderWidth 会让框离图
+        // 有 w/2 的空隙、可见厚度变成 1.5w。
         let border = options.borderWidth > 0
-            ? imageRect.insetBy(dx: -options.borderWidth, dy: -options.borderWidth)
+            ? imageRect.insetBy(dx: -options.borderWidth / 2, dy: -options.borderWidth / 2)
             : nil
         return SingleImagePrintLayout(
             pageSize: pageSize,
@@ -311,7 +315,32 @@ public struct PrintPageLayout: Equatable, Sendable {
 public enum MultiPagePrintLayoutEngine {
     /// 每页格数（≥1；与 ContactSheetLayout 同语义）。
     public static func perPage(options: MultiPagePrintOptions) -> Int {
-        max(1, options.perPage)
+        let grid = fittedGrid(options: options)
+        return max(1, grid.columns * grid.rows)
+    }
+
+    /// 实际可排版的列/行（Wave4b / P2-14）。
+    ///
+    /// 极小自定义纸 + 大页眉页脚时，请求的 columns/rows 可能让格子互相重叠或落到
+    /// 纸张外（cellHeight 被夹到 1pt，但 rows*spacing 仍按原值排）。这里按可用区
+    /// 把行列收窄到"每格至少 1pt + spacing"装得下的最大数量；perPage/分页/落位
+    /// 三处共用同一结果，保证不会越界，也不会出现分页与落位口径不一致。
+    public static func fittedGrid(
+        options: MultiPagePrintOptions
+    ) -> (columns: Int, rows: Int) {
+        let content = SingleImagePrintLayoutEngine.contentRect(
+            pageSize: options.pageSize, margins: options.margins)
+        let gridHeight = max(1, content.height - options.headerHeight - options.footerHeight)
+        let spacing = max(0, options.cellSpacing)
+        func fitted(_ requested: Int, _ length: CGFloat) -> Int {
+            let requested = max(1, requested)
+            guard length > 0, length.isFinite else { return 1 }
+            let capacity = Int(((length + spacing) / (1 + spacing)).rounded(.down))
+            return max(1, min(requested, max(1, capacity)))
+        }
+        return (
+            fitted(options.columns, content.width),
+            fitted(options.rows, gridHeight))
     }
 
     /// 页数（空输入 = 0 页）。
@@ -329,7 +358,8 @@ public enum MultiPagePrintLayoutEngine {
         itemCount: Int,
         options: MultiPagePrintOptions
     ) -> [PrintPageLayout] {
-        let perPage = perPage(options: options)
+        let grid = fittedGrid(options: options)
+        let perPage = max(1, grid.columns * grid.rows)
         let ranges = paginate(itemCount: itemCount, perPage: perPage)
         guard !ranges.isEmpty else { return [] }
         let pageSize = options.pageSize
@@ -365,18 +395,18 @@ public enum MultiPagePrintLayoutEngine {
             width: content.width,
             height: max(1, gridTop - gridBottom)
         )
-        let spacingCountX = CGFloat(options.columns - 1)
-        let spacingCountY = CGFloat(options.rows - 1)
+        let spacingCountX = CGFloat(grid.columns - 1)
+        let spacingCountY = CGFloat(grid.rows - 1)
         let cellWidth = max(
-            1, (gridRect.width - options.cellSpacing * spacingCountX) / CGFloat(options.columns))
+            1, (gridRect.width - options.cellSpacing * spacingCountX) / CGFloat(grid.columns))
         let cellHeight = max(
-            1, (gridRect.height - options.cellSpacing * spacingCountY) / CGFloat(options.rows))
+            1, (gridRect.height - options.cellSpacing * spacingCountY) / CGFloat(grid.rows))
         let captionHeight = min(options.captionHeight, max(0, cellHeight - 1))
 
         return ranges.enumerated().map { pageIndex, range in
             let cells: [PrintCellLayout] = range.enumerated().map { offset, itemIndex in
-                let column = offset % options.columns
-                let row = offset / options.columns
+                let column = offset % grid.columns
+                let row = offset / grid.columns
                 let originX = gridRect.minX + CGFloat(column) * (cellWidth + options.cellSpacing)
                 let topY = gridRect.maxY - CGFloat(row) * (cellHeight + options.cellSpacing)
                 let cellRect = CGRect(

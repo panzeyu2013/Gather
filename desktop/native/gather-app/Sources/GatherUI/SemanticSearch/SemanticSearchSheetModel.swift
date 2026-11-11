@@ -92,11 +92,17 @@ final class SemanticSearchSheetModel {
         }
     }
 
+    /// 计划请求统一带"明细上限"（Wave4b）：计数全量、明细前 N 张，避免大会话
+    /// 一次 IPC 传递上万条 item。写回/撤销后刷新计划同样走这里。
+    private func planInput() -> SemanticKeywordPlanInput {
+        SemanticKeywordPlanInput(
+            sessionId: sessionId, maxItems: SemanticKeywordPath.maxDisplayedPlanItems)
+    }
+
     /// 预览写回：会新增多少个关键词、多少张照片已经具备（幂等）。
     func previewWriteback(l10n: L10n) async {
         await run {
-            let plan = try await self.api.semanticKeywordPlan(
-                SemanticKeywordPlanInput(sessionId: self.sessionId))
+            let plan = try await self.api.semanticKeywordPlan(self.planInput())
             self.plan = plan
             if let unavailable = plan.unavailableReason {
                 self.notice = unavailable
@@ -130,6 +136,10 @@ final class SemanticSearchSheetModel {
             let result = try await self.api.applySemanticKeywords(Confirmed(applyInput))
             // 写回/撤销改的是关键词数据：发 metadata 域事件让已挂载页刷新。
             GatherEventCenter.postDomainChange(.metadata, sessionId: self.sessionId)
+            // Wave4b：场景标签→关键词也改挑片/图库可见信息（facet、检查器标签），
+            // 一并广播 culling 域（否则已挂载页停留在旧关键词）。
+            GatherEventCenter.postDomainChange(
+                .culling, sessionId: self.sessionId, origin: "semantic-keywords")
             if action == .undo {
                 self.lastWriteScopePhotoIds = []
                 self.canUndoWriteback = false
@@ -152,8 +162,7 @@ final class SemanticSearchSheetModel {
                 }
             }
             // 写回后刷新计划：第二次预览的 totalAdditions 应为 0（幂等的 UI 证据）。
-            if let refreshed = try? await self.api.semanticKeywordPlan(
-                SemanticKeywordPlanInput(sessionId: self.sessionId)) {
+            if let refreshed = try? await self.api.semanticKeywordPlan(self.planInput()) {
                 self.plan = refreshed
             }
         }

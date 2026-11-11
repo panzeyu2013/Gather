@@ -683,29 +683,65 @@ extension ExportService {
 }
 
 #if canImport(ImageIO)
-/// 图片水印 logo 的解码缓存（Wave2）。
+/// 图片水印 logo 的解码缓存（Wave2；Wave4b 加 mtime/size 键与容量上限）。
 ///
 /// 为什么缓存：一次交付可能合成上千张，每张都从磁盘解码同一个 logo 是纯浪费；
 /// 缓存的是「解码期就按最长边 2048 降采样」的 CGImage —— 既给超大 logo 兜底
 ///（不把 12000px 的 PNG 全量进内存），又保证缩到输出尺寸时画质够用。
+///
+/// Wave4b：键 = path + size + mtime(ms) —— 同路径替换 logo 后不会继续用旧图；
+/// 表最多容纳 maxEntries 个（LRU 近似：超限先清最早的键），避免长进程缓存无界。
 /// 锁 + nonisolated(unsafe) 的静态表写法与 GatherAnalysis 的 AFPointProfiles 一致。
-private enum WatermarkLogoCache {
+enum WatermarkLogoCache {
+    struct CacheKey: Hashable {
+        var path: String
+        var size: Int64
+        var modifiedMs: Int64
+    }
+
+    static let maxEntries = 8
+
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var images: [String: CGImage] = [:]
+    nonisolated(unsafe) private static var images: [CacheKey: CGImage] = [:]
+
+    /// 当前缓存条目数（诊断/测试用）。
+    static var entryCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return images.count
+    }
 
     /// 读取 logo（最长边 ≤ 2048）；nil = 不可解码。
     static func image(for path: String) -> CGImage? {
+        let key = cacheKey(for: path)
         lock.lock()
-        if let cached = images[path] {
+        if let cached = images[key] {
             lock.unlock()
             return cached
         }
         lock.unlock()
         guard let decoded = decode(path: path) else { return nil }
         lock.lock()
-        images[path] = decoded
+        // 容量上限：先驱逐任意旧键（一次交付通常只有 1-2 个 logo，8 个足够）。
+        if images.count >= maxEntries, let stale = images.keys.first {
+            images.removeValue(forKey: stale)
+        }
+        images[key] = decoded
         lock.unlock()
         return decoded
+    }
+
+    private static func cacheKey(for path: String) -> CacheKey {
+        let attributes: [FileAttributeKey: Any]?
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: path)
+        } catch {
+            attributes = nil
+        }
+        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        let modified = (attributes?[.modificationDate] as? Date)
+            .map { Int64($0.timeIntervalSince1970 * 1000) } ?? 0
+        return CacheKey(path: path, size: size, modifiedMs: modified)
     }
 
     /// 清空缓存（测试隔离用）。

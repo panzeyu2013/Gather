@@ -280,9 +280,18 @@ public extension FilterGroup {
         removing(field: field, andContext: true)
     }
 
+    /// Wave4b：facet 同维剔除也进入 NOT 组（存在量化口径）。
+    ///
+    /// 对 NOT(OR(同维, 其它))，忽略该维后等价于 NOT(其它)：
+    /// OR(NOT(TRUE 或 B), NOT(FALSE 或 B)) = 非 B。因此从 NOT 组里剔除同维叶子是对的；
+    /// 剔除后只剩同维规则的 NOT 组应视为 TRUE（组消失），不能留下空 NOT
+    /// （空 NOT 的 SQL 语义是 1=0，会把 facet 计数全部打成 0）。
+    ///
+    /// OR 组仍**不**剔除：从析取里删同维叶子会改变其它规则的含义（需要 TRUE
+    /// 占位，FilterGroup 表达不了），保守保持旧行为（该维在 OR 下不拆分）。
     private func removing(field: String, andContext: Bool) -> FilterGroup {
         var result: FilterGroup = self
-        let canRemove = andContext && logic == .and
+        let canRemove = andContext && (logic == .and || logic == .not)
         result.conditions = conditions.compactMap { condition in
             switch condition {
             case .rule(let rule):
@@ -293,6 +302,10 @@ public extension FilterGroup {
                 if canRemove, pruned.conditions.isEmpty { return nil }
                 return .group(pruned)
             }
+        }
+        if result.conditions.isEmpty, result.logic == .not {
+            // 根组本身就是 NOT 且被剔空：返回空 AND（无约束 = TRUE），而不是空 NOT。
+            return FilterGroup(logic: .and, conditions: [])
         }
         return result
     }

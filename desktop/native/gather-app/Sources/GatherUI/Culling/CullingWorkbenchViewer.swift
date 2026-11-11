@@ -53,6 +53,35 @@ enum CullingViewerZoom {
         return max(baseMaximumScale, actual)
     }
 
+    /// 查看器窗口所在屏的 backingScale（Wave4b / P2-6）。
+    ///
+    /// 优先窗口自己的屏幕：NSScreen.main 是"当前收键盘事件的窗口所在屏"，
+    /// 查看器不在主屏/第二屏与主屏 scale 不同（1x + Retina 混用）时会错档；
+    /// 窗口还没解析出来时退回主屏，最后按 2（Retina）保守兜底。
+    static func resolvedBackingScale(windowScale: Double?, screenScale: Double?) -> Double {
+        if let windowScale, windowScale.isFinite, windowScale > 0 { return windowScale }
+        if let screenScale, screenScale.isFinite, screenScale > 0 { return screenScale }
+        return 2
+    }
+
+    /// 1:1 模式在窗口尺寸变化后的重锚（Wave4b / P2-7）。
+    ///
+    /// 1:1 是"模式"而不是一次性换算：窗口 resize 后 fitPoints 变了，同一个
+    /// scale 已经不再对应 1:1；调用方在尺寸变化时用它重算 scale。非 1:1 模式
+    /// 返回 nil（保持用户当前缩放）。
+    static func reanchoredScale(
+        actualPixelsMode: Bool,
+        sourceMaxDimension: Int,
+        fitPoints: Double,
+        backingScale: Double
+    ) -> Double? {
+        guard actualPixelsMode else { return nil }
+        return actualPixelsScale(
+            sourceMaxDimension: sourceMaxDimension,
+            fitPoints: fitPoints,
+            backingScale: backingScale)
+    }
+
     /// 收敛到 [fitScale, maximum]；非法值回落到 fit。
     static func clamp(_ scale: Double, maximum: Double = baseMaximumScale) -> Double {
         guard scale.isFinite else { return fitScale }
@@ -122,6 +151,9 @@ struct CullingWorkbenchViewer: View {
     /// 本次拖拽开始时的位移基线（B-C2）：DragGesture.translation 是相对手势起点
     /// 的累计量，直接赋给 offset 会让每次新手势从 0 起算——松手再拖就弹回原点。
     @State private var dragStartOffset = CGSize.zero
+    /// Wave4b / P2-7：当前是否处于「实际像素（1:1）」模式——窗口/布局尺寸变化时
+    /// 据此重算 scale；任何手动缩放/复位都会退出该模式。
+    @State private var actualPixelsMode = false
     @State private var hoveredCellId: String?
     /// Wave3 / task-20：打印版面面板。
     @State private var showingPrintSheet = false
@@ -491,11 +523,20 @@ struct CullingWorkbenchViewer: View {
         }
         // Wave3 / task-20：打印版面面板（单图/多页；渲染经宿主打印端口）。
         .sheet(isPresented: $showingPrintSheet) {
-            PrintOptionsSheet(items: printItems, currentItem: currentPrintItem)
+            PrintOptionsSheet(
+                items: printItems,
+                currentItem: currentPrintItem,
+                truncatedCount: printTruncatedCount)
         }
-        // 页集合变化（筛选/排序/翻页/决策回显）同样要重算邻张；已缓存的不重解。
-        .onChange(of: viewModel.pageVersion) { _, _ in
+        // 页集合变化（筛选/排序/翻页/加载更多）才重算邻张；**决策回显不重算**：
+        // pageVersion 每次决策都会 +1，用它当去抖键会让快速连按（<120ms/拍）时
+        // 预取被反复取消，恰好饿死最需要预取的场景（Wave4b / P2-8）。
+        .onChange(of: CullingPreloadPlanner.pageSignature(assets: assets)) { _, _ in
             viewModel.scheduleNeighborPreload()
+        }
+        // 窗口/布局尺寸变化：1:1 模式下按新 fitPoints 重锚（缩放档位保持有效）。
+        .onChange(of: currentCellSize) { _, _ in
+            reanchorActualPixelsIfNeeded()
         }
         // 可见区域细节层：缩放或平移停止 150ms 后重算每一格的「可见矩形」，
         // 只重解那一块（Wave2：2 图/当前格/hover 格各自有贴片）。
@@ -679,7 +720,7 @@ struct CullingWorkbenchViewer: View {
                                     cellSize: cellGeometry.size
                                 ),
                                 zoom: effectiveZoom,
-                                backingScale: Double(NSScreen.main?.backingScaleFactor ?? 2),
+                                backingScale: viewerBackingScale(),
                                 sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
                                 budgetDimension: detailBudget
                             )
@@ -788,6 +829,7 @@ struct CullingWorkbenchViewer: View {
             .gesture(
                 MagnificationGesture()
                     .onChanged { value in
+                        actualPixelsMode = false
                         scale = CullingViewerZoom.clamp(gestureScale * value, maximum: zoomMaximum)
                     }
                     .onEnded { _ in
@@ -889,6 +931,7 @@ struct CullingWorkbenchViewer: View {
         gestureScale = 1
         offset = .zero
         dragStartOffset = .zero
+        actualPixelsMode = false
     }
 
     // MARK: - Wave3 / task-20：第二屏镜像 + 打印
@@ -900,7 +943,20 @@ struct CullingWorkbenchViewer: View {
 
     /// 打印面板的数据：有选择集时按页内顺序给全部选中（多页排版），
     /// 否则给当前照片（单图打印）。只做字段映射，不解码、不写盘。
+    ///
+    /// Wave4b / P2-11：上限 200 张保留（避免一次渲染上千张），但超出部分必须
+    /// 在面板里可见——printTruncatedCount 由 PrintOptionsSheet 展示提示。
     private var printItems: [PrintJobItem] {
+        printSelectionAssets.prefix(CullingPrintSelection.limit).map(Self.printItem)
+    }
+
+    /// 未被打印的选中张数（0 = 没有截断）。
+    private var printTruncatedCount: Int {
+        CullingPrintSelection.truncatedCount(total: printSelectionAssets.count)
+    }
+
+    /// 打印的候选资产（选择集优先，跨页选择全不在当前页时退回当前照片）。
+    private var printSelectionAssets: [CullingAsset] {
         let source: [CullingAsset]
         if !viewModel.selectedPhotoIds.isEmpty {
             let selected = assets.filter { viewModel.selectedPhotoIds.contains($0.photo.id) }
@@ -916,7 +972,7 @@ struct CullingWorkbenchViewer: View {
         } else {
             source = []
         }
-        return source.prefix(200).map(Self.printItem)
+        return source
     }
 
     private var currentPrintItem: PrintJobItem? {
@@ -1034,32 +1090,51 @@ struct CullingWorkbenchViewer: View {
     //   不可用时作为兜底，见 cellView 的 onUnavailable 回调。）
 
     private func zoomIn() {
+        actualPixelsMode = false
         let next = CullingViewerZoom.clamp(scale * 1.15, maximum: zoomMaximum)
         scale = next
         gestureScale = next
     }
 
     private func zoomOut() {
+        actualPixelsMode = false
         let next = CullingViewerZoom.clamp(scale * (1 / 1.15), maximum: zoomMaximum)
         scale = next
         gestureScale = next
     }
 
-    /// 真 1:1：按源像素 / fitPoints（含屏幕 backingScale）反算相对 fit 的倍率。
+    /// 真 1:1：按源像素 / fitPoints（含查看器窗口屏 backingScale）反算相对 fit 的倍率。
     /// 源图尺寸未知（老库/未索引）时不做换算，保持当前缩放。
+    /// Wave4b / P2-7：进入 1:1 后记住模式，窗口 resize 由 reanchorActualPixelsIfNeeded() 重锚。
     private func zoomToActualPixels() {
         guard let asset = currentAsset, let size = currentCellSize,
               let actual = CullingViewerZoom.actualPixelsScale(
                   sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
                   fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: size),
-                  backingScale: Self.backingScale())
+                  backingScale: viewerBackingScale())
         else { return }
         let next = CullingViewerZoom.clamp(actual, maximum: zoomMaximum)
         scale = next
         gestureScale = next
+        actualPixelsMode = true
         // 1:1 的语义是"看这张图的正中真实像素"：平移复位，避免沿用上一张的位移。
         offset = .zero
         dragStartOffset = .zero
+        scheduleDetailTileUpdateForVisibleCells()
+    }
+
+    /// 1:1 模式下的尺寸重锚：窗口/布局变化后 fitPoints 变了，按新模式重算 scale；
+    /// 非 1:1 模式不做任何事（保持用户当前缩放）。
+    private func reanchorActualPixelsIfNeeded() {
+        guard let asset = currentAsset, let size = currentCellSize else { return }
+        guard let next = CullingViewerZoom.reanchoredScale(
+            actualPixelsMode: actualPixelsMode,
+            sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
+            fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: size),
+            backingScale: viewerBackingScale())
+        else { return }
+        scale = CullingViewerZoom.clamp(next, maximum: zoomMaximum)
+        gestureScale = scale
         scheduleDetailTileUpdateForVisibleCells()
     }
 
@@ -1071,7 +1146,7 @@ struct CullingWorkbenchViewer: View {
         return CullingViewerZoom.maximumScale(
             sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
             fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: size),
-            backingScale: Self.backingScale())
+            backingScale: viewerBackingScale())
     }
 
     /// 缩放胶囊文案：fit 档**不显示**；其余按源像素口径（1:1 = 100%）。
@@ -1082,7 +1157,7 @@ struct CullingWorkbenchViewer: View {
                   scale: effectiveZoom,
                   sourceMaxDimension: Int(max(asset.photo.width, asset.photo.height)),
                   fitPoints: Self.fitPoints(imageSize: imageSize(of: asset), cellSize: size),
-                  backingScale: Self.backingScale())
+                  backingScale: viewerBackingScale())
         else { return "\(Int(effectiveZoom * 100))%" }
         return "\(percent)%"
     }
@@ -1091,9 +1166,14 @@ struct CullingWorkbenchViewer: View {
         CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height))
     }
 
-    /// 屏幕物理像素/点；取不到时按 2（Retina）保守换算。
-    private static func backingScale() -> Double {
-        Double(NSScreen.main?.backingScaleFactor ?? 2)
+    /// 查看器窗口所在屏的物理像素/点（Wave4b / P2-6）。
+    ///
+    /// NSScreen.main 跟随"当前收键盘事件的窗口"，查看器在第二屏/非主屏时会取错屏；
+    /// 窗口已解析时以窗口自己的 screen 为准，窗口还没出来才退回主屏。
+    private func viewerBackingScale() -> Double {
+        CullingViewerZoom.resolvedBackingScale(
+            windowScale: viewerWindow.map { Double($0.backingScaleFactor) },
+            screenScale: NSScreen.main.map { Double($0.backingScaleFactor) })
     }
 
     // MARK: 滚轮缩放（对齐旧版 onWheel：向上 1.15、向下 0.87，范围 1..8）
@@ -1124,6 +1204,7 @@ struct CullingWorkbenchViewer: View {
             scale * (event.scrollingDeltaY < 0 ? 1.15 : 0.87),
             maximum: zoomMaximum)
         guard next != scale else { return }
+        actualPixelsMode = false
         scale = next
         gestureScale = next
     }
@@ -1266,6 +1347,7 @@ struct CullingWorkbenchViewer: View {
     /// 点击 AF 框：以该点为中心、100% 查看（复用 FaceAlign 的坐标模型）。
     private func focus(on point: AFPoint, cellSize: CGSize) {
         guard let asset = currentAsset, cellSize.width > 0, cellSize.height > 0 else { return }
+        actualPixelsMode = false
         scale = 1
         gestureScale = 1
         offset = FaceAlign.offset(

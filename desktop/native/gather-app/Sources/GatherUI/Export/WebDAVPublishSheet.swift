@@ -288,6 +288,12 @@ struct WebDAVPublishSheet: View {
         .padding(GatherMetrics.Space.l)
         .frame(minWidth: 460)
         .accessibilityLabel(l10n("发布交付包"))
+        // Wave4b：切换传输方式时清空敏感输入，避免把 S3 secret/token 当 WebDAV
+        // 密码存进 Keychain（或反之）。endpoint/用户名等非敏感字段保留便于复用。
+        .onChange(of: transport) { _, _ in
+            secret = ""
+            sessionToken = ""
+        }
         .onDisappear { publishTask?.cancel() }
     }
 }

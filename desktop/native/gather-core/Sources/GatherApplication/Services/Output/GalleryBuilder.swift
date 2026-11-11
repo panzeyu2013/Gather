@@ -496,7 +496,9 @@ public enum GalleryBuilder {
     })();
     """
 
-    private static let proofJS = """
+    // Wave4b：internal 而非 private —— ProofPageScriptTests 用 node 驱动真实脚本做
+    // fail-closed/到期/口令闸的 JS 级回归（避免只断言字符串子串）。
+    static let proofJS = """
     (function () {
       // v2：localStorage 存 {version:2, items:{ id: {pick,rating,label,comment} }}；
       // v1 键（id 数组）自动迁移，老客户回传不会丢勾选。
@@ -509,6 +511,8 @@ public enum GalleryBuilder {
       var locked = false;
 
       // ---- Wave3（task-17）：口令门 + 到期提示（纯前端，非加密） ----
+      // Wave4b 说明：新生成的 proof.html/js 一律带 gate-pending/gate DOM（即使本次
+      // 没配口令/到期）——这是新页面的默认安全态；旧已发布包自带旧 proof.*，不受影响。
       // 强制：body 初始带 gate-pending（内容不可见），拿到 share.json 后再决定；
       // 没有 share.json / fetch 不可用（旧分享包/file://）则放行，保持旧行为。
       var shareState = null;

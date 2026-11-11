@@ -209,7 +209,7 @@ struct ContactSheetPresentationTests {
 
     // MARK: - 发布白名单
 
-    @Test("严格白名单：thumbs/画廊入口/联系表/manifest 通过，成片被排除")
+    @Test("严格白名单：thumbs/画廊入口/联系表通过，manifest/成片被排除")
     func allowlistExcludesOriginals() {
         #expect(WebDAVPublisher.isShareArtifact("thumbs/0001.jpg", allowDownload: true))
         #expect(WebDAVPublisher.isShareArtifact("gallery/thumbs/0001.jpg", allowDownload: true))
@@ -217,7 +217,8 @@ struct ContactSheetPresentationTests {
         #expect(WebDAVPublisher.isShareArtifact("gallery/data.json", allowDownload: false))
         #expect(WebDAVPublisher.isShareArtifact("gallery/proof.html", allowDownload: false))
         #expect(WebDAVPublisher.isShareArtifact("contact-sheet-20261030-101010.pdf", allowDownload: false))
-        #expect(WebDAVPublisher.isShareArtifact("manifest-abc.json", allowDownload: false))
+        #expect(WebDAVPublisher.isShareArtifact("manifest-abc.json", allowDownload: false) == false,
+                "Wave4b：manifest-* 含本机路径/审计信息，永不进分享产物")
         #expect(WebDAVPublisher.isShareArtifact("share.json", allowDownload: false))
         // 成片与无关键产物不上传
         #expect(WebDAVPublisher.isShareArtifact("Web 2048/IMG_0001.jpg", allowDownload: true) == false)

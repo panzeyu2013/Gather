@@ -174,7 +174,8 @@ struct SemanticKeywordWritebackTests {
         #expect(try keywords.photoKeywordPaths(photoId: "p1").isEmpty)
         let planAfterUndo = try service.plan(SemanticKeywordPlanInput(sessionId: sessionId))
         #expect(planAfterUndo.totalAdditions == 1, "只有 p1 需要重写")
-        #expect(planAfterUndo.items.filter { $0.photoId == "p1" && !$0.alreadyPresent }.count == 1)
+        let pendingForP1 = planAfterUndo.items.filter { $0.photoId == "p1" && !$0.alreadyPresent }
+        #expect(pendingForP1.count == 1)
 
         // ③ 再写回 p1：闭环恢复。
         let second = try await service.apply(SemanticKeywordApplyInput(

@@ -132,7 +132,16 @@ public struct MetadataDeliveryService: Sendable {
     public func state(sessionId: String) throws -> MetadataDeliveryState {
         let id = try requireSession(sessionId)
         var state = MetadataDeliveryState()
-        state.requiresReloadAck = coordinator.reloadAckGateEnabled
+        // P2（Wave4b）：这个字段的唯一消费方是元数据状态条（"待 C1 重载"）。之前写
+        // gateEnabled（门禁是否生效）会在 ack 已写后仍显示"待重载"并重复给手动 ack
+        // 按钮；改为 isAwaitingReloadAck（门禁生效 **且** reload_acked_at 为空）。
+        do {
+            state.requiresReloadAck = try coordinator.isAwaitingReloadAck(sessionId: id)
+        } catch {
+            // 读 ack 失败按"不等待"展示（不阻塞状态读取；写路径的门禁仍会拦）。
+            state.requiresReloadAck = false
+            GatherLogger.log("metadata.state awaiting-ack 读取失败: \(error)", level: .warn)
+        }
         for row in try deliveryRows(sessionId: id) {
             switch row.status {
             case .pending: state.pending += 1

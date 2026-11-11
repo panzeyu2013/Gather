@@ -123,6 +123,7 @@ public struct SemanticKeywordService {
             labelsByPhoto: labelsByPhoto,
             currentPaths: { try keywords.photoKeywordPaths(photoId: $0) },
             maxLabelsPerPhoto: input.maxLabelsPerPhoto,
+            maxItems: input.maxItems,
             semanticsAvailable: !rows.isEmpty)
     }
 
@@ -135,6 +136,7 @@ public struct SemanticKeywordService {
         labelsByPhoto: [String: [SemanticLabel]],
         currentPaths: (String) throws -> [String],
         maxLabelsPerPhoto: Int,
+        maxItems: Int = 0,
         semanticsAvailable: Bool
     ) rethrows -> SemanticKeywordPlan {
         var items: [SemanticKeywordPlanItem] = []
@@ -156,10 +158,16 @@ public struct SemanticKeywordService {
             items.append(SemanticKeywordPlanItem(
                 photoId: photoId, keywords: missing, alreadyPresent: missing.isEmpty))
         }
+        // Wave4b：明细可截断（UI 预览只取前 N 张，避免 2 万条 IPC 大对象）；
+        // 计数（totalAdditions/photosWithLabels）永远按全量算，截断只影响 items。
+        let limit = max(0, maxItems)
+        let truncated = limit > 0 && items.count > limit
+        let visibleItems = truncated ? Array(items.prefix(limit)) : items
         return SemanticKeywordPlan(
-            sessionId: sessionId, root: root, items: items,
+            sessionId: sessionId, root: root, items: visibleItems,
             photosWithLabels: withLabels, photosWithoutLabels: withoutLabels,
             totalAdditions: additions,
+            itemsTruncated: truncated,
             unavailableReason: semanticsAvailable
                 ? nil
                 : "语义索引未建立（先在设置里开启语义索引并跑一次质量分析）")

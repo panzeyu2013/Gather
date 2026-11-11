@@ -241,9 +241,14 @@ struct SemanticSearchSheet: View {
         if let unavailable = plan.unavailableReason {
             return unavailable
         }
-        return l10n.format(
+        let summary = l10n.format(
             "可写回 %lld 个关键词 / %lld 张照片（已存在的不重复写）",
             Int64(plan.totalAdditions), Int64(plan.photosWithLabels))
+        guard plan.itemsTruncated else { return summary }
+        // Wave4b：明细被上限截断时明确说明（计数是准确的，别让用户以为明细少了词）。
+        return summary + "\n" + l10n.format(
+            "（照片明细仅返回前 %lld 张，计数为全量）",
+            Int64(SemanticKeywordPath.maxDisplayedPlanItems))
     }
 
     private var footer: some View {

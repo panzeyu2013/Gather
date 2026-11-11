@@ -78,9 +78,32 @@ struct CullingPreloadTests {
         #expect(plan.nearRing.count == 2)
     }
 
+    @Test("页集合签名：同页决策回显不变、换页/加载更多才变（预取去抖键）")
+    func pageSignatureOnlyChangesWithPageSet() {
+        let assets = ["p1", "p2", "p3"].map(asset)
+        let signature = CullingPreloadPlanner.pageSignature(assets: assets)
+
+        // 决策回显只改 state、不改 id/顺序 → 签名必须不变（否则快速连按时去抖被重置）。
+        var sameIds = assets
+        sameIds[0].state = b8CullingState("p1", pickState: .picked)
+        #expect(CullingPreloadPlanner.pageSignature(assets: sameIds) == signature)
+
+        #expect(CullingPreloadPlanner.pageSignature(assets: []) == "empty")
+        #expect(CullingPreloadPlanner.pageSignature(assets: []) != signature)
+        #expect(CullingPreloadPlanner.pageSignature(assets: Array(assets.prefix(2))) != signature,
+                "加载更多/筛选换页必须触发重新预热")
+        var replaced = assets
+        replaced[2] = asset("p9")
+        #expect(CullingPreloadPlanner.pageSignature(assets: replaced) != signature,
+                "尾张被替换（筛选结果变化）必须视为换页")
+    }
+
     // MARK: - VM 接线
 
-    private func makeStack() -> (CullingViewModel, PreloadPhotoAPIStub) {
+    private func makeStack(
+        assets: [CullingAsset] = ["p1", "p2", "p3", "p4", "p5"].map { b8CullingAsset($0) },
+        currentPhotoId: String = "p3"
+    ) -> (CullingViewModel, PreloadPhotoAPIStub) {
         // 内存缩略图缓存是进程级的：同套件前一条用例预热过的键会让"应该发生
         // 预取"的断言静默变绿/变红。每次装配先推进缓存代，隔离用例。
         PhotoThumbnailCache.invalidateAll()
@@ -95,12 +118,12 @@ struct CullingPreloadTests {
             captureOne: CaptureOneBridge(),
             photo: photo
         )
-        viewModel.page = b8CullingPage(["p1", "p2", "p3", "p4", "p5"].map { b8CullingAsset($0) })
-        viewModel.currentPhotoId = "p3"
+        viewModel.page = b8CullingPage(assets)
+        viewModel.currentPhotoId = currentPhotoId
         return (viewModel, photo)
     }
 
-    @Test("远邻走 photoAPI.preloadPreviews(±2, 2560)，下一张走 prioritizeThumbnail")
+    @Test("远邻走 photoAPI.preloadPreviews(±2, 1024 投机档)，下一张走 prioritizeThumbnail")
     func runPreloadCallsHostAPIs() async throws {
         let (viewModel, photo) = makeStack()
         await viewModel.runNeighborPreload()
@@ -112,7 +135,11 @@ struct CullingPreloadTests {
         #expect(photo.preloadInputs.count == 1)
         let input = try #require(photo.preloadInputs.first)
         #expect(input.paths == ["/shoot/p5.jpg", "/shoot/p1.jpg"], "只预热远邻 ±2")
-        #expect(input.maxDimension == CullingViewModel.preloadPreviewDimension)
+        #expect(input.maxDimension == CullingViewModel.preloadHostWarmDimension)
+        #expect(CullingViewModel.preloadHostWarmDimension == 1024,
+                "远邻是投机预热，不应整解显示档（Wave4b / P2-4）")
+        #expect(CullingViewModel.preloadHostWarmDimension < CullingViewModel.preloadPreviewDimension,
+                "宿主投机档必须低于 GUI 显示档，否则同一文件被整解两次")
         #expect(CullingViewModel.preloadPreviewDimension == PhotoDetailTier.baseDimension)
     }
 
@@ -160,7 +187,41 @@ struct CullingPreloadTests {
         #expect(cancelledPhoto.preloadInputs.isEmpty)
         #expect(cancelledPhoto.prioritizeInputs.isEmpty)
     }
+
+    @Test("命中判定：内存命中即 true；内存 miss 时必须再查磁盘（不重复解）")
+    func cachePredicateChecksDiskAfterMemoryMiss() {
+        var diskHits: [(path: String, size: Int, preview: Bool)] = []
+        let probe: (String, Int, Bool) -> Bool = { path, size, preview in
+            diskHits.append((path, size, preview))
+            return true
+        }
+
+        // 内存命中：不必查磁盘。
+        #expect(CullingViewModel.isViewerPreviewCached(
+            path: "/shoot/p1.jpg",
+            memoryHit: { _ in true },
+            diskHit: probe))
+        #expect(diskHits.isEmpty, "内存命中时不得再碰磁盘")
+
+        // 内存 miss + 磁盘命中：整体算命中（Wave4b / P2-5 的核心分支）。
+        #expect(CullingViewModel.isViewerPreviewCached(
+            path: "/shoot/p2.jpg",
+            memoryHit: { _ in false },
+            diskHit: probe))
+        #expect(diskHits.count == 1)
+        #expect(diskHits.first?.path == "/shoot/p2.jpg")
+        #expect(diskHits.first?.size == CullingViewModel.preloadPreviewDimension)
+        #expect(diskHits.first?.preview == true)
+
+        // 两边都 miss：未命中（要触发预热/宿主信号）。
+        #expect(!CullingViewModel.isViewerPreviewCached(
+            path: "/shoot/p3.jpg",
+            memoryHit: { _ in false },
+            diskHit: { _, _, _ in false }))
+    }
 }
+
+
 
 // MARK: - 宿主 PHOTO API 记录替身
 

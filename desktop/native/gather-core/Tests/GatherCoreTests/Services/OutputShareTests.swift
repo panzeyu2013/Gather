@@ -237,7 +237,11 @@ struct OutputShareTests {
     @Test("S3 发布：先探针后 share.json/文件；Authorization/哈希头正确；manifest 不落明文口令")
     func s3PublishUploadsWithSignedRequests() async throws {
         let tree = try makeTree()
-        defer { try? FileManager.default.removeItem(atPath: tree) }
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
         let transport = FakeS3Transport()
         let publisher = S3ShareTransport(transport: transport, sleep: { _ in })
         let share = OutputShareOptions(
@@ -284,7 +288,11 @@ struct OutputShareTests {
     @Test("S3 失败分类：403 立即中止为 auth；404 为 notFound；5xx 可重试")
     func s3FailureClassification() async throws {
         let tree = try makeTree()
-        defer { try? FileManager.default.removeItem(atPath: tree) }
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
         // 探针 PUT/DELETE 成功 → share.json 成功 → 文件 PUT 返回 403。
         let authTransport = FakeS3Transport([
             .success(S3HTTPResponse(status: 201)),
@@ -369,7 +377,11 @@ struct OutputShareTests {
     @Test("WebDAV 适配：失败原因映射到分类（401/403 = auth）")
     func webDAVAdapterMapsCategories() async throws {
         let tree = try makeTree()
-        defer { try? FileManager.default.removeItem(atPath: tree) }
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
         // 探针 PUT 403：WebDAVPublisher 视为非认证中止 but failure reason "HTTP 403"。
         // 逐级 MKCOL 各一次（base / client / Wedding），随后探针 PUT 返回 403。
         let transport = FakeWebDAVTransport([
@@ -395,7 +407,11 @@ struct OutputShareTests {
     @Test("S3：share.json 写失败即中止，不再上传文件（Wave4a-C1 fail-closed）")
     func s3ShareManifestFailureAbortsUpload() async throws {
         let tree = try makeTree()
-        defer { try? FileManager.default.removeItem(atPath: tree) }
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
         // 探针 PUT 201 → DELETE 204 → share.json 500（maxAttempts=2，重试一次后返回）。
         let transport = FakeS3Transport([
             .success(S3HTTPResponse(status: 201)),
@@ -416,14 +432,24 @@ struct OutputShareTests {
         #expect(!result.abortedOnAuth)
         #expect(result.failed.contains { $0.path == "share.json" })
         let requests = await transport.requests
+        #expect(requests.count == 4, "只应有探针 PUT/DELETE + share.json 两次重试")
         #expect(!requests.contains { $0.url.absoluteString.contains("/thumbs/") },
                 "share.json 失败后不得上传任何文件")
+        let puts = requests.filter { $0.method == "PUT" }
+        #expect(puts.allSatisfy {
+            $0.url.absoluteString.contains("share.json")
+                || $0.url.absoluteString.contains(".gather-write-probe")
+        }, "share.json 失败后不得出现任何成片/画廊 PUT")
     }
 
     @Test("S3 STS：session token 参与签名并作为 x-amz-security-token 上送（Wave4a-C4）")
     func s3SessionTokenParticipatesInSignature() async throws {
         let tree = try makeTree()
-        defer { try? FileManager.default.removeItem(atPath: tree) }
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
         let transport = FakeS3Transport()
         let publisher = S3ShareTransport(transport: transport, sleep: { _ in })
         let request = OutputSharePublishRequest(
@@ -486,5 +512,135 @@ struct OutputShareTests {
             payloadHash: payloadHash)
         #expect(cleanRequest.contains("host:\(cleanHost)\n"))
         #expect(cleanRequest == spacedRequest, "首尾空白必须归一后再参与签名")
+    }
+
+    @Test("S3 显式 endpoint（path-style）：canonical URI 含 bucket/前缀，签名可复算（Wave4b）")
+    func s3ExplicitEndpointSignatureRoundTrip() async throws {
+        let tree = try makeTree()
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let transport = FakeS3Transport()
+        let publisher = S3ShareTransport(transport: transport, sleep: { _ in })
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .s3,
+            endpoint: "https://minio.example.com:9000",
+            accessKeyID: "AK", secret: "SK", remoteFolder: "client/wedding",
+            bucket: "photos", region: "us-east-1",
+            includePrefixes: ["thumbs"],
+            share: OutputShareOptions(expiresAt: futureExpiry()))
+        _ = try await publisher.publish(request, onProgress: nil)
+        let requests = await transport.requests
+        let puts = requests.filter { $0.method == "PUT" }
+        #expect(!puts.isEmpty)
+        for put in puts {
+            #expect(put.url.absoluteString
+                    .hasPrefix("https://minio.example.com:9000/photos/client/wedding/"))
+            #expect(put.headers["host"] == "minio.example.com:9000")
+            let authorization = try #require(put.headers["Authorization"])
+            let timestamp = try #require(put.headers["x-amz-date"])
+            let payloadHash = try #require(put.headers["x-amz-content-sha256"])
+            let date = String(timestamp.prefix(8))
+            let signature = S3SigV4.signature(
+                secretAccessKey: "SK", date: date, region: "us-east-1",
+                timestamp: timestamp, method: "PUT",
+                canonicalURI: put.url.path, headers: put.headers,
+                payloadHash: payloadHash)
+            let expected = S3SigV4.authorizationHeader(
+                accessKeyID: "AK",
+                scope: S3SigV4.scope(date: date, region: "us-east-1"),
+                signature: signature)
+            #expect(authorization == expected,
+                    "显式 endpoint 的签名必须可按实际请求复算：\(authorization)")
+        }
+    }
+
+    @Test("S3 错误分类：非法 endpoint→INVALID 不重试；真实网络错误→NETWORK 不被吞（Wave4b）")
+    func s3FailureClassificationKeepsNetworkErrors() async throws {
+        let tree = try makeTree()
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        // 1) 非法 endpoint：配置错误（不重试，requests 保持 0）。
+        let badTransport = FakeS3Transport()
+        let badPublisher = S3ShareTransport(transport: badTransport, sleep: { _ in })
+        let badRequest = OutputSharePublishRequest(
+            localPath: tree, transport: .s3, endpoint: "ftp://bad-endpoint",
+            accessKeyID: "AK", secret: "SK", remoteFolder: "p",
+            bucket: "photos", region: "us-east-1",
+            includePrefixes: ["thumbs"],
+            share: OutputShareOptions(expiresAt: futureExpiry()))
+        let badResult = try await badPublisher.publish(badRequest, onProgress: nil)
+        let badFailure = try #require(badResult.failed.first)
+        #expect(badFailure.reason.hasPrefix("INVALID:"), "reason: \(badFailure.reason)")
+        #expect(badFailure.category == .validation)
+        #expect(await badTransport.requests.isEmpty, "配置错误不应发起网络请求")
+
+        // 2) 真实网络错误：探针重试后仍按 NETWORK 上报（不能被吞成通用/本地错误）。
+        let offline = URLError(.notConnectedToInternet)
+        let netTransport = FakeS3Transport([
+            .failure(offline), .failure(offline),
+        ])
+        let netPublisher = S3ShareTransport(
+            transport: netTransport, maxAttempts: 2, sleep: { _ in })
+        let netRequest = OutputSharePublishRequest(
+            localPath: tree, transport: .s3, endpoint: "https://s3.example.com",
+            accessKeyID: "AK", secret: "SK", remoteFolder: "p",
+            bucket: "photos", region: "us-east-1",
+            includePrefixes: ["thumbs"],
+            share: OutputShareOptions(expiresAt: futureExpiry()))
+        let netResult = try await netPublisher.publish(netRequest, onProgress: nil)
+        let netFailure = try #require(netResult.failed.first)
+        #expect(netFailure.reason.hasPrefix("NETWORK:"), "reason: \(netFailure.reason)")
+        #expect(netFailure.category == .network)
+        #expect(await netTransport.requests.count == 2, "真实网络错误应按重试策略尝试")
+    }
+
+    @Test("S3 本地文件读失败：LOCAL_IO 而不是 NETWORK，且不重试/不上传（Wave4b）")
+    func s3LocalReadFailureIsLocalIO() async throws {
+        let tree = try makeTree()
+        defer {
+            do { try FileManager.default.removeItem(atPath: tree) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        // 用"存在但不可读"的文件（权限 000）构造本地读失败：文件系统枚举仍能列出它，
+        // 读取时才失败 → LOCAL_IO，而不是像坏符号链接那样在收集阶段被跳过。
+        let broken = URL(fileURLWithPath: tree)
+            .appendingPathComponent("thumbs/0001.jpg")
+        do {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o000], ofItemAtPath: broken.path)
+        } catch {
+            Issue.record("构造不可读文件失败：\(error)")
+            return
+        }
+        defer {
+            do {
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o644], ofItemAtPath: broken.path)
+            } catch {
+                // 恢复失败只影响临时目录清理。
+            }
+        }
+        let transport = FakeS3Transport()
+        let publisher = S3ShareTransport(transport: transport, sleep: { _ in })
+        let request = OutputSharePublishRequest(
+            localPath: tree, transport: .s3, endpoint: "https://s3.example.com",
+            accessKeyID: "AK", secret: "SK", remoteFolder: "p",
+            bucket: "photos", region: "us-east-1",
+            includePrefixes: ["thumbs"],
+            share: OutputShareOptions(expiresAt: futureExpiry()))
+        let result = try await publisher.publish(request, onProgress: nil)
+        let failure = try #require(result.failed.first)
+        #expect(failure.reason.hasPrefix("LOCAL_IO:"), "reason: \(failure.reason)")
+        #expect(failure.category == .localIO, "actual=\(failure.category.rawValue) reason=\(failure.reason)")
+        let requests = await transport.requests
+        let filePuts = requests.filter { $0.method == "PUT" && $0.url.absoluteString.contains("/thumbs/") }
+        #expect(filePuts.isEmpty, "本地读失败不得上传该文件")
     }
 }

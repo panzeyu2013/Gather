@@ -67,7 +67,8 @@ PUBLISHERS = {
     # Wave2 task-13：批量字段编辑的写路径（apply 后发 metadata 域事件）。
     "Metadata/MetadataBatchEditorSheet.swift": {"metadata"},
     "Metadata/KeywordLibrarySheet.swift": {"metadata"},
-    "SemanticSearch/SemanticSearchSheetModel.swift": {"metadata"},
+    # Wave4b task-44：场景标签写回同时刷新 metadata 与 culling 两域。
+    "SemanticSearch/SemanticSearchSheetModel.swift": {"metadata", "culling"},
     # 变参：调用方传 domain（簇结构变化/绑定变化两类），只登记 1 个调用点。
     "FaceKeywording/FaceKeywordingViewModel+Review.swift": None,
     # 定义处本身不算发布点

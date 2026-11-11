@@ -69,7 +69,9 @@ public enum PrintDocumentRenderer {
             context.beginPDFPage(nil)
             if let border = layout.borderRect {
                 context.setStrokeColor(CGColor(gray: 0.1, alpha: 1))
-                context.setLineWidth(max(0.5, options.borderWidth))
+                // 版面引擎已保证 borderRect 是"中心线路径"（外扩 w/2），
+                // 这里线宽用用户输入的精确值，可见厚度才等于设置值。
+                context.setLineWidth(options.borderWidth)
                 context.stroke(border)
             }
             if !drawImage(item.path, in: layout.imageRect.integral, context: context) {
@@ -102,6 +104,12 @@ public enum PrintDocumentRenderer {
         let result = try withPDFContext(url: url, pageSize: options.pageSize) { context in
             for page in pageLayouts {
                 context.beginPDFPage(nil)
+                // Wave4b：取消会在"页已 begin"时抛错，必须先把页闭合；否则外层
+                // catch 里的 closePDF 会面对未闭合页（CGPDFContext 未定义行为）。
+                var pageOpen = true
+                defer {
+                    if pageOpen { context.endPDFPage() }
+                }
                 drawHeader(page: page, options: options, pageCount: pageCount, context: context)
                 for cell in page.cells {
                     if isCancelled() { throw CancellationError() }
@@ -115,6 +123,7 @@ public enum PrintDocumentRenderer {
                 }
                 drawFooter(page: page, options: options, pageCount: pageCount, context: context)
                 context.endPDFPage()
+                pageOpen = false
             }
             return pageLayouts.count
         }

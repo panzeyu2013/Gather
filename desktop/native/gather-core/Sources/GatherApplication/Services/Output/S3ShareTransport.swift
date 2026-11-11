@@ -345,7 +345,7 @@ public final class S3ShareTransport: OutputShareTransport {
                 throw CancellationError()
             } catch {
                 failures.append(OutputSharePublishFailure(
-                    path: "share.json", reason: Self.sanitizedNetworkReason(error)))
+                    path: "share.json", reason: Self.failureReason(for: error)))
                 return OutputSharePublishResult(
                     uploaded: uploaded, failed: failures,
                     remoteRoot: rootLabel, abortedOnAuth: false)
@@ -355,10 +355,20 @@ public final class S3ShareTransport: OutputShareTransport {
         for (index, file) in files.enumerated() {
             try Task.checkCancellation()
             let key = Self.joinKey(prefix, file.relative)
+            // Wave4b：本地文件读取失败必须报 LOCAL_IO（不是 NETWORK、不重试），
+            // 与真实网络错误分开，避免把"文件没了"误诊成网络抖动。
+            let data: Data
+            do {
+                data = try Data(contentsOf: URL(fileURLWithPath: file.local))
+            } catch {
+                failures.append(OutputSharePublishFailure(
+                    path: file.relative, reason: Self.localReadFailureReason(error)))
+                continue
+            }
             do {
                 let response = try await putWithRetry(
                     configuration: configuration, key: key,
-                    data: try Data(contentsOf: URL(fileURLWithPath: file.local)),
+                    data: data,
                     contentType: WebDAVPublisher.contentType(file.relative),
                     path: file.relative)
                 if response.isSuccess {
@@ -381,7 +391,7 @@ public final class S3ShareTransport: OutputShareTransport {
                 throw CancellationError()
             } catch {
                 failures.append(OutputSharePublishFailure(
-                    path: file.relative, reason: Self.sanitizedNetworkReason(error)))
+                    path: file.relative, reason: Self.failureReason(for: error)))
             }
         }
         return OutputSharePublishResult(
@@ -491,6 +501,9 @@ public final class S3ShareTransport: OutputShareTransport {
                 return response
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let configError as GatherError {
+                // 配置/参数错误（endpoint 非法等）重试无意义，直接抛给调用方分类。
+                throw configError
             } catch {
                 if attempt < maxAttempts {
                     await sleep(attempt)
@@ -526,7 +539,7 @@ public final class S3ShareTransport: OutputShareTransport {
         } catch is CancellationError {
             return .failed("cancelled")
         } catch {
-            return .failed(Self.sanitizedNetworkReason(error))
+            return .failed(Self.failureReason(for: error))
         }
         do {
             let request = try signedRequest(
@@ -541,6 +554,30 @@ public final class S3ShareTransport: OutputShareTransport {
             GatherLogger.log("s3 write-probe cleanup failed", level: .warn)
         }
         return .ok
+    }
+
+    /// 统一错误分类（Wave4b）：配置错误 → INVALID、本地读 → LOCAL_IO、
+    /// 其余视为网络/传输错误 → NETWORK（保留真实网络错误，不能被吞成通用失败）。
+    static func failureReason(for error: any Error) -> String {
+        if let gather = error as? GatherError {
+            let reason = gather.params["reason"] ?? ""
+            return reason.isEmpty
+                ? "INVALID: \(gather.code.rawValue)"
+                : "INVALID: \(gather.code.rawValue) (\(reason))"
+        }
+        if let urlError = error as? URLError {
+            return "NETWORK: \(urlError.code.rawValue) \(urlError.localizedDescription)"
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain || nsError.domain == NSPOSIXErrorDomain {
+            return localReadFailureReason(error)
+        }
+        return sanitizedNetworkReason(error)
+    }
+
+    /// 本地文件读取失败：带 LOCAL_IO 前缀，供分类器映射到 .localIO。
+    static func localReadFailureReason(_ error: any Error) -> String {
+        "LOCAL_IO: \(String(describing: error))"
     }
 
     /// 网络错误串只保留错误描述（可能含 URL，但不含 Authorization/secret）。

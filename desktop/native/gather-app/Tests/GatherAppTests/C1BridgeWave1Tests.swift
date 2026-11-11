@@ -33,8 +33,13 @@ struct C1BridgeWave1ScriptContractTests {
         // variant 没有 path：路径经 parent image 的 path（:1081 / :1541）。
         #expect(script.contains("parent image of v"))
         #expect(script.contains("path of parentImage"))
-        // G1 的一半是"错误被吞"：脚本里不得再有 on error 兜底。
-        #expect(!script.contains("on error"))
+        // G1 的一半是"错误被吞"：不得再有旧版 `on error return ""` 的整体吞错。
+        #expect(!script.contains("on error return"))
+        // P2（Wave4b）：允许**受控回退** primary variant（属性不可读时单张降级），
+        // 但空选中仍然是空（不能把"没选片"变成"导入当前主图"）。
+        #expect(script.contains("on error"))
+        #expect(script.contains("primary variant"))
+        #expect(script.contains("set selectedVariantsList to {}"))
     }
 
     @Test("在 C1 中选中：按 image.path 匹配 + document/variants 参数形式")

@@ -77,6 +77,17 @@ enum PanOffset {
 /// 非当前格是 2560px 基准位图放大，"并排比哪张更实"根本做不了。
 /// 新策略：1/2 图全给（判焦主战场）；3 图/4 图/Survey 只给当前 + hover
 /// （同时解 N 块细节会打满解码闸门，而多点同屏判读靠 hover 已经够）。
+/// 打印候选集上限（Wave4b / P2-11）：多页打印一次最多 200 张，超出部分不再
+/// 静默丢弃——调用方把 truncatedCount 传给打印面板显示提示。纯逻辑便于单测。
+enum CullingPrintSelection {
+    static let limit = 200
+
+    /// 超上限而未包含的张数（0 = 没有截断）。
+    static func truncatedCount(total: Int) -> Int {
+        max(0, total - limit)
+    }
+}
+
 enum CullingDetailTilePolicy {
     static func showsTile(compareCount: Int, isCurrent: Bool, isHovered: Bool) -> Bool {
         if compareCount <= 2 { return true }

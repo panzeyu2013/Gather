@@ -72,6 +72,17 @@ struct FacetSemanticDimensionTests {
         return db
     }
 
+    /// 手工关键词下钻行（"客户A|..."）：用来验证 scene/keyword 两个维度的同维剔除
+    /// 各剔自己的规则，而不是把共用的 keyword_path 规则一起剔掉（Wave4b）。
+    private func insertManualKeyword(_ db: DBConnection, photoIds: [String]) throws {
+        for photoId in photoIds {
+            _ = try db.prepare("""
+                INSERT INTO photo_keywords (photo_id, keyword_path, source, updated_at)
+                VALUES (?, '客户A|婚礼', 'xmp', '2026-01-01T00:00:00Z')
+                """).run([.text(photoId)])
+        }
+    }
+
     private func counts(_ buckets: [FacetBucket]) -> [String: Int] {
         Dictionary(uniqueKeysWithValues: buckets.map { ($0.value, $0.count) })
     }
@@ -205,6 +216,65 @@ struct FacetSemanticDimensionTests {
         let containsRows = try query.filterQuery.filterPhotos(
             sessionId: sessionId, criteria: containsCriteria)
         #expect(containsRows.count == 3, "contains 会命中张三(2)+张三丰(1)")
+    }
+
+    @Test("scene/keyword 共用 keyword_path：同维剔除只剔自己那批（Wave4b）")
+    func sharedKeywordPathOnlyPrunesOwnDimension() throws {
+        let db = try makeDB()
+        try insertManualKeyword(db, photoIds: ["p1", "p2"])
+        // 追加 p5：只有 AI|场景|wedding、没有 beach、没有客户A —— 用来区分
+        // "keyword 维是否错误剔除了场景规则"（p5 不在 beach 筛选里，不应进桶）。
+        _ = try db.prepare("""
+            INSERT INTO photos (id, session_id, asset_id, filepath, filename, status, created_at, updated_at)
+            VALUES ('p5', ?, NULL, '/tmp/p5.CR3', 'p5.CR3', 'ready',
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+            """).run([.text(sessionId)])
+        _ = try db.prepare("""
+            INSERT INTO photo_keywords (photo_id, keyword_path, source, updated_at)
+            VALUES ('p5', 'AI|场景|wedding', 'xmp', '2026-01-01T00:00:00Z')
+            """).run([])
+
+        let query = FacetQuery(connection: db)
+        // 两条规则：场景选 beach（AI|场景|beach）+ 手工关键字下钻（客户A）。
+        let criteria = FilterGroup(logic: .and, conditions: [
+            .rule(FilterRule(
+                field: FilterFields.keywordPath, operator: .startsWith,
+                value: .string("AI|场景|beach"))),
+            .rule(FilterRule(
+                field: FilterFields.keywordPath, operator: .startsWith,
+                value: .string("客户A"))),
+        ])
+
+        // scene 维：只剔场景规则、保留关键字下钻 → 计数只含"客户A 且 …"的 p1/p2。
+        // 若把两条 keyword_path 规则一起剔掉（旧行为），p4 会把 beach 带成 3、p3/p4/p5
+        // 会把 wedding 带成 2。
+        let scene = counts(try query.buckets(
+            sessionId: sessionId, criteria: criteria, dimension: .scene))
+        #expect(scene["beach"] == 2, "关键字下钻必须继续约束场景计数（p4 有 beach 但无客户A）")
+        #expect(scene["wedding"] == nil, "客户A 的照片都没有 wedding：旧行为会错误带回 p3/p4/p5")
+
+        // keyword 维：只剔关键字规则、保留场景选择 → 只在 beach 照片上列关键词。
+        // 若错误剔掉场景规则（旧行为），p5（wedding-only）会把 wedding 抬到 2。
+        let keyword = counts(try query.keywordBuckets(
+            sessionId: sessionId, criteria: criteria, limit: 60, prefix: "AI|场景"))
+        #expect(keyword["beach"] == 3, "场景规则必须继续约束关键词计数（p1/p2/p4 的逻辑资产）")
+        #expect(keyword["wedding"] == 1, "只有 p4 同时有 beach/wedding；p5 被场景规则排除")
+    }
+
+    @Test("keyword_path 规则的来源识别：scene 子树精确边界（Wave4b）")
+    func sceneKeywordRulePredicate() {
+        func rule(_ value: JSONValue) -> FilterRule {
+            FilterRule(field: FilterFields.keywordPath, operator: .startsWith, value: value)
+        }
+        #expect(FacetQuery.isSceneKeywordRule(rule(.string("AI|场景"))))
+        #expect(FacetQuery.isSceneKeywordRule(rule(.string("AI|场景|beach"))))
+        #expect(FacetQuery.isSceneKeywordRule(rule(.string("AI|场景|beach|日落"))))
+        #expect(!FacetQuery.isSceneKeywordRule(rule(.string("AI|场景2"))), "同前缀不等于子树")
+        #expect(!FacetQuery.isSceneKeywordRule(rule(.string("AI|场景2|beach"))))
+        #expect(!FacetQuery.isSceneKeywordRule(rule(.string("客户A"))))
+        #expect(!FacetQuery.isSceneKeywordRule(FilterRule(
+            field: "keyword", operator: .contains, value: .string("AI|场景"))),
+            "只认 keyword_path 字段，扁平 keyword 不是场景规则")
     }
 
     @Test("维度与图库字段的映射固定（scene → keyword_path，person → person）")

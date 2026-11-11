@@ -341,14 +341,8 @@ struct C1BridgeWave3SessionDirectoryTests {
         #expect(plan.scansCaptureOnly)
     }
 
-    @Test("Selects 去重：按文件名大小写不敏感，Capture 优先")
-    func dedupesSelects() {
-        let result = C1SessionDirectoryResolver.dedupe(
-            captureFiles: ["/r/Capture/A.CR2", "/r/Capture/B.CR2"],
-            selectsFiles: ["/r/Selects/a.cr2", "/r/Selects/C.CR2", "/r/Selects/C.CR2"])
-        #expect(result.files == ["/r/Capture/A.CR2", "/r/Capture/B.CR2", "/r/Selects/C.CR2"])
-        #expect(result.skippedDuplicates == 2)
-    }
+    // P2（Wave4b）：dedupe helper 已删除（Selects 不入扫描根，无需同名去重），
+    // 原用例随实现删除；importPlan 用例已覆盖"只扫 Capture"的核心承诺。
 }
 
 // MARK: - 能力边界 / 默认降级

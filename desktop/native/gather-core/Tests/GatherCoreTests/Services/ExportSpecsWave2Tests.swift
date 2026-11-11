@@ -459,4 +459,43 @@ struct ExportSpecsWave2Tests {
         #expect(decoded.contactSheet == nil)
         #expect(decoded.gallery == nil)
     }
+
+    #if canImport(ImageIO)
+    @Test("水印 logo 缓存：path+size+mtime 键与容量上限（Wave4b）")
+    func watermarkLogoCacheKeyedAndBounded() throws {
+        WatermarkLogoCache.removeAll()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-logo-cache-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            WatermarkLogoCache.removeAll()
+            do { try FileManager.default.removeItem(at: root) } catch {
+                // 清理失败不影响断言。
+            }
+        }
+        let logo = root.appendingPathComponent("logo.png")
+        try writePNG(try makeSolidImage(width: 10, height: 10, red: 1, green: 0, blue: 0), to: logo)
+        #expect(WatermarkLogoCache.image(for: logo.path)?.width == 10)
+        #expect(WatermarkLogoCache.entryCount == 1)
+
+        // 同路径替换成不同尺寸/时间：键变化 → 重新解码，不能继续用旧图。
+        try writePNG(try makeSolidImage(width: 20, height: 6, red: 0, green: 1, blue: 0), to: logo)
+        do {
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 1_800_000_000)],
+                ofItemAtPath: logo.path)
+        } catch {
+            // 设 mtime 失败时尺寸已不同，仍能验证键变化。
+        }
+        #expect(WatermarkLogoCache.image(for: logo.path)?.width == 20)
+
+        // 容量上限：灌入 12 个不同 logo 后条目数不得超过 maxEntries。
+        for index in 0..<12 {
+            let path = root.appendingPathComponent("extra-\(index).png")
+            try writePNG(try makeSolidImage(width: 2, height: 2, red: 0, green: 0, blue: 1), to: path)
+            _ = WatermarkLogoCache.image(for: path.path)
+        }
+        #expect(WatermarkLogoCache.entryCount <= WatermarkLogoCache.maxEntries)
+    }
+    #endif
 }

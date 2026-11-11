@@ -443,7 +443,10 @@ struct CullingInspector: View {
                         .disabled(isBusy)
                         .help(l10n("移到会话目录下的 _rejects 文件夹，不删除文件"))
                         // Wave3 / G12：_rejects 若被 C1 Hot Folder 监视会重复导入（检测不到，只提示）。
-                        C1HotFolderNotice()
+                        // P2（Wave4b）：只在装了 C1 的机器展示（没装 C1 的用户看到的是噪音）。
+                        if viewModel.captureOne.c1Installed {
+                            C1HotFolderNotice()
+                        }
                     }
                 }
 
@@ -466,7 +469,16 @@ struct CullingInspector: View {
                 }
 
                 // P1：metadata/template 写回的确认/结束/备份回收（无写回时显示 0）。
-                MetadataSyncBar(sessionId: viewModel.sessionId, api: viewModel.metadataAPI)
+                // P2（Wave4b）：注入挑片 VM 的 C1 动作，状态条不再依赖\.sessionWorkspace
+                // 环境（无工作区容器也能解门禁；环境工作区仍作为回退）。
+                MetadataSyncBar(
+                    sessionId: viewModel.sessionId,
+                    api: viewModel.metadataAPI,
+                    c1Actions: MetadataSyncBarC1Actions(
+                        reload: { try await viewModel.reloadCaptureOneThrowing() },
+                        acknowledgeManualLoad: {
+                            try await viewModel.acknowledgeManualReloadThrowing()
+                        }))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(GatherMetrics.Space.l)

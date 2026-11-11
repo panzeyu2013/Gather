@@ -77,10 +77,11 @@ struct CullingWorkbench: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // P0-4 忙碌角标：加载/提交/排队期间浮在查看器右上角（不占布局高度，
-            // 不挤压照片）。网格布局的既有行为不受影响。
+            // P0-4 忙碌角标：加载/提交/排队期间浮在查看器/网格右上角（不占布局
+            // 高度，不挤压照片）。Wave4b / P2-10：网格布局同样可能排队按键，
+            // 不能只在查看器布局显示，否则 P0-4 在网格里仍是静默丢键。
             .overlay(alignment: .topTrailing) {
-                if let busyText, layoutMode != .grid {
+                if let busyText {
                     CullingWorkbenchBusyBadge(text: busyText)
                         .padding(GatherMetrics.Space.s)
                         .transition(.opacity)

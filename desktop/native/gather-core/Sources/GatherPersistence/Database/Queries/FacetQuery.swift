@@ -106,7 +106,8 @@ public final class FacetQuery {
         switch dimension {
         case .keyword:
             return try keywordBuckets(
-                sessionId: sessionId, criteria: criteria, limit: limit, prefix: keywordPrefix)
+                sessionId: sessionId, criteria: criteria, limit: limit,
+                prefix: keywordPrefix, pruning: .keywordDimension)
         case .scene:
             // 场景桶 = 默认根子树下的下一段；桶值即"图库 scene 字段"的值
             // （选择规则 keyword_path starts_with <root>|<桶值>）。
@@ -114,7 +115,8 @@ public final class FacetQuery {
                 sessionId: sessionId,
                 criteria: criteria,
                 limit: limit,
-                prefix: SemanticKeywordPath.scene)
+                prefix: SemanticKeywordPath.scene,
+                pruning: .sceneDimension)
         case .person:
             return try personBuckets(
                 sessionId: sessionId, criteria: criteria, limit: limit)
@@ -163,7 +165,38 @@ public final class FacetQuery {
         limit: Int = 60,
         prefix: String?
     ) throws -> [FacetBucket] {
-        let scoped = criteria.removing(field: FacetDimension.keyword.field)
+        try keywordBuckets(
+            sessionId: sessionId, criteria: criteria, limit: limit, prefix: prefix,
+            pruning: .keywordDimension)
+    }
+
+    /// keyword_path 同维剔除的"来源"区分（Wave4b / task-44，P2）：
+    ///
+    /// scene 与 keyword 两个 facet 维都把规则落在 `keyword_path` 上，但语义不同：
+    /// - scene 选择 = 值在 `SemanticKeywordPath.scene` 子树下的规则；
+    /// - keyword 选择 = 其余 keyword_path 规则（图库层级下钻/保存查询）。
+    ///
+    /// 直接 `removing(field: keyword_path)` 会把另一维的规则也剔掉：
+    /// - 算 scene 桶时丢掉关键字下钻 → 场景计数不受网格约束（facet 数 ≠ 网格数）；
+    /// - 算 keyword 桶时丢掉场景选择 → 关键词计数不受场景约束。
+    /// 这里按"值是否在 scene 子树"区分来源，只剔除本维自己的规则。
+    private enum KeywordPathPruning {
+        /// 两个都剔除（保留给显式需要的调用方；当前无生产调用）。
+        case all
+        /// keyword 维：剔除 keyword_path 规则中**不在 scene 子树**的那批（= 关键字自己的下钻）。
+        case keywordDimension
+        /// scene 维：只剔除 scene 子树下的规则（= 场景自己的选择）。
+        case sceneDimension
+    }
+
+    private func keywordBuckets(
+        sessionId: String,
+        criteria: FilterGroup,
+        limit: Int,
+        prefix: String?,
+        pruning: KeywordPathPruning
+    ) throws -> [FacetBucket] {
+        let scoped = Self.pruningKeywordPathRules(criteria, mode: pruning)
         let clause = try filterQuery.whereClause(scoped)
         let sessionFilter = sessionId == "__global__" ? "1=1" : "p.session_id = ?"
         // 下钻桶的表达式：rest = substr(path, length(prefix) + 2)，取 rest 的首段。
@@ -215,6 +248,44 @@ public final class FacetQuery {
         return try connection.prepare(sql).query(params).map { row in
             FacetBucket(value: row[0].textValue ?? "", count: Int(row[1].intValue ?? 0))
         }
+    }
+
+    /// 递归剔除 keyword_path 同维规则（只在本维语义下），AND 上下文语义与
+    /// `FilterGroup.removing(field:)` 一致（OR/NOT 组内不剔除，避免改变语义）。
+    private static func pruningKeywordPathRules(
+        _ group: FilterGroup, mode: KeywordPathPruning, andContext: Bool = true
+    ) -> FilterGroup {
+        var result = group
+        let canRemove = andContext && group.logic == .and
+        result.conditions = group.conditions.compactMap { condition in
+            switch condition {
+            case .rule(let rule):
+                guard canRemove, rule.field == FilterFields.keywordPath else {
+                    return .rule(rule)
+                }
+                let isScene = isSceneKeywordRule(rule)
+                switch mode {
+                case .all: return nil
+                case .keywordDimension: return isScene ? .rule(rule) : nil
+                case .sceneDimension: return isScene ? nil : .rule(rule)
+                }
+            case .group(let sub):
+                let pruned = pruningKeywordPathRules(sub, mode: mode, andContext: canRemove)
+                if canRemove, pruned.conditions.isEmpty { return nil }
+                return .group(pruned)
+            }
+        }
+        return result
+    }
+
+    /// 该 keyword_path 规则是否属于"场景"来源：值落在默认场景根（含根本身）。
+    /// 只认字符串字面量规则；其它值类型/字段一律按 keyword 维处理（保守）。
+    static func isSceneKeywordRule(_ rule: FilterRule) -> Bool {
+        guard rule.field == FilterFields.keywordPath,
+              case .string(let raw) = rule.value else { return false }
+        let normalized = raw.hasSuffix("|") ? String(raw.dropLast()) : raw
+        return normalized == SemanticKeywordPath.scene
+            || normalized.hasPrefix(SemanticKeywordPath.scene + "|")
     }
 
     /// person 维：桶值 = persons.name，计数口径与网格一致

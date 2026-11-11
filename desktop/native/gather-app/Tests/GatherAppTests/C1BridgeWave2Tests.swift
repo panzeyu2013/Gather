@@ -34,8 +34,10 @@ struct C1BridgeWave2ScriptContractTests {
         #expect(script.contains("escapeField"))
         #expect(script.contains("& tab &"))
         #expect(script.contains("& linefeed"))
-        // 失败必须上浮（导入侧据此降级为仅文件导入），不允许 on error 吞成空串。
-        #expect(!script.contains("on error"))
+        // 失败必须上浮（导入侧据此降级为仅文件导入）：不允许旧版整体吞错。
+        #expect(!script.contains("on error return"))
+        // P2（Wave4b）：取选中失败允许受控回退 primary variant（单张降级）。
+        #expect(script.contains("primary variant"))
     }
 }
 

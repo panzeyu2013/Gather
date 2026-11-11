@@ -86,4 +86,33 @@ struct CullingViewerZoomTests {
         #expect(CullingViewerZoom.pixelPercent(
             scale: 2, sourceMaxDimension: 0, fitPoints: 800, backingScale: 2) == nil)
     }
+
+    // MARK: - Wave4b：多屏 backingScale 与 1:1 模式重锚
+
+    @Test("backingScale 解析：查看器窗口所在屏优先，退回主屏，最后兜底 2")
+    func resolvedBackingScalePrefersViewerWindow() {
+        #expect(CullingViewerZoom.resolvedBackingScale(windowScale: 1, screenScale: 2) == 1,
+                "窗口在 1x 外接屏时不能再用主屏的 2x（否则 1:1 差一倍）")
+        #expect(CullingViewerZoom.resolvedBackingScale(windowScale: nil, screenScale: 2) == 2)
+        #expect(CullingViewerZoom.resolvedBackingScale(windowScale: nil, screenScale: nil) == 2)
+        #expect(CullingViewerZoom.resolvedBackingScale(windowScale: 0, screenScale: 1) == 1)
+        #expect(CullingViewerZoom.resolvedBackingScale(windowScale: .nan, screenScale: 1) == 1)
+    }
+
+    @Test("1:1 模式重锚：窗口尺寸变化后按新 fitPoints 重算（非模式返回 nil）")
+    func reanchoredScaleFollowsWindowResize() {
+        let before = CullingViewerZoom.reanchoredScale(
+            actualPixelsMode: true, sourceMaxDimension: 6000, fitPoints: 800, backingScale: 2)
+        #expect(before == 3.75)
+
+        // 同一张图，窗口放大到 fitPoints=1000 后 1:1 只需要 3× —— 记住模式才会重算。
+        let after = CullingViewerZoom.reanchoredScale(
+            actualPixelsMode: true, sourceMaxDimension: 6000, fitPoints: 1000, backingScale: 2)
+        #expect(after == 3.0)
+        #expect(after != before)
+
+        #expect(CullingViewerZoom.reanchoredScale(
+            actualPixelsMode: false, sourceMaxDimension: 6000, fitPoints: 1000, backingScale: 2) == nil,
+                "非 1:1 模式不得擅自改用户缩放")
+    }
 }

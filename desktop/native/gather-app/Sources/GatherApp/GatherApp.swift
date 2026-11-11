@@ -94,6 +94,9 @@ struct GatherApp: App {
             // Wave3 / task-20：注入第二屏镜像桥（页面经 environment 读取，
             // 预览/测试没有注入时行为与旧版完全一致）。
             .environment(\.cullingSecondDisplay, secondDisplay)
+            // Wave4b / P2-16：把 openWindow 能力装进 delegate 的重开桥（主窗口被
+            // ⌘W 关掉、只剩第二屏时点 Dock 也能恢复主窗口）。
+            .background(GatherReopenInstaller())
             // 主窗口关闭：第二屏保留窗口，但转「主窗口已关闭」空态（明确策略）。
             .onDisappear {
                 secondDisplay.detach()
@@ -191,3 +194,20 @@ struct GatherApp: App {
 
 // Cut 3 / 3b-2：3b-1 的「迁移期委托」已删除——DashboardViewModel 走 Protocol 的
 // JobCreateParams.metadataScan、LiveSessionAPI ↔ AppImport、测试 ↔ AppBootstrap 直接引用。
+
+/// Dock/激活重开时把「打开主窗口」能力注册给 AppDelegate（Wave4b / P2-16）。
+///
+/// applicationShouldHandleReopen 里没有 SwiftUI 环境，拿不到 openWindow；这里用
+/// 一个零尺寸视图在主窗口内容出现时安装闭包（窗口重建会重新安装）。
+private struct GatherReopenInstaller: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                GatherReopenBridge.shared.install {
+                    openWindow(id: GatherWindowID.main)
+                }
+            }
+    }
+}

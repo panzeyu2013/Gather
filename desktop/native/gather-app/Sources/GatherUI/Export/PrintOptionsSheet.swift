@@ -16,6 +16,9 @@ struct PrintOptionsSheet: View {
     let items: [PrintJobItem]
     /// 单图模式默认打印的当前照片（nil 时用 items.first）。
     let currentItem: PrintJobItem?
+    /// 调用方因上限（CullingPrintSelection.limit）未放进 items 的选中张数。
+    /// Wave4b / P2-11：截断必须可见，不能静默只打前 N 张。
+    let truncatedCount: Int
 
     @Environment(\.languageStore) private var languageStore
     @Environment(\.dismiss) private var dismiss
@@ -51,9 +54,10 @@ struct PrintOptionsSheet: View {
     /// 1 厘米 = 72/2.54 点。
     private static let pointsPerCM: CGFloat = 72 / 2.54
 
-    init(items: [PrintJobItem], currentItem: PrintJobItem?) {
+    init(items: [PrintJobItem], currentItem: PrintJobItem?, truncatedCount: Int = 0) {
         self.items = items
         self.currentItem = currentItem
+        self.truncatedCount = max(0, truncatedCount)
         _mode = State(initialValue: items.count > 1 ? .multiPage : .singleImage)
     }
 
@@ -76,7 +80,7 @@ struct PrintOptionsSheet: View {
             return 1
         case .multiPage:
             if let port = PrintRenderingRegistry.current() {
-                return max(1, port.pageCount(for: makeRequest()))
+                return max(1, port.pageCount(for: pageCountRequest()))
             }
             let perPage = max(1, min(12, max(1, columns)) * min(20, max(1, rows)))
             return max(1, (items.count + perPage - 1) / perPage)
@@ -155,6 +159,10 @@ struct PrintOptionsSheet: View {
                     Text(l10n("自定义")).tag(PrintJobPaper.custom)
                 }
             }
+            // Wave4b / P2-13：没有任何方向选项时的明确交代（避免用户找横向开关）。
+            Text(l10n("当前版本按纵向版面排版；需要横向请选择更宽的纸张（如 10 × 8 英寸）。"))
+                .font(GatherFont.label)
+                .foregroundStyle(.secondary)
             if paper == .custom {
                 HStack(spacing: GatherMetrics.Space.s) {
                     TextField(l10n("页面宽度（厘米）"), text: $customPageWidthCM)
@@ -234,6 +242,13 @@ struct PrintOptionsSheet: View {
             Text(l10n.format("共 %lld 张照片", items.count))
                 .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
+            if truncatedCount > 0 {
+                NativeBanner(
+                    text: l10n.format(
+                        "选择集超过上限：本次只打印前 %lld 张，另有 %lld 张未包含。",
+                        items.count, truncatedCount),
+                    color: GatherTheme.warning)
+            }
         }
     }
 
@@ -266,6 +281,9 @@ struct PrintOptionsSheet: View {
         noticeText = nil
         Task { @MainActor in
             defer {
+                // Wave4b / P2-12：打印面板关闭/失败后删除本次临时 PDF，
+                // 不再把 Gather-Print-*.pdf 永久留在临时目录里。
+                cleanupTemporaryOutput(at: request.outputPath)
                 isRendering = false
                 PrintSessionGate.end()
             }
@@ -303,9 +321,9 @@ struct PrintOptionsSheet: View {
         }
     }
 
-    /// 收集面板选项 → 端口请求（临时 PDF 路径由这里分配）。
-    private func makeRequest() -> PrintJobRequest {
-        let options = PrintJobOptions(
+    /// 收集面板选项（纯值；不分配临时路径，body 预览页数用）。
+    private func makeOptions() -> PrintJobOptions {
+        PrintJobOptions(
             mode: mode,
             paper: paper,
             customPageSize: CGSize(
@@ -329,12 +347,35 @@ struct PrintOptionsSheet: View {
             headerText: headerText,
             footerText: footerText,
             showsPageNumbers: showsPageNumbers)
+    }
+
+    /// 预计页数的轻量请求：outputPath 留空（pageCount 只算版面，不落盘）。
+    private func pageCountRequest() -> PrintJobRequest {
+        PrintJobRequest(
+            options: makeOptions(),
+            items: mode == .singleImage ? [singleItem].compactMap { $0 } : items,
+            outputPath: "")
+    }
+
+    /// 收集面板选项 → 端口请求（临时 PDF 路径由这里分配）。
+    private func makeRequest() -> PrintJobRequest {
         let outputPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("Gather-Print-\(UUID().uuidString).pdf").path
         return PrintJobRequest(
-            options: options,
+            options: makeOptions(),
             items: mode == .singleImage ? [singleItem].compactMap { $0 } : items,
             outputPath: outputPath)
+    }
+
+    /// 打印结束后清理临时 PDF；只删自己分配在系统临时目录里的文件。
+    private func cleanupTemporaryOutput(at path: String) {
+        let temp = FileManager.default.temporaryDirectory.path
+        guard path.hasPrefix(temp) else { return }
+        do {
+            try FileManager.default.removeItem(atPath: path)
+        } catch {
+            // 文件不存在（渲染失败/已被清理）无需处理。
+        }
     }
 
     private var marginPoints: CGFloat {

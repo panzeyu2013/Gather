@@ -2,6 +2,9 @@
 // Wave3：分享清单（share.json）的唯一写入实现，WebDAV 与 S3 两个通道共用。
 //
 // 兼容：字段只增不改——version 仍为 1，旧 proof.js 读到未知字段会忽略；
+// 编码口径：目标 macOS 的 JSONEncoder 默认会转义 "/"，本 writer 显式
+// withoutEscapingSlashes（remoteSubfolder 含 "/" 时与旧输出字节不同，语义一致；
+// 新参数未开启时其余字段/顺序不变，供审计对照）。
 // 没有口令时**不写**口令字段（旧分享包字节不变）。
 // 安全：只写口令派生结果（algorithm/salt/iterations/hash），绝不写明文；
 // 也不写 accessKey/secret（凭据只在 Keychain）。

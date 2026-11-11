@@ -87,18 +87,31 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     /// 失败不吞）是本域最容易回归的部分，而真机验证要触发 TCC 自动化授权。
     /// 注入假运行器后，这些语义可以在单测里直接断言，运行时仍走 osascript。
     private let appleScriptRunner: (@Sendable (String) async throws -> String)?
+    /// P2（Wave4b）：本机是否安装 C1（Hot Folder 提示等 UI 据此 gate）。
+    private let isC1Installed: () -> Bool
+    /// P2（Wave4b）：本会话「已写盘」的照片路径（自动 reload 前先 select，避免必然 noSelection）。
+    private let writtenPhotoPaths: (String) throws -> [String]
 
     /// - Parameter recordReloadAck：Capture One 脚本成功后的持久 ack 写入。
     ///   生产由组合根的 AppRuntime.recordReloadAck 提供（同一 SessionRepo
     ///   写库语义）；测试可注入空实现/闭包。B8.3b-2b 起不再接收命令面。
     /// - Parameter appleScriptRunner：AppleScript 执行接缝（仅测试注入）。
+    /// - Parameter isC1Installed：本机是否安装 Capture One（默认走进程级快照）。
+    /// - Parameter writtenPhotoPaths：本会话已写盘照片路径（默认不起作用 = 旧行为）。
     public init(
         recordReloadAck: @escaping (String) throws -> Void = { _ in },
-        appleScriptRunner: (@Sendable (String) async throws -> String)? = nil
+        appleScriptRunner: (@Sendable (String) async throws -> String)? = nil,
+        isC1Installed: (() -> Bool)? = nil,
+        writtenPhotoPaths: @escaping (String) throws -> [String] = { _ in [] }
     ) {
         self.recordReloadAck = recordReloadAck
         self.appleScriptRunner = appleScriptRunner
+        self.isC1Installed = isC1Installed ?? { C1Installation.isInstalled() }
+        self.writtenPhotoPaths = writtenPhotoPaths
     }
+
+    /// P2（Wave4b）：Hot Folder 提示等 UI 只在装了 C1 时展示；同步读（进程级快照）。
+    public var c1Installed: Bool { isC1Installed() }
 
     public func selectedPhotoPaths() async throws -> [String] {
         let appName = try await captureOneApplicationName()
@@ -138,7 +151,10 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
                 keywords: judgement.keywords))
             if seen.insert(path).inserted { paths.append(path) }
         }
-        return C1SelectionSnapshot(paths: paths, judgements: judgements)
+        return C1SelectionSnapshot(
+            paths: paths,
+            judgements: judgements,
+            malformedLines: parsed.malformedLines.count)
     }
 
     /// 让 C1 重新读取**当前选中 variant** 的源文件元数据，成功后才写 durable ack。
@@ -150,6 +166,7 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
     /// 假 ack 上继续推进）。
     public func reloadMetadata(sessionId: String) async throws {
         let appName = try await captureOneApplicationName()
+        await preselectWrittenPhotos(sessionId: sessionId, appName: appName)
         let output = try await runAppleScript(Self.reloadMetadataScript(appName: appName))
         guard let reloaded = Self.reloadedVariantCount(from: output) else {
             // 脚本成功但报告形状不认识：C1 字典/脚本行为变了的信号，必须保留原文。
@@ -160,6 +177,38 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         // C1 需要一个短暂窗口读取 XMP；只有脚本成功且确有变体被重载才写入 durable ack。
         try await Task.sleep(for: .milliseconds(500))
         try recordReloadAck(sessionId)
+    }
+
+    /// P2（Wave4b）：reload metadata 是 per-variant 的，因此自动 reload 前先把**本次写盘**
+    /// 的照片在 C1 里选中。
+    ///
+    /// 为什么要先 select：写回发生在 Gather，C1 的选中项通常停在别的照片/空选中，
+    /// 直接 reload 必然 .noSelection 并被失败抑制（“回路断点”）。
+    /// 选中失败**不阻断** reload：C1 可能不在当前 collection/未运行，此时退回旧行为并在
+    /// 同步条给出可执行提示。
+    private func preselectWrittenPhotos(sessionId: String, appName: String) async {
+        let paths: [String]
+        do {
+            paths = try writtenPhotoPaths(sessionId)
+        } catch {
+            GatherLogger.log("c1.reload preselect 读取写盘路径失败: \(error)", level: .warn)
+            return
+        }
+        guard !paths.isEmpty else { return }
+        let capped = Array(paths.prefix(Self.maxVariantWritebackItems))
+        do {
+            let output = try await runAppleScript(
+                Self.selectVariantsScript(appName: appName, paths: capped))
+            if let reported = Self.reportedScriptError(in: output) {
+                GatherLogger.log("c1.reload preselect 失败: \(reported)", level: .warn)
+                return
+            }
+            GatherLogger.log(
+                "c1.reload preselect session=\(sessionId) requested=\(capped.count)",
+                level: .info)
+        } catch {
+            GatherLogger.log("c1.reload preselect 脚本失败: \(error)", level: .warn)
+        }
     }
 
     /// 在 Capture One 中选中给定照片（§3.10.2）。
@@ -520,7 +569,17 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         tell application "\(appName)"
           -- 无文档时先在这里抛错（宿主归一到 C1_NO_DOCUMENT），不被当成"没有选中"。
           set frontDocument to current document
-          set selectedVariantsList to selected variants
+          set selectedVariantsList to {}
+          try
+            set selectedVariantsList to selected variants
+          on error
+            -- P2（Wave4b）受控回退：该属性在部分 C1 版本 deprecated/hidden；不可读时退回
+            -- primary variant（单张），避免整个读取失效。空选中仍按空处理（不误导入）。
+            try
+              set primaryVariant to primary variant
+              if primaryVariant is not missing value then set selectedVariantsList to {primaryVariant}
+            end try
+          end try
           set output to ""
           repeat with v in selectedVariantsList
             set parentImage to parent image of v
@@ -630,7 +689,16 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         """
         tell application "\(appName)"
           set frontDocument to current document
-          set selectedVariantsList to selected variants
+          set selectedVariantsList to {}
+          try
+            set selectedVariantsList to selected variants
+          on error
+            -- P2（Wave4b）受控回退 primary variant（不整体失败）。
+            try
+              set primaryVariant to primary variant
+              if primaryVariant is not missing value then set selectedVariantsList to {primaryVariant}
+            end try
+          end try
           set selectedCount to count of selectedVariantsList
           if selectedCount = 0 then return "0"
           repeat with v in selectedVariantsList
@@ -691,7 +759,16 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
 
         tell application "\#(appName)"
           set frontDocument to current document
-          set selectedVariantsList to selected variants
+          set selectedVariantsList to {}
+          try
+            set selectedVariantsList to selected variants
+          on error
+            -- P2（Wave4b）受控回退 primary variant（不整体失败）。
+            try
+              set primaryVariant to primary variant
+              if primaryVariant is not missing value then set selectedVariantsList to {primaryVariant}
+            end try
+          end try
           set output to ""
           repeat with v in selectedVariantsList
             set parentImage to parent image of v

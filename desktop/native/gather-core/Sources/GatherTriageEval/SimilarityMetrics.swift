@@ -416,6 +416,41 @@ enum SimilarityMetrics {
         try expect(
             abs((peopleView?.point.overMergeRate ?? -1) - 1.0) < 1e-9,
             "separate 类过度合并率应为 1.0（2 个预测合并全部是错并）")
+
+        // ARI 边界（Wave4b）：恒等 / 全单例 / 全并一簇 / 交叉分区 / 单张照片。
+        try expect(
+            abs(adjustedRandIndex(
+                truthGroupByPhoto: ["a": "g1", "b": "g1", "c": "g2"],
+                predictedGroup: ["a": "g1", "b": "g1", "c": "g2"]) - 1.0) < 1e-9,
+            "恒等分区 ARI 应为 1")
+        let singletons: [String: String] = ["a": "a", "b": "b", "c": "c"]
+        try expect(
+            abs(adjustedRandIndex(
+                truthGroupByPhoto: singletons, predictedGroup: singletons) - 1.0) < 1e-9,
+            "两侧全单例 ARI 应为 1（等价分区）")
+        try expect(
+            abs(adjustedRandIndex(
+                truthGroupByPhoto: singletons,
+                predictedGroup: ["a": "g", "b": "g", "c": "g"])) < 1e-9,
+            "全单例 vs 全并一簇 ARI 应为 0（无共同 pair）")
+        try expect(
+            abs(adjustedRandIndex(
+                truthGroupByPhoto: ["a": "g", "b": "g", "c": "g"],
+                predictedGroup: ["a": "g", "b": "g", "c": "g"]) - 1.0) < 1e-9,
+            "两侧都并一簇 ARI 应为 1")
+        // 交叉分区：truth a,b|c vs pred a|c,b —— 真/预测的"同对"集合不相交。
+        // 索引=0，expected=(1×1)/C(3,2)=1/3，max=(1+1)/2=1 → ARI=(0-1/3)/(1-1/3)=-0.5。
+        try expect(
+            abs(adjustedRandIndex(
+                truthGroupByPhoto: ["a": "g1", "b": "g1", "c": "g2"],
+                predictedGroup: ["a": "p1", "b": "p2", "c": "p1"]) - (-0.5)) < 1e-9,
+            "交叉分区 ARI 应为 -0.5（比随机还差）")
+        try expect(
+            adjustedRandIndex(truthGroupByPhoto: ["a": "g1"], predictedGroup: ["a": "p1"]) == 1.0,
+            "单张照片 ARI 应为 1（平凡一致）")
+        try expect(
+            recommendedPoint(curve: [], minPrecision: 0.95) == nil,
+            "空曲线应返回 nil（没有可推荐的工作点）")
     }
 
     private static func self_curve(pairs: [SimilarityPairSample]) -> [SimilarityOperatingPoint] {

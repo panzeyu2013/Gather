@@ -98,4 +98,21 @@ struct CullingSecondDisplayMirrorTests {
         #expect(low <= 1024, "预算 1024 必须能夹住目标像素")
         #expect(low <= high, "预算越小、目标像素不应更大")
     }
+
+    @Test("第二屏基准位图档位低于主查看器（不抢共享解码闸，P2-9）")
+    func mirrorBaseBitmapIsSmaller() {
+        #expect(CullingSecondDisplayMirror.baseBitmapSize == 1280)
+        #expect(CullingSecondDisplayMirror.baseBitmapSize < PhotoDetailTier.baseDimension,
+                "镜像窗口用更小档位，降低与主查看器争抢 limit=4 解码闸的时长/内存")
+    }
+
+    @Test("中小缩放即触发细节贴片：阈值与新基准档位同源")
+    func mirrorTileTriggersEarlierWithSmallerBase() throws {
+        let image = asset("p1", width: 4000, height: 3000)
+        let cell = CGSize(width: 400, height: 300)
+        // 基准档从 2560 降到 1280 后，4× 已远超底图分辨率（旧阈值下 1x 屏可能还不触发）。
+        let tile = try #require(CullingSecondDisplayMirror.tile(
+            asset: image, cellSize: cell, zoom: 4, offset: .zero))
+        #expect(tile.viewRect.width > 1 && tile.viewRect.height > 1)
+    }
 }

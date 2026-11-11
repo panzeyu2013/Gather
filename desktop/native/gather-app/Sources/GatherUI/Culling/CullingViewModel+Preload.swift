@@ -97,6 +97,19 @@ enum CullingPreloadPlanner {
         )
     }
 
+    /// 页集合签名（Wave4b / P2：预取去抖只在**页集合真变化**时重置）。
+    ///
+    /// 为什么不用 pageVersion：决策回显每次 applyDecisionStates 都会 +1，用它当
+    /// 触发键会让 120ms 去抖在快速连按（<120ms/拍）时被反复取消，恰好饿死预取。
+    /// 这里只取 O(1) 的页身份（数量 + 首/中/尾 id），决策回显不改变这些值。
+    static func pageSignature(assets: [CullingAsset]) -> String {
+        guard !assets.isEmpty else { return "empty" }
+        let first = assets[0].photo.id
+        let middle = assets[assets.count / 2].photo.id
+        let last = assets[assets.count - 1].photo.id
+        return "\(assets.count)|\(first)|\(middle)|\(last)"
+    }
+
     /// 当前照片下标；currentPhotoId 为空/不在页内时回退 0（与查看器 currentIndex 同口径）。
     static func currentIndex(assets: [CullingAsset], currentPhotoId: String?) -> Int? {
         guard !assets.isEmpty else { return nil }
@@ -110,6 +123,11 @@ enum CullingPreloadPlanner {
 extension CullingViewModel {
     /// 预取用的显示档位：与查看器底层整图位图同键（PhotoDetailTier.baseDimension）。
     static let preloadPreviewDimension = PhotoDetailTier.baseDimension
+    /// 宿主侧远邻预热的档位（Wave4b / P2-4）：远邻是投机预热，**不再整解显示档
+    /// 2560**——宿主解码结果本来就不进 GUI 缓存，整解只是和近邻/当前图抢 CPU。
+    /// 降到 1024 仅用于喂 OS 页缓存/ImageIO，真正的"翻过去零等待"由近邻 GUI
+    /// 预热负责（那一档与显示完全同键）。
+    static let preloadHostWarmDimension = 1024
     /// 宿主缩略图优先级信号使用的缩略图档位（胶片条/首屏小图档）。
     static let preloadPriorityThumbnailSize = 256
 
@@ -186,13 +204,34 @@ extension CullingViewModel {
     // MARK: - 通道实现
 
     /// 与查看器同键的显示缓存命中判定（size = baseDimension、preview = true）。
+    ///
+    /// Wave4b / P2-5：内存未命中时还要查**磁盘缓存**——GUI 显示路径本来就会命中
+    /// ThumbnailDiskCache（PhotoThumbnailView.load），只查内存会把"上次已解好落盘"
+    /// 的图判成 miss：近邻白排一次 decodeAsync（虽然会命中磁盘），远邻还会让宿主
+    /// 整解 RAW 一遍。
     func isViewerPreviewCached(path: String) -> Bool {
+        Self.isViewerPreviewCached(
+            path: path,
+            memoryHit: { key in PhotoThumbnailCache.image(for: key) != nil },
+            diskHit: { path, size, preview in
+                ThumbnailDiskCache.data(path: path, size: size, preview: preview) != nil
+            })
+    }
+
+    /// 命中判定的纯形式（注入内存/磁盘探针）：内存命中直接 true；否则还必须查
+    /// 磁盘缓存——GUI 显示路径本来就会先命中 ThumbnailDiskCache，只查内存会把
+    /// "上次已解好落盘"的图判成 miss（Wave4b / P2-5）。
+    static func isViewerPreviewCached(
+        path: String,
+        memoryHit: (String) -> Bool,
+        diskHit: (String, Int, Bool) -> Bool
+    ) -> Bool {
         let key = PhotoThumbnailCache.key(
             path: path,
-            size: Self.preloadPreviewDimension,
-            preview: true
-        )
-        return PhotoThumbnailCache.image(for: key) != nil
+            size: preloadPreviewDimension,
+            preview: true)
+        if memoryHit(key) { return true }
+        return diskHit(path, preloadPreviewDimension, true)
     }
 
     /// 把一张近邻解码进查看器显示缓存。返回 false = 任务被取消/已关闭（调用方退出）。
@@ -221,12 +260,15 @@ extension CullingViewModel {
     }
 
     /// 宿主侧预览预热（既有 IPC 命令 image.preload_previews；不落 GUI 缓存）。
+    ///
+    /// Wave4b / P2-4：只解 preloadHostWarmDimension（1024），不再与近邻显示档
+    /// 重复整解 2560；同一文件在 GUI 侧真正需要的显示档由近邻预热负责。
     private func preloadHostPreviews(paths: [String]) async {
         guard let photoAPI else { return }
         do {
             let input = try PreviewPreloadInput(
                 paths: paths,
-                maxDimension: Self.preloadPreviewDimension
+                maxDimension: Self.preloadHostWarmDimension
             )
             try await photoAPI.preloadPreviews(input)
         } catch {

@@ -14,6 +14,8 @@ private final class FakeJobFeed: Sendable {
         var enqueued: [String] = []
         var generated: [String] = []
         var applied: [TriageApplyInput] = []
+        var cancelledJobs: [String] = []
+        var logs: [String] = []
     }
 
     private let lock: OSAllocatedUnfairLock<State>
@@ -46,9 +48,19 @@ private final class FakeJobFeed: Sendable {
         lock.withLock { $0.applied.append(input) }
     }
 
+    func recordCancel(_ jobId: String) {
+        lock.withLock { $0.cancelledJobs.append(jobId) }
+    }
+
+    func recordLog(_ message: String) {
+        lock.withLock { $0.logs.append(message) }
+    }
+
     var enqueued: [String] { lock.withLock { $0.enqueued } }
     var generated: [String] { lock.withLock { $0.generated } }
     var applied: [TriageApplyInput] { lock.withLock { $0.applied } }
+    var cancelledJobs: [String] { lock.withLock { $0.cancelledJobs } }
+    var logs: [String] { lock.withLock { $0.logs } }
 }
 
 private func makeJob(
@@ -79,6 +91,7 @@ private func makePipeline(
     feed: FakeJobFeed,
     autoApply: Bool,
     triageEnabled: Bool = true,
+    enqueueFails: Bool = false,
     summary: TriageSummary = makeSummary(),
     maxPolls: Int = 10
 ) -> AITriageAutoPipeline {
@@ -86,6 +99,9 @@ private func makePipeline(
         listJobs: { feed.current },
         enqueueQualityJob: { sessionId in
             feed.recordEnqueue(sessionId)
+            if enqueueFails {
+                throw GatherError.invalidParameter(field: "job", reason: "injected enqueue failure")
+            }
             return makeJob(id: "q1", type: .qualityScore, status: .queued)
         },
         generateTriage: { sessionId in
@@ -98,6 +114,12 @@ private func makePipeline(
         },
         autoApplyEnabled: { autoApply },
         triageEnabled: { triageEnabled },
+        cancelQualityJob: { jobId in
+            feed.recordCancel(jobId)
+        },
+        log: { message in
+            feed.recordLog(message)
+        },
         poll: { feed.advance() })
     return AITriageAutoPipeline(deps: deps, maxPolls: maxPolls)
 }
@@ -217,7 +239,7 @@ struct AITriageAutoPipelineTests {
         #expect(AITriageAutoPipeline.activeQualityJob(jobs, sessionId: "other") == nil)
     }
 
-    @Test("质量 job 超时 → 停止并给出 quality-timeout")
+    @Test("质量 job 超时 → 停止、给出 quality-timeout，并请求取消 job（Wave4b）")
     func qualityTimeout() async {
         let feed = FakeJobFeed([
             [
@@ -229,5 +251,43 @@ struct AITriageAutoPipelineTests {
             .run(sessionId: "s1")
         #expect(outcome.stage == .stopped)
         #expect(outcome.reason == "quality-timeout")
+        #expect(feed.cancelledJobs == ["q1"], "超时后必须取消仍在后台解码的 job")
+        let loggedCancel = feed.logs.contains { $0.contains("cancel=requested") }
+        #expect(loggedCancel)
+    }
+
+    @Test("入队失败 → 停止 + 日志，不静默吞掉（Wave4b）")
+    func enqueueFailureLogged() async {
+        let feed = FakeJobFeed([
+            [makeJob(id: "scan", type: .metadataScan, status: .succeeded)],
+        ])
+        let outcome = await makePipeline(
+            feed: feed, autoApply: false, enqueueFails: true).run(sessionId: "s1")
+        #expect(outcome.stage == .stopped)
+        #expect(outcome.reason == "quality-enqueue-failed")
+        #expect(feed.generated.isEmpty)
+        let loggedEnqueueFailure = feed.logs.contains { $0.contains("quality-enqueue-failed") }
+        #expect(loggedEnqueueFailure)
+    }
+
+    @Test("quality dedupeKey 按导入批次唯一，避免继承旧 checkpoint（Wave4b）")
+    func qualityDedupeKeyPerBatch() {
+        let base = "quality.score:s1:auto-import-triage"
+        #expect(AITriageAutoPipeline.qualityJobDedupeKey(scopeId: "s1", batchNonce: "") == base)
+        let a = AITriageAutoPipeline.qualityJobDedupeKey(scopeId: "s1", batchNonce: "batch-a")
+        let b = AITriageAutoPipeline.qualityJobDedupeKey(scopeId: "s1", batchNonce: "batch-b")
+        #expect(a.hasPrefix(base + ":"))
+        #expect(a != b, "不同导入批次不能共用 dedupeKey（否则 create 会继承旧 photoIds）")
+        #expect(AITriageAutoPipeline.qualityJobDedupeKey(
+            scopeId: "s1", batchNonce: "batch-a") == a, "同一批次内稳定")
+    }
+
+    @Test("reason 字符串集中：quality 取消/中断统一成 quality-<status>")
+    func reasonStringsCentralized() {
+        #expect(AITriageStopReason.qualityTimeout == "quality-timeout")
+        #expect(AITriageStopReason.qualityEnded(.cancelled) == "quality-cancelled")
+        #expect(AITriageStopReason.qualityEnded(.interrupted) == "quality-interrupted")
+        #expect(AITriageStopReason.triageDisabled == "triage-disabled")
+        #expect(AITriageStopReason.indexNotSucceeded == "index-not-succeeded")
     }
 }
