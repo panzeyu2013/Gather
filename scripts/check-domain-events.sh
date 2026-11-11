@@ -62,6 +62,10 @@ PUBLISHERS = {
     "Metadata/MetadataBatchSheet.swift": {"metadata"},
     "Metadata/MetadataEditorSheet.swift": {"metadata"},
     "Metadata/MetadataTemplateSheet.swift": {"metadata"},
+    # Wave2 task-13：批量字段编辑的写路径（apply 后发 metadata 域事件）。
+    "Metadata/MetadataBatchEditorSheet.swift": {"metadata"},
+    "Metadata/KeywordLibrarySheet.swift": {"metadata"},
+    "SemanticSearch/SemanticSearchSheetModel.swift": {"metadata"},
     # 变参：调用方传 domain（簇结构变化/绑定变化两类），只登记 1 个调用点。
     "FaceKeywording/FaceKeywordingViewModel+Review.swift": None,
     # 定义处本身不算发布点

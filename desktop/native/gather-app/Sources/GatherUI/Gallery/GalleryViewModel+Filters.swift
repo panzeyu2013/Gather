@@ -70,15 +70,22 @@ extension GalleryViewModel {
         return FilterGroup(logic: .and, conditions: conditions)
     }
 
-    /// 搜索串的多字段 OR 组（文件名 / 标题 / 说明 / 关键词任意命中）。
+    /// 搜索串的多字段 OR 组。
+    ///
+    /// Wave2 task-13：字段扩到"文件 + 常用 IPTC 描述性字段 + 关键词"，与
+    /// PhotoFilterQuery.jsonFields 的字段 id 逐字一致（服务端 json_extract 投影，
+    /// 列表字段走 json_each 的 contains 语义）。数组字段（creator/person_in_image）
+    /// 同样用 contains，对元素判定，不会拿整段 JSON 比较。
     static func searchCriteria(_ search: String) -> FilterGroup {
-        FilterGroup(logic: .or, conditions: [
-            .rule(FilterRule(field: "filename", operator: .contains, value: .string(search))),
-            .rule(FilterRule(field: "title", operator: .contains, value: .string(search))),
-            .rule(FilterRule(field: "description", operator: .contains, value: .string(search))),
-            .rule(FilterRule(field: FilterFields.keywords, operator: .contains, value: .string(search))),
-            .rule(FilterRule(field: "keyword_path", operator: .contains, value: .string(search))),
-        ])
+        let fields = [
+            "filename", "title", "description", "headline", "creator",
+            "copyright", "credit", "source", "usage_terms",
+            "city", "state", "country", "event", "sublocation", "person_in_image",
+            FilterFields.keywords, "keyword_path",
+        ]
+        return FilterGroup(logic: .or, conditions: fields.map { field -> FilterCondition in
+            .rule(FilterRule(field: field, operator: .contains, value: .string(search)))
+        })
     }
 
     /// 是否走服务端筛选分页（需要 PhotoAPI；预览/旧测试桩为 nil）。
@@ -276,13 +283,25 @@ extension GalleryViewModel {
 
     /// searchCriteria 用到的字段集合（识别保存查询里的搜索词时按它取反）。
     ///
-    /// 与 searchCriteria 的五个 .rule 一一对应。分两处维护是已知风险：新增搜索
-    /// 字段却忘了同步这里，搜索词又会还原不出——本组未加纯函数用例（测试文件
-    /// 归属见修复报告），改动这两处时必须成对检查。
+    /// 与 searchCriteria 生成的条件一一对应。分两处维护是已知风险：新增搜索
+    /// 字段却忘了同步这里，搜索词又会还原不出——改动这两处时必须成对检查
+    /// （Wave2 task-13 起两处都按同一份字段清单扩展）。
     private static let searchCriteriaFields: Set<String> = [
         "filename",
         "title",
         "description",
+        "headline",
+        "creator",
+        "copyright",
+        "credit",
+        "source",
+        "usage_terms",
+        "city",
+        "state",
+        "country",
+        "event",
+        "sublocation",
+        "person_in_image",
         FilterFields.keywords,
         "keyword_path",
     ]

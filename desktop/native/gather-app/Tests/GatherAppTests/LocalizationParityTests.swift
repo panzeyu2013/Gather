@@ -267,7 +267,8 @@ struct LocalizationParityTests {
 
     // MARK: - 孤儿键 allowlist（Cut 6 / 6a-2 收口）
 
-    /// 只剩 1 个允许「en 表里有、Sources 里没有整段字面量」的 key。
+    /// 允许「en 表里有、Sources 里没有整段字面量」的 key：默认 1 个，
+    /// 另加 Wave2 文案迁移后已被取代的 4 个（见 supersededWave2Keys）。
     ///
     /// 判定口径是**整段字面量**，不是审计 §2 的「整键子串」：后者会把注释与长句里的
     /// 同名子串当成引用（`完成` ⊂ `已完成`、`多选` ⊂ `…多选…`、`最近同步` ⊂
@@ -279,6 +280,19 @@ struct LocalizationParityTests {
     /// `“Detection Model Path” cannot be empty`；删掉条目这段断言会回落中文
     /// （审计 §2 #5 明确保留）。
     private static let testPinnedOrphans: Set<String> = ["检测模型路径"]
+
+    /// Wave2（task-16）文案迁移后**已被取代**的旧键：UI 从 run 级编辑器迁到配方级、
+    /// 图片水印从"拒绝"变成"支持"，这 4 条不再有代码引用。
+    ///
+    /// 保留 en 条目而不是删行：本波 en.lproj 约定"只 append、不改既有行"（多 agent
+    /// 并行追加，删行会提高冲突概率）。收口时可连同这 4 行一起删除，并同步清空本
+    /// 常量（allowlist 只允许"仍在表里的键"，删表时必须一起删常量）。
+    private static let supersededWave2Keys: Set<String> = [
+        "图片水印暂不支持，请使用文字水印",
+        "子目录",
+        "留空 = 使用配方名",
+        "相对交付根；留空 = 使用配方名；支持 {session} {date} {time} {recipe}",
+    ]
 
     // MARK: - 测试
 
@@ -327,7 +341,7 @@ struct LocalizationParityTests {
         let literals = sourceLiteralKeys()
         // 扫描塌缩时孤儿会虚假膨胀：先用与覆盖性断言同一条下界兜住。
         #expect(literals.count > 1000, "Sources 整段字面量只有 \(literals.count) 个，扫描或路径假设失效")
-        let allowed = Self.testPinnedOrphans
+        let allowed = Self.testPinnedOrphans.union(Self.supersededWave2Keys)
         let used = usedKeys()
         // R5-P1-2：plural 的单数条目（base + "#one"）不在源码字面量里，只能由
         // base key 的引用证明；base 不在用法的 #one 仍是孤儿（下一行会报红）。

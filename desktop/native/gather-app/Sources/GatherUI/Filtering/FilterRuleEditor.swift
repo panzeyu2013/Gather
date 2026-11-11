@@ -19,23 +19,12 @@ enum FilterFieldCatalog {
         let kind: Kind
     }
 
+    /// 字段 id 与服务端 PhotoFilterQuery.jsonFields 的 key 必须逐字一致
+    /// （Wave2 task-13 起扩到描述性字段全集；PhotoFilterSearchFieldsTests 守两条
+    /// 集合相等，新增字段漏改任意一边都会红）。
     static let fields: [Field] = [
+        // 文件 / 挑选
         .init(id: "filename", label: "文件名", kind: .text),
-        .init(id: "title", label: "标题", kind: .text),
-        .init(id: "description", label: "说明", kind: .text),
-        .init(id: "headline", label: "标题（Headline）", kind: .text),
-        .init(id: "creator", label: "作者", kind: .list),
-        .init(id: "copyright", label: "版权", kind: .text),
-        .init(id: "city", label: "城市", kind: .text),
-        .init(id: "state", label: "省/州", kind: .text),
-        .init(id: "country", label: "国家/地区", kind: .text),
-        .init(id: "country_code", label: "国家代码", kind: .text),
-        .init(id: "location", label: "地点", kind: .text),
-        .init(id: "person_in_image", label: "画面人物", kind: .list),
-        .init(id: "keywords", label: "关键词", kind: .list),
-        // P1 下一波 §3.6.4：层级关键词路径（photo_keywords）。
-        // starts_with = 命中该节点及其子孙（facet 下钻等价规则）。
-        .init(id: "keyword_path", label: "关键词层级", kind: .text),
         .init(id: "rating", label: "星级", kind: .number),
         .init(id: "label", label: "色标", kind: .text),
         .init(id: "camera_model", label: "相机", kind: .text),
@@ -43,6 +32,44 @@ enum FilterFieldCatalog {
         .init(id: "iso", label: "ISO", kind: .number),
         .init(id: "date_taken", label: "拍摄日期", kind: .date),
         .init(id: "created_at", label: "导入时间", kind: .date),
+        // IPTC Core
+        .init(id: "title", label: "标题", kind: .text),
+        .init(id: "description", label: "说明", kind: .text),
+        .init(id: "headline", label: "标题（Headline）", kind: .text),
+        .init(id: "creator", label: "作者", kind: .list),
+        .init(id: "creator_job_title", label: "作者职位", kind: .text),
+        .init(id: "credit", label: "提供者（Credit）", kind: .text),
+        .init(id: "source", label: "来源（Source）", kind: .text),
+        .init(id: "copyright", label: "版权", kind: .text),
+        .init(id: "usage_terms", label: "使用条款", kind: .text),
+        .init(id: "web_statement", label: "权利声明网址", kind: .text),
+        .init(id: "job_identifier", label: "任务标识", kind: .text),
+        .init(id: "caption_writer", label: "说明撰写者", kind: .text),
+        .init(id: "subject_code", label: "主题代码", kind: .list),
+        .init(id: "scene", label: "场景", kind: .list),
+        .init(id: "intellectual_genre", label: "类别（Genre）", kind: .text),
+        .init(id: "date_created", label: "创作日期", kind: .date),
+        .init(id: "location", label: "地点", kind: .text),
+        .init(id: "city", label: "城市", kind: .text),
+        .init(id: "state", label: "省/州", kind: .text),
+        .init(id: "country", label: "国家/地区", kind: .text),
+        .init(id: "country_code", label: "国家代码", kind: .text),
+        // IPTC Extension
+        .init(id: "person_in_image", label: "画面人物", kind: .list),
+        .init(id: "organisation_in_image", label: "画面机构", kind: .list),
+        .init(id: "event", label: "事件", kind: .text),
+        .init(id: "sublocation", label: "地点细节", kind: .text),
+        .init(id: "world_region", label: "世界区域", kind: .text),
+        .init(id: "province_state", label: "省/州（Ext）", kind: .text),
+        .init(id: "model_release_status", label: "模特释放状态", kind: .text),
+        .init(id: "property_release_status", label: "财产释放状态", kind: .text),
+        .init(id: "digital_source_type", label: "数字来源类型", kind: .text),
+        .init(id: "additional_model_info", label: "补充模特信息", kind: .text),
+        // 关键词
+        .init(id: "keywords", label: "关键词", kind: .list),
+        // P1 下一波 §3.6.4：层级关键词路径（photo_keywords）。
+        // starts_with = 命中该节点及其子孙（facet 下钻等价规则）。
+        .init(id: "keyword_path", label: "关键词层级", kind: .text),
     ]
 
     static func field(_ id: String) -> Field? { fields.first { $0.id == id } }

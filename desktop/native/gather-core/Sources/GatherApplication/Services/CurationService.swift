@@ -31,13 +31,16 @@ public enum CurationError: Error, CustomStringConvertible, CodedError {
     case emptyPhotos
     case invalidThreshold(Int)
     case invalidLimit(Int)
+    /// Wave2（task-15）：集合运算入参里的集合不属于目标会话 / 集合列表为空。
+    case invalidCollections(String)
 
     public var code: GatherErrorCode {
         switch self {
         case .sessionNotFound: return .SESSION_NOT_FOUND
         case .collectionNotFound, .stackNotFound: return .ALBUM_NOT_FOUND
         case .photoNotFound: return .PHOTO_NOT_FOUND
-        case .nameConflict, .invalidName, .emptyPhotos, .invalidThreshold, .invalidLimit:
+        case .nameConflict, .invalidName, .emptyPhotos, .invalidThreshold, .invalidLimit,
+             .invalidCollections:
             return .INVALID_PARAM
         }
     }
@@ -63,6 +66,8 @@ public enum CurationError: Error, CustomStringConvertible, CodedError {
             return ["field": "visualThreshold", "reason": "must be 0...14, got \(value)"]
         case .invalidLimit(let value):
             return ["field": "maxGroupCount", "reason": "must be 1...500, got \(value)"]
+        case .invalidCollections(let reason):
+            return ["field": "collectionIds", "reason": reason]
         }
     }
 
@@ -192,6 +197,51 @@ public struct CurationService: Sendable {
         let row = try requireCollection(input.collectionId)
         try requirePhotoIds(input.photoIds)
         return try collections.removeItems(collectionId: row.id, photoIds: input.photoIds)
+    }
+
+    // MARK: - 集合运算（Wave2 / task-15）
+
+    /// 并 / 交 / 差：把结果**物化**成一个新的手动集合（同会话）。
+    ///
+    /// 为什么物化而不是返回临时 id 列表：手动集合可拖拽排序、可直接导出/交付、
+    /// 且不需要 schema 变更；动态规则一侧由 FilterRule 的 `collection` 字段
+    /// 覆盖（并/交/差可表达为规则组合，见 FilterRule.collectionDifference）。
+    ///
+    /// 原子性：建集合 + 追加成员在同一事务里；任何一步失败都不留空壳集合。
+    public func combineCollections(_ input: CollectionCombineInput) throws -> CollectionSummary {
+        try requireSession(input.sessionId)
+        let name = try CurationNaming.normalized(input.name)
+        let orderedIds = CollectionRepo.unique(input.collectionIds)
+        guard !orderedIds.isEmpty else {
+            throw CurationError.invalidCollections("must not be empty")
+        }
+        // 每个参与集合都必须属于该会话（跨会话集合的成员无法在同一网格里表达）。
+        for collectionId in orderedIds {
+            let row = try requireCollection(collectionId)
+            guard row.sessionId == input.sessionId else {
+                throw CurationError.invalidCollections(
+                    "collection \(collectionId) belongs to another session")
+            }
+        }
+        guard try !collections.nameExists(
+            sessionId: input.sessionId, name: name, excluding: nil
+        ) else {
+            throw CurationError.nameConflict(name)
+        }
+        let photoIds = try collections.setOperationPhotoIds(
+            sessionId: input.sessionId,
+            collectionIds: orderedIds,
+            operation: input.operation
+        )
+        let created = try transactions.transaction {
+            let row = try collections.create(
+                sessionId: input.sessionId, name: name, sortOrder: nil)
+            if !photoIds.isEmpty {
+                _ = try collections.appendItems(collectionId: row.id, photoIds: photoIds)
+            }
+            return try requireCollection(row.id)
+        }
+        return Self.summary(created)
     }
 
     /// 显式顺序（1..n，事务内一次完成）。

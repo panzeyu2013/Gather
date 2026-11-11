@@ -46,10 +46,12 @@ struct DeliveryConfirmSheet: View {
             LabeledContent(l10n("配方")) {
                 Text(l10n.format("%lld 个", input.recipes.count))
             }
-            if input.contactSheet != nil {
+            // Wave2：联系表/画廊是配方级产物（run 级参数只作旧数据回落），
+            // 确认摘要按配方的 artifacts 汇总，不能再按 input.contactSheet/gallery 判空。
+            if input.recipes.contains(where: { $0.artifacts.contains(.contactSheet) }) {
                 Text(l10n("包含联系表"))
             }
-            if input.gallery != nil {
+            if input.recipes.contains(where: { $0.artifacts.contains(.gallery) }) {
                 Text(l10n("包含 Web 画廊与客户校样"))
             }
             LabeledContent(l10n("预计文件")) {

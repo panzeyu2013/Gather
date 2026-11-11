@@ -7,6 +7,7 @@
 // - 联系表与画廊只用**导出产物**（失败/缺文件不入册），保证客户看到的就是交付的东西；
 // - isCancelled 在配方之间、联系表/画廊之前检查，取消尽快生效。
 import Foundation
+import CoreGraphics
 import GatherProtocol
 
 public struct OutputProgress: Equatable, Sendable {
@@ -119,6 +120,9 @@ public final class OutputService: @unchecked Sendable {
                 format: recipe.format,
                 quality: recipe.quality,
                 maxDimension: recipe.maxDimension,
+                // Wave2：配方级输出子目录规则（token 模板）逐字段透传；解析/校验在
+                // ExportService.validate + buildPlan 里（预览与执行同源）。
+                subdirectory: recipe.subdirectory,
                 // P0-5 / Wave1：配方里的输出规格（色彩空间/DPI/输出锐化）逐字段透传，
                 // 否则配方编辑器写入的参数在交付链路上是死字段。
                 colorSpace: recipe.colorSpace,
@@ -174,7 +178,11 @@ public final class OutputService: @unchecked Sendable {
                     },
                     resume: resumeState,
                     onWritten: { photoId, url in
-                        written.append((photoId: photoId, url: url, name: url.lastPathComponent))
+                        // Wave2：子目录规则下，manifest 的 name 必须是**相对配方目录**
+                        // 的路径（否则同一批交付里两个子目录的同名文件在清单上重名）。
+                        written.append((
+                            photoId: photoId, url: url,
+                            name: Self.relativeOutputName(url: url, destination: destination)))
                     })
                 exported = result.exported
                 failed = result.failed
@@ -206,7 +214,10 @@ public final class OutputService: @unchecked Sendable {
             var galleryPath: String?
             var galleryItems: Int?
             var gallerySkipped: Int?
-            if recipe.artifacts.contains(.gallery), let gallery = input.gallery {
+            // Wave2：配方级参数优先，nil 回落 run 级（旧配方/旧 checkpoint 兼容）。
+            let recipeGallery = recipe.gallery ?? input.gallery
+            let recipeContactSheet = recipe.contactSheet ?? input.contactSheet
+            if recipe.artifacts.contains(.gallery), let gallery = recipeGallery {
                 if outputs.isEmpty {
                     errors.append("gallery: no exported files")
                 } else {
@@ -229,7 +240,7 @@ public final class OutputService: @unchecked Sendable {
 
             var contactSheetPath: String?
             var contactSheetFailed: Int?
-            if recipe.artifacts.contains(.contactSheet), let sheet = input.contactSheet {
+            if recipe.artifacts.contains(.contactSheet), let sheet = recipeContactSheet {
                 if outputs.isEmpty {
                     errors.append("contact sheet: no exported files")
                 } else {
@@ -392,6 +403,9 @@ public final class OutputService: @unchecked Sendable {
     }
 
     /// 把"真正写出的成片"与展示元数据合成一张表：成品名/路径以写盘结果为准。
+    ///
+    /// Wave2：展示用的 filename 一律取**裸文件名**（子目录不进 caption/画廊标题；
+    /// manifest 的审计路径另用 relativeOutputName）。
     private static func merge(
         outputs: [(photoId: String, url: URL, name: String)],
         presentations: OutputPresentationSnapshot
@@ -401,13 +415,22 @@ public final class OutputService: @unchecked Sendable {
         return outputs.map { output in
             guard var item = byId[output.photoId] else {
                 return DeliveryPresentationItem(
-                    photoId: output.photoId, filePath: output.url.path, filename: output.name)
+                    photoId: output.photoId, filePath: output.url.path,
+                    filename: output.url.lastPathComponent)
             }
             item.photoId = output.photoId
             item.filePath = output.url.path
-            item.filename = output.name
+            item.filename = output.url.lastPathComponent
             return item
         }
+    }
+
+    /// 成片相对配方目标目录的路径（Wave2）：manifest 审计用；落在目录外时退回裸文件名。
+    private static func relativeOutputName(url: URL, destination: String) -> String {
+        let root = URL(fileURLWithPath: destination).standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix(root + "/") else { return url.lastPathComponent }
+        return String(path.dropFirst(root.count + 1))
     }
 
     private func makeContactSheet(
@@ -425,6 +448,8 @@ public final class OutputService: @unchecked Sendable {
         }
         let sheetOptions = ContactSheetOptions(
             columns: sheet.columns, rows: sheet.rows,
+            // Wave2：配方级页面边距（pt）；nil = 渲染器默认 36（升级前版式）。
+            margin: CGFloat(sheet.margin ?? 36),
             title: sheet.title, subtitle: sheet.subtitle, footerText: sheet.footer,
             fields: sheet.fields,
             showLabelChip: sheet.showLabelChip,

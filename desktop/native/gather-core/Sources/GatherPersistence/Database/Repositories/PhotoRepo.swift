@@ -415,6 +415,44 @@ public final class PhotoRepo: Sendable {
         return photos
     }
 
+    /// Wave2（task-15）：全库导入去重 —— 已算出校验和的照片指纹。
+    ///
+    /// 只读；matchingSizes 非空时按块 IN 预筛（去重的预筛口径：大小不同必不
+    /// 是同内容）。空集合 = 不限大小（调用方明确要全库时）。
+    /// 不做 LIMIT：去重判定的正确性优先于截断，行数在照片量级。
+    public func libraryFingerprints(
+        matchingSizes: Set<Int>
+    ) throws -> [LibraryPhotoFingerprint] {
+        let base = """
+            SELECT id, session_id, filepath, checksum,
+                   checksum_file_size, checksum_file_mtime_ms
+              FROM photos
+             WHERE checksum != ''
+            """
+        var rows: [DBRow] = []
+        if matchingSizes.isEmpty {
+            rows = try connection.prepare(base + " ORDER BY rowid").query([])
+        } else {
+            let sizes = matchingSizes.sorted()
+            for chunk in sizes.chunked(by: 400) where !chunk.isEmpty {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+                rows.append(contentsOf: try connection.prepare(
+                    base + " AND checksum_file_size IN (\(placeholders)) ORDER BY rowid"
+                ).query(chunk.map { DBValue.int(Int64($0)) }))
+            }
+        }
+        return rows.map { row in
+            LibraryPhotoFingerprint(
+                photoId: row[0].textValue ?? "",
+                sessionId: row[1].textValue ?? "",
+                filepath: row[2].textValue ?? "",
+                checksum: row[3].textValue ?? "",
+                fileSize: Int(row[4].intValue ?? 0),
+                fileMtimeMs: row[5].doubleValue ?? 0
+            )
+        }
+    }
+
     /// WP3b-1（ExportService.session_summary 下沉）：旧查询列序逐字保留。
     public func reportRows(sessionId: String) throws -> [PhotoReportRow] {
         let rows = try connection.prepare(

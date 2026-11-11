@@ -27,13 +27,8 @@ struct ExportDeliverySection: View {
     @State private var pendingProofImport: PendingProofImport?
     /// 最近一次导入报告（sheet 关闭后摘要行仍要能显示；不随 sheet 消失）。
     @State private var lastImportReport: ClientSelectionImportReport?
-    // P0-6：联系表/画廊参数（run 级草稿）与展开状态。
-    // 刻意不持久化：GatherProtocol 的 SettingsKey 是穷尽枚举且没有这两组参数的键，
-    // 协议里它们也只属于一次 OutputRunInput；配方参数本身走既有 output.recipes 通道。
-    @State private var contactSheetOptions = OutputContactSheetOptions()
-    @State private var galleryOptions = OutputGalleryOptions()
-    @State private var showContactSheetOptions = false
-    @State private var showGalleryOptions = false
+    // Wave2：联系表/画廊参数随配方持久化（OutputRecipe.contactSheet/gallery），
+    // 页面不再持有 run 级草稿状态。
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
@@ -54,18 +49,8 @@ struct ExportDeliverySection: View {
             ForEach(viewModel.deliveryRecipes) { recipe in
                 DeliveryRecipeRow(viewModel: viewModel, recipe: recipe)
             }
-            Toggle(l10n("包含联系表"), isOn: Binding(
-                get: { viewModel.deliveryIncludeContactSheet },
-                set: { viewModel.deliveryIncludeContactSheet = $0 }))
-            if viewModel.deliveryIncludeContactSheet {
-                contactSheetOptionsEditor
-            }
-            Toggle(l10n("包含 Web 画廊与客户校样"), isOn: Binding(
-                get: { viewModel.deliveryIncludeGallery },
-                set: { viewModel.deliveryIncludeGallery = $0 }))
-            if viewModel.deliveryIncludeGallery {
-                galleryOptionsEditor
-            }
+            // Wave2：联系表/画廊是**配方级**产物开关（见每个配方编辑器），
+            // 页面级不再有"包含联系表/画廊"的全局开关。
             HStack(spacing: GatherMetrics.Space.s) {
                 Button(l10n("添加配方")) { viewModel.addDeliveryRecipe() }
                     .gatherButton(.tertiary)
@@ -80,9 +65,7 @@ struct ExportDeliverySection: View {
                        ? l10n("正在交付…")
                        : viewModel.isPreflighting ? l10n("正在预检…") : l10n("开始整套交付")) {
                     Task {
-                        if let input = await viewModel.prepareDeliveryInput(
-                            contactSheetOptions: contactSheetOptions,
-                            galleryOptions: galleryOptions) {
+                        if let input = await viewModel.prepareDeliveryInput() {
                             let preflight = await viewModel.deliveryPreflight(for: input)
                             pendingDelivery = PendingDeliveryConfirmation(
                                 input: input, preflight: preflight)
@@ -181,127 +164,6 @@ struct ExportDeliverySection: View {
         }
         .onChange(of: viewModel.deliveryRoot) { _, _ in
             viewModel.persistDeliveryRoot()
-        }
-    }
-
-    // MARK: - 联系表 / 画廊参数（P0-6：不再写死 4×5 与 480/1600）
-
-    /// 联系表参数：标题/副标题/页脚、行列、caption 模板、绘制字段与两个开关。
-    private var contactSheetOptionsEditor: some View {
-        DisclosureGroup(isExpanded: $showContactSheetOptions) {
-            VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
-                textRow(l10n("标题"), text: $contactSheetOptions.title,
-                        prompt: l10n("留空使用工作区名"))
-                textRow(l10n("副标题"), text: $contactSheetOptions.subtitle)
-                textRow(l10n("页脚"), text: $contactSheetOptions.footer)
-                SliderInputIntView(
-                    title: l10n("列数"), value: $contactSheetOptions.columns, range: 1...12)
-                SliderInputIntView(
-                    title: l10n("行数"), value: $contactSheetOptions.rows, range: 1...20)
-                textRow(l10n("Caption 模板"), text: $contactSheetOptions.captionTemplate,
-                        prompt: "{filename}")
-                Text(l10n("可用占位符：{filename} {title} {rating} {label} {keywords} {date}"))
-                    .font(GatherFont.secondary)
-                    .foregroundStyle(GatherTheme.secondaryText)
-                Toggle(l10n("显示色标圆点"), isOn: $contactSheetOptions.showLabelChip)
-                Toggle(l10n("显示取舍边框"), isOn: $contactSheetOptions.showPickBorder)
-                contactSheetFieldsEditor
-            }
-            .padding(.top, GatherMetrics.Space.xs)
-        } label: {
-            Text(l10n("联系表参数"))
-                .font(GatherFont.labelRegular)
-        }
-    }
-
-    private var contactSheetFieldsEditor: some View {
-        VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
-            Text(l10n("联系表字段"))
-                .font(GatherFont.labelRegular)
-                .foregroundStyle(GatherTheme.secondaryText)
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 120), alignment: .leading)],
-                alignment: .leading,
-                spacing: GatherMetrics.Space.xxs
-            ) {
-                contactSheetFieldToggle(.filename, l10n("文件名"))
-                contactSheetFieldToggle(.title, l10n("标题"))
-                contactSheetFieldToggle(.rating, l10n("评分"))
-                contactSheetFieldToggle(.label, l10n("色标"))
-                contactSheetFieldToggle(.pick, l10n("取舍"))
-                contactSheetFieldToggle(.keywords, l10n("关键词"))
-                contactSheetFieldToggle(.captureTime, l10n("拍摄时间"))
-                contactSheetFieldToggle(.triage, l10n("三档建议"))
-            }
-        }
-    }
-
-    private func contactSheetFieldToggle(
-        _ field: ContactSheetFields, _ title: String
-    ) -> some View {
-        Toggle(title, isOn: Binding(
-            get: { contactSheetOptions.fields.contains(field) },
-            set: { isOn in
-                if isOn {
-                    contactSheetOptions.fields.insert(field)
-                } else {
-                    contactSheetOptions.fields.remove(field)
-                }
-            }))
-    }
-
-    /// 画廊参数：标题/副标题/页脚、缩略图与大图长边、页面展示字段。
-    private var galleryOptionsEditor: some View {
-        DisclosureGroup(isExpanded: $showGalleryOptions) {
-            VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
-                textRow(l10n("标题"), text: $galleryOptions.title,
-                        prompt: l10n("留空使用工作区名"))
-                textRow(l10n("副标题"), text: $galleryOptions.subtitle)
-                textRow(l10n("页脚"), text: $galleryOptions.footer)
-                SliderInputIntView(
-                    title: l10n("缩略图长边"),
-                    value: $galleryOptions.thumbnailMaxDimension, range: 160...2048)
-                SliderInputIntView(
-                    title: l10n("大图长边"),
-                    value: $galleryOptions.largeMaxDimension, range: 320...8192)
-                VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
-                    Text(l10n("画廊字段"))
-                        .font(GatherFont.labelRegular)
-                        .foregroundStyle(GatherTheme.secondaryText)
-                    galleryFieldToggle(.rating, l10n("星级"))
-                    galleryFieldToggle(.label, l10n("色标"))
-                    galleryFieldToggle(.pick, l10n("取舍"))
-                }
-            }
-            .padding(.top, GatherMetrics.Space.xs)
-        } label: {
-            Text(l10n("画廊参数"))
-                .font(GatherFont.labelRegular)
-        }
-    }
-
-    private func galleryFieldToggle(
-        _ field: ContactSheetFields, _ title: String
-    ) -> some View {
-        Toggle(title, isOn: Binding(
-            get: { galleryOptions.fields.contains(field) },
-            set: { isOn in
-                if isOn {
-                    galleryOptions.fields.insert(field)
-                } else {
-                    galleryOptions.fields.remove(field)
-                }
-            }))
-    }
-
-    /// 表单行：左标签 + 圆角输入框（与导出页的 LabeledContent 行保持一致）。
-    private func textRow(
-        _ title: String, text: Binding<String>, prompt: String? = nil
-    ) -> some View {
-        LabeledContent(title) {
-            TextField("", text: text, prompt: prompt.map { Text($0) })
-                .textFieldStyle(.roundedBorder)
-                .labelsHidden()
         }
     }
 
@@ -543,13 +405,15 @@ private struct DeliveryRecipeRow: View {
         }
         if let dpi = recipe.dpi { parts.append("\(dpi) DPI") }
         if recipe.sharpening != nil { parts.append(l10n("输出锐化")) }
-        if recipe.watermark != nil { parts.append(l10n("文字水印")) }
-        let subdirectory = recipe.destination.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !subdirectory.isEmpty {
-            parts.append(l10n.format("子目录 %@", subdirectory))
+        if let watermark = recipe.watermark {
+            parts.append(watermark.type == .text ? l10n("文字水印") : l10n("图片水印"))
         }
-        if viewModel.deliveryIncludeContactSheet { parts.append(l10n("含联系表")) }
-        if viewModel.deliveryIncludeGallery { parts.append(l10n("含画廊")) }
+        // Wave2：子目录规则是 token 模板（{yyyy}/{MM}/{dd}/{client}/{event}/{orig}）。
+        if let subdirectory = recipe.subdirectory, !subdirectory.template.isEmpty {
+            parts.append(l10n.format("子目录 %@", subdirectory.template))
+        }
+        if recipe.artifacts.contains(.contactSheet) { parts.append(l10n("含联系表")) }
+        if recipe.artifacts.contains(.gallery) { parts.append(l10n("含画廊")) }
         return parts.joined(separator: " · ")
     }
 
@@ -574,6 +438,7 @@ private struct DeliveryRecipeRow: View {
             }
             namingEditor
             subdirectoryEditor
+            artifactsEditor
             Toggle(l10n("复制 XMP 附属文件"), isOn: Binding(
                 get: { recipe.includeXmp },
                 set: { newValue in
@@ -681,10 +546,10 @@ private struct DeliveryRecipeRow: View {
         }
     }
 
-    /// 文字水印参数（实现只支持 text；图片水印在 ExportService 里仍是拒绝路径）。
+    /// 配方级水印（Wave2）：文字 / 图片 logo 两种类型，共享位置与透明度。
     private var watermarkEditor: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
-            Toggle(l10n("文字水印"), isOn: Binding(
+            Toggle(l10n("水印"), isOn: Binding(
                 get: { recipe.watermark != nil },
                 set: { isOn in
                     viewModel.updateDeliveryRecipe(id: recipe.id) {
@@ -696,16 +561,97 @@ private struct DeliveryRecipeRow: View {
                     }
                 }))
             if let watermark = recipe.watermark {
-                TextField(l10n("水印文字"), text: Binding(
-                    get: { watermark.content },
-                    set: { newValue in
-                        viewModel.updateDeliveryWatermark(id: recipe.id) {
-                            $0.content = newValue
-                        }
-                    }))
-                    .textFieldStyle(.roundedBorder)
+                LabeledContent(l10n("水印类型")) {
+                    Picker(l10n("水印类型"), selection: Binding(
+                        get: { watermark.type },
+                        set: { newType in
+                            viewModel.updateDeliveryRecipe(id: recipe.id) { target in
+                                guard var value = target.watermark,
+                                      value.type != newType else { return }
+                                value.type = newType
+                                if newType == .image {
+                                    value.imageScale = value.imageScale ?? 0.2
+                                    value.imageMargin = value.imageMargin ?? 0.02
+                                } else {
+                                    value.fontSize = value.fontSize ?? 24
+                                }
+                                target.watermark = value
+                            }
+                        })) {
+                        Text(l10n("文字")).tag(ExportWatermarkType.text)
+                        Text(l10n("图片 logo")).tag(ExportWatermarkType.image)
+                    }
                     .labelsHidden()
-                    .accessibilityLabel(l10n("水印文字"))
+                }
+                if watermark.type == .text {
+                    TextField(l10n("水印文字"), text: Binding(
+                        get: { watermark.content },
+                        set: { newValue in
+                            viewModel.updateDeliveryWatermark(id: recipe.id) {
+                                $0.content = newValue
+                            }
+                        }))
+                        .textFieldStyle(.roundedBorder)
+                        .labelsHidden()
+                        .accessibilityLabel(l10n("水印文字"))
+                    SliderInputIntView(
+                        title: l10n("字号"),
+                        value: Binding(
+                            get: { Int((watermark.fontSize ?? 24).rounded()) },
+                            set: { newValue in
+                                viewModel.updateDeliveryWatermark(id: recipe.id) {
+                                    $0.fontSize = Double(newValue)
+                                }
+                            }),
+                        range: 8...200)
+                } else {
+                    LabeledContent(l10n("水印图片")) {
+                        HStack(spacing: GatherMetrics.Space.s) {
+                            TextField(l10n("水印图片"), text: Binding(
+                                get: { watermark.content },
+                                set: { newValue in
+                                    viewModel.updateDeliveryWatermark(id: recipe.id) {
+                                        $0.content = newValue
+                                    }
+                                }))
+                                .labelsHidden()
+                                .accessibilityLabel(l10n("水印图片"))
+                            Button(l10n("选择…")) {
+                                Task {
+                                    guard let path = await viewModel.chooseWatermarkImage(with: l10n)
+                                    else { return }
+                                    viewModel.updateDeliveryWatermark(id: recipe.id) {
+                                        $0.content = path
+                                    }
+                                }
+                            }
+                            .gatherButton(.secondary, size: .small)
+                        }
+                    }
+                    Text(l10n("建议使用带透明背景的 PNG logo"))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(GatherTheme.secondaryText)
+                    SliderInputView(
+                        title: l10n("宽度比例"),
+                        value: Binding(
+                            get: { watermark.imageScale ?? 0.2 },
+                            set: { newValue in
+                                viewModel.updateDeliveryWatermark(id: recipe.id) {
+                                    $0.imageScale = newValue
+                                }
+                            }),
+                        range: 0.02...1, step: 0.01)
+                    SliderInputView(
+                        title: l10n("边距"),
+                        value: Binding(
+                            get: { watermark.imageMargin ?? 0.02 },
+                            set: { newValue in
+                                viewModel.updateDeliveryWatermark(id: recipe.id) {
+                                    $0.imageMargin = newValue
+                                }
+                            }),
+                        range: 0...0.25, step: 0.005)
+                }
                 LabeledContent(l10n("位置")) {
                     Picker(l10n("位置"), selection: Binding(
                         get: { watermark.position },
@@ -730,16 +676,6 @@ private struct DeliveryRecipeRow: View {
                             }
                         }),
                     range: 0.1...1, step: 0.1)
-                SliderInputIntView(
-                    title: l10n("字号"),
-                    value: Binding(
-                        get: { Int((watermark.fontSize ?? 24).rounded()) },
-                        set: { newValue in
-                            viewModel.updateDeliveryWatermark(id: recipe.id) {
-                                $0.fontSize = Double(newValue)
-                            }
-                        }),
-                    range: 8...200)
             }
         }
     }
@@ -765,24 +701,273 @@ private struct DeliveryRecipeRow: View {
         }
     }
 
+    /// 输出子目录规则（Wave2）：token 模板 + {client}/{event} 取值，逐张解析。
     private var subdirectoryEditor: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
-            LabeledContent(l10n("子目录")) {
+            LabeledContent(l10n("子目录规则")) {
                 TextField(
-                    l10n("子目录"),
+                    l10n("子目录规则"),
                     text: Binding(
-                        get: { recipe.destination },
+                        get: { recipe.subdirectory?.template ?? "" },
                         set: { newValue in
-                            viewModel.updateDeliveryRecipe(id: recipe.id) {
-                                $0.destination = newValue
-                            }
+                            viewModel.setDeliverySubdirectoryTemplate(
+                                id: recipe.id, template: newValue)
                         }),
-                    prompt: Text(l10n("留空 = 使用配方名")))
+                    prompt: Text("{yyyy}/{MM}/{dd}"))
                     .labelsHidden()
+                    .accessibilityLabel(l10n("子目录规则"))
             }
-            Text(l10n("相对交付根；留空 = 使用配方名；支持 {session} {date} {time} {recipe}"))
+            if let subdirectory = recipe.subdirectory,
+               !subdirectory.template.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                LabeledContent(l10n("客户名称")) {
+                    TextField(
+                        l10n("客户名称"),
+                        text: Binding(
+                            get: { subdirectory.client ?? "" },
+                            set: { newValue in
+                                viewModel.updateDeliverySubdirectory(id: recipe.id) {
+                                    $0.client = newValue
+                                }
+                            }))
+                        .labelsHidden()
+                        .accessibilityLabel(l10n("客户名称"))
+                }
+                LabeledContent(l10n("活动名称")) {
+                    TextField(
+                        l10n("活动名称"),
+                        text: Binding(
+                            get: { subdirectory.event ?? "" },
+                            set: { newValue in
+                                viewModel.updateDeliverySubdirectory(id: recipe.id) {
+                                    $0.event = newValue
+                                }
+                            }))
+                        .labelsHidden()
+                        .accessibilityLabel(l10n("活动名称"))
+                }
+                if let preview = subdirectory.resolved(originalFilename: "IMG_1234.NEF") {
+                    Text(l10n.format("示例：%@", preview))
+                        .font(GatherFont.secondary.monospaced())
+                        .foregroundStyle(GatherTheme.secondaryText)
+                }
+            }
+            Text(l10n("留空 = 直接写到导出目录；可用 token：{yyyy} {MM} {dd} {client} {event} {orig}"))
                 .font(GatherFont.secondary)
                 .foregroundStyle(GatherTheme.secondaryText)
+        }
+    }
+
+    // MARK: - 配方级产物（Wave2：联系表/画廊参数随配方保存）
+
+    private func artifactBinding(_ kind: OutputArtifactKind) -> Binding<Bool> {
+        Binding(
+            get: { recipe.artifacts.contains(kind) },
+            set: { isOn in
+                viewModel.setDeliveryRecipeArtifact(id: recipe.id, kind, isEnabled: isOn)
+            })
+    }
+
+    private var artifactsEditor: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+            Toggle(l10n("生成联系表"), isOn: artifactBinding(.contactSheet))
+            if recipe.artifacts.contains(.contactSheet) {
+                contactSheetEditor
+            }
+            Toggle(l10n("生成 Web 画廊"), isOn: artifactBinding(.gallery))
+            if recipe.artifacts.contains(.gallery) {
+                galleryEditor
+            }
+        }
+    }
+
+    /// 联系表参数（配方级）：标题/副标题/页脚/行列/边距/caption 模板/展示字段。
+    private var contactSheetEditor: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+            Text(l10n("联系表参数"))
+                .font(GatherFont.labelRegular)
+                .foregroundStyle(GatherTheme.secondaryText)
+            textRow(l10n("标题"), text: contactSheetText(\.title), prompt: l10n("留空使用工作区名"))
+            textRow(l10n("副标题"), text: contactSheetText(\.subtitle))
+            textRow(l10n("页脚"), text: contactSheetText(\.footer))
+            SliderInputIntView(
+                title: l10n("列数"), value: contactSheetInt(\.columns), range: 1...12)
+            SliderInputIntView(
+                title: l10n("行数"), value: contactSheetInt(\.rows), range: 1...20)
+            SliderInputView(
+                title: l10n("页面边距"), value: contactSheetDouble(\.margin), range: 0...200, step: 1)
+            textRow(l10n("Caption 模板"), text: contactSheetText(\.captionTemplate),
+                    prompt: "{filename}")
+            Text(l10n("可用占位符：{filename} {title} {rating} {label} {keywords} {date}"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(GatherTheme.secondaryText)
+            contactSheetFieldsEditor
+            Toggle(l10n("显示色标圆点"), isOn: contactSheetToggle(\.showLabelChip))
+            Toggle(l10n("显示取舍边框"), isOn: contactSheetToggle(\.showPickBorder))
+        }
+    }
+
+    private var contactSheetFieldsEditor: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
+            Text(l10n("联系表字段"))
+                .font(GatherFont.labelRegular)
+                .foregroundStyle(GatherTheme.secondaryText)
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 120), alignment: .leading)],
+                alignment: .leading,
+                spacing: GatherMetrics.Space.xxs
+            ) {
+                contactSheetFieldToggle(.filename, l10n("文件名"))
+                contactSheetFieldToggle(.title, l10n("标题"))
+                contactSheetFieldToggle(.rating, l10n("评分"))
+                contactSheetFieldToggle(.label, l10n("色标"))
+                contactSheetFieldToggle(.pick, l10n("取舍"))
+                contactSheetFieldToggle(.keywords, l10n("关键词"))
+                contactSheetFieldToggle(.captureTime, l10n("拍摄时间"))
+                contactSheetFieldToggle(.triage, l10n("三档建议"))
+            }
+        }
+    }
+
+    /// 画廊参数（配方级）：标题/副标题/页脚/缩略图与大图长边/展示字段。
+    private var galleryEditor: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+            Text(l10n("画廊参数"))
+                .font(GatherFont.labelRegular)
+                .foregroundStyle(GatherTheme.secondaryText)
+            textRow(l10n("标题"), text: galleryText(\.title), prompt: l10n("留空使用工作区名"))
+            textRow(l10n("副标题"), text: galleryText(\.subtitle))
+            textRow(l10n("页脚"), text: galleryText(\.footer))
+            SliderInputIntView(
+                title: l10n("缩略图长边"),
+                value: galleryInt(\.thumbnailMaxDimension), range: 160...2048)
+            SliderInputIntView(
+                title: l10n("大图长边"),
+                value: galleryInt(\.largeMaxDimension), range: 320...8192)
+            VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
+                Text(l10n("画廊字段"))
+                    .font(GatherFont.labelRegular)
+                    .foregroundStyle(GatherTheme.secondaryText)
+                galleryFieldToggle(.rating, l10n("星级"))
+                galleryFieldToggle(.label, l10n("色标"))
+                galleryFieldToggle(.pick, l10n("取舍"))
+            }
+        }
+    }
+
+    // MARK: - 配方字段 Binding（nil = 默认参数，编辑时物化）
+
+    private func contactSheetText(
+        _ keyPath: WritableKeyPath<OutputContactSheetOptions, String>
+    ) -> Binding<String> {
+        Binding(
+            get: { (recipe.contactSheet ?? OutputContactSheetOptions())[keyPath: keyPath] },
+            set: { newValue in
+                viewModel.updateDeliveryContactSheet(id: recipe.id) {
+                    $0[keyPath: keyPath] = newValue
+                }
+            })
+    }
+
+    private func contactSheetInt(
+        _ keyPath: WritableKeyPath<OutputContactSheetOptions, Int>
+    ) -> Binding<Int> {
+        Binding(
+            get: { (recipe.contactSheet ?? OutputContactSheetOptions())[keyPath: keyPath] },
+            set: { newValue in
+                viewModel.updateDeliveryContactSheet(id: recipe.id) {
+                    $0[keyPath: keyPath] = newValue
+                }
+            })
+    }
+
+    private func contactSheetDouble(
+        _ keyPath: WritableKeyPath<OutputContactSheetOptions, Double?>
+    ) -> Binding<Double> {
+        Binding(
+            get: { (recipe.contactSheet ?? OutputContactSheetOptions())[keyPath: keyPath] ?? 36 },
+            set: { newValue in
+                viewModel.updateDeliveryContactSheet(id: recipe.id) {
+                    $0[keyPath: keyPath] = newValue
+                }
+            })
+    }
+
+    private func contactSheetToggle(
+        _ keyPath: WritableKeyPath<OutputContactSheetOptions, Bool>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { (recipe.contactSheet ?? OutputContactSheetOptions())[keyPath: keyPath] },
+            set: { newValue in
+                viewModel.updateDeliveryContactSheet(id: recipe.id) {
+                    $0[keyPath: keyPath] = newValue
+                }
+            })
+    }
+
+    private func contactSheetFieldToggle(
+        _ field: ContactSheetFields, _ title: String
+    ) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { (recipe.contactSheet ?? OutputContactSheetOptions()).fields.contains(field) },
+            set: { isOn in
+                viewModel.updateDeliveryContactSheet(id: recipe.id) {
+                    if isOn {
+                        $0.fields.insert(field)
+                    } else {
+                        $0.fields.remove(field)
+                    }
+                }
+            }))
+    }
+
+    private func galleryText(
+        _ keyPath: WritableKeyPath<OutputGalleryOptions, String>
+    ) -> Binding<String> {
+        Binding(
+            get: { (recipe.gallery ?? OutputGalleryOptions())[keyPath: keyPath] },
+            set: { newValue in
+                viewModel.updateDeliveryGallery(id: recipe.id) {
+                    $0[keyPath: keyPath] = newValue
+                }
+            })
+    }
+
+    private func galleryInt(
+        _ keyPath: WritableKeyPath<OutputGalleryOptions, Int>
+    ) -> Binding<Int> {
+        Binding(
+            get: { (recipe.gallery ?? OutputGalleryOptions())[keyPath: keyPath] },
+            set: { newValue in
+                viewModel.updateDeliveryGallery(id: recipe.id) {
+                    $0[keyPath: keyPath] = newValue
+                }
+            })
+    }
+
+    private func galleryFieldToggle(
+        _ field: ContactSheetFields, _ title: String
+    ) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { (recipe.gallery ?? OutputGalleryOptions()).fields.contains(field) },
+            set: { isOn in
+                viewModel.updateDeliveryGallery(id: recipe.id) {
+                    if isOn {
+                        $0.fields.insert(field)
+                    } else {
+                        $0.fields.remove(field)
+                    }
+                }
+            }))
+    }
+
+    /// 表单行：左标签 + 圆角输入框（与导出页的 LabeledContent 行保持一致）。
+    private func textRow(
+        _ title: String, text: Binding<String>, prompt: String? = nil
+    ) -> some View {
+        LabeledContent(title) {
+            TextField("", text: text, prompt: prompt.map { Text($0) })
+                .textFieldStyle(.roundedBorder)
+                .labelsHidden()
         }
     }
 }

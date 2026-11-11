@@ -295,6 +295,28 @@ public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
         }
     }
 
+    /// Wave2（task-15）：并 / 交 / 差 —— 物化成一个新集合。
+    ///
+    /// 破坏性入口只收 Confirmed<T>；集合 id 的会话归属校验在 CurationService
+    /// （错误带 field=collectionIds + reason，便于 UI 指出是哪一项）。
+    public func combineCollections(
+        _ input: Confirmed<CollectionCombineInput>
+    ) async throws -> CollectionSummary {
+        let sessionId = try requireId(input.value.sessionId, field: "sessionId")
+        let name = try requireNonBlank(
+            input.value.name, field: "name", maxLength: CurationNaming.maxLength)
+        let collectionIds = try requireIdList(
+            input.value.collectionIds, field: "collectionIds", maxCount: 50)
+        return try mapCuration {
+            try curation.combineCollections(CollectionCombineInput(
+                sessionId: sessionId,
+                name: name,
+                operation: input.value.operation,
+                collectionIds: collectionIds
+            ))
+        }
+    }
+
     // MARK: - 堆栈（§3.8.2）
 
     public func stacks(_ sessionId: String) async throws -> [StackSummary] {
@@ -411,6 +433,32 @@ public final class LiveAlbumAPI: AlbumAPI, @unchecked Sendable {
             throw GatherError.invalidParameter(
                 field: "photoIds", reason: "length must be at most 5000"
             )
+        }
+        return ordered
+    }
+
+    /// Wave2：通用 id 列表校验（去空、去重、单项长度 ≤128、总数上限、空数组拒绝）。
+    private func requireIdList(
+        _ values: [String], field: String, maxCount: Int
+    ) throws -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        ordered.reserveCapacity(values.count)
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            guard trimmed.count <= 128 else {
+                throw GatherError.invalidParameter(
+                    field: field, reason: "each id length must be at most 128")
+            }
+            if seen.insert(trimmed).inserted { ordered.append(trimmed) }
+        }
+        guard !ordered.isEmpty else {
+            throw GatherError.invalidParameter(field: field, reason: "must not be empty")
+        }
+        guard ordered.count <= maxCount else {
+            throw GatherError.invalidParameter(
+                field: field, reason: "length must be at most \(maxCount)")
         }
         return ordered
     }

@@ -16,7 +16,11 @@ extension ExportService {
     /// 计划项（内部）：照片 + 解析后的输出名 + 目标 URL + 诊断。
     struct PlannedOutput {
         var photo: PhotoProjectionRow
+        /// 相对输出名（含子目录，如 "客户A/2026-11-11/IMG_1.jpg"）：
+        /// 预览清单与断点续跑状态都用它。
         var name: String
+        /// 裸文件名（不含子目录）：临时文件命名与进度显示用。
+        var fileName: String
         var url: URL
         var includesXmp: Bool
         var issue: String?
@@ -27,7 +31,7 @@ extension ExportService {
     /// 计划构建（唯一实现，D09）：预览与执行都调用它，命名规则不可能漂移。
     ///
     /// - Parameters:
-    ///   - resumedNames: 断点续跑已确定的目标名（photoId -> name）。
+    ///   - resumedNames: 断点续跑已确定的目标名（photoId -> **相对路径**，可含子目录）。
     ///   - completedPhotoIds: 已完成且文件仍在的照片（决定是否能复用旧名）。
     ///   - onPlanned: 新确定名字时回调（执行路径借此写入 checkpoint）。
     /// - Returns: 计划项（顺序 = 照片顺序）与全部解析出的名字（供续跑状态持久化）。
@@ -43,39 +47,76 @@ extension ExportService {
         var usedNames = Set<String>()
         var resolved: [String: String] = [:]
         var items: [PlannedOutput] = []
-        // P2-12（审计 3）：目标目录**枚举一次**建集合，代替逐张照片的多次 fileExists
-        //（1 万张时旧实现约 5 万次 syscall，这里降到 1 次枚举 + O(1) 查表）。
-        // 计划阶段只看快照；写入阶段仍按每个文件实时 exists 判定（见 execute）。
-        let existingTargets = Set(
-            (try? FileManager.default.contentsOfDirectory(atPath: destination.path)) ?? []
-        )
+        // Wave2：一次计划只取一个「现在」——{yyyy}/{MM}/{dd} 与命名 {date}/{time} 同源，
+        // 跨午夜执行同一批也不会被拆到两个日期目录。
+        let now = Date()
+        // P2-12（审计 3）：目标目录**按需枚举一次**建集合，代替逐张照片的多次 fileExists。
+        // 无子目录时只枚举顶层 destination（与升级前完全一致）；有子目录时每个出现过的
+        // 相对目录各枚举一次，而不是每张照片一次。
+        var targetSnapshots: [String: Set<String>] = [:]
+        func existingTargets(in subdirectory: String) -> Set<String> {
+            if let cached = targetSnapshots[subdirectory] { return cached }
+            let directoryURL = subdirectory.isEmpty
+                ? destination
+                : destination.appendingPathComponent(subdirectory, isDirectory: true)
+            let names = Set(
+                (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
+            )
+            targetSnapshots[subdirectory] = names
+            return names
+        }
         // E-3：每次计划一份时间 formatter（循环内复用，不跨线程共享）。
         let timeFormatter = DateFormatter()
         for (index, photo) in photos.enumerated() {
-            var name = resumedNames[photo.id]
-            let resumedFileExists = name.map {
-                completedPhotoIds.contains(photo.id) && existingTargets.contains($0)
-            } ?? false
-            let targetTaken = name.map { existingTargets.contains($0) } ?? false
-            if name == nil || (!resumedFileExists && targetTaken) {
-                name = resolveName(
+            // Wave2：子目录按照片解析（{orig} 是逐张 token）；无规则/解析为空 → ""。
+            let subdirectory = options.subdirectory?
+                .resolved(originalFilename: photo.filename, date: now) ?? ""
+            let directoryURL = subdirectory.isEmpty
+                ? destination
+                : destination.appendingPathComponent(subdirectory, isDirectory: true)
+            let existingTargets = existingTargets(in: subdirectory)
+            // 续跑名是**相对路径**（可能带子目录）：只有目录与本次解析一致、且完成
+            // 记录成立时才复用旧名（否则视为新交付，重新走命名 + 唯一化）。
+            var fileName: String?
+            var reusedCompleted = false
+            if let resumed = resumedNames[photo.id] {
+                let resumedDirectory = (resumed as NSString).deletingLastPathComponent
+                let resumedFileName = (resumed as NSString).lastPathComponent
+                if resumedDirectory == subdirectory,
+                   completedPhotoIds.contains(photo.id),
+                   existingTargets.contains(resumedFileName) {
+                    fileName = resumedFileName
+                    reusedCompleted = true
+                }
+            }
+            if fileName == nil {
+                var plannedName = resolveName(
                     photo: photo,
                     options: options,
                     counter: (options.naming.counterStart ?? 1) + index,
                     sessionName: sessionName,
                     timeFormatter: timeFormatter
                 )
-                name = uniqueName(
-                    name ?? photo.filename,
+                plannedName = uniqueName(
+                    plannedName,
                     usedNames: &usedNames,
-                    destination: destination,
+                    keyPrefix: subdirectory,
+                    directory: directoryURL,
                     existingTargets: existingTargets
                 )
-                onPlanned?(photo.id, name ?? photo.filename)
-            } else {
-                usedNames.insert((name ?? "").lowercased())
+                fileName = plannedName
+                let relative = subdirectory.isEmpty
+                    ? plannedName
+                    : subdirectory + "/" + plannedName
+                onPlanned?(photo.id, relative)
+            } else if let fileName {
+                // 复用旧名也要占位：后续新照片不得撞上它。
+                usedNames.insert(
+                    (subdirectory.isEmpty ? fileName : subdirectory + "/" + fileName).lowercased()
+                )
             }
-            let outputName = name ?? photo.filename
+            let bareName = fileName ?? photo.filename
+            let outputName = subdirectory.isEmpty ? bareName : subdirectory + "/" + bareName
             resolved[photo.id] = outputName
             let outputURL = destination.appendingPathComponent(outputName)
             // 目标 sidecar 三态判定（P1-3 → 问题 1 验收后修订）：执行改为
@@ -100,12 +141,13 @@ extension ExportService {
             items.append(PlannedOutput(
                 photo: photo,
                 name: outputName,
+                fileName: bareName,
                 url: outputURL,
                 includesXmp: includesXmp,
                 issue: issue,
                 // P2-2（审计 3）：已完成且文件仍在的续跑项会被跳过并计成功，
                 // 不能标成「导出时会失败」。
-                willSkip: resumedFileExists
+                willSkip: reusedCompleted
             ))
         }
         return (items, resolved)
@@ -314,17 +356,72 @@ extension ExportService {
             throw ExportServiceError.startIndexInvalid
         }
         if let watermark = options.watermark {
-            guard watermark.type == .text else { throw ExportServiceError.watermarkTypeUnsupported }
-            guard !watermark.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ExportServiceError.watermarkTextEmpty
-            }
             guard watermark.opacity.isFinite, watermark.opacity >= 0, watermark.opacity <= 1 else {
                 throw ExportServiceError.watermarkOpacityInvalid
             }
-            if let fontSize = watermark.fontSize, !fontSize.isFinite || fontSize < 1 || fontSize > 1000 {
-                throw ExportServiceError.watermarkFontSizeInvalid
+            switch watermark.type {
+            case .text:
+                guard !watermark.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw ExportServiceError.watermarkTextEmpty
+                }
+                if let fontSize = watermark.fontSize,
+                   !fontSize.isFinite || fontSize < 1 || fontSize > 1000 {
+                    throw ExportServiceError.watermarkFontSizeInvalid
+                }
+            case .image:
+                // Wave2：logo PNG 合成 —— 文件/可解码性/版式参数都在这里前置校验，
+                // 不让「跑到第 200 张才发现 logo 路径错」变成整批失败。
+                try validateWatermarkImage(watermark)
             }
         }
+        // Wave2：输出子目录规则（未知 token / 绝对路径 / 路径穿越 / 空段）。
+        if let subdirectory = options.subdirectory,
+           let reason = ExportSubdirectory.validationReason(for: subdirectory.template) {
+            throw GatherError(
+                code: .EXPORT_PARAMS_INVALID,
+                params: ["field": "subdirectory.template", "reason": reason])
+        }
+    }
+
+    /// 图片水印校验（Wave2）：logo 必须存在/可读/ImageIO 能解码，版式参数在区间内。
+    ///
+    /// 失败统一用 EXPORT_PARAMS_INVALID + field/reason：GatherErrorCode 是
+    /// GatherProtocol 的穷尽枚举（本任务不改它），专用码要动 Core.swift 与
+    /// ErrorCodeContractTests；有了专用码再换即可（字段级 params 已带够诊断）。
+    private func validateWatermarkImage(_ watermark: ExportWatermark) throws {
+        let path = watermark.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            throw invalidExportParam(field: "watermark.imagePath", reason: "empty")
+        }
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw invalidExportParam(field: "watermark.imagePath", reason: "missing")
+        }
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw invalidExportParam(field: "watermark.imagePath", reason: "unreadable")
+        }
+        #if canImport(ImageIO)
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int, width > 0 else {
+            throw invalidExportParam(field: "watermark.imagePath", reason: "notAnImage")
+        }
+        #endif
+        if let scale = watermark.imageScale,
+           !scale.isFinite || scale < 0.02 || scale > 1 {
+            throw invalidExportParam(field: "watermark.imageScale", reason: "outOfRange")
+        }
+        if let margin = watermark.imageMargin,
+           !margin.isFinite || margin < 0 || margin > 0.25 {
+            throw invalidExportParam(field: "watermark.imageMargin", reason: "outOfRange")
+        }
+    }
+
+    private func invalidExportParam(field: String, reason: String) -> GatherError {
+        GatherError(
+            code: .EXPORT_PARAMS_INVALID,
+            params: ["field": field, "reason": reason])
     }
 
     func assertDestinationOutsideSource(sessionId: String, destination: String) throws {
@@ -379,6 +476,8 @@ extension ExportService {
         // E-3 闭环（第二轮验证）：指纹路径同样每请求跑一次全量循环，
         // 这里也复用一份 formatter（局部量，不跨线程）。
         let timeFormatter = DateFormatter()
+        // Wave2：{yyyy}/{MM}/{dd} 与子目录 token 都取同一个「现在」，指纹稳定。
+        let now = Date()
         for (index, photo) in photos.enumerated() {
             let planned = resolveName(
                 photo: photo,
@@ -387,10 +486,12 @@ extension ExportService {
                 sessionName: sessionName,
                 timeFormatter: timeFormatter
             )
+            let subdirectory = options.subdirectory?
+                .resolved(originalFilename: photo.filename, date: now) ?? ""
             // 问题 5（第三轮审查）：原为字面量 "(photo.id)"（漏插值），不同照片会
             // 产生相同指纹 → 任务去重身份碰撞。同时补 sidecar 版本（问题 1）：源 XMP 变了
             // 必须形成**新交付**，否则续跑会沿用旧元数据。
-            rows.append("\(photo.id)|\(photo.checksum)|\(photo.checksumFileSize)|\(photo.checksumFileMtimeMs)|\(planned)|\(sidecarVersion(forSource: photo.filepath))")
+            rows.append("\(photo.id)|\(photo.checksum)|\(photo.checksumFileSize)|\(photo.checksumFileMtimeMs)|\(planned)|\(subdirectory)|\(sidecarVersion(forSource: photo.filepath))")
         }
         let payload = [optionsJSON, sessionName, rows.joined(separator: "\n")].joined(separator: "\n---\n")
         return SHA256.hash(Data(payload.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -512,12 +613,17 @@ extension ExportService {
     }
 
     /// 重名唯一化。
-    /// - Parameter existingTargets: 目标目录的**快照**（P2-12 审计 3：一次枚举代替逐名
-    ///   fileExists）。nil 时退回实时查询（调用方没有目录快照的场景）。
+    /// - Parameters:
+    ///   - keyPrefix: 子目录前缀（Wave2）：占位键 = 前缀 + 文件名，等价于按目录唯一化；
+    ///     无子目录时是空串，行为与升级前完全一致。
+    ///   - directory: 该文件所在的目标目录（写入实时 fallback 查询用）。
+    ///   - existingTargets: 目标目录的**快照**（P2-12 审计 3：一次枚举代替逐名
+    ///     fileExists）。nil 时退回实时查询（调用方没有目录快照的场景）。
     private func uniqueName(
         _ input: String,
         usedNames: inout Set<String>,
-        destination: URL,
+        keyPrefix: String,
+        directory: URL,
         existingTargets: Set<String>? = nil
     ) -> String {
         let url = URL(fileURLWithPath: input)
@@ -525,15 +631,18 @@ extension ExportService {
         let ext = url.pathExtension.isEmpty ? "" : ".\(url.pathExtension)"
         var candidate = input
         var index = 2
+        func key(_ name: String) -> String {
+            keyPrefix.isEmpty ? name.lowercased() : (keyPrefix + "/" + name).lowercased()
+        }
         func targetTaken(_ name: String) -> Bool {
             if let existingTargets { return existingTargets.contains(name) }
-            return FileManager.default.fileExists(atPath: destination.appendingPathComponent(name).path)
+            return FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path)
         }
-        while usedNames.contains(candidate.lowercased()) || targetTaken(candidate) {
+        while usedNames.contains(key(candidate)) || targetTaken(candidate) {
             candidate = "\(base)_\(index)\(ext)"
             index += 1
         }
-        usedNames.insert(candidate.lowercased())
+        usedNames.insert(key(candidate))
         return candidate
     }
 

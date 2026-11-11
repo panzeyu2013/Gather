@@ -403,4 +403,127 @@ struct OutputServiceCancelTests {
             atPath: root.appendingPathComponent("Resume2").path)) ?? []
         #expect(names.filter { $0.contains("_2") }.count >= 1, "新参数必须真的重导")
     }
+
+    // MARK: - Wave2（task-16）：配方级联系表/画廊参数 + 子目录规则
+
+    @Test("配方级联系表/画廊参数：run 级无参数也按配方生成")
+    func recipeLevelContactSheetAndGallery() throws {
+        let (db, sessionId, source, _) = try makeWave2OutputFixture()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-output-wave2-artifacts-" + UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: source)
+            try? FileManager.default.removeItem(atPath: root.path)
+        }
+        let service = OutputService(exportService: ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            reports: ExportReportRepo(connection: db)))
+        let recipe = OutputRecipe(
+            name: "Wave2",
+            format: .jpeg,
+            quality: 80,
+            contactSheet: OutputContactSheetOptions(
+                title: "客户样片", columns: 3, rows: 2, margin: 50,
+                fields: [.filename, .rating]),
+            gallery: OutputGalleryOptions(
+                title: "婚礼画廊", thumbnailMaxDimension: 320,
+                largeMaxDimension: 1280, fields: [.rating]),
+            artifacts: [.photos, .contactSheet, .gallery])
+        let input = OutputRunInput(
+            sessionId: sessionId, destinationRoot: root.path, recipes: [recipe])
+        let summary = try service.run(input: input)
+        let result = try #require(summary.recipes.first)
+        #expect(result.exported == 2)
+        let sheet = try #require(result.contactSheetPath, "配方级联系表参数必须生效")
+        #expect(FileManager.default.fileExists(atPath: sheet))
+        let gallery = try #require(result.galleryPath, "配方级画廊参数必须生效")
+        #expect(FileManager.default.fileExists(atPath: gallery))
+        // 画廊缩略图长边按配方参数 320 生成（thumbs 目录里应有缩略图）。
+        let thumbs = URL(fileURLWithPath: gallery).deletingLastPathComponent()
+            .appendingPathComponent("thumbs")
+        let thumbNames = (try? FileManager.default.contentsOfDirectory(atPath: thumbs.path)) ?? []
+        #expect(!thumbNames.isEmpty, "配方级 thumbnailMaxDimension 未用于画廊缩略图")
+    }
+
+    @Test("旧 checkpoint 兼容：配方无联系表参数时回落 run 级")
+    func runLevelContactSheetFallback() throws {
+        let (db, sessionId, source, _) = try makeWave2OutputFixture()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-output-wave2-fallback-" + UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: source)
+            try? FileManager.default.removeItem(atPath: root.path)
+        }
+        let service = OutputService(exportService: ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            reports: ExportReportRepo(connection: db)))
+        let recipe = OutputRecipe(
+            name: "Fallback", format: .jpeg, quality: 80,
+            artifacts: [.photos, .contactSheet])
+        let input = OutputRunInput(
+            sessionId: sessionId,
+            destinationRoot: root.path,
+            recipes: [recipe],
+            contactSheet: OutputContactSheetOptions(title: "旧样片", columns: 2, rows: 2))
+        let summary = try service.run(input: input)
+        let result = try #require(summary.recipes.first)
+        let sheet = try #require(result.contactSheetPath, "run 级参数必须作为旧配方回落")
+        #expect(FileManager.default.fileExists(atPath: sheet))
+    }
+
+    @Test("配方子目录：多级目录落盘 + manifest 记录相对路径")
+    func recipeSubdirectoryWritesNestedOutputs() throws {
+        let (db, sessionId, source, _) = try makeWave2OutputFixture()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-output-wave2-subdir-" + UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: source)
+            try? FileManager.default.removeItem(atPath: root.path)
+        }
+        let service = OutputService(exportService: ExportService(
+            photoRepo: PhotoRepo(connection: db),
+            sessionRepo: SessionRepo(connection: db),
+            reports: ExportReportRepo(connection: db)))
+        let recipe = OutputRecipe(
+            name: "Nested", format: .jpeg, quality: 80,
+            subdirectory: ExportSubdirectory(
+                template: "{client}/{event}", client: "ACME", event: "婚礼"),
+            artifacts: [.photos])
+        let input = OutputRunInput(
+            sessionId: sessionId, destinationRoot: root.path, recipes: [recipe])
+        let summary = try service.run(input: input)
+        let result = try #require(summary.recipes.first)
+        let destination = URL(fileURLWithPath: result.destination)
+        for index in 0..<2 {
+            let output = destination.appendingPathComponent("ACME/婚礼/IMG_\(index).jpg")
+            #expect(FileManager.default.fileExists(atPath: output.path),
+                    "子目录成片缺失: \(output.path)")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: summary.manifestPath))
+        let decoded = try JSONDecoder().decode(OutputRunSummary.self, from: data)
+        let names = Set((decoded.recipes.first?.files ?? []).map(\.name))
+        #expect(names.contains("ACME/婚礼/IMG_0.jpg"),
+                "manifest 必须记录相对配方目录的路径: \(names)")
+    }
+}
+
+// MARK: - Wave2（task-16）：跨 suite 共用的夹具（原 makeFixture 是 OutputServiceTests 私有）
+
+private func makeWave2OutputFixture() throws -> (DBConnection, String, String, [String]) {
+    let db = try makeTestDB()
+    let source = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-output-src-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    let session = try SessionRepo(connection: db).create(
+        name: "Output", source: "local", sourcePath: source.path)
+    var paths: [String] = []
+    for index in 0..<2 {
+        let path = source.appendingPathComponent("IMG_\(index).jpg").path
+        try makeOutputJPEG(at: path)
+        try seedOutputPhoto(db, sessionId: session.id, photoId: "p\(index)", filepath: path)
+        paths.append(path)
+    }
+    return (db, session.id, source.path, paths)
 }

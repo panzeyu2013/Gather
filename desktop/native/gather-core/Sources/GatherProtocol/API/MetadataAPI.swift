@@ -90,6 +90,29 @@ public protocol MetadataAPI: Sendable {
 
     /// 立即回收已确认交付的行与备份（XMP 保留；ignoreReloadAck 由用户显式确认）。
     func cleanupRetention(_ input: Confirmed<MetadataCleanupInput>) async throws -> MetadataCleanupSummary
+
+    // MARK: - Wave2 / 词库（受控词表）
+
+    /// 词库树（含每个路径的同义词）。prefix 为空 = 全量；非空 = 前缀过滤。
+    func keywordLibrary(_ query: KeywordLibraryQuery) async throws -> [KeywordLibraryNode]
+
+    /// 自动补全：词库路径前缀 + 同义词命中（同义词只影响候选，不改变规范路径）。
+    func keywordSuggestions(_ query: KeywordSuggestionQuery) async throws -> [KeywordSuggestion]
+
+    /// 改名（含子孙前缀级联；photo_keywords/keyword_synonyms 同事务）。
+    func renameKeyword(_ input: Confirmed<KeywordRenameInput>) async throws -> KeywordMutationSummary
+
+    /// 合并到一个已存在的路径（只允许叶子；成员/同义词并入 target）。
+    func mergeKeywords(_ input: Confirmed<KeywordMergeInput>) async throws -> KeywordMutationSummary
+
+    /// 删除（cascade=false 时仓储守卫：有成员/子级/同义词一律拒绝）。
+    func deleteKeyword(_ input: Confirmed<KeywordDeleteInput>) async throws -> KeywordMutationSummary
+
+    /// 覆盖式设置同义词（空数组 = 清空）。同义词参与补全与检索，不写 XMP。
+    func setKeywordSynonyms(_ input: Confirmed<KeywordSynonymsInput>) async throws -> KeywordMutationSummary
+
+    /// 新建空路径（含祖先物化；已存在时幂等）。
+    func createKeyword(_ input: Confirmed<KeywordCreateInput>) async throws -> KeywordMutationSummary
 }
 
 // MARK: - 默认实现（未接线 / 测试替身）
@@ -150,5 +173,53 @@ public struct MetadataCleanupSummary: Codable, Equatable, Sendable {
         self.retained = retained
         self.skipped = skipped
         self.errors = errors
+    }
+}
+
+// MARK: - Wave2 / 词库默认实现（未接线：显式失败，不返回可被误读成"空词库"的结果）
+
+public extension MetadataAPI {
+    func keywordLibrary(_ query: KeywordLibraryQuery) async throws -> [KeywordLibraryNode] {
+        _ = query
+        throw GatherError.invalidParameter(
+            field: "keywordLibrary", reason: "keyword library API not wired")
+    }
+
+    func keywordSuggestions(_ query: KeywordSuggestionQuery) async throws -> [KeywordSuggestion] {
+        _ = query
+        throw GatherError.invalidParameter(
+            field: "keywordSuggestions", reason: "keyword library API not wired")
+    }
+
+    func renameKeyword(_ input: Confirmed<KeywordRenameInput>) async throws -> KeywordMutationSummary {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "renameKeyword", reason: "keyword library API not wired")
+    }
+
+    func mergeKeywords(_ input: Confirmed<KeywordMergeInput>) async throws -> KeywordMutationSummary {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "mergeKeywords", reason: "keyword library API not wired")
+    }
+
+    func deleteKeyword(_ input: Confirmed<KeywordDeleteInput>) async throws -> KeywordMutationSummary {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "deleteKeyword", reason: "keyword library API not wired")
+    }
+
+    func setKeywordSynonyms(
+        _ input: Confirmed<KeywordSynonymsInput>
+    ) async throws -> KeywordMutationSummary {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "setKeywordSynonyms", reason: "keyword library API not wired")
+    }
+
+    func createKeyword(_ input: Confirmed<KeywordCreateInput>) async throws -> KeywordMutationSummary {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "createKeyword", reason: "keyword library API not wired")
     }
 }

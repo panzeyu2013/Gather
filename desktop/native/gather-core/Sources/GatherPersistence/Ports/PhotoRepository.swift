@@ -15,6 +15,36 @@ public struct PhotoLookupRow: Equatable, Sendable {
     }
 }
 
+/// Wave2（task-15）：全库导入去重用的照片指纹（photos 行）。
+///
+/// 只包含**已算出校验和**的照片：跨工作区去重以 SHA-256 为判据，未回填校验和的
+/// 行无法安全比较（大小/修改时间只能预筛）。懒索引遗留的空校验和行由既有
+/// checksum.backfill 任务补齐后自然进入本投影。
+public struct LibraryPhotoFingerprint: Equatable, Sendable {
+    public let photoId: String
+    public let sessionId: String
+    public let filepath: String
+    public let checksum: String
+    public let fileSize: Int
+    public let fileMtimeMs: Double
+
+    public init(
+        photoId: String,
+        sessionId: String,
+        filepath: String,
+        checksum: String,
+        fileSize: Int,
+        fileMtimeMs: Double
+    ) {
+        self.photoId = photoId
+        self.sessionId = sessionId
+        self.filepath = filepath
+        self.checksum = checksum
+        self.fileSize = fileSize
+        self.fileMtimeMs = fileMtimeMs
+    }
+}
+
 /// ExportService 报告用照片投影。
 public struct PhotoReportRow: Equatable, Sendable {
     public let filename: String
@@ -62,6 +92,9 @@ public protocol PhotoRepository: Sendable {
     func getLookupByIds(_ photoIds: [String]) throws -> [PhotoLookupRow]
     /// ExportService.session_summary 报告。
     func reportRows(sessionId: String) throws -> [PhotoReportRow]
+    /// Wave2（task-15）：跨会话导入去重 —— 全库已知校验和的照片指纹。
+    /// matchingSizes 非空时只返回文件大小在集合内的行（省掉整库扫）。
+    func libraryFingerprints(matchingSizes: Set<Int>) throws -> [LibraryPhotoFingerprint]
 }
 
 public extension PhotoRepository {
@@ -71,6 +104,11 @@ public extension PhotoRepository {
 
     func getAssetPage(sessionId: String) throws -> (rows: [PhotoPageRow], cursor: Int64?) {
         try getAssetPage(sessionId: sessionId, afterFirstRowid: nil, limit: 200)
+    }
+
+    /// 测试 stub 默认实现（真实实现见 PhotoRepo）。
+    func libraryFingerprints(matchingSizes: Set<Int>) throws -> [LibraryPhotoFingerprint] {
+        []
     }
 }
 

@@ -82,9 +82,20 @@ public struct FilterRule: Codable, Equatable, Sendable {
 }
 
 // TS: FilterGroup.logic（filter.ts 内联联合 'and' | 'or'）
+//
+// Wave2（task-15）：新增 `not`——语义 = "组内子条件一个都不满足"。
+// 组合方式与 SQL 生成（PhotoFilterQuery.buildWhereClause）一致：
+//   - and：全部满足
+//   - or ：任一满足
+//   - not：子条件先按 **or** 组合，再整体取反（= LR Smart Collection 的
+//          "none of the following"）。单条子条件时两种读法等价，因此常见的
+//          "排除某集合/排除某评级"不需要关心这条细节。
+// 空组仍返回"无约束"（1=1），NOT 空组同样不报错——编辑器里把子条件删光不该
+// 让整页筛选变成"什么都不显示"。
 public enum FilterLogic: String, Codable, CaseIterable, Equatable, Sendable {
     case and
     case or
+    case not
 }
 
 // TS: FilterGroup.conditions 的元素：FilterRule | FilterGroup（递归判别联合）
@@ -320,6 +331,39 @@ public enum FilterFields {
     public static let iso = "iso"
     public static let dateTaken = "date_taken"
     public static let label = "label"
+
+    // MARK: - Wave2（task-15）：容器成员与相对日期
+
+    /// 手动集合成员：value = 集合 id（或 id 数组）。
+    ///
+    /// 操作符语义（PhotoFilterQuery 实现）：
+    /// - `eq`：在该集合里；
+    /// - `neq`：**不在**该集合里（差集的一半）；
+    /// - `in` / `contains_any`：在任一集合里（并集）；
+    /// - `contains_all`：同时在所有给定集合里（交集）；
+    /// - `exists`：属于任意手动集合。
+    public static let collection = "collection"
+
+    /// 堆栈成员：字段与操作符同 `collection`，只是按堆栈归属判定。
+    public static let stack = "stack"
+
+    /// 相对日期窗口：value 取 `RelativeDateRange.rawValue`（配 `eq`）。
+    /// 绝对日期仍走 `date_taken` + 比较操作符，两者互不影响。
+    public static let relativeDate = "date_relative"
+}
+
+/// 「最近 N 天 / 本月」的取值域（FilterRule.value 的字符串）。
+///
+/// 为什么用 token 而不是让调用方算绝对日期：算绝对日期要求 UI 持有"今天"，
+/// 规则保存成智能相册/保存查询后第二天就过期；token 由 SQL 侧按查询时刻求值，
+/// 规则长期有效。
+public enum RelativeDateRange: String, Codable, CaseIterable, Equatable, Sendable {
+    /// 最近 7 天（含今天，按本地时区）。
+    case last7 = "last7"
+    /// 最近 30 天（含今天，按本地时区）。
+    case last30 = "last30"
+    /// 本月（自然月，按本地时区）。
+    case thisMonth = "this_month"
 }
 
 public extension FilterRule {
@@ -333,5 +377,49 @@ public extension FilterRule {
             field: FilterFields.keywordPath,
             operator: drilldown ? .startsWith : .eq,
             value: .string(path))
+    }
+
+    // MARK: - Wave2（task-15）：集合运算与相对日期的规则工厂
+
+    /// 属于某手动集合（并集的最小单元；多个 id 用 `collectionMembership(anyOf:)`）。
+    static func inCollection(_ collectionId: String) -> FilterRule {
+        FilterRule(field: FilterFields.collection, operator: .eq, value: .string(collectionId))
+    }
+
+    /// 不属于某手动集合（差集：`and(inCollection(A), notInCollection(B))`）。
+    static func notInCollection(_ collectionId: String) -> FilterRule {
+        FilterRule(field: FilterFields.collection, operator: .neq, value: .string(collectionId))
+    }
+
+    /// 属于任一集合（并集）。
+    static func collectionMembership(anyOf collectionIds: [String]) -> FilterRule {
+        FilterRule(field: FilterFields.collection, operator: .in, value: .array(collectionIds.map { .string($0) }))
+    }
+
+    /// 同时属于所有集合（交集）。
+    static func collectionMembership(allOf collectionIds: [String]) -> FilterRule {
+        FilterRule(field: FilterFields.collection, operator: .containsAll, value: .array(collectionIds.map { .string($0) }))
+    }
+
+    /// 属于某堆栈。
+    static func inStack(_ stackId: String) -> FilterRule {
+        FilterRule(field: FilterFields.stack, operator: .eq, value: .string(stackId))
+    }
+
+    /// 相对日期窗口（最近 7/30 天、本月）。
+    static func relativeDate(_ range: RelativeDateRange) -> FilterRule {
+        FilterRule(field: FilterFields.relativeDate, operator: .eq, value: .string(range.rawValue))
+    }
+
+    /// 差集的完整形态：属于 from，且不属于 excluding 中任意一个。
+    static func collectionDifference(from: String, excluding: [String]) -> FilterGroup {
+        var conditions: [FilterCondition] = [.rule(inCollection(from))]
+        if !excluding.isEmpty {
+            conditions.append(.group(FilterGroup(
+                logic: .not,
+                conditions: excluding.map { .rule(inCollection($0)) }
+            )))
+        }
+        return FilterGroup(logic: .and, conditions: conditions)
     }
 }

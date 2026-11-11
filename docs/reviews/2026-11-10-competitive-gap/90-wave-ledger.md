@@ -93,3 +93,57 @@
 4. 配方 `destination` 现在双语义（绝对=旧配方原样 / 相对=交付根下子目录），协议注释仍是"绝对目录"，建议后续加 `subdirectory` 字段。
 5. 联系表/画廊参数是 run 级草稿（`SettingsKey` 是穷尽枚举，持久化需单独立项）。
 6. 2 图对比预算 5120→6144（判焦更实，峰值内存约 ×2）；Survey 上限 9。
+
+---
+
+## 7. Wave 2 第二批（2026-11-11 同日，task-13 / task-14 / task-15 / task-16）
+
+| 任务 | 缺口 | 修复要点 | 关键文件 |
+| --- | --- | --- | --- |
+| task-13 | 10 册 Top3 | 关键词库（树/改名/合并/同义词/受控值）协议+UI；补全读词库并展开同义词；元数据变量引擎 `{seq}/{client}/{year}/{month}/{day}/{filename}/{name}/{ext}/{camera}`（宽度/转义/未解析可枚举）；批量直改 `<mixed>` + 逐张预检；检索 jsonFields 11→31、搜索串 5→17 字段；FilterRuleEditor 字段目录 41 项 | `Protocol/KeywordLibrary.swift`、`MetadataVariables.swift`、`MetadataBatchEdit.swift`、`Application/Services/Keyword/`、`GatherUI/Metadata/KeywordLibrarySheet.swift`、`MetadataBatchEditorSheet.swift`、`PhotoFilterQuery.swift` |
+| task-14 | 50 册 Top3 ①② | `AITriageAutoPipeline`：导入后等 scan→复用/入队 quality→等终态→生成建议→按开关 automation 应用（轮询可注入、取消/失败只收敛不阻塞导入）；场景标签写回关键词（幂等 + root 子树撤销 + 来源标记）；facet 新增 scene（keyword 子树桶）与 person（persons JOIN，按逻辑资产去重）；语义检索多选平均向量 + labels 分支接 UI；`SemanticSearchSheet` 三合一 | `Application/Services/Quality/AITriageAutoPipeline.swift`、`Semantic/SemanticKeywordService.swift`、`Semantics.swift`、`FacetQuery.swift`、`GatherUI/SemanticSearch/` |
+| task-15 | 40 册 #9/#10 | 集合运算：`FilterLogic.not` + 集合/堆栈 EXISTS 子查询 + 相对日期；`AlbumAPI.combineCollections` 物化 并/交/差；跨会话导入去重（size 预筛 + checksum 全库比对，skip/coexist/replace，replace 带 .gather-prev 备份回滚）；`SessionAPI.previewIngest` 四类计数；Curation 集合运算 sheet | `Protocol/Filter.swift`、`Queries/PhotoFilterQuery.swift`、`CollectionRepo.swift`、`IngestService.swift`、`SessionIngestRunner.swift`、`GatherUI/Curation/CollectionSidebar.swift` |
+| task-16 | 40 册 #5/#6/#18 | 图片水印（logo PNG，宽度比例/边距/透明度，只缩不放、超 2048 降采样、缓存）；子目录 token 规则（`{yyyy}/{MM}/{dd}/{client}/{event}/{orig}`，校验顺序稳定：unclosedToken/strayBrace/unknownToken/pathTraversal/...）；联系表与画廊参数随配方持久化（旧 run 级回落兼容），manifest 记录相对路径 | `Protocol/Export.swift`、`Output.swift`、`ExportService+Run/Plan.swift`、`OutputService.swift`、`GatherUI/Export/` |
+
+### Lead 修掉的 7 处缺陷（子代理静态自查未发现，构建/测试暴露）
+
+1. `IngestService.plan` 公开方法用了 internal 的 `SessionService.LibraryDuplicateTarget` → 补 public + init。
+2. `AITriageAutoPipeline` switch 未穷尽 `.waiting` → 补防御分支。
+3. `AITriageAutoPipeline` `"quality-(job.status.rawValue)"` 漏字符串插值 → 修。
+4. `OutputServiceTests` 新用例跨 suite 调私有 `makeFixture` → 新增文件级 `makeWave2OutputFixture`。
+5. `SemanticKeywordServiceTests` `#expect(xs.allSatisfy(\.keyPath))` 触发宏 rethrows 报错 → 改闭包。
+6. en.lproj 缺 `词库操作失败：%@` 英文条目 → 补（Lead 收口）。
+7. domain 门禁：新增发布点登记 `MetadataBatchEditorSheet`/`KeywordLibrarySheet`/`SemanticSearchSheetModel`，并在写回处补 `.metadata` 域事件。
+
+### 子代理按回执修复的 4 处
+
+- `CollectionRepo.visibleMemberPhotoIds` 的 SQL 插值 `\(` 丢失（near "(" syntax error）→ 修。
+- 图片水印 y 基准两套坐标混用 → 显式 topDown→CG 换算 + 测试坐标口径统一。
+- 子目录模板 reason 优先级/措辞（unclosedToken 先于 unknownToken）→ 修。
+- `FacetSemanticDimensionTests` 断言与 fixture 冲突（p4 横跨两场景）→ 改为有区分度的反向收窄断言。
+
+### 验证证据（Lead 执行）
+
+- 构建：`gather-core` / `gather-app` `swift build --disable-sandbox` 无 error。
+- 测试：
+  - core `--filter "MetadataVariableEngineTests|…|SessionContractTests"` → **138 tests / 20 suites passed**；收口后再跑 108 tests / 16 suites passed。
+  - app `--filter "LocalizationParityTests|…|ReviewFixTests|StackAndVolumeWiring"` → **358 tests / 42 suites passed**；收口后再跑 252 tests / 24 suites passed。
+- 门禁（--strict 口径）：protocol-surface OK、design-system PASS、layering OK、coded-errors OK、domain-events OK、domain-writes OK、duplicate-symbols OK、select-star OK、no-legacy OK、test-catalog OK、cleanup-ratchet OK、warnings PASS。
+
+### 基线变更（第二批 2）
+
+| 基线 | 变更 | 原因 |
+| --- | --- | --- |
+| `docs/protocol-surface-baseline.json` | public_types 420 → **460**；public_declarations 2487 → **2718**；protocol_lines 12811 → **14492** | task-13 关键词库/变量/批量 DTO、task-14 语义/场景标签 DTO、task-15 过滤/摄取 DTO、task-16 导出/子目录 DTO |
+| `docs/protocol-surface-modules-baseline.json` | gatherapplication 203→**208** / 1361→**1419** | 新服务（KeywordLibraryService / SemanticKeywordService / AITriageAutoPipeline） |
+| `docs/cleanup-baseline.json` | try_optional 255 → **261**（--allow-growth 记账） | 6 处 best-effort 清理（摄取 replace 的备份/回滚删除、语义索引回填失败不阻断写回、导出临时文件清理） |
+
+### 遗留（第二批 2）
+
+1. **模板侧变量未接**：变量引擎已在"批量文案"落地；模板 apply/preview 仍按字面写入（预览与实际可能不一致），建议下一波接模板。
+2. **图片水印错误码**复用 `EXPORT_PARAMS_INVALID + params(field/reason)`，未加专用码。
+3. **旧交付配方不自动补 gallery artifact**：升级后旧配方若 artifacts 里没有 `.gallery` 不再生成画廊（不静默改用户数据）；需要一次性迁移的话另立任务。
+4. **集合层级（Collection Set）未做**：需 schema 变更（表/列计数断言），单独立项。
+5. **scene/person facet 在 Filtering/FacetBar 的标题**落到 default 文案；NOT/集合/相对日期目前只有 API/JSON 路径可存，FilterRuleEditor 的编辑入口未接（属 task-13 目录，下一波）。
+6. **C1 color tag 整数序**仍未真机核对；C1 关键词含 `|` 会按层级解析。
+7. 搜索 OR 扩到 17 字段的大库性能未测；词库补全每次读全量同义词（当前规模可接受）。

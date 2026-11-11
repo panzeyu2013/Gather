@@ -85,7 +85,7 @@ extension ExportViewModel {
     /// （旧实现是硬编码 85/2048 且不可编辑，这才是缺口本身）。
     static let newRecipeDefaults = OutputRecipe(
         name: "Recipe", format: .jpeg, quality: 85, maxDimension: 2048,
-        includeMetadata: true)
+        includeMetadata: true, artifacts: [.photos, .contactSheet, .gallery])
 
     public func addDeliveryRecipe() {
         guard deliveryRecipes.count < 32 else { return }
@@ -171,6 +171,71 @@ extension ExportViewModel {
         }
     }
 
+    // MARK: - Wave2：配方级联系表/画廊/子目录
+
+    /// 联系表字段编辑：配方里还没有参数时按默认值物化一份再改。
+    public func updateDeliveryContactSheet(
+        id: String, _ mutate: (inout OutputContactSheetOptions) -> Void
+    ) {
+        updateDeliveryRecipe(id: id) { recipe in
+            var value = recipe.contactSheet ?? OutputContactSheetOptions()
+            mutate(&value)
+            recipe.contactSheet = value
+        }
+    }
+
+    /// 画廊字段编辑（同上）。
+    public func updateDeliveryGallery(
+        id: String, _ mutate: (inout OutputGalleryOptions) -> Void
+    ) {
+        updateDeliveryRecipe(id: id) { recipe in
+            var value = recipe.gallery ?? OutputGalleryOptions()
+            mutate(&value)
+            recipe.gallery = value
+        }
+    }
+
+    /// 配方级「是否产出联系表/画廊」：写 artifacts（顺序稳定 —— 会进配方指纹与
+    /// job dedupeKey，不能靠 Set 遍历序）。
+    public func setDeliveryRecipeArtifact(
+        id: String, _ kind: OutputArtifactKind, isEnabled: Bool
+    ) {
+        updateDeliveryRecipe(id: id) { recipe in
+            var artifacts = Set(recipe.artifacts)
+            if isEnabled {
+                artifacts.insert(kind)
+            } else {
+                artifacts.remove(kind)
+            }
+            recipe.artifacts = OutputArtifactKind.allCases.filter { artifacts.contains($0) }
+        }
+    }
+
+    /// 子目录模板编辑：清空模板 = 整个规则置 nil（旧配方兼容路径）。
+    public func setDeliverySubdirectoryTemplate(id: String, template: String) {
+        updateDeliveryRecipe(id: id) { recipe in
+            let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                recipe.subdirectory = nil
+                return
+            }
+            var value = recipe.subdirectory ?? ExportSubdirectory(template: template)
+            value.template = template
+            recipe.subdirectory = value
+        }
+    }
+
+    /// 子目录 token 取值编辑（{client} / {event}）。
+    public func updateDeliverySubdirectory(
+        id: String, _ mutate: (inout ExportSubdirectory) -> Void
+    ) {
+        updateDeliveryRecipe(id: id) { recipe in
+            guard var value = recipe.subdirectory else { return }
+            mutate(&value)
+            recipe.subdirectory = value
+        }
+    }
+
     /// 单个配方的字段校验（行内红字 + 交付前置门禁共用）。
     /// 返回中文字符串（即 l10n key），空数组 = 合法。
     public func deliveryRecipeIssues(_ recipe: OutputRecipe) -> [String] {
@@ -206,19 +271,33 @@ extension ExportViewModel {
                 }
             }
             if let watermark = recipe.watermark {
-                if watermark.type != .text {
-                    issues.append("图片水印暂不支持，请使用文字水印")
-                }
-                if watermark.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    issues.append("水印文字不能为空")
+                switch watermark.type {
+                case .text:
+                    if watermark.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        issues.append("水印文字不能为空")
+                    }
+                    if let fontSize = watermark.fontSize,
+                       !fontSize.isFinite || fontSize < 1 || fontSize > 1000 {
+                        issues.append("水印字号必须在 1 到 1000 之间")
+                    }
+                case .image:
+                    // Wave2：logo 存在性/可解码性由 ExportService.validate 在预检/执行
+                    // 时强制校验；这里只做编辑期的形状与区间校验（不访问磁盘）。
+                    if watermark.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        issues.append("水印图片不能为空")
+                    }
+                    if let scale = watermark.imageScale,
+                       !scale.isFinite || scale < 0.02 || scale > 1 {
+                        issues.append("水印宽度比例必须在 2% 到 100% 之间")
+                    }
+                    if let margin = watermark.imageMargin,
+                       !margin.isFinite || margin < 0 || margin > 0.25 {
+                        issues.append("水印边距必须在 0% 到 25% 之间")
+                    }
                 }
                 if !watermark.opacity.isFinite || watermark.opacity < 0
                     || watermark.opacity > 1 {
                     issues.append("水印透明度必须在 0 到 1 之间")
-                }
-                if let fontSize = watermark.fontSize,
-                   !fontSize.isFinite || fontSize < 1 || fontSize > 1000 {
-                    issues.append("水印字号必须在 1 到 1000 之间")
                 }
             }
         }
@@ -236,6 +315,33 @@ extension ExportViewModel {
         }
         if !Self.isValidDeliveryDestination(recipe.destination) {
             issues.append("子目录必须是交付根内的相对路径，且不能包含 ..")
+        }
+        // Wave2：子目录 token 规则复用协议层的唯一校验实现（不复制一套 token 表）。
+        if let subdirectory = recipe.subdirectory,
+           ExportSubdirectory.validationReason(for: subdirectory.template) != nil {
+            // 提示文案用固定 key：具体原因（unknownToken/absolutePath/…）只进执行期
+            // 错误 params，不拼进可翻译文案（否则 en 表无法覆盖）。
+            issues.append(
+                "子目录规则无效：只支持 {yyyy} {MM} {dd} {client} {event} {orig}，不能含绝对路径、.. 或未知 token")
+        }
+        if let sheet = recipe.contactSheet {
+            if sheet.columns < 1 || sheet.columns > 12 {
+                issues.append("联系表列数必须在 1 到 12 之间")
+            }
+            if sheet.rows < 1 || sheet.rows > 20 {
+                issues.append("联系表行数必须在 1 到 20 之间")
+            }
+            if let margin = sheet.margin, !margin.isFinite || margin < 0 || margin > 200 {
+                issues.append("联系表边距必须在 0 到 200 之间")
+            }
+        }
+        if let gallery = recipe.gallery {
+            if gallery.thumbnailMaxDimension < 160 || gallery.thumbnailMaxDimension > 2048 {
+                issues.append("画廊缩略图长边必须在 160 到 2048 之间")
+            }
+            if gallery.largeMaxDimension < 320 || gallery.largeMaxDimension > 8192 {
+                issues.append("画廊大图长边必须在 320 到 8192 之间")
+            }
         }
         return issues
     }
@@ -309,10 +415,12 @@ extension ExportViewModel {
     }
 
     static var defaultRecipes: [OutputRecipe] {
+        // Wave2：联系表/画廊改由每条配方自己的 artifacts 决定（旧实现是 run 级开关
+        // 强行覆盖所有配方）；默认配方保留"Web 配方同时出联系表 + 画廊"的旧观感。
         [
             OutputRecipe(name: "Web 2048", format: .jpeg, quality: 82,
                          maxDimension: 2048, includeMetadata: true,
-                         artifacts: [.photos, .contactSheet]),
+                         artifacts: [.photos, .contactSheet, .gallery]),
             OutputRecipe(name: "Print TIFF", format: .tiff, quality: nil,
                          maxDimension: nil, includeMetadata: true, artifacts: [.photos]),
         ]
@@ -484,13 +592,9 @@ extension ExportViewModel {
 
     /// P2-1：先把交付参数校验/冻结成输入，交给确认 sheet；确认前不执行。
     ///
-    /// - Parameters:
-    ///   - contactSheetOptions / galleryOptions: 联系表/画廊参数（P0-6 可配）。
-    ///     为 nil = 使用默认值（标题回落工作区名），保持升级前行为；页面传编辑器草稿。
-    public func prepareDeliveryInput(
-        contactSheetOptions: OutputContactSheetOptions? = nil,
-        galleryOptions: OutputGalleryOptions? = nil
-    ) async -> OutputRunInput? {
+    /// Wave2：联系表/画廊参数已迁到配方级（OutputRecipe.contactSheet/gallery），
+    /// 页面不再传 run 级草稿；旧配方缺参数时在这里物化默认值（标题回落工作区名）。
+    public func prepareDeliveryInput() async -> OutputRunInput? {
         guard !isDelivering else { return nil }
         let root = effectiveDeliveryRoot
         guard !root.isEmpty else {
@@ -514,10 +618,7 @@ extension ExportViewModel {
             return nil
         }
         persistDeliveryRecipes()
-        return makeDeliveryInput(
-            root: root,
-            contactSheetOptions: contactSheetOptions,
-            galleryOptions: galleryOptions)
+        return makeDeliveryInput(root: root)
     }
 
 
@@ -544,6 +645,8 @@ extension ExportViewModel {
                 format: recipe.format,
                 quality: recipe.quality,
                 maxDimension: recipe.maxDimension,
+                // Wave2：子目录规则也要进预检，否则确认弹窗的文件名与真实写盘不一致。
+                subdirectory: recipe.subdirectory,
                 // P0-6：预检必须与 OutputService.run 的映射同源，否则确认 sheet 报的
                 // 结果与真正执行的参数不同（配方编辑器里改色彩空间/DPI/锐化就失配）。
                 colorSpace: recipe.colorSpace,
@@ -610,70 +713,49 @@ extension ExportViewModel {
 
     /// 冻结成 OutputRunInput（确认前唯一构造点）。
     ///
-    /// P0-6：这里把**编辑器记法**翻译成协议契约：
-    /// - 相对子目录（配方 destination 不以 / 开头）→ 拼到交付根下的绝对路径
-    ///   （OutputRunInput/OutputRecipe 的 destination 契约要求绝对路径）；
-    /// - 联系表/画廊参数取编辑器草稿，nil 时回退默认值（标题回落工作区名）。
-    func makeDeliveryInput(
-        root: String,
-        contactSheetOptions: OutputContactSheetOptions?,
-        galleryOptions: OutputGalleryOptions?
-    ) -> OutputRunInput {
-        // 开关直接落到每条配方的 artifacts：编排层只按 artifacts 建联系表/画廊。
+    /// Wave2：这里把**编辑器记法**翻译成协议契约：
+    /// - 配方 destination 为相对子目录时 → 拼到交付根下的绝对路径
+    ///   （协议 destination 契约要求绝对路径）；
+    /// - 联系表/画廊参数已按配方保存；缺参数但勾了产物时物化默认值
+    ///   （标题回落工作区名，与迁移前观感一致）；
+    /// - 子目录 token 规则（recipe.subdirectory）原样透传给编排器逐字段转发。
+    func makeDeliveryInput(root: String) -> OutputRunInput {
         let recipes = deliveryRecipes.map { recipe -> OutputRecipe in
             var updated = recipe
             // 相对子目录 → 绝对路径；非法值已被 prepareDeliveryInput 前置门禁拦下。
             if let resolved = resolvedDeliveryDestination(recipe.destination, root: root) {
                 updated.destination = resolved
             }
-            var artifacts = Set(updated.artifacts)
-            if deliveryIncludeContactSheet {
-                artifacts.insert(.contactSheet)
-            } else {
-                artifacts.remove(.contactSheet)
+            // 旧配方只有 artifacts、没有 per-recipe 参数：按 run 级默认物化一份，
+            // 保证 OutputService 拿到的永远是「配方自带参数」。
+            if updated.artifacts.contains(.contactSheet), updated.contactSheet == nil {
+                var sheet = OutputContactSheetOptions()
+                if sheet.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    sheet.title = sessionName ?? ""
+                }
+                updated.contactSheet = sheet
             }
-            if deliveryIncludeGallery {
-                artifacts.insert(.gallery)
-            } else {
-                artifacts.remove(.gallery)
+            if updated.artifacts.contains(.gallery), updated.gallery == nil {
+                var gallery = OutputGalleryOptions()
+                if gallery.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    gallery.title = sessionName ?? "Gallery"
+                }
+                updated.gallery = gallery
             }
             // 顺序必须稳定：artifacts 会进配方指纹/job dedupeKey。
-            updated.artifacts = OutputArtifactKind.allCases.filter { artifacts.contains($0) }
+            let keptArtifacts = updated.artifacts
+            updated.artifacts = OutputArtifactKind.allCases.filter { keptArtifacts.contains($0) }
             return updated
         }
+        // run 级 contactSheet/gallery 留空：新协议下参数属于配方；OutputService 仍保留
+        // 「配方 nil → run 级」的回落路径给旧 checkpoint 用。
         return OutputRunInput(
             sessionId: sessionId,
             scope: scope,
             selectedPhotoIds: scope == .selected ? selectedPhotoIds : nil,
             destinationRoot: root,
             recipes: recipes,
-            contactSheet: deliveryIncludeContactSheet
-                ? resolvedContactSheetOptions(contactSheetOptions)
-                : nil,
-            gallery: deliveryIncludeGallery
-                ? resolvedGalleryOptions(galleryOptions)
-                : nil)
-    }
-
-    /// 联系表参数：未传 = 默认值；标题留空回落工作区名（与升级前行为一致）。
-    private func resolvedContactSheetOptions(
-        _ options: OutputContactSheetOptions?
-    ) -> OutputContactSheetOptions {
-        var value = options ?? OutputContactSheetOptions()
-        if value.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            value.title = sessionName ?? ""
-        }
-        return value
-    }
-
-    /// 画廊参数：未传 = 默认值；标题留空回落工作区名（与升级前行为一致）。
-    private func resolvedGalleryOptions(
-        _ options: OutputGalleryOptions?
-    ) -> OutputGalleryOptions {
-        var value = options ?? OutputGalleryOptions()
-        if value.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            value.title = sessionName ?? "Gallery"
-        }
-        return value
+            contactSheet: nil,
+            gallery: nil)
     }
 }

@@ -23,6 +23,7 @@
 // 操作（contains / removeItems / 排序压缩）不过滤——否则集合里"看不见的成员行"
 // 会永远删不掉，压缩也会漏行撞位。
 import Foundation
+import GatherProtocol
 
 /// collections 行（item_count 由子查询填充）。
 public struct CollectionRow: Equatable, Sendable {
@@ -513,6 +514,68 @@ public struct CollectionRepo: Sendable {
             """).query([.text(collectionId)]).map { row in
             (photoId: row[0].textValue ?? "", position: Int(row[1].intValue ?? 0))
         }
+    }
+
+    // MARK: - 集合运算（Wave2 / task-15）
+
+    /// 并 / 交 / 差 的成员 id 解析（同会话；已移出工作区的照片不计入）。
+    ///
+    /// 为什么在仓储层做组合而不是一条 SQL：三种运算的"顺序语义"不同
+    /// （union 保留各集合拼接序；intersection/difference 以第一个集合为准），
+    /// 而每个集合的成员已经是 position 有序的；逐集合取序再在 Swift 里组合比
+    /// 拼 UNION/EXCEPT 更可读，也避免 N 个集合的 SQL 膨胀。成员规模在集合量级
+    /// （一次策展几千张），内存组合可接受。
+    public func setOperationPhotoIds(
+        sessionId: String,
+        collectionIds: [String],
+        operation: CollectionSetOperation
+    ) throws -> [String] {
+        let orderedIds = Self.unique(collectionIds)
+        guard !orderedIds.isEmpty else { return [] }
+        var members: [[String]] = []
+        members.reserveCapacity(orderedIds.count)
+        for collectionId in orderedIds {
+            members.append(
+                try visibleMemberPhotoIds(collectionId: collectionId, sessionId: sessionId))
+        }
+        guard let first = members.first else { return [] }
+        let rest = members.dropFirst()
+        switch operation {
+        case .union:
+            var seen = Set<String>()
+            var result: [String] = []
+            for list in members {
+                for photoId in list where seen.insert(photoId).inserted {
+                    result.append(photoId)
+                }
+            }
+            return result
+        case .intersection:
+            let keep = rest.reduce(into: Set(first)) { partial, list in
+                partial.formIntersection(list)
+            }
+            return first.filter { keep.contains($0) }
+        case .difference:
+            let excluded = rest.reduce(into: Set<String>()) { partial, list in
+                partial.formUnion(list)
+            }
+            return first.filter { !excluded.contains($0) }
+        }
+    }
+
+    /// 某集合在指定会话内的可见成员（position 顺序；排除已移出工作区的照片）。
+    private func visibleMemberPhotoIds(
+        collectionId: String, sessionId: String
+    ) throws -> [String] {
+        try connection.prepare("""
+            SELECT ci.photo_id
+            FROM collection_items ci
+            JOIN photos p ON p.id = ci.photo_id
+            WHERE ci.collection_id = ?
+              AND p.session_id = ?
+              AND \(PhotoVisibility.visiblePredicate(alias: "p"))
+            ORDER BY ci.position, ci.photo_id
+            """).query([.text(collectionId), .text(sessionId)]).compactMap { $0[0].textValue }
     }
 
     // MARK: - 内部

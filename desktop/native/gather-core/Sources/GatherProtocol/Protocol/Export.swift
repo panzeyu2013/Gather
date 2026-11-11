@@ -75,19 +75,162 @@ public enum ExportWatermarkPosition: String, Codable, CaseIterable, Equatable, S
 }
 
 // TS: ExportOptions.watermark（内联匿名对象）
+//
+// Wave2：image 类型落地（logo PNG 合成）。text 用 content 当水印文字；
+// image 用 content 当 logo 文件路径，imageScale/imageMargin 是可选的版式参数
+//（旧 JSON 没有这两个键 → nil = 0.2 / 0.02 的默认版式，行为可预期）。
 public struct ExportWatermark: Codable, Equatable, Sendable {
     public var type: ExportWatermarkType
+    /// text = 水印文字；image = logo 绝对路径（PNG/JPEG/TIFF，ImageIO 可解即可）。
     public var content: String
     public var position: ExportWatermarkPosition
     public var opacity: Double
     public var fontSize: Double? // TS: fontSize?
+    /// image 专用：logo 宽度上限 = 输出宽度 × 该比例（0.02-1）；nil = 0.2。
+    /// 只缩小不放大：logo 比目标宽度小的时候保持原始像素。
+    public var imageScale: Double?
+    /// image 专用：logo 距画面边缘的距离 = 输出宽度 × 该比例（0-0.25）；
+    /// nil = 0.02；position == .center 时忽略。
+    public var imageMargin: Double?
 
-    public init(type: ExportWatermarkType, content: String, position: ExportWatermarkPosition, opacity: Double, fontSize: Double? = nil) {
+    public init(
+        type: ExportWatermarkType,
+        content: String,
+        position: ExportWatermarkPosition,
+        opacity: Double,
+        fontSize: Double? = nil,
+        imageScale: Double? = nil,
+        imageMargin: Double? = nil
+    ) {
         self.type = type
         self.content = content
         self.position = position
         self.opacity = opacity
         self.fontSize = fontSize
+        self.imageScale = imageScale
+        self.imageMargin = imageMargin
+    }
+}
+
+/// 导出子目录规则（Wave2 新增，无 TS 对应）。
+///
+/// 模板按 token 生成**相对**输出目录（相对 ExportOptions.destination；可用 "/"
+/// 分多级）：
+/// - {yyyy} {MM} {dd}：导出当天（本地时区）的年/月/日；
+/// - {client} {event}：本规则里的客户名/活动名（空值 = 该目录段在解析时丢弃）；
+/// - {orig}：源文件主名（**逐张**解析，会生成照片级子目录）。
+///
+/// 非法 token、绝对路径、路径穿越（..）与空目录段由 ExportService.validate 拒绝；
+/// token 取值里的路径分隔符会被替换成 "_"，不会逃出 destination。
+public struct ExportSubdirectory: Codable, Equatable, Sendable {
+    /// 例："{client}/{yyyy}-{MM}-{dd}"。
+    public var template: String
+    /// {client} 的取值；nil/空 → 该段在解析时丢弃。
+    public var client: String?
+    /// {event} 的取值；nil/空 → 该段在解析时丢弃。
+    public var event: String?
+
+    public init(template: String, client: String? = nil, event: String? = nil) {
+        self.template = template
+        self.client = client
+        self.event = event
+    }
+
+    /// 允许的 token（大小写敏感：{yyyy} 不等于 {YYYY}）。
+    public static let supportedTokens: Set<String> = [
+        "yyyy", "MM", "dd", "client", "event", "orig",
+    ]
+
+    /// 模板静态校验：nil = 合法，否则返回非法原因（进 EXPORT_PARAMS_INVALID 的 reason）。
+    public static func validationReason(for template: String) -> String? {
+        let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("/") { return "absolutePath" }
+        if trimmed.contains("\\") { return "backslash" }
+        if trimmed.contains("\0") { return "nul" }
+        for segment in trimmed.split(separator: "/", omittingEmptySubsequences: false) {
+            let text = segment.trimmingCharacters(in: .whitespaces)
+            if text.isEmpty { return "emptySegment" }
+            if text == "." || text == ".." { return "pathTraversal" }
+            if let bad = firstUnknownToken(in: text) {
+                // 结构类错误（未闭合/悬空花括号）直接上报；未知 token 才带前缀。
+                // 最终 reason 表：absolutePath / backslash / nul / emptySegment /
+                // pathTraversal / unclosedToken / strayBrace / unknownToken:{name}。
+                return bad.hasPrefix("{") ? "unknownToken:\(bad)" : bad
+            }
+        }
+        return nil
+    }
+
+    /// 第一个非法 token（含悬空 "{" / "}"）；nil = 全部合法。
+    private static func firstUnknownToken(in segment: String) -> String? {
+        var index = segment.startIndex
+        while index < segment.endIndex {
+            let character = segment[index]
+            if character == "}" { return "strayBrace" }
+            guard character == "{" else {
+                index = segment.index(after: index)
+                continue
+            }
+            guard let close = segment[index...].firstIndex(of: "}") else {
+                return "unclosedToken"
+            }
+            let token = String(segment[segment.index(after: index)..<close])
+            if !supportedTokens.contains(token) { return "{\(token)}" }
+            index = segment.index(after: close)
+        }
+        return nil
+    }
+
+    /// 解析成相对子目录（无首尾 "/"）；模板为空 / 解析后为空 → nil。
+    ///
+    /// 结果只含相对路径段：{client} 里带 "/"、".." 之类会被清洗成安全值，
+    /// 永远不会出现绝对路径或 ".." 段。
+    public func resolved(originalFilename: String, date: Date = Date()) -> String? {
+        let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let components = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        let stem = (originalFilename as NSString).deletingPathExtension
+        let orderedValues: [(token: String, value: String)] = [
+            ("{yyyy}", String(format: "%04d", components.year ?? 0)),
+            ("{MM}", String(format: "%02d", components.month ?? 0)),
+            ("{dd}", String(format: "%02d", components.day ?? 0)),
+            ("{client}", Self.sanitizedTokenValue(client)),
+            ("{event}", Self.sanitizedTokenValue(event)),
+            ("{orig}", Self.sanitizedTokenValue(stem)),
+        ]
+        var segments: [String] = []
+        for segment in trimmed.split(separator: "/", omittingEmptySubsequences: false) {
+            var expanded = String(segment)
+            for pair in orderedValues {
+                expanded = expanded.replacingOccurrences(of: pair.token, with: pair.value)
+            }
+            // 未知 token 应由 validate 拦下；这里再兜一层，避免绕过校验的调用方
+            // 把 "{foo}" 当目录名写盘。
+            if expanded.contains("{") || expanded.contains("}") { continue }
+            let cleaned = Self.sanitizedSegment(expanded)
+            if cleaned.isEmpty || cleaned == "." || cleaned == ".." { continue }
+            segments.append(cleaned)
+        }
+        return segments.isEmpty ? nil : segments.joined(separator: "/")
+    }
+
+    /// token 值只作为一个目录段使用：路径分隔符/控制字符一律换成 "_"。
+    private static func sanitizedTokenValue(_ value: String?) -> String {
+        let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return "" }
+        return sanitizedSegment(raw)
+    }
+
+    /// 目录段清洗：非法文件名字符/控制字符 → "_"，去首尾空格与点（防 "."/".."）。
+    private static func sanitizedSegment(_ value: String) -> String {
+        let forbidden = CharacterSet(charactersIn: "<>:\"/\\|?*\0")
+            .union(.controlCharacters)
+        let mapped = value.unicodeScalars.map { scalar -> String in
+            forbidden.contains(scalar) ? "_" : String(scalar)
+        }
+        return mapped.joined()
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ."))
     }
 }
 
@@ -113,6 +256,9 @@ public struct ExportOptions: Codable, Equatable, Sendable {
     public var format: ExportFormat
     public var quality: Double? // TS: quality?
     public var maxDimension: Int? // TS: maxDimension?
+    /// Wave2：输出子目录规则（token 模板）；nil = 直接写到 destination。
+    /// 预览的 outputName 会带相对子目录前缀，执行时按子目录建目录。
+    public var subdirectory: ExportSubdirectory?
     /// P0-5 / Wave1：目标色彩空间；nil = 不转换（保持原片色彩）。
     public var colorSpace: ExportColorSpace?
     /// P0-5 / Wave1：写入成片元数据的 DPI（JPEG JFIF density / TIFF resolution）；
@@ -133,6 +279,7 @@ public struct ExportOptions: Codable, Equatable, Sendable {
         format: ExportFormat,
         quality: Double? = nil,
         maxDimension: Int? = nil,
+        subdirectory: ExportSubdirectory? = nil,
         colorSpace: ExportColorSpace? = nil,
         dpi: Int? = nil,
         sharpening: ExportSharpening? = nil,
@@ -148,6 +295,7 @@ public struct ExportOptions: Codable, Equatable, Sendable {
         self.format = format
         self.quality = quality
         self.maxDimension = maxDimension
+        self.subdirectory = subdirectory
         self.colorSpace = colorSpace
         self.dpi = dpi
         self.sharpening = sharpening

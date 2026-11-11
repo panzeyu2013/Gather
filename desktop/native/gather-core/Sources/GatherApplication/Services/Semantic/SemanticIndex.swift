@@ -345,6 +345,87 @@ public final class SemanticIndex {
             scanned: scan.scanned, skipped: scan.skipped)
     }
 
+    // MARK: 多选种子（图搜图·集合版）
+
+    /// 以**多张选中照片的平均向量**做相似检索（Wave2 / task-14）。
+    ///
+    /// 为什么平均而不是逐张并集：单张构图抖动会把"同一场景但换了机位"的照片排除，
+    /// 平均向量把这几张的共同内容拉到中心，语义更接近"找这类照片"。
+    /// 与单张版共用同一套分块扫描/有界 top-K，只是查询向量不同。
+    public func similar(
+        to photoIds: [String],
+        sessionId: String,
+        limit: Int = 50,
+        minSimilarity: Double = SemanticIndex.defaultMinSimilarity
+    ) throws -> SemanticSearchOutcome {
+        guard limit > 0 else {
+            return SemanticSearchOutcome(
+                sessionId: sessionId, method: .featurePrint, hits: [], scanned: 0, skipped: 0,
+                unavailableReason: "limit must be positive")
+        }
+        let seeds = Array(Set(photoIds.filter { !$0.isEmpty })).sorted()
+        guard !seeds.isEmpty else {
+            return SemanticSearchOutcome(
+                sessionId: sessionId, method: .featurePrint, hits: [], scanned: 0, skipped: 0,
+                unavailableReason: "semantic_unavailable: 没有可用的种子照片")
+        }
+        var vectors: [[Float]] = []
+        var seedSkipped = 0
+        for photoId in seeds {
+            guard let vector = try vector(photoId: photoId)?.vector, !vector.isEmpty else {
+                seedSkipped += 1
+                continue
+            }
+            // 只平均同维向量：系统升级后 2048 vs 1024 混排会让余弦恒 -1。
+            if let first = vectors.first, first.count != vector.count {
+                seedSkipped += 1
+                continue
+            }
+            vectors.append(vector)
+        }
+        guard let query = Self.averageVector(vectors) else {
+            return SemanticSearchOutcome(
+                sessionId: sessionId, method: .featurePrint, hits: [], scanned: 0,
+                skipped: seedSkipped,
+                unavailableReason: "semantic_unavailable: 选中照片没有语义向量")
+        }
+        let seedIds = Set(seeds)
+        var hits: [SemanticSearchHit] = []
+        let scan = try scanVectors(
+            sessionId: sessionId,
+            limit: Self.maxScanRows,
+            preferredDimension: query.count
+        ) { row in
+            guard !seedIds.contains(row.photoId) else { return }
+            let similarity = Self.cosine(query, row.vector)
+            guard similarity >= minSimilarity else { return }
+            Self.insertBounded(
+                SemanticSearchHit(
+                    photoId: row.photoId, similarity: similarity,
+                    labels: row.labels, matchedLabels: []),
+                into: &hits,
+                capacity: limit,
+                rankedBefore: Self.similarityRankedBefore)
+        }
+        return SemanticSearchOutcome(
+            sessionId: sessionId, method: .featurePrint, hits: hits,
+            scanned: scan.scanned, skipped: scan.skipped + seedSkipped)
+    }
+
+    /// 等权平均向量（空输入/长度不一致 → nil；长度不一致只取第一个维度的那批）。
+    public static func averageVector(_ vectors: [[Float]]) -> [Float]? {
+        guard let first = vectors.first, !first.isEmpty else { return nil }
+        var sum = [Float](repeating: 0, count: first.count)
+        var used = 0
+        for vector in vectors where vector.count == first.count {
+            for index in vector.indices { sum[index] += vector[index] }
+            used += 1
+        }
+        guard used > 0 else { return nil }
+        let divisor = Float(used)
+        return sum.map { $0 / divisor }
+    }
+
     // MARK: 标签匹配（文搜）
 
     /// 标签文本匹配：查询词命中任一标签（前缀/包含，大小写不敏感）→ Jaccard 排序。

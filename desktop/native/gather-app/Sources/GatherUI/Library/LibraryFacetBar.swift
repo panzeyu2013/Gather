@@ -1,5 +1,7 @@
 // desktop/native/gather-app/Sources/GatherUI/Library/LibraryFacetBar.swift
 // P1 / C：Library 的 facet 栏（相机 / 镜头 / ISO / 年份 / 色标 / 关键词）。
+// Wave2 / task-14：新增场景（scene）与人物（person）两维——scene 的桶值写进
+// LibraryFilterState.scene（keyword_path 子树），person 复用既有"人物"文本字段。
 //
 // P1 下一波 §3.7.2：真正的实现已移到共享的 Filtering/FacetBar.swift（Gallery 复用同一份）；
 // 本文件保留为**薄适配器**——init 签名（groups/filter/l10n/onCommit）与行为逐字不变，
@@ -38,6 +40,10 @@ struct LibraryFacetBar: View {
             "year": filter.year,
             "label": filter.label,
             "keyword": filter.keyword,
+            // Wave2 / task-14：scene 走 keyword_path 子树（不是扁平 keyword 文本），
+            // person 复用图库既有的"人物"字段（contains 规则）。
+            "scene": filter.scene,
+            "person": filter.person,
         ]
     }
 
@@ -49,6 +55,8 @@ struct LibraryFacetBar: View {
         case "year": filter.year = value
         case "label": filter.label = value
         case "keyword": filter.keyword = value
+        case "scene": filter.scene = value
+        case "person": filter.person = value
         default: break
         }
     }

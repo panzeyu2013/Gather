@@ -35,8 +35,17 @@ public enum FacetDimension: String, Codable, CaseIterable, Sendable {
     case year
     case label
     case keyword
+    /// Wave2 / task-14：场景/事件标签（photo_keywords 中 `SemanticKeywordPath.scene` 子树的下一段）。
+    case scene
+    /// Wave2 / task-14：人物（person_photos；桶值 = persons.name）。
+    case person
 
     /// 用于剔除同维规则时匹配的 FilterRule.field。
+    ///
+    /// scene 复用 keyword_path：场景桶的选择规则就是 `keyword_path starts_with`，
+    /// 这样"选了一个场景之后场景维仍然列其它场景（并集）、其它维按场景收窄"的
+    /// 口径与 keyword 维完全一致，不需要第二套规则类型。
+    /// person 复用图库既有的 `person` 规则字段（PhotoFilterQuery 的 persons EXISTS）。
     public var field: String {
         switch self {
         case .camera: FilterFields.cameraModel
@@ -45,8 +54,14 @@ public enum FacetDimension: String, Codable, CaseIterable, Sendable {
         case .year: FilterFields.dateTaken
         case .label: FilterFields.label
         case .keyword: FilterFields.keywordPath
+        case .scene: FilterFields.keywordPath
+        case .person: Self.personField
         }
     }
+
+    /// 图库 `person` 过滤条件的字段名（FilterFields 在 Protocol 里没有该常量，
+    /// 这里保留唯一副本；PhotoFilterQuery.buildPersonCondition 消费同一字面量）。
+    static let personField = "person"
 
     /// SQL 投影：必须与 field 的语义一致（year 是 date_taken 的前 4 位）。
     /// keyword 维不在 photo_metadata_cache 上，投影见 keywordBuckets。
@@ -57,7 +72,9 @@ public enum FacetDimension: String, Codable, CaseIterable, Sendable {
         case .iso: "CAST(pmc.iso AS TEXT)"
         case .year: "substr(pmc.date_taken, 1, 4)"
         case .label: "pmc.label"
-        case .keyword: ""
+        // keyword/scene/person 不在 photo_metadata_cache 单行上，各有专用 SQL：
+        // keyword → keywordBuckets、scene → keywordBuckets(prefix:)、person → personBuckets。
+        case .keyword, .scene, .person: ""
         }
     }
 }
@@ -86,9 +103,23 @@ public final class FacetQuery {
         limit: Int = 60,
         keywordPrefix: String? = nil
     ) throws -> [FacetBucket] {
-        if dimension == .keyword {
+        switch dimension {
+        case .keyword:
             return try keywordBuckets(
                 sessionId: sessionId, criteria: criteria, limit: limit, prefix: keywordPrefix)
+        case .scene:
+            // 场景桶 = 默认根子树下的下一段；桶值即"图库 scene 字段"的值
+            // （选择规则 keyword_path starts_with <root>|<桶值>）。
+            return try keywordBuckets(
+                sessionId: sessionId,
+                criteria: criteria,
+                limit: limit,
+                prefix: SemanticKeywordPath.scene)
+        case .person:
+            return try personBuckets(
+                sessionId: sessionId, criteria: criteria, limit: limit)
+        case .camera, .lens, .iso, .year, .label:
+            break
         }
         let scoped = criteria.removing(field: dimension.field)
         let clause = try filterQuery.whereClause(scoped)
@@ -180,6 +211,41 @@ public final class FacetQuery {
             params.append(.text(KeywordPathSQL.subtreeLowerBound(prefix)))
             params.append(.text(KeywordPathSQL.subtreeUpperBound(prefix)))
         }
+        params.append(.int(Int64(max(1, limit))))
+        return try connection.prepare(sql).query(params).map { row in
+            FacetBucket(value: row[0].textValue ?? "", count: Int(row[1].intValue ?? 0))
+        }
+    }
+
+    /// person 维：桶值 = persons.name，计数口径与网格一致
+    /// （COUNT(DISTINCT COALESCE(NULLIF(asset_id,''), id))，同 keyword 维）。
+    ///
+    /// 为什么用 EXISTS 式的 JOIN 而不是 person_photos 行数：一张照片可能有多条
+    /// face_observations 指向同一个人，行数会把人物计数虚高。
+    /// 同维剔除：`criteria.removing(field: "person")`，否则选了"张三"后人物维只剩张三。
+    public func personBuckets(
+        sessionId: String,
+        criteria: FilterGroup,
+        limit: Int = 60
+    ) throws -> [FacetBucket] {
+        let scoped = criteria.removing(field: FacetDimension.person.field)
+        let clause = try filterQuery.whereClause(scoped)
+        let sessionFilter = sessionId == "__global__" ? "1=1" : "p.session_id = ?"
+        let sql = """
+            SELECT per.name AS v,
+                   COUNT(DISTINCT COALESCE(NULLIF(p.asset_id, ''), p.id)) AS n
+            FROM person_photos pp
+            JOIN persons per ON per.id = pp.person_id
+            JOIN photos p ON p.id = pp.photo_id
+            LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
+            WHERE \(sessionFilter) AND (\(clause.sql.isEmpty ? "1=1" : clause.sql))
+              AND \(PhotoVisibility.visiblePredicate(alias: "p"))
+              AND per.name IS NOT NULL AND per.name <> ''
+            GROUP BY per.name
+            ORDER BY n DESC, v ASC
+            LIMIT ?
+            """
+        var params: [DBValue] = sessionId == "__global__" ? clause.params : [.text(sessionId)] + clause.params
         params.append(.int(Int64(max(1, limit))))
         return try connection.prepare(sql).query(params).map { row in
             FacetBucket(value: row[0].textValue ?? "", count: Int(row[1].intValue ?? 0))

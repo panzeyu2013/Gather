@@ -48,6 +48,9 @@ struct CompositionCore {
     let qualityService: QualityService
     /// 模型级初审信号（人脸几何/采集质量/合焦/审美），quality.score 第二段执行。
     let modelReviewService: ModelReviewService
+    /// Wave2 / task-14：场景标签（photo_semantics）→ 关键词写回。
+    /// 注入点在 FeatureAPIs.makePhoto（Lead 收口：FeatureAPIs 被 task-13 占用）。
+    let semanticKeywordService: SemanticKeywordService
     let indexerService: IndexerService
     let metadataService: MetadataService
     /// 交付仓储（LiveMetadataAPI 的 conflicts/orphans 读入口，同库同键）。
@@ -334,6 +337,17 @@ struct CompositionCore {
             semanticsEnabled: {
                 settingsService.bool(.semanticIndexEnabled)
             })
+        // Wave2 / task-14：场景标签 → 关键词写回。关键词索引与写回桥共用同一个
+        // KeywordRepo（同一 db）：写盘后 syncFromCache 立刻可见到 facet/筛选。
+        let keywordIndexRepo = KeywordRepo(connection: db)
+        let semanticKeywordService = SemanticKeywordService(
+            semantics: PhotoSemanticsRepo(connection: db),
+            metadata: metadataService,
+            keywords: keywordIndexRepo,
+            indexSync: KeywordIndexSync(
+                index: keywordIndexRepo,
+                metadata: MetadataCacheRepo(connection: db)),
+            photoRepo: photoRepo)
         let indexerService = IndexerService(
             // WP3b-2：扫描写路径/派生失效 SQL 在 IndexerRepo，事务经 TransactionRunner。
             indexer: IndexerRepo(connection: db), transactions: db,
@@ -380,6 +394,7 @@ struct CompositionCore {
             assetRepo: assetRepo, faceKwService: resolvedFaceKwService,
             personRepo: personRepo,
             qualityService: qualityService, modelReviewService: modelReviewService,
+            semanticKeywordService: semanticKeywordService,
             indexerService: indexerService,
             metadataService: metadataService, deliveryRepo: deliveryRepo,
             metadataMutationService: metadataMutationService,

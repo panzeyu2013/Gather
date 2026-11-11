@@ -45,6 +45,9 @@ public struct LibraryFilterState: Equatable, Sendable {
     public var directory = ""
     public var volume = ""
     public var person = ""
+    /// Wave2 / task-14：场景标签 bucket 值（facet 维 `scene`；选择规则是
+    /// `keyword_path starts_with "AI|场景|<value>"`，不是扁平 keyword contains）。
+    public var scene = ""
     public var duplicates = ""
     public var recentDays = ""
     // P1 / C：facet 维（单值选择；空串 = 不限）
@@ -118,6 +121,13 @@ public func buildLibraryCriteria(_ state: LibraryFilterState) -> FilterGroup {
     let person = state.person.trimmingCharacters(in: .whitespaces)
     if !person.isEmpty {
         add("person", .contains, .string(person))
+    }
+    // Wave2 / task-14：scene facet 的选择必须等价于 FacetQuery.scene 的计数口径
+    // （keyword_path 子树）；用 contains 会把 "beach" 误命中 "beach-wedding" 的兄弟节点。
+    let scene = state.scene.trimmingCharacters(in: .whitespaces)
+    if !scene.isEmpty {
+        add(FilterFields.keywordPath, .startsWith,
+            .string("\(SemanticKeywordPath.scene)|\(scene)"))
     }
     if !state.duplicates.isEmpty {
         add("has_duplicates", .eq, .bool(state.duplicates == "yes"))
@@ -297,7 +307,7 @@ public final class LibraryViewModel {
             let next = try await provider.facets(
                 criteria: criteria,
                 sessionId: sessionFilter.isEmpty ? nil : sessionFilter,
-                dimensions: ["camera", "lens", "iso", "year", "label"],
+                dimensions: ["camera", "lens", "iso", "year", "label", "scene", "person"],
                 limit: Self.facetLimit
             )
             guard facetsRequestID == requestID else { return }

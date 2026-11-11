@@ -83,6 +83,11 @@ public struct CollectionSidebar: View {
     @State private var showCreateSheet = false
     @State private var newName = ""
     @State private var isWorking = false
+    /// Wave2（task-15）：集合运算（并/交/差）sheet 的状态。
+    @State private var showCombineSheet = false
+    @State private var combineName = ""
+    @State private var combineOperation: CollectionSetOperation = .union
+    @State private var combineSelected: Set<String> = []
     /// 新建集合失败（sheet 内展示，保留已输入名称，弹窗不关）。
     @State private var actionError: CommandError?
 
@@ -106,6 +111,7 @@ public struct CollectionSidebar: View {
         .background(GatherTheme.surfaceMuted)
         .task(id: sessionId) { await reload() }
         .sheet(isPresented: $showCreateSheet) { createSheet }
+        .sheet(isPresented: $showCombineSheet) { combineSheet }
     }
 
     // MARK: 集合
@@ -129,6 +135,16 @@ public struct CollectionSidebar: View {
                 .disabled(!canCreate)
                 .help(l10n("新建集合"))
                 .accessibilityLabel(l10n("新建集合"))
+                // Wave2（task-15）：并/交/差（至少两个集合才有意义）。
+                Button {
+                    openCombineSheet()
+                } label: {
+                    Image(systemName: "square.on.square.dashed")
+                }
+                .buttonStyle(.plain)
+                .disabled(!canCombine)
+                .help(l10n("集合运算"))
+                .accessibilityLabel(l10n("集合运算"))
             }
             if services.album == nil {
                 Text(l10n("集合未接线（宿主未注入 AlbumAPI）"))
@@ -195,6 +211,138 @@ public struct CollectionSidebar: View {
         }
         .padding(GatherMetrics.Space.xl)
         .frame(minWidth: 360)
+    }
+
+    // MARK: 集合运算（Wave2 / task-15）
+
+    /// 至少两个集合才有"运算"语义。
+    private var canCombine: Bool {
+        services.album != nil && sessionId != nil && collections.count >= 2 && !isWorking
+    }
+
+    private var combineSheet: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
+            Text(l10n("集合运算"))
+                .font(GatherFont.sectionTitle)
+            TextField(l10n("新集合名称"), text: $combineName)
+                .textFieldStyle(.roundedBorder)
+            Picker(l10n("运算方式"), selection: $combineOperation) {
+                Text(l10n("并集")).tag(CollectionSetOperation.union)
+                Text(l10n("交集")).tag(CollectionSetOperation.intersection)
+                Text(l10n("差集（第一个减去其余）")).tag(CollectionSetOperation.difference)
+            }
+            .labelsHidden()
+            Text(l10n("结果会保存成一个新的手动集合，可继续拖拽排序。"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(GatherTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(l10n("参与运算的集合"))
+                .font(GatherFont.eyebrow)
+                .foregroundStyle(GatherTheme.secondaryText)
+            ScrollView {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+                    ForEach(collections) { collection in
+                        Toggle(isOn: combineBinding(for: collection.id)) {
+                            HStack(spacing: GatherMetrics.Space.xs) {
+                                Text(collection.name)
+                                    .font(GatherFont.body)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                Text("\(collection.itemCount)")
+                                    .font(GatherFont.mono)
+                                    .foregroundStyle(GatherTheme.secondaryText)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                    }
+                }
+            }
+            .frame(maxHeight: 220)
+            if combineSelected.count < 2 {
+                Text(l10n("至少选择两个集合"))
+                    .font(GatherFont.labelRegular)
+                    .foregroundStyle(GatherTheme.secondaryText)
+            }
+            if let error = actionError {
+                Text(l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(GatherTheme.errorText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: GatherMetrics.Space.s) {
+                Spacer(minLength: 0)
+                Button(l10n("取消")) { showCombineSheet = false }
+                    .keyboardShortcut(.cancelAction)
+                    .gatherButton(.secondary)
+                Button(l10n("创建")) {
+                    Task { await combineCollections() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .gatherButton(.primary)
+                .disabled(!canSubmitCombine)
+            }
+        }
+        .padding(GatherMetrics.Space.xl)
+        .frame(minWidth: 380)
+    }
+
+    /// 提交条件：名称非空 + 至少两个集合 + 不在进行中。
+    private var canSubmitCombine: Bool {
+        !isWorking
+            && combineSelected.count >= 2
+            && !combineName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func combineBinding(for collectionId: String) -> Binding<Bool> {
+        Binding(
+            get: { combineSelected.contains(collectionId) },
+            set: { isOn in
+                if isOn {
+                    combineSelected.insert(collectionId)
+                } else {
+                    combineSelected.remove(collectionId)
+                }
+            }
+        )
+    }
+
+    private func openCombineSheet() {
+        // 默认勾选前两个集合（最常见的 2 集合运算），并按并集预填默认名。
+        combineSelected = Set(collections.prefix(2).map(\.id))
+        combineOperation = .union
+        combineName = l10n.format(
+            "%@ 合集",
+            collections.prefix(2).map(\.name).joined(separator: " + "))
+        actionError = nil
+        showCombineSheet = true
+    }
+
+    private func combineCollections() async {
+        guard let album = services.album, let sessionId else { return }
+        let name = combineName.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 选中顺序影响差集语义（第一个是被减数）：按侧栏列表顺序取，保证可预期。
+        let ordered = collections.map(\.id).filter { combineSelected.contains($0) }
+        guard !name.isEmpty, ordered.count >= 2 else { return }
+        isWorking = true
+        actionError = nil
+        defer { isWorking = false }
+        do {
+            let created = try await album.combineCollections(
+                Confirmed(CollectionCombineInput(
+                    sessionId: sessionId,
+                    name: name,
+                    operation: combineOperation,
+                    collectionIds: ordered
+                ), source: .userDialog)
+            )
+            // #11：新集合是库级数据变更（侧栏/图库「加入集合」菜单都读它）。
+            GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
+            showCombineSheet = false
+            await reload()
+            selection = .collection(created)
+        } catch {
+            actionError = CommandError(error)
+        }
     }
 
     // MARK: 跨工作区

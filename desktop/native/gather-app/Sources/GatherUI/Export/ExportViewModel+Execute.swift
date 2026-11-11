@@ -160,6 +160,25 @@ extension ExportViewModel {
             ? ExportSharpening(
                 radius: outputSharpeningRadius, intensity: outputSharpeningIntensity)
             : nil
+        // Wave2：子目录规则（空模板 = 不建子目录）；token 校验交给 ExportService.validate，
+        // 这里只做「空串 → nil」的形状转换。
+        let trimmedTemplate = subdirectoryTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subdirectory: ExportSubdirectory? = trimmedTemplate.isEmpty
+            ? nil
+            : ExportSubdirectory(
+                template: trimmedTemplate,
+                client: subdirectoryClient.trimmingCharacters(in: .whitespacesAndNewlines),
+                event: subdirectoryEvent.trimmingCharacters(in: .whitespacesAndNewlines))
+        // 对齐旧行为：文字水印勾选但文字为空时不发 watermark（不是错误）；
+        // 图片水印必须有路径，交给 watermarkValue 给出 EXPORT_PARAMS_INVALID。
+        let hasWatermarkInput = watermarkType == .image
+            || !watermarkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let watermark: ExportWatermark?
+        if transformsAllowed && watermarkEnabled && hasWatermarkInput {
+            watermark = try watermarkValue()
+        } else {
+            watermark = nil
+        }
         return ExportOptions(
             scope: scope,
             selectedPhotoIds: scope == .selected ? selectedPhotoIds.sorted() : nil,
@@ -167,13 +186,12 @@ extension ExportViewModel {
             format: format,
             quality: parsedQuality,
             maxDimension: parsedDimension,
+            subdirectory: subdirectory,
             colorSpace: transformsAllowed ? outputColorSpace : nil,
             dpi: parsedDPI,
             sharpening: sharpening,
             tiffCompression: format == .tiff ? tiffCompression : nil,
-            // 对齐 TS export.tsx:67-75：watermarkEnabled && watermarkText 才发送；
-            // 勾选但文本为空时不发 watermark，不再以 EXPORT_WATERMARK_TEXT_EMPTY 阻断。
-            watermark: transformsAllowed && watermarkEnabled && !watermarkText.isEmpty ? try watermark() : nil,
+            watermark: watermark,
             // TS export.tsx:60-61：counterStart 1 / dateFormat YYYY-MM-DD。
             naming: ExportNaming(pattern: namingPattern, counterStart: 1, dateFormat: "YYYY-MM-DD"),
             includeXmp: includeXmp,
@@ -181,18 +199,37 @@ extension ExportViewModel {
         )
     }
 
-    private func watermark() throws -> ExportWatermark {
-        let text = watermarkText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw GatherError(code: .EXPORT_WATERMARK_TEXT_EMPTY) }
-        guard let fontSize = Double(watermarkFontSize), fontSize > 0 else {
-            throw GatherError(code: .EXPORT_WATERMARK_FONT_SIZE_INVALID)
+    /// 界面水印状态 → 协议水印（Wave2：text / image 两种类型）。
+    private func watermarkValue() throws -> ExportWatermark {
+        switch watermarkType {
+        case .text:
+            let text = watermarkText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw GatherError(code: .EXPORT_WATERMARK_TEXT_EMPTY) }
+            guard let fontSize = Double(watermarkFontSize), fontSize > 0 else {
+                throw GatherError(code: .EXPORT_WATERMARK_FONT_SIZE_INVALID)
+            }
+            return ExportWatermark(
+                type: .text,
+                content: text,
+                position: watermarkPosition,
+                opacity: watermarkOpacity,
+                fontSize: fontSize
+            )
+        case .image:
+            let path = watermarkImagePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty else {
+                throw GatherError(
+                    code: .EXPORT_PARAMS_INVALID,
+                    params: ["field": "watermark.imagePath", "reason": "empty"])
+            }
+            return ExportWatermark(
+                type: .image,
+                content: path,
+                position: watermarkPosition,
+                opacity: watermarkOpacity,
+                imageScale: watermarkImageScale,
+                imageMargin: watermarkImageMargin
+            )
         }
-        return ExportWatermark(
-            type: .text,
-            content: text,
-            position: watermarkPosition,
-            opacity: watermarkOpacity,
-            fontSize: fontSize
-        )
     }
 }

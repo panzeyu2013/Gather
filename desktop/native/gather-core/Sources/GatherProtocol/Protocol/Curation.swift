@@ -187,6 +187,47 @@ public struct CollectionMoveInput: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - 集合运算（Wave2 / task-15：并 / 交 / 差）
+
+/// 两个或多个手动集合之间的集合运算。
+///
+/// 语义（全部在**同一会话内**、结果按"第一个集合的顺序优先"稳定排序）：
+/// - `union`：并集（任一集合里的照片）；
+/// - `intersection`：交集（同时属于所有集合的照片）；
+/// - `difference`：差集（属于第一个集合、且不属于其余任何集合的照片）。
+///
+/// 为什么做"物化成一个新手动集合"而不是只做动态智能集合：手动集合可以被拖拽
+/// 排序、可以直接导出/交付，且不需要 schema 变更；动态规则一侧由 FilterRule 的
+/// `collection` 字段覆盖（并/交/差可表达为规则组合）。
+public enum CollectionSetOperation: String, Codable, CaseIterable, Equatable, Sendable {
+    case union
+    case intersection
+    case difference
+}
+
+/// 集合运算输入（破坏性：会新建集合，调用点用 Confirmed 收口）。
+public struct CollectionCombineInput: Codable, Equatable, Sendable {
+    /// 结果集合所在的会话；参与运算的集合必须同属该会话。
+    public var sessionId: String
+    /// 新集合名（去空白后 1...200，同会话内不得重名）。
+    public var name: String
+    public var operation: CollectionSetOperation
+    /// 至少 1 个；`intersection`/`difference` 按数组顺序解释第一个为主集合。
+    public var collectionIds: [String]
+
+    public init(
+        sessionId: String,
+        name: String,
+        operation: CollectionSetOperation,
+        collectionIds: [String]
+    ) {
+        self.sessionId = sessionId
+        self.name = name
+        self.operation = operation
+        self.collectionIds = collectionIds
+    }
+}
+
 // MARK: - 堆栈（§3.8.2）
 
 /// 更新堆栈：name / coverPhotoId 二选一或同时；clearCover=true 时清空封面（SET NULL 语义）。

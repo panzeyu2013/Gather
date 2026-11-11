@@ -66,8 +66,19 @@ public protocol PhotoAPI: Sendable {
     /// 计数（与 search.total 同口径，但不带分页；一次 COUNT）。
     func count(_ input: SearchCountInput) async throws -> Int
 
-    /// P1：语义检索（photoId = 相似照片；labels = 标签检索）。
+    /// P1：语义检索（photoId = 单张相似；photoIds = 多选平均向量；labels = 标签检索）。
     func semanticSearch(_ query: SemanticSearchQuery) async throws -> SemanticSearchOutcomeSnapshot
+
+    // MARK: - Wave2 / task-14：场景标签写回关键词
+
+    /// 只读预览：标签会变成哪些关键词、哪些已存在（幂等判定），不写盘。
+    func semanticKeywordPlan(_ input: SemanticKeywordPlanInput) async throws -> SemanticKeywordPlan
+
+    /// 写回/撤销场景标签关键词。破坏性（改 XMP 关键词）→ Confirmed 门禁；
+    /// remove=true 撤销同一批（移除 root 子树关键词，保留其它来源关键词）。
+    func applySemanticKeywords(
+        _ input: Confirmed<SemanticKeywordApplyInput>
+    ) async throws -> SemanticKeywordApplyResult
 }
 
 // MARK: - 默认实现（P1 下一波）
@@ -101,5 +112,21 @@ public extension PhotoAPI {
             sessionId: query.sessionId, method: "unavailable", hits: [],
             scanned: 0, skipped: 0,
             unavailableReason: "语义索引未接线")
+    }
+
+    /// 未接线（Preview/测试替身）：不伪造计划。
+    func semanticKeywordPlan(_ input: SemanticKeywordPlanInput) async throws -> SemanticKeywordPlan {
+        SemanticKeywordPlan(
+            sessionId: input.sessionId, root: input.root, items: [],
+            photosWithLabels: 0, photosWithoutLabels: 0, totalAdditions: 0,
+            unavailableReason: "场景标签写回未接线")
+    }
+
+    /// 未接线（Preview/测试替身）：显式失败，不静默成功。
+    func applySemanticKeywords(
+        _ input: Confirmed<SemanticKeywordApplyInput>
+    ) async throws -> SemanticKeywordApplyResult {
+        throw GatherError.invalidParameter(
+            field: "sessionId", reason: "semantic keyword writeback is not available in this build")
     }
 }

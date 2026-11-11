@@ -222,6 +222,42 @@ public final class SessionService {
     /// P1 / D：会话内已有照片的校验和（摄取去重）。只取已回填的行。
     /// - Parameter matchingSizes: 非空时只对文件大小命中的未回填照片现算哈希；
     ///   避免一次摄取把整库未回填照片全部读一遍。
+    /// 全库导入去重目标（Wave2 / task-15）。
+    ///
+    /// 只带定位信息（不给调用方整行）：replace 策略要用 filepath/sessionId 判断
+    /// 「是否同一工作区、原路径是否可覆盖」。
+    public struct LibraryDuplicateTarget: Equatable, Sendable {
+        public let photoId: String
+        public let sessionId: String
+        public let filepath: String
+
+        public init(photoId: String, sessionId: String, filepath: String) {
+            self.photoId = photoId
+            self.sessionId = sessionId
+            self.filepath = filepath
+        }
+    }
+
+    /// 全库（跨工作区）已登记照片的校验和索引：checksum → 最早登记的一份。
+    ///
+    /// 与 photoChecksums 的分工：那个是**会话内**去重（同一张卡重复摄取）；
+    /// 这个是跨工作区去重（同一批素材在别的 Gather 工作区里已经有了一份）。
+    /// 只覆盖已回填 checksum 的行；懒索引遗留的空校验和由 checksum.backfill 补齐。
+    func libraryPhotoDuplicates(
+        matchingSizes: Set<Int>
+    ) throws -> [String: LibraryDuplicateTarget] {
+        var result: [String: LibraryDuplicateTarget] = [:]
+        for row in try photoRepo.libraryFingerprints(matchingSizes: matchingSizes) {
+            guard !row.checksum.isEmpty, result[row.checksum] == nil else { continue }
+            result[row.checksum] = LibraryDuplicateTarget(
+                photoId: row.photoId,
+                sessionId: row.sessionId,
+                filepath: row.filepath
+            )
+        }
+        return result
+    }
+
     public func photoChecksums(
         sessionId: String, matchingSizes: Set<Int>? = nil
     ) throws -> [String: String] {

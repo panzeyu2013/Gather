@@ -87,6 +87,9 @@ public final class LiveMetadataAPI: MetadataAPI {
     private let metadataDelivery: MetadataDeliveryService?
     /// P1：设置页“立即清理/备份统计”。
     private let retention: MetadataRetentionService?
+    /// Wave2 task-13：关键词库（词库树/补全/改名/合并/同义词）。可选：
+    /// 测试/预览构造点不传时词库方法走协议默认实现（显式 INVALID_PARAM）。
+    private let keywordLibrary: KeywordLibraryService?
 
     /// Sendable 由协议继承显式声明：类为 final，所有依赖都是构造后不再变更的
     /// Sendable let（Repo 只持连接、stateWriter 由 deliveryRepo 派生、
@@ -98,7 +101,8 @@ public final class LiveMetadataAPI: MetadataAPI {
         fileLock: XMPFileLock,
         settingsService: SettingsService,
         metadataDelivery: MetadataDeliveryService? = nil,
-        retention: MetadataRetentionService? = nil
+        retention: MetadataRetentionService? = nil,
+        keywordLibrary: KeywordLibraryService? = nil
     ) {
         self.metadataService = metadataService
         self.deliveryRepo = deliveryRepo
@@ -120,6 +124,7 @@ public final class LiveMetadataAPI: MetadataAPI {
         )
         self.metadataDelivery = metadataDelivery
         self.retention = retention
+        self.keywordLibrary = keywordLibrary
     }
 
     // MARK: - P1 下一波 §3.1：写回生命周期
@@ -592,6 +597,53 @@ public final class LiveMetadataAPI: MetadataAPI {
             let status = try deliveryRepo.metadataSummary(sessionId: sessionId, module: .metadata)
             return MetadataKeywordApplyResult(result: result, status: status)
         }
+    }
+
+    // MARK: - Wave2 task-13：关键词库（受控词表）
+
+    public func keywordLibrary(_ query: KeywordLibraryQuery) async throws -> [KeywordLibraryNode] {
+        let service = try requireKeywordLibrary()
+        return try map { try service.library(query) }
+    }
+
+    public func keywordSuggestions(_ query: KeywordSuggestionQuery) async throws -> [KeywordSuggestion] {
+        let service = try requireKeywordLibrary()
+        return try map { try service.suggestions(query) }
+    }
+
+    public func renameKeyword(_ input: Confirmed<KeywordRenameInput>) async throws -> KeywordMutationSummary {
+        let service = try requireKeywordLibrary()
+        return try map { try service.rename(input.value) }
+    }
+
+    public func mergeKeywords(_ input: Confirmed<KeywordMergeInput>) async throws -> KeywordMutationSummary {
+        let service = try requireKeywordLibrary()
+        return try map { try service.merge(input.value) }
+    }
+
+    public func deleteKeyword(_ input: Confirmed<KeywordDeleteInput>) async throws -> KeywordMutationSummary {
+        let service = try requireKeywordLibrary()
+        return try map { try service.delete(input.value) }
+    }
+
+    public func setKeywordSynonyms(
+        _ input: Confirmed<KeywordSynonymsInput>
+    ) async throws -> KeywordMutationSummary {
+        let service = try requireKeywordLibrary()
+        return try map { try service.setSynonyms(input.value) }
+    }
+
+    public func createKeyword(_ input: Confirmed<KeywordCreateInput>) async throws -> KeywordMutationSummary {
+        let service = try requireKeywordLibrary()
+        return try map { try service.create(input.value) }
+    }
+
+    private func requireKeywordLibrary() throws -> KeywordLibraryService {
+        guard let keywordLibrary else {
+            throw GatherError.invalidParameter(
+                field: "keywordLibrary", reason: "keyword library API not wired")
+        }
+        return keywordLibrary
     }
 
     // MARK: - 校验与错误映射

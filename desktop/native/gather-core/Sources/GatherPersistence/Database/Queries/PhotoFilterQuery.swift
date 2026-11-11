@@ -71,21 +71,47 @@ public final class PhotoFilterQuery {
     /// P1 / C：iptc_json 里可按列语义查询的字段（field 名 → JSON key）。
     /// 注意 caption 的对外字段名是 description（IPTC "Description"），内部 JSON key 是 caption。
     public static let jsonFields: [String: String] = [
+        // IPTC Core
         "title": "title",
         "description": "caption",
         "headline": "headline",
         "creator": "creator",
+        "creator_job_title": "creatorJobTitle",
+        "credit": "credit",
+        "source": "source",
         "copyright": "copyrightNotice",
+        "usage_terms": "usageTerms",
+        "web_statement": "webStatement",
+        "job_identifier": "jobIdentifier",
+        "caption_writer": "captionWriter",
+        "subject_code": "subjectCode",
+        "scene": "scene",
+        "intellectual_genre": "intellectualGenre",
+        "location": "location",
         "city": "city",
         "state": "state",
         "country": "country",
         "country_code": "countryCode",
-        "location": "location",
+        "date_created": "dateCreated",
+        // IPTC Extension
         "person_in_image": "personInImage",
+        "event": "event",
+        "organisation_in_image": "organisationInImage",
+        "sublocation": "sublocation",
+        "world_region": "worldRegion",
+        "province_state": "provinceState",
+        "model_release_status": "modelReleaseStatus",
+        "property_release_status": "propertyReleaseStatus",
+        "digital_source_type": "digitalSourceType",
+        "additional_model_info": "additionalModelInfo",
     ]
 
     /// 值为 JSON 数组的字段：eq/in/contains 必须对数组元素判定，不能比较整段 JSON。
-    public static let jsonArrayFields: Set<String> = ["creator", "person_in_image"]
+    /// 覆盖 DescriptiveMetadata 的全部 list 形状字段（contactInfo 是结构，不在此列；
+    /// 它的人员/地址检索走 city/country 等标量字段）。
+    public static let jsonArrayFields: Set<String> = [
+        "creator", "person_in_image", "subject_code", "scene", "organisation_in_image",
+    ]
 
     private let connection: DBConnection
 
@@ -442,10 +468,21 @@ public final class PhotoFilterQuery {
             }
         }
         if parts.isEmpty {
+            // Wave2：空组（含空 NOT 组）= 无约束。编辑器删光子条件不该把整页筛选
+            // 变成"什么都不显示"。
             return FilterWhereClause(sql: "", params: [])
         }
-        let joiner = group.logic == .or ? " OR " : " AND "
-        return FilterWhereClause(sql: parts.joined(separator: joiner), params: params)
+        switch group.logic {
+        case .and:
+            return FilterWhereClause(sql: parts.joined(separator: " AND "), params: params)
+        case .or:
+            return FilterWhereClause(sql: parts.joined(separator: " OR "), params: params)
+        case .not:
+            // Wave2（task-15）：子条件按 OR 组合后整体取反 = "一个都不满足"
+            //（与 FilterLogic.not 的文档同一口径；单条件时 NOT (x) 等价）。
+            return FilterWhereClause(
+                sql: "NOT (\(parts.joined(separator: " OR ")))", params: params)
+        }
     }
 
     private func buildConditionSql(_ rule: FilterRule) throws -> (sql: String, params: [DBValue]) {
@@ -482,6 +519,15 @@ public final class PhotoFilterQuery {
                 """,
                 params: [.text(stringValue(value))]
             )
+        // Wave2（task-15）：容器成员（手动集合 / 堆栈）与相对日期。
+        case FilterFields.collection:
+            return try buildMembershipCondition(
+                rule: rule, table: "collection_items", column: "collection_id")
+        case FilterFields.stack:
+            return try buildMembershipCondition(
+                rule: rule, table: "photo_stack_members", column: "stack_id")
+        case FilterFields.relativeDate:
+            return try buildRelativeDateCondition(rule: rule)
         case "has_duplicates":
             let pendingSql = """
                 EXISTS (
@@ -619,6 +665,98 @@ public final class PhotoFilterQuery {
         case .exists:
             return ("\(fullCol) IS NOT NULL", [])
         }
+    }
+
+    // MARK: - Wave2（task-15）：容器成员 / 相对日期
+
+    /// 容器成员判定（手动集合 collection_items / 堆栈 photo_stack_members）。
+    ///
+    /// 表名/列名是**内部固定字面量**（由本文件的分支传入），用户输入（集合 id）
+    /// 一律走绑定参数；子查询用 `m.photo_id = p.id` 与主查询相连。
+    /// 操作符语义与 FilterFields.collection 的文档一致：
+    /// eq=属于 / neq=不属于（差集）/ in|contains_any=属于任一（并集）/
+    /// contains_all=同时属于全部（交集）/ exists=属于任意容器。
+    private func buildMembershipCondition(
+        rule: FilterRule, table: String, column: String
+    ) throws -> (sql: String, params: [DBValue]) {
+        let op = rule.`operator`
+        let exists = "EXISTS (SELECT 1 FROM \(table) m WHERE m.photo_id = p.id"
+        let ids: [String] = {
+            if let array = rule.value.arrayElements {
+                return array.compactMap { $0.stringValue }
+            }
+            let single = stringValue(rule.value)
+            return single.isEmpty ? [] : [single]
+        }()
+        switch op {
+        case .eq:
+            guard let first = ids.first else { return ("1=0", []) }
+            return ("\(exists) AND m.\(column) = ?)", [.text(first)])
+        case .neq:
+            guard let first = ids.first else { return ("1=1", []) }
+            return ("NOT (\(exists) AND m.\(column) = ?))", [.text(first)])
+        case .in, .containsAny:
+            let unique = Array(Set(ids)).sorted()
+            guard !unique.isEmpty else { return ("1=0", []) }
+            let placeholders = unique.map { _ in "?" }.joined(separator: ", ")
+            return (
+                "\(exists) AND m.\(column) IN (\(placeholders)))",
+                unique.map(DBValue.text))
+        case .containsAll:
+            let unique = Array(Set(ids)).sorted()
+            guard !unique.isEmpty else { return ("1=0", []) }
+            let placeholders = unique.map { _ in "?" }.joined(separator: ", ")
+            return (
+                """
+                (SELECT COUNT(DISTINCT m.\(column)) FROM \(table) m
+                 WHERE m.photo_id = p.id AND m.\(column) IN (\(placeholders))) = ?
+                """,
+                unique.map(DBValue.text) + [.int(Int64(unique.count))])
+        case .exists:
+            return ("\(exists))", [])
+        case .gt, .lt, .gte, .lte, .between, .contains, .startsWith:
+            throw PhotoFilterQueryError.unsupportedOperatorForField(
+                field: rule.field, op: op.rawValue)
+        }
+    }
+
+    /// 相对日期窗口（最近 7/30 天、本月）。**按查询时刻求值**，因此保存成智能相册/
+    /// 保存查询后不会隔天过期。
+    ///
+    /// 日期表达式复用 normalizedDateTaken（EXIF 冒号日期已归一），只取前 10 位比日；
+    /// 时区口径与用户直觉一致：`localtime`（本机时区）而不是 UTC。
+    /// 未知 token 显式报错（INVALID_PARAM 路径），不静默返回空集。
+    private func buildRelativeDateCondition(
+        rule: FilterRule
+    ) throws -> (sql: String, params: [DBValue]) {
+        guard rule.`operator` == .eq || rule.`operator` == .in else {
+            throw PhotoFilterQueryError.unsupportedOperatorForField(
+                field: rule.field, op: rule.`operator`.rawValue)
+        }
+        let tokens: [String]
+        if let array = rule.value.arrayElements {
+            tokens = array.compactMap { $0.stringValue }
+        } else {
+            let single = stringValue(rule.value)
+            tokens = single.isEmpty ? [] : [single]
+        }
+        guard !tokens.isEmpty else { return ("1=0", []) }
+        let dateExpr = "substr(\(Self.normalizedDateTaken), 1, 10)"
+        let clauses: [String] = try tokens.map { token in
+            guard let range = RelativeDateRange(rawValue: token) else {
+                throw PhotoFilterQueryError.unsupportedOperatorForField(
+                    field: "\(rule.field):\(token)", op: rule.`operator`.rawValue)
+            }
+            switch range {
+            case .last7:
+                return "\(dateExpr) >= date('now', 'localtime', '-6 days')"
+            case .last30:
+                return "\(dateExpr) >= date('now', 'localtime', '-29 days')"
+            case .thisMonth:
+                return "strftime('%Y-%m', \(dateExpr)) = strftime('%Y-%m', 'now', 'localtime')"
+            }
+        }
+        return ("(\(clauses.joined(separator: " OR ")))", [])
     }
 
     private func buildKeywordsCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [DBValue]) {

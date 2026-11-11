@@ -90,6 +90,16 @@ struct DeliveryRecipeEditorTests {
             recipe.sharpening = ExportSharpening(radius: 1.5, intensity: 0.8)
             recipe.destination = "客户A/2026-11-11"
             recipe.includeXmp = true
+            // Wave2：新增规格字段也走同一条 output.recipes 持久化通道。
+            recipe.subdirectory = ExportSubdirectory(
+                template: "{client}/{event}", client: "ACME", event: "婚礼")
+            recipe.contactSheet = OutputContactSheetOptions(
+                title: "客户样片", columns: 3, rows: 2, margin: 40)
+            recipe.gallery = OutputGalleryOptions(
+                title: "婚礼画廊", thumbnailMaxDimension: 640, largeMaxDimension: 2560)
+            recipe.watermark = ExportWatermark(
+                type: .image, content: "/tmp/logo.png", position: .bottomLeft,
+                opacity: 0.6, imageScale: 0.2, imageMargin: 0.02)
         }
         viewModel.persistDeliveryRecipes()
         let wrote = await waitUntilAsync {
@@ -108,6 +118,13 @@ struct DeliveryRecipeEditorTests {
         #expect(saved.sharpening == ExportSharpening(radius: 1.5, intensity: 0.8))
         #expect(saved.destination == "客户A/2026-11-11")
         #expect(saved.includeXmp)
+        #expect(saved.subdirectory == ExportSubdirectory(
+            template: "{client}/{event}", client: "ACME", event: "婚礼"))
+        #expect(saved.contactSheet?.columns == 3)
+        #expect(saved.contactSheet?.margin == 40)
+        #expect(saved.gallery?.largeMaxDimension == 2560)
+        #expect(saved.watermark?.type == .image)
+        #expect(saved.watermark?.imageScale == 0.2)
     }
 
     @Test("格式切到原图会清掉转换参数（回到 JPEG 给可编辑默认质量）")
@@ -225,45 +242,47 @@ struct DeliveryRecipeEditorTests {
 
     // MARK: - makeDeliveryInput / 预检同源
 
-    @Test("子目录解析、artifacts 汇总与联系表/画廊参数透传")
-    func deliveryInputResolvesSubdirectoryAndOptions() async throws {
+    @Test("配方级联系表/画廊参数与相对目录解析进 makeDeliveryInput")
+    func deliveryInputResolvesOptionsAndDestination() async throws {
         let (viewModel, _) = try await makeViewModel()
         let id = try #require(viewModel.deliveryRecipes.first?.id)
-        viewModel.updateDeliveryRecipe(id: id) { $0.destination = "客户A/2026-11-11" }
+        viewModel.updateDeliveryRecipe(id: id) { recipe in
+            recipe.destination = "客户A/2026-11-11"
+            recipe.contactSheet = OutputContactSheetOptions(
+                title: "客户样片", subtitle: "副标题", footer: "页脚", columns: 3, rows: 4,
+                margin: 48, fields: [.filename, .rating], captionTemplate: "{filename}",
+                showLabelChip: false, showPickBorder: true)
+            recipe.gallery = OutputGalleryOptions(
+                title: "婚礼画廊", subtitle: "", footer: "",
+                thumbnailMaxDimension: 640, largeMaxDimension: 2560, fields: [.rating])
+            recipe.artifacts = [.photos, .contactSheet, .gallery]
+        }
         viewModel.deliveryRoot = "/tmp/gather-delivery"
-        viewModel.deliveryIncludeContactSheet = true
-        viewModel.deliveryIncludeGallery = true
-        let contactSheet = OutputContactSheetOptions(
-            title: "", subtitle: "副标题", footer: "页脚", columns: 3, rows: 4,
-            fields: [.filename, .rating], captionTemplate: "{filename}",
-            showLabelChip: false, showPickBorder: true)
-        let gallery = OutputGalleryOptions(
-            title: "", subtitle: "", footer: "",
-            thumbnailMaxDimension: 640, largeMaxDimension: 2560, fields: [.rating])
-        let input = try #require(await viewModel.prepareDeliveryInput(
-            contactSheetOptions: contactSheet, galleryOptions: gallery))
+        let input = try #require(await viewModel.prepareDeliveryInput())
 
         let recipe = try #require(input.recipes.first)
         #expect(recipe.destination
             == "/tmp/gather-delivery/客户A/2026-11-11", "相对子目录要解析成交付根下的绝对路径")
-        #expect(recipe.artifacts.contains(.photos))
-        #expect(recipe.artifacts.contains(.contactSheet))
-        #expect(recipe.artifacts.contains(.gallery))
+        #expect(recipe.artifacts == [.photos, .contactSheet, .gallery])
+        // Wave2：联系表/画廊参数属于配方，不再占用 run 级字段。
+        #expect(input.contactSheet == nil)
+        #expect(input.gallery == nil)
 
-        let resolvedSheet = try #require(input.contactSheet)
-        #expect(resolvedSheet.columns == 3)
-        #expect(resolvedSheet.rows == 4)
-        #expect(resolvedSheet.subtitle == "副标题")
-        #expect(resolvedSheet.captionTemplate == "{filename}")
-        #expect(resolvedSheet.fields == [.filename, .rating])
-        #expect(resolvedSheet.showLabelChip == false)
-        #expect(resolvedSheet.showPickBorder)
+        let sheet = try #require(recipe.contactSheet)
+        #expect(sheet.columns == 3)
+        #expect(sheet.rows == 4)
+        #expect(sheet.margin == 48)
+        #expect(sheet.subtitle == "副标题")
+        #expect(sheet.captionTemplate == "{filename}")
+        #expect(sheet.fields == [.filename, .rating])
+        #expect(sheet.showLabelChip == false)
+        #expect(sheet.showPickBorder)
 
-        let resolvedGallery = try #require(input.gallery)
-        #expect(resolvedGallery.thumbnailMaxDimension == 640)
-        #expect(resolvedGallery.largeMaxDimension == 2560)
-        #expect(resolvedGallery.fields == [.rating])
-        #expect(resolvedGallery.title == "Gallery", "标题留空回落升级前的默认文案")
+        let gallery = try #require(recipe.gallery)
+        #expect(gallery.thumbnailMaxDimension == 640)
+        #expect(gallery.largeMaxDimension == 2560)
+        #expect(gallery.fields == [.rating])
+        #expect(gallery.title == "婚礼画廊")
     }
 
     @Test("交付预检与 OutputService 同源：配方新字段进 ExportOptions")
@@ -273,7 +292,9 @@ struct DeliveryRecipeEditorTests {
                 OutputRecipe(
                     id: "r1", name: "Spec", format: .jpeg, quality: 90,
                     maxDimension: 1600, colorSpace: .displayP3, dpi: 300,
-                    sharpening: ExportSharpening(radius: 1.5, intensity: 0.8)),
+                    sharpening: ExportSharpening(radius: 1.5, intensity: 0.8),
+                    subdirectory: ExportSubdirectory(
+                        template: "{client}/{yyyy}", client: "ACME")),
             ]),
         ])
         let export = B6bExportAPIStub()
@@ -293,5 +314,93 @@ struct DeliveryRecipeEditorTests {
         #expect(options.sharpening == ExportSharpening(radius: 1.5, intensity: 0.8))
         #expect(options.quality == 90)
         #expect(options.maxDimension == 1600)
+        #expect(options.subdirectory?.template == "{client}/{yyyy}",
+                "Wave2：子目录规则必须进预检（确认弹窗与真实写盘同源）")
+    }
+
+    // MARK: - Wave2（task-16）：子目录 / 联系表画廊 / 图片水印
+
+    @Test("Wave2：子目录规则编辑、示例与非法 token 校验")
+    func subdirectoryEditingAndValidation() async throws {
+        let (viewModel, _) = try await makeViewModel()
+        let id = try #require(viewModel.deliveryRecipes.first?.id)
+        viewModel.setDeliverySubdirectoryTemplate(
+            id: id, template: "{client}/{yyyy}-{MM}-{dd}")
+        viewModel.updateDeliverySubdirectory(id: id) { $0.client = "ACME" }
+        let recipe = try #require(viewModel.deliveryRecipes.first)
+        #expect(recipe.subdirectory?.template == "{client}/{yyyy}-{MM}-{dd}")
+        #expect(recipe.subdirectory?.client == "ACME")
+        #expect(viewModel.deliveryRecipeIssues(recipe).isEmpty)
+
+        // 未知 token / 路径穿越 → 中文提示（复用协议层唯一校验实现）。
+        viewModel.setDeliverySubdirectoryTemplate(id: id, template: "{unknown}")
+        let invalid = try #require(viewModel.deliveryRecipes.first)
+        #expect(viewModel.deliveryRecipeIssues(invalid).contains {
+            $0.hasPrefix("子目录规则无效")
+        })
+        // 清空模板 → 整个规则移除（回到"直接写交付目录"）。
+        viewModel.setDeliverySubdirectoryTemplate(id: id, template: "   ")
+        #expect(viewModel.deliveryRecipes.first?.subdirectory == nil)
+    }
+
+    @Test("Wave2：配方级联系表/画廊参数编辑与产物开关")
+    func contactSheetGalleryEditing() async throws {
+        let (viewModel, _) = try await makeViewModel()
+        let id = try #require(viewModel.deliveryRecipes.first?.id)
+        viewModel.setDeliveryRecipeArtifact(id: id, .contactSheet, isEnabled: true)
+        viewModel.updateDeliveryContactSheet(id: id) {
+            $0.columns = 3
+            $0.rows = 4
+            $0.margin = 48
+            $0.title = "客户样片"
+        }
+        viewModel.setDeliveryRecipeArtifact(id: id, .gallery, isEnabled: true)
+        viewModel.updateDeliveryGallery(id: id) {
+            $0.thumbnailMaxDimension = 640
+            $0.largeMaxDimension = 2560
+            $0.title = "婚礼画廊"
+        }
+        let recipe = try #require(viewModel.deliveryRecipes.first)
+        #expect(recipe.artifacts.contains(.contactSheet))
+        #expect(recipe.artifacts.contains(.gallery))
+        #expect(recipe.contactSheet?.columns == 3)
+        #expect(recipe.contactSheet?.margin == 48)
+        #expect(recipe.gallery?.largeMaxDimension == 2560)
+        #expect(viewModel.deliveryRecipeIssues(recipe).isEmpty)
+
+        // artifacts 顺序稳定（会进配方指纹）；关闭联系表 → 只留照片 + 画廊。
+        viewModel.setDeliveryRecipeArtifact(id: id, .contactSheet, isEnabled: false)
+        let updated = try #require(viewModel.deliveryRecipes.first)
+        #expect(updated.artifacts == [.photos, .gallery])
+        // 越界参数仍被拦下。
+        viewModel.updateDeliveryContactSheet(id: id) { $0.columns = 0 }
+        viewModel.setDeliveryRecipeArtifact(id: id, .contactSheet, isEnabled: true)
+        #expect(viewModel.deliveryRecipeIssues(
+            viewModel.deliveryRecipes[0]).contains("联系表列数必须在 1 到 12 之间"))
+    }
+
+    @Test("Wave2：图片水印编辑与形状校验（不访问磁盘）")
+    func imageWatermarkEditingAndValidation() async throws {
+        let (viewModel, _) = try await makeViewModel()
+        let id = try #require(viewModel.deliveryRecipes.first?.id)
+        viewModel.updateDeliveryRecipe(id: id) { recipe in
+            recipe.watermark = ExportWatermark(
+                type: .image, content: "", position: .bottomRight,
+                opacity: 0.7, imageScale: 0.15, imageMargin: 0.03)
+        }
+        var recipe = try #require(viewModel.deliveryRecipes.first)
+        #expect(viewModel.deliveryRecipeIssues(recipe).contains("水印图片不能为空"))
+
+        viewModel.updateDeliveryWatermark(id: id) {
+            $0.content = "/tmp/logo.png"
+            $0.imageScale = 0.25
+        }
+        recipe = try #require(viewModel.deliveryRecipes.first)
+        let issues = viewModel.deliveryRecipeIssues(recipe)
+        #expect(issues.isEmpty, "合法图片水印不应有编辑期错误: \(issues)")
+        // 版式越界 → 中文提示。
+        viewModel.updateDeliveryWatermark(id: id) { $0.imageScale = 2 }
+        #expect(viewModel.deliveryRecipeIssues(
+            viewModel.deliveryRecipes[0]).contains("水印宽度比例必须在 2% 到 100% 之间"))
     }
 }

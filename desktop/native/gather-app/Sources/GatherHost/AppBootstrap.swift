@@ -506,13 +506,27 @@ package final class AppBootstrap {
         // Cut 4 / 4b-3：界面语言源注入 Delegate（导入面板文案在动作发生时读它）；
         // 导入闭包同样在**动作发生时**取 store.l10n，不缓存字符串。
         delegate.languageStore = languageStore
+        // Wave2 / task-14：导入完成后的自动初审接线（quality.score → triage.generate）。
+        // 只取三个 Sendable 服务（JobService/SettingsService 已是 @unchecked Sendable，
+        // TriageService 经 actor 桥），不把整个 AppComposition 拖进后台任务。
+        let autoTriageJobService = composition.jobService
+        let autoTriageTriageService = composition.triageService
+        let autoTriageSettings = composition.settingsService
         delegate.onImportFiles = { files in
             let l10n = languageStore.l10n
             Task {
                 await AppImport.importFiles(
                     files,
                     sessionAPI: sessionAPI,
-                    l10n: l10n
+                    l10n: l10n,
+                    afterCreate: { result in
+                        // 钩子只调度、不等待：导入返回速度不变，失败不影响导入结果。
+                        AITriageImportTrigger.schedule(
+                            sessionId: result.session.id,
+                            jobService: autoTriageJobService,
+                            triageService: autoTriageTriageService,
+                            settings: autoTriageSettings)
+                    }
                 )
             }
         }
@@ -537,6 +551,12 @@ package final class AppBootstrap {
                     sourceLabel: l10n("Capture One 文件"),
                     l10n: l10n,
                     afterCreate: { result in
+                        // Wave2 / task-14：C1 导入同样接自动初审（与菜单导入同一语义）。
+                        AITriageImportTrigger.schedule(
+                            sessionId: result.session.id,
+                            jobService: autoTriageJobService,
+                            triageService: autoTriageTriageService,
+                            settings: autoTriageSettings)
                         // 钩子必须立即返回：真正落库在后台 Task 里（要先等 metadata.scan
                         // 终态，否则扫描把 photo_metadata_cache 的 rating/关键词覆盖回 XMP 值）。
                         guard !judgements.isEmpty else { return }
@@ -664,3 +684,68 @@ enum C1JudgementImport {
         }
     }
 }
+
+// MARK: - Wave2 / task-14：导入后自动初审
+
+/// 导入完成后调度自动初审（默认关：triage_auto_generate=0 时直接返回，行为与旧版一致）。
+///
+/// 边界：
+/// - 只调度、不等待（Task.detached）；导入 API 的返回时间不变；
+/// - 失败/超时只打日志，不回写导入状态（增强能力不能把导入变红）；
+/// - 进度与取消走既有 JobService：quality.score 是普通 job，控制中心可见可取消；
+///   用户取消该 job → pipeline 观察终态后停止，不会继续生成建议。
+enum AITriageImportTrigger {
+    /// @MainActor：闭包要捕获非 Sendable 的 TriageService（与调用点同为 MainActor），
+    /// 同时 Task.detached 只带走 Sendable 的 pipeline（不新增 @unchecked Sendable）。
+    @MainActor
+    static func schedule(
+        sessionId: String,
+        jobService: JobService,
+        triageService: TriageService,
+        settings: SettingsService
+    ) {
+        guard settings.bool(.triageAutoGenerate) else { return }
+        let deps = AITriageAutoPipeline.Dependencies(
+            listJobs: { try jobService.list(status: nil, includeCheckpoint: false) },
+            enqueueQualityJob: { scopeId in
+                try jobService.create(JobCreateParams(
+                    type: .qualityScore,
+                    scopeType: "session",
+                    scopeId: scopeId,
+                    // 固定 key：一个会话只接一条自动初审链；重复导入到同一会话时
+                    // JobService 的 dedupeKey 语义会复用而不是再排一条。
+                    dedupeKey: "quality.score:\(scopeId):auto-import-triage"))
+            },
+            // TriageService 不是 Sendable：闭包标 @MainActor，与挑片页
+            // CullingViewModel.generateTriage 的既有隔离一致（同一服务、同一线程域）。
+            generateTriage: { scopeId in
+                try triageService.generate(sessionId: scopeId)
+            },
+            applyTriage: { input in
+                try triageService.apply(Confirmed(input, source: .automation))
+            },
+            autoApplyEnabled: { settings.bool(.triageAutoApply) },
+            poll: { try await Task.sleep(for: .milliseconds(500)) }
+        )
+        let pipeline = AITriageAutoPipeline(deps: deps)
+        Task.detached(priority: .utility) {
+            let outcome = await pipeline.run(sessionId: sessionId)
+            GatherLogger.log(
+                "ai.auto-triage session=\(sessionId) stage=\(outcome.stage.rawValue)"
+                    + " quality=\(outcome.qualityJobId ?? "-")"
+                    + " keep=\(outcome.summary?.counts.keep ?? -1)"
+                    + " reject=\(outcome.summary?.counts.reject ?? -1)"
+                    + " review=\(outcome.summary?.counts.review ?? -1)"
+                    + " applied=\(outcome.applied?.appliedPhotos ?? 0)"
+                    + " reason=\(outcome.reason ?? "-")",
+                level: .info)
+            guard let applied = outcome.applied, applied.appliedPhotos > 0 else { return }
+            // 已挂载的挑片/图库据此重拉建议与决策（与 C1 判断落库同一广播口径）。
+            await MainActor.run {
+                GatherEventCenter.postDomainChange(
+                    .culling, sessionId: sessionId, origin: "ai-auto-triage")
+            }
+        }
+    }
+}
+

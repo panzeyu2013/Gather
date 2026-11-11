@@ -37,9 +37,28 @@ public protocol SessionAPI: Sendable {
     /// P1 / D：摄取（复制/重命名/校验 → 登记）。破坏性在于写文件系统，用 Confirmed 收口。
     func ingest(_ input: Confirmed<SessionIngestInput>) async throws -> SessionIngestResult
 
+    /// Wave2（task-15）：摄取预检（只读，不复制任何文件）。
+    ///
+    /// 返回「新增 / 跨工作区重复 / 目标冲突 / 不可读」四类计数与策略回显，
+    /// 供导入面板在执行前展示；实现不得写盘、不得建 job。
+    func previewIngest(_ input: SessionIngestInput) async throws -> SessionIngestPreview
+
     /// P1-3：为历史空根工作区设置/修复根目录（改变后续扫描/摄取/监听范围）。
     func setSourceRoot(_ input: Confirmed<SessionSetSourceRootInput>) async throws -> SessionData
 
     /// workspace.status
     func status(_ sessionId: String) async throws -> WorkspaceStatus
+}
+
+// MARK: - Wave2（task-15）默认实现
+
+public extension SessionAPI {
+    /// 未实现的摄取预检：显式失败而不是返回全零计数（全零会被 UI 当成
+    /// "没有重复"，比报错更危险）。
+    func previewIngest(_ input: SessionIngestInput) async throws -> SessionIngestPreview {
+        throw GatherError.invalidParameter(
+            field: "previewIngest",
+            reason: "ingest preview is not implemented by this SessionAPI implementation"
+        )
+    }
 }

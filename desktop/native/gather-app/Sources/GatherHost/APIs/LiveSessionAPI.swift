@@ -67,6 +67,15 @@ public final class LiveSessionAPI: SessionAPI, @unchecked Sendable {
         }
     }
 
+    /// Wave2（task-15）：摄取预检（只读）。与 ingest 共用 SessionIngestRunner 的
+    /// 校验/去重/plan 逻辑，但不建 job、不写盘——预览与真正执行不会给出两套口径。
+    public func previewIngest(
+        _ input: SessionIngestInput
+    ) async throws -> SessionIngestPreview {
+        let runner = SessionIngestRunner(sessionService: sessionService)
+        return try await mapAsync { try await runner.preview(input) }
+    }
+
     /// P1-3：设置/修复工作区根目录；服务端校验目录存在、非 forbidden、
     /// 且包含工作区全部可见照片。
     public func setSourceRoot(

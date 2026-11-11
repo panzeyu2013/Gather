@@ -402,6 +402,42 @@ public final class KeywordRepo: Sendable {
             .query([.text(path)]).compactMap { $0[0].textValue }
     }
 
+    /// Wave2 task-13：全部同义词（词库树渲染用，避免每个节点一次查询）。
+    public func allSynonyms() throws -> [String: [String]] {
+        let rows = try connection.prepare(
+            "SELECT keyword_path, synonym FROM keyword_synonyms ORDER BY synonym").query()
+        var result: [String: [String]] = [:]
+        for row in rows {
+            guard let path = row[0].textValue, let synonym = row[1].textValue else { continue }
+            result[path, default: []].append(synonym)
+        }
+        return result
+    }
+
+    /// Wave2 task-13：同义词前缀命中（自动补全用）。返回 (规范路径, 命中的同义词)。
+    ///
+    /// 语义与 prefixMatches 一致（前缀、大小写不敏感）；只扫 keyword_synonyms，
+    /// 不拼 SQL 进 keywords —— 同义词是检索展开的入口，路径本身由补全结果给出。
+    public func synonymMatches(_ needle: String, limit: Int) throws -> [(path: String, synonym: String)] {
+        let escaped = escapeLike(needle)
+        let rows: [(path: String, synonym: String)] = try connection.prepare("""
+            SELECT keyword_path, synonym FROM keyword_synonyms
+            WHERE synonym LIKE ? || '%' ESCAPE '\\'
+            ORDER BY synonym ASC
+            LIMIT ?
+            """).query([.text(escaped), .int(Int64(max(1, limit)))]).compactMap { row -> (path: String, synonym: String)? in
+            guard let path = row[0].textValue, let synonym = row[1].textValue else { return nil }
+            return (path: path, synonym: synonym)
+        }
+        // 同一路径多个命中排在一起时按路径去重，保留字典序第一条同义词。
+        var seen = Set<String>()
+        var result: [(path: String, synonym: String)] = []
+        for row in rows where seen.insert(row.0).inserted {
+            result.append(row)
+        }
+        return result
+    }
+
     /// 该路径的同义词条数（非级联删除的守卫用；不展开子树——子级有同义词时
     /// keyword_synonyms 的 CASCADE 也只作用于被删的那些路径，而子级本身会被
     /// hasChildren 先拦下）。

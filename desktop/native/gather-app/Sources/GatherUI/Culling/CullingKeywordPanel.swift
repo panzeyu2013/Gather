@@ -71,6 +71,10 @@ struct CullingKeywordPanel: View {
 
     @State private var query = ""
     @State private var activeSheet: Sheet?
+    @State private var showKeywordLibrary = false
+    /// Wave2 task-13：词库补全（路径前缀 + 同义词命中；与"本会话已有关键词"
+    /// 的建议合并展示，词库优先）。
+    @State private var librarySuggestions: [KeywordSuggestion] = []
     @FocusState private var inputFocused: Bool
 
     @Environment(\.languageStore) private var languageStore
@@ -101,7 +105,7 @@ struct CullingKeywordPanel: View {
                     .foregroundStyle(.secondary)
             } else {
                 inputRow
-                if inputFocused, !viewModel.keywordSuggestions.isEmpty {
+                if inputFocused, !allSuggestionsEmpty {
                     suggestions
                 }
                 keywordChips
@@ -131,17 +135,22 @@ struct CullingKeywordPanel: View {
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
                 viewModel.clearKeywordSuggestions()
+                librarySuggestions = []
                 return
             }
             try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled else { return }
             await viewModel.loadKeywordSuggestions(prefix: trimmed)
+            await loadLibrarySuggestions(prefix: trimmed)
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .preview: previewSheet
             case .confirm: applyConfirmationSheet
             }
+        }
+        .sheet(isPresented: $showKeywordLibrary) {
+            KeywordLibrarySheet(api: viewModel.metadataAPI)
         }
     }
 
@@ -180,7 +189,40 @@ struct CullingKeywordPanel: View {
 
     private var suggestions: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
-            ForEach(viewModel.keywordSuggestions, id: \.self) { suggestion in
+            ForEach(librarySuggestions) { suggestion in
+                Button {
+                    viewModel.addKeyword(suggestion.path)
+                    query = ""
+                    librarySuggestions = []
+                    viewModel.clearKeywordSuggestions()
+                    inputFocused = true
+                } label: {
+                    HStack(spacing: GatherMetrics.Space.xs) {
+                        Image(systemName: "books.vertical")
+                            .font(GatherFont.label)
+                            .foregroundStyle(.secondary)
+                        Text(suggestion.path)
+                            .font(GatherFont.secondary)
+                            .lineLimit(1)
+                        if let synonym = suggestion.matchedSynonym {
+                            Text(l10n.format("同义词 %@", synonym))
+                                .font(GatherFont.label)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(EdgeInsets(
+                    top: GatherMetrics.Space.xxs,
+                    leading: GatherMetrics.Space.xs,
+                    bottom: GatherMetrics.Space.xxs,
+                    trailing: GatherMetrics.Space.xs
+                ))
+            }
+            ForEach(sessionSuggestions, id: \.self) { suggestion in
                 Button {
                     viewModel.addKeyword(suggestion)
                     query = ""
@@ -202,8 +244,11 @@ struct CullingKeywordPanel: View {
             }
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty,
-               !viewModel.keywordSuggestions.contains(where: {
+               !sessionSuggestions.contains(where: {
                    KeywordNormalizer.fold($0) == KeywordNormalizer.fold(trimmed)
+               }),
+               !librarySuggestions.contains(where: {
+                   KeywordNormalizer.fold($0.path) == KeywordNormalizer.fold(trimmed)
                }),
                KeywordNormalizer.normalize(trimmed) != nil {
                 Button {
@@ -231,6 +276,31 @@ struct CullingKeywordPanel: View {
             RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail, style: .continuous)
                 .fill(GatherTheme.surfaceMuted)
         )
+    }
+
+    // MARK: - 建议合并（词库优先，会话词兜底）
+
+    /// 会话建议去掉与词库候选同路径的重复项（避免同一路径两行）。
+    private var sessionSuggestions: [String] {
+        let libraryKeys = Set(librarySuggestions.map { KeywordNormalizer.fold($0.path) })
+        return viewModel.keywordSuggestions.filter {
+            !libraryKeys.contains(KeywordNormalizer.fold($0))
+        }
+    }
+
+    private var allSuggestionsEmpty: Bool {
+        viewModel.keywordSuggestions.isEmpty && librarySuggestions.isEmpty
+    }
+
+    /// 词库补全（路径前缀 + 同义词）。未接线/失败时静默退化为空：
+    /// 输入框仍在，会话建议照常可用，不把错误糊在用户正在敲的输入下。
+    private func loadLibrarySuggestions(prefix: String) async {
+        do {
+            let query = try KeywordSuggestionQuery(prefix: prefix, limit: 8)
+            librarySuggestions = try await viewModel.metadataAPI.keywordSuggestions(query)
+        } catch {
+            librarySuggestions = []
+        }
     }
 
     // MARK: - chips
@@ -306,6 +376,11 @@ struct CullingKeywordPanel: View {
 
     private var actionRow: some View {
         HStack(spacing: GatherMetrics.Space.s) {
+            Button(l10n("词库…")) { showKeywordLibrary = true }
+                .gatherButton(.tertiary)
+                .disabled(isBusy)
+                .help(l10n("浏览/改名/合并/同义词/受控词表"))
+
             Button(l10n("预览写回")) {
                 Task {
                     await viewModel.previewKeywordWriteback()

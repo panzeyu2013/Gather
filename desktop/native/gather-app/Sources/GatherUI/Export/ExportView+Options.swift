@@ -73,8 +73,38 @@ struct ExportOptionsSection: View {
                 .labelsHidden()
             }
             Text(l10n.format("示例：%@", viewModel.namingPreview(with: l10n)))
-                .font(.callout.monospaced())
+                .font(GatherFont.secondary.monospaced())
                 .foregroundStyle(.secondary)
+            // Wave2：输出子目录规则（token 模板）。空 = 直接写到导出目录。
+            LabeledContent(l10n("子目录规则")) {
+                TextField(
+                    l10n("子目录规则"),
+                    text: $viewModel.subdirectoryTemplate,
+                    prompt: Text("{yyyy}/{MM}/{dd}"))
+                    .labelsHidden()
+                    .accessibilityLabel(l10n("子目录规则"))
+            }
+            if !viewModel.subdirectoryTemplate
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                LabeledContent(l10n("客户名称")) {
+                    TextField(l10n("客户名称"), text: $viewModel.subdirectoryClient)
+                        .labelsHidden()
+                        .accessibilityLabel(l10n("客户名称"))
+                }
+                LabeledContent(l10n("活动名称")) {
+                    TextField(l10n("活动名称"), text: $viewModel.subdirectoryEvent)
+                        .labelsHidden()
+                        .accessibilityLabel(l10n("活动名称"))
+                }
+                if let preview = viewModel.subdirectoryPreview() {
+                    Text(l10n.format("示例：%@", preview))
+                        .font(GatherFont.secondary.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(l10n("留空 = 直接写到导出目录；可用 token：{yyyy} {MM} {dd} {client} {event} {orig}"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(GatherTheme.secondaryText)
             if viewModel.format == .tiff {
                 LabeledContent(l10n("TIFF 压缩")) {
                     Picker(l10n("TIFF 压缩"), selection: $viewModel.tiffCompression) {
@@ -129,10 +159,73 @@ struct ExportOptionsSection: View {
             }
             Toggle(l10n("复制 XMP 附属文件"), isOn: $viewModel.includeXmp)
             if viewModel.transformsAllowed {
-                Toggle(l10n("添加文字水印"), isOn: $viewModel.watermarkEnabled)
+                // 文字水印沿用旧标签（历史 en 条目继续有引用）；图片水印用新标签。
+                Toggle(
+                    viewModel.watermarkType == .text
+                        ? l10n("添加文字水印")
+                        : l10n("添加水印"),
+                    isOn: $viewModel.watermarkEnabled)
                 if viewModel.watermarkEnabled {
-                    TextField(l10n("水印文字"), text: $viewModel.watermarkText)
-                        .accessibilityLabel(l10n("水印文字"))
+                    LabeledContent(l10n("水印类型")) {
+                        Picker(l10n("水印类型"), selection: $viewModel.watermarkType) {
+                            Text(l10n("文字")).tag(ExportWatermarkType.text)
+                            Text(l10n("图片 logo")).tag(ExportWatermarkType.image)
+                        }
+                        .labelsHidden()
+                    }
+                    if viewModel.watermarkType == .text {
+                        TextField(l10n("水印文字"), text: $viewModel.watermarkText)
+                            .accessibilityLabel(l10n("水印文字"))
+                        LabeledContent(l10n("字号")) {
+                            TextField(l10n("字号"), text: $viewModel.watermarkFontSize)
+                                .labelsHidden()
+                                .frame(width: 70)
+                                .multilineTextAlignment(.trailing)
+                                .accessibilityLabel(l10n("字号"))
+                                .focused($watermarkFontSizeFocused)
+                                .onSubmit { viewModel.commitWatermarkFontSize() }
+                                .onChange(of: watermarkFontSizeFocused) { _, isFocused in
+                                    if !isFocused { viewModel.commitWatermarkFontSize() }
+                                }
+                        }
+                    } else {
+                        LabeledContent(l10n("水印图片")) {
+                            HStack(spacing: GatherMetrics.Space.s) {
+                                TextField(l10n("水印图片"), text: $viewModel.watermarkImagePath)
+                                    .labelsHidden()
+                                    .accessibilityLabel(l10n("水印图片"))
+                                Button(l10n("选择…")) {
+                                    Task {
+                                        if let path = await viewModel.chooseWatermarkImage(with: l10n) {
+                                            viewModel.watermarkImagePath = path
+                                        }
+                                    }
+                                }
+                                .gatherButton(.secondary, size: .small)
+                            }
+                        }
+                        Text(l10n("建议使用带透明背景的 PNG logo"))
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(GatherTheme.secondaryText)
+                        LabeledContent(l10n("宽度比例")) {
+                            HStack(spacing: GatherMetrics.Space.controlGap) {
+                                Slider(value: $viewModel.watermarkImageScale, in: 0.02...1, step: 0.01)
+                                    .accessibilityLabel(l10n("宽度比例"))
+                                Text("\(Int((viewModel.watermarkImageScale * 100).rounded()))%")
+                                    .font(GatherFont.mono)
+                                    .frame(width: 42, alignment: .trailing)
+                            }
+                        }
+                        LabeledContent(l10n("边距")) {
+                            HStack(spacing: GatherMetrics.Space.controlGap) {
+                                Slider(value: $viewModel.watermarkImageMargin, in: 0...0.25, step: 0.005)
+                                    .accessibilityLabel(l10n("边距"))
+                                Text("\(Int((viewModel.watermarkImageMargin * 100).rounded()))%")
+                                    .font(GatherFont.mono)
+                                    .frame(width: 42, alignment: .trailing)
+                            }
+                        }
+                    }
                     LabeledContent(l10n("位置")) {
                         Picker(l10n("位置"), selection: $viewModel.watermarkPosition) {
                             Text(l10n("居中")).tag(ExportWatermarkPosition.center)
@@ -141,24 +234,12 @@ struct ExportOptionsSection: View {
                         }
                         .labelsHidden()
                     }
-                    LabeledContent(l10n("字号")) {
-                        TextField(l10n("字号"), text: $viewModel.watermarkFontSize)
-                            .labelsHidden()
-                            .frame(width: 70)
-                            .multilineTextAlignment(.trailing)
-                            .accessibilityLabel(l10n("字号"))
-                            .focused($watermarkFontSizeFocused)
-                            .onSubmit { viewModel.commitWatermarkFontSize() }
-                            .onChange(of: watermarkFontSizeFocused) { _, isFocused in
-                                if !isFocused { viewModel.commitWatermarkFontSize() }
-                            }
-                    }
                     LabeledContent(l10n("透明度")) {
-                        HStack(spacing: 10) {
+                        HStack(spacing: GatherMetrics.Space.controlGap) {
                             Slider(value: $viewModel.watermarkOpacity, in: 0.1...1, step: 0.1)
                                 .accessibilityLabel(l10n("透明度"))
                             Text("\(Int(viewModel.watermarkOpacity * 100))%")
-                                .font(.callout.monospacedDigit())
+                                .font(GatherFont.mono)
                                 .frame(width: 42, alignment: .trailing)
                         }
                     }

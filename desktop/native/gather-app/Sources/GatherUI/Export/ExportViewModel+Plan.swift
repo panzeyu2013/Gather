@@ -11,9 +11,22 @@ extension ExportViewModel {
     /// （范围/变体/格式/目录/命名/水印/XMP）都必须进入指纹。
     public var planSignature: String {
         let destinationKey = destination.trimmingCharacters(in: .whitespacesAndNewlines)
-        let watermarkKey = (watermarkEnabled && transformsAllowed)
-            ? "w:\(watermarkText):\(watermarkPosition.rawValue):\(watermarkOpacity):\(watermarkFontSize)"
-            : "w:-"
+        let watermarkKey: String
+        if watermarkEnabled && transformsAllowed {
+            switch watermarkType {
+            case .text:
+                watermarkKey = "w:text:\(watermarkText):\(watermarkPosition.rawValue):\(watermarkOpacity):\(watermarkFontSize)"
+            case .image:
+                watermarkKey = "w:image:\(watermarkImagePath):\(watermarkPosition.rawValue):\(watermarkOpacity):\(watermarkImageScale):\(watermarkImageMargin)"
+            }
+        } else {
+            watermarkKey = "w:-"
+        }
+        // Wave2：子目录规则改变输出路径（{orig} 还会改变文件集合视角），必须进指纹。
+        let subdirectoryKey = subdirectoryTemplate
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "sd:-"
+            : "sd:\(subdirectoryTemplate):\(subdirectoryClient):\(subdirectoryEvent)"
         let selectedKey = scope == .selected
             ? selectedPhotoIds.sorted().joined(separator: ",")
             : "-"
@@ -36,6 +49,7 @@ extension ExportViewModel {
             namingPattern,
             includeXmp ? "xmp:1" : "xmp:0",
             watermarkKey,
+            subdirectoryKey,
             outputSpecKey,
         ].joined(separator: "|")
     }

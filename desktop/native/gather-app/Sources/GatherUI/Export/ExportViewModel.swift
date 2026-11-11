@@ -56,8 +56,9 @@ public final class ExportViewModel: SessionPageModel {
     // W3：整套交付（多配方 + 联系表）的状态。
     public var deliveryRoot = ""
     public var deliveryRecipes: [OutputRecipe] = []
-    public var deliveryIncludeContactSheet = true
-    public var deliveryIncludeGallery = true
+    // Wave2：联系表/画廊参数迁到配方级（OutputRecipe.contactSheet/gallery + artifacts），
+    // run 级开关不再存在于页面状态；旧数据通过 OutputService 的「配方 nil → run 级」
+    // 回落路径继续可用。
     /// 配方是否已从 settings 载入（区分“从未保存”与“保存了空数组”）。
     public internal(set) var hasLoadedDeliveryRecipes = false
     /// 配方编辑的防抖持久化任务。
@@ -119,10 +120,20 @@ public final class ExportViewModel: SessionPageModel {
     public var outputSharpeningRadius: Double = 1
     public var outputSharpeningIntensity: Double = 0.5
     public var watermarkEnabled = false
+    /// Wave2：watermark 类型（文字 / 图片 logo）。两种类型共享位置与透明度。
+    public var watermarkType: ExportWatermarkType = .text
     public var watermarkText = ""
+    /// Wave2：图片水印 logo 的绝对路径（PNG/JPEG）与版式（宽度比例 0.02-1、边距 0-0.25）。
+    public var watermarkImagePath = ""
+    public var watermarkImageScale: Double = 0.2
+    public var watermarkImageMargin: Double = 0.02
     public var watermarkPosition: ExportWatermarkPosition = .bottomRight
     public var watermarkOpacity = 0.5
     public var watermarkFontSize = "24"
+    /// Wave2：输出子目录规则（token 模板 + 客户/活动取值）；空模板 = 直接写到导出目录。
+    public var subdirectoryTemplate = ""
+    public var subdirectoryClient = ""
+    public var subdirectoryEvent = ""
     public var destination = ""
 
     public init(
@@ -347,6 +358,34 @@ public final class ExportViewModel: SessionPageModel {
             errorMessage = nil
             fieldError = nil
         }
+    }
+
+    /// 选择图片水印 logo（PNG/JPEG）。返回绝对路径；取消返回 nil。
+    ///
+    /// Panel 文案由调用方传入的 L10n 渲染（VM 不读进程全局语言），与
+    /// chooseDestination 同一约定。
+    public func chooseWatermarkImage(with l10n: L10n) async -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.png, .jpeg]
+        panel.prompt = l10n("选择水印图片")
+        panel.message = l10n("建议使用带透明背景的 PNG logo")
+        let response = await panel.begin()
+        guard response == .OK, let url = panel.url else { return nil }
+        return url.path
+    }
+
+    /// 子目录规则的实时示例（与 ExportSubdirectory.resolved 同源，避免 UI 自算一套）。
+    public func subdirectoryPreview() -> String? {
+        let template = subdirectoryTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !template.isEmpty else { return nil }
+        return ExportSubdirectory(
+            template: template,
+            client: subdirectoryClient.trimmingCharacters(in: .whitespacesAndNewlines),
+            event: subdirectoryEvent.trimmingCharacters(in: .whitespacesAndNewlines)
+        ).resolved(originalFilename: "IMG_1234.NEF")
     }
 
     /// 拖放设置导出目录（与 chooseDestination 一致：写入并清除行内/横幅错误）。

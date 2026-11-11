@@ -31,6 +31,8 @@ struct MetadataTemplateSheet: View {
     @State private var showDeleteConfirm = false
     /// 撤销整批写回同样是破坏性动作：必须走确认弹窗后再构造 Confirmed。
     @State private var showUndoConfirm = false
+    /// Wave2 task-13：多选批量直改（与模板并列的入口；变量文案在批量面板内）。
+    @State private var showBatchEditor = false
 
     /// 目标：多选优先，否则当前照片。
     private var targetPhotoIds: [String] {
@@ -65,6 +67,9 @@ struct MetadataTemplateSheet: View {
                 Button(l10n("删除")) { showDeleteConfirm = true }
                     .gatherButton(.destructive)
                     .disabled(selectedId == nil || isBusy)
+                Button(l10n("批量编辑字段…")) { showBatchEditor = true }
+                    .gatherButton(.secondary)
+                    .disabled(targetPhotoIds.isEmpty || isBusy)
             }
 
             HStack {
@@ -163,6 +168,9 @@ struct MetadataTemplateSheet: View {
             Button(l10n("取消"), role: .cancel) {}
         } message: {
             Text(l10n("删除后不可恢复；已套用的照片不会回滚。"))
+        }
+        .sheet(isPresented: $showBatchEditor) {
+            MetadataBatchEditorSheet(viewModel: viewModel, photoIds: targetPhotoIds)
         }
         .sheet(isPresented: $showClearEditor) {
             if let template = selectedTemplate, let fields = editorFields {

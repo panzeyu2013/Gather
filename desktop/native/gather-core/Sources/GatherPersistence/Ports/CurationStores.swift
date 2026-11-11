@@ -29,6 +29,14 @@ public protocol CollectionStore: Sendable {
         afterPhotoId: String?, beforePhotoId: String?) throws -> Bool
     func sessionExists(_ id: String) throws -> Bool
     func existingPhotoIds(sessionId: String, photoIds: [String]) throws -> Set<String>
+    /// Wave2（task-15）：并/交/差 的成员 id 解析（同会话、排除已移出工作区）。
+    /// 顺序契约：union = 各集合按入参顺序拼接后稳定去重；
+    /// intersection / difference = 以第一个集合的顺序为准。
+    func setOperationPhotoIds(
+        sessionId: String,
+        collectionIds: [String],
+        operation: CollectionSetOperation
+    ) throws -> [String]
 }
 
 public protocol StackStore: Sendable {

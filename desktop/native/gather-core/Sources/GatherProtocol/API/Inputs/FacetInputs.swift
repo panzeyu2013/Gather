@@ -9,6 +9,10 @@ public struct PhotoFacetInput: Decodable, Sendable, Equatable {
     /// FacetQueryTests 的字段对照用例守住）。
     public static let allowedDimensions: [String] = [
         "camera", "lens", "iso", "year", "label", "keyword",
+        // Wave2 / task-14：场景标签（photo_keywords 下 SemanticKeywordPath.scene 子树）
+        // 与人物（person_photos）。两维的桶值都直接落成图库可用的筛选值：
+        // scene → keyword_path starts_with，person → person contains/eq。
+        "scene", "person",
     ]
 
     public let sessionId: String

@@ -176,11 +176,16 @@ extension ExportService {
             var installToken: FileInstallToken?
             do {
                 try assertDestinationPath(plan.url, canonicalRoot: canonicalDestination)
+                // Wave2：子目录规则要求逐文件建目录（旧实现只建顶层 destination）。
+                let outputDirectory = plan.url.deletingLastPathComponent()
+                try FileManager.default.createDirectory(
+                    at: outputDirectory, withIntermediateDirectories: true)
                 if options.format == .original {
                     installToken = try installFile(from: URL(fileURLWithPath: plan.photo.filepath), to: plan.url)
                 } else {
-                    let temporary = destination.appendingPathComponent(
-                        ".\(plan.name).gather-export-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)"
+                    // 临时文件放在最终目录内（同卷 + 同目录原子替换），名字用裸文件名。
+                    let temporary = outputDirectory.appendingPathComponent(
+                        ".\(plan.fileName).gather-export-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)"
                     )
                     defer { try? FileManager.default.removeItem(at: temporary) }
                     try convert(source: plan.photo.filepath, destination: temporary, options: options)
@@ -207,7 +212,16 @@ extension ExportService {
             } catch {
                 // D1：失败 = 本次没有完成；恢复覆盖前的旧文件（本次新建则删除半成品）。
                 installToken?.rollback()
-                let message = error is ExportServiceError ? String(describing: error) : (error as NSError).localizedDescription
+                // Wave2：图片水印的校验失败是 GatherError（EXPORT_PARAMS_INVALID +
+                // field/reason）——取码上屏（UI 会翻译），不要退化成 NSError 的英文散文。
+                let message: String
+                if let gather = error as? GatherError {
+                    message = gather.code.rawValue
+                } else if error is ExportServiceError {
+                    message = String(describing: error)
+                } else {
+                    message = (error as NSError).localizedDescription
+                }
                 errors.append("\(plan.photo.filename): \(message)")
                 failed += 1
                 completed += 1
@@ -418,6 +432,22 @@ extension ExportService {
         ) else { throw ExportServiceError.formatUnsupported }
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         guard let watermark else { return context.makeImage() ?? image }
+        switch watermark.type {
+        case .text:
+            drawTextWatermark(watermark, in: context, width: width, height: height)
+        case .image:
+            try drawImageWatermark(watermark, in: context, width: width, height: height)
+        }
+        return context.makeImage() ?? image
+    }
+
+    /// 文字水印（P0-5 / Wave1 的既有版式）：白色文字 + 透明度 + 三种位置。
+    private func drawTextWatermark(
+        _ watermark: ExportWatermark,
+        in context: CGContext,
+        width: Int,
+        height: Int
+    ) {
         context.setAlpha(CGFloat(watermark.opacity))
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         let font = CGFont("Helvetica" as CFString)
@@ -443,7 +473,64 @@ extension ExportService {
         }
         context.textPosition = CGPoint(x: max(0, x), y: max(0, y))
         CTLineDraw(line, context)
-        return context.makeImage() ?? image
+    }
+
+    /// 图片水印合成（Wave2）：logo PNG 渲染进目标色彩空间画面。
+    ///
+    /// - 尺寸：目标宽 = 输出宽度 × imageScale（默认 0.2），**只缩小不放大**
+    ///（logo 比目标小时保持原始像素，避免放大发虚）。
+    /// - 位置：center 居中；bottomRight/bottomLeft 距边缘 = 输出宽度 × imageMargin
+    ///（默认 0.02）。
+    /// - 透明度：context 全局 alpha = watermark.opacity（对图像绘制同样生效）。
+    private func drawImageWatermark(
+        _ watermark: ExportWatermark,
+        in context: CGContext,
+        width: Int,
+        height: Int
+    ) throws {
+        let path = watermark.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, let logo = WatermarkLogoCache.image(for: path) else {
+            // validate 已保证文件可解码；走到这里说明执行期文件被移走/损坏：
+            // 明确失败而不是静默少一个水印（水印是交付承诺的一部分）。
+            throw GatherError(
+                code: .EXPORT_PARAMS_INVALID,
+                params: ["field": "watermark.imagePath", "reason": "unreadableAtRender"])
+        }
+        let scale = min(max(watermark.imageScale ?? 0.2, 0.02), 1)
+        let marginRatio = min(max(watermark.imageMargin ?? 0.02, 0), 0.25)
+        let targetWidth = CGFloat(width) * CGFloat(scale)
+        let drawScale = min(1, targetWidth / CGFloat(max(logo.width, 1)))
+        let logoWidth = max(1, (CGFloat(logo.width) * drawScale).rounded())
+        let logoHeight = max(1, (CGFloat(logo.height) * drawScale).rounded())
+        let margin = (CGFloat(width) * CGFloat(marginRatio)).rounded()
+        let x: CGFloat
+        switch watermark.position {
+        case .center:
+            x = (CGFloat(width) - logoWidth) / 2
+        case .bottomRight:
+            x = CGFloat(width) - logoWidth - margin
+        case .bottomLeft:
+            x = margin
+        }
+        // 显式双坐标换算（避免混用两套 y 方向）：
+        // - topDownY 是**视觉**坐标（0 = 画面顶边，向下为正）；
+        // - CGContext 的绘制坐标是左下原点、向上为正，等价于 cgY = height - topDownY - logoHeight。
+        // 这样 bottom-* 一定贴视觉底边（topDownY = height - logoH - margin），
+        // 居中两套坐标等价，也不会再出现"y 基准是顶还是底"的歧义。
+        let topDownY: CGFloat
+        switch watermark.position {
+        case .center:
+            topDownY = (CGFloat(height) - logoHeight) / 2
+        case .bottomRight, .bottomLeft:
+            topDownY = CGFloat(height) - logoHeight - margin
+        }
+        let cgY = CGFloat(height) - topDownY - logoHeight
+        context.saveGState()
+        context.setAlpha(CGFloat(watermark.opacity))
+        context.interpolationQuality = .high
+        context.draw(logo, in: CGRect(
+            x: x.rounded(), y: cgY.rounded(), width: logoWidth, height: logoHeight))
+        context.restoreGState()
     }
 
     /// 目标色彩空间：显式指定优先，否则沿用原片 profile（缺失时 DeviceRGB）。
@@ -594,3 +681,50 @@ extension ExportService {
         return cancelled
     }
 }
+
+#if canImport(ImageIO)
+/// 图片水印 logo 的解码缓存（Wave2）。
+///
+/// 为什么缓存：一次交付可能合成上千张，每张都从磁盘解码同一个 logo 是纯浪费；
+/// 缓存的是「解码期就按最长边 2048 降采样」的 CGImage —— 既给超大 logo 兜底
+///（不把 12000px 的 PNG 全量进内存），又保证缩到输出尺寸时画质够用。
+/// 锁 + nonisolated(unsafe) 的静态表写法与 GatherAnalysis 的 AFPointProfiles 一致。
+private enum WatermarkLogoCache {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var images: [String: CGImage] = [:]
+
+    /// 读取 logo（最长边 ≤ 2048）；nil = 不可解码。
+    static func image(for path: String) -> CGImage? {
+        lock.lock()
+        if let cached = images[path] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+        guard let decoded = decode(path: path) else { return nil }
+        lock.lock()
+        images[path] = decoded
+        lock.unlock()
+        return decoded
+    }
+
+    /// 清空缓存（测试隔离用）。
+    static func removeAll() {
+        lock.lock()
+        images.removeAll()
+        lock.unlock()
+    }
+
+    private static func decode(path: String) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2048,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+}
+#endif

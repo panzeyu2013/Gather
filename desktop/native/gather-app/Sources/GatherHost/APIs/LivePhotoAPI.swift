@@ -49,6 +49,8 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
     private let savedSearchRepo: SavedSearchRepo?
     /// P1：语义检索（nil = 未接线，返回空结果 + 明确原因）。
     private let semanticIndex: SemanticIndex?
+    /// Wave2 / task-14：场景标签 → 关键词写回（nil = 未接线：预览给原因、写回显式失败）。
+    private let semanticKeywords: SemanticKeywordService?
 
     /// @unchecked Sendable 依据：全部依赖均为构造后不可变的 let；Repo/Service 的
     /// 可变状态由 DBConnection 的递归锁或各服务自己的锁保护（同组合根约定）。
@@ -62,7 +64,8 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         jobAPI: any JobAPI,
         facetQuery: FacetQuery? = nil,
         savedSearchRepo: SavedSearchRepo? = nil,
-        semanticIndex: SemanticIndex? = nil
+        semanticIndex: SemanticIndex? = nil,
+        semanticKeywords: SemanticKeywordService? = nil
     ) {
         self.photoRepo = photoRepo
         self.assetRepo = assetRepo
@@ -74,6 +77,7 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         self.facetQuery = facetQuery
         self.savedSearchRepo = savedSearchRepo
         self.semanticIndex = semanticIndex
+        self.semanticKeywords = semanticKeywords
         self.pathPolicy = LivePhotoPathPolicy(photoRepo: photoRepo)
     }
 
@@ -230,6 +234,15 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
                 sessionId: query.sessionId, method: "unavailable", hits: [],
                 scanned: 0, skipped: 0, unavailableReason: "语义索引未接线")
         }
+        // Wave2 / task-14：多选优先（单张只是种子集合的退化情形）。
+        if !query.photoIds.isEmpty {
+            let outcome = try mapFilterError {
+                try semanticIndex.similar(
+                    to: query.photoIds, sessionId: query.sessionId,
+                    limit: query.limit, minSimilarity: query.minSimilarity)
+            }
+            return Self.semanticSnapshot(outcome)
+        }
         if let photoId = query.photoId, !photoId.isEmpty {
             let outcome = try mapFilterError {
                 try semanticIndex.similar(
@@ -259,6 +272,39 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
             },
             scanned: outcome.scanned, skipped: outcome.skipped,
             unavailableReason: outcome.unavailableReason)
+    }
+
+    // MARK: - Wave2 / task-14：场景标签写回
+
+    public func semanticKeywordPlan(
+        _ input: SemanticKeywordPlanInput
+    ) async throws -> SemanticKeywordPlan {
+        guard let semanticKeywords else {
+            return SemanticKeywordPlan(
+                sessionId: input.sessionId, root: input.root, items: [],
+                photosWithLabels: 0, photosWithoutLabels: 0, totalAdditions: 0,
+                unavailableReason: "场景标签写回未接线")
+        }
+        do {
+            return try semanticKeywords.plan(input)
+        } catch let error as SemanticKeywordError {
+            throw GatherError(code: error.code, params: ["reason": error.description])
+        }
+    }
+
+    public func applySemanticKeywords(
+        _ input: Confirmed<SemanticKeywordApplyInput>
+    ) async throws -> SemanticKeywordApplyResult {
+        guard let semanticKeywords else {
+            throw GatherError.invalidParameter(
+                field: "sessionId",
+                reason: "semantic keyword writeback is not available in this build")
+        }
+        do {
+            return try await semanticKeywords.apply(input.value)
+        } catch let error as SemanticKeywordError {
+            throw GatherError(code: error.code, params: ["reason": error.description])
+        }
     }
 
     public func suggestions(_ query: PhotoSuggestionQuery) async throws -> [FilterSuggestion] {

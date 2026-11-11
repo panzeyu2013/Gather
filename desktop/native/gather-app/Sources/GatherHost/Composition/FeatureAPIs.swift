@@ -88,7 +88,8 @@ struct FeatureAPIs {
             facetQuery: FacetQuery(connection: composition.db),
             savedSearchRepo: SavedSearchRepo(connection: composition.db),
             semanticIndex: SemanticIndex(
-                store: PhotoSemanticsRepo(connection: composition.db))
+                store: PhotoSemanticsRepo(connection: composition.db)),
+            semanticKeywords: composition.core.semanticKeywordService
         )
     }
 
@@ -192,7 +193,10 @@ struct FeatureAPIs {
             metadataDelivery: composition.metadataDeliveryService,
             retention: MetadataRetentionService(
                 lifecycle: MetadataLifecycleRepo(connection: composition.db),
-                coordinator: composition.deliveryCoordinator)
+                coordinator: composition.deliveryCoordinator),
+            // Wave2 task-13：词库服务只包一层 KeywordRepo；与其它 Repo 同库同连接。
+            keywordLibrary: KeywordLibraryService(
+                store: KeywordRepo(connection: composition.db))
         )
     }
 

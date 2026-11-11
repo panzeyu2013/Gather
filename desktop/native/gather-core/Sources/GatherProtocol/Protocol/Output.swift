@@ -61,6 +61,14 @@ public struct OutputRecipe: Codable, Equatable, Identifiable, Sendable {
     public var includeMetadata: Bool
     /// 绝对目录；空串 = <run root>/<name>（由编排器补全）。
     public var destination: String
+    /// Wave2：配方级输出子目录规则（token 模板）；nil = 不带子目录。
+    /// 交付编排器把它逐字段透传给 ExportOptions.subdirectory。
+    public var subdirectory: ExportSubdirectory?
+    /// Wave2：配方级联系表参数。nil = 回落本次交付的 run 级参数
+    /// （旧配方/旧任务 checkpoint 的兼容路径）；非 nil 时该配方用自己的版式。
+    public var contactSheet: OutputContactSheetOptions?
+    /// Wave2：配方级画廊参数。nil = 回落 run 级参数（兼容路径）。
+    public var gallery: OutputGalleryOptions?
     public var artifacts: [OutputArtifactKind]
 
     public init(
@@ -77,6 +85,9 @@ public struct OutputRecipe: Codable, Equatable, Identifiable, Sendable {
         includeXmp: Bool = false,
         includeMetadata: Bool = true,
         destination: String = "",
+        subdirectory: ExportSubdirectory? = nil,
+        contactSheet: OutputContactSheetOptions? = nil,
+        gallery: OutputGalleryOptions? = nil,
         artifacts: [OutputArtifactKind] = [.photos]
     ) {
         self.id = id
@@ -92,6 +103,9 @@ public struct OutputRecipe: Codable, Equatable, Identifiable, Sendable {
         self.includeXmp = includeXmp
         self.includeMetadata = includeMetadata
         self.destination = destination
+        self.subdirectory = subdirectory
+        self.contactSheet = contactSheet
+        self.gallery = gallery
         self.artifacts = artifacts
     }
 }
@@ -102,6 +116,9 @@ public struct OutputContactSheetOptions: Codable, Equatable, Sendable {
     public var footer: String
     public var columns: Int
     public var rows: Int
+    /// Wave2：页面边距（pt，A4@72dpi 的页面坐标）；nil = 渲染器默认 36。
+    /// 只影响联系表版面，不改成片像素。
+    public var margin: Double?
     /// 每张要画的展示字段。默认只文件名 —— 老配方/老测试的 PDF 逐字节不变。
     public var fields: ContactSheetFields
     /// caption 模板（{filename} {title} {rating} {label} {keywords} {date} …）。
@@ -118,6 +135,7 @@ public struct OutputContactSheetOptions: Codable, Equatable, Sendable {
         footer: String = "",
         columns: Int = 4,
         rows: Int = 5,
+        margin: Double? = nil,
         fields: ContactSheetFields = .legacy,
         captionTemplate: String = CaptionFormatter.defaultTemplate,
         showLabelChip: Bool = true,
@@ -128,6 +146,7 @@ public struct OutputContactSheetOptions: Codable, Equatable, Sendable {
         self.footer = footer
         self.columns = max(1, columns)
         self.rows = max(1, rows)
+        self.margin = margin
         self.fields = fields
         self.captionTemplate = captionTemplate
         self.showLabelChip = showLabelChip

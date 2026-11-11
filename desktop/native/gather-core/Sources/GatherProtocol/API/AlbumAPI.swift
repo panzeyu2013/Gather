@@ -46,6 +46,9 @@ public protocol AlbumAPI: Sendable {
     func reorderCollectionItems(_ input: CollectionReorderInput) async throws
     /// 单行拖拽（position 取前后中点；间隙耗尽才事务内重排）。
     func moveCollectionItem(_ input: CollectionMoveInput) async throws
+    /// Wave2（task-15）：并/交/差 —— 新建一个物化集合，成员 = 运算结果。
+    /// 破坏性（写库）：调用点用 Confirmed 收口。
+    func combineCollections(_ input: Confirmed<CollectionCombineInput>) async throws -> CollectionSummary
 
     // MARK: - 堆栈（§3.8.2）
 
@@ -85,6 +88,11 @@ public extension AlbumAPI {
     }
     func moveCollectionItem(_ input: CollectionMoveInput) async throws {
         throw AlbumAPIUnavailable.curationNotImplemented("moveCollectionItem")
+    }
+    func combineCollections(
+        _ input: Confirmed<CollectionCombineInput>
+    ) async throws -> CollectionSummary {
+        throw AlbumAPIUnavailable.curationNotImplemented("combineCollections")
     }
 
     func stacks(_ sessionId: String) async throws -> [StackSummary] { [] }
