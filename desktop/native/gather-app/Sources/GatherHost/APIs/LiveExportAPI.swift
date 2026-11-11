@@ -45,6 +45,8 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
     private let webDAVPublisher: WebDAVPublisher?
     private let webDAVCredentialSaver: (@Sendable (URL, String, String) throws -> Bool)?
     private let webDAVCredentialLookup: (@Sendable (URL, String) -> String?)?
+    /// Wave3 / task-17：S3 兼容传输（nil = 使用默认 URLSession 实现；测试可注入假传输）。
+    private let s3ShareTransport: (any OutputShareTransport)?
     /// Wave3 / task-21：整套交付完成后的命令钩子（nil = 未接线/未配置）。
     private let postCommand: ExportPostCommandHook?
 
@@ -57,6 +59,7 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         webDAVPublisher: WebDAVPublisher? = nil,
         webDAVCredentialSaver: (@Sendable (URL, String, String) throws -> Bool)? = nil,
         webDAVCredentialLookup: (@Sendable (URL, String) -> String?)? = nil,
+        s3ShareTransport: (any OutputShareTransport)? = nil,
         postCommand: ExportPostCommandHook? = nil
     ) {
         self.exportService = exportService
@@ -64,6 +67,7 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         self.webDAVPublisher = webDAVPublisher
         self.webDAVCredentialSaver = webDAVCredentialSaver
         self.webDAVCredentialLookup = webDAVCredentialLookup
+        self.s3ShareTransport = s3ShareTransport
         self.postCommand = postCommand
     }
 
@@ -89,26 +93,72 @@ public final class LiveExportAPI: ExportAPI, @unchecked Sendable {
         _ input: Confirmed<WebDAVPublishInput>,
         onProgress: (@Sendable (Int, Int) -> Void)?
     ) async throws -> WebDAVPublishSummary {
-        guard let publisher = webDAVPublisher else {
-            throw GatherError(code: .INVALID_PARAM, params: [
-                "field": "webdav", "reason": "publisher not wired",
-            ])
-        }
         let payload = input.value
-        guard let url = URL(string: payload.baseURL), url.scheme?.hasPrefix("http") == true else {
+        // Wave3：transport 可选且默认 webdav——旧调用/旧行为逐字不变；
+        // S3 分支复用同一份凭据通道（Keychain，key = canonical endpoint + accessKeyID）。
+        switch payload.transport ?? .webdav {
+        case .webdav:
+            guard let publisher = webDAVPublisher else {
+                throw GatherError(code: .INVALID_PARAM, params: [
+                    "field": "webdav", "reason": "publisher not wired",
+                ])
+            }
+            let url = try Self.requireHTTPURL(payload.baseURL)
+            let password = webDAVCredentialLookup?(url, payload.username) ?? ""
+            let configuration = WebDAVConfiguration(
+                baseURL: url, username: payload.username,
+                password: password, remoteFolder: payload.remoteFolder)
+            let result = try await publisher.publish(
+                localPath: payload.localPath, configuration: configuration,
+                includePrefixes: payload.includePrefixes, share: payload.share,
+                onProgress: onProgress)
+            return Self.summary(from: result)
+        case .s3:
+            let bucket = (payload.bucket ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !bucket.isEmpty else {
+                throw GatherError(code: .INVALID_PARAM, params: [
+                    "field": "bucket", "reason": "must not be empty",
+                ])
+            }
+            // endpoint 可空（AWS 默认由 bucket+region 推导）；Keychain 键与 UI 保存时一致。
+            let canonicalEndpoint = S3ShareAddressing.canonicalEndpoint(
+                baseURL: payload.baseURL, bucket: bucket, region: payload.region)
+            let credentialURL = try Self.requireHTTPURL(canonicalEndpoint)
+            let secret = webDAVCredentialLookup?(credentialURL, payload.username) ?? ""
+            let request = OutputSharePublishRequest(
+                localPath: payload.localPath,
+                transport: .s3,
+                endpoint: payload.baseURL,
+                accessKeyID: payload.username,
+                secret: secret,
+                remoteFolder: payload.remoteFolder,
+                bucket: bucket,
+                region: payload.region,
+                includePrefixes: payload.includePrefixes,
+                share: payload.share)
+            let s3 = s3ShareTransport ?? S3ShareTransport()
+            let result = try await s3.publish(request, onProgress: onProgress)
+            return WebDAVPublishSummary(
+                uploaded: result.uploaded,
+                failed: result.failed.map {
+                    WebDAVPublishFailureInfo(path: $0.path, reason: $0.reason)
+                },
+                remoteRoot: result.remoteRoot,
+                abortedOnAuth: result.abortedOnAuth)
+        }
+    }
+
+    private static func requireHTTPURL(_ text: String) throws -> URL {
+        guard let url = URL(string: text), url.scheme?.hasPrefix("http") == true else {
             throw GatherError(code: .INVALID_PARAM, params: [
                 "field": "baseURL", "reason": "must be http(s)",
             ])
         }
-        let password = webDAVCredentialLookup?(url, payload.username) ?? ""
-        let configuration = WebDAVConfiguration(
-            baseURL: url, username: payload.username,
-            password: password, remoteFolder: payload.remoteFolder)
-        let result = try await publisher.publish(
-            localPath: payload.localPath, configuration: configuration,
-            includePrefixes: payload.includePrefixes, share: payload.share,
-            onProgress: onProgress)
-        return WebDAVPublishSummary(
+        return url
+    }
+
+    private static func summary(from result: WebDAVPublishResult) -> WebDAVPublishSummary {
+        WebDAVPublishSummary(
             uploaded: result.uploaded,
             failed: result.failed.map { WebDAVPublishFailureInfo(path: $0.path, reason: $0.reason) },
             remoteRoot: result.remoteRoot,

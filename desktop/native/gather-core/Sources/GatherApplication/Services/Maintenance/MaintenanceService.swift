@@ -421,6 +421,76 @@ public actor MaintenanceService {
         }
     }
 
+    // MARK: - Wave3（task-24）：目录迁移
+
+    /// 导出目录包（只读库 + 写一个 JSON 文件；不打包原图、不改照片与 XMP）。
+    public func exportLibraryPackage(
+        _ input: LibraryExportInput
+    ) async throws -> LibraryExportResult {
+        guard let database else {
+            throw MaintenanceError.diagnosticsExportFailed("database unavailable")
+        }
+        do {
+            return try database.read { connection in
+                try LibraryPackageService(connection: connection).exportPackage(input)
+            }
+        } catch let maintenance as MaintenanceError {
+            throw maintenance
+        } catch let gather as GatherError {
+            throw gather
+        } catch {
+            throw MaintenanceError.diagnosticsExportFailed("\(error)")
+        }
+    }
+
+    /// 导入目录包（单事务：建会话 + 照片行 + 元数据 + 集合；任何一步失败整批回滚）。
+    public func importLibraryPackage(
+        _ input: LibraryImportInput
+    ) async throws -> LibraryImportReport {
+        guard let database else {
+            throw MaintenanceError.diagnosticsExportFailed("database unavailable")
+        }
+        do {
+            return try database.write { connection in
+                try LibraryPackageService(connection: connection).importPackage(input)
+            }
+        } catch let maintenance as MaintenanceError {
+            throw maintenance
+        } catch let gather as GatherError {
+            throw gather
+        } catch {
+            throw MaintenanceError.diagnosticsExportFailed("\(error)")
+        }
+    }
+
+    /// 从 sidecar/XMP 迁移 rating/label/keywords（两阶段：读 XMP 不占写锁，落库单事务）。
+    ///
+    /// XMPProvider 由调用方注入：Application 不依赖 GatherMetadataIO（分层门禁），
+    /// 宿主（LiveMaintenanceAPI）传入 SidecarXMPProvider。
+    public func migrateExternalMetadata(
+        _ input: ExternalMigrationInput,
+        xmp: any XMPProvider
+    ) async throws -> ExternalMigrationReport {
+        guard let database else {
+            throw MaintenanceError.diagnosticsExportFailed("database unavailable")
+        }
+        let candidates = try database.read { connection in
+            guard try SessionRepo(connection: connection).get(id: input.sessionId) != nil else {
+                throw GatherError(code: .SESSION_NOT_FOUND)
+            }
+            return try LibraryPackageStore(connection: connection)
+                .migrationCandidates(sessionId: input.sessionId)
+        }
+        let service = ExternalMetadataMigrationService(xmp: xmp)
+        let evaluation = await service.evaluate(
+            candidates: candidates, overwriteExisting: input.overwriteExisting)
+        return try database.write { connection in
+            try ExternalMetadataMigrationService.apply(
+                updates: evaluation.updates, connection: connection)
+            return evaluation.report
+        }
+    }
+
     // MARK: - 调度
 
     public func startScheduler() {

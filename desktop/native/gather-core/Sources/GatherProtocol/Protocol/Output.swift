@@ -368,13 +368,27 @@ public struct WebDAVPublishInput: Codable, Equatable, Sendable {
     /// 上层必须给出精确产物清单；发布器拿不到白名单时只按交付产物收窄
     /// （manifest / 联系表 / 画廊入口 / thumbs），绝不把成片目录或无关文件传上去。
     public var includePrefixes: [String]?
+    /// Wave3：发布通道；可选，nil = webdav（旧调用/旧行为逐字不变）。
+    /// transport = .s3 时：baseURL = S3 endpoint（可空 = 由 bucket+region 推 AWS 默认）、
+    /// username = accessKeyID、remoteFolder = key 前缀；bucket/region 见下面两个可选字段。
+    /// secret 不在此结构体：发布端用 Keychain 按 (endpoint, accessKeyID) 查。
+    public var transport: OutputShareTransportKind?
+    /// S3 通道：bucket（WebDAV 忽略；缺省空 = 发布时报参数错）。
+    public var bucket: String?
+    /// S3 通道：region（WebDAV 忽略；nil 默认 us-east-1）。
+    public var region: String?
     /// 分享策略：allowDownload=false 只传 thumbs + 校样页（不传 large/成片）。
     /// nil = 保守默认（不允许下载大图）。
+    ///
+    /// 口令（share.password）只用于本次发布派生哈希写进 share.json，明文不落盘。
     public var share: OutputShareOptions?
 
     public init(
         localPath: String, baseURL: String, username: String, remoteFolder: String,
         includePrefixes: [String]? = nil,
+        transport: OutputShareTransportKind? = nil,
+        bucket: String? = nil,
+        region: String? = nil,
         share: OutputShareOptions? = nil
     ) {
         self.localPath = localPath
@@ -382,6 +396,9 @@ public struct WebDAVPublishInput: Codable, Equatable, Sendable {
         self.username = username
         self.remoteFolder = remoteFolder
         self.includePrefixes = includePrefixes
+        self.transport = transport
+        self.bucket = bucket
+        self.region = region
         self.share = share
     }
 }
@@ -412,7 +429,28 @@ public struct WebDAVPublishSummary: Codable, Equatable, Sendable {
     public var isSuccess: Bool { failed.isEmpty && !abortedOnAuth }
 }
 
+/// Wave3：发布失败分类（按 reason 推断，供 UI 报告"认证/网络/服务端/校验/本地 IO"）。
+public extension WebDAVPublishFailureInfo {
+    var category: OutputShareFailureCategory {
+        OutputShareFailureCategory.infer(fromReason: reason)
+    }
+}
+
+public extension WebDAVPublishSummary {
+    /// 各分类的失败计数（报告用；空 = 没有失败）。
+    var failureCategories: [OutputShareFailureCategory: Int] {
+        var counts: [OutputShareFailureCategory: Int] = [:]
+        for failure in failed {
+            counts[failure.category, default: 0] += 1
+        }
+        return counts
+    }
+}
+
 /// 保存 WebDAV 凭据（密码只进 Keychain，不落 settings/日志）。
+///
+/// Wave3：S3 兼容存储复用本入口——baseURL 传 endpoint、username 传 accessKeyID、
+/// password 传 secretAccessKey，同样只进 Keychain（kSecClassInternetPassword）。
 public struct WebDAVCredentialInput: Codable, Equatable, Sendable {
     public var baseURL: String
     public var username: String

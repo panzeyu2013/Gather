@@ -94,6 +94,8 @@ public struct CullingView: View {
     /// C1 状态胶囊的「打开设置」入口：原生 Settings 场景由 environment 提供
     ///（不再由外壳逐页注入 onOpenSettings 闭包）。
     @Environment(\.openSettings) private var openSettings
+    /// Wave3 / task-20：第二屏镜像桥（App 级注入；nil = 未启用，行为与旧版一致）。
+    @Environment(\.cullingSecondDisplay) private var secondDisplay
     var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     public var body: some View {
@@ -128,6 +130,21 @@ public struct CullingView: View {
         }
         .onChange(of: viewModel.sortMode) { _, newValue in
             sortRaw = newValue.rawValue
+        }
+        // Wave3 / task-20：把「当前会话 + 当前布局」发布给第二屏（只读镜像）。
+        // 不在这里控制第二屏内容之外的东西：VM 可见性仍只由本页 onAppear/onDisappear
+        // 经 SessionPage 生命周期驱动，避免两边 setVisible 导致轮询抖动。
+        .onAppear {
+            guard !viewModel.sessionId.isEmpty else { return }
+            secondDisplay?.attach(sessionId: viewModel.sessionId, layoutRaw: layoutRaw)
+        }
+        .onChange(of: layoutRaw) { _, newValue in
+            secondDisplay?.updateLayoutRaw(newValue)
+            // 网格布局没有查看器：主窗口切网格后第二屏退回单图，
+            // 缩放也归位，避免镜像到上一个查看器遗留的高倍率。
+            if newValue == CullingLayoutMode.grid.rawValue {
+                secondDisplay?.publishViewerTransform(zoom: 1, offset: .zero)
+            }
         }
         .onChange(of: viewModel.pendingCrossPageBatch?.id) { _, _ in
             guard let plan = viewModel.pendingCrossPageBatch else { return }

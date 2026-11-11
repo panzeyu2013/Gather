@@ -100,6 +100,14 @@ public final class SessionControlViewModel: SessionPageModel {
         }
     }
 
+    /// Wave3（task-24）：导入目录包 / XMP 迁移成功后广播库变更。
+    ///
+    /// 发布点必须落在登记文件里（scripts/check-domain-events.sh 的 PUBLISHERS），
+    /// 因此不在迁移卡片里直接 post；域固定 .library（新工作区 + 评分/集合变化）。
+    func postMigrationLibraryChange() {
+        GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
+    }
+
     // MARK: - 可见性 / 轮询 / 关闭（Cut 4 / 4a-2b）
 
     /// 可见性唯一入口（PageVisibility）：把旧 SessionControlView 的 .task 里的

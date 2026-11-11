@@ -1,0 +1,294 @@
+# 真机验收清单（Wave 1–3 收尾）
+
+> 日期：2026-11-11｜仓库基线：以 Lead 收口时的提交为准｜性质：**手工验收清单**（只写文档，不改代码）
+> 依据：[90-wave-ledger.md](90-wave-ledger.md) 的已修/遗留、[00-synthesis.md](00-synthesis.md) 的 P0 清单、以及本文逐项标注的代码文件。
+> 纪律：构建与自动化测试由 Lead 统一执行；本清单只覆盖**自动化测试覆盖不到的部分**：真机、真实素材、真实系统集成（C1 16.7 / 多显示器 / 打印 / Shortcuts / 延迟体感 / 产物肉眼检查）。
+
+## 0. 使用方式
+
+### 0.1 环境与前置
+
+| 项 | 要求 |
+| --- | --- |
+| 系统 | macOS 26+（与 Info.plist 的 LSMinimumSystemVersion 26.0 一致） |
+| 应用 | 用 ./desktop/native/build.sh 产出的 .app（不是 swift run；App Intents/URL scheme/打印面板都需要真实 bundle） |
+| Capture One | 16.7（本机 sdef 版本 16.7.8.16）；验收前后各记录一次 C1 版本与 sdef 路径 |
+| 素材 | ≥10 张 RAW + 2 组 RAW/JPEG 配对 + 1 个 PSD + 1 个 HEIC；另备 1 张 50MP 级大图用于性能项 |
+| 显示器 | 有条件的用 ≥2 台显示器；单屏也可验"第二屏窗口"（同屏开第二窗口） |
+| 记录 | 逐项填 §12 的记录表；失败项必须写"实际结果 + 截图/日志路径 + 建议严重度" |
+
+### 0.2 总则
+
+1. **每项独立开始**：清空应用状态（退出重开）后再进下一项，避免上项残留状态污染结论。
+2. **不可逆动作先备份**：C1 写回、导入合并、批量元数据写回三类，开始前复制被测工作区目录并做一次库备份（设置 → 维护 → 立即备份）。
+3. **失败先回滚再记录**：能回滚的先回滚（见各节"失败时"），再记录实际结果；不要为了继续验收而手工改库。
+4. **"未验证"不等于"通过"**：任何一项没跑，记录表里填"未验"，不得留空。
+
+## 1. Capture One 16.7 真机矩阵
+
+> 背景：C1 桥契约按本机 CaptureOne.sdef（16.7.8.16）文本钉死，自动化测试只覆盖"脚本文本/错误映射"；对象归属、C1 是否 reload、色标整数序只有真机可验。
+> 代码：GatherHost/CaptureOneBridge.swift、GatherProtocol/Protocol/C1.swift、GatherHost/C1RoundTripCoordinator.swift、GatherUI/Culling/CullingSyncControls.swift、GatherApplication/Services/C1/C1ImportJudgementService.swift。
+
+### C1-1 选中读取（application 级 selected variants）
+
+- 前置：C1 打开含 ≥10 张图的 Session；Gather 已获自动化授权（系统设置 → 隐私与安全性 → 自动化）。
+- 步骤：C1 选中 10 张 → Gather 工作台「从 Capture One 导入」→ 确认。
+- 期望：新建工作区并导入这 10 张；C1 选中 0 张时再点导入 → 报 C1_NO_SELECTED_PHOTOS 中文提示，且**不创建空工作区**。
+- 失败时：若 C1 明明选中仍报"请先选择照片" → 记录 C1 版本 + Gather 日志中的脚本文本，判 P0 回归（Wave1 P0-1 复发）；暂停后续 C1 项并回执 Lead。
+
+### C1-2 变体级读取（导入即带判断）
+
+- 前置：C1 中给 5 张图设 1★–5★、红/绿/黄色标、其中 3 张 pick；另 2 张已有外部软件留下的 .xmp 关键词。
+- 步骤：按 C1-1 导入 → 打开控制中心/元数据页等待扫描完成（等 metadata.scan 终态，最长约 10 分钟）。
+- 期望：星级/色标与 C1 一致；pick=true 的照片为"保留"（keep），其余未处理；关键词并入元数据（并集）；重新导入已存在照片时**不覆盖人工决策**。
+- 失败时：出现 C1_JUDGEMENTS_UNAVAILABLE 时记录为降级（文件仍导入、判断未带），不要手工改库补数据。
+
+### C1-3 变体级写回（只改目标 variant）
+
+- 前置：同一 RAW 在 C1 有 2 个 variant（如彩色/黑白）；Gather 中该照片设为 4★ + 紫标 + 保留。
+- 步骤：挑片页选中该照片 → 同步菜单「在 Capture One 中写回判断（变体级）」→ 回 C1 查看两个 variant。
+- 期望：只有目标 variant（优先已 pick，否则 position 1）的 rating/color tag/pick 变化；关键词不变；单次 ≤500 张。
+- 失败时：记录 C1 实际值；两个 variant 都被改 → P0（数据污染），用 C1 历史回滚后回执。
+
+### C1-4 色标整数序核对（0=None…7=Purple）
+
+- 前置：按 C1 UI 顺序（None/Red/Orange/Yellow/Green/Cyan/Blue/Purple）给 8 张图各设一个色标。
+- 步骤：导入后在 Gather 网格/检查器逐个对照。
+- 期望：8 色一一对应（重点核对 Cyan/Blue、Orange/Yellow 不错位）。
+- 失败时：记录映射表（C1 色 → Gather 色）；属已知待真机核对项，只记录不阻塞。
+
+### C1-5 手动 Load ack（reload 死锁出口）
+
+- 前置：完成一次写回后，C1 侧未执行 Load Metadata。
+- 步骤：Gather 触发"重载元数据" → 观察同步条 → C1 手动 Load Metadata → Gather 点「我已在 Capture One 手动加载元数据」→ 再走 confirm/finalize。
+- 期望：ack 后 XMP_CONFIRM_REQUIRES_SYNC 解除，confirm/finalize 成功；元数据页同步条不再卡"待 C1 重载"。
+- 失败时：ack 后仍死锁 → 记录步骤 + 错误码，判 P0（Wave1 P0-2 验收点）。
+
+### C1-6 reload 失败上浮（不再吞错）
+
+- 前置：系统设置里取消 Gather 对 C1 的自动化授权（或让 C1 不运行）。
+- 步骤：触发一次"重载元数据"。
+- 期望：报 C1_SCRIPT_FAILED（中文文案），**不写假 ack**、不把照片标成已确认。
+- 失败时：出现"状态变绿但 C1 未变" → P0（假成功）。
+
+### C1-7 Session 三目录识别（Capture / Selects / Trash）
+
+- 前置：C1 Session 根目录下同时存在 Capture/、Selects/、Trash/（Trash 里放 2 张重要图）。
+- 步骤：Gather 导入该 Session 根目录。
+- 期望：只扫 Capture/；Trash/ 不导入（不"复活"淘汰件）；Selects/ 与 Capture 同名去重，不同名按已知边界不导入并在信息条标注。
+- 失败时：Trash 被导入 → P0，记录数量与路径。
+
+### C1-8 Hot Folder 边界提示
+
+- 前置：C1 配置了 Hot Folder 的 Session。
+- 步骤：查看 Gather 信息条/同步区文案。
+- 期望：有"不检测 Hot Folder"的明示；不出现"已同步"的错误暗示。
+- 失败时：仅记录文案缺失（P1，不阻塞导入）。
+
+### C1-9 reject 往返（已知不闭合）
+
+- 前置：Gather 淘汰 3 张 → 变体级写回 → 回 C1 看 pick。
+- 期望：C1 中 pick=false；再导回 Gather 时这 3 张为"未处理"，不得自动变 keep/reject。
+- 失败时：往返后淘汰状态被误判 → 记录为已知缺口（Wave3 遗留），不阻塞。
+
+### C1-10 500 张上限
+
+- 前置：选中 501 张触发变体级写回。
+- 期望：提示分批（单次上限 500），不出现部分写入无提示。
+- 失败时：记录实际写入张数与提示文案。
+## 2. 第二屏（多显示器 / 第二窗口）
+
+> 代码：GatherApp/GatherApp.swift（独立 Window id）、GatherUI/Culling/CullingSecondDisplay.swift；入口在挑片查看器工具栏「在第二屏显示」（display 图标）。
+
+- 前置：Gather 打开某工作区挑片页；有第二台显示器（单屏可同屏验证第二窗口）。
+- 步骤：
+  1. 挑片页查看器工具栏点 display 图标；
+  2. 主窗口切换照片 / 切换对比布局 / 缩放；
+  3. 在第二屏窗口内尝试点击与键盘操作；
+  4. 关闭主窗口，再重开主窗口并进入挑片页；
+  5. 点第二屏「关闭第二屏」。
+- 期望：
+  - 第二屏是**只读镜像**（有明示文案），跟随当前照片与对比布局，不能选择/标记；
+  - 三种空态各有明确文案：主窗口未进入挑片页 / 主窗口已关闭 / 尚未载入照片；
+  - 主窗口重开后第二屏自动恢复；
+  - 「关闭第二屏」只关第二屏窗口，主窗口不受影响。
+- 失败时：记录现象（黑屏/不跟随/可写/关主窗连坐）；主窗口功能受损判 P0。
+
+## 3. 打印
+
+> 代码：GatherUI/Export/PrintOptionsSheet.swift（单图/多页版面）、PrintSupport.swift（进程级独占闸）、GatherApplication/Services/Export/PrintLayout.swift + PrintDocumentRenderer.swift。
+> 入口两处：挑片查看器工具栏 printer 图标；「整套交付」结果行「打印联系表」。
+
+### P-1 联系表打印
+
+- 前置：跑一次含联系表的整套交付（配方勾「包含联系表」）。
+- 步骤：结果行点「打印联系表」→ 系统打印面板 → 生成 PDF 预览。
+- 期望：PDF 正常打开、版面符合配置的行列/caption；打印面板可正常取消。
+- 失败时：记录是否 beep/无反应；回退：直接打开交付目录里的联系表 PDF 用系统打印。
+
+### P-2 单图 / 多页版面打印
+
+- 前置：挑片页选中 1 张 → printer 图标 → 选"单图"；再选 3 张 → 选"多页排版"。
+- 期望：「打印版面」面板显示选项（页面/边距/张数）；「打印」生成 PDF 后弹系统打印面板；不写工作区、不改照片（面板有明示）。
+- 失败时：若提示"打印渲染不可用（宿主未接线）"→ 记录为装配缺失（打印端口注入），不算通过。
+
+### P-3 打印独占闸
+
+- 前置：打印面板**保持不关闭**（停在系统面板）。
+- 步骤：回 Gather 再触发一次打印（联系表或版面）。
+- 期望：第二次被拒绝并提示"已有打印任务在进行中"，不会出现两个打印面板。
+- 失败时：静默吞掉（无提示）→ P1。
+
+## 4. Shortcuts / App Intents / URL scheme
+
+> 代码：GatherApp/GatherAutomationIntents.swift（4 个 Intent）、GatherHost/Automation/GatherAutomationRuntime.swift、GatherHost/Automation/GatherDeepLinkRoute.swift、GatherHost/GatherAppDelegate.swift。
+> **已知打包缺口**：SwiftPM 构建不生成 App Intents 元数据；若 Shortcuts 里看不到动作，先记录为"打包缺口（需 build.sh 加 appintentsmetadataprocessor）"，不判功能失败。
+
+- 前置：真实 .app 已启动过一次（runtime 注册完成）。
+- 步骤与期望：
+  1. **Shortcuts 动作**：搜到 4 个动作——「新建工作区并导入」「按工作区导出」「按工作区写回元数据」「查询工作区状态」；分别验证：
+     - 新建工作区并导入（2 个文件路径，名称留空）→ 新建成功、名称自动生成；
+     - 按工作区导出（工作区 ID + 输出目录 + jpeg）→ 产物目录出现 JPEG；
+     - 按工作区写回元数据（target=rating）→ 同步条进入待写回；
+     - 查询工作区状态 → 返回摘要（张数等）。
+  2. **URL scheme**（终端执行）：
+     - open "gather://session/<工作区ID>" → 打开该工作区；
+     - open "gather://photo/<照片ID>" → 打开图库并定位该照片；
+     - open "gather://import?session=<工作区ID>&file=<绝对路径>" → 加入已有工作区（不新建）；
+     - open "gather://import?file=<绝对路径>"（旧格式）→ 新建工作区并导入。
+  3. **未启动场景**：退出 Gather 后 open "gather://session/<id>" → 应用启动并打开该工作区，或明确提示 runtime 未就绪（不静默失败）。
+- 失败时：记录动作缺失/参数不生效/打开错误页面；导出后命令钩子见 §7.1。
+
+## 5. 翻片延迟与预取实测
+
+> 代码：GatherUI/Culling/CullingViewModel+Preload.swift、CullingViewModel+Actions.swift（单槽 pending commit + 忙碌角标）、CullingWorkbenchViewer.swift。
+> 目标不是跑分，而是回答"按 → 到清晰图要多久"。
+
+- 前置：50MP 级 RAW ≥200 张；索引与缩略图预热完成（工作区状态"已索引"）；关闭其他重负载应用。
+- 步骤（重复 3 轮取中位数；用手机慢动作/屏录逐帧计时）：
+  1. 第一屏进查看器，连续按 → 翻 30 张，记录"按键 → 目标图清晰"的最大/中位耗时；
+  2. 跳跃翻片（⌘↑/⌘↓ 或点远端缩略图）后再按 →；
+  3. 加载中立刻再按 →（验证单槽 pending commit：按键不丢、有忙碌角标、加载完跳到最后一按目标）。
+- 期望：
+  - 邻张预取生效（±1 同键预热、±2 preload、下一张 prioritize）：常规按 → 中位 ≤0.2s、最大 ≤0.6s（无基线时按"无明显空白"判定）；
+  - 连按不丢键，最终停在最后一次按下的目标；
+  - 活动监视器峰值内存 < 3GB @200 张 50MP。
+- 失败时：记录设备型号、素材规格、三轮数值；"按 → 无反应"回归判 P0。
+
+### 5.1 看图专业档（顺带验）
+
+- F 专注模式：全屏、隐藏检查器/胶片条；ESC 退出；组合键不被 AppKit 吞。
+- 真 1:1：⌘1 / ⌘⌥0 到 100%；⌘0 = 适配窗口（不是放大）。
+- 对比：2 图全格清晰；3 图 / Survey（≤9 张）布局可用；键位 裸 H/F/R/C（专注模式为 ⇧F）。
+- 失败时：记录实际键位与布局（键位被系统占用属 P1）。
+
+## 6. 交付配方编辑器 GUI
+
+> 代码：GatherUI/Export/ExportViewModel+Delivery.swift、ExportView+Delivery.swift。
+
+- 前置：导出页 → 整套交付区。
+- 步骤：
+  1. 新建配方，逐一改：格式、质量、长边、色彩空间、DPI、输出锐化、文字/图片水印、命名模板、子目录、联系表（行列/字段/caption）、画廊（尺寸/字段）；
+  2. 输入非法值：质量 150、长边 -1、DPI 0、子目录 {unclosed、未知 token {foo}、路径穿越 ../；
+  3. 关闭应用重开，回导出页。
+- 期望：全部字段可编辑并持久化；非法值**就地中文提示并阻止开始**（不落到执行期）；重开后配置完整；预检数字与配方一致。
+- 失败时：记录哪项不可编辑/未持久化/校验漏拦截；回退：改回默认配方并删除坏配方（不手工改 settings JSON）。
+
+## 7. 水印 / 子目录 / 联系表 / 画廊实际产物检查
+
+> 代码：GatherProtocol/Protocol/Export.swift、Output.swift、GatherApplication/Services/Export/ExportService+Run/Plan.swift、Output/OutputService.swift。
+
+- 前置：透明背景 PNG logo（≥1024px）；一组含 client/event 所需元数据（标题/关键词）的照片。
+- 步骤：
+  1. 配方开图片水印 + 子目录模板 {yyyy}/{MM}/{dd}/{client}/{orig} + 联系表（勾星级/色标）+ 画廊；
+  2. 跑整套交付；
+  3. 逐产物检查。
+- 期望：
+  - **水印**：logo 按宽度比例贴指定位置、边距与透明度符合、只缩不放（原图小于 2048 时降采样）；大图连跑 3 次不崩、不重复叠加；
+  - **子目录**：产物落在 年/月/日/客户/原名 下；校验顺序正确（unclosedToken 先于 unknownToken，再 pathTraversal）；
+  - **联系表**：行列数正确、caption 按模板、星条/色标点与数据一致；
+  - **画廊**：index/data.json/thumbs/large/proof.html 齐全，尺寸符合配方，data.json 字段完整；
+  - **manifest**：记录**相对路径**（不含本机绝对路径泄漏），张数/字节数一致。
+- 失败时：记录产物路径 + 截图；水印错位/重复叠加 P1；manifest 泄漏绝对路径 P0（隐私）。
+
+### 7.1 导出后命令钩子（export_post_command）
+
+- 前置：设置键 export_post_command 填一个可验证的命令（参数数组执行、不经 shell，例如 `/usr/bin/touch` + `/tmp/gather-post-ok`），超时设默认；空串=关闭。
+- 步骤：跑一次整套交付（单次 export.execute 不触发，属已知边界）。
+- 期望：命令执行、Outcome 记入产物/manifest；超时不阻塞交付成功；命令失败只记录、不把交付判失败。
+- 失败时：记录是否卡 UI / 误判交付失败。
+
+## 8. 目录迁移（Wave3 / task-24，新功能首轮真机）
+
+> 代码：GatherUI/ControlCenter/MigrationCenterCard.swift、GatherApplication/Services/Maintenance/LibraryPackageService.swift 等。
+> 入口：控制中心「分析与索引」卡片内的「迁移与目录包」。
+
+- 前置：准备工作区 A（含集合、评分、关键词）；另留空库（或另一台机）用于"迁移后"验证；迁移前做一次库备份（设置 → 维护）。
+- 步骤与期望：
+  1. **导出目录包**：点「导出目录包…」存为 *.gatherlib.json → 显示"已导出 N 张照片、M 个集合到：路径（归档跳过 K 张）"，可在 Finder 打开；**包内不含原图**（体积应为 KB 级）。
+  2. **导入（keepLocal）**：另一环境选包 + 选新根目录 + 冲突处置=保留本地 → 确认导入 → 报告显示"新增 N 张（待索引 p 张）、评分/关键词/集合计数、photoId/checksum 去重计数、保留本地/保留导入/并存"。
+  3. **冲突策略**：同库重复导入两次，分别用 保留本地 / 保留导入 / 并存，核对报告计数与库内行数（并存应多一行；保留导入应只回绑路径、不新增行）。
+  4. **路径重绑定**：把新根目录下文件改名/移走后导入 → 报告"待索引 N 张">0，不崩、不报错。
+  5. **从 XMP 迁移**：让照片旁有外部软件写回的 .xmp（rating/色标/关键词）→ 先用默认（只补空字段）跑一次，再开「用 XMP 覆盖」跑一次 → 报告"冲突 N 条（按字段计）"与缺项计数；两次结果差异符合预期（默认不覆盖本地已有值）。
+  6. **未接线态**：若宿主未注入 MaintenanceAPI，卡片应显示「迁移未接线（宿主未注入 MaintenanceAPI）」并禁用按钮（不得点了没反应）。
+- 失败时：任何导入失败先恢复备份库（维护 → 恢复）；报告计数与库不符时保留包与报告截图，判 P1（迁移正确性），不影响其他项。
+
+## 9. 已知未闭环项（按"已知风险"记录，不重复判失败）
+
+| # | 项 | 现状 | 验收动作 |
+| --- | --- | --- | --- |
+| 1 | App Intents 发现性 | SwiftPM 不生成元数据，Shortcuts 可能看不到 4 个动作 | 记录"打包缺口"，用 URL scheme 验证自动化面可用 |
+| 2 | C1 色标整数序 | 按 C1 UI 顺序推定（sdef 无枚举） | §1 C1-4 核对，记录映射表 |
+| 3 | C1 判断落库时机 | 在 metadata.scan 终态后，后台最多等 10 分钟且无进度 | 记录等待时长；提前退出会丢判断（重导入可再读） |
+| 4 | Selects 覆盖不完整 | 只扫 Capture；Selects 中不同名文件不导入 | 信息条有明示即通过 |
+| 5 | Hot Folder | 不检测（sdef 无接口） | 有明示即通过 |
+| 6 | reject 往返 | C1 只有布尔 pick | §1 C1-9 记录 |
+| 7 | 旧交付配方 artifacts | 不自动补 .gallery（不静默改用户数据） | 旧配方不生成画廊属预期；需要时手工勾选 |
+| 8 | 集合层级（Collection Set） | 需 schema 变更，单独立项 | 不在本轮验收范围 |
+| 9 | NOT/集合/相对日期编辑入口 | 数据模型/查询已支持；FilterRuleEditor 入口属后续任务 | 只验已有规则/JSON 路径，不判 UI 缺失 |
+| 10 | 模板侧变量 | 变量引擎已在"批量文案"落地，模板 apply 仍按字面 | 不判失败，记录差异 |
+| 11 | 导出后钩子只挂整套交付 | 单次 export.execute 不触发 | 只验 runRecipes 路径 |
+| 12 | 打印/第二屏纳入状态 | 以 Lead 收口回执为准 | 若本轮未合并，记录"未验（功能在飞）" |
+
+## 10. 失败分级与回滚动作
+
+| 级别 | 判据 | 立即动作 |
+| --- | --- | --- |
+| P0 | 数据污染/丢失（C1 写错 variant、Trash 复活、导入覆盖非预期行、manifest 泄漏绝对路径、迁移后库不可用） | 停验收 → C1 历史/维护备份回滚 → 保留日志与截图 → 回执 Lead |
+| P1 | 主流程可完成但明显摩擦（预取无收益、打印静默失败、配方字段未持久化、报告计数不符、水印错位） | 记录步骤与实际值；能绕则绕（换导出目录/换配方），继续后续项 |
+| P2 | 文案/提示缺失、空态不清晰 | 记录文案位置，不阻塞 |
+
+**回滚工具箱**：设置 → 维护 → 恢复备份（会重启应用）；C1 侧撤销/历史；导出产物删目录重导（不碰源图）；迁移合并前先备份库（keepImported 只回绑同一 photoId，不删本地行）。
+
+## 11. 交付口径
+
+- 全部 P0 项 PASS 且无未解释的 P1 → 本波可交付；
+- 存在 P0 FAIL → 不交付，按 §10 回执并附证据；
+- "未验"项在记录表里明确标注，不得口头转述成"通过"。
+
+## 12. 验收记录表
+
+| 项 | 结果（PASS/FAIL/未验） | 实际结果/证据（路径/截图名） | 执行人 | 日期 | 备注（建议严重度） |
+| --- | --- | --- | --- | --- | --- |
+| C1-1 选中读取 | | | | | |
+| C1-2 变体级读 | | | | | |
+| C1-3 变体级写回 | | | | | |
+| C1-4 色标整数序 | | | | | |
+| C1-5 手动 Load ack | | | | | |
+| C1-6 reload 失败上浮 | | | | | |
+| C1-7 Session 三目录 | | | | | |
+| C1-8 Hot Folder 提示 | | | | | |
+| C1-9 reject 往返 | | | | | |
+| C1-10 500 张上限 | | | | | |
+| §2 第二屏 | | | | | |
+| P-1 联系表打印 | | | | | |
+| P-2 版面打印 | | | | | |
+| P-3 打印独占闸 | | | | | |
+| §4 Shortcuts 4 动作 | | | | | |
+| §4 URL scheme 4 路由 | | | | | |
+| §5 翻片延迟/预取 | | | | | |
+| §5.1 专注/1:1/对比 | | | | | |
+| §6 配方编辑器 | | | | | |
+| §7 水印/子目录/联系表/画廊 | | | | | |
+| §7.1 导出后钩子 | | | | | |
+| §8 迁移（导出/导入/策略/重绑定/XMP） | | | | | |

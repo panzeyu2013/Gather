@@ -490,26 +490,49 @@ extension ExportViewModel {
         }
     }
 
-    /// 发布到 WebDAV：先存凭据（Keychain），再上传目录。
+    /// 发布交付包：先存凭据（Keychain），再上传目录（Wave3：WebDAV / S3 两个通道）。
     ///
     /// 白名单**必填**：空列表说明上层没能从 manifest 推出产物清单，此时宁可不发布，
     /// 也绝不"回退成整目录上传"（会把历史 manifest、成片目录、用户杂物一起传上去）。
     /// allowDownload = false 时只传缩略图与校样页（大图/成片不上传）。
-    // DOMAIN-EVENT: none — 产物写 WebDAV，落在应用外；无常驻页消费者
+    /// S3：secret 复用 WebDAV 凭据通道（Keychain，键 = canonical endpoint + accessKeyID），
+    /// endpoint 可空（AWS 默认由 bucket+region 推导）；对象默认私有。
+    /// 口令/到期只是静态页面的纯前端门槛与提示，没有服务端强制。
+    // DOMAIN-EVENT: none — 产物写应用外（WebDAV/S3），无常驻页消费者
     public func publishToWebDAV(
         localPath: String,
-        baseURL: String,
-        username: String,
-        password: String,
-        remoteFolder: String,
+        transport: OutputShareTransportKind = .webdav,
+        endpoint: String = "",
+        accessKeyID: String = "",
+        secret: String = "",
+        remoteFolder: String = "",
+        bucket: String? = nil,
+        region: String? = nil,
         includePrefixes: [String],
-        allowDownload: Bool
+        allowDownload: Bool,
+        proofPassword: String? = nil,
+        expiresAt: String? = nil
     ) async {
         guard !isPublishing else { return }
         guard !includePrefixes.isEmpty else {
             // 上一轮的残留结果必须清掉，否则面板会显示上一次的"发布成功"。
             webDAVPublish = nil
             errorMessage = CommandError.localized("无法确定发布清单，已取消发布")
+            return
+        }
+        let share = OutputShareOptions(
+            allowDownload: allowDownload,
+            expiresAt: expiresAt,
+            remoteSubfolder: remoteFolder,
+            password: proofPassword)
+        if let issue = share.validationIssue() {
+            webDAVPublish = nil
+            errorMessage = CommandError.localized(Self.shareIssueMessage(issue))
+            return
+        }
+        if transport == .s3, (bucket ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            webDAVPublish = nil
+            errorMessage = CommandError.localized("S3 兼容存储需要填写 Bucket")
             return
         }
         isPublishing = true
@@ -522,18 +545,28 @@ extension ExportViewModel {
             publishProgress = nil
         }
         do {
-            // 空密码 = 沿用已保存的凭据；不能用空串覆盖 Keychain（否则第二次发布必 401）。
-            if !password.isEmpty {
+            // 空 secret = 沿用已保存的凭据；不能用空串覆盖 Keychain（否则第二次发布必 401）。
+            // S3 的 Keychain 键与 LiveExportAPI 的查找键都用 canonical endpoint，二者同源。
+            if !secret.isEmpty {
+                let credentialEndpoint: String
+                if transport == .s3 {
+                    credentialEndpoint = S3ShareAddressing.canonicalEndpoint(
+                        baseURL: endpoint, bucket: bucket ?? "", region: region)
+                } else {
+                    credentialEndpoint = endpoint
+                }
                 _ = try await exportAPI.saveWebDAVCredential(WebDAVCredentialInput(
-                    baseURL: baseURL, username: username, password: password))
+                    baseURL: credentialEndpoint, username: accessKeyID, password: secret))
             }
             webDAVPublish = try await exportAPI.publish(
                 Confirmed(WebDAVPublishInput(
-                    localPath: localPath, baseURL: baseURL,
-                    username: username, remoteFolder: remoteFolder,
+                    localPath: localPath, baseURL: endpoint,
+                    username: accessKeyID, remoteFolder: remoteFolder,
                     includePrefixes: includePrefixes,
-                    share: OutputShareOptions(
-                        allowDownload: allowDownload, remoteSubfolder: remoteFolder))),
+                    transport: transport,
+                    bucket: bucket,
+                    region: region,
+                    share: share)),
                 // 外层闭包显式弱持有：内层 Task 的 [weak self] 与外层的强捕获不一致
                 // （#ImplicitStrongCapture），也避免发布流程被闭包延长 VM 生命周期。
                 onProgress: { [weak self] done, total in
@@ -553,6 +586,20 @@ extension ExportViewModel {
             } else {
                 errorMessage = CommandError(error)
             }
+        }
+    }
+
+    /// 分享参数校验问题 → 中文提示（与协议层 validationIssue 同一套判定）。
+    private static func shareIssueMessage(_ issue: OutputShareValidationIssue) -> String {
+        switch issue {
+        case .expiresAtInvalid:
+            return "到期时间格式不合法（需要 ISO-8601）"
+        case .expiresAtInPast:
+            return "到期时间必须晚于现在"
+        case .passwordLengthInvalid:
+            return "口令长度必须在 4 到 128 之间"
+        case .remoteSubfolderInvalid:
+            return "远端目录不能是绝对路径，也不能包含 .."
         }
     }
 

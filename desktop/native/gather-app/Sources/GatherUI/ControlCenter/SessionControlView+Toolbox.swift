@@ -32,6 +32,12 @@ extension SessionControlView {
                     .gatherButton(.tertiary)
                     .help(l10n("切换到人脸关键词页面"))
             }
+            // Wave3（task-24）：目录包导出/导入 + 外部 XMP 迁移。
+            // 成功后的 .library 广播走 VM（发布点登记在 SessionControlViewModel.swift）。
+            MigrationCenterCard(
+                sessionId: viewModel.sessionId,
+                notifyLibraryChanged: { viewModel.postMigrationLibraryChange() }
+            )
         }
         .gatherCard()
     }

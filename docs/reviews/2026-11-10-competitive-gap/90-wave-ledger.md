@@ -188,3 +188,47 @@
 5. **Hot Folder 不检测**：sdef 无读取接口，仅 UI 明示「未检测」。
 6. **评估工具无独立 test target**：用内置 `--self-test` 作验收点；真实数值待标注集。
 7. **导出后钩子只挂整套交付**（`runRecipes` 成功后），单次 export.execute 不触发；UI 未展示 postCommand。
+
+---
+
+## 9. Wave 3 第二批（2026-11-11，task-17 / task-20 / task-24 / task-26）
+
+| 任务 | 缺口 | 修复要点 | 关键文件 |
+| --- | --- | --- | --- |
+| task-17 | 40 册 #1/#17（P0-7） | 交付分享：`OutputShareTransport` 抽象 + WebDAV 适配（复用既有 publisher）+ **S3 兼容传输**（SigV4 头签名、PUT/DELETE 可写探针、401/403 立即中止、404 桶不存在、5xx/网络可重试、对象默认私有）；凭据只进 Keychain（键=canonical endpoint+accessKeyID，secret 不落库/日志/share.json）；`OutputShareManifest` 统一 share.json writer；**口令门**（PBKDF2-HMAC-SHA256 100k，proof.html/js WebCrypto 同参校验、错误口令不泄露存在性、页面明示「非加密仅防随手翻阅」）+ **到期**（校样页只读过期态、明示无服务端强制）；`WebDAVPublishInput` 增可选 transport（默认 webdav 旧调用逐字兼容）；失败分类 auth/notFound/network/server/validation/localIO/unknown 汇总进 Summary；WebDAVPublishSheet 支持 WebDAV/S3 切换与 SecureField | `Services/Output/OutputShareTransport.swift`、`S3ShareTransport.swift`、`OutputSharePassword.swift`、`OutputShareManifest.swift`、`Protocol/ProofShare.swift`、`Protocol/Output.swift`、`GatherUI/Export/WebDAVPublishSheet.swift`、`LiveExportAPI.swift`（批准越界） |
+| task-20 | 20 册 #11、40 册 #7 | **第二显示器**：独立 id 的 `Window`（保持 Window 非 WindowGroup，⌘N/Window 菜单语义不变）+ App 级 `CullingSecondDisplayCoordinator`；镜像桥共享同一 CullingViewModel（选择/当前照片一致），只读镜像（无手势/无评级/不调 setVisible → 无双份轮询）；主窗口关闭 → 第二屏转「主窗口已关闭」空态，重开自动恢复；**打印版面**：`PrintLayout` 纯逻辑（纸张/边距/单图 fit|custom+边框/多页分页/header-footer-pageNumber/cell-image-caption）+ `PrintDocumentRenderer` PDF（复用 RAWDecoder 栅格化、临时文件原子替换、坏图留空框）+ `PrintOptionsSheet` + `PrintSupport` 打印独占闸（已有一打印中拒绝第二个并明确提示） | `GatherApp/GatherApp.swift`、`GatherUI/Culling/CullingSecondDisplay.swift`、`GatherUI/Export/PrintOptionsSheet.swift`、`PrintRenderingPort.swift`、`GatherHost/APIs/LivePrintRenderer.swift`、`GatherApplication/Services/Export/Print*.swift` |
+| task-24 | 40 册 #14/#16 | 目录迁移：库导出为 `*.gatherlib.json` 可移植包（相对路径清单，不打包原图；formatVersion 更高显式失败）；导入/合并按 photoId→checksum 两级去重 + 三种冲突策略（keepLocal/keepImported/coexist），按 newRoot 重绑定路径，单事务回滚；`keepImported` 命中既有 photoId 时 pmc/决策写回**照片行原会话**；`ExternalMetadataMigrationService` 两阶段读 XMP（不解析 .lrcat/.cos）迁移 rating/label/keywords；ControlCenter `MigrationCenterCard` 提供导出/导入/从 XMP 迁移三条入口（未接线显式提示）+ 报告与「按字段计」文案 | `API/MaintenanceAPI.swift`、`Repositories/LibraryPackageStore.swift`、`Services/Maintenance/LibraryPackageService.swift`、`ExternalMetadataMigrationService.swift`、`GatherUI/ControlCenter/MigrationCenterCard.swift` |
+| task-26 | 收尾 | 真机验收清单 `96-manual-acceptance.md`（293 行，13 节 + 22 行记录表）：C1 矩阵 10 项 / 第二屏 / 打印 / Shortcuts 与 URL scheme / 翻片延迟实测 / 配方 GUI / 产物检查 / 目录迁移 / 已知未闭环 12 项 / P0-P2 分级与回滚 | `docs/reviews/2026-11-10-competitive-gap/96-manual-acceptance.md` |
+
+### Lead 修掉的缺陷（6 处）
+
+1. `LibraryPackageStore` 用 `.double(...)`（DBValue 无此成员）→ `.real(...)` ×2。
+2. `LibraryPackageServiceTests` 构造 `MetadataWriteAttributes(rating:label:keywords:)` 参数顺序错 → 按声明顺序。
+3. `PrintLayoutTests` 的 Int/CGFloat 混用（cellWidth/cellHeight 推断 + 表达式超时）→ 显式 `CGFloat` 注解。
+4. `OutputShareTests` 把「签名密钥的 hex」误当 `sha256Hex(signingKey)` → 改为对 key 字节做 hex，并注明期望值语义。
+5. `PrintLayoutTests` 用 `Optional<CGFloat> == 814` 字面量比较（Swift 推断成 Int 恒 false）→ `CGFloat(842 - 28)`。
+6. 迁移卡片的两个写函数未发域事件 → 在函数体内分别发 `.library`/`.metadata` 并登记 `check-domain-events` 的 `MigrationCenterCard.swift`。
+
+### 验证证据（Lead 执行）
+
+- 构建：`gather-core`（含 tool）与 `gather-app` `swift build --build-tests --disable-sandbox` 无 error。
+- 测试：core **35 tests / 4 suites**（OutputShare/WebDAVPublisher/ContactSheetPresentation/LibraryPackageService）通过；app **208 tests / 24 suites**（PrintLayout 10 + CullingSecondDisplay 5 + 本地化/交付/挑片回归）通过。
+- 门禁 12 项全绿（`--strict` 口径）：protocol-surface / design-system / cleanup / layering / coded-errors / domain-events / domain-writes / duplicate-symbols / select-star / no-legacy / test-catalog / warnings。
+
+### 基线变更（Wave 3 第二批）
+
+| 基线 | 变更 | 原因 |
+| --- | --- | --- |
+| `docs/protocol-surface-baseline.json` | public_types 468 → **484**；public_declarations 2765 → **2870**；protocol_lines 14825 → **15441** | task-17 分享/口令/分类类型、task-20 打印 DTO、task-24 库包/迁移 DTO |
+| test-catalog / cleanup | 未变（cleanup try_optional 仍 261） | 新增测试文件均带文件头注释；新代码无 try? |
+
+### 遗留（Wave 3 第二批）
+
+1. **预签名 URL 未实现**（当前 SigV4 头签名 + 对象默认私有）；浏览器直传需另立。
+2. S3 的 URLSession 传输暂放 Application 层（留 `s3ShareTransport` 注入点，后续可移到 Host 组合根）。
+3. **口令门/到期是纯前端**：页面已明示「非加密 / 无服务端强制」；file:// 或禁用 JS 时回退旧行为。
+4. 发布失败分类是 reason 启发式，不是类型化错误码（不新增 GatherErrorCode 的取舍）。
+5. **App Intents 打包元数据**仍未做（`build.sh` 未加 `appintentsmetadataprocessor` → Shortcuts 里看不到动作），见 task-25。
+6. 打印面板可能与选项 sheet 模态叠加（实机观感待验）；联系表按钮在占用时仍显示旧文案；多页单次上限 200 张。
+7. 第二屏未自动选屏/自动全屏；主窗口最小化时显示空态或最后内容。
+8. 目录迁移：导入不触发重索引（缺失文件以 pending 登记）；迁移 conflicts 按字段计。

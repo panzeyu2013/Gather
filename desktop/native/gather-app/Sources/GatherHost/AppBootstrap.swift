@@ -202,6 +202,9 @@ package final class AppBootstrap {
         ImageDecodingRegistry.install(RAWImageDecoder())
         // P1：直方图/合焦/AF 的纯函数端口（页面只经 GatherUI 注册表读取）。
         PreviewAnalysisRegistry.install(PreviewAnalysisAdapter())
+        // Wave3 / task-20：打印渲染端口（版面/PDF 在 GatherApplication，
+        // GatherUI 只经 PrintRenderingRegistry 拿能力；重复注册按后者生效）。
+        PrintRenderingRegistry.install(LivePrintRenderer())
         // R7（refactor）：导入路径规则与 C1 同步状态判定已下沉 GatherProtocol，
         // UI 直调纯函数，不再有端口/registry/Host 适配器。
         // B0：文件日志 sink（启动早期安装，Database.open 的失败也能落盘）。
@@ -473,6 +476,8 @@ package final class AppBootstrap {
             export: appServices.export,
             person: appServices.person,
             captureOne: c1BridgeFacade,
+            // Wave3（task-24）：维护域（目录包导出/导入 + 外部 XMP 迁移）入口装配。
+            maintenance: appServices.maintenance,
             libraryProvider: libraryProvider,
             galleryProvider: galleryProvider,
             dashboardProvider: provider,

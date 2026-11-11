@@ -38,6 +38,9 @@ public struct RootShellDependencies {
     public let export: any ExportAPI
     public let person: any PersonAPI
     public let captureOne: any CaptureOneBridging
+    /// Wave3（task-24）：维护域（目录包导出/导入 + 外部 XMP 迁移）。
+    /// 可选：预览/测试壳可为 nil，迁移卡片会显式提示"未接线"。
+    public let maintenance: (any MaintenanceAPI)?
 
     public let libraryProvider: any LibraryDataProvider
     public let galleryProvider: any GalleryDataProvider
@@ -64,6 +67,7 @@ public struct RootShellDependencies {
         export: any ExportAPI,
         person: any PersonAPI,
         captureOne: any CaptureOneBridging,
+        maintenance: (any MaintenanceAPI)? = nil,
         libraryProvider: any LibraryDataProvider,
         galleryProvider: any GalleryDataProvider,
         dashboardProvider: any DashboardDataProvider,
@@ -86,6 +90,7 @@ public struct RootShellDependencies {
         self.export = export
         self.person = person
         self.captureOne = captureOne
+        self.maintenance = maintenance
         self.libraryProvider = libraryProvider
         self.galleryProvider = galleryProvider
         self.dashboardProvider = dashboardProvider

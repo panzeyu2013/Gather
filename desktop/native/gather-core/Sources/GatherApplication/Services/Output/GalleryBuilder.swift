@@ -377,13 +377,22 @@ public enum GalleryBuilder {
         <title>客户校样 · \(escapeHTML(options.title))</title>
         <link rel="stylesheet" href="gallery.css">
         </head>
-        <body class="proof">
+        <body class="proof gate-pending">
         <header>
           <h1>客户校样</h1>
           <p class="subtitle">勾选喜欢的照片，可以加星级、色标和评论，然后下载选择文件回传给摄影师。</p>
           <p class="meta">已选 <span id="picked">0</span> / \(entries.count)</p>
+          <p class="meta" id="expiry-note" hidden></p>
           <p class="meta" id="locked-note" hidden></p>
+          <p class="meta">口令与到期只是页面提示，不是加密；服务器上的文件不会自动删除（无服务端强制）。</p>
         </header>
+        <section id="password-gate" class="gate" hidden aria-live="polite">
+          <h2>需要访问口令</h2>
+          <p class="meta">口令仅用于限制访问，页面内容并未加密（只防随手翻阅），请勿在此放置敏感素材。</p>
+          <input id="gate-password" type="password" autocomplete="current-password" placeholder="输入口令">
+          <button id="gate-submit" type="button" class="primary">进入校样</button>
+          <p class="meta" id="gate-error" hidden></p>
+        </section>
         <main class="proof-grid">
         \(cells)
         </main>
@@ -437,6 +446,11 @@ public enum GalleryBuilder {
     button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #d2d2d7; background: #fff; cursor: pointer; }
     button.primary { background: #0071e3; border-color: #0071e3; color: #fff; }
     .locked .cell, .locked .proof-actions { opacity: .65; }
+    .gate-pending .proof-grid, .gate-pending .proof-actions, .gate-pending #picked { visibility: hidden; }
+    .gate { max-width: 560px; margin: 32px auto; padding: 24px; border: 1px solid #d2d2d7; border-radius: 12px; background: #fff; }
+    .gate h2 { margin: 0 0 8px; font-size: 20px; }
+    .gate input { width: 100%; box-sizing: border-box; padding: 10px 12px; margin: 12px 0; border: 1px solid #d2d2d7; border-radius: 8px; font: inherit; }
+    .gated .proof-grid, .gated .proof-actions { display: none; }
     @media (prefers-color-scheme: dark) {
       body { background: #111; color: #f5f5f7; }
       .item, .cell { background: #1c1c1e; }
@@ -493,6 +507,107 @@ public enum GalleryBuilder {
       var pickedOut = document.getElementById('picked');
       var note = document.getElementById('locked-note');
       var locked = false;
+
+      // ---- Wave3（task-17）：口令门 + 到期提示（纯前端，非加密） ----
+      // 强制：body 初始带 gate-pending（内容不可见），拿到 share.json 后再决定；
+      // 没有 share.json / fetch 不可用（旧分享包/file://）则放行，保持旧行为。
+      var shareState = null;
+      var needsGate = false;
+      var gateVerified = false;
+      var gate = document.getElementById('password-gate');
+      var gateInput = document.getElementById('gate-password');
+      var gateSubmit = document.getElementById('gate-submit');
+      var gateError = document.getElementById('gate-error');
+      var expiryNote = document.getElementById('expiry-note');
+
+      function setActionsDisabled(disabled) {
+        var actions = document.querySelectorAll('.proof-actions button');
+        Array.prototype.forEach.call(actions, function (el) { el.disabled = disabled; });
+      }
+      function setGated(on) {
+        document.body.classList.toggle('gated', !!on);
+        if (gate) { gate.hidden = !on; }
+        if (on) {
+          gateVerified = false;
+          setActionsDisabled(true);
+        } else if (!locked) {
+          setActionsDisabled(false);
+        }
+      }
+      function gateMessage(text) {
+        if (gateError) { gateError.hidden = !text; gateError.textContent = text || ''; }
+      }
+      function hexToBytes(hex) {
+        var clean = String(hex || '').replace(/[^0-9a-f]/gi, '');
+        var bytes = new Uint8Array(Math.floor(clean.length / 2));
+        for (var i = 0; i < bytes.length; i++) {
+          bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+        }
+        return bytes;
+      }
+      function bytesToHex(buffer) {
+        var view = new Uint8Array(buffer);
+        var out = '';
+        for (var i = 0; i < view.length; i++) {
+          out += ('0' + view[i].toString(16)).slice(-2);
+        }
+        return out;
+      }
+      function unlockAfterGate() {
+        gateVerified = true;
+        setGated(false);
+        if (gate) { gate.hidden = true; }
+        gateMessage('');
+      }
+      function verifyGate() {
+        if (!shareState) { return; }
+        var password = gateInput ? gateInput.value : '';
+        if (!password) { gateMessage('请输入口令'); return; }
+        if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) {
+          gateMessage('当前浏览器环境不支持口令校验（需要 HTTPS）。请不要通过此链接分享。');
+          return;
+        }
+        var salt = hexToBytes(shareState.passwordSalt);
+        var iterations = Number(shareState.passwordIterations) || 100000;
+        var expected = String(shareState.passwordHash || '').toLowerCase();
+        window.crypto.subtle.importKey(
+          'raw', new TextEncoder().encode(password), { name: 'PBKDF2' }, false, ['deriveBits']
+        ).then(function (key) {
+          return window.crypto.subtle.deriveBits(
+            { name: 'PBKDF2', salt: salt, iterations: iterations, hash: 'SHA-256' }, key, 256);
+        }).then(function (bits) {
+          if (bytesToHex(bits) === expected) { unlockAfterGate(); }
+          else { gateMessage('口令不正确'); }
+        }).catch(function () {
+          gateMessage('口令校验失败，请重试');
+        });
+      }
+      if (gateSubmit) { gateSubmit.addEventListener('click', verifyGate); }
+      if (gateInput) {
+        gateInput.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter') { event.preventDefault(); verifyGate(); }
+        });
+      }
+      function applyShare(share) {
+        shareState = share || {};
+        document.body.classList.remove('gate-pending');
+        var expires = share && share.expiresAt ? Date.parse(share.expiresAt) : NaN;
+        if (share && share.expiresAt && !isNaN(expires) && expiryNote) {
+          expiryNote.hidden = false;
+          expiryNote.textContent = '有效期至 ' + share.expiresAt
+            + '（到期后页面只读；没有服务端强制，文件不会自动删除）。';
+        }
+        if (!isNaN(expires) && Date.now() > expires) {
+          setLocked('分享已于 ' + share.expiresAt
+            + ' 到期，当前为只读状态（没有服务端强制，文件仍可访问）。');
+        }
+        if (share && share.passwordHash) {
+          needsGate = true;
+          setGated(true);
+          return;
+        }
+        setGated(false);
+      }
 
       function readJSON(key, fallback) {
         try {
@@ -621,6 +736,8 @@ public enum GalleryBuilder {
       }
 
       function submit() {
+        // 口令门未通过时不得提交（纯前端门槛；防止绕过 disabled 直接调函数）。
+        if (needsGate && !gateVerified) { return; }
         var items = cells.map(function (cell) {
           var id = cell.getAttribute('data-id');
           var entry = entryFor(id);
@@ -658,16 +775,16 @@ public enum GalleryBuilder {
       var submittedAt = readJSON(SUBMITTED_KEY, null);
       if (submittedAt) { setLocked('已提交，可重新下载。'); }
       function loadShare(paths, index) {
-        if (!window.fetch || index >= paths.length) { return; }
+        if (!window.fetch || index >= paths.length) {
+          // 旧分享包 / file:// 打开：拿不到 share.json 就按旧行为放行（无口令门）。
+          document.body.classList.remove('gate-pending');
+          return;
+        }
         window.fetch(paths[index], { cache: 'no-store' }).then(function (response) {
           if (!response.ok) { throw new Error('missing'); }
           return response.json();
         }).then(function (share) {
-          if (!share || !share.expiresAt) { return; }
-          var expires = Date.parse(share.expiresAt);
-          if (!isNaN(expires) && Date.now() > expires) {
-            setLocked('分享已过期（' + share.expiresAt + '），提交已关闭。');
-          }
+          applyShare(share);
         }).catch(function () {
           loadShare(paths, index + 1);
         });

@@ -121,6 +121,10 @@ package struct RootView: View {
                 .environment(
                     \.curationServices,
                     CurationServices(album: deps.album, duplicate: deps.duplicate))
+                // Wave3（task-24）：迁移能力（控制中心「迁移与目录包」卡片）。
+                .environment(
+                    \.migrationServices,
+                    MigrationServices(maintenance: deps.maintenance))
                 // 4a-3a：语言切换走 Observation（外壳文案读
                 // LanguageStore.l10n），不再 .id 重建整棵 detail 子树。
                 // 窗口标题：会话页（控制中心/人脸/重复/挑片/导出）用会话名，

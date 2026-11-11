@@ -26,6 +26,8 @@ public struct WebDAVConfiguration: Equatable, Sendable {
 public enum WebDAVMethod: String, Equatable, Sendable {
     case mkcol = "MKCOL"
     case put = "PUT"
+    /// Wave3：发布前可写探测用（PUT 探针对象后 DELETE 掉，不在服务器留垃圾）。
+    case delete = "DELETE"
 }
 
 public struct WebDAVRequest: Equatable, Sendable {
@@ -176,6 +178,39 @@ public final class WebDAVPublisher: Sendable {
         var failures: [WebDAVPublishFailure] = []
         var directoryCache = Set<String>()
 
+        // Wave3：严格发布模式先做强校验（到期必须晚于现在 / 口令长度 / 远端子目录）
+        // 与"目标可写探测"——网络/凭据问题在传任何文件之前就暴露，并给出分类。
+        if let share {
+            if let issue = share.validationIssue() {
+                let field: String
+                switch issue {
+                case .expiresAtInvalid, .expiresAtInPast:
+                    field = "share.expiresAt"
+                case .passwordLengthInvalid:
+                    field = "share.password"
+                case .remoteSubfolderInvalid:
+                    field = "share.remoteSubfolder"
+                }
+                throw GatherError(
+                    code: .EXPORT_PARAMS_INVALID,
+                    params: ["field": field, "reason": issue.rawValue])
+            }
+            switch await probeWritable(root: root, configuration: configuration) {
+            case .created:
+                break
+            case .authFailure:
+                return WebDAVPublishResult(
+                    uploaded: 0,
+                    failed: [WebDAVPublishFailure(path: "write-probe", reason: "HTTP 401/403")],
+                    remoteRoot: root.path, abortedOnAuth: true)
+            case .failed(let reason):
+                return WebDAVPublishResult(
+                    uploaded: 0,
+                    failed: [WebDAVPublishFailure(path: "write-probe", reason: reason)],
+                    remoteRoot: root.path, abortedOnAuth: false)
+            }
+        }
+
         // 分享清单：随包上传一份（proof.js 读 expiresAt 决定是否还能提交）。
         if let share {
             let remoteDirectory = root
@@ -269,6 +304,53 @@ public final class WebDAVPublisher: Sendable {
         case created
         case authFailure
         case failed(String)
+    }
+
+    /// Wave3：发布前可写探测——在目标目录 PUT 一个随机探针对象再 DELETE。
+    ///
+    /// 只用 target 根目录：不创建深层子目录（真实上传仍按文件路径逐级 MKCOL），
+    /// 探针对象名随机，成功路径上服务器不留垃圾；失败分类与上传一致
+    /// （authFailure = 401/403，failed = HTTP 状态或网络错误描述）。
+    private func probeWritable(
+        root: URL, configuration: WebDAVConfiguration
+    ) async -> DirectoryResult {
+        var created = Set<String>()
+        switch await ensureDirectoryChain(
+            to: root, configuration: configuration, created: &created) {
+        case .authFailure:
+            return .authFailure
+        case .failed(let reason):
+            return .failed(reason)
+        case .created:
+            break
+        }
+        let probeName = ".gather-write-probe-" + UUID().uuidString.lowercased() + ".txt"
+        let probeURL = Self.joinRemote(root, probeName)
+        do {
+            let response = try await putWithRetry(
+                url: probeURL, data: Data("gather".utf8),
+                path: probeName, configuration: configuration)
+            if response.isAuthFailure { return .authFailure }
+            guard response.isSuccess else { return .failed("HTTP \(response.status)") }
+        } catch is CancellationError {
+            return .failed("cancelled")
+        } catch {
+            return .failed(String(describing: error))
+        }
+        do {
+            let response = try await transport.send(WebDAVRequest(
+                method: .delete, url: probeURL,
+                headers: Self.headers(configuration: configuration)))
+            // 探针删除失败不阻塞发布（对象名随机、无内容），只记录；404 = 已被服务器清理。
+            if !response.isSuccess && !response.isAuthFailure && response.status != 404 {
+                GatherLogger.log(
+                    "webdav write-probe cleanup HTTP \(response.status)", level: .warn)
+            }
+        } catch {
+            GatherLogger.log(
+                "webdav write-probe cleanup failed: \(error)", level: .warn)
+        }
+        return .created
     }
 
     /// 从 baseURL 逐级建到 target（已存在的层级跳过；失败的层级明确报错）。
@@ -406,31 +488,8 @@ public final class WebDAVPublisher: Sendable {
     public static func shareManifestJSON(
         share: OutputShareOptions, itemCount: Int, createdAt: String? = nil
     ) -> Data {
-        struct Manifest: Encodable {
-            var version: Int
-            var createdAt: String
-            var expiresAt: String?
-            var allowDownload: Bool
-            var itemCount: Int
-            var remoteSubfolder: String
-        }
-        let stamp = createdAt ?? {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime]
-            return formatter.string(from: Date())
-        }()
-        let manifest = Manifest(
-            version: 1, createdAt: stamp, expiresAt: share.expiresAt,
-            allowDownload: share.allowDownload, itemCount: itemCount,
-            remoteSubfolder: share.remoteSubfolder)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        do {
-            return try encoder.encode(manifest)
-        } catch {
-            // 编码一个固定结构不会失败；真失败就退回最小合法 JSON。
-            return Data("{\"version\":1}".utf8)
-        }
+        // Wave3：WebDAV 与 S3 共用一份实现（字段只增不改；无口令时不写口令字段）。
+        OutputShareManifest.json(share: share, itemCount: itemCount, createdAt: createdAt)
     }
 
     static func headers(

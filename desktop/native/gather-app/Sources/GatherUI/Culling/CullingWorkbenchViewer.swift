@@ -104,6 +104,9 @@ struct CullingWorkbenchViewer: View {
     /// Cut 4 / 4b-1：质量失败原因在渲染期按当前语言解析。
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+    /// Wave3 / task-20：第二屏镜像桥（nil = 未启用/预览）与开窗能力。
+    @Environment(\.cullingSecondDisplay) private var secondDisplay
+    @Environment(\.openWindow) private var openWindow
 
     @State private var scale = 1.0
     /// 底层整图位图（基准档）：细节由可见区域层提供，底层不随缩放抬高。
@@ -120,6 +123,8 @@ struct CullingWorkbenchViewer: View {
     /// 的累计量，直接赋给 offset 会让每次新手势从 0 起算——松手再拖就弹回原点。
     @State private var dragStartOffset = CGSize.zero
     @State private var hoveredCellId: String?
+    /// Wave3 / task-20：打印版面面板。
+    @State private var showingPrintSheet = false
     @State private var wheelMonitor: Any?
     @State private var viewerWindow: NSWindow?
     /// 查看器区域的 AppKit 代理视图（.background(WindowBridge)）。
@@ -319,6 +324,21 @@ struct CullingWorkbenchViewer: View {
                 }
                 .help(l10n(isFocusMode ? "退出专注模式（⇧F）" : "专注模式（⇧F）"))
                 .accessibilityLabel(l10n(isFocusMode ? "退出专注模式" : "专注模式"))
+
+                Divider().frame(height: 12)
+
+                // Wave3 / task-20：打印版面（单图/多页）与第二屏镜像入口。
+                // 打印面板负责选项 + 渲染；第二屏只读镜像当前会话/布局/缩放。
+                Button { showingPrintSheet = true } label: {
+                    Image(systemName: "printer")
+                }
+                .help(l10n("打印…"))
+                .accessibilityLabel(l10n("打印"))
+                Button { openWindow(id: CullingSecondDisplayWindowID.id) } label: {
+                    Image(systemName: "display")
+                }
+                .help(l10n("在第二屏显示"))
+                .accessibilityLabel(l10n("在第二屏显示"))
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
@@ -441,6 +461,8 @@ struct CullingWorkbenchViewer: View {
             startWheelMonitor()
             // P0-4：进入查看器即为当前照片调度邻张预取（去抖后只跑最后一次）。
             viewModel.scheduleNeighborPreload()
+            // Wave3 / task-20：把当前缩放/平移发布给第二屏（只读镜像）。
+            publishViewerTransform()
         }
         .onDisappear {
             stopWheelMonitor()
@@ -458,12 +480,18 @@ struct CullingWorkbenchViewer: View {
         .onChange(of: faceAlign) { _, _ in
             resetTransform()
             clearDetailTiles()
+            publishViewerTransform()
         }
         .onChange(of: viewModel.currentPhotoId) { _, _ in
             resetTransform()
             clearDetailTiles()
+            publishViewerTransform()
             // 翻片/选片后重新调度 ±2 预取（去抖：连按只预热最后一张的邻张）。
             viewModel.scheduleNeighborPreload()
+        }
+        // Wave3 / task-20：打印版面面板（单图/多页；渲染经宿主打印端口）。
+        .sheet(isPresented: $showingPrintSheet) {
+            PrintOptionsSheet(items: printItems, currentItem: currentPrintItem)
         }
         // 页集合变化（筛选/排序/翻页/决策回显）同样要重算邻张；已缓存的不重解。
         .onChange(of: viewModel.pageVersion) { _, _ in
@@ -471,8 +499,14 @@ struct CullingWorkbenchViewer: View {
         }
         // 可见区域细节层：缩放或平移停止 150ms 后重算每一格的「可见矩形」，
         // 只重解那一块（Wave2：2 图/当前格/hover 格各自有贴片）。
-        .onChange(of: scale) { _, _ in scheduleDetailTileUpdateForVisibleCells() }
-        .onChange(of: offset) { _, _ in scheduleDetailTileUpdateForVisibleCells() }
+        .onChange(of: scale) { _, _ in
+            scheduleDetailTileUpdateForVisibleCells()
+            publishViewerTransform()
+        }
+        .onChange(of: offset) { _, _ in
+            scheduleDetailTileUpdateForVisibleCells()
+            publishViewerTransform()
+        }
         // hover 进入新格：>2 图时要给它解贴片（当前+hover 策略）。
         .onChange(of: hoveredCellId) { _, _ in scheduleDetailTileUpdateForVisibleCells() }
         // P1 下一波 §3.9：直方图（右下角，160×80）。
@@ -855,6 +889,49 @@ struct CullingWorkbenchViewer: View {
         gestureScale = 1
         offset = .zero
         dragStartOffset = .zero
+    }
+
+    // MARK: - Wave3 / task-20：第二屏镜像 + 打印
+
+    /// 把当前缩放/平移发布给第二屏（只读镜像；主窗口是唯一写入方）。
+    private func publishViewerTransform() {
+        secondDisplay?.publishViewerTransform(zoom: effectiveZoom, offset: offset)
+    }
+
+    /// 打印面板的数据：有选择集时按页内顺序给全部选中（多页排版），
+    /// 否则给当前照片（单图打印）。只做字段映射，不解码、不写盘。
+    private var printItems: [PrintJobItem] {
+        let source: [CullingAsset]
+        if !viewModel.selectedPhotoIds.isEmpty {
+            let selected = assets.filter { viewModel.selectedPhotoIds.contains($0.photo.id) }
+            // 跨页选择可能一张都不在当前页：此时退回当前照片（单图打印），
+            // 而不是给一个空面板（"没有可打印的照片"应只在真的没选中时出现）。
+            if let currentAsset, selected.isEmpty {
+                source = [currentAsset]
+            } else {
+                source = selected
+            }
+        } else if let currentAsset {
+            source = [currentAsset]
+        } else {
+            source = []
+        }
+        return source.prefix(200).map(Self.printItem)
+    }
+
+    private var currentPrintItem: PrintJobItem? {
+        currentAsset.map(Self.printItem)
+    }
+
+    private static func printItem(_ asset: CullingAsset) -> PrintJobItem {
+        PrintJobItem(
+            filePath: asset.photo.filepath,
+            caption: asset.photo.filename,
+            rating: Int(asset.state.rating.rounded()),
+            label: "",
+            pick: asset.state.pickState,
+            keywords: asset.keywords
+        )
     }
 
     /// 缩放/平移/尺寸变化后重算**所有会显示贴片的格**的可见区域细节层

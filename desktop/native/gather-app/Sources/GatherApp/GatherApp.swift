@@ -22,6 +22,9 @@ struct GatherApp: App {
     /// Cut 3 / 3b-1：数据库、组合根、AppServices、页面 provider、C1 桥与
     /// Delegate 回调全部由 AppBootstrap 装配；场景只读 `scene`/`errorMessage`。
     @State private var bootstrap = AppBootstrap()
+    /// Wave3 / task-20：第二显示器镜像桥（App 级唯一实例，两个窗口共享）。
+    /// 主窗口挑片页写、第二屏只读；不承载任何写操作或生命周期控制。
+    @State private var secondDisplay = CullingSecondDisplayCoordinator()
 
     var body: some Scene {
         // Cut 4 / 4a-3a：语言唯一来源是 bootstrap.languageStore。读一次
@@ -88,6 +91,13 @@ struct GatherApp: App {
             .onOpenURL { url in
                 appDelegate.handle(url)
             }
+            // Wave3 / task-20：注入第二屏镜像桥（页面经 environment 读取，
+            // 预览/测试没有注入时行为与旧版完全一致）。
+            .environment(\.cullingSecondDisplay, secondDisplay)
+            // 主窗口关闭：第二屏保留窗口，但转「主窗口已关闭」空态（明确策略）。
+            .onDisappear {
+                secondDisplay.detach()
+            }
         }
         // N08 / Phase 4 收口：菜单只有 SwiftUI 这一条轨。AppDelegate 不构建任何
         // AppKit 菜单（也没有兜底分支）；标准菜单项的语言跟随系统语言，
@@ -109,6 +119,29 @@ struct GatherApp: App {
         #else
         .defaultSize(width: 1180, height: 780)
         #endif
+        // Wave3 / task-20：第二显示器窗口。
+        //
+        // 单窗口假设不变：主窗口仍是唯一的 Window(main)，第二屏是**独立 id 的
+        // Window 场景**（不是 WindowGroup——⌘N 仍是新建工作区、Window 菜单行为
+        // 不变）；关掉主窗口不会连带关掉第二屏，主窗口 onDisappear 只把镜像桥
+        // 置为 detached，第二屏转空态并保持可重开。
+        Window(Text(l10n("第二屏 · 挑片查看器")), id: CullingSecondDisplayWindowID.id) {
+            Group {
+                if let scene = bootstrap.scene {
+                    CullingSecondDisplayWindow(
+                        sessionStore: scene.sessionStore,
+                        coordinator: secondDisplay
+                    )
+                    .environment(\.languageStore, scene.languageStore)
+                } else {
+                    ProgressView(l10n("初始化中…"))
+                        .controlSize(.large)
+                        .frame(minWidth: 480, minHeight: 320)
+                }
+            }
+        }
+        .windowStyle(.automatic)
+        .defaultSize(width: 1000, height: 700)
         // 原生「设置」窗口：⌘, 由系统提供，最小化/缩放按钮自动变灰，
         // 窗口位置与打开的 pane 由系统记忆。取代旧版在内容区切换设置页。
         //

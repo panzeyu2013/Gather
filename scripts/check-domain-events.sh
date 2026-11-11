@@ -55,6 +55,8 @@ PUBLISHERS = {
     "Gallery/GalleryViewModel+Load.swift": {"library"},
     "Curation/CollectionView.swift": {"library"},
     "Curation/CollectionSidebar.swift": {"library"},
+    # Wave3 task-24：迁移卡片在 importLibraryPackage / migrateExternalMetadata 成功后发事件。
+    "ControlCenter/MigrationCenterCard.swift": {"library", "metadata"},
     # #11 补广播：这些写路径在「R3 补齐」时新增了域广播，按所属域登记。
     "ControlCenter/SessionControlViewModel.swift": {"library"},
     "Culling/IngestSheet.swift": {"library"},
