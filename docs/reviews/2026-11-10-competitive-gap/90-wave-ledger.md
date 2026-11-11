@@ -349,6 +349,6 @@
 - 触发：用户「请你全量修复所有问题」（针对 97 号报告 P0/P1/P2）。
 - Wave 4a（110d583a）：§3 全部 P1（C1/挑片/打印/导出分享/元数据/AI/组织去重）+ 回归测试。
 - Wave 4b（b7ba51b4）：§4 P2 + §6 测试缺口（proof.js JS 级、打印渲染、第二屏只读、导入去重/预检/replace、SigV4 显式 endpoint、facet NOT/差集/NOT 嵌套/相对日期边界、评估 ARI/datasetHash/pair 口径）。
-- Wave 4c：审计「半修」收尾（legacy proof 回归、A2 待重试重放、去重候选分页、撤销 scope 持久化、AWS 固定向量）。
+- Wave 4c（cdf961b2）：审计「半修」收尾（legacy proof 回归、A2 待重试重放、去重候选分页、撤销 scope 持久化、AWS 固定向量）。
 - 纪律：teammates 只改码/静态自查，Lead 统一跑 core/app 全量 + 12 门禁后提交；每批一行 commit 可回滚。
 - 状态：三批完成后 97 号报告 §3/§4 全部条目闭环；明确取舍见 97 号 §11（C1 reject、分享托管、集合层级 schema、相似度结论）。

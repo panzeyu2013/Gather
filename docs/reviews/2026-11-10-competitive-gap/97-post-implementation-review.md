@@ -171,7 +171,7 @@
 | --- | --- | --- | --- |
 | Wave 4a | `110d583a` | §3 全部 P1：C1 A1–A5、挑片 B1–B3、导出 C1–C5、元数据 D2–D4、AI E1–E5、组织 F1–F5 + L1/L2 | 全修 + 回归测试 |
 | Wave 4b | `b7ba51b4` | §4 P2：C1 诊断链、挑片性能/打印卫生、分享可测性与脱敏、AI facet/dedupeKey/广播/评估、组织 NOT/差集/折叠、打印渲染与第二屏只读测试 | 全修 + 测试补齐 |
-| Wave 4c | 见随提交 | 对抗审计发现的「半修」：legacy share=nil × 新 proof.js 回归、A2 判断无重试、F1 候选 LIMIT 500、E2 撤销 scope 不持久、C4 AWS 官方向量 | 修复中/已修 |
+| Wave 4c | `cdf961b2` | 对抗审计发现的「半修」：legacy share=nil × 新 proof.js 回归、A2 判断无重试、F1 候选 LIMIT 500、E2 撤销 scope 不持久、C4 AWS 官方向量 | 修复中/已修 |
 
 关键取舍（明确记录，不再视为未修）：
 - C1 reject 不写回（C1 16.7 无 reject 位；UI 已说明），pick 只写 keep。
