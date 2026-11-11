@@ -109,9 +109,13 @@ public struct LibraryPackageService: Sendable {
         }
         let sessionName = Self.resolvedSessionName(
             explicit: input.sessionName, fallback: package.session.name)
+        // P1（task-31 review）：newRoot 空 = 沿用包内记录的原路径已不再是"相对路径"
+        // 语义；用包 session.sourcePath 解析成绝对路径，避免把相对路径写进 photos。
+        let effectiveRoot = Self.effectiveRoot(
+            newRoot: input.newRoot, packageSourcePath: package.session.sourcePath)
         let sessions = SessionRepo(connection: connection)
         let newSession = try sessions.create(
-            name: sessionName, source: "migration", sourcePath: input.newRoot)
+            name: sessionName, source: "migration", sourcePath: effectiveRoot)
 
         let store = LibraryPackageStore(connection: connection)
         let metadata = MetadataCacheRepo(connection: connection)
@@ -128,8 +132,8 @@ public struct LibraryPackageService: Sendable {
         var idMap: [String: String] = [:]
 
         for photo in package.photos {
-            let absolute = Self.absolutePath(
-                relativePath: photo.relativePath, newRoot: input.newRoot)
+            let absolute = try Self.absolutePath(
+                relativePath: photo.relativePath, newRoot: effectiveRoot)
             let fileExists = FileManager.default.fileExists(atPath: absolute)
             if !fileExists {
                 report.missingFiles.append(absolute)
@@ -216,13 +220,41 @@ public struct LibraryPackageService: Sendable {
                     metadataSessionId = newSession.id
                 }
                 // 元数据：rating/label/keywords 走 photo_metadata_cache（真相源）。
-                if input.importRatings || input.importKeywords {
+                //
+                // P0（task-31 review）：keepImported 回绑的是**既有行**，不能整行 upsert。
+                // 目录包不携带 date_taken/相机/GPS/宽高/尺寸等 EXIF/指纹列，整行 upsert
+                // 会把它们写成 NULL；未勾选的 rating/keywords 也会被空值覆盖。既有行只走
+                // 窄更新：rating 仅 `>0` 且勾选时写、keywords 仅非空且勾选时写、label/
+                // descriptive 仅包里有值时写；其余列一律保持原值。
+                let importedDescriptive = Self.decodeDescriptive(photo.descriptiveJSON)
+                if rebindExisting {
+                    let ratingToImport: Int64? = {
+                        guard input.importRatings, let rating = photo.rating, rating > 0
+                        else { return nil }
+                        return Int64(rating)
+                    }()
+                    let labelToImport = Self.nonEmptyLabel(photo.label)
+                    let keywordsToImport: [String]? =
+                        input.importKeywords && !photo.keywords.isEmpty ? photo.keywords : nil
+                    if ratingToImport != nil || labelToImport != nil
+                        || keywordsToImport != nil || importedDescriptive != nil {
+                        try metadata.updateMigrationFields(
+                            photoId: targetId,
+                            rating: ratingToImport,
+                            label: labelToImport,
+                            keywords: keywordsToImport,
+                            descriptive: importedDescriptive)
+                    }
+                    if ratingToImport != nil { report.importedRatings += 1 }
+                    if keywordsToImport != nil { report.importedKeywords += 1 }
+                } else if input.importRatings || input.importKeywords {
+                    // 新行没有既有 EXIF 可保；保留整行 upsert 以建立首份缓存。
                     let cacheInput = MetadataCacheInput(
                         sessionId: metadataSessionId,
                         rating: input.importRatings ? photo.rating.map(Int64.init) : nil,
                         label: input.importRatings ? photo.label : nil,
                         keywords: input.importKeywords ? photo.keywords : nil,
-                        descriptive: Self.decodeDescriptive(photo.descriptiveJSON)
+                        descriptive: importedDescriptive
                     )
                     try metadata.upsert(
                         photoId: targetId, sessionId: metadataSessionId, data: cacheInput)
@@ -279,11 +311,60 @@ public struct LibraryPackageService: Sendable {
         return String(path.dropFirst(root.count + 1))
     }
 
-    /// 相对路径 + 新根 → 绝对路径（newRoot 为空 = 沿用导出时记录的原路径语义：退化为文件名）。
-    static func absolutePath(relativePath: String, newRoot: String) -> String {
+    /// 有效导入根：显式 newRoot 优先；空串回退到包内工作区 sourcePath（P1：
+    /// 原实现空根直接把 relativePath 当 filepath 落库，变成相对路径）。
+    static func effectiveRoot(newRoot: String, packageSourcePath: String) -> String {
+        let candidate = newRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.isEmpty ? packageSourcePath : candidate
+    }
+
+    /// 相对路径 + 新根 → 绝对路径。
+    ///
+    /// P1（task-31 review）：包内 relativePath 是不可信输入——拒绝绝对路径与任何
+    /// `..` 段；standardize 后必须仍落在 root 内，否则抛 INVALID_PARAM，导入事务
+    /// 整体回滚（调用方 MaintenanceService 的 database.write）。
+    static func absolutePath(relativePath: String, newRoot: String) throws -> String {
         let root = (newRoot as NSString).standardizingPath
-        guard !root.isEmpty else { return relativePath }
-        return (root as NSString).appendingPathComponent(relativePath)
+        guard !root.isEmpty, (root as NSString).isAbsolutePath else {
+            throw GatherError.invalidParameter(
+                field: "newRoot", reason: "a non-empty absolute root is required")
+        }
+        let raw = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else {
+            throw GatherError.invalidParameter(
+                field: "packagePath", reason: "photo relativePath is empty")
+        }
+        guard !(raw as NSString).isAbsolutePath else {
+            throw GatherError.invalidParameter(
+                field: "packagePath", reason: "absolute photo path is not allowed")
+        }
+        // 先拒绝原始 `..`（不依赖 standardize，保留显式报警），standardize 后再检查一次。
+        let rawSegments = raw.split(separator: "/", omittingEmptySubsequences: true)
+        guard !rawSegments.contains("..") else {
+            throw GatherError.invalidParameter(
+                field: "packagePath", reason: "photo path must not contain '..'")
+        }
+        let standardized = (raw as NSString).standardizingPath
+        guard standardized != ".", !standardized.hasPrefix("../"),
+              !standardized.split(separator: "/").contains(".."),
+              !(standardized as NSString).isAbsolutePath else {
+            throw GatherError.invalidParameter(
+                field: "packagePath", reason: "photo path escapes the package root")
+        }
+        let joined = (root as NSString).appendingPathComponent(standardized)
+        let normalized = (joined as NSString).standardizingPath
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        guard normalized.hasPrefix(prefix), normalized.count > prefix.count else {
+            throw GatherError.invalidParameter(
+                field: "packagePath", reason: "photo path escapes the new root")
+        }
+        return normalized
+    }
+
+    private static func nonEmptyLabel(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     static func resolvePackageURL(destinationPath: String, sessionName: String) throws -> URL {

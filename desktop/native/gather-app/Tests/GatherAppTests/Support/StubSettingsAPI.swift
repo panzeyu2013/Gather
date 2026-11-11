@@ -69,6 +69,12 @@ final class B8SettingsAPIStub: SettingsAPI, @unchecked Sendable {
         set { box.lock.withLock { box.setError = newValue } }
     }
 
+    /// Review P0-1 回归：让 get 抛错，模拟 settings 瞬时读取失败。
+    var getError: (any Error)? {
+        get { box.lock.withLock { box.getError } }
+        set { box.lock.withLock { box.getError = newValue } }
+    }
+
     var mlStatusError: (any Error)? {
         get { box.lock.withLock { box.mlStatusError } }
         set { box.lock.withLock { box.mlStatusError = newValue } }

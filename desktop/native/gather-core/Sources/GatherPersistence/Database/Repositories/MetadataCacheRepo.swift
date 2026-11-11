@@ -206,6 +206,52 @@ public final class MetadataCacheRepo: Sendable {
         ])
     }
 
+    /// Wave2 收尾（task-31 review P0）：迁移回绑**既有照片**时的窄更新。
+    ///
+    /// 与 `upsert` 的区别：只 UPDATE 迁移实际携带的列，绝不把
+    /// date_taken/相机/GPS/宽高/尺寸等 EXIF/指纹列写成 NULL——目录包本来就没有
+    /// 这些字段，整行 upsert 会把既有缓存清空。调用方负责过滤：
+    /// rating 只在 >0 时传、keywords 只在非空时传、label/descriptive 只在有值时传；
+    /// 任何 nil 都表示"本列不动"。
+    ///
+    /// - Returns: 实际更新的行数（0 = 该照片还没有 cache 行，调用方可决定是否补）。
+    @discardableResult
+    public func updateMigrationFields(
+        photoId: String,
+        rating: Int64? = nil,
+        label: String? = nil,
+        keywords: [String]? = nil,
+        descriptive: DescriptiveMetadata? = nil
+    ) throws -> Int {
+        var keywordsJSON: String?
+        if let keywords, !keywords.isEmpty {
+            keywordsJSON = try JSONValue.stringify(
+                JSONValue.array(keywords.map { JSONValue.string($0) }))
+        }
+        var descriptiveJSON: String?
+        if let descriptive, !descriptive.isEmpty {
+            descriptiveJSON = try Self.encodeDescriptive(descriptive)
+        }
+        // COALESCE(?, col)：nil 参数 = 保持原值；有值才覆盖。cached_at 是缓存新鲜度
+        // 标记（非 EXIF），有实际字段变更时刷新。
+        return try connection.prepare("""
+            UPDATE photo_metadata_cache
+               SET rating = COALESCE(?, rating),
+                   label = COALESCE(?, label),
+                   keywords = COALESCE(?, keywords),
+                   iptc_json = COALESCE(?, iptc_json),
+                   cached_at = ?
+             WHERE photo_id = ?
+            """).run([
+                optDB(rating),
+                optDB(label),
+                keywordsJSON.map { DBValue.text($0) },
+                descriptiveJSON.map { DBValue.text($0) },
+                .text(nowISOString()),
+                .text(photoId),
+            ])
+    }
+
     /// 描述性元数据 → JSON 文本；nil 编码为 '{}'（配合同名 CASE WHEN 表达"不更新"）。
     static func encodeDescriptive(_ descriptive: DescriptiveMetadata?) throws -> String {
         guard let descriptive, !descriptive.isEmpty else { return "{}" }

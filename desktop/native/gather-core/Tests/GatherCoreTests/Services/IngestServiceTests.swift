@@ -557,6 +557,71 @@ struct IngestServiceTests {
             format: "%04d/%02d/%02d/", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
         #expect(relative.hasPrefix(expected), "实际：\(relative)")
     }
+    // MARK: - Review P0-2：replace 备份不得静默删除
+
+    @Test("replace：发现上次遗留的 .gather-prev 备份时必须拒绝覆盖且不删备份")
+    func replaceRefusesLeftoverBackup() async throws {
+        let source = try makeSource(["a.jpg"], contents: ["a.jpg": "payload-new"])
+        let dest = try makeDestination()
+        defer {
+            [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let legacyOriginal = (dest as NSString).appendingPathComponent("a.jpg")
+        try Data("payload-old".utf8).write(to: URL(fileURLWithPath: legacyOriginal))
+        let leftover = legacyOriginal + ".gather-prev-legacy"
+        try Data("payload-original".utf8).write(to: URL(fileURLWithPath: leftover))
+
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        // 跨会话重复的键是"即将导入的源文件校验和"（库里已登记同内容的一份）。
+        let incomingChecksum = try service.checksum(
+            (source as NSString).appendingPathComponent("a.jpg"))
+        let options = IngestOptions(
+            destinationRoot: dest, renameTemplate: "{orig}.{ext}",
+            duplicatePolicy: .replace, sessionId: "s1", sessionSourceRoot: dest)
+        let plan = try await service.plan(
+            sourcePaths: [source], options: options,
+            libraryDuplicates: [incomingChecksum: SessionService.LibraryDuplicateTarget(
+                photoId: "p1", sessionId: "s1", filepath: legacyOriginal)])
+        let result = service.execute(plan, options: options)
+
+        #expect(result.copied.isEmpty, "遗留备份存在时不得覆盖")
+        #expect(result.failed.count == 1)
+        #expect(result.failed.first?.message.contains("遗留的备份") == true)
+        #expect(FileManager.default.fileExists(atPath: leftover), "用户原件备份绝不能被删除")
+        let content = try String(contentsOfFile: legacyOriginal, encoding: .utf8)
+        #expect(content == "payload-old", "原文件必须保持不动")
+    }
+
+    @Test("replace：无遗留备份时成功覆盖，且不留下 .gather-prev 残留")
+    func replaceSucceedsAndCleansBackup() async throws {
+        let source = try makeSource(["a.jpg"], contents: ["a.jpg": "payload-new"])
+        let dest = try makeDestination()
+        defer {
+            [source, dest].forEach { try? FileManager.default.removeItem(atPath: $0) }
+        }
+        let original = (dest as NSString).appendingPathComponent("a.jpg")
+        try Data("payload-old".utf8).write(to: URL(fileURLWithPath: original))
+
+        let service = IngestService(now: { Date(timeIntervalSince1970: 0) })
+        let incomingChecksum = try service.checksum(
+            (source as NSString).appendingPathComponent("a.jpg"))
+        let options = IngestOptions(
+            destinationRoot: dest, renameTemplate: "{orig}.{ext}",
+            duplicatePolicy: .replace, sessionId: "s1", sessionSourceRoot: dest)
+        let plan = try await service.plan(
+            sourcePaths: [source], options: options,
+            libraryDuplicates: [incomingChecksum: SessionService.LibraryDuplicateTarget(
+                photoId: "p1", sessionId: "s1", filepath: original)])
+        let result = service.execute(plan, options: options)
+
+        #expect(result.failed.isEmpty)
+        #expect(result.replaced == [original])
+        let content = try String(contentsOfFile: original, encoding: .utf8)
+        #expect(content == "payload-new")
+        let entries = try FileManager.default.contentsOfDirectory(atPath: dest)
+        #expect(!entries.contains { $0.contains(".gather-prev") }, "成功路径必须清理备份")
+    }
+
 }
 
 /// P0 / C1：可注入的 EXIF 端口（只回拍摄日期与型号）。
@@ -573,4 +638,5 @@ private struct IngestStubExif: ExifProvider, @unchecked Sendable {
             ifd0: ifd0.isEmpty ? nil : .object(ifd0),
             exif: exif.isEmpty ? nil : .object(exif))
     }
+
 }

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-11T02:25:28Z",
+  "generated_at": "2026-11-11T03:16:32Z",
   "note": "WP1 Protocol 公开面 ratchet；口径见 scripts/check-protocol-surface.sh 头注释。",
   "protocol_files": 110,
   "protocol_lines": 15501,

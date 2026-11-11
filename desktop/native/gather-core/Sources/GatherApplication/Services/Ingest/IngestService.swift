@@ -561,10 +561,16 @@ public final class IngestService: @unchecked Sendable {
                 if item.replaceExisting {
                     // 先把旧文件挪到同目录备份名（原子 rename），再走同一条
                     // 临时文件 → 校验 → rename 路径写新文件；成功后删备份。
-                    let backup = item.destPath + ".gather-prev"
-                    if fileManager.fileExists(atPath: backup) {
-                        try? fileManager.removeItem(atPath: backup)
+                    //
+                    // 备份名必须唯一并保留遗留检查（Review P0）：固定名 ".gather-prev"
+                    // 在"上次替换中途崩溃"时会留下用户原件的唯一副本，旧实现下一次
+                    // replace 会无条件删掉它 → 原件永久丢失。现在：
+                    //   1) 备份名带 UUID，互不覆盖；
+                    //   2) 发现任何遗留备份一律拒绝本张并提示人工确认，绝不删除。
+                    if let leftover = try firstLeftoverReplaceBackup(for: item.destPath) {
+                        throw IngestError.leftoverReplaceBackup(leftover)
                     }
+                    let backup = item.destPath + ".gather-prev-" + UUID().uuidString.lowercased()
                     try fileManager.moveItem(atPath: item.destPath, toPath: backup)
                     replaceBackup = backup
                 }
@@ -811,6 +817,24 @@ public final class IngestService: @unchecked Sendable {
 
     /// 第二目的地路径：按"相对主目的地的路径"拼接，禁止用字符串替换
     /// （根目录是另一路径的子串时会把目录结构拼坏）。
+    /// 找出目标路径下遗留的 replace 备份（含历史固定名 ".gather-prev" 与新的 UUID 名）。
+    /// 返回绝对路径；没有则 nil。**只读**：绝不删除（可能是用户原片的唯一副本）。
+    private func firstLeftoverReplaceBackup(for destPath: String) throws -> String? {
+        let dir = (destPath as NSString).deletingLastPathComponent
+        let name = (destPath as NSString).lastPathComponent
+        let prefix = name + ".gather-prev"
+        let entries: [String]
+        do {
+            entries = try fileManager.contentsOfDirectory(atPath: dir)
+        } catch {
+            return nil  // 目录不可读：后续 moveItem 会给出真实错误
+        }
+        for entry in entries.sorted() where entry.hasPrefix(prefix) {
+            return (dir as NSString).appendingPathComponent(entry)
+        }
+        return nil
+    }
+
     private func secondDestinationPath(
         for dest: String, destinationRoot: String, secondRoot: String
     ) throws -> String {
@@ -827,11 +851,14 @@ public final class IngestService: @unchecked Sendable {
         case checksumMismatch(String)
         case destinationExists(String)
         case outsideDestinationRoot(String)
+        /// 上次 replace 中途崩溃遗留的备份：拒绝覆盖并要求人工确认（绝不静默删除）。
+        case leftoverReplaceBackup(String)
         public var code: GatherErrorCode {
             switch self {
             case .checksumMismatch: .INGEST_CHECKSUM_MISMATCH
             case .destinationExists: .INGEST_DESTINATION_EXISTS
             case .outsideDestinationRoot: .INGEST_PATH_INVALID
+            case .leftoverReplaceBackup: .INGEST_TRANSFER_FAILED
             }
         }
 
@@ -840,6 +867,8 @@ public final class IngestService: @unchecked Sendable {
             case .checksumMismatch(let path): "校验失败（复制后内容不一致）：\(path)"
             case .destinationExists(let path): "目标已存在，拒绝覆盖：\(path)"
             case .outsideDestinationRoot(let path): "目标不在目的地根目录下：\(path)"
+            case .leftoverReplaceBackup(let path):
+                "发现上次替换遗留的备份，可能是您的原片，请人工确认后再重试：\(path)"
             }
         }
     }

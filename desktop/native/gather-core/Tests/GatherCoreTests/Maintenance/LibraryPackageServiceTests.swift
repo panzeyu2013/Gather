@@ -129,7 +129,9 @@ struct LibraryPackageServiceTests {
         let bound = try db.prepare(
             "SELECT filepath FROM photos WHERE id = 'p1' AND session_id = ?"
         ).get([.text(report.sessionId)])
-        #expect(bound?[0].textValue == newRoot + "/a.jpg")
+        let expectedBound = ((newRoot as NSString).standardizingPath as NSString)
+            .appendingPathComponent("a.jpg")
+        #expect(bound?[0].textValue == expectedBound)
         // 评分/关键词随行迁移。
         let rating = try db.prepare(
             "SELECT rating FROM photo_metadata_cache WHERE photo_id = 'p1'"
@@ -160,6 +162,11 @@ struct LibraryPackageServiceTests {
         let service = LibraryPackageService(connection: db)
         let exported = try service.exportPackage(
             LibraryExportInput(sessionId: "s1", destinationPath: dir))
+        // P0 修复后 keepImported 走窄 UPDATE（不再整行 upsert）：先给既有照片建 cache
+        // 行，才能验证回绑后 session_id 仍属于原会话、且列没有被写成 NULL。
+        try MetadataCacheRepo(connection: db).upsert(
+            photoId: "p1", sessionId: "s1",
+            data: MetadataCacheInput(sessionId: "s1", rating: 3))
 
         // keepLocal：photoId 已存在 → 丢弃包内记录（不新增行）。
         let keepLocal = try service.importPackage(LibraryImportInput(
@@ -183,7 +190,9 @@ struct LibraryPackageServiceTests {
         #expect(keepImported.conflictsKeptImported == 1)
         #expect(keepImported.importedPhotos == 1)
         let rebound = try db.prepare("SELECT filepath FROM photos WHERE id = 'p1'").get([])
-        #expect(rebound?[0].textValue == otherRoot + "/a.jpg")
+        let expectedRebind = ((otherRoot as NSString).standardizingPath as NSString)
+            .appendingPathComponent("a.jpg")
+        #expect(rebound?[0].textValue == expectedRebind)
         // keepImported 回绑既有照片行：pmc.session_id 必须仍等于该行原会话（s1），
         // 否则按会话 join 的读面会漏掉这条元数据。
         let cacheSession = try db.prepare(
@@ -252,5 +261,187 @@ struct LibraryPackageServiceTests {
         let ratingA2 = try db.prepare(
             "SELECT rating FROM photo_metadata_cache WHERE photo_id = 'p1'").get([])
         #expect(ratingA2?[0].intValue == 4)
+    }
+
+    // MARK: - Review P0/P1 回归（task-31）：回绑不洗缓存 + 包路径不可信
+
+    private struct KeepImportedFixture {
+        let db: DBConnection
+        let packagePath: String
+        let targetRoot: String
+    }
+
+    /// 既有照片（cache 有 EXIF/rating/label/keywords/IPTC）导出成包，再把包里
+    /// 迁移字段改成不同值，用于验证回绑时"只更新迁移列、EXIF 不动"。
+    private func makeKeepImportedFixture(packageRating: Int = 4) throws -> KeepImportedFixture {
+        let db = try makeTestDB()
+        try insertSession(db, "s1")
+        let dir = try makeTempDir(prefix: "gather-pkg-src")
+        let file = try writeTempFile(in: dir, name: "a.jpg", content: Data("a".utf8))
+        try insertPhoto(db, id: "p1", sessionId: "s1", filepath: file, checksum: "c1")
+        _ = try db.prepare("UPDATE sessions SET source_path = ? WHERE id = ?")
+            .run([.text(dir), .text("s1")])
+        try MetadataCacheRepo(connection: db).upsert(
+            photoId: "p1", sessionId: "s1",
+            data: MetadataCacheInput(
+                sessionId: "s1",
+                dateTaken: "2024:05:01 10:00:00",
+                cameraMake: "Fujifilm",
+                cameraModel: "X-T5",
+                lensModel: "33mm F1.4",
+                focalLength: 33,
+                fNumber: 1.4,
+                exposureTime: "1/250",
+                iso: 400,
+                rating: 5,
+                label: "Red",
+                gpsLatitude: 31.2,
+                gpsLongitude: 121.5,
+                width: 6000,
+                height: 4000,
+                fileSize: 123,
+                fileMtime: "2024-05-01T00:00:00Z",
+                keywords: ["旧词"],
+                descriptive: DescriptiveMetadata(title: "旧标题")))
+        let service = LibraryPackageService(connection: db)
+        let exported = try service.exportPackage(
+            LibraryExportInput(sessionId: "s1", destinationPath: dir))
+        let targetRoot = try makeTempDir(prefix: "gather-pkg-dst")
+        _ = try writeTempFile(in: targetRoot, name: "a.jpg", content: Data("a".utf8))
+
+        // 改包里迁移字段（模拟另一台机器上的新评分/色标/关键词/IPTC）。
+        let data = try Data(contentsOf: URL(fileURLWithPath: exported.packagePath))
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var photos = object["photos"] as? [[String: Any]],
+              !photos.isEmpty else {
+            throw GatherError.invalidParameter(field: "package", reason: "fixture package invalid")
+        }
+        photos[0]["rating"] = packageRating
+        photos[0]["label"] = "Green"
+        photos[0]["keywords"] = ["新词"]
+        let descriptiveJSON = try JSONEncoder().encode(DescriptiveMetadata(title: "新标题"))
+        photos[0]["descriptiveJSON"] = String(decoding: descriptiveJSON, as: UTF8.self)
+        object["photos"] = photos
+        let mutated = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let modifiedPath = (dir as NSString).appendingPathComponent("modified.gatherlib.json")
+        try mutated.write(to: URL(fileURLWithPath: modifiedPath), options: .atomic)
+        return KeepImportedFixture(db: db, packagePath: modifiedPath, targetRoot: targetRoot)
+    }
+
+    @Test("keepImported 回绑既有照片：只更新迁移字段，EXIF/指纹列保持不变")
+    func keepImportedPreservesExistingCacheEXIF() throws {
+        let fx = try makeKeepImportedFixture()
+        let report = try LibraryPackageService(connection: fx.db).importPackage(
+            LibraryImportInput(
+                packagePath: fx.packagePath,
+                newRoot: fx.targetRoot,
+                sessionName: "keepImported",
+                conflictPolicy: .keepImported))
+        #expect(report.conflictsKeptImported == 1)
+        let cache = try #require(
+            try MetadataCacheRepo(connection: fx.db).get("p1"))
+        #expect(cache.sessionId == "s1")
+        // EXIF/指纹：目录包不带这些字段，回绑绝不能清空。
+        #expect(cache.dateTaken == "2024:05:01 10:00:00")
+        #expect(cache.cameraMake == "Fujifilm")
+        #expect(cache.cameraModel == "X-T5")
+        #expect(cache.lensModel == "33mm F1.4")
+        #expect(cache.gpsLatitude == 31.2)
+        #expect(cache.gpsLongitude == 121.5)
+        #expect(cache.width == 6000)
+        #expect(cache.height == 4000)
+        #expect(cache.fileSize == 123)
+        // 迁移字段：包里有值才写。
+        #expect(cache.rating == 4)
+        #expect(cache.label == "Green")
+        #expect(cache.keywords == ["新词"])
+        #expect(cache.descriptive.title == "新标题")
+    }
+
+    @Test("keepImported：importRatings/importKeywords=false 不覆盖既有评级与关键词")
+    func keepImportedHonorsImportFlags() throws {
+        let fx = try makeKeepImportedFixture()
+        let report = try LibraryPackageService(connection: fx.db).importPackage(
+            LibraryImportInput(
+                packagePath: fx.packagePath,
+                newRoot: fx.targetRoot,
+                sessionName: "keepImportedFlags",
+                conflictPolicy: .keepImported,
+                importRatings: false,
+                importKeywords: false))
+        #expect(report.conflictsKeptImported == 1)
+        #expect(report.importedRatings == 0)
+        #expect(report.importedKeywords == 0)
+        let cache = try #require(
+            try MetadataCacheRepo(connection: fx.db).get("p1"))
+        #expect(cache.rating == 5, "未勾选 rating 时不得用空值覆盖既有评级")
+        #expect(cache.keywords == ["旧词"], "未勾选 keywords 时不得清空既有词")
+        #expect(cache.dateTaken == "2024:05:01 10:00:00")
+        #expect(cache.cameraModel == "X-T5")
+    }
+
+    @Test("keepImported：包里 rating=0 不覆盖既有评级（>0 才写）")
+    func keepImportedDoesNotWriteZeroRating() throws {
+        let fx = try makeKeepImportedFixture(packageRating: 0)
+        _ = try LibraryPackageService(connection: fx.db).importPackage(
+            LibraryImportInput(
+                packagePath: fx.packagePath,
+                newRoot: fx.targetRoot,
+                sessionName: "keepImportedZeroRating",
+                conflictPolicy: .keepImported))
+        let cache = try #require(
+            try MetadataCacheRepo(connection: fx.db).get("p1"))
+        #expect(cache.rating == 5, "包里的 0 不是有效评级，不得覆盖既有 5 星")
+        #expect(cache.keywords == ["新词"], "其它迁移字段仍按包内有值写入")
+        #expect(cache.dateTaken == "2024:05:01 10:00:00")
+    }
+
+    @Test("relativePath：拒绝绝对路径与 .. 段，合法路径仍落在 root 内")
+    func rejectsUnsafeRelativePaths() throws {
+        let root = try makeTempDir(prefix: "gather-pkg-root")
+        #expect(throws: GatherError.self) {
+            _ = try LibraryPackageService.absolutePath(
+                relativePath: "../evil.jpg", newRoot: root)
+        }
+        #expect(throws: GatherError.self) {
+            _ = try LibraryPackageService.absolutePath(
+                relativePath: "/etc/passwd", newRoot: root)
+        }
+        #expect(throws: GatherError.self) {
+            _ = try LibraryPackageService.absolutePath(
+                relativePath: "a/../../evil.jpg", newRoot: root)
+        }
+        let resolved = try LibraryPackageService.absolutePath(
+            relativePath: "sub/a.jpg", newRoot: root)
+        let standardizedRoot = (root as NSString).standardizingPath
+        #expect(resolved.hasPrefix(standardizedRoot + "/"))
+        #expect(resolved.hasSuffix("/sub/a.jpg"))
+    }
+
+    @Test("newRoot 为空：用包内 session.sourcePath 解析绝对路径")
+    func emptyNewRootUsesPackageSourcePath() throws {
+        let sourceDB = try makeTestDB()
+        try insertSession(sourceDB, "s1")
+        let dir = try makeTempDir(prefix: "gather-pkg-source-root")
+        let file = try writeTempFile(in: dir, name: "a.jpg", content: Data("a".utf8))
+        try insertPhoto(sourceDB, id: "p1", sessionId: "s1", filepath: file, checksum: "c1")
+        _ = try sourceDB.prepare("UPDATE sessions SET source_path = ? WHERE id = ?")
+            .run([.text(dir), .text("s1")])
+        let exported = try LibraryPackageService(connection: sourceDB).exportPackage(
+            LibraryExportInput(sessionId: "s1", destinationPath: dir))
+
+        let targetDB = try makeTestDB()
+        let report = try LibraryPackageService(connection: targetDB).importPackage(
+            LibraryImportInput(packagePath: exported.packagePath, newRoot: ""))
+        #expect(report.importedPhotos == 1)
+        let row = try targetDB.prepare("""
+            SELECT p.filepath, s.source_path
+            FROM photos p JOIN sessions s ON p.session_id = s.id
+            WHERE p.id = 'p1'
+            """).get([])
+        let expectedPath = ((dir as NSString).standardizingPath as NSString)
+            .appendingPathComponent("a.jpg")
+        #expect(row?[0].textValue == expectedPath)
+        #expect(row?[1].textValue == dir, "空 newRoot 的工作区源根也应回退到包内 sourcePath")
     }
 }

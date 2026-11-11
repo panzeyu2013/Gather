@@ -533,4 +533,32 @@ struct DeliveryRecipeEditorTests {
         #expect(!restored.artifacts.contains(.gallery), "显式取消在重载后必须保留")
         #expect(restored.artifactsMigrationVersion == 1)
     }
+
+    // MARK: - Review P0-1：读失败不得覆盖磁盘配方
+
+    @Test("settings 读失败 / 坏 JSON：不得把默认配方落盘覆盖用户数据")
+    func loadFailureDoesNotOverwriteRecipes() async throws {
+        let payload = try recipeJSON([OutputRecipe(
+            id: "r1", name: "用户配方", format: .jpeg,
+            naming: ExportNaming(pattern: "{original}"))])
+
+        // ① 读取抛错（瞬时 settings 故障）
+        let settings = B8SettingsAPIStub(values: ["output.recipes": payload])
+        settings.getError = NSError(domain: "test", code: 1)
+        let viewModel = ExportViewModel(
+            sessionId: "s1", export: B6bExportAPIStub(),
+            session: B8SessionAPIStub(), settings: settings)
+        await viewModel.loadDeliveryRecipes()
+        #expect(settings.setInputs.isEmpty, "读失败时不得落盘（否则会用默认配方覆盖用户数据）")
+        #expect(viewModel.deliveryRecipes.isEmpty)
+
+        // ② 坏 JSON
+        let corrupt = B8SettingsAPIStub(values: ["output.recipes": "{not-json"])
+        let corruptViewModel = ExportViewModel(
+            sessionId: "s1", export: B6bExportAPIStub(),
+            session: B8SessionAPIStub(), settings: corrupt)
+        await corruptViewModel.loadDeliveryRecipes()
+        #expect(corrupt.setInputs.isEmpty, "坏 JSON 也不得落盘（保留原值供人工恢复）")
+        #expect(corruptViewModel.deliveryRecipes.isEmpty)
+    }
 }

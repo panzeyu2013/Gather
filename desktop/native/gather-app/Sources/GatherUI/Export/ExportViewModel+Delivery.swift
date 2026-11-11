@@ -51,8 +51,10 @@ extension ExportViewModel {
     /// 保存过空数组时保持空（删除最后一个配方不得在下次运行被复活）。
     public func loadDeliveryRecipes() async {
         guard deliveryRecipes.isEmpty, !hasLoadedDeliveryRecipes else { return }
+        // 读失败（settings 瞬时错误/坏 JSON）绝不能种默认配方：迁移一旦落盘就会
+        // 覆盖用户磁盘上的配方（P0 · 评审核对）。保留磁盘原值，下次 load 再试。
+        guard let recipes = await readDeliveryRecipes() else { return }
         hasLoadedDeliveryRecipes = true
-        let recipes = await readDeliveryRecipes() ?? Self.defaultRecipes
         await applyLoadedDeliveryRecipes(recipes)
     }
 
@@ -123,7 +125,9 @@ extension ExportViewModel {
             let raw = try await settingsAPI.get(key)
             if !raw.isEmpty, let data = raw.data(using: .utf8) {
                 do { return try JSONDecoder().decode([OutputRecipe].self, from: data) } catch {
-                    // 坏 JSON 与旧实现一致：回落默认配方。
+                    // 坏 JSON = 读取失败，不得回落默认配方（否则迁移会覆盖原值）。
+                    GatherLogger.log("output.recipes decode failed: \(error)", level: .warn)
+                    return nil
                 }
             }
         } catch {
