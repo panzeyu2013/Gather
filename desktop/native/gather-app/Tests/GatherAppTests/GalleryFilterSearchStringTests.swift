@@ -20,10 +20,14 @@ private func searchRule(_ field: String, _ value: String) -> FilterCondition {
 @Suite("Gallery 保存查询：搜索词还原（D4）")
 @MainActor
 struct GalleryFilterSearchStringTests {
-    /// searchCriteria 用到的五个字段名（写死而不是引用生产私有集合：用例守的是
-    /// **契约**——搜索组认哪五个字段；生产侧那份 private 常量是实现细节）。
+    /// searchCriteria 用到的字段名（写死而不是引用生产私有集合：用例守的是
+    /// **契约**——搜索组认哪些字段；生产侧那份 private 常量是实现细节）。
+    /// Wave2 / task-13：检索面从 5 字段扩到 17 字段（IPTC 描述性字段全集）。
     private static let searchFields = [
-        "filename", "title", "description", FilterFields.keywords, FilterFields.keywordPath,
+        "filename", "title", "description", "headline", "creator",
+        "copyright", "credit", "source", "usage_terms",
+        "city", "state", "country", "event", "sublocation", "person_in_image",
+        FilterFields.keywords, FilterFields.keywordPath,
     ]
 
     @Test("searchCriteria 生成的五字段 OR 组能还原出原搜索词")
@@ -35,7 +39,7 @@ struct GalleryFilterSearchStringTests {
             return rule.field
         }
         #expect(group.logic == .or)
-        #expect(group.conditions.count == 5)
+        #expect(group.conditions.count == Self.searchFields.count)
         #expect(fields == Self.searchFields)
         #expect(GalleryViewModel.searchString(in: group) == "日落")
     }

@@ -272,7 +272,8 @@ public struct C1ImportJudgementService {
         let merged = C1ImportJudgementMapping.merge(judgements)
         let rows = try photos.getBySessionProjection(sessionId: sessionId)
         var byPath: [String: PhotoProjectionRow] = [:]
-        for row in rows where row.archivedAt == nil && row.status != "missing" {
+        for row in rows
+        where PhotoVisibility.isVisible(archivedAt: row.archivedAt) && row.status != "missing" {
             byPath[ScanPath.canonical(row.filepath)] = row
         }
         var report = C1ImportJudgementReport()

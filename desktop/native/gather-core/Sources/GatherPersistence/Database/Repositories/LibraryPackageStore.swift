@@ -89,7 +89,9 @@ public struct LibraryPackageStore: Sendable {
     public func exportRows(
         sessionId: String, includeArchived: Bool
     ) throws -> [LibraryPackageExportRow] {
-        let archivedClause = includeArchived ? "" : "AND p.archived_at IS NULL"
+        let archivedClause = includeArchived
+            ? ""
+            : "AND \(PhotoVisibility.visiblePredicate(alias: "p"))"
         let rows = try connection.prepare("""
             SELECT p.id, p.filepath, p.filename, p.checksum, p.status,
                    p.checksum_file_size, p.checksum_file_mtime_ms, p.archived_at,
@@ -123,7 +125,8 @@ public struct LibraryPackageStore: Sendable {
     /// 归档（已移出工作区）张数：导出报告用（includeArchived=false 时告知用户少了多少）。
     public func archivedCount(sessionId: String) throws -> Int {
         let row = try connection.prepare(
-            "SELECT COUNT(*) FROM photos WHERE session_id = ? AND archived_at IS NOT NULL"
+            "SELECT COUNT(*) FROM photos WHERE session_id = ? AND "
+                + PhotoVisibility.archivedPredicate(alias: "")
         ).get([.text(sessionId)])
         return Int(row?[0].intValue ?? 0)
     }
@@ -265,7 +268,7 @@ public extension LibraryPackageStore {
             SELECT p.id, p.filepath, COALESCE(pmc.rating, 0), pmc.label, COALESCE(pmc.keywords, '[]')
               FROM photos p
               LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
-             WHERE p.session_id = ? AND p.archived_at IS NULL
+             WHERE p.session_id = ? AND \(PhotoVisibility.visiblePredicate(alias: "p"))
              ORDER BY p.rowid
             """).query([.text(sessionId)])
         return rows.map { row in
