@@ -30,6 +30,9 @@ struct CullingInspector: View {
     @State private var showTriageUndoConfirm = false
     /// P1：客户校样评论（photoId → 最近一条）；nil/空 = 没有反馈。
     @State private var proofComments: [String: String] = [:]
+    /// Wave5 batch4：场景/连拍组「保留最佳、淘汰其余」的影响面（Confirmed 由确认分支构造）。
+    @State private var pendingNavigationGroupDecision: CullingNavigationGroupDecisionPlan?
+    @State private var showNavigationGroupDecisionConfirm = false
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
@@ -372,9 +375,7 @@ struct CullingInspector: View {
                         .padding(.top, GatherMetrics.Space.xs)
                     } label: {
                         HStack {
-                            Text(viewModel.activeFilterCount == 0
-                                 ? l10n("全部照片")
-                                 : l10n.format("%lld 项筛选", viewModel.activeFilterCount))
+                            Text(filterSummaryText)
                                 .font(GatherFont.secondary)
                                 .foregroundStyle(.secondary)
                             Spacer(minLength: 0)
@@ -416,6 +417,71 @@ struct CullingInspector: View {
                             .frame(maxWidth: .infinity)
                             .disabled(!keepValid || isBusy)
                             .help(keepValid ? "" : l10n("按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"))
+                        }
+                    }
+                }
+
+                // Wave5 batch4（50-ai-similarity §2 P1-7）：场景/连拍组视图 + 最佳帧决策。
+                if let current = viewModel.currentAsset,
+                   let group = viewModel.navigationGroup(forPhotoId: current.photo.id) {
+                    let plan = viewModel.prepareNavigationGroupDecision(groupId: group.id)
+                    GatherInspectorSection(
+                        l10n.format(
+                            "%@ · %lld 张",
+                            group.type == .burst ? l10n("连拍组") : l10n("场景组"),
+                            Int64(group.photoIds.count)),
+                        subtitle: l10n("组内最佳帧优先；可一键保留最佳、淘汰其余")
+                    ) {
+                        Button(viewModel.navigationGroupViewGroup?.id == group.id
+                               ? l10n("退出组视图")
+                               : l10n("查看组视图")) {
+                            Task { await viewModel.enterNavigationGroupViewForGroup(group.id) }
+                        }
+                        .gatherButton(.secondary)
+                        .frame(maxWidth: .infinity)
+
+                        if let plan {
+                            Text(l10n.format("最佳：%@", plan.keepFilename))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Button(l10n("保留最佳、淘汰其余")) {
+                                pendingNavigationGroupDecision = plan
+                                showNavigationGroupDecisionConfirm = true
+                            }
+                            .gatherButton(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .disabled(isBusy)
+                            // 挂在按钮自身上（同视图多个按钮级 confirmationDialog 的既有约定）。
+                            .confirmationDialog(
+                                l10n("保留最佳帧、淘汰其余？"),
+                                isPresented: $showNavigationGroupDecisionConfirm,
+                                titleVisibility: .visible
+                            ) {
+                                Button(
+                                    l10n.format(
+                                        "保留「%@」并淘汰 %lld 张",
+                                        plan.keepFilename,
+                                        Int64(plan.rejectPhotoIds.count)),
+                                    role: .destructive
+                                ) {
+                                    let decision = pendingNavigationGroupDecision
+                                    pendingNavigationGroupDecision = nil
+                                    guard let decision else { return }
+                                    Task {
+                                        await viewModel.performNavigationGroupDecision(
+                                            Confirmed(decision, source: .userDialog))
+                                    }
+                                }
+                                Button(l10n("取消"), role: .cancel) {
+                                    pendingNavigationGroupDecision = nil
+                                }
+                            } message: {
+                                Text(l10n.format(
+                                    "组内 %lld 张，其中 %lld 张不在当前页；会被一起淘汰（只写决策、不删文件，可撤销）。",
+                                    Int64(plan.totalCount),
+                                    Int64(plan.totalCount - plan.visibleCount)))
+                            }
                         }
                     }
                 }
@@ -537,6 +603,19 @@ struct CullingInspector: View {
     }
 
     /// P1-8：完整组员数（服务端 groups）；未加载时回退当前视图，避免阻塞渲染。
+    /// Wave5 batch4：人物筛选是客户端投影，不计入 activeFilterCount；折叠标题显式带上它。
+    private var filterSummaryText: String {
+        if let person = viewModel.personFilter {
+            let count = viewModel.activeFilterCount
+            return count == 0
+                ? l10n.format("人物：%@", person)
+                : l10n.format("人物：%@ · %lld 项筛选", person, Int64(count))
+        }
+        return viewModel.activeFilterCount == 0
+            ? l10n("全部照片")
+            : l10n.format("%lld 项筛选", viewModel.activeFilterCount)
+    }
+
     private var knownGroupCount: Int {
         guard let groupId = viewModel.currentAsset?.similarityGroupId else {
             return currentGroupAssets.count

@@ -55,6 +55,13 @@ extension GalleryViewModel {
             case "keyword":
                 // 层级下钻：命中该节点自身 + 全部子孙（点 A 也看到 A|B）。
                 conditions.append(.rule(.keywordPath(value)))
+            case "person":
+                // Wave5 batch4（50-ai-similarity §2 P1-6）：人物精确匹配。
+                // 复用图库既有 person 规则（PhotoFilterQuery.buildPersonCondition：
+                // eq = persons.name 精确等值），与 Library 的 personFacet 同口径；
+                // 不能用 contains（"Ann" 会误命中 "Anna"）。
+                conditions.append(.rule(FilterRule(
+                    field: "person", operator: .eq, value: .string(value))))
             default:
                 break
             }
@@ -122,7 +129,8 @@ extension GalleryViewModel {
     }
 
     static var facetDimensions: [String] {
-        ["camera", "lens", "iso", "year", "label", "keyword"]
+        // Wave5 batch4：补 person（Library 已有；服务端 FacetQuery.personBuckets 供数）。
+        ["camera", "lens", "iso", "year", "label", "keyword", "person"]
     }
 
     /// 点 facet：同维单选（再点取消）；keyword 维同时下钻/回退。
@@ -265,6 +273,8 @@ extension GalleryViewModel {
                     nextFacets["year"] = rule.value.stringValue ?? ""
                 case FilterFields.keywordPath where rule.operator == .startsWith:
                     nextFacets["keyword"] = rule.value.stringValue ?? ""
+                case "person" where rule.operator == .eq:
+                    nextFacets["person"] = rule.value.stringValue ?? ""
                 default:
                     leftover.append(.rule(rule))
                 }

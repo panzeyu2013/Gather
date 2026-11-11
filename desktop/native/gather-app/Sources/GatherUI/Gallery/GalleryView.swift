@@ -58,6 +58,9 @@ package struct GalleryView: View {
     @State var pendingStackRename: PendingStackRename?
     @State var stackRenameText = ""
     @State var pendingStackDissolve: PendingStackDissolve?
+    /// Wave5（Batch4 / task-19）：批量重命名 / 移动到文件夹的 sheet 目标。
+    @State var pendingPhotoRename: PendingPhotoRename?
+    @State var pendingPhotoMove: PendingPhotoMove?
     /// 生产装配（Cut 4 / 4a-2a-2）：VM 来自会话工作区（workspace.gallery），
     /// 外壳不再维护 gallery 单槽，也不再在导航时替换 VM。
     ///
@@ -200,6 +203,14 @@ package struct GalleryView: View {
         // Wave1：堆栈重命名（非破坏性：按下即改，失败走页面横幅）。
         .sheet(item: $pendingStackRename) { _ in
             stackRenameSheet
+        }
+        // Wave5（Batch4 / task-19）：批量重命名 / 移动（破坏性；Confirmed 在 sheet
+        // 的确认分支构造，取消分支不发命令）。
+        .sheet(item: $pendingPhotoRename) { pending in
+            photoRenameSheet(pending)
+        }
+        .sheet(item: $pendingPhotoMove) { pending in
+            photoMoveSheet(pending)
         }
         // Wave1：取消堆叠是破坏性动作——与集合/资产关联同一套确认通道，
         // Confirmed 只从 onConfirm 分支构造。

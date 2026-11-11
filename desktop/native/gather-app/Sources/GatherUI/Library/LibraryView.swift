@@ -106,6 +106,25 @@ package struct LibraryView: View {
             "\(relink.oldRoot) → \(relink.newRoot)")
     }
 
+    // MARK: - 物理文件夹树（Wave5 batch4 / task-18，F1）
+
+    /// 目录树的根 = 当前筛选工作区的 sourcePath。
+    ///
+    /// 全局图库没有"当前会话"；用户通过既有的「工作区」筛选选中一个工作区后，
+    /// 左栏的文件夹树才有唯一根。未选工作区 / 历史空根会话 → nil（面板给空态）。
+    var folderTreeRootPath: String? {
+        guard !viewModel.sessionFilter.isEmpty,
+              let session = viewModel.sessions.first(where: { $0.id == viewModel.sessionFilter }),
+              !session.sourcePath.isEmpty else { return nil }
+        return session.sourcePath
+    }
+
+    /// 目录树头部显示的会话名（可选）。
+    var folderTreeSessionName: String? {
+        guard !viewModel.sessionFilter.isEmpty else { return nil }
+        return viewModel.sessions.first { $0.id == viewModel.sessionFilter }?.name
+    }
+
     /// 窗口副标题：加载完成后显示库存摘要，避免固定营销句占满标题栏。
     private var browseSubtitle: String {
         guard viewModel.phase == .loaded else {
@@ -156,7 +175,10 @@ package struct LibraryView: View {
         // 打开右侧 inspector 时，系统 toolbar search 会横跨内容列 + 检查器；
         // 搜索属于照片内容，必须留在内容列内，和筛选项待在同一个 surface 里。
         .onChange(of: viewModel.filter.search) { _, _ in viewModel.onFilterChanged() }
-        .onChange(of: viewModel.sessionFilter) { _, _ in viewModel.onSessionFilterChanged() }
+        .onChange(of: viewModel.sessionFilter) { _, _ in
+            // Wave5 batch4：切换工作区时清掉不属于新根的目录前缀（否则切过去 0 张）。
+            viewModel.onSessionFilterChanged(folderRoot: folderTreeRootPath)
+        }
         // 右侧检查器：目录级管理功能。内容区回到「筛选 + 网格」两件事。
         .inspector(isPresented: $showInspector) {
             libraryInspector

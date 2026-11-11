@@ -192,6 +192,13 @@ extension GalleryView {
                 stackMenuItems(for: targetIds)
                 Divider()
             }
+            // Wave5（Batch4 / task-19）：批量重命名 / 移动到文件夹（右键 = 指针下的
+            // 照片；若在选中集内则作用于整个选中集，与「加入集合」同口径）。
+            if viewModel.photoAPI != nil, !targetIds.isEmpty {
+                Button(l10n("批量重命名…")) { requestPhotoRename(photoIds: targetIds) }
+                Button(l10n("移动到文件夹…")) { requestPhotoMove(photoIds: targetIds) }
+                Divider()
+            }
             if let url = GalleryView.finderURL(for: photo) {
                 Button(l10n("在 Finder 中显示")) {
                     NSWorkspace.shared.activateFileViewerSelecting([url])

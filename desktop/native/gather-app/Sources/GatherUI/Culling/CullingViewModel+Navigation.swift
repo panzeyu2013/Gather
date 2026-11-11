@@ -185,3 +185,159 @@ extension CullingViewModel {
         }
     }
 }
+
+// MARK: - Wave5 batch4：场景/连拍「组视图」与最佳帧决策
+
+/// 导航组「保留最佳、淘汰其余」的影响面快照（Confirmed 由确认弹窗分支构造）。
+struct CullingNavigationGroupDecisionPlan: Equatable, Sendable {
+    let groupId: String
+    let groupType: NavigationGroupType
+    let keepPhotoId: String
+    let keepFilename: String
+    let rejectPhotoIds: [String]
+    let totalCount: Int
+    let visibleCount: Int
+
+    var groupTypeTitleKey: LocalizedText {
+        groupType == .burst ? LocalizedText("连拍组") : LocalizedText("场景组")
+    }
+}
+
+extension CullingViewModel {
+    /// 组视图当前组（nil = 未开启）。
+    var navigationGroupViewGroup: NavigationGroup? {
+        guard let id = filterState.navigationGroupViewId else { return nil }
+        return navigationGroups.first { $0.id == id }
+    }
+
+    var isNavigationGroupViewActive: Bool {
+        filterState.navigationGroupViewId != nil
+    }
+
+    /// 组视图置顶的最佳帧（lead）；网格用它画「最佳」徽标。
+    var navigationGroupViewLeadPhotoId: String? {
+        navigationGroupViewGroup?.leadPhotoId
+    }
+
+    /// 当前照片所属导航组（组员 >= 2 才返回）。
+    func navigationGroup(forPhotoId photoId: String) -> NavigationGroup? {
+        guard !photoId.isEmpty else { return nil }
+        return navigationGroups.first {
+            $0.photoIds.count >= 2 && $0.photoIds.contains(photoId)
+        }
+    }
+
+    /// photoId -> 所属组组员数（网格「组 N 张」折叠计数；只收 >=2 的组）。
+    var navigationGroupSizeByPhotoID: [String: Int] {
+        var result: [String: Int] = [:]
+        for group in navigationGroups where group.photoIds.count >= 2 {
+            for id in group.photoIds { result[id] = group.photoIds.count }
+        }
+        return result
+    }
+
+    /// 进入当前选中导航组的「组视图」：把页收窄到该组并 lead 置顶、当前照片定位到 lead。
+    func enterNavigationGroupView() async {
+        let groupId = selectedNavigationGroupId
+        guard !groupId.isEmpty, navigationGroups.contains(where: { $0.id == groupId }) else {
+            errorMessage = CommandError.localized("请先选择一个场景/连拍组")
+            return
+        }
+        filterState.navigationGroupViewId = groupId
+        selectedPhotoIds.removeAll()
+        selectionAnchorId = nil
+        invalidateSelectionSnapshot()
+        CullingClientProjectionCache.clear(sessionId: sessionId)
+        await applyClientProjection(loadAheadForPerson: false)
+    }
+
+    func exitNavigationGroupView() async {
+        guard filterState.navigationGroupViewId != nil else { return }
+        filterState.navigationGroupViewId = nil
+        await applyClientProjection()
+    }
+
+    func toggleNavigationGroupView() async {
+        if isNavigationGroupViewActive {
+            await exitNavigationGroupView()
+        } else {
+            await enterNavigationGroupView()
+        }
+    }
+
+    /// 指定组进/出组视图（检查器按"当前照片所在组"调用，不依赖下拉选中项）。
+    func enterNavigationGroupViewForGroup(_ groupId: String) async {
+        guard navigationGroups.contains(where: { $0.id == groupId }) else { return }
+        if filterState.navigationGroupViewId == groupId {
+            await exitNavigationGroupView()
+            return
+        }
+        selectedNavigationGroupId = groupId
+        filterState.navigationGroupViewId = groupId
+        selectedPhotoIds.removeAll()
+        selectionAnchorId = nil
+        invalidateSelectionSnapshot()
+        CullingClientProjectionCache.clear(sessionId: sessionId)
+        await applyClientProjection(loadAheadForPerson: false)
+    }
+
+    /// 保留最佳、淘汰其余：只准备影响面；Confirmed 由确认弹窗分支构造（D-011）。
+    func prepareNavigationGroupDecision(
+        groupId: String? = nil
+    ) -> CullingNavigationGroupDecisionPlan? {
+        let resolvedId = groupId
+            ?? filterState.navigationGroupViewId
+            ?? selectedNavigationGroupId
+        guard !resolvedId.isEmpty,
+              let group = navigationGroups.first(where: { $0.id == resolvedId }),
+              group.photoIds.count >= 2 else {
+            errorMessage = CommandError.localized("当前照片不在可决策的场景/连拍组内")
+            return nil
+        }
+        let ordered = CullingClientProjection.project(
+            assets: page?.assets ?? [], person: nil, group: group)
+        let leadId = group.leadPhotoId.flatMap { lead in
+            group.photoIds.contains(lead) ? lead : nil
+        } ?? ordered.first?.photo.id ?? group.photoIds[0]
+        let keepFilename = ordered.first { $0.photo.id == leadId }?.photo.filename
+            ?? fileName(forPhotoId: leadId)
+        let rejectIds = group.photoIds.filter { $0 != leadId }
+        let visibleIds = Set(page?.assets.map(\.photo.id) ?? [])
+        let visibleCount = group.photoIds.filter { visibleIds.contains($0) }.count
+        return CullingNavigationGroupDecisionPlan(
+            groupId: group.id,
+            groupType: group.type,
+            keepPhotoId: leadId,
+            keepFilename: keepFilename,
+            rejectPhotoIds: rejectIds,
+            totalCount: group.photoIds.count,
+            visibleCount: visibleCount)
+    }
+
+    /// 确认后执行：最佳 keep、其余 reject（两次批量提交，各自进撤销栈）。
+    /// 组可能跨页：按 group.photoIds 全量提交，不只当前可见。
+    func performNavigationGroupDecision(
+        _ plan: Confirmed<CullingNavigationGroupDecisionPlan>
+    ) async {
+        let value = plan.value
+        guard !value.keepPhotoId.isEmpty, !value.rejectPhotoIds.isEmpty else { return }
+        await batchUpdate(
+            patch: CullingUpdatePatch(pickState: .picked),
+            targets: [value.keepPhotoId])
+        await batchUpdate(
+            patch: CullingUpdatePatch(pickState: .rejected),
+            targets: Set(value.rejectPhotoIds))
+        // 决策后服务端页/摘要已变：重取一页并在新页上重建组视图。
+        await loadPage(reset: true)
+        CullingClientProjectionCache.storeBase(sessionId: sessionId, page: page)
+        await applyClientProjection(forceBaseFromCurrentPage: true, loadAheadForPerson: false)
+        notice = CullingNotice(
+            "已保留最佳帧、淘汰其余 %lld 张",
+            params: ["\(value.rejectPhotoIds.count)"])
+        postCullingChange()
+    }
+
+    private func fileName(forPhotoId photoId: String) -> String {
+        page?.assets.first { $0.photo.id == photoId }?.photo.filename ?? photoId
+    }
+}

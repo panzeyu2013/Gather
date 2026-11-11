@@ -42,7 +42,8 @@ public final class ImagePreloadService {
             if FileManager.default.fileExists(atPath: path) {
 #if canImport(ImageIO)
                 if RAWDecoder.supports(".\((path as NSString).pathExtension.lowercased())"),
-                   (try? RAWDecoder.getThumbnail(path: path, size: safeSize)) != nil {
+                   (try? RAWDecoder.getThumbnail(
+                        path: path, size: safeSize, allowEmbeddedPreview: true)) != nil {
                     succeeded += 1
                 }
 #else
@@ -60,7 +61,8 @@ public final class ImagePreloadService {
             throw ImagePreloadError.invalidPath
         }
 #if canImport(ImageIO)
-        _ = try RAWDecoder.getThumbnail(path: path, size: max(size, 1))
+        _ = try RAWDecoder.getThumbnail(
+            path: path, size: max(size, 1), allowEmbeddedPreview: true)
 #else
         throw ImagePreloadError.unsupported
 #endif
@@ -75,7 +77,8 @@ public final class ImagePreloadService {
             for path in selected {
                 guard FileManager.default.fileExists(atPath: path) else { continue }
 #if canImport(ImageIO)
-                _ = try? RAWDecoder.getPreview(path: path, maxDimension: size)
+                _ = try? RAWDecoder.getPreview(
+                    path: path, maxDimension: size, allowEmbeddedPreview: true)
 #endif
             }
         }

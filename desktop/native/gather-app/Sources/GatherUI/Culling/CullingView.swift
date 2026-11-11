@@ -219,9 +219,15 @@ public struct CullingView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
             restorePanelsAfterFocus()
         }
+        // Wave5 batch4：投影页被外部刷新替换后（pageVersion 变）做幂等重投影。
+        .onChange(of: viewModel.pageVersion) { _, _ in
+            Task { await viewModel.reprojectIfNeeded() }
+        }
         // 离开挑片页：专注模式必须收口（否则整窗全屏 + 面板隐藏会带到别的页面）。
         .onDisappear {
             if isFocusMode { exitFocusMode() }
+            // 客户端投影基准是页面级临时态：离开时丢弃，回来按新页重建。
+            CullingClientProjectionCache.clear(sessionId: viewModel.sessionId)
         }
     }
 

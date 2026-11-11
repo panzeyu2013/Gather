@@ -154,6 +154,14 @@ extension GalleryViewModel {
         }
     }
 
+    /// 库级广播 helper（照片路径/集合/堆栈都是库级数据）。
+    ///
+    /// 名字进 check-domain-writes 的 HELPER 登记表；发布点必须落在
+    /// check-domain-events 允许的文件里（本文件已登记 library 域）。
+    func postLibraryChange() {
+        GatherEventCenter.postDomainChange(.library, sessionId: sessionId)
+    }
+
     /// 取消堆叠（破坏性：解散这一堆的堆栈记录与折叠，不动照片文件）。
     /// confirmed 只能来自视图的确认分支（gatherDestructiveConfirm）。
     func dissolveStack(stackId: String, confirmed: Bool) async {

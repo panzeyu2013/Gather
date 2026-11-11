@@ -51,6 +51,11 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
     private let semanticIndex: SemanticIndex?
     /// Wave2 / task-14：场景标签 → 关键词写回（nil = 未接线：预览给原因、写回显式失败）。
     private let semanticKeywords: SemanticKeywordService?
+    /// Wave5（Batch4 / task-19）：照片文件级操作（批量重命名 + 移动到文件夹）。
+    ///
+    /// 默认在 init 内用 photoRepo/assetRepo 组装（relocate = AssetRepo 的事务化路径迁移）；
+    /// 测试可注入替身。写盘/改库的域事件与缩略图缓存失效由 UI 层成功后统一处理。
+    private let fileOps: PhotoFileOpsService
 
     /// @unchecked Sendable 依据：全部依赖均为构造后不可变的 let；Repo/Service 的
     /// 可变状态由 DBConnection 的递归锁或各服务自己的锁保护（同组合根约定）。
@@ -65,7 +70,8 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         facetQuery: FacetQuery? = nil,
         savedSearchRepo: SavedSearchRepo? = nil,
         semanticIndex: SemanticIndex? = nil,
-        semanticKeywords: SemanticKeywordService? = nil
+        semanticKeywords: SemanticKeywordService? = nil,
+        fileOps: PhotoFileOpsService? = nil
     ) {
         self.photoRepo = photoRepo
         self.assetRepo = assetRepo
@@ -79,6 +85,48 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         self.semanticIndex = semanticIndex
         self.semanticKeywords = semanticKeywords
         self.pathPolicy = LivePhotoPathPolicy(photoRepo: photoRepo)
+        self.fileOps = fileOps ?? PhotoFileOpsService(
+            photoRepo: photoRepo,
+            relocate: { photoId, oldPath, newPath, sharesSidecar in
+                // 路径迁移与 photos.filepath / sidecar 绑定 / 交付与关键词来源
+                // 在同一事务内完成（AssetRepo 内部 connection.transaction）。
+                try assetRepo.relocatePhotoPathsAfterMove(
+                    photoId: photoId,
+                    oldPhotoPath: oldPath,
+                    newPhotoPath: newPath,
+                    sharesSidecar: sharesSidecar,
+                    archivedAt: nil,
+                    timestamp: nowISOString())
+            },
+            captureMetadata: LivePhotoAPI.captureMetadataReader)
+    }
+
+    /// 重命名 token 的 EXIF 来源：读盘上 DateTimeOriginal / Model。
+    ///
+    /// 读不到（RAW 无 EXIF 段 / 权限）返回 nil，由服务退化为文件修改时间。
+    private static let captureMetadataReader: PhotoFileOpsService.CaptureMetadataReader = { path in
+        let ext = (path as NSString).pathExtension.lowercased()
+        let isJpeg = ext == "jpg" || ext == "jpeg"
+        do {
+            guard let parsed = try await ImageIOExifProvider().parse(
+                filePath: path, isJpeg: isJpeg) else { return nil }
+            guard case .object(let exif)? = parsed.exif else { return nil }
+            let camera = exif["Model"]?.stringValue
+            let rawDate = exif["DateTimeOriginal"]?.stringValue
+            return PhotoCaptureMetadata(
+                date: rawDate.flatMap(parseExifDate),
+                cameraModel: (camera?.isEmpty ?? true) ? nil : camera)
+        } catch {
+            return nil
+        }
+    }
+
+    /// EXIF 时间格式："2026:05:01 10:20:30"（本地时区语义）。
+    private static func parseExifDate(_ raw: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        return formatter.date(from: raw)
     }
 
     // MARK: - PhotoAPI
@@ -305,6 +353,22 @@ public final class LivePhotoAPI: PhotoAPI, @unchecked Sendable {
         } catch let error as SemanticKeywordError {
             throw GatherError(code: error.code, params: ["reason": error.description])
         }
+    }
+
+
+    // MARK: - Wave5（Batch4 / task-19）：批量重命名 + 移动到文件夹
+
+    public func previewRename(_ input: PhotoRenamePreviewInput) async throws -> PhotoRenamePreview {
+        try await fileOps.previewRename(input)
+    }
+
+    /// 破坏性：Confirmed 已由 UI 的预览确认分支构造；这里只透传（不补确认）。
+    public func renamePhotos(_ input: Confirmed<PhotoRenameInput>) async throws -> PhotoRenameResult {
+        try await fileOps.renamePhotos(input.value)
+    }
+
+    public func movePhotos(_ input: Confirmed<PhotoMoveInput>) async throws -> PhotoMoveResult {
+        try await fileOps.movePhotos(input.value)
     }
 
     public func suggestions(_ query: PhotoSuggestionQuery) async throws -> [FilterSuggestion] {

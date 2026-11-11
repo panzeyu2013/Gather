@@ -98,3 +98,37 @@
 3. 摄取入口 AI 调度依赖 SessionAPI 装饰器；WorkflowRegistry 层未统一。
 4. XMPPacketReader IIM-only fast-path 仍缺 2:40（外部 IIM 老文件在 fast-path 读不到 instructions）。
 5. 发布历史只在同一交付目录可见；跨目录/跨机器无全局历史（不做服务端）。
+
+## Batch 4（task-18 ~ task-21）
+
+| task | 域 | owner | 结论 |
+| --- | --- | --- | --- |
+| task-18 | 物理文件夹树 / 按目录浏览 | ingest-export | 资料库左栏「文件夹/集合」页签 + 懒加载目录树；点目录应用 directory 前缀筛选并即时提交；面包屑/清除/刷新/Finder/复制路径；根=当前筛选工作区 sourcePath |
+| task-19 | 导入后批量重命名 + 文件移动 | c1-fix | PhotoAPI 新增 previewRename/renamePhotos/movePhotos（不新开域）；token 预演 + 冲突策略 + 两阶段改名 + sidecar 随行 + 组内失败整组回滚；移动经 AssetRepo relocate 事务化更新库路径；Gallery 右键 + sheet |
+| task-20 | 场景/连拍最佳帧视图 + People Filter | ai-similarity | 挑片组视图（导航组收窄、lead 置顶、quality 排序、最佳徽标、一键保留最佳/淘汰其余）；人物筛选（已加载窗口客户端投影 + 精确 eq）；Gallery facet 补 person + 保存查询还原 |
+| task-21 | RAW 嵌入 JPEG 快档 | culling-viewer | decodeScaled 对 RAW≤4096 先取内嵌预览（≥75% 才用，否则回退整解）；查看器/预取 opt-in，导出/打印/质量分析默认仍真解；纯决策函数 + 伪装 RAW 测试 |
+
+### 关键设计取舍
+
+- RAW 快档：allowEmbeddedPreview 默认 false，仅 RAWImageDecoder / ImagePreloadService 传 true；导出/联系表/画廊/质量/模型分析保持完整解码，避免交付件采样到内嵌 JPEG。
+- 重命名：模板不允许路径分隔符（改名不是移动）；{seq:3} 的冒号按 token 内语法处理，不算路径分隔符；扩展名缺失补原扩展名、显式改扩展名拒绝。
+- 移动：目标必须是用户选择的绝对目录；同批内部撞名一律拒绝；sidecar 有兄弟消费则复制、否则移动。
+- 文件夹树：只读目录、不 stat 图片/不算张数；「用此目录新建工作区/摄取」因宿主回调不接受指定目录暂未接线，保留 Finder/复制路径。
+- 组视图/人物：人物筛选当前是已加载窗口的客户端投影（服务端 CullingFilters 无 person 条件），UI 已明示；keep-best 两次 batchUpdate 形成两步撤销。
+- 设计门禁：新增 UI 全部改用 GatherFont/GatherMetrics token，design-system 指标不增长。
+
+### 验证（Lead 执行，2026-11-11）
+
+- 构建：gather-core / gather-app swift build --build-tests --disable-sandbox 均通过。
+- 测试：core 1946 / 286 + 串行 25 / 4 全绿；app 1138 / 162 全绿。
+- 门禁 14 项全绿（含 warnings）。
+- 基线记账：protocol-surface public_types 501→511、public_declarations 3040→3094、protocol_lines 16574→16827（FileOps DTO + 协议方法）；cleanup 未涨；design-system font.systemSize 15=15、literalSpacing 87<89。
+- Lead 修：RAW 快档默认关闭（导出不被采样）+ viewer/preload opt-in；rename 模板 {seq:N} 冒号误判；l10n 73 键 + Burst/Scene scanner 冲突；design token 回归；测试 actor 隔离/optional 运算符；protocol 基线。
+
+### 未闭环/下一批
+
+1. 文件夹树右键「新建工作区/摄取到此工作区」未接线（宿主回调只接受外壳选择器）。
+2. 挑片人物筛选只覆盖已加载窗口；服务端 CullingFilters/CullingPageQuery 无 person 条件（下批扩协议）。
+3. keep-best 两次 batchUpdate = 两步撤销；组视图当前只在挑片页。
+4. RAW 真机（CR3/NEF/ARW/DNG）内嵌尺寸/方向/2560 回退需人工抽查。
+5. Batch 5：GPS/拍摄时间、模板/词库导入导出、自动化查询/写评级、发布端点扩展、剩余 P2。

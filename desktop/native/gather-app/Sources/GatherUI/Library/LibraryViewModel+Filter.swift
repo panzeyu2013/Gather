@@ -41,6 +41,53 @@ extension LibraryViewModel {
         commitFilter()
     }
 
+    // MARK: - 物理文件夹树（Wave5 batch4 / task-18，F1）
+
+    /// 当前 directory 筛选对应的目录（去掉末尾 "/"；nil = 未按目录筛选）。
+    public var selectedDirectoryPath: String? {
+        DirectoryFilterRule.normalizedFilterPath(filter.directory)
+    }
+
+    /// 点击目录树：选中 → 应用 directory 前缀；再次点击同一目录 → 取消筛选。
+    ///
+    /// 目录点击是明确动作，**立即提交**（directory 属防抖字段，不能等 300ms）；
+    /// 前缀由 DirectoryFilterRule 生成（末尾 "/"，避免兄弟目录前缀误命中）。
+    public func toggleDirectoryFilter(_ path: String) {
+        let normalized = DirectoryFilterRule.normalizedPath(path)
+        guard !normalized.isEmpty else { return }
+        // 智能相册会绕过 filters（fetchPage 走 albumPhotos）：目录导航必须退出
+        // 相册视图，否则点击目录后网格"看起来没反应"。
+        selectedAlbumId = nil
+        if DirectoryFilterRule.isSelected(path: normalized, filterPrefix: filter.directory) {
+            filter.directory = ""
+        } else {
+            filter.directory = DirectoryFilterRule.prefix(for: normalized)
+        }
+        debounceTask?.cancel()
+        commitFilter()
+    }
+
+    /// 清除目录筛选（面包屑的 xmark / 状态条出口）。
+    public func clearDirectoryFilter() {
+        guard !filter.directory.isEmpty else { return }
+        filter.directory = ""
+        debounceTask?.cancel()
+        commitFilter()
+    }
+
+    /// 会话筛选变更（复用目录树时）：切到别的工作区后，旧工作区根的目录前缀
+    /// 会让结果为 0 张——先清掉不属于新根的前缀，再提交一次查询。
+    public func onSessionFilterChanged(folderRoot: String?) {
+        if let folderRoot {
+            let rootPrefix = DirectoryFilterRule.prefix(for: folderRoot)
+            let current = filter.directory.trimmingCharacters(in: .whitespaces)
+            if !current.isEmpty, !current.hasPrefix(rootPrefix) {
+                filter.directory = ""
+            }
+        }
+        commitFilter()
+    }
+
     /// TS: activeFilterCount / advancedFilterCount（trim 后非空的字段数）。
     /// P1 / C：facet 五维与规则编辑器也是"筛选生效"，漏计会让工具栏的
     /// 「清除筛选」在只有 facet 时被 .disabled（LibraryView+Filters），空态也会误判成空库。

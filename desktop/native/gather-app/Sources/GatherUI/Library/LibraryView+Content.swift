@@ -21,6 +21,29 @@ extension LibraryView {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            // Wave5 batch4：目录筛选生效时给面包屑 + 清除出口（左栏折叠时也能看见/清除）。
+            if let selected = viewModel.selectedDirectoryPath,
+               let breadcrumb = DirectoryFilterRule.breadcrumb(
+                   root: folderTreeRootPath, filterPrefix: viewModel.filter.directory) {
+                HStack(spacing: 4) {
+                    Image(systemName: "folder")
+                        .font(GatherFont.label)
+                        .foregroundStyle(GatherTheme.accent)
+                    Text(breadcrumb)
+                        .font(.callout)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(selected)
+                    Button { viewModel.clearDirectoryFilter() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(GatherFont.labelRegular)
+                            .foregroundStyle(GatherTheme.secondaryText)
+                    }
+                    .buttonStyle(.plain)
+                    .help(l10n("清除目录筛选"))
+                    .accessibilityLabel(l10n("清除目录筛选"))
+                }
+            }
             Spacer(minLength: 0)
             if viewModel.isFetching {
                 ProgressView()
@@ -44,7 +67,12 @@ extension LibraryView {
         // 集合是会话级容器：把图库当前的工作区筛选当作"所属工作区"，
         // 未筛选（全部工作区）时侧栏提示"先选一个工作区"。
         LibraryCurationHost(
-            sessionId: viewModel.sessionFilter.isEmpty ? nil : viewModel.sessionFilter
+            sessionId: viewModel.sessionFilter.isEmpty ? nil : viewModel.sessionFilter,
+            folderTreeRootPath: folderTreeRootPath,
+            folderTreeSessionName: folderTreeSessionName,
+            folderTreeSelectedPrefix: viewModel.filter.directory,
+            onSelectDirectory: { viewModel.toggleDirectoryFilter($0) },
+            onClearDirectory: { viewModel.clearDirectoryFilter() }
         ) {
             browseContent
         }
@@ -116,7 +144,7 @@ extension LibraryView {
     }
 
     private var photoGrid: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: .zero) {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: GatherMetrics.Space.m) {
                     ForEach(viewModel.photos, id: \.assetId) { photo in
@@ -155,15 +183,23 @@ extension LibraryView {
         .padding(.vertical, GatherMetrics.Space.s)
     }
 }
-// MARK: - 策展侧栏入口（§3.8）
+// MARK: - 左侧浏览栏（文件夹 + 策展；Wave5 batch4 / F1）
 
-/// 图库内容区外壳：折叠式策展侧栏 + 原内容 / 集合 / 跨工作区重复。
+/// 左侧浏览栏的两个页签。
+enum LibrarySidebarTab: Hashable {
+    case folders
+    case collections
+}
+
+/// 图库内容区外壳：左侧浏览栏（物理文件夹树 / 集合）+ 原内容 / 集合 / 跨工作区重复。
 ///
-/// 折叠态只留一条 28pt 的窄轨（一个图标按钮）：默认不改变图库布局，
-/// 展开后才让出 216pt 给侧栏。选中集合或"跨工作区重复"后内容区整体切换，
-/// 关闭（xmark）回到图库。
+/// Wave5 batch4（task-18 / F1）：默认展开左栏（否则物理文件夹树只存在于代码里，
+/// 用户仍需先猜入口）。左栏顶部两个页签：
+/// - 文件夹：FolderTreePanel（根 = 当前工作区 sourcePath，点击目录 = directory 筛选）；
+/// - 集合：原 CollectionSidebar（会话级手动集合 + 跨工作区重复）。
+/// 折叠态只留一条 28pt 窄轨（一个图标按钮），与旧行为一致。
 ///
-/// 依赖经环境注入（CurationServices），未注入时侧栏仍可展开并显示"未接线"，
+/// 依赖经环境注入（CurationServices），未注入时集合页签仍可展开并显示"未接线"，
 /// 不会静默丢功能。
 struct LibraryCurationHost<Browse: View>: View {
     @Environment(\.languageStore) private var languageStore
@@ -171,20 +207,39 @@ struct LibraryCurationHost<Browse: View>: View {
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     private let sessionId: String?
+    private let folderTreeRootPath: String?
+    private let folderTreeSessionName: String?
+    private let folderTreeSelectedPrefix: String
+    private let onSelectDirectory: (String) -> Void
+    private let onClearDirectory: () -> Void
     private let browse: Browse
 
-    @State private var showsSidebar = false
+    @State private var showsSidebar = true
+    @State private var sidebarTab: LibrarySidebarTab = .folders
     @State private var selection: CurationSidebarSelection?
 
-    init(sessionId: String?, @ViewBuilder browse: () -> Browse) {
+    init(
+        sessionId: String?,
+        folderTreeRootPath: String? = nil,
+        folderTreeSessionName: String? = nil,
+        folderTreeSelectedPrefix: String = "",
+        onSelectDirectory: @escaping (String) -> Void = { _ in },
+        onClearDirectory: @escaping () -> Void = {},
+        @ViewBuilder browse: () -> Browse
+    ) {
         self.sessionId = sessionId
+        self.folderTreeRootPath = folderTreeRootPath
+        self.folderTreeSessionName = folderTreeSessionName
+        self.folderTreeSelectedPrefix = folderTreeSelectedPrefix
+        self.onSelectDirectory = onSelectDirectory
+        self.onClearDirectory = onClearDirectory
         self.browse = browse()
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: .zero) {
             if showsSidebar {
-                CollectionSidebar(sessionId: sessionId, selection: $selection)
+                sidebar
                 Divider()
             } else {
                 collapsedRail
@@ -192,6 +247,51 @@ struct LibraryCurationHost<Browse: View>: View {
             }
             content
         }
+        // 从集合切回文件夹页签 = 结束集合浏览，回到图库网格（否则页签与内容不一致）。
+        .onChange(of: sidebarTab) { _, tab in
+            if tab == .folders { selection = nil }
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(spacing: .zero) {
+            HStack(spacing: GatherMetrics.Space.xs) {
+                Picker("", selection: $sidebarTab) {
+                    Text(l10n("文件夹")).tag(LibrarySidebarTab.folders)
+                    Text(l10n("集合")).tag(LibrarySidebarTab.collections)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Button { showsSidebar = false } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(GatherFont.label)
+                        .foregroundStyle(GatherTheme.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .help(l10n("隐藏文件夹与集合侧栏"))
+                .accessibilityLabel(l10n("隐藏文件夹与集合侧栏"))
+            }
+            .padding(GatherMetrics.Space.s)
+            Divider()
+            switch sidebarTab {
+            case .folders:
+                FolderTreePanel(
+                    rootPath: folderTreeRootPath,
+                    rootTitle: folderTreeSessionName,
+                    selectedDirectoryPrefix: folderTreeSelectedPrefix,
+                    onSelectDirectory: { path in
+                        // 目录导航是「浏览图库」的动作：结束当前集合视图再应用筛选。
+                        selection = nil
+                        onSelectDirectory(path)
+                    },
+                    onClearDirectory: onClearDirectory
+                )
+            case .collections:
+                CollectionSidebar(sessionId: sessionId, selection: $selection)
+            }
+        }
+        .frame(minWidth: 208, idealWidth: 228, maxWidth: 300)
+        .background(GatherTheme.surfaceMuted)
     }
 
     @ViewBuilder
@@ -218,8 +318,8 @@ struct LibraryCurationHost<Browse: View>: View {
                     .foregroundStyle(GatherTheme.secondaryText)
             }
             .buttonStyle(.plain)
-            .help(l10n("集合与跨工作区重复"))
-            .accessibilityLabel(l10n("打开策展侧栏"))
+            .help(l10n("文件夹与集合"))
+            .accessibilityLabel(l10n("打开文件夹与集合侧栏"))
             Spacer(minLength: 0)
         }
         .padding(.vertical, GatherMetrics.Space.s)

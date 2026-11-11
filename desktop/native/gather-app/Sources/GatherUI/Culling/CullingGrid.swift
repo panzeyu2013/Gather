@@ -264,6 +264,8 @@ struct CullingGridView: View {
 
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
     private var assets: [CullingAsset] { viewModel.page?.assets ?? [] }
+    /// Wave5 batch4：折叠计数（photoId → 所属导航组组员数），每次渲染算一次。
+    private var groupSizes: [String: Int] { viewModel.navigationGroupSizeByPhotoID }
 
     var body: some View {
         VStack(spacing: .zero) {
@@ -277,9 +279,17 @@ struct CullingGridView: View {
                                 HStack(spacing: GatherMetrics.Space.s) {
                                     ForEach(row.items, id: \.index) { item in
                                         if assets.indices.contains(item.index) {
-                                            cell(assets[item.index])
+                                            let asset = assets[item.index]
+                                            cell(
+                                                asset,
+                                                // 组视图内只标最佳；普通网格标「组 N 张」折叠计数。
+                                                groupSize: viewModel.isNavigationGroupViewActive
+                                                    ? nil : groupSizes[asset.photo.id],
+                                                isGroupBest: viewModel.isNavigationGroupViewActive
+                                                    && viewModel.navigationGroupViewLeadPhotoId
+                                                        == asset.photo.id)
                                                 .frame(width: item.width, height: row.height)
-                                                .id(assets[item.index].photo.id)
+                                                .id(asset.photo.id)
                                         }
                                     }
                                     Spacer(minLength: 0)
@@ -307,6 +317,11 @@ struct CullingGridView: View {
                             proxy.scrollTo(id, anchor: .center)
                         }
                     }
+                    // Wave5 batch4：决策/外部刷新会把投影页换回服务端页；
+                    // pageVersion 变化时做幂等重投影（matches 已投影则 no-op）。
+                    .onChange(of: viewModel.pageVersion) { _, _ in
+                        Task { await viewModel.reprojectIfNeeded() }
+                    }
                     // B2 / 浏览连续性：进网格时先把视口定位到当前照片。旧实现只在
                     // onChange 里滚——从单图第 300 张切到网格，看到的是列表顶部。
                     // LazyVStack 首帧只实例化视口内的行，先让出一帧再滚，目标格的
@@ -328,8 +343,21 @@ struct CullingGridView: View {
 
     private var header: some View {
         HStack(spacing: GatherMetrics.Space.m) {
-            Text(l10n.format("%lld 张", viewModel.page?.total ?? assets.count))
-                .gatherText(.secondary)
+            if let group = viewModel.navigationGroupViewGroup {
+                Text(l10n.format(
+                    "%@ · %lld 张（页内 %lld，最佳置顶）",
+                    group.type == .burst ? l10n("连拍组") : l10n("场景组"),
+                    Int64(group.photoIds.count),
+                    Int64(assets.count)))
+                    .gatherText(.secondaryStrong)
+            } else {
+                Text(l10n.format("%lld 张", viewModel.page?.total ?? assets.count))
+                    .gatherText(.secondary)
+            }
+            if let person = viewModel.personFilter {
+                Text(l10n.format("人物：%@（已加载 %lld 张内）", person, Int64(assets.count)))
+                    .gatherText(.secondary)
+            }
             if !viewModel.selectedPhotoIds.isEmpty {
                 Text(l10n.format("已选 %lld 张", viewModel.selectedPhotoIds.count))
                     .gatherText(.secondaryStrong)
@@ -348,13 +376,19 @@ struct CullingGridView: View {
         .padding(EdgeInsets(top: GatherMetrics.Space.s, leading: 0, bottom: GatherMetrics.Space.s, trailing: 0))
     }
 
-    private func cell(_ asset: CullingAsset) -> some View {
+    private func cell(
+        _ asset: CullingAsset,
+        groupSize: Int? = nil,
+        isGroupBest: Bool = false
+    ) -> some View {
         CullingGridCell(
             asset: asset,
             isSelected: viewModel.selectedPhotoIds.contains(asset.photo.id),
             isCurrent: viewModel.currentPhotoId == asset.photo.id,
             thumbnailSize: density.thumbnailSize,
-            l10n: l10n
+            l10n: l10n,
+            groupSize: groupSize,
+            isGroupBest: isGroupBest
         )
         .contentShape(Rectangle())
         .onTapGesture {
@@ -490,6 +524,10 @@ private struct CullingGridCell: View {
     let isCurrent: Bool
     let thumbnailSize: Int
     let l10n: L10n
+    /// Wave5 batch4：所属导航组组员数（>1 才显示「组 N 张」折叠计数）。
+    let groupSize: Int?
+    /// Wave5 batch4：组视图下的最佳帧徽标。
+    let isGroupBest: Bool
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -512,6 +550,13 @@ private struct CullingGridCell: View {
             VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                 HStack(spacing: GatherMetrics.Space.xs) {
                     decisionBadge
+                    if isGroupBest {
+                        chip(text: l10n("最佳"), systemImage: "crown.fill")
+                    } else if let groupSize {
+                        chip(
+                            text: l10n.format("组 %lld 张", Int64(groupSize)),
+                            systemImage: "rectangle.stack")
+                    }
                     if asset.photo.status == "missing" {
                         chip(text: l10n("离线"), systemImage: "exclamationmark.triangle.fill")
                     }

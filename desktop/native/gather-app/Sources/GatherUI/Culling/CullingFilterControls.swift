@@ -12,6 +12,18 @@ struct CullingFilterControls: View {
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+    /// Wave5 batch4：人物候选（服务端 person facet；未接线时退回已加载页并集）。
+    @State private var personNames: [String] = []
+
+    /// 已选人物即使不在候选里也必须能显示（facet 加载失败/候选截断时）。
+    private var personOptions: [String] {
+        var options = personNames
+        if let selected = viewModel.personFilter,
+           !options.contains(selected) {
+            options.insert(selected, at: 0)
+        }
+        return options
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
@@ -57,12 +69,30 @@ struct CullingFilterControls: View {
                 }
             }
 
+            // Wave5 batch4（50-ai-similarity §2 P1-6）：人物精确筛选取代「回 Library 再回挑片」。
+            filterPicker(l10n("人物")) {
+                Picker(l10n("人物"), selection: personBinding) {
+                    Text(l10n("全部人物")).tag(String?.none)
+                    ForEach(personOptions, id: \.self) { name in
+                        Text(name).tag(String?.some(name))
+                    }
+                }
+            }
+            if viewModel.personFilter != nil {
+                Text(l10n.format(
+                    "人物筛选只作用于已加载窗口（当前匹配 %lld 张，服务端分页暂不支持人物条件）；清除后恢复全部",
+                    Int64(viewModel.page?.assets.count ?? 0)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Toggle(l10n("仅 XMP 冲突"), isOn: conflictOnlyBinding)
                 .toggleStyle(.checkbox)
                 .font(GatherFont.secondary)
 
             Button(l10n("重置筛选")) {
-                Task { await viewModel.resetFilters() }
+                Task { await viewModel.resetFiltersIncludingClientProjection() }
             }
             .gatherButton(.tertiary, size: .small)
 
@@ -102,7 +132,7 @@ struct CullingFilterControls: View {
                                 .map { l10n.format(" · 推荐 %lld", $0 + 1) } ?? ""
                             Text(l10n.format(
                                 "%@ · %lld 张%@",
-                                group.type == .burst ? "Burst" : "Scene",
+                                group.type == .burst ? l10n("连拍组") : l10n("场景组"),
                                 group.photoIds.count,
                                 leadLabel
                             ))
@@ -121,7 +151,37 @@ struct CullingFilterControls: View {
                 }
                 .gatherButton(.secondary, size: .small)
                 .disabled(viewModel.isNavigationBusy || viewModel.selectedNavigationGroupId.isEmpty)
+
+                // Wave5 batch4：场景/连拍最佳帧视图（入口 + 状态）。
+                Button(viewModel.isNavigationGroupViewActive
+                       ? l10n("退出组视图")
+                       : l10n("查看组视图")) {
+                    Task { await viewModel.toggleNavigationGroupView() }
+                }
+                .gatherButton(.secondary, size: .small)
+                .disabled(viewModel.isNavigationBusy
+                    || (!viewModel.isNavigationGroupViewActive
+                        && viewModel.selectedNavigationGroupId.isEmpty))
+                .help(l10n("把当前页收窄到该场景/连拍组，组内按最佳帧优先排序"))
+
+                if let group = viewModel.navigationGroupViewGroup {
+                    Text(l10n.format(
+                        "组视图：%@ · %lld 张（最佳置顶）",
+                        group.type == .burst ? l10n("连拍组") : l10n("场景组"),
+                        Int64(group.photoIds.count)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+        }
+        .task {
+            // 挑片页进入时预取人物候选（失败不影响其它筛选）。
+            personNames = await viewModel.personFilterNames()
+        }
+        .onChange(of: viewModel.pageVersion) { _, _ in
+            // 首次进页时 PhotoAPI 可能还没接好/首屏未到：有页后再补一次候选。
+            guard personNames.isEmpty else { return }
+            Task { personNames = await viewModel.personFilterNames() }
         }
         .disabled(isBusy)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -144,42 +204,50 @@ struct CullingFilterControls: View {
     private var unreviewedOnlyBinding: Binding<Bool> {
         Binding(
             get: { viewModel.filterState.unreviewedOnly },
-            set: { value in Task { await viewModel.setFilterState { $0.unreviewedOnly = value } } }
+            set: { value in Task { await viewModel.setFilterStateKeepingClientProjection { $0.unreviewedOnly = value } } }
         )
     }
 
     private var pickStateBinding: Binding<PickState?> {
         Binding(
             get: { viewModel.filterState.pickState },
-            set: { value in Task { await viewModel.setFilterState { $0.pickState = value } } }
+            set: { value in Task { await viewModel.setFilterStateKeepingClientProjection { $0.pickState = value } } }
         )
     }
 
     private var ratingBinding: Binding<Int?> {
         Binding(
             get: { viewModel.filterState.rating },
-            set: { value in Task { await viewModel.setFilterState { $0.rating = value } } }
+            set: { value in Task { await viewModel.setFilterStateKeepingClientProjection { $0.rating = value } } }
         )
     }
 
     private var colorFilterBinding: Binding<CaptureOneColorLabel?> {
         Binding(
             get: { viewModel.filterState.colorLabel },
-            set: { value in Task { await viewModel.setFilterState { $0.colorLabel = value } } }
+            set: { value in Task { await viewModel.setFilterStateKeepingClientProjection { $0.colorLabel = value } } }
         )
     }
 
     private var qualityStatusBinding: Binding<CullingFilterQualityStatus?> {
         Binding(
             get: { viewModel.filterState.qualityStatus },
-            set: { value in Task { await viewModel.setFilterState { $0.qualityStatus = value } } }
+            set: { value in Task { await viewModel.setFilterStateKeepingClientProjection { $0.qualityStatus = value } } }
         )
     }
 
     private var conflictOnlyBinding: Binding<Bool> {
         Binding(
             get: { viewModel.filterState.metadataConflictOnly },
-            set: { value in Task { await viewModel.setFilterState { $0.metadataConflictOnly = value } } }
+            set: { value in Task { await viewModel.setFilterStateKeepingClientProjection { $0.metadataConflictOnly = value } } }
+        )
+    }
+
+    /// 人物筛选（nil = 全部）：客户端投影，不改服务端 scope。
+    private var personBinding: Binding<String?> {
+        Binding(
+            get: { viewModel.personFilter },
+            set: { value in Task { await viewModel.setPersonFilter(value) } }
         )
     }
 

@@ -113,3 +113,68 @@ struct GalleryFilterSearchStringTests {
         #expect(GalleryViewModel.searchString(in: nested) == nil)
     }
 }
+
+// MARK: - Wave5 batch4：Gallery person facet（50-ai-similarity §2 P1-6）
+
+/// 最小 Gallery 数据源替身：person facet 测试不触网/不建库。
+private struct PersonFacetGalleryProviderStub: GalleryDataProvider {
+    func getSession(_ sessionId: String) async throws -> SessionData? { nil }
+
+    func photoPage(
+        sessionId: String,
+        afterFirstRowid: Int64?,
+        limit: Int,
+        expandVariants: Bool
+    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
+        ([], nil)
+    }
+}
+
+@Suite("Gallery person facet（Wave5 batch4）")
+@MainActor
+struct GalleryPersonFacetTests {
+    private func makeViewModel() -> GalleryViewModel {
+        GalleryViewModel(
+            sessionId: "s1",
+            provider: PersonFacetGalleryProviderStub(),
+            job: B5bJobAPIStub(),
+            debounceDelay: .milliseconds(1))
+    }
+
+    @Test("请求维度包含 person（服务端 FacetQuery.personBuckets 供数）")
+    func personDimensionRequested() {
+        #expect(GalleryViewModel.facetDimensions.contains("person"))
+    }
+
+    @Test("选中 person facet → person eq 规则（精确匹配，不是 contains）")
+    func personFacetBuildsExactRule() throws {
+        let viewModel = makeViewModel()
+        viewModel.selectFacet(dimension: "person", value: "Ann")
+
+        let criteria = try #require(viewModel.activeCriteria)
+        let rule = criteria.conditions.compactMap { condition -> FilterRule? in
+            guard case .rule(let rule) = condition else { return nil }
+            return rule
+        }.first { $0.field == "person" }
+        #expect(rule?.operator.rawValue == "eq")
+        #expect(rule?.value.stringValue == "Ann")
+    }
+
+    @Test("保存查询恢复：person eq 规则还原成 person facet 选中态")
+    func savedSearchRestoresPersonFacet() {
+        let viewModel = makeViewModel()
+        viewModel.restore(criteria: FilterGroup(logic: .and, conditions: [
+            .rule(FilterRule(field: "person", operator: .eq, value: .string("Ann"))),
+        ]))
+        #expect(viewModel.facetSelection["person"] == "Ann")
+    }
+
+    @Test("清除 person facet：选中态与条件同时清空")
+    func clearPersonFacet() {
+        let viewModel = makeViewModel()
+        viewModel.selectFacet(dimension: "person", value: "Ann")
+        viewModel.selectFacet(dimension: "person", value: "")
+        #expect(viewModel.facetSelection["person"] == "")
+        #expect(viewModel.activeCriteria == nil)
+    }
+}

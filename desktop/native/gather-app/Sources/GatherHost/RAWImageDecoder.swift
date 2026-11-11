@@ -12,7 +12,8 @@ public struct RAWImageDecoder: ImageDecoderPort {
     public init() {}
 
     public func getPreview(path: String, maxDimension: Int) throws -> ImageDecodeResult {
-        let result = try RAWDecoder.getPreview(path: path, maxDimension: maxDimension)
+        let result = try RAWDecoder.getPreview(
+            path: path, maxDimension: maxDimension, allowEmbeddedPreview: true)
         return ImageDecodeResult(
             buffer: result.buffer,
             format: result.format,
@@ -22,7 +23,8 @@ public struct RAWImageDecoder: ImageDecoderPort {
     }
 
     public func getThumbnail(path: String, size: Int) throws -> ImageDecodeResult {
-        let result = try RAWDecoder.getThumbnail(path: path, size: size)
+        let result = try RAWDecoder.getThumbnail(
+            path: path, size: size, allowEmbeddedPreview: true)
         return ImageDecodeResult(
             buffer: result.buffer,
             format: result.format,

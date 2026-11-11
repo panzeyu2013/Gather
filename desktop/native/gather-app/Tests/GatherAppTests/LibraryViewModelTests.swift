@@ -173,11 +173,13 @@ private final class StubLibraryProvider: LibraryDataProvider {
         return albums
     }
 
-    static func session(_ id: String, name: String = "工作区") -> SessionData {
+    static func session(
+        _ id: String, name: String = "工作区", sourcePath: String = ""
+    ) -> SessionData {
         SessionData(
             id: id, name: name, status: .photosLoaded, photoCount: 3,
             analysisStatus: .idle, writebackStatus: .idle, importSource: "folder",
-            sourcePath: "", failedWritebackCount: 0, truncatedImport: false,
+            sourcePath: sourcePath, failedWritebackCount: 0, truncatedImport: false,
             createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z"
         )
     }
@@ -859,5 +861,111 @@ struct LibraryViewModelTests {
         #expect(input.value.action == .keep)
         // 返回的剩余列表直接替换本地状态（stub 返回空 = 已结清）。
         #expect(viewModel.metadataOrphans.isEmpty)
+    }
+
+    // MARK: - 物理文件夹树：directory 筛选（Wave5 batch4 / task-18，F1）
+
+    @Test func directoryFilterToggleSetsAndClearsPrefix() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.total = 1
+        stub.photos = [StubLibraryProvider.photo("p1")]
+        await viewModel.load()
+        #expect(viewModel.selectedDirectoryPath == nil)
+
+        viewModel.toggleDirectoryFilter("/tmp/gather-album")
+        #expect(viewModel.filter.directory == "/tmp/gather-album/",
+                "目录筛选前缀必须补尾斜杠，避免 /tmp/gather-album2 误命中")
+        #expect(viewModel.selectedDirectoryPath == "/tmp/gather-album")
+        #expect(viewModel.page == 0)
+        #expect(await waitUntilAsync { stub.fetchCalls.count == 2 })
+        let rules = stub.fetchCalls[1].criteria.conditions.compactMap {
+            condition -> FilterRule? in
+            if case .rule(let rule) = condition { return rule }
+            return nil
+        }
+        let directoryRule = rules.first { $0.field == "directory" }
+        #expect(directoryRule?.operator == .startsWith)
+        #expect(directoryRule?.value == .string("/tmp/gather-album/"))
+
+        // 再点同一目录（尾斜杠/空白差异视为同一目录）→ 取消筛选。
+        viewModel.toggleDirectoryFilter("/tmp/gather-album/")
+        #expect(viewModel.filter.directory == "")
+        #expect(viewModel.selectedDirectoryPath == nil)
+        #expect(await waitUntilAsync { stub.fetchCalls.count == 3 })
+        let clearedRules = stub.fetchCalls[2].criteria.conditions.compactMap {
+            condition -> FilterRule? in
+            if case .rule(let rule) = condition { return rule }
+            return nil
+        }
+        #expect(!clearedRules.contains { $0.field == "directory" })
+    }
+
+    @Test func directoryFilterCombinesWithExistingConditions() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.total = 1
+        stub.photos = [StubLibraryProvider.photo("p1")]
+        await viewModel.load()
+
+        viewModel.filter.rating = "4"
+        viewModel.onFilterChanged()
+        #expect(await waitUntilAsync { stub.fetchCalls.count == 2 })
+        viewModel.toggleDirectoryFilter("/tmp/gather-album")
+        #expect(await waitUntilAsync { stub.fetchCalls.count == 3 })
+
+        let criteria = stub.fetchCalls[2].criteria
+        #expect(criteria.logic == .and)
+        let rules = criteria.conditions.compactMap { condition -> FilterRule? in
+            if case .rule(let rule) = condition { return rule }
+            return nil
+        }
+        #expect(rules.contains {
+            $0.field == "rating" && $0.operator == .gte && $0.value == .number(4)
+        })
+        #expect(rules.contains {
+            $0.field == "directory" && $0.value == .string("/tmp/gather-album/")
+        })
+    }
+
+    @Test func sessionChangeClearsForeignDirectoryFilter() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.sessions = [
+            StubLibraryProvider.session("s1", sourcePath: "/tmp/gather-ws-a"),
+            StubLibraryProvider.session("s2", sourcePath: "/tmp/gather-ws-b"),
+        ]
+        stub.total = 1
+        stub.photos = [StubLibraryProvider.photo("p1")]
+        await viewModel.load()
+
+        viewModel.sessionFilter = "s1"
+        viewModel.onSessionFilterChanged(folderRoot: "/tmp/gather-ws-a")
+        viewModel.toggleDirectoryFilter("/tmp/gather-ws-a/DCIM")
+        #expect(viewModel.filter.directory == "/tmp/gather-ws-a/DCIM/")
+
+        viewModel.sessionFilter = "s2"
+        viewModel.onSessionFilterChanged(folderRoot: "/tmp/gather-ws-b")
+        #expect(viewModel.filter.directory == "",
+                "切到别的工作区后旧根目录前缀必须清掉，否则结果是 0 张")
+        #expect(await waitUntilAsync { stub.fetchCalls.last?.sessionId == "s2" })
+        let rules = stub.fetchCalls.last?.criteria.conditions.compactMap {
+            condition -> FilterRule? in
+            if case .rule(let rule) = condition { return rule }
+            return nil
+        } ?? []
+        #expect(!rules.contains { $0.field == "directory" })
+    }
+
+    @Test func directoryNavigationExitsAlbumView() async {
+        let (viewModel, stub) = makeStubVM()
+        stub.total = 1
+        stub.photos = [StubLibraryProvider.photo("p1")]
+        await viewModel.load()
+
+        viewModel.selectAlbum("album-1")
+        #expect(viewModel.selectedAlbumId == "album-1")
+        // 智能相册 fetchPage 走 albumPhotos（绕过 filters）：目录导航必须先退出
+        // 相册视图，否则点击目录后网格看起来没反应。
+        viewModel.toggleDirectoryFilter("/tmp/gather-album")
+        #expect(viewModel.selectedAlbumId == nil)
+        #expect(viewModel.filter.directory == "/tmp/gather-album/")
     }
 }

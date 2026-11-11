@@ -79,6 +79,24 @@ public protocol PhotoAPI: Sendable {
     func applySemanticKeywords(
         _ input: Confirmed<SemanticKeywordApplyInput>
     ) async throws -> SemanticKeywordApplyResult
+
+    // MARK: - Wave5（Batch4 / task-19）：批量重命名 + 移动到文件夹
+
+    /// 只读预览：模板渲染后的 旧→新、冲突分类与非法 token；不写盘、不改库。
+    ///
+    /// 渲染引擎与摄取同一套 token（{yyyy}/{MM}/{dd}/{HH}/{mm}/{ss}/{orig}/{ext}/
+    /// {camera}/{seq:N}）；模板非法时整批不可执行（invalidTokens 非空）。
+    func previewRename(_ input: PhotoRenamePreviewInput) async throws -> PhotoRenamePreview
+
+    /// 批量改名（写盘 + 同一事务迁移 photos.filepath/sidecar 绑定）。
+    ///
+    /// 破坏性：调用点必须经 Confirmed 收口（用户确认预览后才会到这一步）。
+    func renamePhotos(_ input: Confirmed<PhotoRenameInput>) async throws -> PhotoRenameResult
+
+    /// 移动所选照片到目标目录（写盘 + 同一事务迁移 photos.filepath/sidecar 绑定）。
+    ///
+    /// 破坏性：同 renamePhotos 的 Confirmed 门禁；目标目录来自用户显式选择。
+    func movePhotos(_ input: Confirmed<PhotoMoveInput>) async throws -> PhotoMoveResult
 }
 
 // MARK: - 默认实现（P1 下一波）
@@ -128,5 +146,22 @@ public extension PhotoAPI {
     ) async throws -> SemanticKeywordApplyResult {
         throw GatherError.invalidParameter(
             field: "sessionId", reason: "semantic keyword writeback is not available in this build")
+    }
+
+    /// 未接线（Preview/测试替身）：空预览 + 明确原因，不伪造可改名项。
+    func previewRename(_ input: PhotoRenamePreviewInput) async throws -> PhotoRenamePreview {
+        PhotoRenamePreview(
+            sessionId: input.sessionId, unavailableReason: "批量重命名未接线")
+    }
+
+    /// 未接线：显式失败（写盘 + 改库不可静默假装成功）。
+    func renamePhotos(_ input: Confirmed<PhotoRenameInput>) async throws -> PhotoRenameResult {
+        throw GatherError.invalidParameter(
+            field: "template", reason: "batch rename is not available in this build")
+    }
+
+    func movePhotos(_ input: Confirmed<PhotoMoveInput>) async throws -> PhotoMoveResult {
+        throw GatherError.invalidParameter(
+            field: "destinationRoot", reason: "batch move is not available in this build")
     }
 }

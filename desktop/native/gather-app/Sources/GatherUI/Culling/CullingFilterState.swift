@@ -22,6 +22,16 @@ public struct FilterState: Equatable {
     /// P0/T0：按建议 verdict 过滤（仅 .filtered scope 生效）。
     public var triageVerdicts: [TriageVerdict]?
 
+    // MARK: - Wave5 batch4：客户端投影（不改服务端筛选语义）
+
+    /// 人物精确筛选（person eq）。服务端 CullingFilters 没有 person 条件，因此这里
+    /// 只作用于**已加载窗口**：先追加若干页，再按 asset.people 精确匹配。
+    /// 刻意不进 isActive / savedViewFilters —— 它不是服务端筛选，不改变 scope。
+    var person: String?
+    /// 场景/连拍「组视图」的目标导航组 id（客户端把当前页收窄到该组并排序）。
+    /// 同样不是服务端筛选：组员来自 navigation.groups，不新增后端查询。
+    var navigationGroupViewId: String?
+
     public init() {}
 
     public var isActive: Bool {

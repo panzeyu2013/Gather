@@ -317,6 +317,9 @@ struct LocalizationParityTests {
         "已导出 %lld 张照片、%lld 个集合到：%@（归档跳过 %lld 张）",
         "导入完成：新增 %lld 张（待索引 %lld 张），评分 %lld，关键词 %lld，集合 %lld；photoId 去重 %lld，checksum 去重 %lld；保留本地 %lld，保留导入 %lld，并存 %lld。",
         "导入会新建一个工作区并写入评分/关键词/集合，不会修改原图。",
+        // Wave5 / Batch4：资料库左栏改为「文件夹/集合」页签后，旧的策展侧栏入口文案。
+        "打开策展侧栏",
+        "集合与跨工作区重复",
     ]
 
     // MARK: - 测试

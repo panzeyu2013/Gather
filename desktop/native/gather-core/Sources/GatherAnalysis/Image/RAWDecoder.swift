@@ -48,18 +48,43 @@ public struct RAWRegionDecodeResult: Equatable, Sendable {
     }
 }
 
+/// 解码来源（B3 快档诊断用，internal：不扩公共 API 面）。
+///
+/// - embedded：结果来自容器内嵌 JPEG 预览（只缩小/不放大，最快）；
+/// - full：结果来自整图解码（RAW 真解 / 位图直解 / P0-8 兜底）。
+enum RAWDecodeSource: String, Equatable, Sendable {
+    case embedded
+    case full
+}
+
 /// RAWDecoder 解码结果（对齐 TS DecodeResult：buffer + format + 宽高）。
 public struct RAWDecodeResult: Equatable {
     public let buffer: Data
     public let format: String
     public let width: Int
     public let height: Int
+    /// B3 快档诊断：本次结果来自内嵌预览还是整解。
+    ///
+    /// internal（不扩公共面）：测试经 @testable 断言快档是否命中，日志在
+    /// decodeScaled 内按 debug 级输出。公开构造恒为 .full；本类型在本模块外
+    /// 只被按 buffer/format/宽高消费，诊断字段不构成公开契约。
+    let decodeSource: RAWDecodeSource
 
+    /// 公开构造：诊断默认记 full（外部只按 buffer/format/宽高消费）。
     public init(buffer: Data, format: String, width: Int, height: Int) {
         self.buffer = buffer
         self.format = format
         self.width = width
         self.height = height
+        self.decodeSource = .full
+    }
+
+    init(buffer: Data, format: String, width: Int, height: Int, decodeSource: RAWDecodeSource) {
+        self.buffer = buffer
+        self.format = format
+        self.width = width
+        self.height = height
+        self.decodeSource = decodeSource
     }
 }
 
@@ -111,13 +136,23 @@ public enum RAWDecoder {
     }
 
     /// 缩略图：CGImageSourceCreateThumbnailAtIndex + 方向变换 + JPEG 编码。
-    public static func getThumbnail(path: String, size: Int, quality: Double = 0.8) throws -> RAWDecodeResult {
-        try decodeScaled(path: path, maxPixel: max(size, 1), quality: quality)
+    /// - Parameter allowEmbeddedPreview: 查看器/预取路径传 true 用 RAW 内嵌 JPEG 快档；
+    ///   导出/打印/联系表/质量分析等需要像素保真的路径保持默认 false（真解）。
+    public static func getThumbnail(
+        path: String, size: Int, quality: Double = 0.8, allowEmbeddedPreview: Bool = false
+    ) throws -> RAWDecodeResult {
+        try decodeScaled(
+            path: path, maxPixel: max(size, 1), quality: quality,
+            allowEmbeddedPreview: allowEmbeddedPreview)
     }
 
     /// 预览：fit-inside 缩放（不放大），方向变换后 JPEG 编码。
-    public static func getPreview(path: String, maxDimension: Int, quality: Double = 1.0) throws -> RAWDecodeResult {
-        try decodeScaled(path: path, maxPixel: max(maxDimension, 1), quality: quality)
+    public static func getPreview(
+        path: String, maxDimension: Int, quality: Double = 1.0, allowEmbeddedPreview: Bool = false
+    ) throws -> RAWDecodeResult {
+        try decodeScaled(
+            path: path, maxPixel: max(maxDimension, 1), quality: quality,
+            allowEmbeddedPreview: allowEmbeddedPreview)
     }
 
     /// **区域解码**（tiled detail）：只渲染归一化矩形覆盖的那块像素。
@@ -244,7 +279,9 @@ public enum RAWDecoder {
     }
 
     /// 缩放解码公共路径：maxPixel <= 0 表示不缩放（全尺寸）。
-    public static func decodeScaled(path: String, maxPixel: Int?, quality: Double) throws -> RAWDecodeResult {
+    public static func decodeScaled(
+        path: String, maxPixel: Int?, quality: Double, allowEmbeddedPreview: Bool = false
+    ) throws -> RAWDecodeResult {
         let ext = (path as NSString).pathExtension.lowercased()
         guard !ext.isEmpty, PhotoFileTypes.isSupported(ext) else {
             throw RAWDecoderError.unsupportedExtension(ext.isEmpty ? path : ".\(ext)")
@@ -252,6 +289,19 @@ public enum RAWDecoder {
         let url = URL(fileURLWithPath: path)
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             throw RAWDecoderError.cannotOpenSource(path)
+        }
+        // B3 / RAW 嵌入 JPEG 快档（20-culling-viewer §2 B3）：缩略图/预览优先用
+        // 容器里的内嵌 JPEG 预览，避免为 1024px 缩略图整解 50MP RAW。判定全部
+        // 收在纯函数 embeddedPreviewAcceptable 里（格式 / 请求档位 / 可用像素比例）；
+        // 这里只做 I/O。快档任意一步失败（无内嵌 / 太小 / 编码失败）都静默回退
+        // 现有整解——错误分类与 1:1 / 区域解码语义完全不变。
+        if allowEmbeddedPreview,
+           let maxPixel,
+           maxPixel <= embeddedPreviewMaxRequestedPixels,
+           PhotoFileTypes.isRAW(ext),
+           let fast = embeddedPreviewResult(
+               source: source, ext: ext, maxPixel: maxPixel, quality: quality) {
+            return fast
         }
         // P0-8：缩略图 API 失败时退回「整图解码 → 缩放」兜底（HEIC/HEIF/PSD
         // 这类由 ImageIO 按内容合成的格式，容器里没有内嵌缩略图时最常触发）。
@@ -270,6 +320,67 @@ public enum RAWDecoder {
             throw RAWDecoderError.jpegEncodeFailed(path)
         }
         return RAWDecodeResult(buffer: jpeg, format: "jpeg", width: width, height: height)
+    }
+
+    // MARK: - B3 / RAW 嵌入 JPEG 快档
+
+    /// RAW 快档的请求上限：只给缩略图/预览档（<=4096）用内嵌 JPEG；
+    /// 1:1 与区域解码（tiled detail）仍走真解——那是判合焦的数据源。
+    static let embeddedPreviewMaxRequestedPixels = 4_096
+    /// 内嵌预览必须达到请求边长的 75%，否则放大糊；不达标就回退整解。
+    static let embeddedPreviewMinimumRatio = 0.75
+
+    /// 内嵌预览是否可接受的纯决策（供单测；不做 I/O）。
+    ///
+    /// - Parameters:
+    ///   - embedded: 内嵌预览在请求档位下实际可用的最长边像素
+    ///     （已按请求缩小；内嵌原生 >= 请求时等于请求值）。
+    ///   - requested: 调用方请求的最长边像素（getThumbnail size / getPreview maxDimension）。
+    ///   - ext: 文件扩展名（可带点/大写；归一化在 PhotoFileTypes.isRAW 内完成）。
+    static func embeddedPreviewAcceptable(embedded: Int, requested: Int, ext: String) -> Bool {
+        guard requested > 0, requested <= embeddedPreviewMaxRequestedPixels else { return false }
+        guard embedded > 0 else { return false }
+        guard PhotoFileTypes.isRAW(ext) else { return false }
+        return Double(embedded) >= Double(requested) * embeddedPreviewMinimumRatio
+    }
+
+    /// 尝试用内嵌 JPEG 预览出结果；nil = 没有内嵌 / 太小 / 编码失败（调用方回退整解）。
+    private static func embeddedPreviewResult(
+        source: CGImageSource,
+        ext: String,
+        maxPixel: Int,
+        quality: Double
+    ) -> RAWDecodeResult? {
+        guard let image = embeddedPreviewImage(from: source, maxPixel: maxPixel) else { return nil }
+        let available = max(image.width, image.height)
+        guard embeddedPreviewAcceptable(embedded: available, requested: maxPixel, ext: ext) else {
+            return nil
+        }
+        guard let jpeg = encodeJPEG(image, quality: quality) else { return nil }
+        GatherLogger.log(
+            "raw decode: embedded preview \(image.width)x\(image.height) (requested \(maxPixel))",
+            level: .debug)
+        return RAWDecodeResult(
+            buffer: jpeg,
+            format: "jpeg",
+            width: image.width,
+            height: image.height,
+            decodeSource: .embedded)
+    }
+
+    /// 取容器内嵌预览（只读内嵌，绝不从整图生成）。
+    ///
+    /// 两个 FromImage* 都显式 false：没有内嵌预览时返回 nil，交给整解路径；
+    /// WithTransform 保留 EXIF/RAW 方向语义（与旧整解路径同口径）。
+    private static func embeddedPreviewImage(from source: CGImageSource, maxPixel: Int) -> CGImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: false,
+            kCGImageSourceCreateThumbnailFromImageIfAbsent: false,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(maxPixel, 1),
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     private static func makeImage(from source: CGImageSource, maxPixel: Int?) -> CGImage? {
