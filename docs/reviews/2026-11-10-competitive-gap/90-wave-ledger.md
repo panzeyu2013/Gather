@@ -276,3 +276,54 @@
 4. 配方迁移采用保守精确匹配：改名/自定义过的旧配方只写 marker、不补 gallery（取舍已写入注释与测试）。
 5. App Intents helper 目前逐 intent 源文件编译；若 intent 文件引用同 target 其他符号需改整 target 编译（脚本内有注释）。
 6. build.sh 全量组装耗时约 2–3 分钟，属发布活动，不进日常测试循环。
+
+---
+
+## 11. 完成判定（2026-11-11 收口）
+
+### 11.1 目标覆盖核对（对照 goal 的三段清单）
+
+| 目标项 | 落地任务 | 状态 |
+| --- | --- | --- |
+| Wave1 P0：C1 脚本契约 + 手动 ack | task-6 | ✅ |
+| Wave1 P0：翻片预取 + 按键排队 | task-8 | ✅ |
+| Wave1 P0：HEIC/HEIF/PSD 解码兜底 | task-7 | ✅ |
+| Wave1 P0：导出色彩空间/DPI/锐化 | task-7 | ✅ |
+| Wave1 P0：交付配方可编辑 | task-10 | ✅ |
+| Wave1 P0：单图全屏 + 真 1:1 | task-8 | ✅ |
+| Wave1 P0：堆栈新建 + 卷重连接线 | task-9 | ✅ |
+| Wave1 P0：元数据页 C1 reload + 「在 C1 中显示」 | task-6 | ✅ |
+| Wave2：导出/交付规格闭环 | task-7/10/16/17/23 | ✅ |
+| Wave2：对比每格清晰 + Survey | task-12 | ✅ |
+| Wave2：关键词库/变量/批量直改/检索覆盖 | task-13/22 | ✅ |
+| Wave2：AI 初审接入导入 | task-14 | ✅ |
+| Wave2：集合层级 + 跨会话导入去重 | task-15/27 | ✅（层级为命名路径约定，取舍已文档化） |
+| Wave3：托管式客户交付 | task-17 | ✅（S3 兼容 + 口令/到期；不做服务端托管，边界已文档化） |
+| Wave3：变体级 C1 通道 + Session 三目录 | task-11/18 | ✅ |
+| Wave3：感知级相似立项评估 | task-19 | ✅（评估工具 + 决策报告；真实数值待标注集） |
+| Wave3：第二显示器 | task-20 | ✅ |
+| Wave3：目录迁移 | task-24 | ✅ |
+| Wave3：自动化面 | task-21/25 | ✅（URL scheme/Shortcuts/钩子 + 打包元数据） |
+
+### 11.2 最终全量验证（Lead 执行，2026-11-11）
+
+- **gather-core**：`SWIFT_TEST_FLAGS="--disable-sandbox" ./scripts/test.sh core` →
+  并行主批 **1807 tests / 263 suites passed** + 串行全局状态批 **25 tests / 4 suites passed**。
+- **gather-app**：`SWIFT_TEST_FLAGS="--disable-sandbox" ./scripts/test.sh app` → **966 tests / 128 suites passed**。
+- **门禁 12 项**（`--strict`）：protocol-surface / design-system / cleanup-ratchet / layering / coded-errors / domain-events / domain-writes / duplicate-symbols / select-star / no-legacy / test-catalog / warnings —— **全绿**。
+- **发布组装**：`GATHER_VERSION=3.0.0 GATHER_SWIFT_FLAGS="--disable-sandbox" ./desktop/native/build.sh` → 组装成功（unsigned，2m44s），
+  `[appintents] OK … Metadata.appintents (11072 bytes)`；`./scripts/check-appintents.sh` → version 3.0 / **intents(8) / shortcuts(4) / OK**。
+- **相似度评估工具**：`swift run gather-triage-eval similarity-eval --self-test` → PASS；旧 CLI `--help` 正常。
+
+### 11.3 提交序列（每步可独立回滚/验证）
+
+`c054cd40` Wave1 → `b22371d1` Wave2 batch1 → `15bee2d9` Wave2 batch2 → `24bcc730` Wave3 batchA →
+`a018d15c` Wave3 batchB → `1f77327a` 收尾批 → `779a676c` 收口修（可见性谓词 + 检索字段测试）。
+
+### 11.4 明确的"未做/外部活动"（不属于本目标缺口）
+
+1. **真机验收**：C1 16.7 矩阵、第二屏/打印 GUI、Shortcuts 交互、翻片延迟实测 —— 清单见 `96-manual-acceptance.md`，需在有 C1/真机的机器上执行。
+2. **集合层级 schema 化**（`collections.parent_id` + user_version 迁移）：需要产品决策（迁移链 vs 重建库），当前以命名路径约定替代并文档化。
+3. **预签名 URL 直传**、**服务端强制到期/口令**：当前为 SigV4 头签名 + 默认私有 + 前端口令门（页面已明示边界）。
+4. **规则编辑器的集合/堆栈下拉候选**：当前手填 UUID + 剪贴板 + 帮助文案。
+5. **感知级相似的真实数值评估**：工具与规范已就绪，需要人工标注集（2–3 人日）才能给出立项结论。
