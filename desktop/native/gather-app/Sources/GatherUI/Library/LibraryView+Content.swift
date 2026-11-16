@@ -72,7 +72,8 @@ extension LibraryView {
             folderTreeSessionName: folderTreeSessionName,
             folderTreeSelectedPrefix: viewModel.filter.directory,
             onSelectDirectory: { viewModel.toggleDirectoryFilter($0) },
-            onClearDirectory: { viewModel.clearDirectoryFilter() }
+            onClearDirectory: { viewModel.clearDirectoryFilter() },
+            onCreateWorkspace: onCreateWorkspace
         ) {
             browseContent
         }
@@ -212,6 +213,7 @@ struct LibraryCurationHost<Browse: View>: View {
     private let folderTreeSelectedPrefix: String
     private let onSelectDirectory: (String) -> Void
     private let onClearDirectory: () -> Void
+    private let onCreateWorkspace: @MainActor (String) -> Void
     private let browse: Browse
 
     @State private var showsSidebar = true
@@ -225,6 +227,7 @@ struct LibraryCurationHost<Browse: View>: View {
         folderTreeSelectedPrefix: String = "",
         onSelectDirectory: @escaping (String) -> Void = { _ in },
         onClearDirectory: @escaping () -> Void = {},
+        onCreateWorkspace: @escaping @MainActor (String) -> Void = { _ in },
         @ViewBuilder browse: () -> Browse
     ) {
         self.sessionId = sessionId
@@ -233,6 +236,7 @@ struct LibraryCurationHost<Browse: View>: View {
         self.folderTreeSelectedPrefix = folderTreeSelectedPrefix
         self.onSelectDirectory = onSelectDirectory
         self.onClearDirectory = onClearDirectory
+        self.onCreateWorkspace = onCreateWorkspace
         self.browse = browse()
     }
 
@@ -284,7 +288,12 @@ struct LibraryCurationHost<Browse: View>: View {
                         selection = nil
                         onSelectDirectory(path)
                     },
-                    onClearDirectory: onClearDirectory
+                    onClearDirectory: onClearDirectory,
+                    onCreateWorkspace: { path in
+                        // 先结束集合浏览再交给外壳（与目录筛选同一入口语义）。
+                        selection = nil
+                        onCreateWorkspace(path)
+                    }
                 )
             case .collections:
                 CollectionSidebar(sessionId: sessionId, selection: $selection)

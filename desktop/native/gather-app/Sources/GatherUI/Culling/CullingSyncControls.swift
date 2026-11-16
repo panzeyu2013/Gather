@@ -14,6 +14,9 @@ struct CullingSyncControls: View {
     /// 紧凑工具栏只画图标，避免挤掉范围/布局控件。
     var compact = false
 
+    /// Wave5 batch6 / R6：淘汰红标的确认弹窗（覆盖色标属于有影响的写入，必须显式确认）。
+    @State private var showRejectedColorTagConfirm = false
+
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
@@ -44,6 +47,15 @@ struct CullingSyncControls: View {
             }
             .disabled(isBusy)
             .help(l10n("写回星级/色标/保留（keep）到 C1 当前页；C1 无淘汰位（淘汰不写回），跨页请分批"))
+            // Wave5 batch6 / R6：C1 没有 reject 位，淘汰用**显式红标约定**表达
+            // （只改色标=红，覆盖原色标；不写星级/关键词/pick）。
+            Button(l10n(C1RejectedColorTagCopy.menuTitle)) {
+                showRejectedColorTagConfirm = true
+            }
+            .disabled(!hasRejectedPhotos || isBusy)
+            .help(hasRejectedPhotos
+                  ? l10n("把这些淘汰照片在 C1 里的色标改为红色（覆盖原色标）；不写星级、关键词与 pick")
+                  : l10n(C1RejectedColorTagCopy.emptyHint))
             if (viewModel.syncStatus?.written ?? 0) > 0 {
                 Button(l10n("在 Capture One 中加载元数据")) { Task { await viewModel.reloadCaptureOne() } }
                     .disabled(!viewModel.canLoadMetadata || isBusy)
@@ -87,6 +99,26 @@ struct CullingSyncControls: View {
         .fixedSize()
         .help(l10n("先在 Capture One 中 Load Metadata，再返回 Gather 确认同步"))
         .accessibilityLabel(l10n("同步与写回"))
+        // 覆盖语义在弹窗正文里写清；标题带张数（用户确认的是"影响多少张"）。
+        .confirmationDialog(
+            l10n.format(
+                C1RejectedColorTagCopy.confirmTitleTemplate,
+                max(0, viewModel.rejectedPhotoCount)),
+            isPresented: $showRejectedColorTagConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(l10n(C1RejectedColorTagCopy.confirmAction)) {
+                Task { await viewModel.markRejectedInCaptureOne() }
+            }
+            Button(l10n("取消"), role: .cancel) {}
+        } message: {
+            Text(l10n(C1RejectedColorTagCopy.confirmMessage))
+        }
+    }
+
+    /// 有淘汰照片才有可写的红标目标（0 时入口禁用并给提示，不让用户点出一个空报告）。
+    private var hasRejectedPhotos: Bool {
+        viewModel.rejectedPhotoCount > 0
     }
 
     /// 写回入口可用性：没有已决策照片就没有可写回的计划（服务端会抛 CULLING_NO_DECISIONS）。

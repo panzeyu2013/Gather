@@ -14,6 +14,10 @@
 //   · 行式记录 + TAB 字段分隔 + 反斜杠转义（路径/关键词可含任意字符），畸形行跳过并
 //     计数而不是整批失败；脚本失败仍上浮，由导入侧降级为"仅按文件导入"。
 //
+// Wave5 batch6（2026-11-11，task-25 / 复核 R6）：
+//   · writeRejectedColorTags(paths:)：把"淘汰"写成 C1 红标（只改 color tag，raw 1），
+//     复用 R1 写前回读 + R3 browse 重试；脚本内再防御"非单 variant 不写"，不写 reload-ack。
+//
 // Wave5（2026-11-11，task-11 / Batch1 C1 写回正确性）：
 //   · R1：变体级写回**写前回读**每个 image 的 variant 数（variantCountReadScript）；
 //     恰好 1 个才写，多个不猜目标 → 报告 skippedMultiVariant；回读失败上浮不盲写；
@@ -1333,6 +1337,192 @@ public final class CaptureOneBridge: CaptureOneBridging, @unchecked Sendable {
         }
         return flags
     }
+
+    // MARK: - Wave5 batch6 / R6：淘汰的红标约定（C1 无 reject 位）
+
+    /// 把"淘汰"在 C1 里表达成红标（只改 color tag = Red；不写 pick/rating/关键词）。
+    ///
+    /// 为什么用红标而不是别的通道：
+    /// - C1 16.7 sdef 的 variant 只有布尔 pick（:1084），**没有 reject 位**；
+    /// - XMP 侧用 `culling:reject` 关键词会污染 C1 词库（G4 / 复核 R13 明确禁止）；
+    /// - "移入 Trash collection" 需要 collection 语义、会改会话结构（且不可从 Gather 撤销）。
+    /// 红标是纯色标覆盖：C1 里一眼可见、用户换色标即可撤销，也不影响 pick/rating/keywords。
+    /// 覆盖语义（会盖掉原有色标）必须在 UI 确认弹窗里明示。
+    ///
+    /// 安全规则（与变体级写回同源，R1/R3）：
+    /// - 写前读 variant 数：0 → notFound；>1 → **不猜目标**，整条跳过并进
+    ///   skippedMultiVariant（写错 variant 不可逆，96 号 §10 判 P0）；
+    /// - 脚本内再防御一次：写入瞬间若 variant 数 ≠ 1 就返回 "2"、不写；
+    /// - notFound 若磁盘上存在且父目录唯一 → browse 切集合后重试一次；
+    /// - **不写 reload-ack**：红标不改变需要 C1 Load 的 rating/关键词，catalog 本就是权威；
+    ///   也绝不写关键词、不调 reload metadata。
+    public func writeRejectedColorTags(paths: [String]) async throws -> C1VariantWritebackReport {
+        var unique: [String] = []
+        var seen = Set<String>()
+        var notFound: [String] = []
+        var skipped = 0
+        for raw in paths {
+            let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard path.hasPrefix("/") else {
+                notFound.append(raw)
+                continue
+            }
+            // 去重键用 canonical（fold /private 前缀），脚本仍用原始路径匹配 C1 登记值。
+            guard seen.insert(ScanPath.canonical(path)).inserted else { continue }
+            guard unique.count < Self.maxVariantWritebackItems else {
+                skipped += 1
+                continue
+            }
+            unique.append(path)
+        }
+        guard !unique.isEmpty else {
+            return C1VariantWritebackReport(written: 0, notFound: notFound, skipped: skipped)
+        }
+
+        let appName = try await captureOneApplicationName()
+        // R1：写前回读变体数（脚本失败上浮，绝不按"未知"盲写）。
+        let firstPartition = Self.partitionRejectedColorTagPaths(
+            paths: unique,
+            counts: try await readVariantCounts(paths: unique, appName: appName))
+        var multiVariant = firstPartition.multiVariant
+        var written = 0
+
+        let first = try await writeRejectedColorTagItems(
+            firstPartition.writable, appName: appName)
+        written += first.written
+        notFound.append(contentsOf: first.notFound)
+        multiVariant.append(contentsOf: first.multiVariant)
+
+        // R3：当前集合里没有的照片若磁盘上存在、父目录唯一 → browse 后只重试这些。
+        let missing = firstPartition.notFound
+        if !missing.isEmpty,
+           let directory = Self.singleParentDirectory(of: missing),
+           await browse(toDirectory: directory, appName: appName) {
+            var retried: C1RejectedColorTagPartition?
+            do {
+                retried = Self.partitionRejectedColorTagPaths(
+                    paths: missing,
+                    counts: try await readVariantCounts(paths: missing, appName: appName))
+            } catch {
+                GatherLogger.log(
+                    "c1.rejected_color_tag browse=\(directory) 回读失败: \(error)",
+                    level: .warn)
+                notFound.append(contentsOf: missing)
+            }
+            if let retried {
+                multiVariant.append(contentsOf: retried.multiVariant)
+                notFound.append(contentsOf: retried.notFound)
+                let second = try await writeRejectedColorTagItems(
+                    retried.writable, appName: appName)
+                written += second.written
+                notFound.append(contentsOf: second.notFound)
+                multiVariant.append(contentsOf: second.multiVariant)
+            }
+        } else {
+            notFound.append(contentsOf: missing)
+        }
+
+        // 口径：不写 durable reload-ack（红标不是"C1 需要重载的元数据"）。
+        return C1VariantWritebackReport(
+            written: written, notFound: notFound, skipped: skipped,
+            skippedMultiVariant: multiVariant)
+    }
+
+    /// 对一批**已确认单 variant** 的路径发一次红标脚本；逐条判定结果。
+    ///
+    /// 为什么把 "2" 单独返回而非当未命中：脚本内防御发现多 variant 是"契约/竞态"
+    /// 信息（用户需要回 C1 定变体），与"照片不在当前集合"是两种可执行下一步。
+    private func writeRejectedColorTagItems(
+        _ paths: [String],
+        appName: String
+    ) async throws -> (written: Int, notFound: [String], multiVariant: [String]) {
+        guard !paths.isEmpty else { return (0, [], []) }
+        let output = try await runAppleScript(
+            Self.rejectedColorTagScript(appName: appName, paths: paths), timeout: 30)
+        guard let flags = Self.parseRejectedColorTagReport(output, expected: paths.count) else {
+            throw CaptureOneBridgeError.scriptFailed(
+                "unexpected rejected color tag report: \(output)")
+        }
+        var written = 0
+        var notFound: [String] = []
+        var multiVariant: [String] = []
+        for (index, flag) in flags.enumerated() {
+            switch flag {
+            case "1": written += 1
+            case "2": multiVariant.append(paths[index])
+            default: notFound.append(paths[index])
+            }
+        }
+        return (written, notFound, multiVariant)
+    }
+
+    /// 红标脚本（internal：脚本契约由 C1BridgeWave3Tests 文本断言）。
+    ///
+    /// 只发 **color tag = Red**（C1ColorTagMapping.rawValue(for: .red) = 1）；
+    /// 不碰 pick / rating / 关键词，也不调 reload metadata。每条路径一行报告：
+    /// "1" = 已标红、"0" = 当前集合里没有、"2" = 变体数 ≠ 1（防御：不写、让用户定变体）。
+    static func rejectedColorTagScript(appName: String, paths: [String]) -> String {
+        let red = C1ColorTagMapping.rawValue(for: .red)
+        var blocks: [String] = []
+        for path in paths {
+            blocks.append([
+                "    set matches to (every image of targetDoc whose path is \(appleScriptLiteral(path)))",
+                "    if (count of matches) > 0 then",
+                "      set theImage to (item 1 of matches)",
+                "      if (count of (variants of theImage)) is 1 then",
+                "        set color tag of (variant 1 of theImage) to \(red)",
+                "        set report to report & \"1\" & linefeed",
+                "      else",
+                "        set report to report & \"2\" & linefeed",
+                "      end if",
+                "    else",
+                "      set report to report & \"0\" & linefeed",
+                "    end if",
+            ].joined(separator: "\n"))
+        }
+        return """
+        tell application "\(appName)"
+          set targetDoc to current document
+          set report to ""
+        \(blocks.joined(separator: "\n"))
+          return report
+        end tell
+        """
+    }
+
+    /// 红标报告解析：行数 = 请求数、每行只能是 "0"/"1"/"2"；否则 nil（契约漂移）。
+    static func parseRejectedColorTagReport(_ output: String, expected: Int) -> [String]? {
+        let flags = output
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard flags.count == expected,
+              flags.allSatisfy({ $0 == "0" || $0 == "1" || $0 == "2" }) else {
+            return nil
+        }
+        return flags
+    }
+
+    /// R6 写前回读的分区（纯函数：C1BridgeWave3Tests 直接驱动）。
+    ///
+    /// 与变体级写回的 R1 同一规则：0 → notFound（当前集合没有）、1 → 可写（唯一目标）、
+    /// 多 variant → 整条跳过并计数（不猜目标）。
+    static func partitionRejectedColorTagPaths(
+        paths: [String],
+        counts: [Int]
+    ) -> C1RejectedColorTagPartition {
+        var result = C1RejectedColorTagPartition(writable: [], multiVariant: [], notFound: [])
+        for (index, path) in paths.enumerated() {
+            let count = index < counts.count ? counts[index] : 0
+            if count == 0 {
+                result.notFound.append(path)
+            } else if count == 1 {
+                result.writable.append(path)
+            } else {
+                result.multiVariant.append(path)
+            }
+        }
+        return result
+    }
 }
 
 /// G3 只读脚本的解析结果（internal：C1BridgeWave2Tests 直接驱动纯函数）。
@@ -1351,6 +1541,16 @@ struct C1VariantTargetPartition: Equatable {
     var writable: [C1VariantWritebackItem]
     var multiVariant: [String]
     var notFound: [C1VariantWritebackItem]
+}
+
+/// Wave5 batch6 / R6 红标写回的分区结果（internal：C1BridgeWave3Tests 直接驱动）。
+///
+/// 与 C1VariantTargetPartition 同一口径：可写 = 当前集合里恰好 1 个 variant（唯一目标）；
+/// multiVariant = 不猜目标、整条跳过；notFound = 当前集合里没有（可按父目录 browse 补救）。
+struct C1RejectedColorTagPartition: Equatable {
+    var writable: [String]
+    var multiVariant: [String]
+    var notFound: [String]
 }
 
 

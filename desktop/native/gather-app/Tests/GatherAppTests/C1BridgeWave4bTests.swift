@@ -327,3 +327,111 @@ struct C1BridgeWave4bMetadataSyncBarTests {
         #expect(!envOnly.c1ActionsAvailable)
     }
 }
+
+// MARK: - Wave5 batch6 / R6 + G11：淘汰红标文案与 C1 调整徽标（纯映射）
+
+@Suite("C1BridgeWave6 红标结果 → UI 呈现（R6）")
+struct C1BridgeWave6PresentationTests {
+    @Test("报告 → 结果：全成功 / 部分 / 空 / 未接线")
+    func mapsReports() {
+        #expect(C1RejectedColorTagOutcome(
+            report: C1VariantWritebackReport(written: 3)) == .written(3))
+        #expect(C1RejectedColorTagOutcome(
+            report: C1VariantWritebackReport()) == .nothing)
+        #expect(C1RejectedColorTagOutcome(
+            report: C1VariantWritebackReport(
+                written: 2, notFound: ["/a.cr2"],
+                skipped: 1, skippedMultiVariant: ["/b.cr2"]))
+            == .partial(written: 2, notFound: 1, multiVariant: 1, overLimit: 1))
+        #expect(C1RejectedColorTagOutcome(
+            report: .unsupported("rejected color tag not wired"))
+            == .unsupported("rejected color tag not wired"))
+        // 只有 notFound / 只有多变体 都是"部分"，不能报成功。
+        #expect(C1RejectedColorTagOutcome(
+            report: C1VariantWritebackReport(notFound: ["/a.cr2"]))
+            == .partial(written: 0, notFound: 1, multiVariant: 0, overLimit: 0))
+        #expect(C1RejectedColorTagOutcome(
+            report: C1VariantWritebackReport(skippedMultiVariant: ["/a.cr2"]))
+            == .partial(written: 0, notFound: 0, multiVariant: 1, overLimit: 0))
+    }
+
+    @Test("成功只发 notice（不误报错误）；部分成功给可执行 errorKey + 四个计数参数")
+    func presentationBranches() {
+        let success = C1RejectedColorTagPresentation.make(.written(4))
+        #expect(success.errorKey == nil)
+        #expect(success.noticeKey == C1RejectedColorTagCopy.successTemplate)
+        #expect(success.noticeParams == ["4"])
+
+        let partial = C1RejectedColorTagPresentation.make(
+            .partial(written: 2, notFound: 1, multiVariant: 3, overLimit: 0))
+        #expect(partial.noticeKey == nil)
+        #expect(partial.errorKey == C1RejectedColorTagCopy.partialTemplate)
+        #expect(partial.errorParams == ["2", "1", "3", "0"])
+
+        let unsupported = C1RejectedColorTagPresentation.make(.unsupported("not wired"))
+        #expect(unsupported.errorKey == C1RejectedColorTagCopy.unsupportedTemplate)
+        #expect(unsupported.errorParams == ["not wired"])
+        // 未接线必须给可执行下一步（手动在 C1 标红），不能只说"失败"。
+        #expect(C1RejectedColorTagCopy.unsupportedTemplate.contains("手动"))
+
+        #expect(C1RejectedColorTagPresentation.make(.nothing).errorKey
+            == C1RejectedColorTagCopy.nothing)
+    }
+
+    @Test("确认文案：标题带张数、正文写明覆盖色标且不写星级/关键词/pick")
+    func confirmationCopy() {
+        #expect(C1RejectedColorTagCopy.menuTitle.contains("红标"))
+        #expect(C1RejectedColorTagCopy.menuTitle.contains("覆盖"))
+        #expect(C1RejectedColorTagCopy.confirmTitleTemplate.contains("%lld"))
+        #expect(C1RejectedColorTagCopy.confirmTitleTemplate.contains("红标"))
+        // 覆盖语义 + 不写什么：确认弹窗必须让用户看懂影响面。
+        #expect(C1RejectedColorTagCopy.confirmMessage.contains("覆盖"))
+        #expect(C1RejectedColorTagCopy.confirmMessage.contains("不写"))
+        #expect(C1RejectedColorTagCopy.confirmMessage.contains("variant"))
+        #expect(C1RejectedColorTagCopy.emptyHint.contains("没有淘汰"))
+        #expect(!C1RejectedColorTagCopy.confirmAction.isEmpty)
+        // 成功/部分文案都带计数占位（渲染期插值）。
+        #expect(C1RejectedColorTagCopy.successTemplate.contains("%lld"))
+        #expect(C1RejectedColorTagCopy.partialTemplate.contains("%lld"))
+    }
+}
+
+@Suite("C1BridgeWave6 C1 调整徽标（G11）")
+struct C1BridgeWave6AdjustmentBadgeTests {
+    private func adjustmentHint(
+        hasAdjustments: Bool,
+        names: [String]
+    ) -> C1AdjustmentHint {
+        C1AdjustmentHint(
+            photoPath: "/shoot/a.cr2",
+            xmpPath: "/shoot/a.xmp",
+            hasAdjustments: hasAdjustments,
+            angle: nil,
+            cropRect: nil,
+            attributeNames: names)
+    }
+
+    @Test("没有调整 / 未接线 / 读不到 → 不显示徽标（nil）")
+    func hiddenWithoutAdjustments() {
+        #expect(C1AdjustmentBadge(hint: nil) == nil)
+        #expect(C1AdjustmentBadge(hint: C1AdjustmentHint.none(photoPath: "/shoot/a.cr2")) == nil)
+        #expect(C1AdjustmentBadge(
+            hint: adjustmentHint(hasAdjustments: false, names: ["Exposure2012"])) == nil)
+    }
+
+    @Test("有调整 → 显示并带属性计数（空列表也按 1 项，不显示 0 项）")
+    func visibleWithAdjustments() {
+        let badge = C1AdjustmentBadge(
+            hint: adjustmentHint(
+                hasAdjustments: true, names: ["Exposure2012", "CropTop", "Angle"]))
+        #expect(badge?.attributeCount == 3)
+        let emptyNames = C1AdjustmentBadge(
+            hint: adjustmentHint(hasAdjustments: true, names: []))
+        #expect(emptyNames?.attributeCount == 1)
+        // hover 文案说明"预览是 ImageIO 渲染"且带计数占位。
+        #expect(C1RejectedColorTagCopy.badgeHelpTemplate.contains("ImageIO"))
+        #expect(C1RejectedColorTagCopy.badgeHelpTemplate.contains("%lld"))
+        #expect(C1RejectedColorTagCopy.badgeLabel.contains("C1"))
+        #expect(C1RejectedColorTagCopy.inspectorDetailTemplate.contains("%@"))
+    }
+}

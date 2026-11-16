@@ -30,6 +30,8 @@ struct CullingInspector: View {
     @State private var showTriageUndoConfirm = false
     /// P1：客户校样评论（photoId → 最近一条）；nil/空 = 没有反馈。
     @State private var proofComments: [String: String] = [:]
+    /// Wave5 batch6 / G11：当前照片的 C1 调整提示（nil = 无/读不到 → 整段隐藏）。
+    @State private var c1AdjustmentHint: C1AdjustmentHint?
     /// Wave5 batch4：场景/连拍组「保留最佳、淘汰其余」的影响面（Confirmed 由确认分支构造）。
     @State private var pendingNavigationGroupDecision: CullingNavigationGroupDecisionPlan?
     @State private var showNavigationGroupDecisionConfirm = false
@@ -137,6 +139,28 @@ struct CullingInspector: View {
                               ? l10n.format("设置所选 %lld 张照片的颜色标签", viewModel.selectedPhotoIds.count)
                               : l10n("设置当前照片的颜色标签"))
                         .accessibilityLabel(l10n("颜色标签"))
+                    }
+                }
+
+                // Wave5 batch6 / G11：C1 有调整时给显式说明（预览不含 C1 色彩/曲线/局部）。
+                // 只读提示、失败静默隐藏：读不到 crs: 字段时整段不渲染，不影响其它面板。
+                if let hint = c1AdjustmentHint, let badge = C1AdjustmentBadge(hint: hint) {
+                    GatherInspectorSection(l10n(C1RejectedColorTagCopy.inspectorSectionTitle)) {
+                        HStack(spacing: GatherMetrics.Space.xs) {
+                            Image(systemName: "camera.filters")
+                                .foregroundStyle(GatherTheme.warningText)
+                                .accessibilityHidden(true)
+                            Text(l10n(C1RejectedColorTagCopy.badgeLabel))
+                                .font(GatherFont.secondaryStrong)
+                        }
+                        Text(l10n.format(
+                            C1RejectedColorTagCopy.inspectorDetailTemplate,
+                            hint.attributeNames.prefix(3).joined(separator: "、")))
+                            .font(GatherFont.secondary)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(l10n.format(
+                                C1RejectedColorTagCopy.badgeHelpTemplate, badge.attributeCount))
                     }
                 }
 
@@ -560,6 +584,17 @@ struct CullingInspector: View {
         .task(id: viewModel.currentAsset?.similarityGroupId) {
             guard viewModel.currentAsset?.similarityGroupId != nil else { return }
             await viewModel.ensureSimilarityGroupsLoaded()
+        }
+        // G11：随当前照片刷新 C1 调整提示（只读；未接线/读取失败即 nil → 隐藏）。
+        .task(id: viewModel.currentAsset?.photo.id) {
+            c1AdjustmentHint = nil
+            guard let photoId = viewModel.currentAsset?.photo.id,
+                  let path = viewModel.currentAsset?.photo.filepath, !path.isEmpty else {
+                return
+            }
+            let hint = await viewModel.c1AdjustmentHint(for: path)
+            guard !Task.isCancelled, viewModel.currentAsset?.photo.id == photoId else { return }
+            c1AdjustmentHint = hint
         }
     }
 

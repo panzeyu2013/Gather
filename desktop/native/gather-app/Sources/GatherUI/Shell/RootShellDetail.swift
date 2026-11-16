@@ -21,6 +21,9 @@ extension RootView {
                     onOpenSession: { sessionId in navigation.openSession(sessionId) },
                     onOpenPhoto: { sessionId, photoId in
                         openGallery(sessionId, photoId: photoId)
+                    },
+                    onCreateWorkspace: { directoryPath in
+                        handleCreateWorkspaceRequest(at: directoryPath)
                     }
                 )
             case .persons:

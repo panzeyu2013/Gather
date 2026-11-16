@@ -15,6 +15,9 @@ private final class FakeJobFeed: Sendable {
         var generated: [String] = []
         var applied: [TriageApplyInput] = []
         var cancelledJobs: [String] = []
+        var groups: [String] = []
+        /// 事件顺序（Wave5 batch6）：用于断言 groups 在 generate 之前。
+        var events: [String] = []
         var logs: [String] = []
     }
 
@@ -37,11 +40,17 @@ private final class FakeJobFeed: Sendable {
     }
 
     func recordEnqueue(_ sessionId: String) {
-        lock.withLock { $0.enqueued.append(sessionId) }
+        lock.withLock { state in
+            state.enqueued.append(sessionId)
+            state.events.append("quality-enqueued")
+        }
     }
 
     func recordGenerate(_ sessionId: String) {
-        lock.withLock { $0.generated.append(sessionId) }
+        lock.withLock { state in
+            state.generated.append(sessionId)
+            state.events.append("generate")
+        }
     }
 
     func recordApply(_ input: TriageApplyInput) {
@@ -52,10 +61,19 @@ private final class FakeJobFeed: Sendable {
         lock.withLock { $0.cancelledJobs.append(jobId) }
     }
 
+    func recordGroupArtifacts(_ sessionId: String) {
+        lock.withLock { state in
+            state.groups.append(sessionId)
+            state.events.append("groups")
+        }
+    }
+
     func recordLog(_ message: String) {
         lock.withLock { $0.logs.append(message) }
     }
 
+    var groups: [String] { lock.withLock { $0.groups } }
+    var events: [String] { lock.withLock { $0.events } }
     var enqueued: [String] { lock.withLock { $0.enqueued } }
     var generated: [String] { lock.withLock { $0.generated } }
     var applied: [TriageApplyInput] { lock.withLock { $0.applied } }
@@ -93,7 +111,8 @@ private func makePipeline(
     triageEnabled: Bool = true,
     enqueueFails: Bool = false,
     summary: TriageSummary = makeSummary(),
-    maxPolls: Int = 10
+    maxPolls: Int = 10,
+    groupOutcome: AITriageGroupArtifactsOutcome = .alreadyReady
 ) -> AITriageAutoPipeline {
     let deps = AITriageAutoPipeline.Dependencies(
         listJobs: { feed.current },
@@ -114,6 +133,10 @@ private func makePipeline(
         },
         autoApplyEnabled: { autoApply },
         triageEnabled: { triageEnabled },
+        ensureGroupArtifacts: { sessionId in
+            feed.recordGroupArtifacts(sessionId)
+            return groupOutcome
+        },
         log: { message in
             feed.recordLog(message)
         },
@@ -199,6 +222,7 @@ struct AITriageAutoPipelineTests {
         #expect(outcome.reason == "quality-cancelled")
         #expect(feed.generated.isEmpty)
         #expect(feed.applied.isEmpty)
+        #expect(feed.groups.isEmpty, "质量未成功时不应跑分组准备（E3 在 quality 成功之后）")
     }
 
     @Test("索引失败 → 不跑质量分析（没有可信 photoIds）")
@@ -210,6 +234,7 @@ struct AITriageAutoPipelineTests {
         #expect(outcome.stage == .stopped)
         #expect(outcome.reason == "index-not-succeeded")
         #expect(feed.enqueued.isEmpty)
+        #expect(feed.groups.isEmpty)
     }
 
     @Test("triage_enabled=0 → 直接 skipped：不入队质量、不生成、不应用（E4）")
@@ -224,6 +249,7 @@ struct AITriageAutoPipelineTests {
         #expect(feed.enqueued.isEmpty, "关闭 triage 时不应再排 quality job（省掉整段解码）")
         #expect(feed.generated.isEmpty)
         #expect(feed.applied.isEmpty)
+        #expect(feed.groups.isEmpty, "triage 关闭时也不做分组分析（整条自动初审被跳过）")
     }
 
     @Test("没有任何 job（空会话/立即返回）→ 视索引为就绪，直接排质量")
@@ -286,5 +312,61 @@ struct AITriageAutoPipelineTests {
         #expect(AITriageStopReason.qualityEnded(.interrupted) == "quality-interrupted")
         #expect(AITriageStopReason.triageDisabled == "triage-disabled")
         #expect(AITriageStopReason.indexNotSucceeded == "index-not-succeeded")
+    }
+
+    // MARK: - Wave5 batch6（E3）：分组产物准备
+
+    @Test("E3：quality 成功后、生成建议前确保分组产物（顺序 quality→groups→generate）")
+    func ensuresGroupArtifactsBetweenQualityAndGenerate() async {
+        let feed = FakeJobFeed([
+            [
+                makeJob(id: "scan", type: .metadataScan, status: .succeeded),
+                makeJob(id: "q1", type: .qualityScore, status: .succeeded),
+            ],
+        ])
+        let outcome = await makePipeline(feed: feed, autoApply: false, groupOutcome: .enqueued)
+            .run(sessionId: "s1")
+        #expect(outcome.stage == .done)
+        #expect(feed.groups == ["s1"])
+        #expect(feed.events == ["quality-enqueued", "groups", "generate"],
+            "分组准备必须在质量成功后、建议生成前；顺序即 triage 理由码可用的保证")
+        #expect(feed.logs.contains { $0.contains("groups=enqueued") })
+    }
+
+    @Test("E3：宿主返回 alreadyReady（近期成功/已有组）→ 只记录，不阻断生成")
+    func groupArtifactsAlreadyReadyLogged() async {
+        let feed = FakeJobFeed([
+            [
+                makeJob(id: "scan", type: .metadataScan, status: .succeeded),
+                makeJob(id: "q1", type: .qualityScore, status: .succeeded),
+            ],
+        ])
+        let outcome = await makePipeline(feed: feed, autoApply: false, groupOutcome: .alreadyReady)
+            .run(sessionId: "s1")
+        #expect(outcome.stage == .done)
+        #expect(feed.groups == ["s1"])
+        #expect(feed.generated == ["s1"])
+        #expect(feed.logs.contains { $0.contains("groups=already-ready") })
+    }
+
+    @Test("E3：分组分析未完成 → 只记日志并继续生成建议（初审不能被分组拖停）")
+    func groupArtifactsFailureDoesNotBlockGenerate() async {
+        let feed = FakeJobFeed([
+            [
+                makeJob(id: "scan", type: .metadataScan, status: .succeeded),
+                makeJob(id: "q1", type: .qualityScore, status: .succeeded),
+            ],
+        ])
+        let outcome = await makePipeline(
+            feed: feed,
+            autoApply: false,
+            groupOutcome: .failed("duplicate-wait: timeout"))
+            .run(sessionId: "s1")
+        #expect(outcome.stage == .done)
+        #expect(feed.generated == ["s1"])
+        let logged = feed.logs.contains {
+            $0.contains("groups=failed") && $0.contains("duplicate-wait: timeout")
+        }
+        #expect(logged, "失败原因必须进日志，不能静默")
     }
 }

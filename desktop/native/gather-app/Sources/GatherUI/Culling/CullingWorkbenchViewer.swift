@@ -186,6 +186,8 @@ struct CullingWorkbenchViewer: View {
     @State private var focusMask: FocusMask?
     /// crs:Crop* 只读裁剪框（nil = 无 sidecar/无裁剪，不画标记）。
     @State private var cropFrame: CropFrame?
+    /// Wave5 batch6 / G11：当前照片是否有 C1 调整（nil = 无/读不到 → 徽标静默隐藏）。
+    @State private var c1AdjustmentHint: C1AdjustmentHint?
 
     /// 当前已加载列表（viewModel.page 变化经 @Observable 自动回流）。
     private var assets: [CullingAsset] {
@@ -255,6 +257,25 @@ struct CullingWorkbenchViewer: View {
                     .padding(.top, GatherMetrics.Space.s)
                     .monospacedDigit()
                     .help(l10n("滚轮缩放 · 拖动平移 · 双击复位 · ⌘−/⌘= 缩放"))
+            }
+        }
+        // Wave5 batch6 / G11：C1 有调整时给可见徽标。
+        //
+        // 为什么必须有：Gather 预览走 ImageIO/CIRAWFilter 渲染，**不含** C1 的色彩/曲线/
+        // 局部调整；没有提示时用户会以为"C1 调好的效果就是现在这样"，判断失真。
+        // 只读元数据、失败静默隐藏（提示是增强信息，绝不阻塞看图）。
+        .overlay(alignment: .topLeading) {
+            if let badge = C1AdjustmentBadge(hint: c1AdjustmentHint) {
+                Label(l10n(C1RejectedColorTagCopy.badgeLabel), systemImage: "camera.filters")
+                    .font(GatherFont.label)
+                    .foregroundStyle(GatherTheme.viewerTextPrimary.opacity(0.9))
+                    .padding(.horizontal, GatherMetrics.Space.s)
+                    .padding(.vertical, GatherMetrics.Space.xxs)
+                    .background(Capsule().fill(GatherTheme.viewerChrome.opacity(0.85)))
+                    .padding(GatherMetrics.Space.s)
+                    .help(l10n.format(
+                        C1RejectedColorTagCopy.badgeHelpTemplate, badge.attributeCount))
+                    .accessibilityLabel(l10n(C1RejectedColorTagCopy.badgeLabel))
             }
         }
         .overlay(alignment: .bottomLeading) {
@@ -591,7 +612,14 @@ struct CullingWorkbenchViewer: View {
         }
         .task(id: viewModel.currentPhotoId) {
             cropFrame = nil
+            c1AdjustmentHint = nil
             guard let photoId = viewModel.currentPhotoId else { return }
+            // G11：C1 调整提示（只读 XMP crs: 字段；失败/未接线即 nil → 徽标不显示）。
+            if let path = viewModel.currentAsset?.photo.filepath, !path.isEmpty {
+                let hint = await viewModel.c1AdjustmentHint(for: path)
+                guard !Task.isCancelled, viewModel.currentPhotoId == photoId else { return }
+                c1AdjustmentHint = hint
+            }
             do {
                 let frame = try await viewModel.cullingAPI.adjustmentHint(photoId: photoId)
                 guard !Task.isCancelled, viewModel.currentPhotoId == photoId else { return }

@@ -151,6 +151,10 @@ struct FolderTreeRow: Identifiable, Equatable, Sendable {
     let depth: Int
     let kind: Kind
 
+    /// 只有真实目录行才提供「用此目录新建工作区…」：空目录占位/不可读占位
+    /// 没有可用的绝对路径，右键菜单里也不该出现该动作。
+    var canCreateWorkspace: Bool { kind == .directory }
+
     var id: String {
         switch kind {
         case .directory: return "dir:" + path
@@ -287,10 +291,29 @@ struct FolderTreePanel: View {
     let selectedDirectoryPrefix: String
     let onSelectDirectory: (String) -> Void
     let onClearDirectory: () -> Void
+    /// 右键「用此目录新建工作区…」：传当前目录绝对路径。默认 no-op，便于
+    /// 预览/独立测试；生产由 LibraryView ← RootView 注入（切工作台 + 预填目录）。
+    let onCreateWorkspace: @MainActor (String) -> Void
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
     @State private var model = FolderTreeModel()
+
+    init(
+        rootPath: String?,
+        rootTitle: String?,
+        selectedDirectoryPrefix: String,
+        onSelectDirectory: @escaping (String) -> Void,
+        onClearDirectory: @escaping () -> Void,
+        onCreateWorkspace: @escaping @MainActor (String) -> Void = { _ in }
+    ) {
+        self.rootPath = rootPath
+        self.rootTitle = rootTitle
+        self.selectedDirectoryPrefix = selectedDirectoryPrefix
+        self.onSelectDirectory = onSelectDirectory
+        self.onClearDirectory = onClearDirectory
+        self.onCreateWorkspace = onCreateWorkspace
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
@@ -385,7 +408,8 @@ struct FolderTreePanel: View {
                             row: row,
                             model: model,
                             selectedDirectoryPrefix: selectedDirectoryPrefix,
-                            onSelect: onSelectDirectory)
+                            onSelect: onSelectDirectory,
+                            onCreateWorkspace: onCreateWorkspace)
                     }
                 }
                 .padding(.vertical, 2)
@@ -412,6 +436,7 @@ private struct FolderTreeRowView: View {
     let model: FolderTreeModel
     let selectedDirectoryPrefix: String
     let onSelect: (String) -> Void
+    let onCreateWorkspace: @MainActor (String) -> Void
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
@@ -476,7 +501,11 @@ private struct FolderTreeRowView: View {
 
     @ViewBuilder
     private var contextMenu: some View {
-        if row.kind == .directory {
+        if row.canCreateWorkspace {
+            Button(l10n("用此目录新建工作区…")) {
+                onCreateWorkspace(row.path)
+            }
+            Divider()
             Button(l10n("在 Finder 中显示")) {
                 NSWorkspace.shared.activateFileViewerSelecting(
                     [URL(fileURLWithPath: row.path)])

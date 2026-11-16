@@ -631,3 +631,219 @@ private struct Wave3StubBridge: CaptureOneBridging {
     }
     nonisolated static func documentProbeScript(appName: String) -> String { "stub:" + appName }
 }
+
+// MARK: - Wave5 batch6 / R6：淘汰的红标约定（C1 无 reject 位）
+
+/// 红标脚本里每条路径一个内联块 → 用 "every image of targetDoc whose path is" 计数。
+private func wave6RedScriptPathCount(_ script: String) -> Int {
+    script.components(separatedBy: "every image of targetDoc whose path is").count - 1
+}
+
+/// 红标写回的桥：runner 按脚本种类分流（红标脚本也含 variant 数判断，必须先识别）。
+private func makeRejectedColorTagBridge(
+    ack: LockedBox<Wave3AckState>,
+    scripts: LockedBox<Wave3ScriptLog>? = nil,
+    countLines: @escaping @Sendable (String) -> String = { script in
+        String(repeating: "1\n", count: wave3CountScriptPathCount(script))
+    },
+    browseSucceeds: Bool = true,
+    reportLines: (@Sendable (String) -> String)? = nil
+) -> CaptureOneBridge {
+    CaptureOneBridge(
+        recordReloadAck: { sessionId in ack.lock.withLock { ack.ids.append(sessionId) } },
+        appleScriptRunner: { script in
+            if let scripts { scripts.lock.withLock { scripts.scripts.append(script) } }
+            if script.contains("System Events") { return "Capture One" }
+            if script.contains("browse targetDoc to path") {
+                return browseSucceeds ? "1" : "error:browse failed"
+            }
+            // 红标脚本必须先于回读脚本识别：它里面也有 count of (variants of theImage)。
+            if script.contains("set color tag of (variant 1 of theImage)") {
+                if let reportLines { return reportLines(script) }
+                return String(repeating: "1\n", count: wave6RedScriptPathCount(script))
+            }
+            if script.contains("count of (variants of theImage)") { return countLines(script) }
+            return "1"
+        })
+}
+
+@Suite("C1BridgeWave6 淘汰红标：脚本契约与报告")
+struct C1BridgeWave6RejectedColorTagScriptTests {
+    @Test("脚本只改色标为红（raw 1）：不写 pick/rating/关键词、不 reload、不写 culling 关键词")
+    func scriptWritesOnlyRedColorTag() {
+        let script = CaptureOneBridge.rejectedColorTagScript(
+            appName: "Capture One", paths: ["/shoot/a.cr2"])
+        #expect(script.contains("every image of targetDoc whose path is \"/shoot/a.cr2\""))
+        #expect(script.contains("set color tag of (variant 1 of theImage) to 1"))
+        // 只写色标：其它判断一律不碰（C1 无 reject 位，红标是唯一的淘汰表达）。
+        #expect(!script.contains("set pick"))
+        #expect(!script.contains("set rating"))
+        #expect(!script.contains("apply keyword"))
+        #expect(!script.contains("culling:"))
+        #expect(!script.contains("reload metadata"))
+        // 多变体防御：写入瞬间不是单 variant 就报 "2"（不猜目标）。
+        #expect(script.contains("if (count of (variants of theImage)) is 1 then"))
+    }
+
+    @Test("红色 raw 值来自 C1ColorTagMapping（唯一事实源，不硬编码魔法数）")
+    func redRawValueComesFromMapping() {
+        #expect(C1ColorTagMapping.rawValue(for: .red) == 1)
+        let script = CaptureOneBridge.rejectedColorTagScript(
+            appName: "Capture One", paths: ["/shoot/a.cr2"])
+        #expect(script.contains("to \(C1ColorTagMapping.rawValue(for: .red))"))
+    }
+
+    @Test("报告解析：只接受 0/1/2；行数必须等于请求数")
+    func parsesReport() {
+        #expect(CaptureOneBridge.parseRejectedColorTagReport("1\n0\n2", expected: 3) == ["1", "0", "2"])
+        #expect(CaptureOneBridge.parseRejectedColorTagReport(" 1 \n 2 ", expected: 2) == ["1", "2"])
+        #expect(CaptureOneBridge.parseRejectedColorTagReport("1", expected: 2) == nil)
+        #expect(CaptureOneBridge.parseRejectedColorTagReport("1\nx", expected: 2) == nil)
+        #expect(CaptureOneBridge.parseRejectedColorTagReport("3\n", expected: 1) == nil)
+    }
+
+    @Test("分区：0→notFound；1→可写；多 variant→整条跳过（不猜目标）")
+    func partitionsTargets() {
+        let partition = CaptureOneBridge.partitionRejectedColorTagPaths(
+            paths: ["/a.cr2", "/b.cr2", "/c.cr2"], counts: [1, 3, 0])
+        #expect(partition.writable == ["/a.cr2"])
+        #expect(partition.multiVariant == ["/b.cr2"])
+        #expect(partition.notFound == ["/c.cr2"])
+        // 回读数量不足按"当前集合里没有"处理（保守，绝不按未知盲写）。
+        let short = CaptureOneBridge.partitionRejectedColorTagPaths(
+            paths: ["/a.cr2"], counts: [])
+        #expect(short.notFound == ["/a.cr2"])
+        #expect(short.writable.isEmpty)
+    }
+}
+
+@Suite("C1BridgeWave6 淘汰红标：写回行为")
+struct C1BridgeWave6RejectedColorTagWriteTests {
+    @Test("单 variant：全部标红；**不写 reload-ack**（红标不是需要 C1 重载的元数据）")
+    func writesAndDoesNotAck() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let bridge = makeRejectedColorTagBridge(ack: ack)
+        let report = try await bridge.writeRejectedColorTags(
+            paths: ["/shoot/a.cr2", "/shoot/b.cr2"])
+        #expect(report.written == 2)
+        #expect(report.notFound.isEmpty)
+        #expect(report.skippedMultiVariant.isEmpty)
+        #expect(report.unsupportedReason == nil)
+        #expect(ack.lock.withLock { ack.ids }.isEmpty, "红标不写 reload-ack")
+    }
+
+    @Test("多变体：整条跳过、一次写脚本都不发、也不写 ack")
+    func multiVariantSkipsWithoutWriting() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let scripts = LockedBox(Wave3ScriptLog())
+        let bridge = makeRejectedColorTagBridge(
+            ack: ack, scripts: scripts, countLines: { _ in "2\n2\n" })
+        let report = try await bridge.writeRejectedColorTags(
+            paths: ["/shoot/a.cr2", "/shoot/b.cr2"])
+        #expect(report.written == 0)
+        #expect(report.skippedMultiVariant == ["/shoot/a.cr2", "/shoot/b.cr2"])
+        let sent = scripts.lock.withLock { scripts.scripts }
+        #expect(!sent.contains { $0.contains("set color tag of (variant 1 of theImage)") },
+                "多 variant 时不得发出红标写脚本（写错 variant 不可逆）")
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+    }
+
+    @Test("无淘汰项：空报告、完全不碰 C1（不打任何脚本）")
+    func emptyPathsDoNothing() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let scripts = LockedBox(Wave3ScriptLog())
+        let bridge = makeRejectedColorTagBridge(ack: ack, scripts: scripts)
+        let report = try await bridge.writeRejectedColorTags(paths: [])
+        #expect(report.written == 0)
+        #expect(report.notFound.isEmpty)
+        #expect(scripts.lock.withLock { scripts.scripts }.isEmpty)
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+    }
+
+    @Test("脚本内防御位 \"2\"（写入瞬间变多 variant）→ 进 skippedMultiVariant，不算 notFound")
+    func scriptLevelMultiVariantDefense() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let bridge = makeRejectedColorTagBridge(ack: ack, reportLines: { _ in "2\n" })
+        let report = try await bridge.writeRejectedColorTags(paths: ["/shoot/a.cr2"])
+        #expect(report.written == 0)
+        #expect(report.skippedMultiVariant == ["/shoot/a.cr2"])
+        #expect(report.notFound.isEmpty)
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+    }
+
+    @Test("notFound → browse 唯一父目录后重试一次（成功写，仍不写 ack）")
+    func browsesToParentDirectoryAndRetries() async throws {
+        let directory = try makeWave3PhotoDirectory()
+        defer { removeWave3Directory(directory) }
+        let paths = ["a.cr2", "b.cr2"].map {
+            directory.appendingPathComponent($0).path
+        }
+        for path in paths {
+            #expect(FileManager.default.createFile(atPath: path, contents: Data()))
+        }
+        let ack = LockedBox(Wave3AckState())
+        let scripts = LockedBox(Wave3ScriptLog())
+        let bridge = CaptureOneBridge(
+            recordReloadAck: { sessionId in ack.lock.withLock { ack.ids.append(sessionId) } },
+            appleScriptRunner: { script in
+                scripts.lock.withLock { scripts.scripts.append(script) }
+                if script.contains("System Events") { return "Capture One" }
+                if script.contains("browse targetDoc to path") { return "1" }
+                if script.contains("set color tag of (variant 1 of theImage)") {
+                    return String(
+                        repeating: "1\n", count: wave6RedScriptPathCount(script))
+                }
+                if script.contains("count of (variants of theImage)") {
+                    // 第一次（切换前）都不在当前集合；browse 后回读为单 variant。
+                    let call = scripts.lock.withLock { () -> Int in
+                        scripts.countCalls += 1
+                        return scripts.countCalls
+                    }
+                    return call == 1 ? "0\n0\n" : "1\n1\n"
+                }
+                return "1"
+            })
+        let report = try await bridge.writeRejectedColorTags(paths: paths)
+        #expect(report.written == 2)
+        #expect(report.notFound.isEmpty)
+        let sent = scripts.lock.withLock { scripts.scripts }
+        #expect(sent.contains { $0.contains("browse targetDoc to path \"\(directory.path)\"") },
+                "切集合必须指向 notFound 的唯一父目录")
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+    }
+
+    @Test("相对路径进 notFound（不 fallback）；报告形状漂移 → C1_SCRIPT_FAILED")
+    func degradesOnBadInputAndContractDrift() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let bridge = makeRejectedColorTagBridge(ack: ack)
+        let invalid = try await bridge.writeRejectedColorTags(paths: ["relative/a.cr2"])
+        #expect(invalid.written == 0)
+        #expect(invalid.notFound == ["relative/a.cr2"])
+
+        let malformed = makeRejectedColorTagBridge(ack: ack, reportLines: { _ in "1\n1\n" })
+        do {
+            _ = try await malformed.writeRejectedColorTags(paths: ["/shoot/a.cr2"])
+            Issue.record("报告行数与请求不符必须当脚本失败，不能猜")
+        } catch let error as CaptureOneBridgeError {
+            guard case .scriptFailed(let message) = error else {
+                Issue.record("期望 scriptFailed，实际 \(error)")
+                return
+            }
+            #expect(message.contains("unexpected rejected color tag report"))
+        }
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+    }
+
+    @Test("超单次上限：只写上限内、其余进 skipped（不静默丢，也不写 ack）")
+    func overLimitIsSkipped() async throws {
+        let ack = LockedBox(Wave3AckState())
+        let bridge = makeRejectedColorTagBridge(ack: ack)
+        let paths = (0...CaptureOneBridge.maxVariantWritebackItems).map { "/shoot/p\($0).cr2" }
+        let report = try await bridge.writeRejectedColorTags(paths: paths)
+        #expect(report.written == CaptureOneBridge.maxVariantWritebackItems)
+        #expect(report.skipped == 1)
+        #expect(report.notFound.isEmpty)
+        #expect(report.skippedMultiVariant.isEmpty)
+        #expect(ack.lock.withLock { ack.ids }.isEmpty)
+    }
+}

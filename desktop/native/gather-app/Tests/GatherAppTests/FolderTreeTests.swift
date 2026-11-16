@@ -1,5 +1,6 @@
 // desktop/native/gather-app/Tests/GatherAppTests/FolderTreeTests.swift
 // Wave5 batch4（task-18 / F1）：物理文件夹树 —— 目录枚举 / 懒加载 / directory 筛选规则。
+// Wave5 batch6（task-27 / A5）：文件夹树右键「用此目录新建工作区」入口映射。
 //
 // 覆盖（不碰真实照片库；临时目录 + 纯函数/模型）：
 // 1. 目录枚举：只返回真实目录（文件/隐藏项/符号链接排除）、排序稳定；
@@ -7,7 +8,9 @@
 // 3. 懒加载模型：根一层随 setRoot 读取，子目录只在展开时读取；可见行拍平 +
 //    空目录占位；重复 setRoot 不重置；
 // 4. directory 筛选前缀规则：末斜杠、归一化、选中判定、面包屑；
-// 5. directory 与既有条件 AND 组合（复用 buildLibraryCriteria，不新增后端）。
+// 5. directory 与既有条件 AND 组合（复用 buildLibraryCriteria，不新增后端）；
+// 6. 新建工作区：目录→NewWorkspaceRequest 纯映射（trim/空路径/请求身份）、
+//    只有真实目录行才提供动作、回调收到绝对目录路径、默认回调 no-op。
 import Foundation
 import Testing
 @testable import GatherUI
@@ -150,5 +153,61 @@ struct FolderTreeTests {
                 && $0.value == .string("/a/b/")
         })
         #expect(rules.contains { $0.field == "rating" })
+    }
+
+    // MARK: - 用此目录新建工作区（Batch6 / task-27）
+
+    @Test func workspaceCreationRequestMapsDirectoryAndTrimsWhitespace() {
+        let request = RootView.workspaceCreationRequest(
+            forDirectory: " /tmp/gather-album \n")
+        #expect(request?.folderPath == "/tmp/gather-album")
+        #expect(request?.folderPath.isEmpty == false,
+                "预填目录必须非空，Dashboard 才会把它带进新建表单")
+        // 同一路径的重复请求也必须是新身份（Equatable 依赖 UUID，表单才会重开）。
+        let again = RootView.workspaceCreationRequest(forDirectory: "/tmp/gather-album")
+        #expect(request != again)
+        // 空/纯空白路径不产生请求（也不切 Dashboard）。
+        #expect(RootView.workspaceCreationRequest(forDirectory: "") == nil)
+        #expect(RootView.workspaceCreationRequest(forDirectory: "   ") == nil)
+    }
+
+    @Test func onlyRealDirectoryRowsOfferWorkspaceCreation() {
+        #expect(FolderTreeRow(path: "/a", name: "a", depth: 0, kind: .directory)
+            .canCreateWorkspace)
+        #expect(!FolderTreeRow(path: "/a", name: "", depth: 1, kind: .empty)
+            .canCreateWorkspace, "空目录占位行没有可用路径，右键不出现该项")
+        #expect(!FolderTreeRow(path: "/a", name: "", depth: 1, kind: .unreadable)
+            .canCreateWorkspace, "不可读占位行没有可用路径，右键不出现该项")
+    }
+
+    @Test func folderTreeWorkspaceActionPassesAbsoluteDirectoryPath() throws {
+        let root = try makeFolderTreeRoot("gather-foldertree-action")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = FolderTreeModel()
+        model.setRoot(root.path)
+        let directoryRow = try #require(model.visibleRows().first)
+        #expect(directoryRow.canCreateWorkspace)
+
+        var received: [String] = []
+        let panel = FolderTreePanel(
+            rootPath: root.path,
+            rootTitle: nil,
+            selectedDirectoryPrefix: "",
+            onSelectDirectory: { _ in },
+            onClearDirectory: {},
+            onCreateWorkspace: { received.append($0) })
+        panel.onCreateWorkspace(directoryRow.path)
+        #expect(received == [root.path], "右键动作必须传当前目录的绝对路径")
+    }
+
+    @Test func folderTreeWorkspaceActionDefaultsToNoOp() {
+        // 预览/独立测试路径不注入回调：默认闭包必须存在且可安全调用（不崩/不导航）。
+        let panel = FolderTreePanel(
+            rootPath: nil,
+            rootTitle: nil,
+            selectedDirectoryPrefix: "",
+            onSelectDirectory: { _ in },
+            onClearDirectory: {})
+        panel.onCreateWorkspace("/tmp/gather-does-not-matter")
     }
 }

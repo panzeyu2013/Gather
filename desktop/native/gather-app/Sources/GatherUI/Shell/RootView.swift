@@ -30,6 +30,7 @@
 // 本文件只保留依赖、@State、init 与 modifier 接线；层级/顺序/动画/焦点不变。
 import SwiftUI
 import AppKit
+import Foundation
 import GatherProtocol
 
 package struct RootView: View {
@@ -232,6 +233,32 @@ package struct RootView: View {
             guard !navigation.isDashboard, viewModel.sessions.isEmpty else { return }
             await viewModel.refreshSidebarSessions()
         }
+    }
+}
+
+// MARK: - 文件夹树「用此目录新建工作区」（Wave5 batch6 / task-27）
+
+extension RootView {
+    /// 文件夹树右键「用此目录新建工作区…」：切到工作台并投递**预填目录**请求，
+    /// 不直接建库——建库仍走工作台现有新建表单的确认流程（与「导入文件夹…」
+    /// 选完目录后的落点一致：RootShellOverlay.handleImportFolderRequest）。
+    @MainActor
+    func handleCreateWorkspaceRequest(at directoryPath: String) {
+        guard let request = Self.workspaceCreationRequest(forDirectory: directoryPath) else {
+            return
+        }
+        navigation.selectDashboard()
+        newWorkspaceRequest = request
+    }
+
+    /// 纯映射（不碰 UI，供 FolderTreeTests 直接断言）：
+    /// 目录绝对路径 → 新建工作区请求；空白路径返回 nil（不发请求、不导航）。
+    nonisolated static func workspaceCreationRequest(
+        forDirectory directoryPath: String
+    ) -> NewWorkspaceRequest? {
+        let path = directoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        return NewWorkspaceRequest(folderPath: path)
     }
 }
 

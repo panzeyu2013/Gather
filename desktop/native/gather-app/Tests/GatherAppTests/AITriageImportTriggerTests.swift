@@ -9,6 +9,7 @@
 // 5. 两个开关默认关闭时，调度器把状态置为「未启用」（可见性，不只写日志）。
 import Foundation
 import Testing
+import os
 @testable import GatherUI
 @testable import GatherHost
 import GatherProtocol
@@ -105,6 +106,24 @@ private func currentPhase(
     store.phase(sessionId: sessionId)
 }
 
+/// E3：记录分组产物准备是否被调度（@Sendable 闭包不能捕获可变局部变量）。
+///
+/// final + 唯一存储属性是不可变的 OSAllocatedUnfairLock → 可直接声明 Sendable，
+/// 不需要 @unchecked（cleanup ratchet 禁止新增 unchecked 逃逸口）。
+private final class GroupArtifactsCallProbe: Sendable {
+    private struct State {
+        var sessions: [String] = []
+    }
+
+    private let lock = OSAllocatedUnfairLock(initialState: State())
+
+    var calls: [String] { lock.withLock { $0.sessions } }
+
+    func record(_ sessionId: String) {
+        lock.withLock { $0.sessions.append(sessionId) }
+    }
+}
+
 private func stubSummary() -> TriageSummary {
     TriageSummary(
         counts: TriageCounts(keep: 3, reject: 1, review: 2, total: 6, coverage: 1),
@@ -195,18 +214,25 @@ struct AITriageImportTriggerTests {
         let db = try makeTestDB()
         let settings = SettingsService(repo: SettingsRepo(connection: db))
         let jobService = JobService(repo: AnalysisJobRepo(connection: db))
+        let groupProbe = GroupArtifactsCallProbe()
         let scheduler = AITriageAutoScheduler(
             jobService: jobService,
             database: db,
             settings: settings,
             hasFaceObservations: { _ in true },
-            enqueueFaceAnalysis: { _ in })
+            enqueueFaceAnalysis: { _ in },
+            ensureGroupArtifacts: { sessionId in
+                groupProbe.record(sessionId)
+                return .alreadyReady
+            })
         let store = AITriageStatusStore.shared
         store.reset()
         defer { store.reset() }
 
         scheduler.schedule(sessionId: "s1")
         #expect(currentPhase(store, "s1") == Optional(.notEnabled))
+        #expect(groupProbe.calls.isEmpty,
+            "triage 未启用时整条自动初审（含分组分析）都应跳过，不做无用扫描")
     }
 
     // MARK: 人脸前置（E2）

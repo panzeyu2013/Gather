@@ -645,4 +645,177 @@ extension CullingViewModel {
         case .keyword: return LocalizedText("关键字")
         }
     }
+
+    // MARK: - Wave5 batch6 / R6：淘汰的红标约定（C1 无 reject 位）
+
+    /// 已淘汰张数（同步菜单的可用性与确认弹窗文案用；0 = 无淘汰项）。
+    ///
+    /// 口径 = CullingSummary.rejected（挑片页同一份聚合），不在 UI 侧重算。
+    var rejectedPhotoCount: Int {
+        summary?.rejected ?? 0
+    }
+
+    /// 把"淘汰"写进 C1：只把这些照片的**色标**改为红（覆盖原色标）。
+    ///
+    /// 与「在 Capture One 中写回判断（变体级）」的分工：那个写 rating/色标/keep；
+    /// 这个只表达 C1 没有的 reject 位。失败/部分成功都给可执行下一步：
+    /// - 未接线 → 提示在 C1 里手动标红（红标没有 XMP 兜底通道）；
+    /// - 部分写入 → 明示"不在当前集合 / 多变体跳过"的下一步。
+    public func markRejectedInCaptureOne() async {
+        do {
+            let report = try await cullingAPI.writeRejectedColorTags(sessionId)
+            applyRejectedColorTagOutcome(C1RejectedColorTagOutcome(report: report))
+        } catch {
+            errorMessage = c1CommandError(error)
+        }
+    }
+
+    /// 红标结果 → 提示（唯一分支出口；成功不发 errorMessage）。
+    private func applyRejectedColorTagOutcome(_ outcome: C1RejectedColorTagOutcome) {
+        let presentation = C1RejectedColorTagPresentation.make(outcome)
+        if let key = presentation.errorKey {
+            errorMessage = CommandError.localized(key, params: presentation.errorParams)
+            return
+        }
+        errorMessage = nil
+        if let key = presentation.noticeKey {
+            notice = CullingNotice(key, params: presentation.noticeParams)
+        }
+    }
+
+    // MARK: - Wave5 batch6 / G11：C1 调整提示（预览不含 C1 色彩/曲线）
+
+    /// 某张照片是否有 C1 调整（XMP `crs:` 字段）。
+    ///
+    /// 数据走既有 `C1RoundTripExtending.adjustmentHints`（只读 sidecar/JPEG 头，≤4MB）；
+    /// 未接线 / 读取失败 / 没有 crs 字段一律 nil —— 提示是可选增强，UI 必须静默隐藏，
+    /// 绝不能让"读不到提示"变成看图失败。
+    public func c1AdjustmentHint(for photoPath: String) async -> C1AdjustmentHint? {
+        guard !photoPath.isEmpty else { return nil }
+        // 只在装了 C1 的机器上提示：crs: 字段也可能来自 ACR/Bridge，徽标文案是 C1 口径，
+        // 对非 C1 用户显示反而误导（G11 的上下文就是 C1 工作流）。
+        guard captureOne.c1Installed else { return nil }
+        guard let roundTrip = captureOne as? any C1RoundTripExtending else { return nil }
+        return roundTrip.adjustmentHints(paths: [photoPath]).first(where: { $0.hasAdjustments })
+    }
+}
+
+// MARK: - Wave5 batch6：红标 / C1 调整提示的纯映射（视图只决定布局；测试直接驱动）
+
+/// 红标写回结果的可测映射：VM 只按它分支出文案，测试不需要真 C1。
+public enum C1RejectedColorTagOutcome: Equatable, Sendable {
+    /// 未接线（协议默认实现）：没有发生任何写入。
+    case unsupported(String)
+    /// 没有可写的淘汰照片（空会话 / 全部被可见性过滤）。
+    case nothing
+    /// 全部写入成功。
+    case written(Int)
+    /// 部分写入：notFound = 不在 C1 当前集合；multiVariant = 多 variant 跳过；
+    /// overLimit = 超过单次上限未处理（需要分批）。
+    case partial(written: Int, notFound: Int, multiVariant: Int, overLimit: Int)
+
+    public init(report: C1VariantWritebackReport) {
+        if let reason = report.unsupportedReason {
+            self = .unsupported(reason)
+            return
+        }
+        let multi = report.skippedMultiVariant.count
+        let incomplete = !report.notFound.isEmpty || multi > 0 || report.skipped > 0
+        if report.written == 0, !incomplete {
+            self = .nothing
+        } else if !incomplete {
+            self = .written(report.written)
+        } else {
+            self = .partial(
+                written: report.written,
+                notFound: report.notFound.count,
+                multiVariant: multi,
+                overLimit: report.skipped)
+        }
+    }
+}
+
+/// 红标结果 → UI 提示的**纯映射**（VM 只负责把 errorKey/noticeKey 交给现有载体；
+/// 测试直接驱动本类型，不需要真 C1、不需要真库）。
+public struct C1RejectedColorTagPresentation: Equatable, Sendable {
+    /// 非 nil = 走 errorMessage（带可执行下一步）。
+    public var errorKey: String?
+    public var errorParams: [String]
+    /// 非 nil = 走 notice（全部成功/计数提示）。
+    public var noticeKey: String?
+    public var noticeParams: [String]
+
+    public static func make(_ outcome: C1RejectedColorTagOutcome) -> C1RejectedColorTagPresentation {
+        switch outcome {
+        case .nothing:
+            return C1RejectedColorTagPresentation(
+                errorKey: C1RejectedColorTagCopy.nothing, errorParams: [])
+        case .unsupported(let reason):
+            return C1RejectedColorTagPresentation(
+                errorKey: C1RejectedColorTagCopy.unsupportedTemplate, errorParams: [reason])
+        case .written(let written):
+            return C1RejectedColorTagPresentation(
+                noticeKey: C1RejectedColorTagCopy.successTemplate,
+                noticeParams: ["\(written)"])
+        case .partial(let written, let notFound, let multiVariant, let overLimit):
+            return C1RejectedColorTagPresentation(
+                errorKey: C1RejectedColorTagCopy.partialTemplate,
+                errorParams: [
+                    "\(written)", "\(notFound)", "\(multiVariant)", "\(overLimit)",
+                ])
+        }
+    }
+
+    private init(errorKey: String? = nil, errorParams: [String] = [],
+                 noticeKey: String? = nil, noticeParams: [String] = []) {
+        self.errorKey = errorKey
+        self.errorParams = errorParams
+        self.noticeKey = noticeKey
+        self.noticeParams = noticeParams
+    }
+}
+
+/// R6 红标与 G11 调整提示的 UI 文案（key + 参数在渲染期查表；纯常量便于回归）。
+enum C1RejectedColorTagCopy {
+    /// 同步菜单项标题。
+    static let menuTitle = "在 C1 中标记淘汰（红标，覆盖现有色标）"
+    /// 无淘汰项时的禁用提示。
+    static let emptyHint = "当前会话没有淘汰照片"
+    /// 确认弹窗标题（%lld = 张数）。
+    static let confirmTitleTemplate = "在 C1 中把 %lld 张淘汰照片标为红标？"
+    /// 确认弹窗正文：覆盖语义 + 明确不写什么。
+    static let confirmMessage =
+        "只会把这些照片在 C1 里的色标改为红色（覆盖原色标）；不写星级、不写关键词、不改 pick。含多个 variant 的照片会跳过。"
+    /// 确认按钮。
+    static let confirmAction = "标记红标"
+    /// 成功提示（%lld = 张数）。
+    static let successTemplate = "已在 C1 中把 %lld 张淘汰照片标为红标"
+    /// 部分成功（%lld×4 = 已写 / 不在集合 / 多变体 / 超上限）。
+    static let partialTemplate =
+        "已在 C1 中标红 %lld 张；%lld 张不在 C1 当前集合、%lld 张有多个变体未处理、%lld 张超过单次上限（回 C1 选定变体或分批后可重试）"
+    /// 未接线（%@ = 原因）。
+    static let unsupportedTemplate =
+        "在 C1 中标记淘汰未完成（%@）：请在 Capture One 里手动把淘汰照片的色标改为红色"
+    /// 无淘汰项（服务端返回空报告时）。
+    static let nothing = "当前会话没有淘汰照片，无需在 C1 中标记"
+    /// G11 徽标文案。
+    static let badgeLabel = "C1 有调整"
+    /// G11 徽标 hover 说明（%lld = 命中属性数）。
+    static let badgeHelpTemplate = "Gather 预览是 ImageIO 渲染，不含 C1 的色彩/曲线/局部调整（%lld 项）"
+    /// G11 检查器分区标题。
+    static let inspectorSectionTitle = "Capture One 调整"
+    /// G11 检查器明细（%@ = 属性名摘要）。
+    static let inspectorDetailTemplate = "预览不含这些 C1 调整：%@"
+}
+
+/// G11 徽标的纯映射：可见性/计数在这里，视图只决定布局与点击。
+public struct C1AdjustmentBadge: Equatable, Sendable {
+    /// 命中 `crs:` 字段的个数（≥1）。
+    public let attributeCount: Int
+
+    /// nil = 不显示（无 hint / 读了但没调整 / 未接线）。
+    public init?(hint: C1AdjustmentHint?) {
+        guard let hint, hint.hasAdjustments else { return nil }
+        attributeCount = max(1, hint.attributeNames.count)
+    }
 }

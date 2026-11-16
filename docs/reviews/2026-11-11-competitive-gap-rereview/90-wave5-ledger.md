@@ -165,3 +165,33 @@
 3. 模板/词库导入格式与 Lightroom 兼容 CSV、模板 2000 上限提示未做。
 4. 自动化无 CLI/AppleScript 字典（仍按边界另立项）；Shortcuts 查询返回为 dialog 摘要，无可落盘结果。
 5. Batch 6：C1 R6/插件诊断、AI 分组自动/场景标签中文化、文件夹树右键入口、发布端点扩展、剩余 P2、真机清单。
+
+## Batch 6（task-25 ~ task-27）
+
+| task | 域 | owner | 结论 |
+| --- | --- | --- | --- |
+| task-25 | C1 收尾：淘汰红标 + 预览调整提示 | c1-interop | CullingAPI.writeRejectedColorTags：对 reject 照片在 C1 只写色标红（覆盖色标，不写 pick/rating/关键词/ack，多变体跳过）；同步菜单确认弹窗与报告；查看器/检查器「C1 有调整」徽标（ImageIO 预览不含 C1 调整，读取失败静默隐藏） |
+| task-26 | AI 初审自动分组分析 | ai-similarity | 新增 ensureGroupArtifacts：quality 成功后、generateTriage 前跑 duplicate.scan（JobService，15min 成功/活跃复用，dedupeKey 带 nonce）与 navigation.analyze（既有 NavigationAPI，已有组不重算）；60s 有界等待，失败只记日志继续初审 |
+| task-27 | 文件夹树新建工作区入口 | ingest-export | FolderTreePanel 右键「用此目录新建工作区…」→ LibraryView onCreateWorkspace → RootView 设置 NewWorkspaceRequest(folderPath:) 并切 Dashboard；复用预填目录 sheet；空/不可读行不出现菜单项；摄取入口仍留后续批 |
+
+### 关键设计取舍
+
+- C1 淘汰：C1 16.7 无 reject 位，采用显式红标约定；只改色标、不写其它判断；多 variant 不猜目标；动作需确认且文案明说覆盖语义。
+- C1 调整提示：复用既有 adjustmentHints；仅 c1Installed 时读、≤4MB；失败/未接线静默隐藏，不影响看图。
+- AI 分组：duplicate 走 JobService（不改 job 类型）；navigation 无 job 类型，直接调 NavigationAPI；两者失败互不影响，初审不被拖停；60s 到点 job 留后台，本轮可能缺组比较理由，下次导入可补。
+- 文件夹树：只做「新建工作区」预填，不直接创建；摄取依赖挑片 VM，留后续批。
+
+### 验证（Lead 执行，2026-11-16）
+
+- 构建：gather-core / gather-app swift build --build-tests --disable-sandbox 均通过。
+- 测试：core 1956 / 288 + 串行 25 / 4 全绿；app 1222 / 177 全绿。
+- 门禁 14 项全绿（含 warnings）。
+- 基线记账：protocol-surface public_types 513（gatherapplication 261→262，AITriageGroupArtifactsOutcome）、public_declarations 3109（gatherapplication 1786→1788）、protocol_lines 17020→17066；test-catalog 增长按脚本允许（@Test 3203 / @Suite 408）。
+- Lead 修：Batch6 新增 15 条 l10n en 条目；protocol 基线重写；全量构建/测试/门禁。
+
+### 未闭环/下一批
+
+1. CaptureOneBridgeFacade / C1RoundTripCoordinator 未转发 writeRejectedColorTags（默认 .unsupported）；生产 UI 走 LiveCullingAPI 正常，facade 路径待补。
+2. AI 分组失败原因仅日志；AITriageStatusStore.Phase 未扩「分组分析未完成」，状态卡暂不显示。
+3. 文件夹树「摄取到此工作区」未做（IngestSheet 依赖挑片 VM）。
+4. Batch 7：场景标签中文化/自动关键词、发布端点扩展（FTP/SFTP/网盘）、C1 插件安装/诊断面、JPEG 内嵌 GPS/时间读侧、剩余 P2、真机验收清单。

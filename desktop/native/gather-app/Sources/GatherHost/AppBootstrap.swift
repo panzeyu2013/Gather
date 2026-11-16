@@ -433,6 +433,45 @@ package final class AppBootstrap {
         let triageDatabase = composition.db
         let photoRepo = composition.photoRepo
         let triageFaceAPI = appServices.face
+        // Wave5 batch6（E3）：初审前分组产物（duplicate.scan + navigation.analyze）。
+        // duplicate.scan 走 JobService 现有 job 类型；navigation.analyze 无 job 类型，
+        // 直接调现有 NavigationAPI（不新增 job 类型/schema）。
+        // 只捕获 Sendable 服务句柄（不把整个组合根拖进 @Sendable 闭包）。
+        let triageJobService = composition.jobService
+        let triageNavigationAPI = appServices.navigation
+        let triageGroupArtifacts = AITriageGroupArtifactsCoordinator(
+            deps: AITriageGroupArtifactsCoordinator.Dependencies(
+                listJobs: { try triageJobService.list(status: nil, includeCheckpoint: false) },
+                enqueueDuplicateScan: { sessionId in
+                    // dedupeKey 带批次 nonce：终态同 key 默认 inheritCheckpoint，
+                    // 会把上一批 photoIds 合并进来（与 quality dedupeKey 同一理由）。
+                    try triageJobService.create(JobCreateParams(
+                        type: .duplicateScan,
+                        scopeType: "session",
+                        scopeId: sessionId,
+                        dedupeKey: "duplicate.scan:\(sessionId):default:auto-import-triage:"
+                            + UUID().uuidString,
+                        checkpoint: ["visualThreshold": .null]))
+                },
+                waitDuplicateScan: { jobId, timeoutMs in
+                    // 有界等待：60s 到点只停止等待、不取消 job（job 可后台跑完）。
+                    let _: DuplicateScanResult? = try await triageJobService
+                        .waitForResult(jobId: jobId, timeoutMs: timeoutMs)
+                },
+                hasNavigationGroups: { sessionId in
+                    // 已有组不重算（任务边界：只补缺失的组，不动已有结果）。
+                    let groups = try NavigationRepo(connection: triageDatabase)
+                        .listGroups(sessionId: sessionId)
+                    return !groups.isEmpty
+                },
+                analyzeNavigation: { sessionId in
+                    _ = try await triageNavigationAPI.analyze(
+                        NavigationAnalyzeParams(sessionId: sessionId))
+                },
+                now: { Date() },
+                log: { message in
+                    GatherLogger.log(message, level: .info)
+                }))
         let autoTriageScheduler = AITriageAutoScheduler(
             jobService: composition.jobService,
             database: triageDatabase,
@@ -457,6 +496,9 @@ package final class AppBootstrap {
                             level: .warn)
                     }
                 }
+            },
+            ensureGroupArtifacts: { sessionId in
+                await triageGroupArtifacts.run(sessionId: sessionId)
             })
         // Wave5 batch3（E1 的第七个入口）：摄取面板走 SessionAPI.ingest，
         // 宿主把 UI 依赖里的 session 包一层：job 终态成功后调度自动初审
@@ -1101,6 +1143,183 @@ struct AITriageFacePlan: Equatable {
     }
 }
 
+/// Wave5 batch6（E3）：导入后自动初审前的分组产物准备。
+///
+/// 为什么需要：triage 的理由码要比较相似/重复/场景组，而三类分组分析一直是手动按钮
+/// （50-ai-similarity §3-D）；导入即初审后若没有任何组，建议只能出硬技术失败。
+///
+/// 边界（与任务一致）：
+/// - 复用现有 job 类型 duplicate.scan（JobService）与现有 navigation.analyze（NavigationAPI；
+///   该命令没有 job 类型，不新增 job 类型）；
+/// - 已有近期成功结果/已有组则跳过，不重算、不重复入队；
+/// - 有界等待（默认 60s：poll 预算的一小段），超时只停止等待、**不取消** job；
+/// - 任一步失败只记录原因并继续（初审不能被分组拖停）；不自动应用分组建议。
+struct AITriageGroupArtifactsCoordinator: Sendable {
+    /// duplicate.scan 的决策（纯判定，测试直接驱动）。
+    enum DuplicatePlan: Equatable, Sendable {
+        /// 近期成功：直接跳过，不重复入队。
+        case recentSuccess
+        /// 会话已有活跃 job：复用它并做有界等待（不重复入队）。
+        case waitActive(String)
+        /// 无结果/无活跃：入队并做有界等待。
+        case enqueue
+    }
+
+    struct Dependencies: Sendable {
+        var listJobs: @Sendable () throws -> [AnalysisJobData]
+        var enqueueDuplicateScan: @Sendable (String) throws -> AnalysisJobData
+        /// 有界等待：超时抛错但**不取消** job（与 quality 等待同一语义）。
+        var waitDuplicateScan: @Sendable (String, Int64) async throws -> Void
+        var hasNavigationGroups: @Sendable (String) throws -> Bool
+        var analyzeNavigation: @Sendable (String) async throws -> Void
+        var now: @Sendable () -> Date
+        var log: @Sendable (String) -> Void
+    }
+
+    let deps: Dependencies
+    /// 有界等待预算：任务要求"poll 预算的一小段"，默认 60s；超时只停止等待。
+    let duplicateWaitTimeoutMs: Int64
+    /// 近期成功窗口：默认 15 分钟内的成功结果视为已就绪，避免重复 dHash 扫描。
+    let recentSuccessWindow: TimeInterval
+
+    init(
+        deps: Dependencies,
+        duplicateWaitTimeoutMs: Int64 = 60_000,
+        recentSuccessWindow: TimeInterval = 15 * 60
+    ) {
+        self.deps = deps
+        self.duplicateWaitTimeoutMs = duplicateWaitTimeoutMs
+        self.recentSuccessWindow = recentSuccessWindow
+    }
+
+    /// 纯判定：活跃 job 优先复用；近期成功跳过；其余入队。
+    ///
+    /// finishedAt 不可解析（旧行/空）时视为"不可判定近期"→ 重跑：宁可多扫一次，
+    /// 也不能把没有组的旧结果当作已就绪（否则 triage 又退化到硬技术信号）。
+    static func duplicatePlan(
+        jobs: [AnalysisJobData],
+        sessionId: String,
+        now: Date,
+        recentWindow: TimeInterval
+    ) -> DuplicatePlan {
+        let scans = jobs
+            .filter { $0.type == .duplicateScan && $0.scopeId == sessionId }
+            .sorted { $0.createdAt < $1.createdAt }
+        if let active = scans.last(where: { Self.isActive($0.status) }) {
+            return .waitActive(active.id)
+        }
+        if let succeeded = scans.last(where: { $0.status == .succeeded }),
+           let finished = Self.parseTimestamp(succeeded.finishedAt),
+           now.timeIntervalSince(finished) <= recentWindow {
+            return .recentSuccess
+        }
+        return .enqueue
+    }
+
+    static func isActive(_ status: AnalysisJobStatus) -> Bool {
+        switch status {
+        case .queued, .running, .cancelling: true
+        case .succeeded, .failed, .cancelled, .interrupted: false
+        }
+    }
+
+    static func parseTimestamp(_ raw: String) -> Date? {
+        guard !raw.isEmpty else { return nil }
+        // 形式：ISO8601（测试夹具为 "2026-11-11T00:00:00Z"；持久行可能带毫秒）。
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: raw) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: raw)
+    }
+
+    /// 准备分组产物。不抛错：所有失败收敛成 .failed(reason)，交给 pipeline 记日志并继续。
+    func run(sessionId: String) async -> AITriageGroupArtifactsOutcome {
+        var performed = false
+        var failureReason: String?
+
+        // 1) duplicate.scan：与 navigation 互不影响（前者失败不阻止后者）。
+        do {
+            let jobs = try deps.listJobs()
+            switch Self.duplicatePlan(
+                jobs: jobs,
+                sessionId: sessionId,
+                now: deps.now(),
+                recentWindow: recentSuccessWindow
+            ) {
+            case .recentSuccess:
+                deps.log("ai.auto-triage session=\(sessionId)"
+                    + " groups.duplicate=skip reason=recent-success")
+            case .waitActive(let jobId):
+                performed = true
+                deps.log("ai.auto-triage session=\(sessionId)"
+                    + " groups.duplicate=wait-active job=\(jobId)")
+                do {
+                    try await deps.waitDuplicateScan(jobId, duplicateWaitTimeoutMs)
+                    deps.log("ai.auto-triage session=\(sessionId)"
+                        + " groups.duplicate=ready job=\(jobId)")
+                } catch {
+                    failureReason = "duplicate-wait: \(error)"
+                    deps.log("ai.auto-triage session=\(sessionId)"
+                        + " groups.duplicate=failed job=\(jobId) reason=\(error)")
+                }
+            case .enqueue:
+                performed = true
+                do {
+                    let job = try deps.enqueueDuplicateScan(sessionId)
+                    deps.log("ai.auto-triage session=\(sessionId)"
+                        + " groups.duplicate=enqueued job=\(job.id)")
+                    do {
+                        try await deps.waitDuplicateScan(job.id, duplicateWaitTimeoutMs)
+                        deps.log("ai.auto-triage session=\(sessionId)"
+                            + " groups.duplicate=ready job=\(job.id)")
+                    } catch {
+                        failureReason = "duplicate-wait: \(error)"
+                        deps.log("ai.auto-triage session=\(sessionId)"
+                            + " groups.duplicate=failed job=\(job.id) reason=\(error)")
+                    }
+                } catch {
+                    failureReason = "duplicate-enqueue: \(error)"
+                    deps.log("ai.auto-triage session=\(sessionId)"
+                        + " groups.duplicate=failed reason=enqueue: \(error)")
+                }
+            }
+        } catch {
+            failureReason = "duplicate-list: \(error)"
+            deps.log("ai.auto-triage session=\(sessionId)"
+                + " groups.duplicate=failed reason=list: \(error)")
+        }
+
+        // 2) navigation.analyze：已有组不重算；无 job 类型，直接调用现有 API。
+        do {
+            if try deps.hasNavigationGroups(sessionId) {
+                deps.log("ai.auto-triage session=\(sessionId)"
+                    + " groups.navigation=skip reason=already-exists")
+            } else {
+                performed = true
+                do {
+                    try await deps.analyzeNavigation(sessionId)
+                    deps.log("ai.auto-triage session=\(sessionId)"
+                        + " groups.navigation=analyzed")
+                } catch {
+                    failureReason = failureReason ?? "navigation: \(error)"
+                    deps.log("ai.auto-triage session=\(sessionId)"
+                        + " groups.navigation=failed reason=\(error)")
+                }
+            }
+        } catch {
+            failureReason = failureReason ?? "navigation-check: \(error)"
+            deps.log("ai.auto-triage session=\(sessionId)"
+                + " groups.navigation=failed reason=check: \(error)")
+        }
+
+        guard let failureReason else {
+            return performed ? .enqueued : .alreadyReady
+        }
+        return .failed(failureReason)
+    }
+}
+
 /// 自动初审的宿主调度入口（Wave5 batch2 / E1）。
 ///
 /// 为什么单独成类型：五个导入入口（菜单/Finder、C1 文件、Dashboard 新建、
@@ -1115,6 +1334,8 @@ struct AITriageAutoScheduler: Sendable {
     let hasFaceObservations: @Sendable (String) throws -> Bool
     /// E2：缺观测时入队一次增量 face.analyze（不等待结果）。
     let enqueueFaceAnalysis: @Sendable (String) -> Void
+    /// E3：quality 成功后、生成建议前确保分组产物（duplicate.scan + navigation.analyze）。
+    let ensureGroupArtifacts: @Sendable (String) async -> AITriageGroupArtifactsOutcome
 
     @MainActor
     func schedule(sessionId: String) {
@@ -1124,7 +1345,8 @@ struct AITriageAutoScheduler: Sendable {
             database: database,
             settings: settings,
             hasFaceObservations: hasFaceObservations,
-            enqueueFaceAnalysis: enqueueFaceAnalysis)
+            enqueueFaceAnalysis: enqueueFaceAnalysis,
+            ensureGroupArtifacts: ensureGroupArtifacts)
     }
 }
 
@@ -1137,6 +1359,8 @@ struct AITriageAutoScheduler: Sendable {
 ///   用户取消该 job → pipeline 观察终态后停止，不会继续生成建议；
 /// - Wave5 batch2：超时只停止等待、不取消 job；缺人脸观测时入队 face.analyze
 ///   但不等它（本次按无脸信号先生成，状态卡显示"待人脸分析"）。
+/// - Wave5 batch6（E3）：quality 成功后先确保分组产物（duplicate.scan + navigation.analyze，
+///   60s 有界等待）；失败只记日志并继续生成建议，不因分组拖停初审。
 enum AITriageImportTrigger {
     /// @MainActor：只做调度（读设置 + 建 actor + 起 detached 任务）；
     /// 真正耗时的 generate/apply 在 `AITriageBackgroundWorker` actor 上执行（E4）。
@@ -1147,7 +1371,8 @@ enum AITriageImportTrigger {
         database: DBConnection,
         settings: SettingsService,
         hasFaceObservations: (@Sendable (String) throws -> Bool)? = nil,
-        enqueueFaceAnalysis: (@Sendable (String) -> Void)? = nil
+        enqueueFaceAnalysis: (@Sendable (String) -> Void)? = nil,
+        ensureGroupArtifacts: (@Sendable (String) async -> AITriageGroupArtifactsOutcome)? = nil
     ) {
         guard settings.bool(.triageAutoGenerate) else {
             // 未启用也要可见（状态卡 = 用户唯一的"这次导入到底跑没跑 AI 初审"答案）。
@@ -1207,6 +1432,10 @@ enum AITriageImportTrigger {
             },
             autoApplyEnabled: { settings.bool(.triageAutoApply) },
             triageEnabled: { settings.bool(.triageEnabled) },
+            ensureGroupArtifacts: { scopeId in
+                guard let ensureGroupArtifacts else { return .alreadyReady }
+                return await ensureGroupArtifacts(scopeId)
+            },
             log: { message in
                 GatherLogger.log(message, level: .info)
             },

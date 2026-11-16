@@ -1,6 +1,7 @@
 // desktop/native/gather-core/Sources/GatherProtocol/API/CullingAPI.swift
 // Cut 1 / 阶段 1A：挑片域协议（25 个方法；P0 / A1 追加 selection，P1-7 追加
-// updateSelection，Wave1 追加 acknowledgeManualReload）。
+// updateSelection，Wave1 追加 acknowledgeManualReload，Wave5 batch6 追加
+// writeRejectedColorTags）。
 //
 // 职责：挑片分页/历史栈/单张与批量决策/分组/摘要/同步状态/写回与清理。
 // 对应命令（19 条）：culling.list_page / history / apply_history / update /
@@ -72,6 +73,20 @@ public protocol CullingAPI: Sendable {
     ///
     /// 非破坏性：只写会话的 reload ack 列；与 confirmSync 同级的会话级写入。
     func acknowledgeManualReload(_ sessionId: String) async throws -> Bool
+
+    /// Wave5 batch6 / R6：把本会话里**已淘汰**（pickState=rejected）的照片在 C1 中
+    /// 表达为红标（只改 color tag = Red）。
+    ///
+    /// 为什么需要：C1 16.7 的 variant 只有布尔 pick（sdef:1084），淘汰无法用 pick 表达；
+    /// XMP 的 `culling:reject` 关键词会污染 C1 词库（复核 R13）。红标是显式的可撤销约定。
+    ///
+    /// 语义边界（由实现与 bridge 共同保证）：
+    /// - **非破坏性**：只改色标，不删文件、不移动、不改星级/pick/关键词；
+    /// - 覆盖语义：会盖掉这些照片原有的色标（UI 必须确认并说明）；
+    /// - 多 variant 的照片不猜目标（整条跳过并计数）；不在 C1 当前集合的照片不 fallback；
+    /// - 不写 reload-ack（红标不改变需要 C1 Load 的元数据）。
+    /// 默认实现显式失败（未接线不得假装成功；红标无 XMP 兜底通道）。
+    func writeRejectedColorTags(_ sessionId: String) async throws -> C1VariantWritebackReport
 }
 
 public extension CullingAPI {
@@ -110,5 +125,15 @@ public extension CullingAPI {
         _ = sessionId
         throw GatherError.invalidParameter(
             field: "acknowledgeManualReload", reason: "manual reload ack API not wired")
+    }
+
+    /// Wave5 batch6 / R6：未接线（Preview/测试替身）显式失败。
+    ///
+    /// 不能返回空报告装成功：红标没有 XMP 兜底通道，用户会以为 C1 里已经标了淘汰；
+    /// 显式抛错才能让 UI 提示"未接线/请在 C1 中手动标记"。
+    func writeRejectedColorTags(_ sessionId: String) async throws -> C1VariantWritebackReport {
+        _ = sessionId
+        throw GatherError.invalidParameter(
+            field: "writeRejectedColorTags", reason: "rejected color tag API not wired")
     }
 }

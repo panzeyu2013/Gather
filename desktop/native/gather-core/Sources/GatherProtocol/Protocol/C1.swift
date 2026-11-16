@@ -32,6 +32,11 @@
 //   · writeback 报告增加 skippedMultiVariant —— 同一 image 有多个 variant 时**不再猜目标**
 //     （写错 variant 不可逆，96 号 §10 判 P0），整条跳过并由 UI 提示用户回 C1 选变体；
 //   · 作用域补救（notFound 时 browse 到唯一父目录重试一次）是实现细节，不加公共类型。
+//
+// Wave5 batch6（2026-11-11，task-25 / 复核 R6）：
+//   · `writeRejectedColorTags` 协议要求 —— C1 16.7 无 reject 位，淘汰改用**显式红标约定**
+//     （只改 color tag = Red，不写 pick/rating/关键词、不写 reload-ack；多 variant 沿用 R1 跳过）；
+//   · 默认实现返回 .unsupported（未接线时 UI 提示手动在 C1 标红，不伪造成功）。
 
 import Foundation
 
@@ -122,6 +127,13 @@ public protocol CaptureOneBridging: Sendable {
         sessionId: String?,
         items: [C1VariantWritebackItem]
     ) async throws -> C1VariantWritebackReport
+    /// Wave5 batch6 / R6：把"淘汰"在 C1 里表达成**红标约定**（C1 16.7 无 reject 位）。
+    ///
+    /// 只把目标 variant 的 color tag 改为 Red（raw 1，复用 C1ColorTagMapping）；
+    /// **不写 pick / rating / 关键词**，**不写 reload-ack**（catalog 权威，红标不改变
+    /// 需要确认的值）。多 variant 不猜目标（沿用 R1：整条跳过并进 skippedMultiVariant）。
+    /// 默认实现返回 .unsupported（调用方据此提示"未接线"，不伪造成功）。
+    func writeRejectedColorTags(paths: [String]) async throws -> C1VariantWritebackReport
     /// P2（Wave4b）：本机是否安装 Capture One（同步、轻量；Hot Folder 提示等只在装了 C1
     /// 时展示）。默认 false = 未接线，UI 不应据此宣称任何 C1 能力。
     var c1Installed: Bool { get }
@@ -497,6 +509,15 @@ public extension CaptureOneBridging {
         _ = sessionId
         _ = items
         return .unsupported("variant writeback not wired")
+    }
+
+    /// Wave5 batch6 / R6：淘汰红标写回的默认实现 = 未接线。
+    ///
+    /// 分支与 writeVariantJudgements 同口径：红标是可选增强，未接线时返回 unsupported
+    /// 让 UI 提示"请在 C1 中手动标记"，而不是抛一条错误盖住真正的工作流。
+    func writeRejectedColorTags(paths: [String]) async throws -> C1VariantWritebackReport {
+        _ = paths
+        return .unsupported("rejected color tag not wired")
     }
 
     /// 默认未接线：不知道本机是否装了 C1（UI 的 Hot Folder 提示据此隐藏）。

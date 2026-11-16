@@ -31,15 +31,20 @@ package struct LibraryView: View {
     /// 打开具体照片（N07）：点击卡片必须打开**那张照片**，而不是只打开它所属
     /// 工作区的控制中心——跨工作区搜索命中一张照片后，目标本身才是用户要的。
     let onOpenPhoto: (String, String) -> Void
+    /// 文件夹树右键「用此目录新建工作区…」：传当前目录绝对路径。默认 no-op，
+    /// 便于预览/独立测试；生产由 RootView 注入（切工作台 + 预填新建表单目录）。
+    let onCreateWorkspace: @MainActor (String) -> Void
 
     package init(
         viewModel: LibraryViewModel,
         onOpenSession: @escaping (String) -> Void = { _ in },
-        onOpenPhoto: @escaping (String, String) -> Void = { _, _ in }
+        onOpenPhoto: @escaping (String, String) -> Void = { _, _ in },
+        onCreateWorkspace: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         self.viewModel = viewModel
         self.onOpenSession = onOpenSession
         self.onOpenPhoto = onOpenPhoto
+        self.onCreateWorkspace = onCreateWorkspace
     }
 
     /// Cut 4 / 4a-3b-2b：语言源由外壳经 environment 下发（RootView）。

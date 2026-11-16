@@ -2818,3 +2818,20 @@
 "请先填写合法的纬度与经度（-90~90 / -180~180）" = "Enter valid latitude and longitude first (-90..90 / -180..180)";
 "请同时填写纬度和经度（GPS 需要成对）" = "Enter both latitude and longitude (GPS requires a pair)";
 "跳过同名（保留本机模板）" = "Skip same-name (keep local templates)";
+
+/* Wave5 / Batch6（C1 红标/调整提示 · 文件夹树新建工作区） */
+"在 C1 中标记淘汰（红标，覆盖现有色标）" = "Mark Rejected in Capture One (Red Tag, Overwrites Color Label)";
+"当前会话没有淘汰照片" = "No rejected photos in this session";
+"在 C1 中把 %lld 张淘汰照片标为红标？" = "Mark %lld rejected photos with a red tag in Capture One?";
+"只会把这些照片在 C1 里的色标改为红色（覆盖原色标）；不写星级、不写关键词、不改 pick。含多个 variant 的照片会跳过。" = "Only the color label of these photos in Capture One is set to red (overwriting the existing label); ratings, keywords, and pick are not written. Photos with multiple variants are skipped.";
+"标记红标" = "Mark Red";
+"已在 C1 中把 %lld 张淘汰照片标为红标" = "Marked %lld rejected photos with a red tag in Capture One";
+"已在 C1 中标红 %lld 张；%lld 张不在 C1 当前集合、%lld 张有多个变体未处理、%lld 张超过单次上限（回 C1 选定变体或分批后可重试）" = "Marked %lld photos red in Capture One; %lld outside the current C1 collection, %lld with multiple variants skipped, %lld over the batch limit (select variants in C1 or retry in batches)";
+"在 C1 中标记淘汰未完成（%@）：请在 Capture One 里手动把淘汰照片的色标改为红色" = "Marking rejected photos in Capture One did not complete (%@): manually set their color label to red in Capture One";
+"当前会话没有淘汰照片，无需在 C1 中标记" = "There are no rejected photos in this session, so nothing needs marking in Capture One";
+"把这些淘汰照片在 C1 里的色标改为红色（覆盖原色标）；不写星级、关键词与 pick" = "Set the color label of these rejected photos to red in Capture One (overwriting the existing label); ratings, keywords, and pick are not written";
+"C1 有调整" = "C1 Adjustments";
+"Gather 预览是 ImageIO 渲染，不含 C1 的色彩/曲线/局部调整（%lld 项）" = "Gather previews are rendered by ImageIO and do not include Capture One color/curve/local adjustments (%lld items)";
+"Capture One 调整" = "Capture One Adjustments";
+"预览不含这些 C1 调整：%@" = "Preview does not include these Capture One adjustments: %@";
+"用此目录新建工作区…" = "New Workspace from This Folder…";

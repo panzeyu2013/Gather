@@ -16,6 +16,10 @@
 // 不取消 job」——5000 张素材的 quality.score 永远超过 5 分钟；在目标素材量上旧实现
 // 会取消仍在正常推进的任务，而且用户毫无感知。索引等待放宽到 6× 预算，
 // 质量等待按 progress 续期（连续 maxPolls 次无进展才判定卡住）。
+//
+// Wave5 batch6（E3）：quality 成功后、生成建议前插入 ensureGroupArtifacts
+// （duplicate.scan + navigation.analyze）。分组分析失败只记日志、不阻断建议生成：
+// 没有组时 triage 仍可用硬技术信号出建议，只是少了组比较理由。
 import Foundation
 import GatherProtocol
 
@@ -66,6 +70,20 @@ public struct AITriageAutoOutcome: Equatable, Sendable {
     }
 }
 
+/// Wave5 batch6（E3）：分组产物准备结果（duplicate.scan + navigation.analyze）。
+///
+/// 为什么放在初审前：triage 的理由码要比较相似/重复/场景组；没有组时只能出硬技术
+/// 失败（50-ai-similarity §3-D）。宿主负责"已有近期结果则跳过 + 有界等待"，
+/// 本类型只携带结果；**失败不阻断初审**（只记录原因，建议照常生成）。
+public enum AITriageGroupArtifactsOutcome: Equatable, Sendable {
+    /// 会话已有近期成功结果/已有组：不重复入队（幂等跳过）。
+    case alreadyReady
+    /// 已入队或已触发分析（宿主已按有界预算等待，超时只停止等待、不取消 job）。
+    case enqueued
+    /// 任一分组分析未完成；载体是给日志/状态解释的短原因。
+    case failed(String)
+}
+
 /// 导入后自动初审：等索引 → 确保 quality.score 跑完 → 生成建议（可选自动应用）。
 ///
 /// 纯编排，所有副作用经 Dependencies 注入，因此可单测（假 job 列表 + 假睡眠）。
@@ -87,6 +105,11 @@ public struct AITriageAutoPipeline: Sendable {
         /// triage_enabled（E4）：关闭时整条自动初审（含 quality.score 入队）直接 skipped，
         /// 不做无用的完整质量/模型分析。
         public var triageEnabled: @Sendable () -> Bool
+        /// Wave5 batch6（E3）：quality 成功后、生成建议前确保分组产物就绪。
+        ///
+        /// 由宿主实现「已有近期成功结果则跳过 + 有界等待」；本闭包不抛错：
+        /// 失败返回 .failed(reason)，pipeline 只记日志并继续生成建议。
+        public var ensureGroupArtifacts: @Sendable (String) async -> AITriageGroupArtifactsOutcome
         /// 结构化日志（宿主传 GatherLogger；测试注入记录器）。
         public var log: @Sendable (String) -> Void
         /// 轮询间隔（测试注入 no-op）。
@@ -99,6 +122,7 @@ public struct AITriageAutoPipeline: Sendable {
             applyTriage: @escaping @Sendable (TriageApplyInput) async throws -> TriageApplyResult,
             autoApplyEnabled: @escaping @Sendable () -> Bool,
             triageEnabled: @escaping @Sendable () -> Bool,
+            ensureGroupArtifacts: @escaping @Sendable (String) async -> AITriageGroupArtifactsOutcome,
             log: @escaping @Sendable (String) -> Void,
             poll: @escaping @Sendable () async throws -> Void
         ) {
@@ -108,6 +132,7 @@ public struct AITriageAutoPipeline: Sendable {
             self.applyTriage = applyTriage
             self.autoApplyEnabled = autoApplyEnabled
             self.triageEnabled = triageEnabled
+            self.ensureGroupArtifacts = ensureGroupArtifacts
             self.log = log
             self.poll = poll
         }
@@ -180,6 +205,19 @@ public struct AITriageAutoPipeline: Sendable {
                 return AITriageAutoOutcome(
                     stage: .stopped, qualityJobId: qualityJobId,
                     reason: AITriageStopReason.cancelled)
+            }
+
+            // ③.5 Wave5 batch6（E3）：确保分组产物（duplicate.scan + navigation.analyze）。
+            // 失败只记录（状态卡/日志可见原因），**不阻断**下面的建议生成：
+            // 没有组时 triage 仍可用硬技术信号出建议，只是少了组比较理由。
+            let groupArtifacts = await deps.ensureGroupArtifacts(sessionId)
+            switch groupArtifacts {
+            case .alreadyReady:
+                deps.log("ai.auto-triage session=\(sessionId) groups=already-ready")
+            case .enqueued:
+                deps.log("ai.auto-triage session=\(sessionId) groups=enqueued")
+            case .failed(let reason):
+                deps.log("ai.auto-triage session=\(sessionId) groups=failed reason=\(reason)")
             }
 
             // ④ 生成建议（triage_auto_generate 的语义：到了这里就一定要生成一次）。

@@ -133,6 +133,9 @@ private actor StubCullingAPI: CullingAPI {
     var confirmSyncResult = true
     var selectionResult = CullingSelectionIds(ids: [])
     var moveRejectedResultOverride: CullingMoveRejectedResult?
+    /// Wave5 batch6 / R6：淘汰红标（报告可注入；默认空报告 = 无淘汰项）。
+    var rejectedColorTagReport = C1VariantWritebackReport()
+    var rejectedColorTagError: GatherError?
     var pageError: GatherError?
     var updateError: GatherError?
 
@@ -153,6 +156,7 @@ private actor StubCullingAPI: CullingAPI {
     private(set) var confirmSyncCalls: [String] = []
     private(set) var selectionQueries: [CullingSelectionQuery] = []
     private(set) var moveRejectedInputs: [Confirmed<CullingMoveRejectedInput>] = []
+    private(set) var rejectedColorTagCalls: [String] = []
     private(set) var triageGenerateCalls = 0
 
     /// 回归用：让 update 在返回前挂起，连拍才能真正重叠。
@@ -177,6 +181,12 @@ private actor StubCullingAPI: CullingAPI {
     func setSelection(_ value: CullingSelectionIds) { selectionResult = value }
     func setMoveRejectedResult(_ value: CullingMoveRejectedResult) {
         moveRejectedResultOverride = value
+    }
+    func setRejectedColorTagReport(_ value: C1VariantWritebackReport) {
+        rejectedColorTagReport = value
+    }
+    func setRejectedColorTagError(_ value: GatherError?) {
+        rejectedColorTagError = value
     }
 
     func page(_ query: CullingPageQuery) async throws -> CullingPage {
@@ -253,6 +263,13 @@ private actor StubCullingAPI: CullingAPI {
 
     func syncStatus(_ sessionId: String) async throws -> CullingSyncStatus {
         syncStatusResult
+    }
+
+    // Wave5 batch6 / R6：淘汰红标（stub 只记录 sessionId + 返回注入报告/错误）。
+    func writeRejectedColorTags(_ sessionId: String) async throws -> C1VariantWritebackReport {
+        rejectedColorTagCalls.append(sessionId)
+        if let rejectedColorTagError { throw rejectedColorTagError }
+        return rejectedColorTagReport
     }
 
     func reset(_ input: Confirmed<CullingResetInput>) async throws -> Bool {
@@ -1599,3 +1616,94 @@ struct CullingViewModelAPITests {
         #expect(saved.currentPhotoId == "p2")
     }
 }
+// MARK: - Wave5 batch6 / R6 + G11：淘汰红标 / C1 调整提示（VM 入口）
+
+@Suite("CullingViewModel 淘汰红标与 C1 调整提示")
+@MainActor
+struct CullingRejectedColorTagViewModelTests {
+    private func makeVM(api: StubCullingAPI) -> CullingViewModel {
+        CullingViewModel(
+            sessionId: "s1", culling: api, navigation: StubNavigationAPI(),
+            metadata: B6bMetadataAPIStub(), jobs: B5bJobAPIStub(), quality: B5bQualityAPIStub()
+        )
+    }
+
+    @Test("rejectedPhotoCount 走 CullingSummary：0 = 菜单禁用口径；随 summary 变化")
+    func rejectedCountFollowsSummary() {
+        let api = StubCullingAPI()
+        let vm = makeVM(api: api)
+        #expect(vm.rejectedPhotoCount == 0, "未加载 summary 前视为没有淘汰项")
+        vm.summary = CullingSummary(
+            totalGroups: 2, totalPhotos: 5, kept: 2, rejected: 3, pending: 0,
+            rated: 1, labeled: 0)
+        #expect(vm.rejectedPhotoCount == 3)
+    }
+
+    @Test("成功：只发 notice（带张数）、errorMessage 清空；sessionId 传给 API")
+    func markRejectedSuccess() async {
+        let api = StubCullingAPI()
+        await api.setRejectedColorTagReport(C1VariantWritebackReport(written: 2))
+        let vm = makeVM(api: api)
+        await vm.markRejectedInCaptureOne()
+        #expect(vm.errorMessage == nil)
+        let calls = await api.rejectedColorTagCalls
+        #expect(calls == ["s1"], "红标必须只写当前会话")
+        guard case .text(let text)? = vm.notice?.payload else {
+            Issue.record("期望文本 notice，实际 \(String(describing: vm.notice))")
+            return
+        }
+        #expect(text.key == C1RejectedColorTagCopy.successTemplate)
+        #expect(text.params == ["2"])
+    }
+
+    @Test("部分成功：errorMessage 落到 partialTemplate 并带四个计数（不谎报全成功）")
+    func markRejectedPartial() async {
+        let api = StubCullingAPI()
+        await api.setRejectedColorTagReport(C1VariantWritebackReport(
+            written: 1, notFound: ["/shoot/a.cr2"],
+            skipped: 2, skippedMultiVariant: ["/shoot/b.cr2"]))
+        let vm = makeVM(api: api)
+        await vm.markRejectedInCaptureOne()
+        #expect(vm.notice == nil)
+        #expect(vm.errorMessage?.code == C1RejectedColorTagCopy.partialTemplate)
+        #expect(vm.errorMessage?.params == ["1", "1", "1", "2"])
+    }
+
+    @Test("未接线（实现抛错）：显式失败落到 INVALID_PARAM，不装成功")
+    func markRejectedNotWired() async {
+        let api = StubCullingAPI()
+        await api.setRejectedColorTagError(
+            GatherError.invalidParameter(
+                field: "writeRejectedColorTags", reason: "rejected color tag API not wired"))
+        let vm = makeVM(api: api)
+        await vm.markRejectedInCaptureOne()
+        #expect(vm.notice == nil)
+        #expect(vm.errorMessage?.code == GatherErrorCode.INVALID_PARAM.rawValue)
+    }
+
+    @Test("CullingAPI 默认实现 = 未接线：显式抛 INVALID_PARAM（不返回空报告伪造成功）")
+    func protocolDefaultImplementationThrows() async {
+        // B8CullingAPIStub（Support 夹具）没有覆写 → 走协议默认实现。
+        let stub = B8CullingAPIStub()
+        do {
+            _ = try await stub.writeRejectedColorTags("s1")
+            Issue.record("未接线的默认实现必须抛错，不能返回空报告")
+        } catch let error as GatherError {
+            #expect(error.code == .INVALID_PARAM)
+        } catch {
+            Issue.record("意外的错误类型：\(error)")
+        }
+    }
+
+    @Test("G11：未注入 C1 往返扩展端口时，调整提示静默 nil（不阻塞看图）")
+    func adjustmentHintIsSilentlyHidden() async {
+        let vm = makeVM(api: StubCullingAPI())
+        // 测试便利构造器注入的是具体 CaptureOneBridge（不是 C1RoundTripExtending 门面）
+        // → 端口未接线：必须 nil，而不是抛错/阻塞。
+        let hint = await vm.c1AdjustmentHint(for: "/shoot/a.cr2")
+        #expect(hint == nil)
+        let emptyPath = await vm.c1AdjustmentHint(for: "")
+        #expect(emptyPath == nil)
+    }
+}
+

@@ -509,6 +509,51 @@ public final class LiveCullingAPI: CullingAPI, @unchecked Sendable {
         return true
     }
 
+    /// Wave5 batch6 / R6：把本会话的淘汰判断在 C1 里表达为红标（只改 color tag）。
+    ///
+    /// 职责划分：本方法只做**查数据**（哪些照片是 rejected、它们的绝对路径），
+    /// AppleScript/变体安全规则全在 CaptureOneBridge.writeRejectedColorTags。
+    ///
+    /// 数据口径：
+    /// - 决策来源 = culling_decisions 里 decision == "reject" 的照片（与挑片页"淘汰"同一真相源）；
+    /// - 只取可见且未缺失的照片（归档/移出 _rejects 的照片不该再去改 C1 色标）；
+    /// - 没有淘汰项返回空报告（不是错误：UI 侧按钮本就禁用，服务端不制造假失败）。
+    ///
+    /// 未接线（测试替身/预览）时由协议默认实现抛 INVALID_PARAM，不伪造成功。
+    public func writeRejectedColorTags(_ sessionId: String) async throws -> C1VariantWritebackReport {
+        let id = try LiveAPIInput.requireSessionId(sessionId)
+        guard let bridge = CaptureOneBridge.shared else {
+            throw GatherError.invalidParameter(
+                field: "captureOne", reason: "C1 桥未接线（缺少 CaptureOneBridge.shared）")
+        }
+        let decisions = try map { try cullingService.getDecisions(sessionId: id) }
+        let rejected = Set(
+            decisions
+                .filter { $0.decision == CullingDecisionValue.reject.rawValue }
+                .map(\.photoId)
+        )
+        guard !rejected.isEmpty else { return C1VariantWritebackReport() }
+        guard let photoRepo else {
+            throw GatherError.invalidParameter(
+                field: "photoRepo", reason: "淘汰红标未接线（缺少 photoRepo）")
+        }
+        let rows = try map { try photoRepo.getBySessionProjection(sessionId: id) }
+        let paths = rows
+            .filter { row in
+                rejected.contains(row.id)
+                    && PhotoVisibility.isVisible(archivedAt: row.archivedAt)
+                    && row.status != "missing"
+            }
+            .map(\.filepath)
+        guard !paths.isEmpty else { return C1VariantWritebackReport() }
+        do {
+            return try await bridge.writeRejectedColorTags(paths: paths)
+        } catch let error as CaptureOneBridgeError {
+            // 桥错误是稳定码：收敛成 GatherError（UI 按码取文案，不直出英文诊断）。
+            throw GatherError(code: error.code, underlying: error.description)
+        }
+    }
+
     // MARK: - 校验与错误映射
 
     /// 人工改选 → triage_feedback（校准样本）。失败只记日志，不影响决策提交。
