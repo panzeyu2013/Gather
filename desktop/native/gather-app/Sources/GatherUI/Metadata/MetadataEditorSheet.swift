@@ -50,6 +50,8 @@ struct MetadataEditorSheet: View {
     @State private var initialLongitudeText = ""
     @State private var initialDateTakenText = ""
     @State private var isLookingUpPlace = false
+    // Wave5（batch9）：双源（内嵌 + sidecar）冲突可见性；空数组 = 不显示（读不到/未接线也不显示）。
+    @State private var dualSourceConflictFields: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
@@ -58,6 +60,14 @@ struct MetadataEditorSheet: View {
             Text(l10n("初值来自盘上（含 JPEG 内嵌 IPTC）；只提交改动过的字段。留空表示清空附属文件字段；JPEG 的内嵌字段（Bridge/Capture One 写入）无法在此清空，需先在原软件中清空。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            if let warning = dualSourceWarningText {
+                // Wave5（batch9）：只提示，不阻断编辑、不自动清理内嵌（策略说明见文案）。
+                Text(warning)
+                    .font(GatherFont.label)
+                    .foregroundStyle(GatherTheme.warningText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if isLoading {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 120)
@@ -363,6 +373,44 @@ struct MetadataEditorSheet: View {
         return geoDateEdited ? fields + " + " + l10n("位置与时间") : fields
     }
 
+    // MARK: - Wave5（batch9）：双源冲突可见性
+
+    /// 双源冲突警示文案（nil = 不显示；只提示，不阻断编辑）。
+    private var dualSourceWarningText: String? {
+        guard let names = Self.dualSourceFieldNames(
+            dualSourceConflictFields, localize: { l10n($0) }) else { return nil }
+        return l10n.format(
+            "内嵌元数据与 sidecar 不一致（字段：%@）；当前以 sidecar 为准，内嵌不会自动清理。",
+            names)
+    }
+
+    /// 冲突字段 id → 显示名（中文 key；描述性字段复用 MetadataDisplay.fieldTitle 表）。
+    /// nonisolated：纯映射，单测/非 MainActor 调用方不应被 View 的隔离域限制。
+    nonisolated static func dualSourceFieldLabelKey(_ id: String) -> String {
+        switch id {
+        case "rating": return "评分"
+        case "label": return "色标"
+        case "keywords": return "关键词"
+        case "dateTaken": return "拍摄时间"
+        case "latitude": return "纬度"
+        case "longitude": return "经度"
+        default:
+            if let field = DescriptiveField(rawValue: id) {
+                return MetadataDisplay.fieldTitle(field)
+            }
+            return id
+        }
+    }
+
+    /// 冲突字段的显示名拼接（纯函数，便于单测）：空 fields = nil（不显示警示）。
+    nonisolated static func dualSourceFieldNames(
+        _ fields: [String],
+        localize: (String) -> String
+    ) -> String? {
+        guard !fields.isEmpty else { return nil }
+        return fields.map { localize(dualSourceFieldLabelKey($0)) }.joined(separator: "、")
+    }
+
     /// reportError=false：失败分支已经给出更具体的文案（例如 JPEG 内嵌清空
     /// 失败），这次重新读盘只是把输入框拉回盘上值，不能把原因覆盖成"读盘失败"。
     private func load(reportError: Bool = true) async {
@@ -402,6 +450,14 @@ struct MetadataEditorSheet: View {
             latitudeText = initialLatitudeText
             longitudeText = initialLongitudeText
             dateTakenText = initialDateTakenText
+            // Wave5（batch9）：双源可见性（仅 JPEG + sidecar）。读失败/未接线静默不显示，
+            // 不阻断编辑；也不把"读不到"当成"无冲突"写进任何缓存。
+            do {
+                dualSourceConflictFields =
+                    try await api.dualSourceConflict(photoId: photoId)?.fields ?? []
+            } catch {
+                dualSourceConflictFields = []
+            }
         } catch {
             // 读盘失败不等于"没有元数据"：不能拿缓存继续编辑（fail-closed）。
             diskReadFailed = true

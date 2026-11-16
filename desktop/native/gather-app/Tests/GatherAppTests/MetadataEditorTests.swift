@@ -9,7 +9,12 @@
 import Foundation
 import Testing
 import GatherProtocol
+import GatherPersistence
+import GatherApplication
+import GatherDelivery
 @testable import GatherUI
+@testable import GatherHost
+import GatherTestSupport
 
 @Suite("元数据编辑器受控值（Wave5 batch2）")
 struct MetadataEditorTests {
@@ -269,5 +274,150 @@ struct MetadataEditorTests {
         // 美国 2026-11-01 回拨日同理：01:30 + 1h = 02:30（不是 01:30 重复小时）。
         #expect(MetadataEditorDraft.shiftedDateTime(
             "2026-11-01T01:30:00", bySeconds: 3_600) == "2026-11-01T02:30:00")
+    }
+}
+
+// MARK: - Wave5（batch9）：双源冲突可见性
+
+/// 可编程的内嵌读侧替身（nil = 内嵌不可读）。
+private struct DualSourceStubExif: ExifProvider {
+    let segments: MetadataParseSegments?
+
+    func parse(filePath: String, isJpeg: Bool) async throws -> MetadataParseSegments? {
+        segments
+    }
+}
+
+/// 不可变的 sidecar 读侧替身（读盘只走它，文件存在性由夹具真实创建/删除）。
+private struct DualSourceFakeXMP: XMPProvider {
+    let attributes: MetadataWriteAttributes
+
+    func readKeywords(photoPath: String) async throws -> [String] {
+        attributes.keywords ?? []
+    }
+    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
+        attributes
+    }
+    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {}
+    func backup(photoPath: String) async throws -> String { "" }
+    func restore(photoPath: String, backupPath: String) async throws {}
+    func fileExists(_ path: String) -> Bool { true }
+    func removeFile(_ path: String) async throws {}
+}
+
+private struct DualSourceNoopMutations: MetadataMutationPort {
+    func queuePhotoValues(
+        sessionId: String,
+        photoId: String,
+        values: [String: JSONValue],
+        source: MetadataMutationSource,
+        schedule: Bool
+    ) throws -> MetadataMutationResult {
+        MetadataMutationResult(
+            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending")
+    }
+}
+
+@Suite("双源冲突：API 默认与警示映射（Wave5 batch9）")
+struct MetadataDualSourceConflictUITests {
+    @Test("未接线的 stub：dualSourceConflict 返回 nil（未知，UI 不显示）")
+    func apiDefaultNil() async throws {
+        let stub = B6bMetadataAPIStub()
+        let conflict = try await stub.dualSourceConflict(photoId: "p1")
+        #expect(conflict == nil)
+    }
+
+    @Test("警示映射：字段列表拼接；空列表不显示")
+    func warningMapping() {
+        #expect(MetadataEditorSheet.dualSourceFieldNames([], localize: { $0 }) == nil,
+                "空 = 不显示警示")
+
+        let names = MetadataEditorSheet.dualSourceFieldNames(
+            ["dateTaken", "rating", "title"], localize: { $0 })
+        #expect(names?.contains("评分") == true)
+        #expect(names?.contains("标题") == true)
+        #expect(names?.contains("拍摄时间") == true)
+        #expect(names?.split(separator: "、").count == 3)
+    }
+
+    @Test("字段显示名：非描述字段用既有中文 key，未知 id 原样透出")
+    func fieldLabels() {
+        #expect(MetadataEditorSheet.dualSourceFieldLabelKey("rating") == "评分")
+        #expect(MetadataEditorSheet.dualSourceFieldLabelKey("label") == "色标")
+        #expect(MetadataEditorSheet.dualSourceFieldLabelKey("keywords") == "关键词")
+        #expect(MetadataEditorSheet.dualSourceFieldLabelKey("dateTaken") == "拍摄时间")
+        #expect(MetadataEditorSheet.dualSourceFieldLabelKey("latitude") == "纬度")
+        #expect(MetadataEditorSheet.dualSourceFieldLabelKey("longitude") == "经度")
+        #expect(MetadataEditorSheet.dualSourceFieldLabelKey("caption") == "说明")
+        #expect(MetadataEditorSheet.dualSourceFieldLabelKey("weird") == "weird")
+    }
+
+    // MARK: Live 接线（fake 内嵌/sidecar）
+
+    private struct LiveFixture {
+        let dir: URL
+        let photoId: String
+        let api: LiveMetadataAPI
+
+        func cleanup() { try? FileManager.default.removeItem(at: dir) }
+    }
+
+    private func makeLiveFixture(
+        embedded: MetadataParseSegments?,
+        sidecar: MetadataWriteAttributes,
+        withSidecar: Bool = true
+    ) throws -> LiveFixture {
+        let db = try makeTestDB()
+        let session = try SessionRepo(connection: db).create(name: "dual", source: "test")
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-dual-live-(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let photoURL = dir.appendingPathComponent("IMG_DUAL.jpg")
+        try Data("jpeg-bytes".utf8).write(to: photoURL)
+        if withSidecar {
+            try Data("sidecar".utf8).write(
+                to: URL(fileURLWithPath: TSPath.xmpSidecarPath(photoURL.path)))
+        }
+        let photoId = try PhotoRepo(connection: db).addPhotos(
+            sessionId: session.id,
+            filepaths: [PhotoAddInput(filepath: photoURL.path, width: 100, height: 80)],
+            "test").ids[0]
+        let xmp = DualSourceFakeXMP(attributes: sidecar)
+        let service = MetadataService(
+            metadataCacheRepo: MetadataCacheRepo(connection: db),
+            xmp: xmp,
+            connection: db,
+            mutations: DualSourceNoopMutations(),
+            exif: DualSourceStubExif(segments: embedded))
+        let api = LiveMetadataAPI(
+            metadataService: service,
+            deliveryRepo: DeliveryRepo(connection: db),
+            xmp: xmp,
+            fileLock: XMPFileLock(),
+            settingsService: SettingsService(repo: SettingsRepo(connection: db)))
+        return LiveFixture(dir: dir, photoId: photoId, api: api)
+    }
+
+    @Test("Live 接线：内嵌与 sidecar 冲突 → DTO（排序 + canonical=sidecar）；无 sidecar → nil")
+    func liveWiring() async throws {
+        let embedded = MetadataParseSegments(
+            ifd0: .object(["Rating": .number(5)]),
+            dc: .object(["title": .string("内嵌标题")]))
+        let fixture = try makeLiveFixture(
+            embedded: embedded,
+            sidecar: MetadataWriteAttributes(
+                rating: 3, descriptive: DescriptiveMetadata(title: "sidecar 标题")))
+        defer { fixture.cleanup() }
+        let conflict = try await fixture.api.dualSourceConflict(photoId: fixture.photoId)
+        #expect(conflict?.photoId == fixture.photoId)
+        #expect(conflict?.fields == ["rating", "title"])
+        #expect(conflict?.canonical == .sidecar)
+
+        // 没有 sidecar = 单源：即便内嵌与"空 sidecar"不同也不报。
+        let single = try makeLiveFixture(
+            embedded: embedded, sidecar: MetadataWriteAttributes(), withSidecar: false)
+        defer { single.cleanup() }
+        let none = try await single.api.dualSourceConflict(photoId: single.photoId)
+        #expect(none == nil)
     }
 }

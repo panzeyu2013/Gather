@@ -613,3 +613,225 @@ struct SidecarGeoDatePatchingTests {
     }
 }
 
+
+// MARK: - Wave5（batch9）：双源冲突可见性
+
+/// 可编程的内嵌读侧替身（ExifProvider）：nil = 内嵌不可读，throw = 解析失败。
+private struct StubExif: ExifProvider {
+    enum Behavior: Sendable {
+        case segments(MetadataParseSegments)
+        case unreadable
+        case failure
+    }
+
+    let behavior: Behavior
+
+    func parse(filePath: String, isJpeg: Bool) async throws -> MetadataParseSegments? {
+        switch behavior {
+        case .segments(let segments):
+            return segments
+        case .unreadable:
+            return nil
+        case .failure:
+            throw GatherError.invalidParameter(field: "exif", reason: "stub failure")
+        }
+    }
+}
+
+@Suite("双源冲突可见性（内嵌 + sidecar）")
+struct MetadataDualSourceConflictTests {
+    /// 组装可写属性（只填本用例关心的字段）。
+    private func attributes(
+        rating: Double? = nil,
+        label: String? = nil,
+        keywords: [String]? = nil,
+        dateTaken: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        descriptive: DescriptiveMetadata? = nil
+    ) -> MetadataWriteAttributes {
+        MetadataWriteAttributes(
+            keywords: keywords, rating: rating, label: label, dateTaken: dateTaken,
+            latitude: latitude, longitude: longitude, descriptive: descriptive)
+    }
+
+    @Test("纯比较：两侧都有值且不同 → 全部字段按名字排序报出")
+    func detectsAllFieldKinds() {
+        let embedded = attributes(
+            rating: 5, label: "Red", keywords: ["婚礼", "上海"],
+            dateTaken: "2026:12:01 10:00:00",
+            latitude: 31.2304, longitude: 121.4737,
+            descriptive: DescriptiveMetadata(title: "内嵌标题", caption: "一致说明"))
+        let sidecar = attributes(
+            rating: 3, label: "Green", keywords: ["上海", "人像"],
+            dateTaken: "2026-12-02T10:00:00",
+            latitude: 30, longitude: 120,
+            descriptive: DescriptiveMetadata(title: "sidecar 标题", caption: "一致说明"))
+        #expect(MetadataDiskReader.dualSourceConflictFields(embedded: embedded, sidecar: sidecar)
+            == ["dateTaken", "keywords", "label", "latitude", "longitude", "rating", "title"])
+    }
+
+    @Test("纯比较：等价格式 / 乱序 / 容差内 / 列表乱序 → 无冲突")
+    func equalValuesDoNotConflict() {
+        let embedded = attributes(
+            rating: 4, label: "Red", keywords: ["a", "b"],
+            dateTaken: "2026:12:01 10:00:00",
+            latitude: 31.2304, longitude: 121.4737,
+            descriptive: DescriptiveMetadata(personInImage: ["张三", "李四"]))
+        let sidecar = attributes(
+            rating: 4, label: "Red", keywords: ["b", "a"],
+            dateTaken: "2026-12-01T10:00:00",
+            latitude: 31.2304000001, longitude: 121.4737000001,
+            descriptive: DescriptiveMetadata(personInImage: ["李四", "张三"]))
+        #expect(MetadataDiskReader.dualSourceConflictFields(embedded: embedded, sidecar: sidecar).isEmpty)
+    }
+
+    @Test("纯比较：一侧缺失不算冲突；contactInfo 结构不参与提示")
+    func oneSideMissingAndContactIgnored() {
+        let empty = attributes()
+        let onlyEmbedded = attributes(
+            rating: 5, label: "Red", keywords: ["a"],
+            descriptive: DescriptiveMetadata(title: "标题"))
+        #expect(MetadataDiskReader.dualSourceConflictFields(embedded: onlyEmbedded, sidecar: empty).isEmpty)
+        #expect(MetadataDiskReader.dualSourceConflictFields(embedded: empty, sidecar: onlyEmbedded).isEmpty)
+
+        let leftContact = attributes(descriptive: DescriptiveMetadata(
+            contactInfo: DescriptiveContact(email: "a@b.c")))
+        let rightContact = attributes(descriptive: DescriptiveMetadata(
+            contactInfo: DescriptiveContact(email: "x@y.z")))
+        #expect(MetadataDiskReader.dualSourceConflictFields(
+            embedded: leftContact, sidecar: rightContact).isEmpty)
+    }
+
+    // MARK: IO 门禁（JPEG + sidecar）
+
+    private struct IOFixture {
+        let dir: String
+        let photoPath: String
+
+        func cleanup() { try? FileManager.default.removeItem(atPath: dir) }
+    }
+
+    private func makeIOFixture(ext: String = "jpg", withSidecar: Bool = true) throws -> IOFixture {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-dual-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/IMG_1." + ext
+        try Data("jpeg-bytes".utf8).write(to: URL(fileURLWithPath: path))
+        if withSidecar {
+            try Data("sidecar".utf8).write(to: URL(fileURLWithPath: TSPath.xmpSidecarPath(path)))
+        }
+        return IOFixture(dir: dir, photoPath: path)
+    }
+
+    @Test("IO 门禁：JPEG+sidecar 才比较；非 JPEG/无 sidecar/内嵌不可读 → 空且不抛")
+    func ioGating() async throws {
+        let embeddedSegments = MetadataParseSegments(
+            ifd0: .object(["Rating": .number(5)]),
+            dc: .object(["title": .string("内嵌标题")]))
+        let xmp = SwitchableXMP()
+        xmp.setAttributes(attributes(
+            rating: 3, descriptive: DescriptiveMetadata(title: "sidecar 标题")))
+
+        let jpeg = try makeIOFixture()
+        defer { jpeg.cleanup() }
+        let reader = MetadataDiskReader(
+            xmp: xmp, exif: StubExif(behavior: .segments(embeddedSegments)), embeddedReader: nil)
+        let fields = await reader.dualSourceConflict(photoPath: jpeg.photoPath)
+        #expect(fields == ["rating", "title"])
+
+        let raw = try makeIOFixture(ext: "cr3")
+        defer { raw.cleanup() }
+        let rawFields = await reader.dualSourceConflict(photoPath: raw.photoPath)
+        #expect(rawFields.isEmpty, "非 JPEG 不存在双源")
+
+        let noSidecar = try makeIOFixture(withSidecar: false)
+        defer { noSidecar.cleanup() }
+        let noSidecarFields = await reader.dualSourceConflict(photoPath: noSidecar.photoPath)
+        #expect(noSidecarFields.isEmpty, "没有 sidecar 就没有第二个源")
+
+        let unreadable = MetadataDiskReader(
+            xmp: xmp, exif: StubExif(behavior: .unreadable), embeddedReader: nil)
+        let unreadableFields = await unreadable.dualSourceConflict(photoPath: jpeg.photoPath)
+        #expect(unreadableFields.isEmpty, "内嵌不可读 = 无法判定，不报冲突")
+
+        let failing = MetadataDiskReader(
+            xmp: xmp, exif: StubExif(behavior: .failure), embeddedReader: nil)
+        let failingFields = await failing.dualSourceConflict(photoPath: jpeg.photoPath)
+        #expect(failingFields.isEmpty, "解析失败不得抛错/误报")
+
+        let noExif = MetadataDiskReader(xmp: xmp, exif: nil, embeddedReader: nil)
+        let noExifFields = await noExif.dualSourceConflict(photoPath: jpeg.photoPath)
+        #expect(noExifFields.isEmpty, "未注入 EXIF 读取器 = 无法判定")
+    }
+
+    // MARK: 服务层
+
+    private struct ServiceFixture {
+        let db: DBConnection
+        let dir: String
+        let photoId: String
+        let photoPath: String
+        let xmp: SwitchableXMP
+        let service: MetadataService
+
+        func cleanup() { try? FileManager.default.removeItem(atPath: dir) }
+    }
+
+    private func makeServiceFixture(
+        ext: String = "jpg",
+        withSidecar: Bool = true,
+        behavior: StubExif.Behavior
+    ) throws -> ServiceFixture {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-dual-service-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let sessionId = "s-\(UUID().uuidString)"
+        try insertSession(db, sessionId)
+        let photoId = "p-\(UUID().uuidString)"
+        let photoPath = dir + "/dual." + ext
+        try Data("bytes".utf8).write(to: URL(fileURLWithPath: photoPath))
+        if withSidecar {
+            try Data("sidecar".utf8).write(to: URL(fileURLWithPath: TSPath.xmpSidecarPath(photoPath)))
+        }
+        try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: photoPath)
+        let xmp = SwitchableXMP()
+        let service = MetadataService(
+            metadataCacheRepo: MetadataCacheRepo(connection: db),
+            xmp: xmp,
+            connection: db,
+            mutations: NoopMutations(),
+            exif: StubExif(behavior: behavior))
+        return ServiceFixture(
+            db: db, dir: dir, photoId: photoId, photoPath: photoPath, xmp: xmp, service: service)
+    }
+
+    @Test("服务层：冲突返回排序 DTO（canonical=sidecar）；未知照片 → nil")
+    func serviceReturnsDTO() async throws {
+        let fixture = try makeServiceFixture(
+            behavior: .segments(MetadataParseSegments(
+                ifd0: .object(["Rating": .number(5)]))))
+        defer { fixture.cleanup() }
+        fixture.xmp.setAttributes(attributes(rating: 3, label: "Red"))
+        let conflict = try await fixture.service.dualSourceConflict(photoId: fixture.photoId)
+        #expect(conflict?.photoId == fixture.photoId)
+        #expect(conflict?.fields == ["rating"])
+        #expect(conflict?.canonical == .sidecar)
+
+        let missing = try await fixture.service.dualSourceConflict(photoId: "missing-photo")
+        #expect(missing == nil)
+    }
+
+    @Test("服务层：非 JPEG 即使 sidecar 有差异也不报")
+    func serviceSkipsNonJpeg() async throws {
+        let fixture = try makeServiceFixture(
+            ext: "cr3",
+            behavior: .segments(MetadataParseSegments(
+                ifd0: .object(["Rating": .number(5)]))))
+        defer { fixture.cleanup() }
+        fixture.xmp.setAttributes(attributes(rating: 3))
+        let conflict = try await fixture.service.dualSourceConflict(photoId: fixture.photoId)
+        #expect(conflict == nil)
+    }
+}

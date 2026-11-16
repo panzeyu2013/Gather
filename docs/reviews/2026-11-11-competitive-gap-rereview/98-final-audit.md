@@ -1,7 +1,7 @@
 # Wave 5 收口审计（2026-11-16）
 
 > 目的：对 2026-11-11 复核报告的 2 条 P0 风险 + 22 条 P1 做逐项闭环对账，并列出剩余 P2 / 明确不做 / 待决策。
-> 基线：Wave 5 Batch 1–8（3af5f491 / d1782603 / f8a4baec / 9ddf68ac / 8a77a5d9 / 6f265649 / 625cc9fe / 本批）。
+> 基线：Wave 5 Batch 1–9（3af5f491 / d1782603 / f8a4baec / 9ddf68ac / 8a77a5d9 / 6f265649 / 625cc9fe / a09c3d7e / 本批）。
 > 验证：core 1964 tests / 289 suites + 串行 25/4；app 1256 tests / 183 suites；14 项门禁全绿；每批一行 commit 可回滚。
 
 ## 1. P0 风险（2 条）
@@ -28,11 +28,11 @@
 | Delivery C3 | 导入不是一次配置 | 已闭环 | Batch3（IngestPreset + 预检/失败全量/重试 + 摄取后 AI 初审） |
 | Metadata D1 | IPTC 字段/受控值缺 | 已闭环 | Batch2（4 交付字段 + 4 张 CV + Picker/校验） |
 | Metadata D2 | GPS 只读 / 无改拍摄时间 | 已闭环 | Batch5（GPS/时间写入 + 反查地名）+ Batch7（内嵌读侧 + 批量时间） |
-| Metadata D3 | 模板/词库 I/O；同义词检索；双源静默 | 部分闭环 | Batch2（同义词检索）+ Batch5（模板/词库导入导出）；遗留：JPEG 有 sidecar 时内嵌 IPTC 清不掉 / 非 JPEG 只写 sidecar / 双源静默取 sidecar 未单独改造 |
+| Metadata D3 | 模板/词库 I/O；同义词检索；双源静默 | 已闭环（策略+可见性） | Batch2（同义词检索）+ Batch5（模板/词库导入导出）+ Batch9（双源冲突警示；canonical=sidecar 策略：JPEG 有 sidecar 只写 sidecar 且不自动清内嵌，作为明确产品决策记录） |
 | AI E1 | 导入即初审默认路径不成立 | 已闭环 | Batch2（5 入口 + 超时不取消 + 状态可见） |
 | AI E2 | 人脸是隐式前置 | 已闭环 | Batch2（缺失观测入队 face.analyze 且不阻塞，状态可见） |
 | AI E3 | 分组分析不随初审跑 | 已闭环 | Batch6（duplicate.scan + navigation.analyze 编排，失败不阻塞） |
-| AI E4 | 场景/最佳帧产品化 / People Filter | 部分闭环 | Batch4（组视图/最佳帧/一键保留 + People Filter）+ Batch7（标签中文化）+ Batch8（入口上移）；遗留：自动关键词写回未做（按手动写回为产品口径） |
+| AI E4 | 场景/最佳帧产品化 / People Filter | 已闭环（产品口径） | Batch4（组视图/最佳帧/一键保留 + People Filter）+ Batch7（标签中文化）+ Batch8（入口上移）；自动关键词写回不做（明确决策：未审阅 AI 标签不自动进交付链，保留手动写回/整批撤销） |
 | Organize F1 | 无物理文件夹树/浏览即读 | 已闭环 | Batch4（懒加载目录树/按目录筛选）+ Batch8（新建工作区/摄取入口 + 外部卷） |
 | Organize F2 | 无批量重命名/文件移动 | 已闭环 | Batch4（PhotoAPI preview/rename/move + sidecar/回滚） |
 | Organize F3 | 自动化第二层缺失 | 已闭环（Shortcuts/URL） | Batch5（查询照片 + 写评级/色标/保留）+ Batch4（既有 4 深链/4 intents）；遗留：CLI/AppleScript 字典按边界另立项 |
@@ -44,8 +44,7 @@
 
 1. C1 插件往返：GatherLink 目前仍 Open With 单向；role/Edit/Publish 入口、安装/版本/兼容诊断未做（P2）。
 2. C1 关键词写回：淘汰已用红标约定，但关键词 → C1 apply keyword 仍未接（P2）。
-3. Metadata 双源：JPEG 有 .xmp 时内嵌 IPTC 清理、非 JPEG 只写 sidecar、双源不同值静默取 sidecar（P1 尾巴，需单独设计写策略）。
-4. AI 自动关键词：场景标签只做显示/检索/手动写回；自动写回与中文同义词写回未做（产品口径）。
+3. AI 自动关键词：场景标签只做显示/检索/手动写回；自动写回与中文同义词写回不做（产品决策，见 §2 E4）。
 5. JPEG 内嵌 slow path：embedded_fast_path=0 时写回可能镜像相机 EXIF 到 XMP；内嵌 GPS/时间写侧只走快路径。
 6. 发布端点：内置仅 WebDAV/S3；FTP/SFTP/网盘/社媒未做（可用导出后钩子替代，P2）。
 7. 剩余 P2：联系表纸张/横向、画廊字段、客户成片 ZIP、导出元数据精简、屏幕色彩管理/软打样、幻灯片/多窗口/拖出、C1 500 张自动分批、收藏夹/虚拟副本边界声明等。
@@ -68,7 +67,7 @@
 ## 5. 验证汇总
 
 - 构建：gather-core / gather-app swift build --build-tests --disable-sandbox 均通过。
-- 测试：core 1964 / 289 + 串行 25 / 4；app 1256 / 183；全绿。
+- 测试：core 1970 / 290 + 串行 25 / 4；app 1260 / 184；全绿。
 - 门禁 14 项全绿（含 warnings）。
-- 基线：protocol-surface 513 types / 3109 declarations / 17138 lines；cleanup 不涨；design-system 不涨。
+- 基线：protocol-surface 514 types / 3115 declarations / 17177 lines；cleanup 不涨；design-system 不涨。
 - 每个 batch 独立 commit，工作树可回滚。

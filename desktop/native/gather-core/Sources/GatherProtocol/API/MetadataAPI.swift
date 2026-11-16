@@ -132,6 +132,39 @@ public protocol MetadataAPI: Sendable {
     /// 盘上当前 GPS 坐标与拍摄时间（编辑器初值；与 diskDescriptive 同口径的读盘）。
     /// nil = 未接线 / 读不到（调用方退回缓存投影，不得当成"盘上为空"）。
     func diskGeoDate(photoId: String) async throws -> MetadataGeoDateSnapshot?
+
+    // MARK: - Wave5（batch9）：双源可见性
+
+    /// 内嵌元数据与 sidecar 的逐字段冲突（JPEG 且 sidecar 存在时才可能出现）。
+    ///
+    /// 这是**只读可见性**接口：写目标策略（MetadataTargetPolicy）不变——JPEG 有
+    /// sidecar 时永远写 sidecar、读侧 sidecar 覆盖内嵌；本接口不清理内嵌、也不改写入位置。
+    /// nil = 无双源 / 无冲突 / 读不到（无法判定）；调用方不得把它当成"一定没有冲突"的缓存依据。
+    func dualSourceConflict(photoId: String) async throws -> MetadataDualSourceConflict?
+}
+
+// MARK: - 双源冲突（Wave5 batch9）
+
+/// 内嵌（JPEG APP1）+ sidecar 的字段级冲突描述。
+///
+/// 只表达"两侧都有显式值且不同"；一侧缺失不算冲突（读侧 sidecar 覆盖但不清内嵌）。
+public struct MetadataDualSourceConflict: Codable, Equatable, Sendable {
+    /// 当前权威源。本轮刻意固定 sidecar：写侧有 sidecar 只写它、读侧它覆盖内嵌。
+    public enum Canonical: String, Codable, Equatable, Sendable {
+        case sidecar
+    }
+
+    public let photoId: String
+    /// 冲突字段的稳定 id：DescriptiveField.rawValue，或 rating/label/keywords/dateTaken/latitude/longitude。已排序。
+    public let fields: [String]
+    public let canonical: Canonical
+
+    public init(photoId: String, fields: [String]) throws {
+        self.photoId = try APIValidation.nonBlank(photoId, field: "photoId", maxLength: 128)
+        let normalized = fields.sorted()
+        self.fields = try APIValidation.nonEmpty(normalized, field: "fields")
+        self.canonical = .sidecar
+    }
 }
 
 // MARK: - 默认实现（未接线 / 测试替身）
@@ -177,6 +210,12 @@ public extension MetadataAPI {
 
     /// 未接线/读不到返回 nil（= 未知）；调用方不得把它当成"盘上为空"。
     func diskGeoDate(photoId: String) async throws -> MetadataGeoDateSnapshot? {
+        _ = photoId
+        return nil
+    }
+
+    /// Wave5（batch9）：未接线 = 未知 → nil（UI 不显示警示，也不缓存"无冲突"结论）。
+    func dualSourceConflict(photoId: String) async throws -> MetadataDualSourceConflict? {
         _ = photoId
         return nil
     }

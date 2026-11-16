@@ -371,6 +371,19 @@ public final class MetadataService: @unchecked Sendable {
             uncertain: dedupUncertain)
     }
 
+    // MARK: - Wave5（batch9）：双源冲突可见性
+
+    /// 内嵌 + sidecar 的字段级冲突（只做可见性提示；不清理内嵌、不改写目标策略）。
+    ///
+    /// 返回 nil = 无双源 / 无冲突 / 内嵌或 sidecar 读不到（无法判定）；照片不存在也返回 nil
+    /// （与 diskGeoDate 同口径：未知不拦编辑）。
+    public func dualSourceConflict(photoId: String) async throws -> MetadataDualSourceConflict? {
+        guard let lookup = try photoRepo.getLookupByIds([photoId]).first else { return nil }
+        let fields = await reader.dualSourceConflict(photoPath: lookup.filepath)
+        guard !fields.isEmpty else { return nil }
+        return try MetadataDualSourceConflict(photoId: photoId, fields: fields)
+    }
+
     /// GPS/时间的盘上回读比较（dateTaken：空串与 nil 等价 = 清空；坐标：1e-5 容差）。
     static func geoDateMatches(
         attributes: MetadataWriteAttributes,

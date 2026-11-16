@@ -2888,3 +2888,6 @@
 "未新增照片：目录为空、照片都已存在，或文件不可读" = "No new photos: the folder is empty, all photos already exist, or files are unreadable";
 "无法摄取：目录或工作区无效" = "Cannot ingest: invalid folder or workspace";
 "摄取失败：%@" = "Ingest failed: %@";
+
+/* Wave5 / Batch9（双源冲突提示） */
+"内嵌元数据与 sidecar 不一致（字段：%@）；当前以 sidecar 为准，内嵌不会自动清理。" = "Embedded metadata differs from the sidecar (fields: %@). The sidecar is canonical; embedded metadata is not cleaned automatically.";

@@ -256,3 +256,27 @@
 3. C1 插件往返 role/Edit/Publish、安装/诊断面未做（P2）；插件产物未重建。
 4. 发布端点 FTP/SFTP/网盘、剩余 P2（色彩管理/幻灯片/多窗口等按决策不做）。
 5. 真机验收清单已更新但未执行（人工）。
+
+## Batch 9（task-34）
+
+| task | 域 | owner | 结论 |
+| --- | --- | --- | --- |
+| task-34 | Metadata 双源冲突可见 | metadata-search | MetadataDiskReader.dualSourceConflict：JPEG+sidecar 时逐字段比较内嵌/sidecar（rating/label/keywords/dateTaken/经纬度/descriptive 显式字段；一侧缺失不算冲突；内嵌不可读不误报）；MetadataAPI/LiveMetadataAPI 接线；编辑器显示警示条「以 sidecar 为准，内嵌不自动清理」 |
+
+### 关键设计取舍
+
+- 写目标策略保持既有语义：JPEG 有 sidecar 永远写 sidecar；非 JPEG/RAW 只写 sidecar；embedded 模式仅对无 sidecar 的 JPEG 生效。本轮只做可见性，不提供清内嵌动作（避免造双真相源/数据损失）。
+- 冲突判定只覆盖显式 text/list 字段；contactInfo 结构不参与（成员级合并语义不同）；相机 EXIF 日期/GPS 与 sidecar 修改后的差异会提示（事实差异）。
+- 内嵌不可读/未注入 exif/sidecar 读失败 → 返回空（无法判定 ≠ 无冲突），不抛错、不打断编辑。
+
+### 验证（Lead 执行，2026-11-16）
+
+- 构建：gather-core / gather-app swift build --build-tests --disable-sandbox 均通过。
+- 测试：core 1970 / 290 + 串行 25 / 4；app 1260 / 184；全绿。
+- 门禁 14 项全绿（含 warnings）。
+- 基线：protocol-surface 514 types / 3115 declarations / 17177 lines（MetadataDualSourceConflict + API 方法）。
+- Lead 修：测试 fixture 未插值 UUID 导致共享临时目录（gather-dual-(UUID().uuidString) 字面量）；新增 en 文案 1 条；protocol 基线重写。
+
+### 后续（不阻塞 goal 收口）
+
+- C1 插件往返/安装诊断、C1 apply keyword、FTP/SFTP/网盘发布端点、AI 自动关键词等 P2 backlog 见 98-final-audit.md §3。

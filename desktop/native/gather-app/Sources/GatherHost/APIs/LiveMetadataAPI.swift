@@ -528,6 +528,12 @@ public final class LiveMetadataAPI: MetadataAPI {
         try await mapAsync { try await metadataService.diskGeoDate(photoId: photoId) }
     }
 
+    // MARK: - Wave5（batch9）：双源可见性
+
+    public func dualSourceConflict(photoId: String) async throws -> MetadataDualSourceConflict? {
+        try await mapAsync { try await metadataService.dualSourceConflict(photoId: photoId) }
+    }
+
     public func recentBatches(limit: Int) async throws -> [MetadataBatchSummary] {
         try map {
             batchStore.list().prefix(max(0, limit)).map { batch in

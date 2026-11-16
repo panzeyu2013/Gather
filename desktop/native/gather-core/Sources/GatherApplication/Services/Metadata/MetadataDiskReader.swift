@@ -91,6 +91,115 @@ public struct MetadataDiskReader: Sendable {
         }
     }
 
+    // MARK: - Wave5（batch9）：双源冲突可见性
+
+    /// 内嵌 + sidecar 的字段级冲突（仅 JPEG 且 sidecar 存在时才有双源）。
+    ///
+    /// 只做**可见性**提示：写目标策略不变（有 sidecar 就写 sidecar、读侧 sidecar 覆盖内嵌），
+    /// 也不清理内嵌。读不到内嵌 / 解析失败 / sidecar 读失败一律返回空（无法判定 ≠ 无冲突），
+    /// 不抛错——提示信息不该把编辑流程打断。
+    func dualSourceConflict(photoPath: String) async -> [String] {
+        guard Self.isJpegPath(photoPath),
+              FileManager.default.fileExists(atPath: TSPath.xmpSidecarPath(photoPath)),
+              let exif else {
+            return []
+        }
+        let parsed: MetadataParseSegments?
+        do {
+            parsed = try await exif.parse(filePath: photoPath, isJpeg: true)
+        } catch {
+            GatherLogger.log(
+                "dualSourceConflict embedded parse failed (path token=\(TSPath.basename(photoPath))): "
+                    + "\(error)", level: .debug)
+            return []
+        }
+        guard let parsed,
+              let embedded = MetadataAttributes.embeddedAttributesFromParse(parsed) else {
+            // 内嵌不可读或没有可比较的内嵌值 → 无法判定，不报冲突。
+            return []
+        }
+        let sidecar: MetadataWriteAttributes
+        do {
+            sidecar = try await xmp.readAttributes(photoPath: photoPath)
+        } catch {
+            GatherLogger.log(
+                "dualSourceConflict sidecar read failed (path token=\(TSPath.basename(photoPath))): "
+                    + "\(error)", level: .debug)
+            return []
+        }
+        return Self.dualSourceConflictFields(embedded: embedded, sidecar: sidecar)
+    }
+
+    /// 纯比较：两侧**都显式有值**且不同才算冲突（一侧缺失 = 正常叠加，不算）。
+    /// 返回排序后的稳定字段 id；空数组 = 无冲突。
+    static func dualSourceConflictFields(
+        embedded: MetadataWriteAttributes,
+        sidecar: MetadataWriteAttributes
+    ) -> [String] {
+        var fields: [String] = []
+        if let lhs = embedded.rating, let rhs = sidecar.rating, lhs != rhs {
+            fields.append("rating")
+        }
+        if let lhs = embedded.label, let rhs = sidecar.label, lhs != rhs {
+            fields.append("label")
+        }
+        if let lhs = embedded.keywords, let rhs = sidecar.keywords,
+           Set(lhs) != Set(rhs) {
+            fields.append("keywords")
+        }
+        if let lhs = embedded.dateTaken, let rhs = sidecar.dateTaken,
+           !Self.dateTakenEqual(lhs, rhs) {
+            fields.append("dateTaken")
+        }
+        if let lhs = embedded.latitude, let rhs = sidecar.latitude,
+           abs(lhs - rhs) > 1e-5 {
+            fields.append("latitude")
+        }
+        if let lhs = embedded.longitude, let rhs = sidecar.longitude,
+           abs(lhs - rhs) > 1e-5 {
+            fields.append("longitude")
+        }
+        fields.append(contentsOf: Self.descriptiveConflictFields(
+            embedded: embedded.descriptive, sidecar: sidecar.descriptive))
+        return fields.sorted()
+    }
+
+    /// 描述性字段逐项比较（contactInfo 结构成员走另套合并语义，不在双源提示里报）。
+    static func descriptiveConflictFields(
+        embedded: DescriptiveMetadata?,
+        sidecar: DescriptiveMetadata?
+    ) -> [String] {
+        guard let embedded, let sidecar else { return [] }
+        var fields: [String] = []
+        for field in DescriptiveField.allCases where field != .contactInfo {
+            switch (embedded.value(for: field), sidecar.value(for: field)) {
+            case (.text(let lhs)?, .text(let rhs)?):
+                if lhs.trimmingCharacters(in: .whitespacesAndNewlines)
+                    != rhs.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    fields.append(field.rawValue)
+                }
+            case (.list(let lhs)?, .list(let rhs)?):
+                if Set(lhs) != Set(rhs) { fields.append(field.rawValue) }
+            default:
+                // 一侧缺失或结构值：不是"两侧都有显式值"，不算冲突。
+                break
+            }
+        }
+        return fields
+    }
+
+    /// 拍摄时间比较：能归一化就按归一化比（EXIF 冒号形态 vs XMP ISO 不算冲突），
+    /// 否则 trim 后按原文比较。
+    static func dateTakenEqual(_ lhs: String, _ rhs: String) -> Bool {
+        let left = lhs.trimmingCharacters(in: .whitespacesAndNewlines)
+        let right = rhs.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let normalizedLeft = MetadataGeoDateInput.normalizedDateTime(left),
+           let normalizedRight = MetadataGeoDateInput.normalizedDateTime(right) {
+            return normalizedLeft == normalizedRight
+        }
+        return left == right
+    }
+
     /// JPEG 判定（扩展名大小写不敏感）。
     static func isJpegPath(_ path: String) -> Bool {
         let lower = path.lowercased()
