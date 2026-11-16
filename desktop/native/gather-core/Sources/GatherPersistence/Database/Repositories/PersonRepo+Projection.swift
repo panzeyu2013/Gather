@@ -172,8 +172,9 @@ extension PersonRepo {
     }
 
     private func decodeBbox(_ raw: String) -> [Double] {
+        // 逐行解码复用共享 decoder（性能审计 2026-11-17：旧实现每行新建）。
         guard let data = raw.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([Double].self, from: data) else {
+              let decoded = try? RepoJSONCoding.decoder.decode([Double].self, from: data) else {
             return []
         }
         return decoded
@@ -189,7 +190,7 @@ private extension DBValue {
 
 /// TS: JSON.stringify(faceBbox)（number[]）。
 private func jsonString(_ bbox: [Double]) -> String {
-    guard let data = try? JSONEncoder().encode(bbox) else { return "[]" }
+    guard let data = try? RepoJSONCoding.encoder.encode(bbox) else { return "[]" }
     return String(decoding: data, as: UTF8.self)
 }
 

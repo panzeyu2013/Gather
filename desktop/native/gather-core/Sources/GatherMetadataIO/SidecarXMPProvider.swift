@@ -293,8 +293,9 @@ public final class SidecarXMPProvider: XMPProvider {
 
     private func readSidecar(_ photoPath: String) throws -> ParsedSidecar {
         let path = Self.resolveSidecarPath(photoPath)
-        guard FileManager.default.fileExists(atPath: path),
-              let data = FileManager.default.contents(atPath: path)
+        // contents 已表达「不存在/不可读 → nil」，再 fileExists 是多一次 stat
+        // （性能审计 2026-11-17：这是逐张照片读取 sidecar 的路径）。语义不变。
+        guard let data = FileManager.default.contents(atPath: path)
         else { return ParsedSidecar() }
         let parser = XMLParser(data: data)
         let delegate = SidecarXMLDelegate()

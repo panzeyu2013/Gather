@@ -44,6 +44,9 @@ public struct CullingHistoryStackTops: Equatable, Sendable {
 /// culling_history 仓库（TS CullingHistoryRepository）。
 public final class CullingHistoryRepo {
     private let connection: DBConnection
+    /// 历史操作 JSON 编解码器（性能审计 2026-11-17：append/list/delete 逐行新建）。
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
 
     public init(connection: DBConnection) {
         self.connection = connection
@@ -55,7 +58,7 @@ public final class CullingHistoryRepo {
             _ = try connection.prepare(
                 "DELETE FROM culling_history WHERE session_id = ? AND undone = 1"
             ).run([.text(sessionId)])
-            let operationJSON = try JSONEncoder().encode(entries)
+            let operationJSON = try encoder.encode(entries)
             _ = try connection.prepare("""
                 INSERT INTO culling_history (session_id, operation_json, undone, created_at)
                 VALUES (?, ?, 0, ?)
@@ -143,7 +146,7 @@ public final class CullingHistoryRepo {
         var doomed: [Int64] = []
         for row in rows {
             guard let json = row[1].textValue,
-                  let entries = try? JSONDecoder().decode(
+                  let entries = try? decoder.decode(
                       [CullingHistoryEntry].self, from: Data(json.utf8)) else { continue }
             if entries.contains(where: { photoIds.contains($0.photoId) }) {
                 doomed.append(row[0].intValue ?? 0)
@@ -162,7 +165,7 @@ public final class CullingHistoryRepo {
 
     private func makeOperation(_ row: CullingHistoryRow) throws -> CullingHistoryOperation {
         do {
-            let entries = try JSONDecoder().decode(
+            let entries = try decoder.decode(
                 [CullingHistoryEntry].self,
                 from: Data(row.operationJSON.utf8)
             )

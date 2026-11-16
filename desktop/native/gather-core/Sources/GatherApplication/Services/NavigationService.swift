@@ -289,14 +289,20 @@ public final class NavigationService {
             }
             current = []
         }
-        for row in rows {
+        // 逐行只算一次（性能审计 2026-11-17）：旧实现每行对「当前行 + 上一行」各
+        // 解析一次时间戳、各编译一次文件名数字正则（1 万行 ≈ 4 万次重活）。预计算
+        // 不改变取值、比较顺序与 NaN 语义（previous 存在时其行号恒为 index - 1：
+        // current 是连续后缀，只在边界 flush 后重新累积）。
+        let timestamps = rows.map { parseISODate($0.capturedAt) }
+        let sequences = rows.map { filenameSequence($0.filename) }
+        for (index, row) in rows.enumerated() {
             let previous = current.last
-            let gap = previous.map { (parseISODate(row.capturedAt) - parseISODate($0.capturedAt)) / 1000 } ?? 0
+            let gap = previous == nil ? 0 : (timestamps[index] - timestamps[index - 1]) / 1000
             let directoryChanged = previous.map { TSPath.dirname($0.filepath) != TSPath.dirname(row.filepath) } ?? false
             let sameCamera = previous == nil || previous!.cameraModel.isEmpty || row.cameraModel.isEmpty
                 || previous!.cameraModel == row.cameraModel
-            let previousSequence = previous.flatMap { filenameSequence($0.filename) }
-            let currentSequence = filenameSequence(row.filename)
+            let previousSequence = previous == nil ? nil : sequences[index - 1]
+            let currentSequence = sequences[index]
             let sequential = previousSequence == nil || currentSequence == nil
                 || (currentSequence! > previousSequence! && currentSequence! - previousSequence! <= 3)
             let visualDistance = previous.flatMap { hammingDistance($0.hashHex, row.hashHex) }
@@ -453,25 +459,37 @@ func hammingDistance(_ left: String, _ right: String) -> Int? {
     return (a ^ b).nonzeroBitCount
 }
 
+/// parseISODate 的 EXIF/空格形态兜底解析器（性能审计 2026-11-17）。
+///
+/// 旧实现每次调用新建 3 个 formatter（ISO8601 ×2 + DateFormatter ×1），而它被
+/// 逐行分组循环调用（1 万张照片 ≈ 2 万次调用 ≈ 6 万个 formatter）。带时区形态
+/// 复用仓库唯一的 ISO 解析器 tsParseISODate（同一对 formatOptions、同一兜底顺序）；
+/// 两种无时区形态做成只读静态 formatter（创建后不再改配置；与 IngestService 的
+/// 静态 exifDateFormatter 同一模式）。取值与顺序与原实现逐条一致。
+private enum LegacyWallDateParsers {
+    static let exif = make("yyyy:MM:dd HH:mm:ss")
+    static let dashed = make("yyyy-MM-dd HH:mm:ss")
+    static let all = [exif, dashed]
+
+    private static func make(_ format: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = format
+        return formatter
+    }
+}
+
 /// TS: Date.parse(ISO string) → 毫秒时间戳。
 func parseISODate(_ value: String) -> Double {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let date = formatter.date(from: value) {
-        return date.timeIntervalSince1970 * 1000
-    }
-    let formatter2 = ISO8601DateFormatter()
-    if let date = formatter2.date(from: value) {
+    // 前两步与原实现同义：ISO8601DateFormatter(.withInternetDateTime[, .withFractionalSeconds])。
+    if let date = tsParseISODate(value) {
         return date.timeIntervalSince1970 * 1000
     }
     // 生产库的 date_taken 是 EXIF 原值（"2026:07:30 10:00:00"），
     // 也兼容无 T 的 ISO 空格形式；否则 gap 恒 NaN → 每张自成一组。
-    let fallback = DateFormatter()
-    fallback.locale = Locale(identifier: "en_US_POSIX")
-    fallback.timeZone = TimeZone(secondsFromGMT: 0)
-    for format in ["yyyy:MM:dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss"] {
-        fallback.dateFormat = format
-        if let date = fallback.date(from: value) {
+    for formatter in LegacyWallDateParsers.all {
+        if let date = formatter.date(from: value) {
             return date.timeIntervalSince1970 * 1000
         }
     }

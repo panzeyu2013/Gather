@@ -399,10 +399,12 @@ public final class QualityService: @unchecked Sendable {
         if ids.isEmpty { return [] }
         let rows = try qualityRepo.latestResults(photoIds: ids)
         var latest: [String: QualityResult] = [:]
+        // 逐行解码复用同一 decoder（性能审计 2026-11-17：旧实现每行新建）。
+        let decoder = JSONDecoder()
         for row in rows {
             if latest[row.photoId] != nil { continue }
             guard let data = row.resultJson.data(using: .utf8),
-                  var result = try? JSONDecoder().decode(QualityResult.self, from: data) else {
+                  var result = try? decoder.decode(QualityResult.self, from: data) else {
                 // 跳过无效历史分析行（TS catch 语义）。
                 continue
             }
@@ -426,9 +428,11 @@ public final class QualityService: @unchecked Sendable {
             modelId: Self.modelId,
             modelVersion: Self.modelVersion
         )
+        // 逐行解码复用同一 decoder（性能审计 2026-11-17：旧实现每行新建）。
+        let decoder = JSONDecoder()
         for row in rows {
             guard let data = row.resultJson.data(using: .utf8),
-                  let result = try? JSONDecoder().decode(QualityResult.self, from: data) else {
+                  let result = try? decoder.decode(QualityResult.self, from: data) else {
                 continue
             }
             rowsByPhoto[row.photoId, default: []].append((row.fingerprint, result))
@@ -477,12 +481,20 @@ public final class QualityService: @unchecked Sendable {
         )
         let memberGroups = try groups ?? loadSimilarityGroups(sessionId: sessionId)
         guard let memberGroups else { return }
+        // 位置索引只建一次（性能审计 2026-11-17）：旧实现在「组 × 组员」嵌套循环里
+        // 对 results 逐条线性 firstIndex —— 相似组覆盖整会话时是 O(n²)。这里保留
+        // 首次出现下标（与 firstIndex 同义）；本方法只写 relativeRank，不增删元素。
+        var indexByPhotoId: [String: Int] = [:]
+        indexByPhotoId.reserveCapacity(results.count)
+        for (index, result) in results.enumerated() where indexByPhotoId[result.photoId] == nil {
+            indexByPhotoId[result.photoId] = index
+        }
         for members in memberGroups.values {
             let ranked = members
                 .compactMap { successful[$0] }
                 .sorted { $0.qualityScore > $1.qualityScore }
             for (index, member) in ranked.enumerated() {
-                if let position = results.firstIndex(where: { $0.photoId == member.photoId }) {
+                if let position = indexByPhotoId[member.photoId] {
                     results[position].relativeRank = Double(index + 1)
                 }
             }

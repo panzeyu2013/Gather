@@ -231,11 +231,12 @@ public final class TriageRepo: TriageRepository {
             WHERE session_id = ?
             ORDER BY photo_id
             """).query([.text(sessionId)])
+        let decoder = RepoJSONCoding.decoder
         return rows.map { row in
             let verdict = TriageVerdict(rawValue: row[1].textValue ?? "") ?? .review
             let reasons: [TriageReason]
             do {
-                reasons = try JSONDecoder().decode(
+                reasons = try decoder.decode(
                     [TriageReason].self,
                     from: Data((row[4].textValue ?? "[]").utf8)
                 )
@@ -265,10 +266,11 @@ public final class TriageRepo: TriageRepository {
                policy_version, input_fingerprint, computed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """)
+        let encoder = RepoJSONCoding.encoder
         for suggestion in suggestions {
             let reasons: String
             do {
-                let data = try JSONEncoder().encode(suggestion.reasons)
+                let data = try encoder.encode(suggestion.reasons)
                 reasons = String(data: data, encoding: .utf8) ?? "[]"
             } catch {
                 reasons = "[]"
@@ -490,6 +492,7 @@ public final class TriageRepo: TriageRepository {
     private func loadModelReviews(assetFileIds: [String]) throws -> [String: ModelReviewResult] {
         guard !assetFileIds.isEmpty else { return [:] }
         var result: [String: ModelReviewResult] = [:]
+        let decoder = RepoJSONCoding.decoder
         for chunk in chunks(assetFileIds) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             let rows = try connection.prepare("""
@@ -504,7 +507,7 @@ public final class TriageRepo: TriageRepository {
                 if result[fileId] != nil { continue }
                 guard let json = row[1].textValue else { continue }
                 do {
-                    let decoded = try JSONDecoder().decode(
+                    let decoded = try decoder.decode(
                         ModelReviewResult.self, from: Data(json.utf8))
                     // failed 行没有信号；不能拿它顶掉更早的成功行。
                     guard decoded.status == .succeeded else { continue }
@@ -520,6 +523,7 @@ public final class TriageRepo: TriageRepository {
     private func loadQuality(assetFileIds: [String]) throws -> [String: QualityResult] {
         guard !assetFileIds.isEmpty else { return [:] }
         var result: [String: QualityResult] = [:]
+        let decoder = RepoJSONCoding.decoder
         for chunk in chunks(assetFileIds) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
             var params: [DBValue?] = []
@@ -537,7 +541,7 @@ public final class TriageRepo: TriageRepository {
                 guard let json = row[1].textValue else { continue }
                 let decoded: QualityResult
                 do {
-                    decoded = try JSONDecoder().decode(
+                    decoded = try decoder.decode(
                         QualityResult.self, from: Data(json.utf8)
                     )
                 } catch {
@@ -694,6 +698,7 @@ public final class TriageRepo: TriageRepository {
             SELECT id, group_type, photo_ids_json, lead_photo_id
             FROM navigation_groups WHERE session_id = ?
             """).query([.text(sessionId)])
+        let decoder = RepoJSONCoding.decoder
         for row in navigationRows {
             let id = row[0].textValue ?? ""
             let type = row[1].textValue ?? ""
@@ -701,7 +706,7 @@ public final class TriageRepo: TriageRepository {
             guard let json = row[2].textValue else { continue }
             let photoIds: [String]
             do {
-                photoIds = try JSONDecoder().decode([String].self, from: Data(json.utf8))
+                photoIds = try decoder.decode([String].self, from: Data(json.utf8))
             } catch {
                 continue
             }

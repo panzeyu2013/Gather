@@ -769,14 +769,16 @@ public enum IPTCControlledVocabulary {
 
 public extension JSONValue {
     /// 任意 Encodable -> JSONValue（经 JSONEncoder 一次往返）。
+    /// 编解码器复用 JSONValueCoding（性能审计 2026-11-17：元数据缓存的
+    /// descriptive 逐行往返曾每次新建两个 coder；默认配置输出逐字节相同）。
     init<T: Encodable>(encoding value: T) throws {
-        let data = try JSONEncoder().encode(value)
-        self = try JSONDecoder().decode(JSONValue.self, from: data)
+        let data = try JSONValueCoding.encoder.encode(value)
+        self = try JSONValueCoding.decoder.decode(JSONValue.self, from: data)
     }
 
     /// JSONValue -> 任意 Decodable。
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
-        let data = try JSONEncoder().encode(self)
-        return try JSONDecoder().decode(type, from: data)
+        let data = try JSONValueCoding.encoder.encode(self)
+        return try JSONValueCoding.decoder.decode(type, from: data)
     }
 }

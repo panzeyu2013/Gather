@@ -112,6 +112,18 @@ public extension JSONValue {
 // 键与 TS `JSON.stringify` 一致，不做 key 转换。原注释：Protocol 侧不重复定义
 // stringValue/arrayValue（String/[String] 语义），这里承接仓库层与算法层共用的
 // 便捷方法；Persistence/Analysis/Domain 经 import GatherProtocol 使用。
+
+/// JSONValue 编解码器的共享实例（性能审计 2026-11-17）。
+///
+/// `JSONValue.parse` / `stringify` 在逐行路径上被高频调用（元数据缓存行的
+/// keywords/descriptive、人脸 bbox、分析指纹等），旧实现每次调用新建
+/// JSONEncoder/JSONDecoder。默认配置下二者没有跨调用可变状态（Foundation 已标
+/// Sendable），复用不改变任何输出字节；损坏输入的抛错/回落语义也不变。
+enum JSONValueCoding {
+    static let encoder = JSONEncoder()
+    static let decoder = JSONDecoder()
+}
+
 extension JSONValue {
     public subscript(_ key: String) -> JSONValue? {
         if case .object(let dict) = self { return dict[key] }
@@ -130,13 +142,13 @@ extension JSONValue {
 
     /// TS `JSON.stringify`。
     public static func stringify(_ value: JSONValue) throws -> String {
-        let data = try JSONEncoder().encode(value)
+        let data = try JSONValueCoding.encoder.encode(value)
         return String(data: data, encoding: .utf8) ?? ""
     }
 
     /// TS `JSON.parse`（解析失败抛出）。
     public static func parse(_ string: String) throws -> JSONValue {
-        try JSONDecoder().decode(JSONValue.self, from: Data(string.utf8))
+        try JSONValueCoding.decoder.decode(JSONValue.self, from: Data(string.utf8))
     }
 
     /// Int64 → 数字（现有 case 为 .number(Double)，双端无损）。

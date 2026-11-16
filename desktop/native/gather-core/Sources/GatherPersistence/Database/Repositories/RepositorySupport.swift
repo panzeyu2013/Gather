@@ -107,6 +107,17 @@ public func tsExists(_ path: String) -> Bool {
     FileManager.default.fileExists(atPath: path)
 }
 
+/// 仓库层共享 JSON 编解码器（2026-11-17 性能审计）。
+///
+/// 逐行路径（triage 建议/历史操作/人物 bbox/关键词、元数据缓存投影）过去每次
+/// 调用新建 JSONEncoder/JSONDecoder。默认配置下二者没有跨调用可变状态
+/// （Foundation 已标 Sendable，同类静态实例在 FaceConstraintCodec 已有先例），
+/// 复用不改变输出字节与失败语义。
+enum RepoJSONCoding {
+    static let encoder = JSONEncoder()
+    static let decoder = JSONDecoder()
+}
+
 /// 可空值 → DBValue?（SQL 绑定用）。
 public func optDB(_ v: Int64?) -> DBValue? { v.map { .int($0) } }
 public func optDB(_ v: Double?) -> DBValue? { v.map { .real($0) } }

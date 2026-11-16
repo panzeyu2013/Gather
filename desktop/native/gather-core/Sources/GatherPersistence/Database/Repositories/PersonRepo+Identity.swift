@@ -364,8 +364,9 @@ extension PersonRepo {
     }
 
     private func parseKeywords(_ raw: String) -> [String] {
+        // 逐行解码复用共享 decoder（性能审计 2026-11-17：旧实现每行新建）。
         guard let data = raw.data(using: .utf8),
-              let parsed = try? JSONDecoder().decode([String].self, from: data) else {
+              let parsed = try? RepoJSONCoding.decoder.decode([String].self, from: data) else {
             return []
         }
         return parsed
@@ -374,6 +375,6 @@ extension PersonRepo {
 
 /// TS: JSON.stringify(keywords) —— JSON 数组文本。
 private func jsonString(_ keywords: [String]) -> String {
-    guard let data = try? JSONEncoder().encode(keywords) else { return "[]" }
+    guard let data = try? RepoJSONCoding.encoder.encode(keywords) else { return "[]" }
     return String(decoding: data, as: UTF8.self)
 }
