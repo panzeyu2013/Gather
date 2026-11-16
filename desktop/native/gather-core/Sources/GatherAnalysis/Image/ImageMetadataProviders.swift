@@ -163,11 +163,15 @@ public struct ImageIOExifProvider: ExifProvider {
             if let dict = value as? [String: Any] {
                 return .object(dict.mapValues { json($0) })
             }
-            // CF 运行时判型 + 解包（CGImageMetadataTag 是 CF 类型，Swift 对 CF 类型的
-            // 条件转换被编译器判为恒真而禁用，故走 typeID）。
+            // CF 运行时判型 + 解包：CGImageMetadataTag 是 CF 类型，条件转换（as?）被
+            // 编译器判为恒真而报错（"conditional downcast to CoreFoundation type ...
+            // will always succeed"），-warnings-as-errors 下会直接挡住构建。这里先比对
+            // CFTypeID，再用 unsafeDowncast：typeID 相等已证明同型（等价 as! 的前提），
+            // 未知 CF 类型不会进入本分支，仍走下方 description 兜底、不崩。
             let object = value as AnyObject
             if CFGetTypeID(object) == CGImageMetadataTagGetTypeID() {
-                return json(CGImageMetadataTagCopyValue(object as! CGImageMetadataTag))
+                let tag = unsafeDowncast(object, to: CGImageMetadataTag.self)
+                return json(CGImageMetadataTagCopyValue(tag))
             }
         }
         return .string(String(describing: value))

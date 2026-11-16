@@ -4,6 +4,10 @@
 # 指标（均为“非纯注释行”的匹配行数；整行以 // 或 * 开头不计）：
 #   unchecked_sendable  Sources/**/*.swift 中 @unchecked Sendable
 #   try_optional        Sources/**/*.swift 中 try?
+#   try_bang            Sources/**/*.swift 中 try!（零容忍：新代码不得引入）
+#   as_bang             Sources/**/*.swift 中 as!（零容忍：用 guard/as? 或 CFTypeID + unsafeDowncast）
+#   fatal_error         Sources/**/*.swift 中 fatalError（零容忍：错误走 throws，不崩进程）
+#   nonisolated_unsafe  Sources/**/*.swift 中 nonisolated(unsafe)（并发约定禁止新增）
 #   services_prepare    gather-core/Sources/GatherApplication/Services 中 prepare(
 #   todo_fixme          Sources + Tests 中 TODO / FIXME
 #   with_known_issue    Tests 中 withKnownIssue(
@@ -28,7 +32,7 @@ SERVICES="$CORE_SRC/GatherApplication/Services"
 CORE_TESTS="desktop/native/gather-core/Tests"
 APP_TESTS="desktop/native/gather-app/Tests"
 BASELINE="docs/cleanup-baseline.json"
-METRICS="unchecked_sendable try_optional services_prepare todo_fixme with_known_issue"
+METRICS="unchecked_sendable try_optional try_bang as_bang fatal_error nonisolated_unsafe services_prepare todo_fixme with_known_issue"
 
 for d in "$CORE_SRC" "$APP_SRC" "$SERVICES" "$CORE_TESTS" "$APP_TESTS"; do
   if [ ! -d "$d" ]; then
@@ -49,7 +53,7 @@ for arg in "$@"; do
     --write-baseline) WRITE=1 ;;
     --allow-growth) ALLOW_GROWTH=1 ;;
     -h|--help)
-      sed -n '2,20p' "$0"
+      sed -n '2,21p' "$0"
       exit 0
       ;;
     *)
@@ -77,6 +81,10 @@ metric() {
   case "$1" in
     unchecked_sendable) count_matches '@unchecked Sendable' "$CORE_SRC" "$APP_SRC" ;;
     try_optional)       count_matches 'try\?' "$CORE_SRC" "$APP_SRC" ;;
+    try_bang)           count_matches 'try!' "$CORE_SRC" "$APP_SRC" ;;
+    as_bang)            count_matches 'as!' "$CORE_SRC" "$APP_SRC" ;;
+    fatal_error)        count_matches 'fatalError' "$CORE_SRC" "$APP_SRC" ;;
+    nonisolated_unsafe) count_matches 'nonisolated\(unsafe\)' "$CORE_SRC" "$APP_SRC" ;;
     services_prepare)   count_matches 'prepare\(' "$SERVICES" ;;
     todo_fixme)         count_matches 'TODO|FIXME' "$CORE_SRC" "$APP_SRC" "$CORE_TESTS" "$APP_TESTS" ;;
     with_known_issue)   count_matches 'withKnownIssue' "$CORE_TESTS" "$APP_TESTS" ;;
@@ -97,6 +105,10 @@ write_baseline() {
   "metrics": {
     "unchecked_sendable": $(metric unchecked_sendable),
     "try_optional": $(metric try_optional),
+    "try_bang": $(metric try_bang),
+    "as_bang": $(metric as_bang),
+    "fatal_error": $(metric fatal_error),
+    "nonisolated_unsafe": $(metric nonisolated_unsafe),
     "services_prepare": $(metric services_prepare),
     "todo_fixme": $(metric todo_fixme),
     "with_known_issue": $(metric with_known_issue)
@@ -104,6 +116,10 @@ write_baseline() {
   "scopes": {
     "unchecked_sendable": "desktop/native/*/Sources/**/*.swift",
     "try_optional": "desktop/native/*/Sources/**/*.swift",
+    "try_bang": "desktop/native/*/Sources/**/*.swift",
+    "as_bang": "desktop/native/*/Sources/**/*.swift",
+    "fatal_error": "desktop/native/*/Sources/**/*.swift",
+    "nonisolated_unsafe": "desktop/native/*/Sources/**/*.swift",
     "services_prepare": "desktop/native/gather-core/Sources/GatherApplication/Services/**/*.swift",
     "todo_fixme": "desktop/native/*/Sources + desktop/native/*/Tests",
     "with_known_issue": "desktop/native/*/Tests/**/*.swift"

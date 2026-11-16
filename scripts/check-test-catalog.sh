@@ -29,7 +29,7 @@ TEST_ROOTS=(
 
 # 只允许 --self-test 的子进程覆盖扫描根，避免普通调用被环境变量绕过。
 if [ "${CTC_SELF_TEST_CHILD:-0}" = "1" ] && [ -n "${CTC_TEST_ROOTS_OVERRIDE:-}" ]; then
-  # shellcheck disable=SC2206
+  # shellcheck disable=SC2206  # 自测用空格分隔的测试根清单，有意按词拆分（SC2206 正是该语义）
   TEST_ROOTS=(${CTC_TEST_ROOTS_OVERRIDE})
 fi
 
@@ -125,11 +125,14 @@ skip_test_name() {
 }
 
 # 负例自测：临时目录内构造缺元数据 / 补齐元数据的 skip，验证 strict 开关是活的。
+# 临时目录放脚本级变量：EXIT trap 在函数返回后才执行，local 变量届时已出作用域，
+# 所以 trap 必须单引号延迟展开脚本级变量（立即展开只对 local 有效但会骗过 SC2064）。
+SELFTEST_TMP=""
 run_self_test() {
-  local tmp root script out rc
-  tmp="$(mktemp -d)"
-  trap "rm -rf '$tmp'" EXIT
-  root="$tmp/root"
+  local root script out rc
+  SELFTEST_TMP="$(mktemp -d)"
+  trap 'rm -rf "$SELFTEST_TMP"' EXIT
+  root="$SELFTEST_TMP/root"
   mkdir -p "$root"
   script="$ROOT/scripts/check-test-catalog.sh"
 

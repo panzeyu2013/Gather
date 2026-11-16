@@ -68,6 +68,10 @@ jobs:
         run: ./scripts/check-coded-errors.sh
       - name: Backlog evidence
         run: ./scripts/check-backlog-evidence.sh
+      # 仓库层卫生：脚本语法（bash -n stderr 为空）/editorconfig/Markdown 相对链接/
+      # 本地化表安全/scripts 缓存产物。纯 Linux、无 Swift 依赖，与上面各门禁同 job。
+      - name: Repo hygiene
+        run: ./scripts/check-repo-hygiene.sh
 
   gather-core:
     name: gather-core tests

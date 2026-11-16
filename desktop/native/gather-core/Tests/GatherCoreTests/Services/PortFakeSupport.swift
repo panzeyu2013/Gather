@@ -235,7 +235,7 @@ final class PortFakeMetadataMutation: MetadataMutationPort, @unchecked Sendable 
 
 // MARK: - Delivery
 
-// #6 收窄后 DeliveryRowReading 带 Sendable，带可变记录器的替身只能 
+// #6 收窄后 DeliveryRowReading 带 Sendable，带可变记录器的替身只能
 // （测试串行；Tests 不进 cleanup-ratchet 的计数范围）。
 final class PortFakeDeliveryRepo: DeliveryRepository, DeliveryRowReading, @unchecked Sendable {
     var items: [DeliveryItemRow] = []

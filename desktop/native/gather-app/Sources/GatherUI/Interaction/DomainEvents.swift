@@ -106,7 +106,7 @@ private struct JobTerminalRefreshModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onReceive(GatherEventChannel.jobTerminal.publisher) { event in
-                
+
                 if sessionOnly, event.job.scopeType != "session" { return }
                 if let sessionId, event.job.scopeId != sessionId { return }
 

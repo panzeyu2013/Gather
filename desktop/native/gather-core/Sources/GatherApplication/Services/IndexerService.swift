@@ -142,7 +142,7 @@ public final class IndexerService: @unchecked Sendable {
         }
     }
 
-    /// 新照片入库后的元数据预热：把新行 id 交给元数据链路（EXIF → 
+    /// 新照片入库后的元数据预热：把新行 id 交给元数据链路（EXIF →
     /// photo_metadata_cache，含 date_taken / camera_model）。**必须**由宿主注入
     /// MetadataService.getMetadata：不注入时这些列为空，RAW/JPEG 的按时间自动
     /// 合并（AssetRepo.reconcileRawJpegLinks 要求两侧 date_taken + camera_model）

@@ -163,3 +163,4 @@ if gaps:
 if fail:
     sys.exit(1)
 print("check-domain-writes: OK")
+PY

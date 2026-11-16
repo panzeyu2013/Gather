@@ -71,12 +71,16 @@ proto_file_n=$(wc -l < "$TMP/proto-files" | tr -d ' ')
 proto_line_n=$(while IFS= read -r f; do cat "$f"; done < "$TMP/proto-files" | wc -l | tr -d ' ')
 
 # 顶层声明：行首必须是 public，排除缩进的嵌套类型。
-grep -hE '^public (struct|enum|indirect enum|final class|class|protocol|actor) [A-Za-z_][A-Za-z0-9_]*' \
-  $(cat "$TMP/proto-files") > "$TMP/decls" || true
+# 文件清单用 xargs 逐行传入：未加引号的 $(cat ...) 依赖 word splitting（SC2046），
+# 路径含空白时会拆错。与下方 module-metrics 的逐模块统计同一写法。
+xargs -I{} cat {} < "$TMP/proto-files" \
+  | grep -hE '^public (struct|enum|indirect enum|final class|class|protocol|actor) [A-Za-z_][A-Za-z0-9_]*' \
+  > "$TMP/decls" || true
 sed -E 's/^public (struct|enum|indirect enum|final class|class|protocol|actor) ([A-Za-z_][A-Za-z0-9_]*).*/\2/' \
   "$TMP/decls" | LC_ALL=C sort > "$TMP/type-names"
 public_types=$(wc -l < "$TMP/type-names" | tr -d ' ')
-public_declarations=$(grep -hE '^[[:space:]]*public[[:space:]]' $(cat "$TMP/proto-files") | wc -l | tr -d ' ')
+public_declarations=$(xargs -I{} cat {} < "$TMP/proto-files" \
+  | grep -hE '^[[:space:]]*public[[:space:]]' | wc -l | tr -d ' ')
 
 # 每个类型名的声明次数（顶层同名不应出现；防御性保留）。
 awk '{ print $1 }' "$TMP/type-names" | LC_ALL=C sort | uniq -c > "$TMP/decl-counts"

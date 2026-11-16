@@ -152,12 +152,10 @@ if [ "$STRICT" -eq 1 ]; then
     fi
 
     # 必需文件按归属拆开：#13 把纯数据/替身搬到了 GatherPreviewData。
-    for required in PreviewProviders.swift; do
-      if [ ! -f "$PREVIEW_DIR/$required" ]; then
-        echo "FAIL(strict): 缺少 fixture 文件 $PREVIEW_DIR/$required" >&2
-        fail=1
-      fi
-    done
+    if [ ! -f "$PREVIEW_DIR/PreviewProviders.swift" ]; then
+      echo "FAIL(strict): 缺少 fixture 文件 $PREVIEW_DIR/PreviewProviders.swift" >&2
+      fail=1
+    fi
     for required in PreviewFixtures.swift PreviewAPIs.swift; do
       if [ ! -f "$PREVIEW_DATA_DIR/$required" ]; then
         echo "FAIL(strict): 缺少 fixture 文件 $PREVIEW_DATA_DIR/$required" >&2

@@ -28,7 +28,10 @@ APP="$ROOT/desktop/native/gather-app"
 # 用户缓存）。测试统一落到仓库 .build/，跨运行复用——同一份权重只编译一次，
 # 之后各进程只读，避免每次运行往系统临时目录写 37MB。
 export GATHER_MODEL_CACHE_DIR="${GATHER_MODEL_CACHE_DIR:-$ROOT/.build/gather-model-cache}"
-FLAGS=(${SWIFT_TEST_FLAGS:-})
+# SC2206：SWIFT_TEST_FLAGS 是「按空白拆分」的一组 flag（不是单个带空格参数），
+# 原写法 ${SWIFT_TEST_FLAGS:-} 不加引号依赖 word splitting，且会顺带触发 glob 展开；
+# read -a 只做 IFS 拆分、不做 glob，空值时得到空数组（后续 ${FLAGS[@]+...} 兼容 bash 3.2）。
+read -r -a FLAGS <<< "${SWIFT_TEST_FLAGS:-}"
 
 # 进程级兜底（2026-10-30）：进程内的 TempHygiene(atexit) 覆盖不到两种情况——
 # ① SIGKILL / Ctrl-C 时 atexit 不执行；② 个别子系统（如 DeliveryReplayClaims 的
