@@ -253,4 +253,167 @@ enum AppImport {
             "\(month)/\(day) \(hour):\(String(format: "%02d", minute))"
         )
     }
+
+    // MARK: - Wave5 batch7（A2/R5）：C1 导入的统一语义
+
+    /// C1 导入的统一来源标记（菜单 / Dashboard / 深链三个入口共用同一字符串）。
+    static let captureOneSource = "capture-one"
+
+    /// C1 文件导入的统一入口：capture-one 来源标 + 「Capture One 文件」失败提示标签 +
+    /// 判断数据落库（三个 C1 入口共用，来源/命名/判断语义只有这一份）。
+    ///
+    /// 顺序：AppImport.importFiles 建库 → 外层 afterCreate（如自动初审）→ coordinator
+    /// 按导入路径取回暂存判断并调度落库。判断落库失败不影响导入结果（协调器自己收敛）。
+    @MainActor
+    static func importCaptureOneFiles(
+        _ importPaths: [String],
+        sessionAPI: any SessionAPI,
+        coordinator: C1ImportCoordinator,
+        l10n: L10n,
+        afterCreate: (@MainActor (SessionCreateResult) async throws -> Void)? = nil
+    ) async {
+        // 与 importFiles 的归一化口径对齐：判断按**实际导入路径集合**暂存/取回，
+        // 避免入口路径里有被过滤项时 take 失配（判断会静默丢失）。
+        let normalizedPaths = normalizeImportFilepaths(importPaths)
+        guard !normalizedPaths.isEmpty else { return }
+        await importFiles(
+            normalizedPaths,
+            sessionAPI: sessionAPI,
+            source: captureOneSource,
+            sourceLabel: l10n("Capture One 文件"),
+            l10n: l10n,
+            afterCreate: { result in
+                // 外层钩子（如自动初审）失败也要保证判断落库调度照常执行：
+                // 两者互不依赖，任何一方失败都不影响导入结果。
+                if let afterCreate {
+                    do {
+                        try await afterCreate(result)
+                    } catch {
+                        GatherLogger.log(
+                            "c1.import afterCreate hook failed: \(error)", level: .warn)
+                    }
+                }
+                coordinator.finishCreate(sessionId: result.session.id, paths: normalizedPaths)
+            }
+        )
+    }
+}
+
+// MARK: - C1 判断数据随导入的统一入口（Wave5 batch7 / A2 / R5）
+//
+// 从 AppBootstrap 的菜单闭包下沉到这里：三个 C1 入口（菜单 ⌘⇧I / Dashboard 新建工作区
+// source=capture-one / gather://import?source=capture-one）共用同一份「快照 → 暂存 →
+// 建库后落库（等待 metadata.scan 终态，跳过登记 pending 重放）」语义。
+
+/// C1 判断快照的待应用队列：按「归一化路径集合」暂存，等建库后取回。
+///
+/// key 用路径集合而不是 sessionId：读快照时还没有 session（新建工作区），而两次 C1
+/// 导入可能在 await 之间交错（各自独立 Task）；按文件集关联，A 的判断不会被应用到 B 的
+/// 新会话。所有调用都在 MainActor 上，因此不需要锁；同文件集的并发导入共用同一份快照
+/// （内容一致、幂等）。
+@MainActor
+final class C1PendingJudgements {
+    private var byPathSet: [String: [C1VariantJudgement]] = [:]
+
+    func store(_ paths: [String], judgements: [C1VariantJudgement]) {
+        // 上限防御：用户连续取消/失败导入时不留无限增长的残留（超过 8 批直接清空，
+        // 代价只是丢掉还没被消费的旧判断——导入仍会正常进行）。
+        if byPathSet.count >= 8 { byPathSet.removeAll() }
+        byPathSet[Self.key(paths: paths)] = judgements
+    }
+
+    func take(paths: [String]) -> [C1VariantJudgement] {
+        byPathSet.removeValue(forKey: Self.key(paths: paths)) ?? []
+    }
+
+    func reset() {
+        byPathSet.removeAll()
+    }
+
+    static func key(paths: [String]) -> String {
+        paths.map(ScanPath.canonical).sorted().joined(separator: "\u{1F}")
+    }
+}
+
+/// C1 判断数据随导入的统一协调器（三个 C1 入口共用）。
+///
+/// 职责：
+/// - capturePaths：读 selectedVariantSnapshot，把判断按**导入路径集合**暂存，并返回
+///   本次要导入的路径（入口已确定路径时以入口为准；否则用快照路径）。读不到判断
+///   → 退回 fallback 路径并广播 C1_JUDGEMENTS_UNAVAILABLE（导入照常进行，G3 降级口径）；
+/// - finishCreate：建库后取回该路径集合的判断，交给注入的 scheduler
+///   （生产 = 等 metadata.scan 终态后落库；跳过时由 AppBootstrap 登记 C1PendingJudgementReplay）。
+///
+/// 不持 DB / 桥（全部闭包注入），因此可单测；判断落库的任何失败都不影响导入结果。
+@MainActor
+struct C1ImportCoordinator {
+    typealias SnapshotProvider = @MainActor () async throws -> C1SelectionSnapshot
+    typealias PathProvider = @MainActor () async throws -> [String]
+    typealias ApplyScheduler = @MainActor (_ sessionId: String, _ judgements: [C1VariantJudgement]) -> Void
+
+    private let snapshotProvider: SnapshotProvider
+    private let fallbackPathProvider: PathProvider
+    private let scheduleApply: ApplyScheduler
+    private let journal: C1PendingJudgements
+
+    init(
+        snapshotProvider: @escaping SnapshotProvider,
+        fallbackPathProvider: @escaping PathProvider,
+        scheduleApply: @escaping ApplyScheduler,
+        journal: C1PendingJudgements = C1PendingJudgements()
+    ) {
+        self.snapshotProvider = snapshotProvider
+        self.fallbackPathProvider = fallbackPathProvider
+        self.scheduleApply = scheduleApply
+        self.journal = journal
+    }
+
+    /// 读快照 → 暂存判断 → 返回本次要导入的路径。
+    ///
+    /// - Parameter expectedPaths: 入口已经确定的导入路径（Dashboard / 深链）。nil = 菜单
+    ///   语义，用快照的路径。给了 expectedPaths 时只保留与之（canonical 归一后）相交的
+    ///   判断——导入范围始终以入口为准，快照只提供判断数据。
+    /// - Throws: 快照失败时退回 fallback 路径（不抛）；**两条路都失败**才抛出，
+    ///   由调用方决定是否继续导入（深链会退化为仅按文件导入）。
+    func capturePaths(expectedPaths: [String]? = nil) async throws -> [String] {
+        let snapshot: C1SelectionSnapshot
+        do {
+            snapshot = try await snapshotProvider()
+        } catch {
+            // G3 降级：判断数据是可选增强，绝不能让"读不到判断"变成"导入失败"。
+            let paths = try await fallbackPathProvider()
+            journal.store(paths, judgements: [])
+            NotificationCenter.default.post(
+                name: GatherAppNotification.captureOneError,
+                object: GatherErrorCode.C1_JUDGEMENTS_UNAVAILABLE.rawValue)
+            return paths
+        }
+        if snapshot.malformedLines > 0 {
+            // P2（Wave4b）：畸形行不再静默丢弃（契约漂移要能在日志里看见）。
+            GatherLogger.log(
+                "c1.judgements parse malformedLines=\(snapshot.malformedLines)"
+                    + " paths=\(snapshot.paths.count)（可能 C1 字典/脚本契约变化）",
+                level: .warn)
+        }
+        let importPaths = expectedPaths ?? snapshot.paths
+        guard !importPaths.isEmpty else { return [] }
+        let allowed = Set(importPaths.map(ScanPath.canonical))
+        let judgements = snapshot.judgements.filter {
+            allowed.contains(ScanPath.canonical($0.photoPath))
+        }
+        journal.store(importPaths, judgements: judgements)
+        return importPaths
+    }
+
+    /// 建库后取回判断并调度落库（无判断 = no-op；同一路径集合只消费一次）。
+    func finishCreate(sessionId: String, paths: [String]) {
+        let judgements = journal.take(paths: paths)
+        guard !judgements.isEmpty else { return }
+        scheduleApply(sessionId, judgements)
+    }
+
+    /// 测试/停机：丢弃尚未消费的暂存判断。
+    func reset() {
+        journal.reset()
+    }
 }

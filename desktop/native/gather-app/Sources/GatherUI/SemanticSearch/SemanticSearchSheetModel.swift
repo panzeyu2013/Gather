@@ -4,6 +4,9 @@
 // 产品边界（ROADMAP §七）：**不做**自然语言/CLIP 文搜；这里是"Vision 标签的词面
 // 检索"（英文标签 + UI 本地化映射）与"多选平均向量找同类"，两条都不需要新模型资产。
 //
+// Wave5 batch7：中文输入/显示走 SemanticLabelCatalog（中文→英文标签再检索；
+// 结果与写回预览显示中文名）；检索参数与写回路径始终英文（可逆）。
+//
 // Wave4c / task-50：撤销 scope（上次写回的 appliedPhotoIds）落会话级 JSON 文件
 // （见 SemanticKeywordBatchStore.swift），面板重开/App 重启后仍可撤销上一次写回。
 import Foundation
@@ -24,6 +27,13 @@ final class SemanticSearchSheetModel {
         case write
         case undo
         var id: String { rawValue }
+    }
+
+    /// 中文输入 → 英文检索标签的可见映射（输入框提示用：海滩 → beach）。
+    struct LabelMapping: Equatable, Identifiable {
+        let input: String
+        let english: String
+        var id: String { input + "->" + english }
     }
 
     let api: any PhotoAPI
@@ -71,12 +81,73 @@ final class SemanticSearchSheetModel {
         }
     }
 
-    /// 标签检索词（逗号/空白分隔；Vision 标签是英文原串，UI 直接展示匹配到的标签）。
-    var labelKeywords: [String] {
+    /// 用户原始输入词（中文/英文；逗号/空白分隔）。
+    var labelQueryTerms: [String] {
         labelQuery
             .split(whereSeparator: { $0 == "," || $0 == "，" || $0.isWhitespace })
             .map { String($0).trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    /// 检索参数：中文经 catalog 反向映射成英文标签，再交给既有 labels 检索。
+    /// 英文原样；目录未收录的中文原样透传（结果为空时由 notice 引导）。
+    var labelKeywords: [String] {
+        SemanticLabelCatalog.englishLabels(for: labelQueryTerms)
+    }
+
+    /// 已识别的中文→英文映射（输入框下方的可见提示；未识别中文不在此列）。
+    var labelMappings: [LabelMapping] {
+        labelQueryTerms.compactMap { term in
+            guard SemanticLabelCatalog.containsChinese(term) else { return nil }
+            let mapped = SemanticLabelCatalog.englishLabels(for: term)
+            let mappedLowercased = mapped.map { $0.lowercased() }
+            guard !mapped.isEmpty,
+                  mappedLowercased != [SemanticLabelCatalog.normalize(term)] else {
+                return nil
+            }
+            return LabelMapping(input: term, english: mapped.joined(separator: "/"))
+        }
+    }
+
+    /// 目录无法映射的中文词（检索为空时提示换英文/常见中文名）。
+    var unmappedChineseTerms: [String] {
+        labelQueryTerms.filter {
+            SemanticLabelCatalog.containsChinese($0) && !SemanticLabelCatalog.isKnown($0)
+        }
+    }
+
+    /// 命中标签的显示名（中文优先；未收录回落英文原串）。
+    func displayLabels(_ labels: [String]) -> [String] {
+        SemanticLabelCatalog.displayList(labels)
+    }
+
+    func displayText(_ labels: [String]) -> String {
+        displayLabels(labels).joined(separator: " · ")
+    }
+
+    /// 写回预览中的一条关键词：path 仍是英文（AI|场景|beach），displayName 只用于界面。
+    struct PlannedKeyword: Identifiable, Equatable {
+        let path: String
+        let englishLabel: String
+        let displayName: String
+        var id: String { path }
+    }
+
+    /// 计划明细里的关键词（去重、保留置信度顺序）；路径不翻译，只给展示名。
+    var plannedKeywords: [PlannedKeyword] {
+        guard let plan else { return [] }
+        var seen = Set<String>()
+        var result: [PlannedKeyword] = []
+        for item in plan.items {
+            for path in item.keywords where seen.insert(path).inserted {
+                let english = SemanticLabelCatalog.labelSegment(of: path) ?? path
+                result.append(PlannedKeyword(
+                    path: path,
+                    englishLabel: english,
+                    displayName: SemanticLabelCatalog.displayName(for: english)))
+            }
+        }
+        return result
     }
 
     var hasMultipleSeeds: Bool { seedPhotoIds.count > 1 }
@@ -100,19 +171,32 @@ final class SemanticSearchSheetModel {
     }
 
     func searchLabels(l10n: L10n) async {
+        // 中文输入先经 catalog 映射成英文标签（落盘/检索参数始终英文）。
         let keywords = labelKeywords
         guard !keywords.isEmpty else {
             hits = []
-            notice = l10n("输入标签再检索（例如 beach、wedding、indoor）")
+            notice = l10n("输入标签再检索（中文或英文均可，例如 海滩、wedding）")
             return
         }
+        let unmapped = unmappedChineseTerms
         await run {
             let outcome = try await self.api.semanticSearch(SemanticSearchQuery(
                 sessionId: self.sessionId, labels: keywords))
             self.hits = outcome.hits
-            self.notice = outcome.hits.isEmpty
-                ? (outcome.unavailableReason ?? l10n("没有命中这些标签的照片"))
-                : nil
+            if !outcome.hits.isEmpty {
+                self.notice = nil
+                return
+            }
+            if let unavailable = outcome.unavailableReason {
+                self.notice = unavailable
+            } else if !unmapped.isEmpty {
+                // 未收录中文不能静默空结果：明确引导换英文/常见中文名。
+                self.notice = l10n.format(
+                    "没有命中这些标签的照片；中文「%@」暂无映射，可换用英文或常见中文名（如 海滩、婚礼）。",
+                    unmapped.joined(separator: "、"))
+            } else {
+                self.notice = l10n("没有命中这些标签的照片")
+            }
         }
     }
 

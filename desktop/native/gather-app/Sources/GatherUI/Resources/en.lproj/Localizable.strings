@@ -2797,7 +2797,6 @@
 "已导出 %lld 个模板到 %@" = "Exported %lld templates to %@";
 "已导出 %lld 条关键词到 %@" = "Exported %lld keywords to %@";
 "已更新 %lld 张照片的评级/标记" = "Updated rating/marks for %lld photos";
-"当前写目标是 JPEG 内嵌元数据，GPS/拍摄时间暂不支持（需要 .xmp 附属文件或 sidecar 写入模式）。" = "The current write target is embedded JPEG metadata; GPS/capture time are not supported yet (an .xmp sidecar or sidecar write mode is required).";
 "拍摄时间格式不正确（%@），示例：2026-12-01T10:00:00" = "Invalid capture time format (%@). Example: 2026-12-01T10:00:00";
 "文件有 %lld 行数据：新增 %lld 个路径，更新 %lld 组同义词，与现有完全一致 %lld 个，非法 %lld 行。" = "File has %lld data rows: %lld paths added, %lld synonym sets updated, %lld identical, %lld invalid rows.";
 "文件里有 %lld 个可导入模板；%lld 个与现有模板同名；%lld 个非法条目。" = "File has %lld importable templates; %lld share names with existing ones; %lld invalid entries.";
@@ -2835,3 +2834,44 @@
 "Capture One 调整" = "Capture One Adjustments";
 "预览不含这些 C1 调整：%@" = "Preview does not include these Capture One adjustments: %@";
 "用此目录新建工作区…" = "New Workspace from This Folder…";
+
+/* Wave5 / Batch7（场景标签中文化 · 批量时间调整） */
+"标签（中文或英文，逗号分隔，如 海滩, wedding）" = "Labels (Chinese or English, comma-separated, e.g. beach, wedding)";
+"中文映射：%@" = "Chinese mapping: %@";
+"命中标签：%@" = "Matched labels: %@";
+"将写入的关键词" = "Keywords to write";
+"…等 %lld 个" = "…and %lld more";
+"写回路径：%@|英文标签（可逆；中文只影响显示）" = "Writeback path: %@|English label (reversible; Chinese only affects display)";
+"界面显示中文名；写回 XMP 的关键词仍用英文标签（如 AI|场景|beach），可在图库按关键词检索/交付。" = "The UI shows Chinese names; keywords written to XMP still use English labels (e.g. AI|scene|beach, with the Chinese scene segment in the stored path), searchable in the library and deliverable.";
+"输入标签再检索（中文或英文均可，例如 海滩、wedding）" = "Enter labels to search again (Chinese or English, e.g. beach, wedding)";
+"时间调整" = "Time Adjustment";
+"偏移现有时间" = "Shift Existing Time";
+"设为指定时刻" = "Set to Specific Time";
+"偏移量" = "Offset";
+"秒" = "Seconds";
+"分钟" = "Minutes";
+"小时" = "Hours";
+"天" = "Days";
+"指定时刻" = "Specific Time";
+"预演时间调整" = "Preview Time Adjustment";
+"应用时间调整…" = "Apply Time Adjustment…";
+"…其余 %lld 张同理。" = "…same for the remaining %lld photos.";
+"时间来自盘上值（读不到时退回缓存）；只改拍摄时间，不动 GPS；留空无法偏移时请改用“设为指定时刻”。" = "Times come from disk values (fallback to cache when unreadable); only capture time is changed, GPS is untouched. If values are missing, use “Set to Specific Time” instead.";
+"%@：%@ → 不可调整（%@）" = "%@: %@ → not adjustable (%@)";
+"%@：%@ → %@" = "%@: %@ → %@";
+"请先填写合法的偏移量或指定时刻" = "Enter a valid offset or specific time first";
+"时间格式不正确" = "Invalid time format";
+"没有可用的拍摄时间" = "No usable capture time";
+"偏移量非法" = "Invalid offset";
+"原拍摄时间无法解析" = "Original capture time cannot be parsed";
+"没有可写的照片：请先预演并检查时间格式" = "No writable photos: run preview and check the time format first";
+"调整时间" = "Adjust Time";
+"时间调整：已写 %lld 张 · 跳过 %lld · 失败 %lld" = "Time adjustment: %lld written · %lld skipped · %lld failed";
+"调整这批照片的拍摄时间？" = "Adjust capture time for these photos?";
+"将按偏移 %@ %@ 调整拍摄时间：共 %lld 张，预演可写 %lld 张。" = "Shift capture time by %@ %@: %lld photos total, %lld writable after preview.";
+"将把 %lld 张照片的拍摄时间设为 %@（预演可写 %lld 张）。" = "Set capture time of %lld photos to %@ (%lld writable after preview).";
+
+/* Wave5 / Batch7 补漏 */
+"可写 %lld / %lld 张" = "Writable %lld / %lld photos";
+"未知原因" = "Unknown reason";
+"没有命中这些标签的照片；中文「%@」暂无映射，可换用英文或常见中文名（如 海滩、婚礼）。" = "No photos matched these labels; there is no Chinese mapping for \"%@\" yet. Try English or a common English name (e.g. beach, wedding).";

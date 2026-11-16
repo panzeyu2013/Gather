@@ -137,7 +137,10 @@ struct MetadataEditorSheet: View {
 
     /// 位置与时间分区：GPS 坐标 / 拍摄时间 / 按坐标反查地名。
     ///
-    /// - 写目标为 JPEG 内嵌时明确禁用并说明原因（内嵌读侧尚未接线，写了也读不回）；
+    /// Wave5（batch7）起 JPEG 内嵌目标也可读写：内嵌读侧补齐后，生产默认的
+    /// embedded_fast_path 写回会在写后校验里读到 exif:* 元素；设置 embedded_fast_path=0
+    /// 走旧写回实现时，若文件原生 EXIF 已有日期，写后校验可能失败（ImageIO 原生值优先）
+    /// —— 失败会显式上报，不会谎报成功。
     /// - 坐标清空本波不支持（MetadataWriteAttributes 的 nil 只能表达"不触碰"）；
     ///   拍摄时间留空 = 清空（与描述性字段同一三态语义）。
     private var geoDateSection: some View {
@@ -145,12 +148,6 @@ struct MetadataEditorSheet: View {
             Text(l10n("位置与时间"))
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
-            if !isGeoDateSupported {
-                Text(l10n("当前写目标是 JPEG 内嵌元数据，GPS/拍摄时间暂不支持（需要 .xmp 附属文件或 sidecar 写入模式）。"))
-                    .font(.caption)
-                    .foregroundStyle(GatherTheme.warningText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
                 Text(l10n("纬度"))
                     .font(.caption)
@@ -158,14 +155,12 @@ struct MetadataEditorSheet: View {
                     .frame(width: 96, alignment: .leading)
                 TextField("31.230400", text: $latitudeText)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(!isGeoDateSupported)
                 Text(l10n("经度"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 48, alignment: .trailing)
                 TextField("121.473700", text: $longitudeText)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(!isGeoDateSupported)
             }
             HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
                 Text(l10n("拍摄时间"))
@@ -174,14 +169,13 @@ struct MetadataEditorSheet: View {
                     .frame(width: 96, alignment: .leading)
                 TextField("2026-12-01T10:00:00", text: $dateTakenText)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(!isGeoDateSupported)
             }
             HStack(spacing: GatherMetrics.Space.s) {
                 Button(l10n("根据坐标反查地名")) {
                     Task { await reverseGeocodePlace() }
                 }
                 .gatherButton(.secondary)
-                .disabled(isBusy || isLoading || isLookingUpPlace || !isGeoDateSupported)
+                .disabled(isBusy || isLoading || isLookingUpPlace)
                 if isLookingUpPlace {
                     ProgressView().controlSize(.small)
                 }
@@ -191,12 +185,6 @@ struct MetadataEditorSheet: View {
                 .font(GatherFont.label)
                 .foregroundStyle(.secondary)
         }
-    }
-
-    /// JPEG 内嵌目标（xmpPath == filepath）不支持位置/时间：读侧未接线，写后回读必失败。
-    private var isGeoDateSupported: Bool {
-        guard let detail else { return true }
-        return detail.xmpPath != detail.filepath
     }
 
     /// 坐标 → 输入框文本（6 位小数；nil → 空串）。

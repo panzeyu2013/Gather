@@ -195,3 +195,34 @@
 2. AI 分组失败原因仅日志；AITriageStatusStore.Phase 未扩「分组分析未完成」，状态卡暂不显示。
 3. 文件夹树「摄取到此工作区」未做（IngestSheet 依赖挑片 VM）。
 4. Batch 7：场景标签中文化/自动关键词、发布端点扩展（FTP/SFTP/网盘）、C1 插件安装/诊断面、JPEG 内嵌 GPS/时间读侧、剩余 P2、真机验收清单。
+
+## Batch 7（task-28 ~ task-30）
+
+| task | 域 | owner | 结论 |
+| --- | --- | --- | --- |
+| task-28 | C1 判断入口统一（A2） | c1-interop | C1ImportCoordinator 下沉到 AppImport；菜单/Dashboard（source=capture-one）/深链 source=capture-one 共用快照→暂存→建库后落库；普通 local/Shortcuts 不变；失败不影响导入 |
+| task-29 | AI 场景标签中文化 | ai-similarity | SemanticLabelCatalog（56 英文标签 + 11 中文别名）；中文输入反向映射英文检索；结果/写回预览显示中文，落盘路径仍 AI|场景|<英文> 可逆；未收录中文提示换英文 |
+| task-30 | JPEG 内嵌 GPS/时间读侧 + 批量时间调整 | metadata-search | embeddedAttributesFromParse 补 dateTaken/latitude/longitude（XMP 优先、显式空阻断原生回退、原生 EXIF/GPS 兜底）；编辑器解除 JPEG 内嵌禁用；批量编辑器时间偏移/设为时刻 + 预演 + Confirmed |
+
+### 关键设计取舍
+
+- C1 入口：判断快照按「归一化路径集合」暂存，避免 await 交错把 A 的判断应用到 B 会话；快照+fallback 双失败时深链静默降级为仅按文件导入（日志可见），菜单路径仍上浮错误码。
+- 场景标签：中文只影响显示/输入映射，XMP 关键词保持英文路径，保证可逆与既有照片兼容；不做第二层中文同义词写回。
+- 内嵌 GPS/时间：present-but-empty 阻断原生回退（显式清空不得被相机值复活）；写侧内嵌快路径能回读 exif:*；旧 embedded_fast_path=0 路径对相机已有日期可能写后校验显式失败，不谎报。
+- 批量时间：绝对时刻一次 applyGeoAndDate(photoIds 数组)；偏移因每张目标时间不同逐张调用（上限 200）；固定 UTC 墙上时间，DST 不敏感。
+
+### 验证（Lead 执行，2026-11-16）
+
+- 构建：gather-core / gather-app swift build --build-tests --disable-sandbox 均通过。
+- 测试：core 1964 / 289 + 串行 25 / 4 全绿；app 1248 / 182 全绿。
+- 门禁 14 项全绿（含 warnings）。
+- 基线：protocol-surface 513 types / 3109 declarations / 17138 lines（Batch7 无 public 增长，--strict 直接过）；test-catalog 按脚本允许增长。
+- Lead 修：CreateSessionOutcome 字段改 package（Host 桥读取）；GatherAppDelegate 测试补 coordinator.capturePaths + 去掉错误的 importSource 断言；MetadataGeoDate 测试插值 bug（GEO_(index) 重复路径）；场景标签 4 条 en 译文非法引号/含中文；C1Dashboard 桥套件串行化；SemanticSearchSheetModel trailing-closure warning；批量时间失败断言 fixture。
+
+### 未闭环/下一批
+
+1. GatherLink 插件 URL 仍缺 &source=capture-one（Host 已就绪，coplugin 不在 scope）；插件安装/诊断面未做。
+2. 深链快照+fallback 双失败静默降级（仅日志）；AI 分组失败原因仍只在日志（AITriageStatusStore.Phase 未扩）。
+3. 批量时间偏移是逐张调用（200 上限），无单批事务；写后 GPS/时间缓存投影不刷新（编辑器重开读盘正确）。
+4. 场景标签未做自动关键词/中文同义词写回；内嵌 GPS/时间 slow path 写回可能镜像相机 EXIF 到 XMP（读侧一致性取舍）。
+5. Batch 8：发布端点扩展、剩余 P2、真机验收清单更新、最终收口台账。

@@ -17,6 +17,7 @@ import Testing
 import GatherProtocol
 @testable import GatherApplication
 @testable import GatherHost
+@testable import GatherUI
 import GatherTestSupport
 
 // MARK: - 写回脚本契约（G4/G5）
@@ -845,5 +846,146 @@ struct C1BridgeWave6RejectedColorTagWriteTests {
         #expect(report.notFound.isEmpty)
         #expect(report.skippedMultiVariant.isEmpty)
         #expect(ack.lock.withLock { ack.ids }.isEmpty)
+    }
+}
+
+// MARK: - Wave5 batch7（A2/R5）：C1 判断随导入的统一入口
+
+private func wave7Judgement(_ path: String, rating: Int = 3) -> C1VariantJudgement {
+    C1VariantJudgement(photoPath: path, rating: rating, colorTag: 1, pick: true, keywords: ["kw"])
+}
+
+private func wave7Snapshot(
+    _ paths: [String],
+    judgements: [C1VariantJudgement],
+    malformedLines: Int = 0
+) -> C1SelectionSnapshot {
+    C1SelectionSnapshot(
+        paths: paths, judgements: judgements, malformedLines: malformedLines)
+}
+
+/// 纯逻辑套件：协调器不持 DB/桥，全闭包注入（快照/路径/调度都可替身）。
+@Suite("C1BridgeWave7 判断随导入统一入口（A2/R5）")
+@MainActor
+struct C1ImportCoordinatorTests {
+    private final class Recorder: @unchecked Sendable {
+        struct Applied: Equatable {
+            let sessionId: String
+            let paths: [String]
+        }
+        var applied: [Applied] = []
+    }
+
+    @Test("菜单语义（expectedPaths=nil）：返回快照路径；建库后按该集合调度一次")
+    func menuSemanticsSchedulesOnce() async throws {
+        let recorder = Recorder()
+        let a = "/shoot/a.cr2"
+        let b = "/shoot/b.cr2"
+        let coordinator = C1ImportCoordinator(
+            snapshotProvider: {
+                wave7Snapshot([a, b], judgements: [wave7Judgement(a), wave7Judgement(b)])
+            },
+            fallbackPathProvider: { [] },
+            scheduleApply: { sessionId, judgements in
+                recorder.applied.append(.init(
+                    sessionId: sessionId, paths: judgements.map(\.photoPath)))
+            })
+        let paths = try await coordinator.capturePaths()
+        #expect(paths == [a, b])
+        coordinator.finishCreate(sessionId: "s1", paths: paths)
+        #expect(recorder.applied == [.init(sessionId: "s1", paths: [a, b])])
+        // 同一路径集合只消费一次：重复 finishCreate 不得重复落库/重复历史。
+        coordinator.finishCreate(sessionId: "s1", paths: paths)
+        #expect(recorder.applied.count == 1)
+        coordinator.reset()
+    }
+
+    @Test("入口已给路径（Dashboard/深链）：返回入口路径，只保留相交判断")
+    func expectedPathsAreAuthoritative() async throws {
+        let recorder = Recorder()
+        let a = "/shoot/a.cr2"
+        let b = "/shoot/b.cr2"
+        let coordinator = C1ImportCoordinator(
+            snapshotProvider: {
+                wave7Snapshot([a, b], judgements: [wave7Judgement(a), wave7Judgement(b, rating: 5)])
+            },
+            fallbackPathProvider: { [] },
+            scheduleApply: { sessionId, judgements in
+                recorder.applied.append(.init(
+                    sessionId: sessionId, paths: judgements.map(\.photoPath)))
+            })
+        // 入口只导入 a：判断也只应用 a（快照里多出来的 b 不得越界落到别的会话）。
+        let paths = try await coordinator.capturePaths(expectedPaths: [a])
+        #expect(paths == [a])
+        coordinator.finishCreate(sessionId: "s2", paths: paths)
+        #expect(recorder.applied == [.init(sessionId: "s2", paths: [a])])
+        // 未暂存的路径集合（b）没有可落判断：不调度。
+        coordinator.finishCreate(sessionId: "s3", paths: [b])
+        #expect(recorder.applied.count == 1)
+    }
+
+    @Test("入口路径为空：返回空且不暂存（由调用方决定是否导入）")
+    func emptyExpectedPathsAreNoOp() async throws {
+        let recorder = Recorder()
+        let coordinator = C1ImportCoordinator(
+            snapshotProvider: { wave7Snapshot(["/shoot/a.cr2"], judgements: []) },
+            fallbackPathProvider: { [] },
+            scheduleApply: { sessionId, _ in
+                recorder.applied.append(.init(sessionId: sessionId, paths: []))
+            })
+        let paths = try await coordinator.capturePaths(expectedPaths: [])
+        #expect(paths.isEmpty)
+        coordinator.finishCreate(sessionId: "s1", paths: [])
+        #expect(recorder.applied.isEmpty)
+    }
+
+    @Test("快照失败：退回 fallback 路径 + C1_JUDGEMENTS_UNAVAILABLE；导入照常（不抛）")
+    func snapshotFailureFallsBackToPaths() async throws {
+        let recorder = Recorder()
+        final class Box: @unchecked Sendable {
+            var posted: String?
+        }
+        let box = Box()
+        let token = NotificationCenter.default.addObserver(
+            forName: GatherAppNotification.captureOneError, object: nil, queue: nil
+        ) { notification in
+            box.posted = notification.object as? String
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        let fallback = "/shoot/fallback.cr2"
+        let coordinator = C1ImportCoordinator(
+            snapshotProvider: { throw CaptureOneBridgeError.scriptFailed("boom") },
+            fallbackPathProvider: { [fallback] },
+            scheduleApply: { sessionId, judgements in
+                recorder.applied.append(.init(
+                    sessionId: sessionId, paths: judgements.map(\.photoPath)))
+            })
+        let paths = try await coordinator.capturePaths()
+        #expect(paths == [fallback])
+        #expect(box.posted == GatherErrorCode.C1_JUDGEMENTS_UNAVAILABLE.rawValue)
+        // 降级导入没有判断数据可落：不调度、不报错。
+        coordinator.finishCreate(sessionId: "s1", paths: paths)
+        #expect(recorder.applied.isEmpty)
+    }
+
+    @Test("快照与 fallback 都失败：抛出（由调用方决定是否继续导入）")
+    func bothProvidersFailThrows() async {
+        let coordinator = C1ImportCoordinator(
+            snapshotProvider: { throw CaptureOneBridgeError.scriptFailed("snapshot") },
+            fallbackPathProvider: { throw CaptureOneBridgeError.notRunning },
+            scheduleApply: { _, _ in
+                Issue.record("失败路径不得调度判断落库")
+            })
+        do {
+            _ = try await coordinator.capturePaths()
+            Issue.record("快照与 fallback 都失败时必须抛出（不能静默返回空路径）")
+        } catch let error as CaptureOneBridgeError {
+            guard case .notRunning = error else {
+                Issue.record("期望 fallback 的 notRunning 上浮，实际 \(error)")
+                return
+            }
+        } catch {
+            Issue.record("意外的错误类型：\(error)")
+        }
     }
 }

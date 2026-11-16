@@ -435,3 +435,123 @@ struct C1BridgeWave6AdjustmentBadgeTests {
         #expect(C1RejectedColorTagCopy.inspectorDetailTemplate.contains("%@"))
     }
 }
+
+// MARK: - Wave5 batch7（A2/R5）：Dashboard 新建工作区（C1）走统一 C1 入口
+
+private func wave7SessionData(id: String, name: String, source: String) -> SessionData {
+    SessionData(
+        id: id, name: name, status: .photosLoaded, photoCount: 2,
+        analysisStatus: .idle, writebackStatus: .idle,
+        importSource: source, sourcePath: "",
+        failedWritebackCount: 0, truncatedImport: false,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z")
+}
+
+/// Wave7：DashboardDataProvider 替身（记录建库入参；轮询走空结果）。
+private final class Wave7DashboardProvider: DashboardDataProvider, @unchecked Sendable {
+    struct Created: Equatable {
+        let name: String
+        let source: String
+        let filepaths: [String]
+    }
+    var created: [Created] = []
+    var nextOutcome: CreateSessionOutcome?
+
+    func listSessions() async throws -> [SessionData] { [] }
+
+    func createSession(name: String, source: String, sourcePath: String) async throws -> SessionData {
+        wave7SessionData(id: "s-local", name: name, source: source)
+    }
+
+    func createSessionFromFiles(
+        name: String, source: String, filepaths: [String]
+    ) async throws -> CreateSessionOutcome {
+        created.append(.init(name: name, source: source, filepaths: filepaths))
+        return nextOutcome ?? CreateSessionOutcome(
+            session: wave7SessionData(id: "s-c1", name: name, source: source),
+            failedFiles: [], added: filepaths.count)
+    }
+
+    func deleteSession(_ sessionId: String, confirmed: Bool) async throws {}
+    func workspaceStatus(sessionId: String) async throws -> WorkspaceStatus? { nil }
+    func listJobs(includeCheckpoint: Bool) async throws -> [AnalysisJobData] { [] }
+    func cancelJob(_ jobId: String) async throws -> Bool { false }
+    func retryJob(_ jobId: String) async throws -> Bool { false }
+    func clearCompletedJobs(includeFailed: Bool) async throws -> Int { 0 }
+}
+
+/// Wave7：C1 桥替身（Dashboard C1 分支只需要 preflight + selectedPhotoPaths）。
+private struct Wave7CaptureOneBridge: CaptureOneBridging {
+    let paths: [String]
+    func selectedPhotoPaths() async throws -> [String] { paths }
+    func reloadMetadata(sessionId: String) async throws {}
+    func checkHealth() async -> Result<String, CaptureOneBridgeError> { .success("fake") }
+    func preflight() async -> C1PreflightStatus {
+        C1PreflightStatus(
+            reachable: true, appRunning: true, automationAuthorized: true,
+            documentOpen: true, timedOut: false, appName: "Capture One")
+    }
+    nonisolated static func documentProbeScript(appName: String) -> String { "wave7:" + appName }
+}
+
+// 本套件读写进程级 C1DashboardImportBridge 静态注入；串行避免用例互清。
+@Suite("C1BridgeWave7 Dashboard C1 建库统一入口（A2/R5）", .serialized)
+@MainActor
+struct C1DashboardCaptureOneEntryTests {
+    private func makePhoto() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wave7-dash-\(UUID().uuidString).jpg")
+        try Data("jpeg-fixture".utf8).write(to: url)
+        return url
+    }
+
+    @Test("有宿主桥：走统一 C1 入口（判断/来源标/命名），不再 provider 直连")
+    func usesUnifiedEntryWhenWired() async throws {
+        defer {
+            C1DashboardImportBridge.createSessionFromSelection = nil
+            C1DashboardImportBridge.defaultCaptureOneName = nil
+        }
+        let photo = try makePhoto()
+        defer { try? FileManager.default.removeItem(at: photo) }
+        final class Box: @unchecked Sendable {
+            var captured: (name: String, paths: [String])?
+        }
+        let box = Box()
+        let session = wave7SessionData(id: "s-unified", name: "自定义", source: "capture-one")
+        C1DashboardImportBridge.createSessionFromSelection = { name, paths, _ in
+            box.captured = (name, paths)
+            return CreateSessionOutcome(session: session, failedFiles: [], added: paths.count)
+        }
+        C1DashboardImportBridge.defaultCaptureOneName = { _ in "C1 导入 11/16 12:00" }
+        let provider = Wave7DashboardProvider()
+        let vm = DashboardViewModel(provider: provider)
+        vm.captureOne = Wave7CaptureOneBridge(paths: [photo.path])
+
+        let created = await vm.createSessionFromCaptureOne(
+            name: "自定义", with: L10n(language: .zhCN))
+
+        #expect(created?.id == "s-unified")
+        #expect(box.captured?.name == "自定义")
+        #expect(box.captured?.paths == normalizeImportFilepaths([photo.path]))
+        #expect(provider.created.isEmpty, "有宿主桥时不得再直连 provider（会丢判断数据）")
+    }
+
+    @Test("未接线（单测/预览）：回退 provider 直连，导入照常且来源标仍是 capture-one")
+    func fallsBackToProviderWhenUnwired() async throws {
+        C1DashboardImportBridge.createSessionFromSelection = nil
+        C1DashboardImportBridge.defaultCaptureOneName = nil
+        let photo = try makePhoto()
+        defer { try? FileManager.default.removeItem(at: photo) }
+        let provider = Wave7DashboardProvider()
+        let vm = DashboardViewModel(provider: provider)
+        vm.captureOne = Wave7CaptureOneBridge(paths: [photo.path])
+
+        let created = await vm.createSessionFromCaptureOne(
+            name: "", with: L10n(language: .zhCN))
+
+        #expect(created?.importSource == "capture-one")
+        #expect(provider.created.count == 1)
+        #expect(provider.created.first?.source == "capture-one")
+        #expect(provider.created.first?.filepaths == normalizeImportFilepaths([photo.path]))
+    }
+}

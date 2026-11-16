@@ -320,6 +320,9 @@ struct LocalizationParityTests {
         // Wave5 / Batch4：资料库左栏改为「文件夹/集合」页签后，旧的策展侧栏入口文案。
         "打开策展侧栏",
         "集合与跨工作区重复",
+        // Wave5 / Batch7：场景标签文案中文化后取代的旧提示。
+        "标签（逗号分隔，如 beach, wedding）",
+        "输入标签再检索（例如 beach、wedding、indoor）",
     ]
 
     // MARK: - 测试

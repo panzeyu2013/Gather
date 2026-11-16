@@ -123,6 +123,19 @@ struct SemanticKeywordServiceTests {
         #expect(plan.unavailableReason != nil)
     }
 
+    @Test("写回路径段固定为英文 Vision 标签（中文显示映射只在 UI，不进 XMP）")
+    func writebackPathsStayEnglish() {
+        let paths = SemanticKeywordService.keywordPaths(
+            labels: [label("beach", 0.9), label("Wedding", 0.8)],
+            root: "AI|场景")
+        #expect(paths == ["AI|场景|beach", "AI|场景|wedding"])
+        // 中文显示名不参与路径：最后一段必须是英文标签（可逆写回/检索的前提）。
+        let segments = paths.map { path in
+            path.split(separator: "|").last.map(String.init) ?? ""
+        }
+        #expect(segments == ["beach", "wedding"])
+    }
+
     @Test("撤销范围只认 root 子树：前缀相同的兄弟命名空间不能被误删")
     func undoScope() {
         #expect(SemanticKeywordService.isUnder("AI|场景|beach", root: "AI|场景"))

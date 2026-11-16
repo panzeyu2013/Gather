@@ -195,6 +195,56 @@ enum MetadataEditorDraft {
         return draft.isEmpty ? nil : draft
     }
 
+    // MARK: - Wave5（batch7）：批量时间调整（纯计算）
+
+    /// 批量时间调整方式：偏移现有值 / 设为同一指定时刻。
+    enum TimeAdjustMode: String, CaseIterable, Equatable, Sendable {
+        case offset
+        case absolute
+    }
+
+    /// 时间偏移单位。批量"时间偏移"动作与纯计算测试共用。
+    enum TimeOffsetUnit: String, CaseIterable, Equatable, Sendable {
+        case seconds, minutes, hours, days
+
+        var secondsMultiplier: Int {
+            switch self {
+            case .seconds: return 1
+            case .minutes: return 60
+            case .hours: return 3_600
+            case .days: return 86_400
+            }
+        }
+    }
+
+    /// 偏移量文本（可带正负号；空/非法/非整数返回 nil）→ 秒。
+    ///
+    /// 0 秒也返回 0：调用方据此禁用按钮（静默无操作比报错更糟）。
+    static func offsetSeconds(_ amountText: String, unit: TimeOffsetUnit) -> Int? {
+        let text = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let amount = Int(text) else { return nil }
+        let (product, overflow) = amount.multipliedReportingOverflow(
+            by: unit.secondsMultiplier)
+        return overflow ? nil : product
+    }
+
+    /// 拍摄时间 + 偏移秒数 → 归一化时间文本；源不可解析返回 nil。
+    ///
+    /// 取舍（测试与注释同一口径）：EXIF 的 DateTimeOriginal 是**没有时区的墙上时间**，
+    /// 因此按固定 UTC 日历做秒级算术——用设备本地日历会让夏令时切换日把 02:30 + 1h
+    /// 变成 03:30/01:30（同一次批量在不同机器/不同日期结果不同）。跨日/跨月/闰年
+    /// 进位由 Date 的绝对时间算术负责。
+    static func shiftedDateTime(_ raw: String, bySeconds seconds: Int) -> String? {
+        guard let normalized = MetadataGeoDateInput.normalizedDateTime(raw) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        guard let date = formatter.date(from: normalized) else { return nil }
+        let shifted = date.addingTimeInterval(TimeInterval(seconds))
+        return formatter.string(from: shifted)
+    }
+
     private static func normalized(_ text: String?) -> String {
         (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }

@@ -222,31 +222,42 @@ private final class GeoDateMutationPort: MetadataMutationPort, @unchecked Sendab
 struct LiveMetadataGeoDateWiringTests {
     private struct Fixture {
         let dir: URL
-        let photoId: String
-        let photoPath: String
+        let photoIds: [String]
+        let photoPaths: [String]
         let xmp: GeoDateRecordingXMP
         let api: LiveMetadataAPI
+
+        var photoId: String { photoIds[0] }
+        var photoPath: String { photoPaths[0] }
 
         func cleanup() { try? FileManager.default.removeItem(at: dir) }
     }
 
-    private func makeFixture(dropsGeoDateOnRead: Bool = false) throws -> Fixture {
+    /// photoCount > 1 用于批量时间调整用例（一次 applyGeoAndDate 传 photoIds 数组）。
+    private func makeFixture(
+        photoCount: Int = 1, dropsGeoDateOnRead: Bool = false
+    ) throws -> Fixture {
         let db = try makeTestDB()
         let session = try SessionRepo(connection: db).create(name: "geo-date", source: "test")
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gather-geodate-live-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let photoURL = dir.appendingPathComponent("GEO_1.cr3")
-        try Data("raw-bytes".utf8).write(to: photoURL)
-        let photoId = try PhotoRepo(connection: db).addPhotos(
-            sessionId: session.id,
-            filepaths: [PhotoAddInput(filepath: photoURL.path, width: 100, height: 80)],
-            "test").ids[0]
+        var inputs: [PhotoAddInput] = []
+        var photoPaths: [String] = []
+        for index in 1...max(1, photoCount) {
+            let photoURL = dir.appendingPathComponent("GEO_\(index).cr3")
+            try Data("raw-bytes".utf8).write(to: photoURL)
+            inputs.append(PhotoAddInput(filepath: photoURL.path, width: 100, height: 80))
+            photoPaths.append(photoURL.path)
+        }
+        let photoIds = try PhotoRepo(connection: db).addPhotos(
+            sessionId: session.id, filepaths: inputs, "test").ids
+        // let 常量：会被 @Sendable 的 flushPending 闭包捕获，不能再在闭包里看到可变 var。
+        let paths = Dictionary(uniqueKeysWithValues: zip(photoIds, photoPaths))
 
         let xmp = GeoDateRecordingXMP()
         xmp.setDropsGeoDateOnRead(dropsGeoDateOnRead)
         let mutations = GeoDateMutationPort()
-        let paths = [photoId: photoURL.path]
         let service = MetadataService(
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             xmp: xmp,
@@ -270,7 +281,37 @@ struct LiveMetadataGeoDateWiringTests {
             fileLock: XMPFileLock(),
             settingsService: SettingsService(repo: SettingsRepo(connection: db)))
         return Fixture(
-            dir: dir, photoId: photoId, photoPath: photoURL.path, xmp: xmp, api: api)
+            dir: dir, photoIds: photoIds, photoPaths: photoPaths, xmp: xmp, api: api)
+    }
+
+    @Test("批量时间：一次 applyGeoAndDate 用 photoIds 数组写同一时刻")
+    func batchAbsoluteTimeAdjustment() async throws {
+        let fixture = try makeFixture(photoCount: 2)
+        defer { fixture.cleanup() }
+        let input = try MetadataGeoDateInput(
+            photoIds: fixture.photoIds, dateTaken: "2026-12-01T10:00:00")
+        let outcome = try await fixture.api.applyGeoAndDate(
+            Confirmed(input, source: .userDialog))
+        #expect(Set(outcome.written) == Set(fixture.photoIds))
+        #expect(outcome.failed.isEmpty)
+        for path in fixture.photoPaths {
+            let written = try #require(fixture.xmp.recorded(path))
+            #expect(written.dateTaken == "2026-12-01T10:00:00")
+        }
+        for photoId in fixture.photoIds {
+            let snapshot = try await fixture.api.diskGeoDate(photoId: photoId)
+            #expect(snapshot?.dateTaken == "2026-12-01T10:00:00")
+        }
+    }
+
+    @Test("批量时间：非法时刻整批拒绝（不产生写入）")
+    func batchInvalidTimeRejected() {
+        do {
+            _ = try MetadataGeoDateInput(photoIds: ["a", "b"], dateTaken: "12/01/2026")
+            Issue.record("非法时间应被输入层拒绝")
+        } catch {
+            #expect(error is GatherError)
+        }
     }
 
     @Test("applyGeoAndDate：坐标/时间进写盘 attributes，回读一致才 written")

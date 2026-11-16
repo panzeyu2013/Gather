@@ -71,9 +71,10 @@ extension DashboardDataProvider {
 
 /// TS: session.create 响应 —— session 数据 + 加照片结果计数。
 package struct CreateSessionOutcome: Equatable, Sendable {
-    var session: SessionData
-    var failedFiles: [String]
-    var added: Int
+    // package：Host 的统一 C1 导入桥（C1DashboardImportBridge）需要读取结果。
+    package var session: SessionData
+    package var failedFiles: [String]
+    package var added: Int
 
     package init(session: SessionData, failedFiles: [String], added: Int) {
         self.session = session

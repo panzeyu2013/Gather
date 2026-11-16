@@ -73,6 +73,9 @@ public struct SemanticKeywordService {
     }
 
     /// 标签集合 → 完整 keyword_path（含 root），按置信度降序取前 N、去重、稳定排序。
+    ///
+    /// 路径段固定为 Vision 英文标签（可逆映射）；中文显示名只在 UI
+    /// （SemanticLabelCatalog），**不写入**路径/XMP。
     public static func keywordPaths(
         labels: [SemanticLabel],
         root: String = SemanticKeywordPath.scene,

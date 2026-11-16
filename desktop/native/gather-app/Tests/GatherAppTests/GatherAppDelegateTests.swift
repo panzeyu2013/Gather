@@ -22,7 +22,9 @@ import UniformTypeIdentifiers
 @testable import GatherApplication
 import GatherTestSupport
 
-@Suite("GatherAppDelegate")
+// 本套件读写进程级 NotificationCenter / 真实 DB，导入完成通知跨用例会互串；
+// 串行执行保证断言看到的是本用例的 session。
+@Suite("GatherAppDelegate", .serialized)
 @MainActor
 struct GatherAppDelegateTests {
     @Test func deepLinkFiltersFilesAndDeduplicates() throws {
@@ -228,6 +230,103 @@ struct GatherAppDelegateTests {
         #expect(box.retryFiles == [ScanPath.canonical(photo.path)])
     }
 
+    // MARK: - Wave5 batch7（A2/R5）：C1 导入统一入口
+
+    /// C1 文件统一入口：capture-one 来源标 + 「Capture One 文件」来源标签 +
+    /// 判断数据按导入路径集合调度落库（三个 C1 入口共用同一份语义）。
+    @Test func captureOneImportEntryMarksSourceAndSchedulesJudgements() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-c1-entry-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let photo = try makeJPEG(at: directory.appendingPathComponent("frame.jpg"))
+        let importPaths = normalizeImportFilepaths([photo.path])
+        #expect(!importPaths.isEmpty)
+
+        let db = try makeTestDB()
+        let services = AppServices.live(composition: AppComposition.make(db: db))
+
+        final class Box: @unchecked Sendable {
+            var scheduled: [(sessionId: String, judgements: [C1VariantJudgement])] = []
+            var completed: [AnyHashable: Any]?
+        }
+        let box = Box()
+        let token = NotificationCenter.default.addObserver(
+            forName: GatherAppNotification.importCompleted, object: nil, queue: nil
+        ) { notification in
+            box.completed = notification.userInfo
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        let judgement = C1VariantJudgement(
+            photoPath: importPaths[0], rating: 4, colorTag: 1, pick: true, keywords: ["beach"])
+        let coordinator = C1ImportCoordinator(
+            snapshotProvider: {
+                C1SelectionSnapshot(paths: importPaths, judgements: [judgement])
+            },
+            fallbackPathProvider: { [] },
+            scheduleApply: { sessionId, judgements in
+                box.scheduled.append((sessionId, judgements))
+            })
+
+        // 生产调用链先 capturePaths（读快照 + 按路径集合暂存判断），再导入。
+        _ = try await coordinator.capturePaths(expectedPaths: importPaths)
+        await AppImport.importCaptureOneFiles(
+            importPaths,
+            sessionAPI: services.session,
+            coordinator: coordinator,
+            l10n: L10n(language: .zhCN)
+        )
+
+        let sessions = try await services.session.list()
+        #expect(!sessions.isEmpty)
+        // 判断数据按导入路径调度一次（真实落库由 scheduler 注入，跳过 DB 等待）。
+        #expect(box.scheduled.count == 1)
+        let scheduled = try #require(box.scheduled.first)
+        #expect(scheduled.judgements.map(\.photoPath) == importPaths)
+        // 来源标签统一「Capture One 文件」（失败提示/Toast 用同一 key）。
+        let completed = try #require(box.completed)
+        #expect(completed[GatherAppImportUserInfoKey.sourceLabel] as? String == "Capture One 文件")
+    }
+
+    /// 普通本地导入不触发 C1 判断通道（source=local、无判断调度）。
+    @Test func localImportDoesNotTouchC1Judgements() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-local-entry-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let photo = try makeJPEG(at: directory.appendingPathComponent("local.jpg"))
+
+        let db = try makeTestDB()
+        let services = AppServices.live(composition: AppComposition.make(db: db))
+
+        final class Box: @unchecked Sendable {
+            var c1ErrorPosted = false
+            var completed: [AnyHashable: Any]?
+        }
+        let box = Box()
+        let errorToken = NotificationCenter.default.addObserver(
+            forName: GatherAppNotification.captureOneError, object: nil, queue: nil
+        ) { _ in box.c1ErrorPosted = true }
+        let doneToken = NotificationCenter.default.addObserver(
+            forName: GatherAppNotification.importCompleted, object: nil, queue: nil
+        ) { notification in box.completed = notification.userInfo }
+        defer {
+            NotificationCenter.default.removeObserver(errorToken)
+            NotificationCenter.default.removeObserver(doneToken)
+        }
+
+        await AppImport.importFiles(
+            [photo.path], sessionAPI: services.session, l10n: L10n(language: .zhCN))
+
+        let sessions = try await services.session.list()
+        #expect(!sessions.isEmpty)
+        // 普通导入不读 C1 快照，也不产生 C1 判断/C1 错误提示。
+        #expect(!box.c1ErrorPosted)
+        let completed = try #require(box.completed)
+        #expect((completed[GatherAppImportUserInfoKey.sourceLabel] as? String)?.isEmpty != false)
+    }
+
     /// 生成真实可解码的 1x1 JPEG（RAWDecoder.getDimensions 依赖 ImageIO 读头）。
     private func makeJPEG(at url: URL) throws -> URL {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
@@ -251,5 +350,101 @@ struct GatherAppDelegateTests {
     private struct TestError: Error {
         let message: String
         init(_ message: String) { self.message = message }
+    }
+}
+
+// MARK: - Wave5 batch7（A2/R5）：gather://import?source=capture-one
+
+/// C1 来源深链：不改路由形状（仍 .importFiles），只把导入语义切到 C1
+/// （判断快照 + capture-one 来源标 + 去重/命名一致）。
+@Suite("Capture One 来源深链（A2/R5）")
+@MainActor
+struct GatherDeepLinkCaptureOneSourceTests {
+    private func makePhoto(_ name: String) throws -> (directory: URL, url: URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-c1-deeplink-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let photo = directory.appendingPathComponent(name)
+        try Data("jpeg-fixture".utf8).write(to: photo)
+        return (directory, photo)
+    }
+
+    private func importURL(files: [URL], source: String?) throws -> URL {
+        var components = URLComponents()
+        components.scheme = "gather"
+        components.host = "import"
+        var items = files.map { URLQueryItem(name: "file", value: $0.path) }
+        if let source { items.append(URLQueryItem(name: "source", value: source)) }
+        components.queryItems = items
+        return try #require(components.url)
+    }
+
+    private func cleanup(_ directory: URL) {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    @Test("isCaptureOneSource：大小写/空白容错；local/缺省/非 import URL 不算 C1")
+    func recognizesSourceParameter() throws {
+        for raw in [
+            "gather://import?file=/a.jpg&source=capture-one",
+            "gather://import?file=/a.jpg&SOURCE=Capture-One",
+            "gather://import?file=/a.jpg&source=%20capture-one%20",
+        ] {
+            let url = try #require(URL(string: raw))
+            #expect(GatherAppDelegate.isCaptureOneSource(url), "应识别 C1 来源：\(raw)")
+        }
+        for raw in [
+            "gather://import?file=/a.jpg&source=local",
+            "gather://import?file=/a.jpg",
+            "gather://session/s1?source=capture-one",
+        ] {
+            let url = try #require(URL(string: raw))
+            #expect(!GatherAppDelegate.isCaptureOneSource(url), "不应识别 C1 来源：\(raw)")
+        }
+    }
+
+    @Test("source=capture-one → onCaptureOneFilesImport；普通 URL → onImportFiles")
+    func routesCaptureOneSemantics() throws {
+        let (directory, photo) = try makePhoto("c1.jpg")
+        let (localDirectory, localPhoto) = try makePhoto("local.jpg")
+        defer {
+            cleanup(directory)
+            cleanup(localDirectory)
+        }
+        final class Box: @unchecked Sendable {
+            var c1: [String]?
+            var local: [String]?
+        }
+        let box = Box()
+        let delegate = GatherAppDelegate()
+        delegate.onImportFiles = { box.local = $0 }
+        delegate.onCaptureOneFilesImport = { box.c1 = $0 }
+
+        delegate.handle(try importURL(files: [photo], source: "capture-one"))
+        #expect(box.c1 == [photo.standardizedFileURL.path])
+        #expect(box.local == nil, "C1 来源不得走通用导入（会丢来源标与判断数据）")
+
+        delegate.handle(try importURL(files: [localPhoto], source: nil))
+        #expect(box.local == [localPhoto.standardizedFileURL.path])
+    }
+
+    @Test("C1 回调未安装时排队；先装通用回调也不把 C1 导入降级成本地导入")
+    func pendingCaptureOneImportIsNotDowngraded() throws {
+        let (directory, photo) = try makePhoto("pending.jpg")
+        defer { cleanup(directory) }
+        let delegate = GatherAppDelegate()
+        delegate.handle(try importURL(files: [photo], source: "capture-one"))
+
+        // 只装通用回调：C1 来源 URL 必须继续排队，不能被 onImportFiles 消费。
+        var localCalls: [[String]] = []
+        delegate.onImportFiles = { localCalls.append($0) }
+        #expect(localCalls.isEmpty)
+
+        // 装 C1 回调 → 重放，走 C1 语义。
+        var c1Calls: [[String]] = []
+        delegate.onCaptureOneFilesImport = { c1Calls.append($0) }
+        #expect(c1Calls.count == 1)
+        #expect(c1Calls.first == [photo.standardizedFileURL.path])
+        #expect(localCalls.isEmpty)
     }
 }

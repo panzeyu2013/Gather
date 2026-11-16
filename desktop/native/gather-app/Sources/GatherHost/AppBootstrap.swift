@@ -598,6 +598,7 @@ package final class AppBootstrap {
             composition: composition,
             sessionAPI: appServices.session,
             jobAPI: appServices.job,
+            dashboardProvider: provider,
             runtime: runtime,
             captureOneBridge: c1RoundTrip,
             // Wave5 batch2：五个导入入口共享的自动初审调度器。
@@ -735,6 +736,8 @@ package final class AppBootstrap {
         composition: AppComposition,
         sessionAPI: any SessionAPI,
         jobAPI: any JobAPI,
+        // Wave5 batch7（A2/R5）：Dashboard C1 建库也走统一 C1 导入入口（同一个 provider）。
+        dashboardProvider: any DashboardDataProvider,
         runtime: AppRuntime,
         captureOneBridge: any CaptureOneBridging,
         autoTriageScheduler: AITriageAutoScheduler,
@@ -768,6 +771,55 @@ package final class AppBootstrap {
         // Cut 4 / 4b-3：界面语言源注入 Delegate（导入面板文案在动作发生时读它）；
         // 导入闭包同样在**动作发生时**取 store.l10n，不缓存字符串。
         delegate.languageStore = languageStore
+        // Wave5 batch7（A2/R5）：C1 判断数据随导入的统一协调器。
+        //
+        // 三个 C1 入口（菜单 ⌘⇧I / Dashboard 新建工作区 source=capture-one /
+        // gather://import?source=capture-one）共用它：快照 → 按导入路径暂存 →
+        // 建库后交给 C1JudgementImport（等 metadata.scan 终态；跳过时登记 pending 重放）。
+        // 判断落库失败绝不影响导入结果（协调器/调度器自行收敛）。
+        let c1Import = C1ImportCoordinator(
+            snapshotProvider: { try await captureOneJudgements() },
+            fallbackPathProvider: { try await captureOneBridge.selectedPhotoPaths() },
+            scheduleApply: { sessionId, judgements in
+                C1JudgementImport.scheduleApply(
+                    database: replayDatabase,
+                    sessionId: sessionId,
+                    judgements: judgements,
+                    onSkipped: { report in
+                        // Wave4c：扫描失败/超时/取消不再是"静默跳过"——登记 pending，
+                        // 状态条可见且可重试；自动重试由 replay 的后台 watcher 负责。
+                        let reason = report.skippedReason ?? "unknown"
+                        Task {
+                            await c1PendingReplay.register(
+                                sessionId: sessionId,
+                                judgements: judgements,
+                                skippedReason: reason)
+                        }
+                    })
+            })
+        // Wave5 batch7（A2/R5）：Dashboard「新建工作区（Capture One）」走同一 C1 入口。
+        //
+        // 为什么经 UI 静态桥：GatherUI 不能 import GatherHost。注入后 Dashboard 的
+        // C1 分支与菜单/深链共用同一入口（判断数据 + capture-one 来源标 + 默认命名）；
+        // 未接线（单测/预览/停机）时 VM 显式回退 provider 直连（导入照常、无判断数据）。
+        C1DashboardImportBridge.defaultCaptureOneName = { l10n in
+            AppImport.defaultImportName(source: AppImport.captureOneSource, l10n: l10n)
+        }
+        C1DashboardImportBridge.createSessionFromSelection = { name, selectedPaths, _ in
+            let paths: [String]
+            do {
+                paths = try await c1Import.capturePaths(expectedPaths: selectedPaths)
+            } catch {
+                // 快照与 fallback 都失败：仍按 Dashboard 选中路径建库（只少判断数据）。
+                GatherLogger.log(
+                    "c1.dashboard snapshot failed: \(error)", level: .warn)
+                paths = selectedPaths
+            }
+            let outcome = try await dashboardProvider.createSessionFromFiles(
+                name: name, source: AppImport.captureOneSource, filepaths: paths)
+            c1Import.finishCreate(sessionId: outcome.session.id, paths: paths)
+            return outcome
+        }
         // Wave3 / task-21：gather:// 深链路由（session/photo/import-into-session）。
         // 事件名与 userInfo 键在 GatherUI/GatherAppNotification 单源定义。
         delegate.onImportFilesIntoSession = { files, sessionId in
@@ -862,76 +914,53 @@ package final class AppBootstrap {
                 )
             }
         }
-        // Wave2 / G3：C1 判断数据的待应用队列（导入成功后按路径集合取回）。
-        // 为什么按路径集合做 key 而不是单个 pending：两次 C1 导入可能在 await 之间
-        // 交错（各自独立 Task），只存一份会把 A 的判断应用到 B 的新会话；
-        // 两个回调都在 MainActor 上执行，同文件集共用同一份快照（内容一致、幂等）。
-        let pendingJudgements = C1PendingJudgements()
-
+        // Wave5 batch7（A2/R5）：菜单 ⌘⇧I 与 gather://import?source=capture-one 共用
+        // AppImport.importCaptureOneFiles（capture-one 来源标 + 判断数据落库）。
         delegate.onCaptureOneImportFiles = { files in
             // 对齐旧版 App.tsx c1:plugin-import：C1 导入保留
-            // capture-one 来源标记与「C1 导入 M/D H:mm」命名。
+            // capture-one 来源标记与「C1 导入 M/D H:mm」命名（统一入口实现）。
             let l10n = languageStore.l10n
-            // 快照在这里同步取回：AppImport 的 onCaptureOneImport 一定先于本回调执行。
-            let judgements = pendingJudgements.take(paths: files)
-            let database = composition.db
             Task {
-                await AppImport.importFiles(
+                await AppImport.importCaptureOneFiles(
                     files,
                     sessionAPI: sessionAPI,
-                    source: "capture-one",
-                    sourceLabel: l10n("Capture One 文件"),
+                    coordinator: c1Import,
                     l10n: l10n,
                     afterCreate: { result in
                         // Wave2 / task-14：C1 导入同样接自动初审（与菜单导入同一语义）。
                         autoTriageScheduler.schedule(sessionId: result.session.id)
-                        // 钩子必须立即返回：真正落库在后台 Task 里（要先等 metadata.scan
-                        // 终态，否则扫描把 photo_metadata_cache 的 rating/关键词覆盖回 XMP 值）。
-                        guard !judgements.isEmpty else { return }
-                        C1JudgementImport.scheduleApply(
-                            database: database,
-                            sessionId: result.session.id,
-                            judgements: judgements,
-                            onSkipped: { report in
-                                // Wave4c：扫描失败/超时/取消不再是"静默跳过"——登记 pending，
-                                // 状态条可见且可重试；自动重试由 replay 的后台 watcher 负责。
-                                let reason = report.skippedReason ?? "unknown"
-                                Task {
-                                    await c1PendingReplay.register(
-                                        sessionId: result.session.id,
-                                        judgements: judgements,
-                                        skippedReason: reason)
-                                }
-                            })
-                    }
-                )
+                    })
+            }
+        }
+        // Wave5 batch7（A2/R5）：插件/脚本显式 source=capture-one 的深链导入。
+        // 入口给的路径是权威（期望路径），快照只提供判断；快照失败仍按 capture-one
+        // 导入（只少了判断数据），绝不把 C1 语义降级成本地导入。
+        delegate.onCaptureOneFilesImport = { files in
+            let l10n = languageStore.l10n
+            Task {
+                let paths: [String]
+                do {
+                    paths = try await c1Import.capturePaths(expectedPaths: files)
+                } catch {
+                    // 快照与 fallback 都失败：仍按入口路径导入（只少判断数据，不阻塞）。
+                    GatherLogger.log(
+                        "c1.deeplink snapshot failed: \(error)", level: .warn)
+                    paths = files
+                }
+                await AppImport.importCaptureOneFiles(
+                    paths,
+                    sessionAPI: sessionAPI,
+                    coordinator: c1Import,
+                    l10n: l10n,
+                    afterCreate: { result in
+                        autoTriageScheduler.schedule(sessionId: result.session.id)
+                    })
             }
         }
         delegate.onCaptureOneImport = {
-            do {
-                let snapshot = try await captureOneJudgements()
-                // P2（Wave4b）：畸形行不再静默丢弃（契约漂移要能在日志里看见）。
-                if snapshot.malformedLines > 0 {
-                    GatherLogger.log(
-                        "c1.judgements parse malformedLines=\(snapshot.malformedLines)"
-                            + " paths=\(snapshot.paths.count)（可能 C1 字典/脚本契约变化）",
-                        level: .warn)
-                }
-                pendingJudgements.store(snapshot.paths, judgements: snapshot.judgements)
-                return snapshot.paths
-            } catch {
-                // G3 降级：判断数据是可选增强，绝不能让"读不到判断"变成"导入失败"。
-                // 退回旧行为（只按文件导入），并用独立错误码提示未能读取判断数据。
-                do {
-                    let paths = try await captureOneBridge.selectedPhotoPaths()
-                    NotificationCenter.default.post(
-                        name: GatherAppNotification.captureOneError,
-                        object: GatherErrorCode.C1_JUDGEMENTS_UNAVAILABLE.rawValue)
-                    return paths
-                } catch {
-                    throw error
-                }
-            }
+            // 读快照 + 按快照路径暂存判断（失败时协调器退回 selectedPhotoPaths 并广播
+            // C1_JUDGEMENTS_UNAVAILABLE）；delegate 只负责拿"要导入的路径"。
+            try await c1Import.capturePaths()
         }
         return c1PendingReplay
     }
@@ -967,35 +996,13 @@ package final class AppBootstrap {
     }
 }
 
-// MARK: - C1 判断数据导入（Wave2 / G3）
-
-/// C1 判断快照的待应用队列：按「归一化路径集合」暂存，等 onCaptureOneImportFiles 取回。
-///
-/// key 用路径集合而不是 sessionId：读快照时还没有 session（新建工作区），而两次 C1
-/// 导入可能在 await 之间交错（各自独立 Task）；按文件集关联，A 的判断不会被应用到 B 的
-/// 新会话。两个回调都在 MainActor 上执行，因此不需要锁；同文件集的并发导入共用同一份
-/// 快照（内容一致、幂等）。
-@MainActor
-final class C1PendingJudgements {
-    private var byPathSet: [String: [C1VariantJudgement]] = [:]
-
-    func store(_ paths: [String], judgements: [C1VariantJudgement]) {
-        // 上限防御：用户连续取消/失败导入时不留无限增长的残留（超过 8 批直接清空，
-        // 代价只是丢掉还没被消费的旧判断——导入仍会正常进行）。
-        if byPathSet.count >= 8 { byPathSet.removeAll() }
-        byPathSet[Self.key(paths: paths)] = judgements
-    }
-
-    func take(paths: [String]) -> [C1VariantJudgement] {
-        byPathSet.removeValue(forKey: Self.key(paths: paths)) ?? []
-    }
-
-    static func key(paths: [String]) -> String {
-        paths.map(ScanPath.canonical).sorted().joined(separator: "\u{1F}")
-    }
-}
+// MARK: - C1 判断落库调度（Wave2 / G3；入口统一在 AppImport.C1ImportCoordinator）
 
 /// C1 判断的落库调度：导入钩子里只调度、不等待（导入返回速度不变）。
+///
+/// Wave5 batch7（A2/R5）：快照读取与 pending 队列已下沉到 AppImport（C1ImportCoordinator /
+/// C1PendingJudgements），三个 C1 入口共用；本类型只保留"等 metadata.scan 终态再落库"
+/// 的 DB 侧调度。
 enum C1JudgementImport {
     /// 后台等本会话 metadata.scan 终态，再把 C1 rating/色标/pick/关键词写进新会话。
     ///

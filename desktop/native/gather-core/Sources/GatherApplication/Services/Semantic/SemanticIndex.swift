@@ -448,7 +448,9 @@ public final class SemanticIndex {
     // MARK: 标签匹配（文搜）
 
     /// 标签文本匹配：查询词命中任一标签（前缀/包含，大小写不敏感）→ Jaccard 排序。
-    /// 不做 CLIP 文本编码（无模型资产），标签是英文原串，UI 负责本地化显示。
+    /// 不做 CLIP 文本编码（无模型资产）：标签与查询参数都是英文原串。
+    /// 中文显示/中文输入→英文映射在 UI（GatherUI/SemanticSearch/SemanticLabelCatalog），
+    /// 不进入本层、不写盘（关键词路径仍是 AI|场景|<英文>，可逆）。
     public func search(
         sessionId: String,
         labels query: [String],

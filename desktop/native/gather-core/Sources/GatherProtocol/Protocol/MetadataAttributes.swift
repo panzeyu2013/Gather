@@ -80,15 +80,87 @@ public enum MetadataAttributes {
             normalizeKeywordList(dc?["subject"] ?? iptc?["Keywords"])
         }
         let descriptive = descriptiveFromParse(parsed)
-        if keywords == nil, rating == nil, xmp?["Label"] == nil, descriptive.isEmpty {
+        // Wave5（batch7）：GPS 坐标与拍摄时间（JPEG 内嵌读侧）。
+        // 写侧（descriptionPatches）写的是 exif:DateTimeOriginal/GPSLatitude/GPSLongitude；
+        // 读侧对称地从 XMP 本地名取，取不到再回退原生 EXIF/GPS 分段：
+        // - ImageIO 对 GPS 会按本地名透出（相机 EXIF 有 GPS 时给的是**相机值**，
+        //   写入值的优先级由 MetadataWriteRouter 的 XMPPacketReader 叠加保证）；
+        // - ImageIO 把 exif:DateTimeOriginal 折叠进 EXIF 字典（原生 EXIF 优先），
+        //   所以日期回退到 parsed.exif；present-but-empty 阻断回退（显式清空不得复活）。
+        let dateTaken = embeddedDateTaken(parsed)
+        let latitude = embeddedCoordinate(parsed, xmpKey: "GPSLatitude", gpsKey: "latitude")
+        let longitude = embeddedCoordinate(parsed, xmpKey: "GPSLongitude", gpsKey: "longitude")
+        if keywords == nil, rating == nil, xmp?["Label"] == nil, descriptive.isEmpty,
+           dateTaken == nil, latitude == nil, longitude == nil {
             return nil
         }
         return MetadataWriteAttributes(
             keywords: keywords,
             rating: rating,
             label: xmp?["Label"]?.stringValue,
+            dateTaken: dateTaken,
+            latitude: latitude,
+            longitude: longitude,
             descriptive: descriptive.isEmpty ? nil : descriptive
         )
+    }
+
+    /// 内嵌拍摄时间：XMP exif:DateTimeOriginal（本地名）→ EXIF 分段。
+    ///
+    /// presence 阻断：XMP 里存在该键但为空（用户显式清空）时不得回退到相机 EXIF，
+    /// 否则"清空后又被相机值复活"。
+    private static func embeddedDateTaken(_ parsed: MetadataParseSegments) -> String? {
+        if let text = firstText(parsed, keys: ["DateTimeOriginal"]), !text.isEmpty {
+            return text
+        }
+        if parsed.xmpPresentKeys.contains("DateTimeOriginal") { return nil }
+        return stringValue(parsed.exif?["DateTimeOriginal"])
+    }
+
+    /// 内嵌 GPS 坐标：XMP 本地名 → ImageIO 已按方向归一化的 gps 分段。
+    /// presence 阻断同 DateTaken：XMP 显式清空后不得复活相机 GPS。
+    private static func embeddedCoordinate(
+        _ parsed: MetadataParseSegments, xmpKey: String, gpsKey: String
+    ) -> Double? {
+        if let text = firstText(parsed, keys: [xmpKey]), let value = parseGPSCoordinate(text) {
+            return value
+        }
+        if parsed.xmpPresentKeys.contains(xmpKey) { return nil }
+        // ImageIOExifProvider 已把 LatitudeRef/LongitudeRef 折进数值符号。
+        return parsed.gps?[gpsKey]?.numberValue
+    }
+
+    /// JSONValue → 非空字符串（EXIF 字典里的日期是字符串；数字转字符串）。
+    private static func stringValue(_ value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        if let text = value.stringValue { return text.isEmpty ? nil : text }
+        if let number = value.numberValue { return String(number) }
+        return nil
+    }
+
+    /// GPS 文本 → 十进制度（与宿主 SidecarXMPProvider.parseGpsCoordinate 同形态）：
+    /// 十进制 / "43,30.5N" 度分格式 / U+2212 负号；N·E 为正、S·W 为负；6 位小数。
+    ///
+    /// 放在 Protocol 是刻意的：内嵌读取（本文件）与 sidecar 读取（GatherMetadataIO）
+    /// 必须同一语义；SidecarXMPProvider 端的同名 private 实现暂未改成调用这里
+    /// （该文件不在本批写作用域），回执已列待收敛。
+    static func parseGPSCoordinate(_ value: String) -> Double? {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let sign: Double = trimmed.hasSuffix("S") || trimmed.hasSuffix("W") ? -1 : 1
+        let body = trimmed
+            .replacingOccurrences(of: "[NSEW]$", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\u{2212}", with: "-")
+        let parts = body.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        if parts.count == 1 {
+            guard let decimal = Double(parts[0]) else { return nil }
+            return sign * decimal
+        }
+        guard parts.count == 2, let degrees = Double(parts[0]), let minutes = Double(parts[1]) else {
+            return nil
+        }
+        let decimal = degrees + minutes / 60
+        return sign * (decimal * 1_000_000).rounded() / 1_000_000
     }
 
     /// 内嵌描述性元数据映射（键表与 ImageIO 的 IPTC 常量逐字一致）。

@@ -2,8 +2,8 @@
 // Wave2 / task-14：场景标签检索/写回面板。
 //
 // 入口：挑片检查器「场景标签…」（CullingTriageCard）——用当前多选照片做种子，
-// 支持 ① 找相似（多选平均向量）② 按 Vision 标签检索 ③ 把场景标签写回关键词
-//（预览 → 确认写回 → 整批撤销）。
+// 支持 ① 找相似（多选平均向量）② 按 Vision 标签检索（支持中文输入，见
+// SemanticLabelCatalog）③ 把场景标签写回关键词（预览显示中文名；路径仍英文；整批撤销）。
 import Foundation
 import SwiftUI
 import GatherProtocol
@@ -119,18 +119,31 @@ struct SemanticSearchSheet: View {
     }
 
     private var labelField: some View {
-        HStack(spacing: GatherMetrics.Space.s) {
-            TextField(l10n("标签（逗号分隔，如 beach, wedding）"), text: Binding(
-                get: { model.labelQuery },
-                set: { model.labelQuery = $0 }
-            ))
-            .textFieldStyle(.roundedBorder)
-            .onSubmit { Task { await model.searchLabels(l10n: l10n) } }
-            Button(l10n("检索")) {
-                Task { await model.searchLabels(l10n: l10n) }
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
+            HStack(spacing: GatherMetrics.Space.s) {
+                TextField(l10n("标签（中文或英文，逗号分隔，如 海滩, wedding）"), text: Binding(
+                    get: { model.labelQuery },
+                    set: { model.labelQuery = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { Task { await model.searchLabels(l10n: l10n) } }
+                Button(l10n("检索")) {
+                    Task { await model.searchLabels(l10n: l10n) }
+                }
+                .gatherButton(.secondary)
+                .disabled(model.isBusy)
             }
-            .gatherButton(.secondary)
-            .disabled(model.isBusy)
+            // 中文→英文映射可见（避免用户以为检索参数变了却说不清为什么命中）。
+            if !model.labelMappings.isEmpty {
+                Text(l10n.format(
+                    "中文映射：%@",
+                    model.labelMappings
+                        .map { "\($0.input) → \($0.english)" }
+                        .joined(separator: "、")))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -173,10 +186,21 @@ struct SemanticSearchSheet: View {
                                         .font(GatherFont.labelRegular)
                                         .lineLimit(1)
                                     if !hit.matchedLabels.isEmpty {
-                                        Text(hit.matchedLabels.joined(separator: " · "))
+                                        // 主行中文显示名；英文原标签作为小字副行（可逆证据）。
+                                        Text(model.displayText(hit.matchedLabels))
                                             .font(GatherFont.secondary)
                                             .foregroundStyle(.secondary)
                                             .lineLimit(1)
+                                            .accessibilityLabel(Text(l10n.format(
+                                                "命中标签：%@",
+                                                model.displayText(hit.matchedLabels))))
+                                        let englishText = hit.matchedLabels.joined(separator: " · ")
+                                        if model.displayText(hit.matchedLabels) != englishText {
+                                            Text(englishText)
+                                                .font(.caption2)
+                                                .foregroundStyle(.tertiary)
+                                                .lineLimit(1)
+                                        }
                                     }
                                 }
                                 Spacer()
@@ -207,6 +231,7 @@ struct SemanticSearchSheet: View {
                 .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            plannedKeywordsPreview
             HStack(spacing: GatherMetrics.Space.s) {
                 Button(l10n("预览")) {
                     Task { await model.previewWriteback(l10n: l10n) }
@@ -226,6 +251,10 @@ struct SemanticSearchSheet: View {
                 .gatherButton(.secondary, size: .small)
                 .disabled(model.isBusy || !model.canUndoWriteback)
             }
+            Text(l10n("界面显示中文名；写回 XMP 的关键词仍用英文标签（如 AI|场景|beach），可在图库按关键词检索/交付。"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Text(l10n("写回是幂等的：同一张照片重复写不会重复加词；撤销只移除 AI 场景子树。"))
                 .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
@@ -236,6 +265,35 @@ struct SemanticSearchSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .gatherCard()
+    }
+
+    /// 写回预览：中文显示名 + 英文原标签（路径本身不翻译，保持 AI|场景|<英文>）。
+    @ViewBuilder
+    private var plannedKeywordsPreview: some View {
+        if let plan = model.plan, !model.plannedKeywords.isEmpty {
+            Text(l10n("将写入的关键词"))
+                .font(GatherFont.secondary)
+                .foregroundStyle(.secondary)
+            Text(model.plannedKeywords.prefix(10)
+                .map { "\($0.displayName)（\($0.englishLabel)）" }
+                .joined(separator: " · "))
+                .font(GatherFont.secondary)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.plannedKeywords.count > 10 {
+                Text(l10n.format(
+                    "…等 %lld 个",
+                    Int64(model.plannedKeywords.count)))
+                    .font(GatherFont.secondary)
+                    .foregroundStyle(.secondary)
+            }
+            Text(l10n.format(
+                "写回路径：%@|英文标签（可逆；中文只影响显示）",
+                plan.root))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var planSummary: String {

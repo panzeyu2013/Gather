@@ -21,6 +21,26 @@ package enum AITriageUIBridge {
     }
 }
 
+/// Wave5 batch7（A2/R5）：Dashboard「新建工作区（Capture One）」→ 宿主统一 C1 导入入口。
+///
+/// 为什么需要：这条入口此前只调 provider.createSessionFromFiles —— 没有判断数据，
+/// 命名/来源标也与菜单导入不一致（复核 R5：三入口能力不一致）。GatherUI 不能 import
+/// GatherHost，故由宿主在装配时注入实现；nil = 未接线（单测/预览），VM 回退旧行为
+/// （导入照常，只是不带判断数据）。
+@MainActor
+package enum C1DashboardImportBridge {
+    /// 宿主统一入口：读 C1 判断快照 → 建库（source=capture-one）→ 判断数据落库。
+    package static var createSessionFromSelection: (@MainActor (
+        _ name: String,
+        _ selectedPaths: [String],
+        _ l10n: L10n
+    ) async throws -> CreateSessionOutcome)?
+
+    /// C1 默认命名（与菜单导入同为「C1 导入 M/D H:mm」，只有一份实现）。
+    /// nil = 未接线：VM 回退旧文案。
+    package static var defaultCaptureOneName: (@MainActor (L10n) -> String)?
+}
+
 extension DashboardViewModel {
     // MARK: 动作
 
@@ -88,17 +108,27 @@ extension DashboardViewModel {
             // R7：路径规则已下沉 GatherProtocol（唯一真相源），UI 直调，无 registry。
             let selectedPaths = normalizeImportFilepaths(files)
             let parentDirectory = commonParentDirectory(filepaths: selectedPaths)
-            let sessionName = name.isEmpty
-                ? (parentDirectory.isEmpty ? l10n("Capture One 导入") : TSPath.basename(parentDirectory))
-                : name
-            // Provider 的 createSessionFromFiles 契约 = 建会话 + addPhotos +
-            // metadata.scan（checkpoint.requestedPaths = 本次选中集合）；job 入队
-            // 失败时由 LiveSessionAPI 回滚会话行（TS session.ipc.ts L52-62）。
-            let outcome = try await provider.createSessionFromFiles(
-                name: sessionName,
-                source: SessionSource.captureOne.rawValue,
-                filepaths: selectedPaths
-            )
+            // 默认命名与菜单导入统一（Host 注入：C1 导入 M/D H:mm）；
+            // 未接线时回退旧文案，保证单测/预览可用。
+            let fallbackName = parentDirectory.isEmpty
+                ? (C1DashboardImportBridge.defaultCaptureOneName?(l10n) ?? l10n("Capture One 导入"))
+                : TSPath.basename(parentDirectory)
+            let sessionName = name.isEmpty ? fallbackName : name
+            // Wave5 batch7（A2/R5）：优先走宿主统一 C1 入口（判断快照 + capture-one 来源标
+            // + afterCreate 落库）；未接线时退回 provider 直连（导入照常、无判断数据）。
+            let outcome: CreateSessionOutcome
+            if let createFromSelection = C1DashboardImportBridge.createSessionFromSelection {
+                outcome = try await createFromSelection(sessionName, selectedPaths, l10n)
+            } else {
+                // Provider 的 createSessionFromFiles 契约 = 建会话 + addPhotos +
+                // metadata.scan（checkpoint.requestedPaths = 本次选中集合）；job 入队
+                // 失败时由 LiveSessionAPI 回滚会话行（TS session.ipc.ts L52-62）。
+                outcome = try await provider.createSessionFromFiles(
+                    name: sessionName,
+                    source: SessionSource.captureOne.rawValue,
+                    filepaths: selectedPaths
+                )
+            }
             setImportNotice(
                 session: outcome.session,
                 failedFiles: outcome.failedFiles,

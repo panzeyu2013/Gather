@@ -167,6 +167,13 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
     /// C1 菜单导入专用回调（携带 capture-one 来源标记与失败提示标签；
     /// 与 onImportFiles 区分，见 GatherApp.importFiles 的 source 参数）。
     public var onCaptureOneImportFiles: (([String]) -> Void)?
+    /// Wave5 batch7（A2/R5）：gather://import?source=capture-one … —— 插件/脚本显式 C1 语义导入。
+    ///
+    /// 与菜单 ⌘⇧I 共用宿主统一入口（判断快照 + capture-one 来源标 + afterCreate 落库）；
+    /// 与 onImportFiles 的区别只在"导入语义"，不改变路由形状（仍是 .importFiles）。
+    public var onCaptureOneFilesImport: (([String]) -> Void)? {
+        didSet { flushPendingDeepLinks() }
+    }
     /// 优雅停机回调（GatherApp 装配后挂载；返回前完成写回排空与 SQLite 关闭）。
     public var onPrepareForTermination: (() async -> Void)?
 
@@ -235,14 +242,49 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func dispatch(_ route: GatherDeepLinkRoute, url: URL) {
-        switch route {
-        case .importFiles(let files):
-            if let onImportFiles {
-                onImportFiles(files)
+    /// 深链是否显式声明 C1 来源（gather://import?source=capture-one）。
+    ///
+    /// 为什么在 delegate 而不是解析器：路由形状不变（仍是 .importFiles），source 只是
+    /// "这条导入走哪套语义"的宿主分发策略——旧 URL 不受影响，插件只需在 URL 里加参数。
+    /// 大小写与空白容错：脚本/插件拼 URL 时常见 Source=Capture-One。
+    public static func isCaptureOneSource(_ url: URL) -> Bool {
+        // 只认 gather://import（其它 host 的同名 query 不改变导入语义）。
+        guard url.scheme?.lowercased() == "gather",
+              (url.host ?? "").lowercased() == "import",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else {
+            return false
+        }
+        return items.contains { item in
+            guard item.name.lowercased() == "source" else { return false }
+            let value = (item.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.lowercased() == "capture-one"
+        }
+    }
+
+    /// 文件导入分发：显式 source=capture-one 走 C1 语义（判断数据 + 来源标），否则通用导入。
+    ///
+    /// 回调未安装时**按同一 URL 排队**（重放时再判一次），绝不把 C1 导入降级成本地导入——
+    /// 那会丢 capture-one 来源标与判断数据，也丢失"这是 C1 来的"语义。
+    private func routeFilesImport(_ files: [String], url: URL) {
+        if Self.isCaptureOneSource(url) {
+            if let onCaptureOneFilesImport {
+                onCaptureOneFilesImport(files)
             } else {
                 pendingImportURLs.append(url)
             }
+            return
+        }
+        if let onImportFiles {
+            onImportFiles(files)
+        } else {
+            pendingImportURLs.append(url)
+        }
+    }
+
+    private func dispatch(_ route: GatherDeepLinkRoute, url: URL) {
+        switch route {
+        case .importFiles(let files):
+            routeFilesImport(files, url: url)
         case .importIntoSession(let sessionId, let files):
             if let onImportFilesIntoSession {
                 onImportFilesIntoSession(files, sessionId)
@@ -282,7 +324,7 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
         pendingImportURLs.removeAll()
         for url in imports {
             if case .route(.importFiles(let files)) = GatherDeepLinkParser.parse(url) {
-                onImportFiles?(files)
+                routeFilesImport(files, url: url)
             }
         }
         let routes = pendingRouteURLs
@@ -292,7 +334,7 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
             case .route(let route):
                 switch route {
                 case .importFiles(let files):
-                    if let onImportFiles { onImportFiles(files) } else { pendingImportURLs.append(url) }
+                    routeFilesImport(files, url: url)
                 case .importIntoSession(let sessionId, let files):
                     if let onImportFilesIntoSession {
                         onImportFilesIntoSession(files, sessionId)

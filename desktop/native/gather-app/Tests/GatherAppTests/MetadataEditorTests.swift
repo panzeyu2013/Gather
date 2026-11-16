@@ -209,4 +209,65 @@ struct MetadataEditorTests {
             #expect(!MetadataDisplay.fieldTitle(field).isEmpty)
         }
     }
+
+    // MARK: - Wave5（batch7）：批量时间调整纯计算
+
+    @Test("偏移量解析：带符号整数 × 单位 → 秒；非法/空 → nil")
+    func offsetSecondsParsing() {
+        #expect(MetadataEditorDraft.offsetSeconds("-2", unit: .hours) == -7_200)
+        #expect(MetadataEditorDraft.offsetSeconds("30", unit: .minutes) == 1_800)
+        #expect(MetadataEditorDraft.offsetSeconds("+1", unit: .days) == 86_400)
+        #expect(MetadataEditorDraft.offsetSeconds("0", unit: .seconds) == 0, "0 由调用方禁用按钮")
+        #expect(MetadataEditorDraft.offsetSeconds("abc", unit: .hours) == nil)
+        #expect(MetadataEditorDraft.offsetSeconds("", unit: .hours) == nil)
+        #expect(MetadataEditorDraft.offsetSeconds("1.5", unit: .hours) == nil)
+        #expect(MetadataEditorDraft.offsetSeconds("99999999999999999999", unit: .days) == nil,
+                "溢出必须失败，不能静默截断")
+    }
+
+    @Test("时间偏移：跨日/跨月/闰年进位，负偏移回到前一天")
+    func shiftedDateTimeArithmetic() {
+        #expect(MetadataEditorDraft.shiftedDateTime(
+            "2026-12-01T23:30:00", bySeconds: 3_600) == "2026-12-02T00:30:00")
+        #expect(MetadataEditorDraft.shiftedDateTime(
+            "2026-12-01T00:30:00", bySeconds: -3_600) == "2026-11-30T23:30:00")
+        #expect(MetadataEditorDraft.shiftedDateTime(
+            "2026-12-31T23:59:30", bySeconds: 60) == "2027-01-01T00:00:30")
+        // 闰年 2 月 29 日存在，跨年不丢日。
+        #expect(MetadataEditorDraft.shiftedDateTime(
+            "2028-02-28T23:00:00", bySeconds: 3_600) == "2028-02-29T00:00:00")
+        // 输入形态兼容：EXIF 冒号/空格都能先归一化再偏移。
+        #expect(MetadataEditorDraft.shiftedDateTime(
+            "2026:12:01 10:00:00", bySeconds: 60) == "2026-12-01T10:01:00")
+        #expect(MetadataEditorDraft.shiftedDateTime("不是时间", bySeconds: 60) == nil)
+    }
+
+    @Test("批量时间预演示例：不同形态旧时间同偏移后各自正确（跨日/冒号形态）")
+    func batchTimePreviewSamples() {
+        let olds = ["2026-12-01T23:30:00", "2026:12:02 08:00:00", "2026-12-01"]
+        let shifted = olds.compactMap {
+            MetadataEditorDraft.shiftedDateTime($0, bySeconds: 3_600)
+        }
+        #expect(shifted == [
+            "2026-12-02T00:30:00",
+            "2026-12-02T09:00:00",
+            "2026-12-01T01:00:00",
+        ])
+        // 不可解析的旧值在预演里走"不可调整"分支（不写、不静默算错）。
+        #expect(olds.compactMap {
+            MetadataEditorDraft.shiftedDateTime($0, bySeconds: 3_600)
+        }.count == 3)
+        #expect(MetadataEditorDraft.shiftedDateTime("", bySeconds: 60) == nil)
+    }
+
+    @Test("时间偏移与夏令时无关：固定 UTC 墙上时间算术（跨 DST 切换日不跳变）")
+    func shiftedDateTimeIsDSTInsensitive() {
+        // 欧洲 2026-03-29 是夏令时切换日。若用设备本地日历做算术，01:30 + 1h 可能
+        // 变成 03:30 或 01:30；这里按固定 UTC 墙上时间，必须是 02:30。
+        #expect(MetadataEditorDraft.shiftedDateTime(
+            "2026-03-29T01:30:00", bySeconds: 3_600) == "2026-03-29T02:30:00")
+        // 美国 2026-11-01 回拨日同理：01:30 + 1h = 02:30（不是 01:30 重复小时）。
+        #expect(MetadataEditorDraft.shiftedDateTime(
+            "2026-11-01T01:30:00", bySeconds: 3_600) == "2026-11-01T02:30:00")
+    }
 }
