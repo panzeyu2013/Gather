@@ -56,7 +56,7 @@
 
 ## 4. 真机验收清单（人工执行，本轮未跑）
 
-沿用 96-manual-acceptance.md §1–§12，并补充 Wave5 新增项：
+沿用上一轮 docs/reviews/2026-11-10-competitive-gap/96-manual-acceptance.md §1–§12 与本目录 96-wave5-manual-acceptance.md，并补充 Wave5 新增项：
 
 1. C1：多变体写回跳过与提示；browse 跨集合重试；select 前 deselect；淘汰红标动作；C1 有调整徽标；GatherLink 插件带 source=capture-one 后判断/来源标生效。
 2. 交付：S3 预签名链接客户可打开与到期；WebDAV 静态入口；发布记录/HEAD 差分二次发布跳过；部分失败重试。
