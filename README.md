@@ -30,8 +30,8 @@ decisions back through metadata.
 
 - **Local-first:** photos, indexes, models, and metadata processing stay on the
   computer; the app does not run a local web service.
-- **Native workflow:** SwiftUI pages call 16 typed domain APIs (172 methods)
-  in-process across eight functional SwiftPM targets (16 total, incl. test/tool targets); there is no Electron, browser
+- **Native workflow:** SwiftUI pages call 16 typed domain APIs (195 methods)
+  in-process across nine functional SwiftPM targets (18 total, incl. test/tool targets); there is no Electron, browser
   renderer, JavaScript IPC runtime, or string-command router.
 - **Recoverable writeback:** metadata changes are persisted in the `deliveries`
   queue and processed with conflict detection and restart recovery.
@@ -107,7 +107,7 @@ and re-reads the signed entitlements. Assembly also asserts the bundled
 
 ```text
 SwiftUI (GatherUI)
-  ↓ AppServices：16 个域协议 / 172 个类型化方法（同进程直连）
+  ↓ AppServices：16 个域协议 / 195 个类型化方法（同进程直连）
 GatherHost（AppComposition 组合根 / AppRuntime / Live*API）
   ↓
 GatherApplication（服务编排、JobService）
@@ -116,10 +116,11 @@ GatherApplication（服务编排、JobService）
   └─ GatherAnalysis：dHash/LSH 聚类、Vision 人脸、RAW/ImageIO 解码
 ```
 
-The eight targets are `GatherProtocol` (values, API, error codes),
+The nine functional targets are `GatherProtocol` (values, API, error codes),
 `GatherPersistence` (SchemaCurrent, Database, repositories), `GatherDelivery`
 (delivery engine), `GatherAnalysis`, `GatherApplication` (services),
-`GatherUI`, `GatherHost`, and `GatherApp`. `AppComposition` is
+`GatherMetadataIO` (XMP/JPEG/IPTC write path), `GatherUI`, `GatherHost`, and
+`GatherApp`. `AppComposition` is
 the single composition root; `AppRuntime` owns job lifecycle. There is no
 118-command router; `Database.open(at:)` opens the current schema (user_version=1);
 incompatible databases fail closed (no migration chain).

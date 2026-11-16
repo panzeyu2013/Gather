@@ -41,7 +41,7 @@ desktop/native/
 │   ├── Sources/GatherCoreBenchmarks/ + GatherFaceBenchmarks/
 │   ├── Tests/GatherTestSupport/     # makeTestDB 等共享夹具
 │   └── Tests/GatherCoreTests/
-├── gather-app/                      # 4 个 target
+├── gather-app/                      # 4 个源码 target（+ GatherAppTests 测试 target）
 │   ├── Sources/GatherUI/            # 页面/状态层/本地化资源（en/zh-Hans lproj）
 │   ├── Sources/GatherPreviewData/   # DEBUG-only 预览数据与 API 替身（#13 从 GatherUI 拆出）
 │   ├── Sources/GatherHost/          # AppComposition、AppRuntime、Live*API、RootView、菜单
@@ -121,7 +121,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh
 
 SwiftPM 不会执行 Xcode 的 `ExtractAppIntentsMetadata` 构建步骤，裸 `swift build`
 组装的 `.app` 因此没有 `Contents/Resources/Metadata.appintents`，Shortcuts.app 也就
-看不到 Gather 的 4 个动作。`desktop/native/build.sh` 在 app 组装完成、签名之前补这一步：
+看不到 Gather 的 6 个动作。`desktop/native/build.sh` 在 app 组装完成、签名之前补这一步：
 
 - 实现：`scripts/build-appintents-metadata.sh`（不是产品运行时逻辑）
   1. 找出 `Sources/GatherApp` 里含 `AppIntent`/`AppShortcutsProvider` 的源文件；
@@ -141,19 +141,20 @@ SwiftPM 不会执行 Xcode 的 `ExtractAppIntentsMetadata` 构建步骤，裸 `s
   ```
 
   输出会列出 `Metadata.appintents` 的 version、actions 标识与 autoShortcuts 数；
-  4 个 intent（`CreateWorkspaceAndImportIntent`/`ExportWorkspaceIntent`/
-  `WritebackWorkspaceMetadataIntent`/`WorkspaceStatusIntent`）缺一即 exit 1。
+  默认强制校验 4 个 Wave3 intent（`CreateWorkspaceAndImportIntent`/`ExportWorkspaceIntent`/
+  `WritebackWorkspaceMetadataIntent`/`WorkspaceStatusIntent`）齐全（缺一即 exit 1）；
+  Wave5 另有 `QueryPhotosIntent`/`RatePhotosIntent`，当前共 6 个动作。
 
 Shortcuts.app 端到端验收步骤：
 
 1. 构建并确认 `release/Gather.app/Contents/Resources/Metadata.appintents/extract.actionsdata`
    与 `version.json` 存在；
-2. `./scripts/check-appintents.sh` 通过（列出 4 个 intent 标识）；
+2. `./scripts/check-appintents.sh` 通过（列出 intent 标识，默认强制校验其中 4 个）；
 3. `open -n release/Gather.app`，等待应用完成启动（首次可配合
    `--data-dir`/`GATHER_APPLICATION_SUPPORT_DIR` 使用隔离库）；
 4. 打开 Shortcuts.app → 新建快捷指令 → 搜索 "Gather"：应能看到「新建工作区并导入」
-   「按工作区导出」「按工作区写回元数据」「查询工作区状态」4 个动作（App 快捷指令
-   短语里也应出现，如「用 Gather 新建工作区」）；
+   「按工作区导出」「按工作区写回元数据」「查询工作区状态」「查询照片」「设置照片评级/标记」
+   6 个动作（App 快捷指令短语里也应出现，如「用 Gather 新建工作区」「用 Gather 查询照片」）；
 5. 跑一次「查询工作区状态」（填已有工作区 ID）：应返回名称/照片数/XMP 队列；
    若 Gather 未启动，动作应报「Gather 尚未完成启动」而不是静默失败。
 
@@ -181,7 +182,7 @@ defaults delete com.gather.desktop.native GatherApplicationSupportDirectory
 
 ```text
 SwiftUI（GatherUI：页面 / ViewModel / LanguageStore）
-  ↓ AppServices（16 个域 API / 172 个类型化方法，同进程直连）
+  ↓ AppServices（16 个域 API / 195 个类型化方法，同进程直连）
 GatherHost（AppComposition 组合根、AppRuntime、Live*API）
   ↓
 GatherApplication（服务编排；交付在 GatherDelivery）
@@ -265,7 +266,7 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 
 ```bash
 ./scripts/check-no-legacy.sh             # 无 Legacy/兼容层、WebKit/JS、Electron；app 无 JSONSerialization
-./scripts/check-cleanup-ratchet.sh       # 5 个清理指标不超 docs/cleanup-baseline.json
+./scripts/check-cleanup-ratchet.sh       # 9 个清理指标不超 docs/cleanup-baseline.json（新增 try_bang/as_bang/fatal_error 零基线、nonisolated_unsafe ≤7）
 ./scripts/check-layering.sh              # 依赖方向（UI 不 import Persistence/Domain/Analysis/Delivery/Host）
 ./scripts/check-domain-events.sh         # 域事件：通道名只在 2 个文件、发布点与域字面量在登记表内（#11）
 ./scripts/check-domain-writes.sh         # 写路径必发域：叶子写函数必须发域 / 显式 none + 理由（#11 R3）
@@ -277,15 +278,22 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 ./scripts/check-coded-errors.sh
 ./scripts/check-backlog-evidence.sh
 ./scripts/check-design-system.sh
+./scripts/check-repo-hygiene.sh          # 仓库层卫生 6 节：bash -n/执行位/CRLF、.editorconfig、Markdown 链接、本地化表、无缓存产物、shellcheck（-S warning；缺失即 FAIL，需预装）
 ./scripts/check-warnings.sh              # core/app Sources -warnings-as-errors
 ```
 
 门禁与扫描以当前工作树为准；未暂存的删除仍会被 `git ls-files` 列出，不能据此判断
 文件仍然存在。
 
+文档基线数字用只读事实报告取（**不是门禁**、不接入 CI；口径与各门禁一致）：
+
+```bash
+./scripts/report-baseline.sh  # 只读事实报告（非门禁）：targets / API / 测试声明 / 本地化 / schema / protocol / cleanup 基线
+```
+
 ## 类型化 API 契约
 
-- 16 个域协议 / 172 个方法（`GatherProtocol/API/*API.swift`）。旧 118 条字符串命令已
+- 16 个域协议 / 195 个方法（`GatherProtocol/API/*API.swift`）。旧 118 条字符串命令已
   删除，历史映射见 git 历史。
 - **破坏性操作**只接收 `Confirmed<T>`：类型层面禁止裸 Bool；UI 必须在真实确认弹窗
   分支构造。

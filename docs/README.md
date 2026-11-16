@@ -7,7 +7,7 @@ Gather 把本地文件夹或 Capture One 选中项组织成工作区，在一个
 
 ## 架构
 
-SwiftUI（GatherUI）→ AppServices（16 个域 API / 172 个类型化方法）→ GatherHost
+SwiftUI（GatherUI）→ AppServices（16 个域 API / 195 个类型化方法）→ GatherHost
 （AppComposition / AppRuntime / Live*API）→ GatherApplication（服务、JobService、
 WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是 GatherPersistence，
 图像/人脸在 GatherAnalysis，XMP/JPEG/IPTC 写盘在 GatherMetadataIO。
@@ -40,13 +40,17 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 - 测试入口：`./scripts/test.sh core|app`（或 `all`）。
 - 完整 `.app` 只在发布/打包时构建：`./desktop/native/build.sh`。
 
-## 当前基线（2026-10-31 appearance 合并后采样，以脚本输出为准）
+## 当前基线（2026-11-17 采样，以脚本输出为准）
 
-- 9 个功能 target（含测试/工具共 18 个）。
-- gather-core 1,623 tests / 239 suites；gather-app 879 tests / 102 suites（`./scripts/test.sh` 运行时口径）。
-  `check-test-catalog.sh` 的 ratchet 用 `@Suite` **声明**口径（core 181 + app 102 = 283）；core 还有
-  一批只有 `@Test` 没有 `@Suite` 的测试文件，运行时每个算一个隐式套件，这就是 239 与 181 的差额。
-- 12 个 `check-*.sh` 门禁（2026-10-30 移除 `check-docs.sh`）；en 2,020 键 / zh 9 占位键。
+- 9 个功能 target（含测试/工具共 18 个）；16 个域 API / 195 个类型化方法。
+- **声明口径**（`check-test-catalog.sh` 的 ratchet，按剥注释后的 `@Test`/`@Suite` 声明计）：
+  core 1,995 `@Test` / 234 `@Suite`；app 1,260 / 183（合计 3,255 / 417，均不低于基线 2,502 / 283）。
+- **最近一次 macOS 运行**（2026-11-16，当前 Linux 环境无法复跑）：core 1,970 tests / 290 suites +
+  串行 25 tests / 4 suites（合计 1,995 / 294）；app 1,260 tests / 184 suites。core 声明 234 个
+  `@Suite` 与运行时 294 的差额来自只有 `@Test`、没有 `@Suite` 的测试文件（运行时每个文件算一个隐式套件）。
+- 15 个 `check-*.sh` 门禁（14 项在最近一次 macOS 运行 2026-11-16 全绿；新增
+  `check-repo-hygiene.sh` 为 Linux 只读门禁，2026-11-17 本地通过；清单见 [DEVELOPMENT.md](DEVELOPMENT.md)）；
+  en 2,680 键 / zh-Hans 9 占位键。
 
 ## 文档
 
@@ -61,6 +65,7 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 | [cleanup-backlog.md](cleanup-backlog.md) | 清理台账（门禁输入） |
 | [design/appearance-interaction.md](design/appearance-interaction.md) | 设计系统与页面配方 |
 | [design/functional-usability-remediation-2026-10-29.md](design/functional-usability-remediation-2026-10-29.md) | 功能与易用性整改 |
+| [reviews/2026-11-17-quality-hardening/00-overview.md](reviews/2026-11-17-quality-hardening/00-overview.md) | 2026-11-17 质量加固审计：整洁度 / 规范 / 测试 / 设计 / 性能 |
 
 ## 许可证
 
