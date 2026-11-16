@@ -152,6 +152,13 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
     public var onOpenPhoto: ((String, String) -> Void)? {
         didSet { flushPendingDeepLinks() }
     }
+    /// Wave5 batch5：gather://rate?… —— 脚本写评级/色标/保留（无 UI 直接执行）。
+    ///
+    /// patch 已在解析期校验（至少一个字段、rating 0…5、label/pick 白名单），宿主只负责
+    /// 真正落库；失败由宿主转成可见错误（toast + 日志），不在这里吞掉。
+    public var onApplyDecisions: ((String, [String], GatherAutomationDecisionPatch) -> Void)? {
+        didSet { flushPendingDeepLinks() }
+    }
     /// 把 photoId 解析成所属 sessionId（同步只读查询；nil = 未找到）。
     public var onResolvePhotoSession: ((String) -> String?)?
     /// 深链解析失败（诊断/提示用）。
@@ -255,8 +262,18 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
                 break
             }
             onOpenPhoto(sessionId, photoId)
+        case .rate(let sessionId, let photoIds, let patch):
+            // 写判断不是幂等导航：没有 handler 时排队到安装后再执行（与 import 同口径），
+            // 不静默丢弃——脚本触发后用户应当看到结果或错误。
+            if let onApplyDecisions {
+                onApplyDecisions(sessionId, photoIds, patch)
+            } else {
+                pendingRouteURLs.append(url)
+            }
         }
-        NSApp.activate(ignoringOtherApps: true)
+        // NSApp 在非 AppKit 宿主（单测/命令行）里为 nil：可选链让路由分发本身可测，
+        // 生产行为不变（真实 app 里 NSApp 恒存在）。
+        NSApp?.activate(ignoringOtherApps: true)
     }
 
     /// handler 挂载后重放启动早期到达的深链；仍未挂载的保留到下次。
@@ -285,6 +302,10 @@ public final class GatherAppDelegate: NSObject, NSApplicationDelegate {
                 case .openPhoto(let photoId):
                     if let onOpenPhoto, let sessionId = onResolvePhotoSession?(photoId) {
                         onOpenPhoto(sessionId, photoId)
+                    } else { pendingRouteURLs.append(url) }
+                case .rate(let sessionId, let photoIds, let patch):
+                    if let onApplyDecisions {
+                        onApplyDecisions(sessionId, photoIds, patch)
                     } else { pendingRouteURLs.append(url) }
                 }
             case .invalid(let error):

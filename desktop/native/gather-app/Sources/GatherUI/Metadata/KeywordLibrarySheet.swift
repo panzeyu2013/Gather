@@ -12,6 +12,8 @@
 // 错误呈现：仓储业务错误统一为 GatherError(.METADATA_KEYWORDS_INVALID)，
 // params["reason"] 由服务层给出中文原因；本面板按本地文案路径展示（不吞原因）。
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import GatherProtocol
 
 struct KeywordLibrarySheet: View {
@@ -34,6 +36,11 @@ struct KeywordLibrarySheet: View {
     @State private var synonymsText = ""
     @State private var cascadeDelete = false
     @State private var pendingDelete = false
+    /// Wave5（Batch5 / task-23）：词库 CSV 导入/导出（导入先预览再确认）。
+    @State private var showKeywordImportPreview = false
+    @State private var keywordCsvPreview = KeywordCsvPreview.empty
+    @State private var keywordImportOutcome: KeywordImportOutcome?
+    @State private var keywordTransferNotice: String?
 
     private var selectedNode: KeywordLibraryNode? {
         nodes.first { $0.path == selectedPath }
@@ -57,6 +64,14 @@ struct KeywordLibrarySheet: View {
                 Text(l10n("关键词库"))
                     .font(GatherFont.cardTitle)
                 Spacer()
+                // Wave5（Batch5 / task-23）：受控词表可导出 CSV 搬迁/备份，也可导入合并
+                // （只增路径/覆盖同义词，不删除现有词；超过 2000 行显式拒绝）。
+                Button(l10n("导出词库…")) { chooseKeywordExport() }
+                    .gatherButton(.tertiary, size: .small)
+                    .disabled(isBusy)
+                Button(l10n("导入词库…")) { chooseKeywordImport() }
+                    .gatherButton(.tertiary, size: .small)
+                    .disabled(isBusy)
                 Button(l10n("刷新")) { Task { await reload() } }
                     .gatherButton(.tertiary, size: .small)
                     .disabled(isBusy)
@@ -82,6 +97,12 @@ struct KeywordLibrarySheet: View {
             }
             .frame(maxHeight: 520)
 
+            if let keywordTransferNotice {
+                Text(keywordTransferNotice)
+                    .font(GatherFont.label)
+                    .foregroundStyle(.secondary)
+            }
+
             if isBusy {
                 ProgressView().controlSize(.small)
             }
@@ -89,6 +110,10 @@ struct KeywordLibrarySheet: View {
         .padding(GatherMetrics.Space.l)
         .frame(width: 760)
         .task { await reload() }
+        // Wave5（Batch5 / task-23）：导入预览（确认后才写库；取消不发任何写命令）。
+        .sheet(isPresented: $showKeywordImportPreview) {
+            keywordImportPreviewSheet
+        }
         .confirmationDialog(
             l10n("删除这个关键词？"),
             isPresented: $pendingDelete,
@@ -393,6 +418,159 @@ struct KeywordLibrarySheet: View {
         }
     }
 
+    // MARK: - Wave5（Batch5 / task-23）：词库导入/导出
+
+    private func chooseKeywordExport() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.nameFieldStringValue = "GatherKeywords.csv"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in await exportKeywords(to: url) }
+        }
+    }
+
+    private func exportKeywords(to url: URL) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let executor = MetadataTransferExecutor(metadata: api)
+            let result = try await executor.exportKeywordCSV()
+            try result.text.write(to: url, atomically: true, encoding: .utf8)
+            keywordTransferNotice = l10n.format(
+                "已导出 %lld 条关键词到 %@", result.count, url.lastPathComponent)
+            errorText = nil
+        } catch {
+            present(error)
+        }
+    }
+
+    /// 文件级非法（空文件/超 2000 行/编码）的 reason 是本地校验文案，需要显式上屏；
+    /// 词库存取错误仍走 present（码表 + reason）。
+    private func importErrorText(_ error: any Error) -> String {
+        if let gather = error as? GatherError, gather.code == .INVALID_PARAM,
+           let reason = gather.params["reason"], !reason.isEmpty {
+            return CommandErrorText.resolve(
+                CommandError.localized("导入失败：%@", params: [reason]), with: l10n)
+        }
+        return CommandErrorText.resolve(CommandError(error), with: l10n)
+    }
+
+    private func chooseKeywordImport() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in await loadKeywordImport(from: url) }
+        }
+    }
+
+    /// 只读加载 + 预览：不写库；用户在预览 sheet 里点「导入」后才执行。
+    private func loadKeywordImport(from url: URL) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            // 新增/同义词更新的分类要尽量新：先刷新词库（失败不阻断，按当前已知判）。
+            await reload()
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let preview = try KeywordLibraryTransfer.decodeCSV(text, existing: nodes)
+            keywordCsvPreview = preview
+            keywordImportOutcome = nil
+            errorText = nil
+            showKeywordImportPreview = true
+        } catch {
+            errorText = importErrorText(error)
+        }
+    }
+
+    /// 确认导入：新路径 createKeyword + setKeywordSynonyms，既有路径只覆盖同义词；
+    /// 逐条独立提交，失败逐条计数（不静默部分成功）；成功后有写才广播 .metadata。
+    private func confirmKeywordImport() async {
+        guard !isBusy else { return }
+        let plan = KeywordLibraryTransfer.plan(keywordCsvPreview)
+        guard !plan.newRows.isEmpty || !plan.synonymUpdates.isEmpty else {
+            keywordTransferNotice = l10n("没有需要导入的词（全部一致或非法）")
+            keywordImportOutcome = nil
+            showKeywordImportPreview = false
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let executor = MetadataTransferExecutor(metadata: api)
+        let outcome = await executor.importKeywords(Confirmed(plan, source: .userDialog))
+        keywordImportOutcome = outcome
+        keywordTransferNotice = l10n.format(
+            "已导入词库：新增 %lld 个路径，更新 %lld 组同义词，跳过一致 %lld 个，失败 %lld 个。",
+            outcome.createdPaths, outcome.updatedSynonyms,
+            outcome.unchanged, outcome.failures.count)
+        if outcome.createdPaths + outcome.updatedSynonyms > 0 {
+            GatherEventCenter.postDomainChange(.metadata, sessionId: nil)
+        }
+        await reload()
+        if outcome.failures.isEmpty { showKeywordImportPreview = false }
+    }
+
+    /// 导入预览 sheet：新增/更新/一致计数 + 非法行（前 8 条）+ 结果。
+    private var keywordImportPreviewSheet: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
+            Text(l10n("导入词库"))
+                .font(GatherFont.cardTitle)
+            Text(l10n.format(
+                "文件有 %lld 行数据：新增 %lld 个路径，更新 %lld 组同义词，与现有完全一致 %lld 个，非法 %lld 行。",
+                keywordCsvPreview.dataLineCount,
+                keywordCsvPreview.newCount,
+                keywordCsvPreview.synonymUpdateCount,
+                keywordCsvPreview.unchangedCount,
+                keywordCsvPreview.invalid.count))
+                .font(GatherFont.secondary)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(l10n("导入只增路径与覆盖同义词，不删除现有词、不做层级移动，也不改 XMP。"))
+                .font(GatherFont.label)
+                .foregroundStyle(.secondary)
+            if !keywordCsvPreview.invalid.isEmpty {
+                Text(l10n.format("%lld 行不可导入（前 8 行）：",
+                                 keywordCsvPreview.invalid.count))
+                    .font(GatherFont.label)
+                    .foregroundStyle(GatherTheme.warningText)
+                ForEach(Array(keywordCsvPreview.invalid.prefix(8)), id: \.lineNumber) { row in
+                    Text(l10n.format("第 %lld 行：%@", row.lineNumber, row.reason))
+                        .font(GatherFont.label)
+                        .foregroundStyle(GatherTheme.warningText)
+                }
+            }
+            if let outcome = keywordImportOutcome, !outcome.failures.isEmpty {
+                Text(l10n.format("有 %lld 条写入失败（可重试）：", outcome.failures.count))
+                    .font(GatherFont.label)
+                    .foregroundStyle(GatherTheme.errorText)
+                ForEach(Array(outcome.failures.prefix(8).enumerated()), id: \.offset) {
+                    _, failure in
+                    Text(l10n.format(
+                        "%@：%@", failure.name,
+                        MetadataDisplay.localizedFailure(failure.reason, with: l10n)))
+                        .font(GatherFont.label)
+                        .foregroundStyle(GatherTheme.errorText)
+                }
+            }
+            HStack {
+                Spacer()
+                Button(l10n("取消")) { showKeywordImportPreview = false }
+                    .gatherButton(.secondary)
+                    .disabled(isBusy)
+                Button(l10n("导入")) { Task { await confirmKeywordImport() } }
+                    .gatherButton(.primary)
+                    .disabled(isBusy || (keywordCsvPreview.newCount + keywordCsvPreview.synonymUpdateCount) == 0)
+            }
+            if isBusy { ProgressView().controlSize(.small) }
+        }
+        .padding(GatherMetrics.Space.l)
+        .frame(width: 660)
+    }
     private func present(_ error: any Error) {
         if let gather = error as? GatherError, gather.code == .METADATA_KEYWORDS_INVALID {
             let reason = gather.params["reason"] ?? ""

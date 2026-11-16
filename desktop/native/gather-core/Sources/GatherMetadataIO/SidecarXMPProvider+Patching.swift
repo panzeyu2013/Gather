@@ -17,6 +17,9 @@ extension SidecarXMPProvider {
     static let lrNamespace = "http://ns.adobe.com/lightroom/1.0/"
     private static let xmpNamespace = "http://ns.adobe.com/xap/1.0/"
     private static let photoshopNamespace = "http://ns.adobe.com/photoshop/1.0/"
+    /// Wave5（batch5）：拍摄时间/GPS 的 EXIF 命名空间（与读侧 SidecarXMLDelegate 的
+    /// exif:DateTimeOriginal / exif:GPSLatitude / exif:GPSLongitude 逐字对称）。
+    private static let exifNamespace = "http://ns.adobe.com/exif/1.0/"
     private static let rdfNamespace = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 
     /// 写后校验：目标字段必须与期望一致（label 的 "" 与 nil 等价）。
@@ -69,6 +72,37 @@ extension SidecarXMPProvider {
                     expected: normalized ?? "nil", actual: actual.triageSignal ?? "nil")
             }
         }
+        // Wave5（batch5）：GPS 坐标与拍摄时间必须读回一致（空串/缺省都算「清空」）。
+        // 诊断字段名借用最接近的描述性字段（dateCreated / location）：GPS/时间不在
+        // DescriptiveField 表里，错误码前缀 XMP_WRITE_VERIFICATION_FAILED 不变。
+        if let expectedDate = expected.dateTaken {
+            let normalizedExpected = expectedDate.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedActual = (actual.dateTaken ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedExpected != normalizedActual {
+                throw SidecarXMPError.verificationFailed(
+                    xmpPath: xmpPath, field: .descriptive,
+                    expected: normalizedExpected, actual: normalizedActual.isEmpty ? "nil" : normalizedActual)
+            }
+        }
+        if let expectedLatitude = expected.latitude {
+            guard let actualLatitude = actual.latitude,
+                  abs(actualLatitude - expectedLatitude) <= Self.gpsTolerance else {
+                throw SidecarXMPError.verificationFailed(
+                    xmpPath: xmpPath, field: .descriptive,
+                    expected: Self.gpsCoordinateText(expectedLatitude),
+                    actual: actual.latitude.map(Self.gpsCoordinateText) ?? "nil")
+            }
+        }
+        if let expectedLongitude = expected.longitude {
+            guard let actualLongitude = actual.longitude,
+                  abs(actualLongitude - expectedLongitude) <= Self.gpsTolerance else {
+                throw SidecarXMPError.verificationFailed(
+                    xmpPath: xmpPath, field: .descriptive,
+                    expected: Self.gpsCoordinateText(expectedLongitude),
+                    actual: actual.longitude.map(Self.gpsCoordinateText) ?? "nil")
+            }
+        }
         // P1 / IPTC：逐字段校验（只校验被显式设置的字段；清空的字段期望读到 nil）。
         if let descriptive = expected.descriptive, !descriptive.isEmpty {
             let actualDescriptive = actual.descriptive ?? DescriptiveMetadata()
@@ -115,6 +149,16 @@ extension SidecarXMPProvider {
 
     private static func describeList(_ values: [String]) -> String {
         "[" + values.joined(separator: ",") + "]"
+    }
+
+    /// GPS 坐标读回容差：写 6 位小数（≈0.1 米），解析/外部格式化后差应远小于该值。
+    private static let gpsTolerance = 1e-5
+
+    /// GPS 坐标 → XMP 文本：十进制、6 位小数（与读侧 parseGpsCoordinate 的十进制形态对称）。
+    /// `String(format:)` 无 locale 参数时不做本地化（小数点固定为 "."），
+    /// 德语等以逗号作小数点的地区不会写出 "31,2304"。
+    private static func gpsCoordinateText(_ value: Double) -> String {
+        String(format: "%.6f", value)
     }
 
     /// 对原始文档文本做补丁（其余内容逐字节保留）。insert-or-replace。
@@ -237,6 +281,42 @@ extension SidecarXMPProvider {
                 parts.inner = replaced
             } else if !replacement.isEmpty {
                 insertions.append(replacement)
+            }
+        }
+
+        // Wave5（batch5）：GPS 坐标与拍摄时间（exif 命名空间）。
+        // 语义：nil = 不写；dateTaken 空串 = 删除元素（显式清空）；坐标没有"清空"信号
+        // （MetadataWriteAttributes.latitude/longitude 的 nil 只能表达不触碰）。
+        // 读侧对称见 SidecarXMLDelegate + parseGpsCoordinate（十进制/分秒都认）。
+        if let dateTaken = attributes.dateTaken {
+            prefixes.append(("exif", exifNamespace))
+            parts.openTag = removeAttribute(parts.openTag, name: "exif:DateTimeOriginal")
+            let trimmed = dateTaken.trimmingCharacters(in: .whitespacesAndNewlines)
+            let element = trimmed.isEmpty ? "" : simpleElement("exif:DateTimeOriginal", value: trimmed)
+            if let replaced = replaceElement(parts.inner, name: "exif:DateTimeOriginal", with: element) {
+                parts.inner = replaced
+            } else if !element.isEmpty {
+                insertions.append(element)
+            }
+        }
+        if let latitude = attributes.latitude {
+            prefixes.append(("exif", exifNamespace))
+            parts.openTag = removeAttribute(parts.openTag, name: "exif:GPSLatitude")
+            let element = simpleElement("exif:GPSLatitude", value: Self.gpsCoordinateText(latitude))
+            if let replaced = replaceElement(parts.inner, name: "exif:GPSLatitude", with: element) {
+                parts.inner = replaced
+            } else {
+                insertions.append(element)
+            }
+        }
+        if let longitude = attributes.longitude {
+            prefixes.append(("exif", exifNamespace))
+            parts.openTag = removeAttribute(parts.openTag, name: "exif:GPSLongitude")
+            let element = simpleElement("exif:GPSLongitude", value: Self.gpsCoordinateText(longitude))
+            if let replaced = replaceElement(parts.inner, name: "exif:GPSLongitude", with: element) {
+                parts.inner = replaced
+            } else {
+                insertions.append(element)
             }
         }
 

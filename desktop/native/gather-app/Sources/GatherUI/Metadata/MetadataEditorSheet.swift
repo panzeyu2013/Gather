@@ -12,6 +12,11 @@
 // - 补丁不含 contactInfo 时不得置 replace_contact（否则会清空整块联系人）；
 // - 提交走 metadata.applyDescriptive（批次 templateId="inline"），撤销复用批次历史；
 // - JPEG 的写入仍是 .xmp sidecar：面板明确提示 Bridge 可能读内嵌 IPTC。
+//
+// Wave5（batch5）：新增「位置与时间」分区（GPS 坐标 / 拍摄时间 + 按坐标反查地名）。
+// - 初值同样读盘（metadata.diskGeoDate；读不到退回缓存投影，不 fail-closed 整个编辑器）；
+// - 与描述性字段同一次确认：先写位置/时间（失败即停，不动描述性字段），再写描述字段；
+// - 反查只填 city/state/country，不写坐标；失败给出可见文案，不静默。
 import SwiftUI
 import GatherProtocol
 
@@ -19,6 +24,8 @@ struct MetadataEditorSheet: View {
     let photoId: String
     let api: any MetadataAPI
     var onApplied: (MetadataTemplateApplyOutcome) -> Void = { _ in }
+    /// 反查端口（默认 MapKit；测试/预览可注入 fake，不触网）。
+    var geoLookup: any GeoPlaceLookup = MapKitGeoPlaceLookup()
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.languageStore) private var languageStore
@@ -35,6 +42,14 @@ struct MetadataEditorSheet: View {
     @State private var showDiscardConfirm = false
     /// 盘上元数据读不到：fail-closed，禁用保存（缓存值可能落后，保存会覆盖外部改动）。
     @State private var diskReadFailed = false
+    // Wave5（batch5）：位置与时间（与描述性字段分开维护：它们不在 DescriptiveField 表里）。
+    @State private var latitudeText = ""
+    @State private var longitudeText = ""
+    @State private var dateTakenText = ""
+    @State private var initialLatitudeText = ""
+    @State private var initialLongitudeText = ""
+    @State private var initialDateTakenText = ""
+    @State private var isLookingUpPlace = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
@@ -56,6 +71,7 @@ struct MetadataEditorSheet: View {
                         section(title: l10n("IPTC Extension"), fields: MetadataDisplay.iptcExtensionFields)
                         // Wave5（batch2）：交付字段（受控值 Picker / 列表"常用值"菜单）。
                         section(title: l10n("交付字段"), fields: MetadataDisplay.wave5DeliveryFields)
+                        geoDateSection
                         contactSection
                     }
                 }
@@ -76,24 +92,24 @@ struct MetadataEditorSheet: View {
             }
 
             HStack {
-                Text(l10n.format("将写入 %lld 个字段", changedFieldCount))
+                Text(summaryText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button(l10n("取消")) {
-                    if changedFieldCount > 0 { showDiscardConfirm = true } else { dismiss() }
+                    if hasEdits { showDiscardConfirm = true } else { dismiss() }
                 }
                 .gatherButton(.secondary)
                 Button(l10n("应用")) { Task { await apply() } }
                     .keyboardShortcut(.defaultAction)
                     .gatherButton(.primary)
-                    .disabled(isBusy || isLoading || diskReadFailed || changedFieldCount == 0)
+                    .disabled(isBusy || isLoading || diskReadFailed || !hasEdits)
             }
         }
         .padding(GatherMetrics.Space.l)
         .frame(width: 620)
         .task { await load() }
-        .interactiveDismissDisabled(changedFieldCount > 0)
+        .interactiveDismissDisabled(hasEdits)
         .confirmationDialog(
             l10n("放弃未保存的改动？"),
             isPresented: $showDiscardConfirm,
@@ -114,6 +130,102 @@ struct MetadataEditorSheet: View {
             ForEach(fields.filter { $0 != .contactInfo }, id: \.self) { field in
                 fieldRow(field)
             }
+        }
+    }
+
+    // MARK: - 位置与时间（Wave5 batch5）
+
+    /// 位置与时间分区：GPS 坐标 / 拍摄时间 / 按坐标反查地名。
+    ///
+    /// - 写目标为 JPEG 内嵌时明确禁用并说明原因（内嵌读侧尚未接线，写了也读不回）；
+    /// - 坐标清空本波不支持（MetadataWriteAttributes 的 nil 只能表达"不触碰"）；
+    ///   拍摄时间留空 = 清空（与描述性字段同一三态语义）。
+    private var geoDateSection: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+            Text(l10n("位置与时间"))
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            if !isGeoDateSupported {
+                Text(l10n("当前写目标是 JPEG 内嵌元数据，GPS/拍摄时间暂不支持（需要 .xmp 附属文件或 sidecar 写入模式）。"))
+                    .font(.caption)
+                    .foregroundStyle(GatherTheme.warningText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
+                Text(l10n("纬度"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 96, alignment: .leading)
+                TextField("31.230400", text: $latitudeText)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!isGeoDateSupported)
+                Text(l10n("经度"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 48, alignment: .trailing)
+                TextField("121.473700", text: $longitudeText)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!isGeoDateSupported)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
+                Text(l10n("拍摄时间"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 96, alignment: .leading)
+                TextField("2026-12-01T10:00:00", text: $dateTakenText)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!isGeoDateSupported)
+            }
+            HStack(spacing: GatherMetrics.Space.s) {
+                Button(l10n("根据坐标反查地名")) {
+                    Task { await reverseGeocodePlace() }
+                }
+                .gatherButton(.secondary)
+                .disabled(isBusy || isLoading || isLookingUpPlace || !isGeoDateSupported)
+                if isLookingUpPlace {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer(minLength: 0)
+            }
+            Text(l10n("反查只填城市/省州/国家，不写坐标；失败会保留原值。"))
+                .font(GatherFont.label)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// JPEG 内嵌目标（xmpPath == filepath）不支持位置/时间：读侧未接线，写后回读必失败。
+    private var isGeoDateSupported: Bool {
+        guard let detail else { return true }
+        return detail.xmpPath != detail.filepath
+    }
+
+    /// 坐标 → 输入框文本（6 位小数；nil → 空串）。
+    private static func coordinateText(_ value: Double?) -> String {
+        guard let value else { return "" }
+        return String(format: "%.6f", value)
+    }
+
+    /// 按坐标反查地名并填入 city/state/country（只填命中的字段，未命中的保留原值）。
+    private func reverseGeocodePlace() async {
+        let latText = latitudeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lonText = longitudeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let latitude = Double(latText), let longitude = Double(lonText),
+              latitude.isFinite, longitude.isFinite,
+              (-90.0...90.0).contains(latitude), (-180.0...180.0).contains(longitude) else {
+            errorText = l10n("请先填写合法的纬度与经度（-90~90 / -180~180）")
+            return
+        }
+        isLookingUpPlace = true
+        defer { isLookingUpPlace = false }
+        do {
+            let place = try await geoLookup.reverseGeocode(
+                latitude: latitude, longitude: longitude)
+            for (field, value) in GeoPlaceMapping.fieldValues(place) {
+                values[field] = value
+            }
+            errorText = nil
+        } catch {
+            errorText = l10n(GeoPlaceMapping.messageKey(for: error))
         }
     }
 
@@ -244,6 +356,25 @@ struct MetadataEditorSheet: View {
             contact: contact, initialContact: initialContact)
     }
 
+    /// 位置/时间输入框是否有未保存改动（原始文本比较；归一化与合法性交给 apply）。
+    private var geoDateEdited: Bool {
+        func trimmed(_ text: String) -> String {
+            text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed(latitudeText) != trimmed(initialLatitudeText)
+            || trimmed(longitudeText) != trimmed(initialLongitudeText)
+            || trimmed(dateTakenText) != trimmed(initialDateTakenText)
+    }
+
+    /// 有任何未保存改动（决定应用按钮/关闭确认）。
+    private var hasEdits: Bool { changedFieldCount > 0 || geoDateEdited }
+
+    /// 状态行：描述性字段数 +（有改动时）位置/时间。
+    private var summaryText: String {
+        let fields = l10n.format("将写入 %lld 个字段", changedFieldCount)
+        return geoDateEdited ? fields + " + " + l10n("位置与时间") : fields
+    }
+
     /// reportError=false：失败分支已经给出更具体的文案（例如 JPEG 内嵌清空
     /// 失败），这次重新读盘只是把输入框拉回盘上值，不能把原因覆盖成"读盘失败"。
     private func load(reportError: Bool = true) async {
@@ -266,6 +397,23 @@ struct MetadataEditorSheet: View {
             values = initial
             initialContact = disk.contactInfo ?? DescriptiveContact()
             contact = initialContact
+            // Wave5（batch5）：位置/时间初值读盘；未接线/读失败退回缓存投影
+            // （不让 GPS/时间读失败禁用整个编辑器——描述性字段仍可编辑）。
+            var geoSnapshot: MetadataGeoDateSnapshot?
+            do {
+                geoSnapshot = try await api.diskGeoDate(photoId: photoId)
+            } catch {
+                geoSnapshot = nil
+            }
+            let latitudeValue = geoSnapshot?.latitude ?? loaded.exif.gpsLatitude
+            let longitudeValue = geoSnapshot?.longitude ?? loaded.exif.gpsLongitude
+            let dateValue = geoSnapshot?.dateTaken ?? loaded.exif.dateTaken
+            initialLatitudeText = Self.coordinateText(latitudeValue)
+            initialLongitudeText = Self.coordinateText(longitudeValue)
+            initialDateTakenText = dateValue ?? ""
+            latitudeText = initialLatitudeText
+            longitudeText = initialLongitudeText
+            dateTakenText = initialDateTakenText
         } catch {
             // 读盘失败不等于"没有元数据"：不能拿缓存继续编辑（fail-closed）。
             diskReadFailed = true
@@ -284,12 +432,67 @@ struct MetadataEditorSheet: View {
                 l10n(MetadataDisplay.fieldTitle(violation.field)), violation.value)
             return
         }
+        // 位置/时间：先校验（越界/格式错留在面板，不做任何写入）。
+        let geoDraft: MetadataEditorDraft.GeoDateDraft?
+        do {
+            geoDraft = try MetadataEditorDraft.geoDateChanges(
+                latitude: latitudeText, longitude: longitudeText,
+                dateTaken: dateTakenText,
+                initialLatitude: initialLatitudeText,
+                initialLongitude: initialLongitudeText,
+                initialDate: initialDateTakenText)
+        } catch let error as MetadataEditorDraft.GeoDateValidationError {
+            errorText = geoDateErrorMessage(error)
+            return
+        } catch {
+            errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+            return
+        }
+        let patch = MetadataEditorDraft.changes(
+            values: values, initial: initialValues,
+            contact: contact, initialContact: initialContact)
+        guard patch != nil || geoDraft != nil else {
+            errorText = l10n("没有改动")
+            return
+        }
         isBusy = true
         defer { isBusy = false }
-        guard let patch = MetadataEditorDraft.changes(
-            values: values, initial: initialValues,
-            contact: contact, initialContact: initialContact) else {
-            errorText = l10n("没有改动")
+
+        // 1) 先写位置/时间：失败即停（不动描述性字段，避免"半套改动"）。
+        if let geoDraft {
+            do {
+                let geoInput = try MetadataGeoDateInput(
+                    photoIds: [photoId],
+                    latitude: geoDraft.latitude,
+                    longitude: geoDraft.longitude,
+                    dateTaken: geoDraft.dateTaken)
+                let outcome = try await api.applyGeoAndDate(
+                    Confirmed(geoInput, source: .userDialog))
+                GatherEventCenter.postDomainChange(.metadata, sessionId: nil)
+                if let failure = outcome.failed.first {
+                    errorText = MetadataDisplay.localizedFailure(failure.message, with: l10n)
+                    onApplied(outcome)
+                    await load(reportError: false)
+                    return
+                }
+                if outcome.written.isEmpty,
+                   !(outcome.conflicts.isEmpty && outcome.skipped.isEmpty) {
+                    errorText = l10n("位置/时间没有写入：与盘上值冲突或写目标不支持")
+                    onApplied(outcome)
+                    await load(reportError: false)
+                    return
+                }
+                onApplied(outcome)
+            } catch {
+                errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+                return
+            }
+        }
+
+        // 2) 描述性字段（与位置/时间同一次确认；patch 为 nil = 只改了位置/时间）。
+        guard let patch else {
+            await load(reportError: false)
+            dismiss()
             return
         }
         do {
@@ -320,6 +523,26 @@ struct MetadataEditorSheet: View {
             dismiss()
         } catch {
             errorText = CommandErrorText.resolve(CommandError(error), with: l10n)
+        }
+    }
+
+    /// 位置/时间校验失败 → 中文文案（新增 key 列在回执，由 Lead 统一补 en）。
+    private func geoDateErrorMessage(
+        _ error: MetadataEditorDraft.GeoDateValidationError
+    ) -> String {
+        switch error {
+        case .latitudeNotNumber(let text):
+            return l10n.format("纬度必须是数字（当前：%@）", text)
+        case .latitudeOutOfRange(let value):
+            return l10n.format("纬度必须在 -90 ~ 90 之间（当前：%@）", String(value))
+        case .longitudeNotNumber(let text):
+            return l10n.format("经度必须是数字（当前：%@）", text)
+        case .longitudeOutOfRange(let value):
+            return l10n.format("经度必须在 -180 ~ 180 之间（当前：%@）", String(value))
+        case .coordinatesIncomplete:
+            return l10n("请同时填写纬度和经度（GPS 需要成对）")
+        case .invalidDate(let text):
+            return l10n.format("拍摄时间格式不正确（%@），示例：2026-12-01T10:00:00", text)
         }
     }
 }

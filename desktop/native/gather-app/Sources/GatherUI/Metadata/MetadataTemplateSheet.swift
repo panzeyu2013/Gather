@@ -6,6 +6,8 @@
 // - 应用是破坏性动作：按钮本身即确认（Confirmed 只能由这里构造），逐张独立提交；
 // - 撤销按批次 id 反向写，失败时保留批次可重试。
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import GatherProtocol
 
 /// 未解析变量的一行（逐字段展示；id 仅用于 ForEach 稳定身份）。
@@ -43,6 +45,12 @@ struct MetadataTemplateSheet: View {
     @State private var showUndoConfirm = false
     /// Wave2 task-13：多选批量直改（与模板并列的入口；变量文案在批量面板内）。
     @State private var showBatchEditor = false
+    /// Wave5（Batch5 / task-23）：模板导入/导出（JSON；导入先预览再确认）。
+    @State private var showTemplateImportPreview = false
+    @State private var templateImportPreview = MetadataTemplateImportPreview.empty
+    @State private var templateImportStrategy: MetadataTemplateImportStrategy = .skip
+    @State private var templateImportOutcome: MetadataTemplateImportOutcome?
+    @State private var templateTransferNotice: String?
 
     /// 目标：多选优先，否则当前照片。
     private var targetPhotoIds: [String] {
@@ -61,6 +69,22 @@ struct MetadataTemplateSheet: View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("元数据模板"))
                 .font(.headline)
+
+            // Wave5（Batch5 / task-23）：模板可导出成 JSON 分享、也可从 JSON 导入；
+            // 导入是"先预览后确认"（同名默认跳过），不静默改掉本机既有模板。
+            HStack(spacing: GatherMetrics.Space.s) {
+                Button(l10n("导出全部模板…")) { chooseTemplateExport() }
+                    .gatherButton(.tertiary, size: .small)
+                    .disabled(isBusy)
+                Button(l10n("导入模板…")) { chooseTemplateImport() }
+                    .gatherButton(.tertiary, size: .small)
+                    .disabled(isBusy)
+                if let templateTransferNotice {
+                    Text(templateTransferNotice)
+                        .font(GatherFont.label)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             HStack {
                 Picker(l10n("模板"), selection: $selectedId) {
@@ -219,6 +243,10 @@ struct MetadataTemplateSheet: View {
         }
         .sheet(isPresented: $showBatchEditor) {
             MetadataBatchEditorSheet(viewModel: viewModel, photoIds: targetPhotoIds)
+        }
+        // Wave5（Batch5 / task-23）：导入预览（确认后才执行；取消不发任何写命令）。
+        .sheet(isPresented: $showTemplateImportPreview) {
+            templateImportPreviewSheet
         }
         .sheet(isPresented: $showClearEditor) {
             if let template = selectedTemplate, let fields = editorFields {
@@ -472,4 +500,172 @@ struct MetadataTemplateSheet: View {
             appliedBatchId = nil
         }
     }
+    // MARK: - Wave5（Batch5 / task-23）：模板导入/导出
+
+    /// 导出目的地（NSSavePanel；写文件是只读导出的最后一步）。
+    private func chooseTemplateExport() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "GatherTemplates.json"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in await exportTemplates(to: url) }
+        }
+    }
+
+    private func exportTemplates(to url: URL) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let executor = MetadataTransferExecutor(metadata: viewModel.metadataAPI)
+            let result = try await executor.exportTemplates()
+            try result.data.write(to: url, options: .atomic)
+            templateTransferNotice = l10n.format(
+                "已导出 %lld 个模板到 %@", result.count, url.lastPathComponent)
+            errorText = nil
+        } catch {
+            errorText = transferErrorText(error)
+        }
+    }
+
+    /// 文件级非法（空文件/版本过高/非法 JSON）的 reason 是本地校验文案，需要显式上屏；
+    /// API 散文仍只进诊断（不乱码上屏）。
+    private func transferErrorText(_ error: any Error) -> String {
+        if let gather = error as? GatherError, gather.code == .INVALID_PARAM,
+           let reason = gather.params["reason"], !reason.isEmpty {
+            return CommandErrorText.resolve(
+                CommandError.localized("导入失败：%@", params: [reason]), with: l10n)
+        }
+        return CommandErrorText.resolve(CommandError(error), with: l10n)
+    }
+
+    private func chooseTemplateImport() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in await loadTemplateImport(from: url) }
+        }
+    }
+
+    /// 只读加载 + 预览：这一步不写任何模板；用户在预览 sheet 里确认后才执行。
+    private func loadTemplateImport(from url: URL) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            // 同名判定要尽量新：先刷新一次列表（失败不阻断导入，按当前已知列表判）。
+            await reload()
+            let data = try Data(contentsOf: url)
+            let preview = try MetadataTemplateTransfer.decode(
+                data, existingNames: Set(templates.map(\.name)))
+            templateImportPreview = preview
+            templateImportOutcome = nil
+            templateImportStrategy = .skip
+            errorText = nil
+            showTemplateImportPreview = true
+        } catch {
+            errorText = transferErrorText(error)
+        }
+    }
+
+    /// 确认导入：逐条 saveTemplate（同名按策略跳过/覆盖），失败逐条计数。
+    // DOMAIN-EVENT: none — 模板定义不是照片元数据，不写任何照片的 XMP
+    private func confirmTemplateImport() async {
+        guard !isBusy else { return }
+        var existing: [String: MetadataTemplateSummary] = [:]
+        for summary in templates where existing[summary.name] == nil {
+            existing[summary.name] = summary
+        }
+        let plan = MetadataTemplateTransfer.plan(
+            templateImportPreview, existing: existing, strategy: templateImportStrategy)
+        guard !plan.items.isEmpty else {
+            templateTransferNotice = l10n("没有可导入的模板（同名已跳过或条目非法）")
+            templateImportOutcome = nil
+            showTemplateImportPreview = false
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let executor = MetadataTransferExecutor(metadata: viewModel.metadataAPI)
+        let outcome = await executor.importTemplates(Confirmed(plan, source: .userDialog))
+        templateImportOutcome = outcome
+        templateTransferNotice = l10n.format(
+            "已导入模板：新增 %lld 个，覆盖 %lld 个，跳过同名 %lld 个，失败 %lld 个。",
+            outcome.created, outcome.overwritten, outcome.skipped, outcome.failures.count)
+        await reload()
+        if outcome.failures.isEmpty { showTemplateImportPreview = false }
+    }
+
+    /// 导入预览 sheet：计数 + 同名策略 + 非法条目（前 8 条）+ 结果。
+    private var templateImportPreviewSheet: some View {
+        VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
+            Text(l10n("导入模板"))
+                .font(GatherFont.cardTitle)
+            Text(l10n.format(
+                "文件里有 %lld 个可导入模板；%lld 个与现有模板同名；%lld 个非法条目。",
+                templateImportPreview.entries.count,
+                templateImportPreview.existingNameCount,
+                templateImportPreview.invalid.count))
+                .font(GatherFont.secondary)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !templateImportPreview.exportedAt.isEmpty {
+                Text(l10n.format("导出时间：%@", templateImportPreview.exportedAt))
+                    .font(GatherFont.label)
+                    .foregroundStyle(.secondary)
+            }
+            if templateImportPreview.existingNameCount > 0 {
+                Picker(l10n("同名模板"), selection: $templateImportStrategy) {
+                    Text(l10n("跳过同名（保留本机模板）"))
+                        .tag(MetadataTemplateImportStrategy.skip)
+                    Text(l10n("覆盖同名模板"))
+                        .tag(MetadataTemplateImportStrategy.overwrite)
+                }
+                .pickerStyle(.segmented)
+            }
+            if !templateImportPreview.invalid.isEmpty {
+                Text(l10n.format("%lld 个条目不可导入（前 8 条）：",
+                                 templateImportPreview.invalid.count))
+                    .font(GatherFont.label)
+                    .foregroundStyle(GatherTheme.warningText)
+                ForEach(Array(templateImportPreview.invalid.prefix(8)), id: \.index) { item in
+                    Text(l10n.format("第 %lld 个：%@（%@）", item.index, item.name, item.reason))
+                        .font(GatherFont.label)
+                        .foregroundStyle(GatherTheme.warningText)
+                }
+            }
+            if let outcome = templateImportOutcome, !outcome.failures.isEmpty {
+                Text(l10n.format("有 %lld 个模板导入失败（可重试）：",
+                                 outcome.failures.count))
+                    .font(GatherFont.label)
+                    .foregroundStyle(GatherTheme.errorText)
+                ForEach(Array(outcome.failures.prefix(8).enumerated()), id: \.offset) {
+                    _ , failure in
+                    Text(l10n.format(
+                        "%@：%@", failure.name,
+                        MetadataDisplay.localizedFailure(failure.reason, with: l10n)))
+                        .font(GatherFont.label)
+                        .foregroundStyle(GatherTheme.errorText)
+                }
+            }
+            HStack {
+                Spacer()
+                Button(l10n("取消")) { showTemplateImportPreview = false }
+                    .gatherButton(.secondary)
+                    .disabled(isBusy)
+                Button(l10n("导入")) { Task { await confirmTemplateImport() } }
+                    .gatherButton(.primary)
+                    .disabled(isBusy || templateImportPreview.entries.isEmpty)
+            }
+            if isBusy { ProgressView().controlSize(.small) }
+        }
+        .padding(GatherMetrics.Space.l)
+        .frame(width: 620)
+    }
+
 }

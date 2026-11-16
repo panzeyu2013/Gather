@@ -132,3 +132,36 @@
 3. keep-best 两次 batchUpdate = 两步撤销；组视图当前只在挑片页。
 4. RAW 真机（CR3/NEF/ARW/DNG）内嵌尺寸/方向/2560 回退需人工抽查。
 5. Batch 5：GPS/拍摄时间、模板/词库导入导出、自动化查询/写评级、发布端点扩展、剩余 P2。
+
+## Batch 5（task-22 ~ task-24）
+
+| task | 域 | owner | 结论 |
+| --- | --- | --- | --- |
+| task-22 | GPS 编辑/反查 + 改拍摄时间 | metadata-search | MetadataAPI 增 applyGeoAndDate/diskGeoDate（默认实现 + 盘上回读校验，不谎报）；SidecarXMP Patching 写 exif:DateTimeOriginal/GPSLatitude/GPSLongitude 并写后 verify；编辑器「位置与时间」分区 + MapKit 反查地名（CLGeocoder 在 macOS 26 已废弃）；JPEG 内嵌目标显式禁用并说明 |
+| task-23 | 模板与词库导入/导出 | c1-fix | UI 层 MetadataTransferService：模板 JSON 导出/导入（同名跳过/覆盖预览 + Confirmed）；词库 CSV 导出/导入（只增路径/覆盖同义词，不删除、不移动层级）；坏行/空文件/超 2000 行显式拒绝 |
+| task-24 | 自动化第二层 | c1-interop | runtime 增 queryPhotos/applyDecisions；Shortcuts 增「查询照片」「设置照片评级/标记」；URL gather://rate?session&photo…&rating/label/pick；未启动/非法参数可读错误；原 4 动作与 4 路由保留 |
+
+### 关键设计取舍
+
+- GPS/时间：写入走既有 attributeWriter + 交付队列，服务层额外盘上回读（AttributeWriter.attributesMatch 不含 GPS/时间）；读回不一致 → failed + uncertain（XMP_WRITE_VERIFICATION_FAILED）。
+- JPEG 内嵌目标（xmpPath==filepath）暂不支持 GPS/时间：写侧 SidecarXMP 与内嵌写器语义不同，编辑器显式禁用而不是假成功。
+- 反查地名只填 city/state/country，不回写坐标；无对应地名/取消/网络失败均有可见文案。
+- 模板/词库导入不改 core 协议：复用 templates/templateFields/saveTemplate/createKeyword/setKeywordSynonyms；词库 CSV 同义词用分号+反斜杠转义。
+- 自动化：查询用 PhotoAPI.search（keywords contains_any / rating gte），写判断用 CullingAPI.batchUpdate，不新造查询语言；URL 与 Shortcuts 共用同一 runtime。
+- 批量时间调整 UI 仍单张（API 已支持 photoIds 数组）；清空 GPS 需 MetadataWriteAttributes 增加 clear 信号（未做）。
+
+### 验证（Lead 执行，2026-11-16）
+
+- 构建：gather-core / gather-app swift build --build-tests --disable-sandbox 均通过。
+- 测试：core 1953 / 288 + 串行 25 / 4 全绿；app 1189 / 171 全绿。
+- 门禁 14 项全绿（含 warnings）。
+- 基线记账：protocol-surface public_types 511→513、public_declarations 3094→3109、protocol_lines 16827→17020（MetadataGeoDate DTO/方法 + automation runtime DTO/错误 + 深链路由）。
+- Lead 修：SidecarXMP verify 误用 MetadataField.dateCreated/location → .descriptive；MetadataGeoDateService 缺 import GatherProtocol；gather://rate 空 photo 语义（空串=missingPhotoIds）；41 条 l10n 缺键 + 1 条斜杠/顿号不一致；测试替身空串 dateTaken 归一化。
+
+### 未闭环/下一批
+
+1. JPEG 内嵌 GPS/时间读侧映射未接线（MetadataAttributes.embeddedAttributesFromParse 需加 exif 三项），编辑器对 JPEG 内嵌目标仍禁用。
+2. 批量时间偏移 UI、GPS 清空信号、写入后缓存投影刷新（facet/只读面板滞后到下次 scan）。
+3. 模板/词库导入格式与 Lightroom 兼容 CSV、模板 2000 上限提示未做。
+4. 自动化无 CLI/AppleScript 字典（仍按边界另立项）；Shortcuts 查询返回为 dialog 摘要，无可落盘结果。
+5. Batch 6：C1 R6/插件诊断、AI 分组自动/场景标签中文化、文件夹树右键入口、发布端点扩展、剩余 P2、真机清单。

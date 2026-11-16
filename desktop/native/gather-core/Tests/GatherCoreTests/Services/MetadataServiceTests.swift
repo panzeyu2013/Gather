@@ -13,6 +13,7 @@ import GatherTestSupport
 @testable import GatherAnalysis
 @testable import GatherApplication
 @testable import GatherDelivery
+@testable import GatherMetadataIO
 
 /// 计数 EXIF provider：调用次数即"是否重新提取"的独立证据。
 private final class CountingExif: ExifProvider, @unchecked Sendable {
@@ -44,8 +45,25 @@ private final class SwitchableXMP: XMPProvider, @unchecked Sendable {
     private var attributes = MetadataWriteAttributes()
     private var sidecarExists = true
 
-    func setAttributes(_ value: MetadataWriteAttributes) { lock.lock(); attributes = value; lock.unlock() }
+    private var dropsGeoDateOnRead = false
+
+    func setAttributes(_ value: MetadataWriteAttributes) {
+        // 真实 SidecarXMP 写盘会把空串 dateTaken 处理成"删除元素"（读回 nil）；
+        // 这个内存替身必须同口径归一化，否则清空用例会看到 "" 而非 nil。
+        var normalized = value
+        if let date = normalized.dateTaken,
+           date.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            normalized.dateTaken = nil
+        }
+        lock.lock(); attributes = normalized; lock.unlock()
+    }
     func setSidecarExists(_ value: Bool) { lock.lock(); sidecarExists = value; lock.unlock() }
+    func setDropsGeoDateOnRead(_ value: Bool) {
+        lock.lock(); dropsGeoDateOnRead = value; lock.unlock()
+    }
+    func dropsGeoDate() -> Bool {
+        lock.lock(); defer { lock.unlock() }; return dropsGeoDateOnRead
+    }
 
     /// 同步锁临界区辅助（Swift 6：async 上下文不得直接 lock/unlock）。
     private func attributesSnapshot() -> MetadataWriteAttributes {
@@ -58,7 +76,19 @@ private final class SwitchableXMP: XMPProvider, @unchecked Sendable {
         attributesSnapshot().keywords ?? []
     }
     func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        attributesSnapshot()
+        let snapshot = attributesSnapshot()
+        guard dropsGeoDate() else { return snapshot }
+        // 模拟「写盘成功但读侧拿不到」的宿主（Wave5 batch5：JPEG 内嵌目标的真实形态）：
+        // GPS/时间被丢弃，服务层回读必须判失败，不能谎报 written。
+        return MetadataWriteAttributes(
+            keywords: snapshot.keywords,
+            rating: snapshot.rating,
+            label: snapshot.label,
+            descriptive: snapshot.descriptive,
+            triageSignal: snapshot.triageSignal,
+            keywordsMode: snapshot.keywordsMode,
+            replaceContact: snapshot.replaceContact,
+            clearedContactMembers: snapshot.clearedContactMembers)
     }
     func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {}
     func backup(photoPath: String) async throws -> String { "" }
@@ -369,3 +399,217 @@ struct MetadataServiceTests {
         #expect(merged?.contactInfo?.city == "上海", "空 overlay 不得抹掉内嵌联系人")
     }
 }
+
+// MARK: - Wave5（batch5）：位置 / 拍摄时间
+
+/// 记录入队属性并在 flush 时真写 XMP 的变更端口（交付队列语义的最小替身）。
+private final class StoringMutations: MetadataMutationPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: [String: MetadataWriteAttributes] = [:]
+
+    func queuePhotoValues(
+        sessionId: String,
+        photoId: String,
+        values: [String: JSONValue],
+        source: MetadataMutationSource,
+        schedule: Bool
+    ) throws -> MetadataMutationResult {
+        lock.lock()
+        defer { lock.unlock() }
+        pending[photoId] = MetadataWriteAttributes(jsonValue: .object(values))
+        return MetadataMutationResult(
+            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending")
+    }
+
+    func takePending() -> [String: MetadataWriteAttributes] {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = pending
+        pending = [:]
+        return result
+    }
+}
+
+@Suite("位置/拍摄时间写入（MetadataService）")
+struct MetadataGeoDateServiceTests {
+    private struct Fixture {
+        let db: DBConnection
+        let dir: String
+        let photoId: String
+        let photoPath: String
+        let xmp: SwitchableXMP
+        let service: MetadataService
+
+        func cleanup() { try? FileManager.default.removeItem(atPath: dir) }
+    }
+
+    private func makeFixture(dropGeoDateOnRead: Bool = false) throws -> Fixture {
+        let db = try makeTestDB()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-geodate-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let sessionId = "s-\(UUID().uuidString)"
+        try insertSession(db, sessionId)
+        let photoId = "p-\(UUID().uuidString)"
+        let photoPath = dir + "/geo.cr3"
+        try Data("raw-bytes".utf8).write(to: URL(fileURLWithPath: photoPath))
+        try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: photoPath)
+
+        let xmp = SwitchableXMP()
+        xmp.setDropsGeoDateOnRead(dropGeoDateOnRead)
+        let mutations = StoringMutations()
+        let paths = [photoId: photoPath]
+        let service = MetadataService(
+            metadataCacheRepo: MetadataCacheRepo(connection: db),
+            xmp: xmp,
+            connection: db,
+            mutations: mutations,
+            flushPending: { _ in
+                // 交付队列替身：把入队值写进假 XMP（SwitchableXMP 的读就是 attributes，
+                // 因此写盘=setAttributes；真实链路由 provider 写文件）。
+                let pending = mutations.takePending()
+                for (id, attributes) in pending where paths[id] != nil {
+                    xmp.setAttributes(attributes)
+                }
+                return WritebackResult(
+                    totalAffected: pending.count, written: pending.count, failed: 0,
+                    skipped: 0, errors: [], failedItems: [], report: "")
+            }
+        )
+        return Fixture(
+            db: db, dir: dir, photoId: photoId, photoPath: photoPath,
+            xmp: xmp, service: service)
+    }
+
+    @Test("applyGeoDate：坐标+时间经交付队列写盘，回读一致 → written")
+    func writesAndReadsBack() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let outcome = try await fixture.service.applyGeoDate(
+            photoIds: [fixture.photoId],
+            latitude: 31.2304,
+            longitude: 121.4737,
+            dateTaken: "2026-12-01T10:00:00",
+            source: .manual)
+        #expect(outcome.written == [fixture.photoId])
+        #expect(outcome.failed.isEmpty)
+        let readBack = try await fixture.xmp.readAttributes(photoPath: fixture.photoPath)
+        #expect(abs((readBack.latitude ?? 0) - 31.2304) < 1e-5)
+        #expect(abs((readBack.longitude ?? 0) - 121.4737) < 1e-5)
+        #expect(readBack.dateTaken == "2026-12-01T10:00:00")
+        let snapshot = try await fixture.service.diskGeoDate(photoId: fixture.photoId)
+        #expect(snapshot?.dateTaken == "2026-12-01T10:00:00")
+        #expect(abs((snapshot?.latitude ?? 0) - 31.2304) < 1e-5)
+    }
+
+    @Test("applyGeoDate：空串清空拍摄时间")
+    func clearsDateTaken() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        _ = try await fixture.service.applyGeoDate(
+            photoIds: [fixture.photoId], latitude: nil, longitude: nil,
+            dateTaken: "2026-12-01T10:00:00", source: .manual)
+        let outcome = try await fixture.service.applyGeoDate(
+            photoIds: [fixture.photoId], latitude: nil, longitude: nil,
+            dateTaken: "", source: .manual)
+        #expect(outcome.written == [fixture.photoId])
+        let readBack = try await fixture.xmp.readAttributes(photoPath: fixture.photoPath)
+        #expect(readBack.dateTaken == nil)
+    }
+
+    @Test("applyGeoDate：写盘成功但读回拿不到 GPS/时间 → failed + uncertain，不谎报 written")
+    func failsWhenReadBackDropsFields() async throws {
+        let fixture = try makeFixture(dropGeoDateOnRead: true)
+        defer { fixture.cleanup() }
+        let outcome = try await fixture.service.applyGeoDate(
+            photoIds: [fixture.photoId], latitude: 31.2304, longitude: 121.4737,
+            dateTaken: nil, source: .manual)
+        #expect(outcome.written.isEmpty)
+        #expect(outcome.uncertain.contains(fixture.photoId))
+        let message = try #require(outcome.failed.first?.message)
+        #expect(message.hasPrefix("XMP_WRITE_VERIFICATION_FAILED"))
+    }
+
+    @Test("applyGeoDate：未知 photoId 显式失败")
+    func rejectsUnknownPhoto() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        await #expect(throws: GatherError.self) {
+            _ = try await fixture.service.applyGeoDate(
+                photoIds: ["missing"], latitude: 1, longitude: 2,
+                dateTaken: nil, source: .manual)
+        }
+    }
+}
+
+@Suite("sidecar GPS/拍摄时间写盘（真实 SidecarXMPProvider）")
+struct SidecarGeoDatePatchingTests {
+    private func makeTempPhoto() throws -> (dir: String, path: String) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gather-sidecar-geodate-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/IMG_0001.cr3"
+        try Data("raw-bytes".utf8).write(to: URL(fileURLWithPath: path))
+        return (dir, path)
+    }
+
+    @Test("写盘往返：exif:GPSLatitude/GPSLongitude/DateTimeOriginal 落盘且读回一致")
+    func writesExifGeoDate() async throws {
+        let temp = try makeTempPhoto()
+        defer { try? FileManager.default.removeItem(atPath: temp.dir) }
+        let provider = SidecarXMPProvider()
+        let attributes = MetadataWriteAttributes(
+            dateTaken: "2026-12-01T10:00:00",
+            latitude: 31.2304,
+            longitude: 121.4737)
+        try await provider.writeAttributes(photoPath: temp.path, attributes: attributes)
+        let readBack = try await provider.readAttributes(photoPath: temp.path)
+        #expect(readBack.dateTaken == "2026-12-01T10:00:00")
+        #expect(abs((readBack.latitude ?? 0) - 31.2304) < 1e-5)
+        #expect(abs((readBack.longitude ?? 0) - 121.4737) < 1e-5)
+        let text = try String(
+            contentsOfFile: TSPath.xmpSidecarPath(temp.path), encoding: .utf8)
+        #expect(text.contains("exif:GPSLatitude"))
+        #expect(text.contains("exif:GPSLongitude"))
+        #expect(text.contains("exif:DateTimeOriginal"))
+        #expect(text.contains("xmlns:exif="), "exif 前缀必须声明，否则产出非法 XMP")
+    }
+
+    @Test("空串清空拍摄时间：元素删除，读回 nil")
+    func clearsDateTimeOriginal() async throws {
+        let temp = try makeTempPhoto()
+        defer { try? FileManager.default.removeItem(atPath: temp.dir) }
+        let provider = SidecarXMPProvider()
+        try await provider.writeAttributes(
+            photoPath: temp.path,
+            attributes: MetadataWriteAttributes(dateTaken: "2026-12-01T10:00:00"))
+        try await provider.writeAttributes(
+            photoPath: temp.path, attributes: MetadataWriteAttributes(dateTaken: ""))
+        let readBack = try await provider.readAttributes(photoPath: temp.path)
+        #expect(readBack.dateTaken == nil)
+        let text = try String(
+            contentsOfFile: TSPath.xmpSidecarPath(temp.path), encoding: .utf8)
+        #expect(!text.contains("exif:DateTimeOriginal"))
+    }
+
+    @Test("写后校验：宿主丢弃 exif 元素时必须显式失败（不谎报成功）")
+    func verificationFailureIsLoud() async throws {
+        let temp = try makeTempPhoto()
+        defer { try? FileManager.default.removeItem(atPath: temp.dir) }
+        let provider = SidecarXMPProvider(writeTransform: { text in
+            var stripped = text
+            for name in ["exif:GPSLatitude", "exif:GPSLongitude", "exif:DateTimeOriginal"] {
+                let pattern = "<" + name + ">[^<]*</" + name + ">"
+                stripped = stripped.replacingOccurrences(
+                    of: pattern, with: "", options: .regularExpression)
+            }
+            return stripped
+        })
+        await #expect(throws: SidecarXMPError.self) {
+            try await provider.writeAttributes(
+                photoPath: temp.path,
+                attributes: MetadataWriteAttributes(latitude: 31.2304, longitude: 121.4737))
+        }
+    }
+}
+

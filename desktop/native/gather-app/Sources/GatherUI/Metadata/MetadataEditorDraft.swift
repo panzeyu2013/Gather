@@ -105,6 +105,96 @@ enum MetadataEditorDraft {
         return nil
     }
 
+    // MARK: - Wave5（batch5）：位置 / 拍摄时间
+
+    /// 位置/时间的草稿：nil 字段 = 不动；dateTaken == "" = 清空。
+    struct GeoDateDraft: Equatable {
+        var latitude: Double?
+        var longitude: Double?
+        var dateTaken: String?
+
+        var isEmpty: Bool {
+            latitude == nil && longitude == nil && dateTaken == nil
+        }
+    }
+
+    /// 位置/时间输入校验失败（UI 映射中文文案；协议输入层会再校验一次）。
+    enum GeoDateValidationError: Error, Equatable {
+        case latitudeNotNumber(String)
+        case latitudeOutOfRange(Double)
+        case longitudeNotNumber(String)
+        case longitudeOutOfRange(Double)
+        /// 只填了一个坐标：GPS 必须成对（半个坐标不是合法资产）。
+        case coordinatesIncomplete
+        case invalidDate(String)
+    }
+
+    /// 位置/时间三态差异计算；nil = 没有改动。
+    ///
+    /// 语义：
+    /// - 坐标：两个空 = 不动；只有一个空 = 不完整（失败）；非数字/越界 = 失败；
+    ///   与初值数值相同（容差 1e-9）= 不动；任一变化 → 两个坐标一起提交（成对写入）。
+    /// - 时间：空 = 清空（初值本来为空则不算改动）；非法 = 失败；归一化后与初值相同
+    ///   = 不动（盘上可能是 EXIF 冒号形态，归一化后比较才不会"假改动"）。
+    static func geoDateChanges(
+        latitude: String,
+        longitude: String,
+        dateTaken: String,
+        initialLatitude: String,
+        initialLongitude: String,
+        initialDate: String
+    ) throws -> GeoDateDraft? {
+        let latText = normalized(latitude)
+        let lonText = normalized(longitude)
+        var latitudeValue: Double?
+        var longitudeValue: Double?
+        if latText.isEmpty && lonText.isEmpty {
+            // 不动（保留初值）。
+        } else if latText.isEmpty || lonText.isEmpty {
+            throw GeoDateValidationError.coordinatesIncomplete
+        } else {
+            guard let lat = Double(latText), lat.isFinite else {
+                throw GeoDateValidationError.latitudeNotNumber(latText)
+            }
+            guard (-90.0...90.0).contains(lat) else {
+                throw GeoDateValidationError.latitudeOutOfRange(lat)
+            }
+            guard let lon = Double(lonText), lon.isFinite else {
+                throw GeoDateValidationError.longitudeNotNumber(lonText)
+            }
+            guard (-180.0...180.0).contains(lon) else {
+                throw GeoDateValidationError.longitudeOutOfRange(lon)
+            }
+            let initialLat = Double(normalized(initialLatitude))
+            let initialLon = Double(normalized(initialLongitude))
+            var unchanged = false
+            if let initialLat, let initialLon {
+                unchanged = abs(lat - initialLat) <= 1e-9 && abs(lon - initialLon) <= 1e-9
+            }
+            if !unchanged {
+                latitudeValue = lat
+                longitudeValue = lon
+            }
+        }
+
+        let dateText = normalized(dateTaken)
+        var dateValue: String?
+        if dateText.isEmpty {
+            // 空串 = 清空；初值本来为空则不算改动。
+            if !normalized(initialDate).isEmpty { dateValue = "" }
+        } else {
+            guard let normalizedDate = MetadataGeoDateInput.normalizedDateTime(dateText) else {
+                throw GeoDateValidationError.invalidDate(dateText)
+            }
+            let initialNormalized = MetadataGeoDateInput.normalizedDateTime(normalized(initialDate))
+            if normalizedDate != initialNormalized { dateValue = normalizedDate }
+        }
+
+        let draft = GeoDateDraft(
+            latitude: latitudeValue, longitude: longitudeValue, dateTaken: dateValue)
+        return draft.isEmpty ? nil : draft
+    }
+
     private static func normalized(_ text: String?) -> String {
         (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }

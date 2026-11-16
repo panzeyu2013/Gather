@@ -5,6 +5,8 @@
 // 后到覆盖先到；不同载荷/不同 Kind 必须不相等，避免 View 误消费。
 import Testing
 @testable import GatherUI
+@testable import GatherHost
+@testable import GatherProtocol
 
 @Suite("WorkspaceIntent 入口意图")
 struct WorkspaceIntentTests {
@@ -67,5 +69,88 @@ struct WorkspaceIntentTests {
         let taken = pending.removeValue(forKey: .galleryFilter)
         #expect(taken == .galleryFilter(.hasFace))
         #expect(pending[.galleryFilter] == nil)
+    }
+}
+// MARK: - Wave5 batch5：自动化命令参数面（App Intents / URL scheme 共用）
+
+/// App Intents 的参数校验不在 intent 结构体上直接测：GatherApp 是 executableTarget，
+/// 测试 target 不能 import 它。intent 只做「String 参数 → GatherHost 归一化」这一步，
+/// 因此参数契约统一钉在 GatherHost 的入口类型上（Shortcuts 与 gather:// 共用同一份
+/// 校验，避免两套入口给出不同的合法值集合）。
+@Suite("自动化命令参数面（intent ↔ runtime 契约）")
+struct AutomationCommandParameterContractTests {
+    @Test("查询照片：空串 = 未设置（Shortcuts 可选参数的语义）")
+    func queryParametersTreatEmptyAsUnset() throws {
+        let defaults = try GatherAutomationPhotoQuery.parse(
+            sessionId: "session-1", keyword: "", minRating: "", limit: "")
+        #expect(defaults.keyword == nil)
+        #expect(defaults.minRating == nil)
+        #expect(defaults.limit == GatherAutomationPhotoQuery.defaultLimit)
+
+        // 0 星是合法过滤值（不是"未设置"）：不能把 "0" 当空串吞掉。
+        let zero = try GatherAutomationPhotoQuery.parse(
+            sessionId: "session-1", keyword: "", minRating: "0", limit: "")
+        #expect(zero.minRating == 0)
+    }
+
+    @Test("查询照片：越界/非数字一律报错，不静默回落默认值")
+    func queryParametersRejectOutOfRange() {
+        #expect(throws: GatherAutomationError.self) {
+            try GatherAutomationPhotoQuery.parse(
+                sessionId: "session-1", keyword: "", minRating: "6", limit: "")
+        }
+        #expect(throws: GatherAutomationError.self) {
+            try GatherAutomationPhotoQuery.parse(
+                sessionId: "session-1", keyword: "", minRating: "", limit: "0")
+        }
+        #expect(throws: GatherAutomationError.self) {
+            try GatherAutomationPhotoQuery.parse(
+                sessionId: "session-1", keyword: "", minRating: "",
+                limit: String(GatherAutomationPhotoQuery.maxLimit + 1))
+        }
+        // 空 sessionId：宁可报错，也不让脚本以为"查了整个库"。
+        #expect(throws: GatherAutomationError.self) {
+            try GatherAutomationPhotoQuery.parse(
+                sessionId: "", keyword: "", minRating: "", limit: "")
+        }
+    }
+
+    @Test("写判断：字符串参数按「空串 = 不改」解释")
+    func decisionParametersTreatEmptyAsUnset() throws {
+        let ratingOnly = try GatherAutomationDecisionPatch.parse(
+            rating: "2", label: "", pick: "")
+        #expect(ratingOnly.rating == 2)
+        #expect(ratingOnly.colorLabel == nil)
+        #expect(ratingOnly.pickState == nil)
+
+        let pickOnly = try GatherAutomationDecisionPatch.parse(
+            rating: "", label: "", pick: "keep")
+        #expect(pickOnly.rating == nil)
+        #expect(pickOnly.pickState == .picked)
+
+        // 全空 = 空写：intent 必须拿到错误（不能"成功但什么都没改"）。
+        #expect(throws: GatherAutomationError.self) {
+            try GatherAutomationDecisionPatch.parse(rating: "", label: "", pick: "")
+        }
+    }
+
+    @Test("写判断：每个 C1 色标的 rawValue 小写形式都被接受（枚举漂移先红）")
+    func everyColorLabelIsAddressable() throws {
+        for label in CaptureOneColorLabel.allCases {
+            let parsed = try GatherAutomationDecisionPatch.parse(
+                rating: "", label: label.rawValue.lowercased(), pick: "")
+            #expect(parsed.colorLabel == label, "label=\(label.rawValue)")
+        }
+        // 反向：大小写不敏感，但不能接受未知名字。
+        #expect(throws: GatherAutomationError.self) {
+            try GatherAutomationDecisionPatch.parse(rating: "", label: "chartreuse", pick: "")
+        }
+    }
+
+    @Test("未启动文案稳定：Shortcuts 直接展示 runtimeUnavailable 的 errorDescription")
+    func runtimeUnavailableCopyIsStable() {
+        #expect(GatherAutomationError.runtimeUnavailable.errorDescription
+            == "Gather 尚未完成启动；请先打开应用再运行此动作。")
+        #expect(GatherAutomationError.noPhotoIds.errorDescription == "没有指定照片 ID。")
     }
 }

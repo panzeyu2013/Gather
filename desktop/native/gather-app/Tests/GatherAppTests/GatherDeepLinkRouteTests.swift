@@ -12,6 +12,7 @@
 import Foundation
 import Testing
 @testable import GatherHost
+@testable import GatherProtocol
 
 @Suite("gather:// 深链解析")
 struct GatherDeepLinkRouteTests {
@@ -82,5 +83,168 @@ struct GatherDeepLinkRouteTests {
             return
         }
         #expect(hostError.code == "DEEPLINK_UNKNOWN_HOST")
+    }
+}
+
+// MARK: - Wave5 batch5：gather://rate（脚本写评级/色标/保留）
+
+/// URL scheme 第二层：无 UI 直接写判断。
+///
+/// 覆盖：合法（单张/多张/去重/大小写/部分字段）、缺参（session/photo/判断字段）、
+/// 越界（rating）、未知 label/pick、photo 数量上限。
+@Suite("gather://rate 深链解析")
+struct GatherDeepLinkRateRouteTests {
+    private func result(_ raw: String) throws -> GatherDeepLinkParseResult {
+        GatherDeepLinkParser.parse(try #require(URL(string: raw)))
+    }
+
+    @Test func parsesSinglePhotoRating() throws {
+        #expect(try result("gather://rate?session=s1&photo=p1&rating=3") ==
+            .route(.rate(
+                sessionId: "s1",
+                photoIds: ["p1"],
+                patch: GatherAutomationDecisionPatch(rating: 3))))
+    }
+
+    @Test func parsesAllFieldsAndDedupesPhotos() throws {
+        #expect(try result(
+            "gather://rate?session=s1&photo=p1&photo=p2&photo=p1&rating=5&label=Red&pick=keep") ==
+            .route(.rate(
+                sessionId: "s1",
+                photoIds: ["p1", "p2"],
+                patch: GatherAutomationDecisionPatch(
+                    rating: 5, colorLabel: .red, pickState: .picked))))
+
+        // 只给 pick（拒绝）也是合法补丁；色标名大小写不敏感。
+        #expect(try result("gather://rate?session=s1&photo=p1&pick=REJECT") ==
+            .route(.rate(
+                sessionId: "s1",
+                photoIds: ["p1"],
+                patch: GatherAutomationDecisionPatch(pickState: .rejected))))
+
+        // 「清除色标」是可表达的：label=none → CaptureOneColorLabel.none。
+        #expect(try result("gather://rate?session=s1&photo=p1&label=none") ==
+            .route(.rate(
+                sessionId: "s1",
+                photoIds: ["p1"],
+                patch: GatherAutomationDecisionPatch(colorLabel: CaptureOneColorLabel.none))))
+    }
+
+    @Test func rejectsMissingParameters() throws {
+        // 缺 session / 缺 photo / photo 为空串 → 各自稳定码。
+        #expect(try result("gather://rate?photo=p1&rating=3") == .invalid(.missingSessionId))
+        #expect(try result("gather://rate?session=&photo=p1&rating=3") == .invalid(.missingSessionId))
+        #expect(try result("gather://rate?session=s1&rating=3") == .invalid(.missingPhotoIds))
+        #expect(try result("gather://rate?session=s1&photo=&rating=3") == .invalid(.missingPhotoIds))
+
+        // 一个判断字段都没给 = 空写，必须拒绝（不能"看起来成功但什么都没改"）。
+        guard case .invalid(let error) = try result("gather://rate?session=s1&photo=p1") else {
+            Issue.record("expected invalid decision")
+            return
+        }
+        #expect(error.code == "DEEPLINK_INVALID_DECISION")
+    }
+
+    @Test func rejectsOutOfRangeRating() throws {
+        guard case .invalid(let error) = try result(
+            "gather://rate?session=s1&photo=p1&rating=6") else {
+            Issue.record("expected invalid decision")
+            return
+        }
+        #expect(error.code == "DEEPLINK_INVALID_DECISION")
+        // 失败原因不吞：说明合法区间，脚本作者能据此修。
+        #expect(error.description.contains("0…5"))
+    }
+
+    @Test func rejectsUnknownLabelAndPick() throws {
+        guard case .invalid(let labelError) = try result(
+            "gather://rate?session=s1&photo=p1&label=chartreuse") else {
+            Issue.record("expected invalid label")
+            return
+        }
+        #expect(labelError.code == "DEEPLINK_INVALID_DECISION")
+        #expect(labelError.description.contains("色标"))
+
+        guard case .invalid(let pickError) = try result(
+            "gather://rate?session=s1&photo=p1&pick=maybe") else {
+            Issue.record("expected invalid pick")
+            return
+        }
+        #expect(pickError.code == "DEEPLINK_INVALID_DECISION")
+        #expect(pickError.description.contains("keep"))
+    }
+
+    @Test func rejectsTooManyPhotos() throws {
+        let photos = (0...GatherDeepLinkParser.maxRatePhotoIds)
+            .map { "photo=p\($0)" }
+            .joined(separator: "&")
+        #expect(try result("gather://rate?session=s1&\(photos)&rating=1") ==
+            .invalid(.tooManyPhotoIds))
+    }
+
+    @Test func keepsLegacyRoutesParseable() throws {
+        // 新增 rate 不得影响既有 4 条路由的解析结果（回归钉子）。
+        #expect(try result("gather://session/s1") == .route(.openSession(sessionId: "s1")))
+        #expect(try result("gather://photo/p1") == .route(.openPhoto(photoId: "p1")))
+    }
+}
+
+// MARK: - Wave5 batch5：AppDelegate 路由分发（无 UI 也可执行）
+
+/// 分发契约：解析成功的 rate 调用 onApplyDecisions；解析失败走 onDeepLinkError；
+/// 回调尚未安装时排队，安装后重放（与 import 同口径）。
+@Suite("gather://rate 路由分发")
+@MainActor
+struct GatherDeepLinkRateDispatchTests {
+    private func rateURL(_ raw: String) throws -> URL {
+        try #require(URL(string: raw))
+    }
+
+    @Test func dispatchesRateToHandler() throws {
+        final class Box: @unchecked Sendable {
+            var sessionId: String?
+            var photoIds: [String] = []
+            var patch: GatherAutomationDecisionPatch?
+        }
+        let box = Box()
+        let delegate = GatherAppDelegate()
+        delegate.onApplyDecisions = { sessionId, photoIds, patch in
+            box.sessionId = sessionId
+            box.photoIds = photoIds
+            box.patch = patch
+        }
+        delegate.handle(try rateURL(
+            "gather://rate?session=s1&photo=p1&photo=p2&rating=4&label=blue&pick=keep"))
+        #expect(box.sessionId == "s1")
+        #expect(box.photoIds == ["p1", "p2"])
+        #expect(box.patch == GatherAutomationDecisionPatch(
+            rating: 4, colorLabel: .blue, pickState: .picked))
+    }
+
+    @Test func replaysPendingRateWhenHandlerInstalls() throws {
+        final class Box: @unchecked Sendable {
+            var applied = false
+        }
+        let box = Box()
+        let delegate = GatherAppDelegate()
+        // 回调未安装：先排队（不静默丢弃）。
+        delegate.handle(try rateURL("gather://rate?session=s1&photo=p1&rating=2"))
+        #expect(box.applied == false)
+        delegate.onApplyDecisions = { _, _, _ in box.applied = true }
+        #expect(box.applied)
+    }
+
+    @Test func invalidRateReportsErrorWithoutApplying() throws {
+        final class Box: @unchecked Sendable {
+            var applied = false
+            var error: GatherDeepLinkError?
+        }
+        let box = Box()
+        let delegate = GatherAppDelegate()
+        delegate.onApplyDecisions = { _, _, _ in box.applied = true }
+        delegate.onDeepLinkError = { box.error = $0 }
+        delegate.handle(try rateURL("gather://rate?session=s1&photo=p1&rating=9"))
+        #expect(box.applied == false)
+        #expect(box.error?.code == "DEEPLINK_INVALID_DECISION")
     }
 }

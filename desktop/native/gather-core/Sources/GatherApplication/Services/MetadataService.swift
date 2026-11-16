@@ -287,6 +287,111 @@ public final class MetadataService: @unchecked Sendable {
         try await attributeWriter.apply(inputs, source: source)
     }
 
+    // MARK: - Wave5（batch5）：位置 / 拍摄时间
+
+    /// 盘上当前 GPS 坐标与拍摄时间（编辑器初值）。
+    ///
+    /// 与 diskDescriptive 同口径：读盘（JPEG = 内嵌 + sidecar 合成），不读缓存。
+    public func diskGeoDate(photoId: String) async throws -> MetadataGeoDateSnapshot? {
+        guard let lookup = try photoRepo.getLookupByIds([photoId]).first else { return nil }
+        let attributes = try await reader.diskAttributes(photoPath: lookup.filepath)
+        return MetadataGeoDateSnapshot(
+            latitude: attributes.latitude,
+            longitude: attributes.longitude,
+            dateTaken: attributes.dateTaken)
+    }
+
+    /// 写入 GPS 坐标与拍摄时间。
+    ///
+    /// 走既有 attributeWriter（交付队列 → 备份 → 指纹冲突检测 → 写盘 → provider 写后校验），
+    /// 再对 **written** 做一次盘上回读：
+    /// - AttributeWriter.attributesMatch 只比较 rating/label/keywords/descriptive，**不含**
+    ///   GPS/时间（该文件不在本波写作用域），所以这里补回读才算数；
+    /// - 读回不一致（典型：JPEG 内嵌目标的读侧尚未接线）→ 从 written 移到
+    ///   failed + uncertain（XMP_WRITE_VERIFICATION_FAILED），宁可报"不确定"也不谎报成功。
+    public func applyGeoDate(
+        photoIds: [String],
+        latitude: Double?,
+        longitude: Double?,
+        dateTaken: String?,
+        source: MetadataMutationSource
+    ) async throws -> MetadataAttributesApplyOutcome {
+        let attributes = MetadataWriteAttributes(
+            dateTaken: dateTaken, latitude: latitude, longitude: longitude)
+        guard !attributes.isEmpty else {
+            throw GatherError.invalidParameter(
+                field: "latitude/longitude/dateTaken", reason: "must set at least one")
+        }
+        let lookups = try photoRepo.getLookupByIds(photoIds)
+        let byId = Dictionary(uniqueKeysWithValues: lookups.map { ($0.id, $0) })
+        var inputs: [(photoId: String, attributes: MetadataWriteAttributes)] = []
+        for photoId in photoIds {
+            guard byId[photoId] != nil else {
+                throw GatherError.invalidParameter(
+                    field: "photoIds", reason: "contains unknown photo ids")
+            }
+            inputs.append((photoId, attributes))
+        }
+        let result = try await attributeWriter.apply(inputs, source: source)
+        guard !result.written.isEmpty else { return result }
+
+        var stillWritten: [String] = []
+        var failed = result.failed
+        var uncertain = result.uncertain
+        for photoId in result.written {
+            guard let lookup = byId[photoId] else { continue }
+            let disk: MetadataWriteAttributes
+            do {
+                disk = try await reader.diskAttributes(photoPath: lookup.filepath)
+            } catch {
+                uncertain.append(photoId)
+                failed.append(MetadataApplyFailure(
+                    photoId: photoId,
+                    message: GatherErrorCode.XMP_WRITE_VERIFICATION_FAILED.rawValue
+                        + ": readback failed"))
+                continue
+            }
+            guard Self.geoDateMatches(
+                attributes: attributes, disk: disk) else {
+                uncertain.append(photoId)
+                failed.append(MetadataApplyFailure(
+                    photoId: photoId,
+                    message: GatherErrorCode.XMP_WRITE_VERIFICATION_FAILED.rawValue
+                        + ": geo/date not readable after write"))
+                continue
+            }
+            stillWritten.append(photoId)
+        }
+        let dedupUncertain = Array(Set(uncertain)).sorted()
+        return MetadataAttributesApplyOutcome(
+            written: stillWritten,
+            attempted: result.attempted,
+            skipped: result.skipped,
+            failed: failed,
+            uncertain: dedupUncertain)
+    }
+
+    /// GPS/时间的盘上回读比较（dateTaken：空串与 nil 等价 = 清空；坐标：1e-5 容差）。
+    static func geoDateMatches(
+        attributes: MetadataWriteAttributes,
+        disk: MetadataWriteAttributes
+    ) -> Bool {
+        if let latitude = attributes.latitude {
+            guard let diskLatitude = disk.latitude,
+                  abs(diskLatitude - latitude) <= 1e-5 else { return false }
+        }
+        if let longitude = attributes.longitude {
+            guard let diskLongitude = disk.longitude,
+                  abs(diskLongitude - longitude) <= 1e-5 else { return false }
+        }
+        if let dateTaken = attributes.dateTaken {
+            let expected = dateTaken.trimmingCharacters(in: .whitespacesAndNewlines)
+            let actual = (disk.dateTaken ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if expected != actual { return false }
+        }
+        return true
+    }
+
 
 
     // MARK: - 关键词（#6 S5 起由 MetadataKeywordWriter 承担）

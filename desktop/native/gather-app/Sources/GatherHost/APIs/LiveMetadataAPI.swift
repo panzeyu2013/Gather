@@ -496,6 +496,38 @@ public final class LiveMetadataAPI: MetadataAPI {
         )
     }
 
+    // MARK: - Wave5（batch5）：位置 / 拍摄时间
+
+    public func applyGeoAndDate(
+        _ input: Confirmed<MetadataGeoDateInput>
+    ) async throws -> MetadataTemplateApplyOutcome {
+        let payload = input.value
+        let result = try await mapAsync {
+            try await metadataService.applyGeoDate(
+                photoIds: payload.photoIds,
+                latitude: payload.latitude,
+                longitude: payload.longitude,
+                dateTaken: payload.dateTaken,
+                source: .manual)
+        }
+        // 与 inline apply 同族：写盘成功后立刻按会话自动确认（否则同步条永远停在待确认）。
+        autoConfirmAfterWrite(photoIds: result.written)
+        return MetadataTemplateApplyOutcome(
+            // 坐标/时间不进 MetadataApplyBatchStore：batchId 空串 = 不可撤销（UI 据此隐藏撤销入口）。
+            batchId: "",
+            written: result.written,
+            skipped: result.skipped,
+            conflicts: [],
+            failed: result.failed.map {
+                MetadataApplyFailureDTO(photoId: $0.photoId, message: $0.message)
+            },
+            undoAvailable: false)
+    }
+
+    public func diskGeoDate(photoId: String) async throws -> MetadataGeoDateSnapshot? {
+        try await mapAsync { try await metadataService.diskGeoDate(photoId: photoId) }
+    }
+
     public func recentBatches(limit: Int) async throws -> [MetadataBatchSummary] {
         try map {
             batchStore.list().prefix(max(0, limit)).map { batch in

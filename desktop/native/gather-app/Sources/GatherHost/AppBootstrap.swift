@@ -521,6 +521,33 @@ package final class AppBootstrap {
                     pendingXmp: sync.summary.pending, writtenXmp: sync.summary.written,
                     failedXmp: sync.summary.failed, conflictXmp: sync.summary.conflict,
                     reloadAckedAt: sync.reloadAckedAt)
+            },
+            // Wave5 batch5：查询照片（只读）。走既有检索（PhotoAPI.search），
+            // 过滤条件由 GatherAutomationPhotoQuery.criteria 映射到 FilterEngine，
+            // 不新造查询语言。
+            queryPhotos: { query in
+                // 会话必须存在：检索 API 对未知 session 返回 0 张，脚本会误以为
+                // "这个工作区是空的"而不是"工作区 ID 写错了"。
+                _ = try await appServices.session.get(query.sessionId)
+                let result = try await appServices.photo.search(
+                    try PhotoQuery(
+                        criteria: query.criteria,
+                        sessionId: query.sessionId,
+                        limit: query.limit))
+                return GatherAutomationPhotoQueryResult(
+                    sessionId: query.sessionId,
+                    photoIds: result.photos.map(\.photoId),
+                    total: result.total,
+                    samples: result.photos.map {
+                        GatherAutomationPhotoSample(photoId: $0.photoId, filename: $0.filename)
+                    })
+            },
+            // Wave5 batch5：写判断（rating / 色标 / pick）。与 gather://rate 共用
+            // 同一个实现（applyAutomationDecisions），避免两条入口语义分叉。
+            applyDecisions: { sessionId, photoIds, patch in
+                try await Self.applyAutomationDecisions(
+                    culling: appServices.culling,
+                    sessionId: sessionId, photoIds: photoIds, patch: patch)
             })
         GatherAutomationRuntimeRegistry.current = automationRuntime
 
@@ -736,6 +763,45 @@ package final class AppBootstrap {
         delegate.onResolvePhotoSession = resolvePhotoSession
         delegate.onDeepLinkError = { error in
             GatherLogger.log("deep link rejected: \(error.description)", level: .warn)
+        }
+        // Wave5 batch5：gather://rate —— 无 UI 直接写评级/色标/保留。
+        //
+        // 走注册表里的**同一个** runtime（与 Shortcuts/App Intents 完全同一条实现），
+        // 不另开一条写入路径；runtime 未安装时按既有语义报 runtimeUnavailable。
+        //
+        // 为什么必须给可见错误：URL scheme 没有调用栈可以把错误还给脚本；失败若只写日志，
+        // 用户/Siri 看到的是"什么都没发生"。用错误 toast + 日志兜底（成功也给一条计数 toast，
+        // 让"写了多少张"可见）。
+        delegate.onApplyDecisions = { sessionId, photoIds, patch in
+            let l10n = languageStore.l10n
+            Task { @MainActor in
+                do {
+                    guard let runtime = GatherAutomationRuntimeRegistry.current else {
+                        throw GatherAutomationError.runtimeUnavailable
+                    }
+                    let summary = try await runtime.applyDecisions(
+                        sessionId, photoIds, patch)
+                    GatherToastCenter.shared.show(
+                        type: .success,
+                        message: l10n.format(
+                            "已更新 %lld 张照片的评级/标记", summary.written))
+                } catch {
+                    GatherLogger.log(
+                        "deeplink.rate failed session=\(sessionId) photos=\(photoIds.count): \(error)",
+                        level: .error)
+                    // 自动化面错误自己带可读原因（参数非法/runtime 未就绪）：直接展示，
+                    // 不要经 errorText 码表漏斗——它只认错误码，会把原因换成通用文案。
+                    let reason: String
+                    if let automation = error as? GatherAutomationError {
+                        reason = automation.errorDescription ?? String(describing: automation)
+                    } else {
+                        reason = APIErrorPresentation.message(for: error, with: l10n)
+                    }
+                    GatherToastCenter.shared.show(
+                        type: .error,
+                        message: l10n.format("写评级/标记失败：%@", reason))
+                }
+            }
         }
         // Wave2 / task-14：导入完成后的自动初审接线（quality.score → triage.generate）。
         // Wave5 batch2：依赖收进 AITriageAutoScheduler（六个入口共用同一份开关/人脸
@@ -1374,5 +1440,48 @@ struct TriageSchedulingSessionAPI: SessionAPI {
 
     func status(_ sessionId: String) async throws -> WorkspaceStatus {
         try await base.status(sessionId)
+    }
+}
+
+// MARK: - Wave5 batch5：自动化写判断的共享实现
+
+extension AppBootstrap {
+    /// 把自动化入口的判断补丁落到挑片决策（gather://rate 与 App Intents 共用）。
+    ///
+    /// 为什么两条入口必须共用：URL scheme 没有返回值、Shortcuts 有 dialog，但两者
+    /// 的合法值集合、计数口径与错误语义必须一致；各写一份迟早分叉。
+    ///
+    /// 边界：
+    /// - 非破坏性：只走 CullingAPI.batchUpdate（与挑片页星级/色标/保留同一路径），
+    ///   不删除、不移动、不改文件名；
+    /// - 空补丁/空 photoIds 在类型层拒绝（CullingBatchUpdateInput 也会兜底），
+    ///   这里提前给出自动化面的可读错误；
+    /// - written = 实际更新的照片数（CullingAPI 每个操作目标一条结果），
+    ///   skipped = 请求去重后未落库的张数。
+    /// nonisolated：批更新是同步 SQLite 事务（LiveCullingAPI 内部再切执行上下文），
+    /// 不能让 AppBootstrap 的 @MainActor 推断把它拉到主线程上跑几百张的写入。
+    nonisolated static func applyAutomationDecisions(
+        culling: any CullingAPI,
+        sessionId: String,
+        photoIds: [String],
+        patch: GatherAutomationDecisionPatch
+    ) async throws -> GatherAutomationDecisionSummary {
+        guard !photoIds.isEmpty else { throw GatherAutomationError.noPhotoIds }
+        guard !patch.isEmpty else {
+            throw GatherAutomationError.invalidDecision("至少需要 rating / label / pick 之一")
+        }
+        let input = try CullingBatchUpdateInput(
+            sessionId: sessionId,
+            photoIds: photoIds,
+            patch: CullingUpdatePatch(
+                rating: patch.rating,
+                pickState: patch.pickState,
+                colorLabel: patch.colorLabel))
+        let results = try await culling.batchUpdate(input)
+        let requested = Set(photoIds).count
+        return GatherAutomationDecisionSummary(
+            sessionId: sessionId,
+            written: results.count,
+            skipped: max(0, requested - results.count))
     }
 }

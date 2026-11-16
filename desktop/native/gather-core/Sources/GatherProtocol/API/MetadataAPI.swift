@@ -116,6 +116,22 @@ public protocol MetadataAPI: Sendable {
 
     /// 新建空路径（含祖先物化；已存在时幂等）。
     func createKeyword(_ input: Confirmed<KeywordCreateInput>) async throws -> KeywordMutationSummary
+
+    // MARK: - Wave5（batch5）：位置 / 拍摄时间
+
+    /// 直接写入/清空 GPS 坐标与拍摄时间（**sidecar 通道**）。返回与内联 apply
+    /// 一致的 outcome；batchId 为空串 = 本操作不产生可撤销批快照（不做 undo）。
+    ///
+    /// 三态语义见 `MetadataGeoDateInput`：nil 不动 / dateTaken 空串清空 / 有值写入。
+    /// JPEG 内嵌写目标（无 sidecar、auto 模式）在写后校验阶段会显式失败：GPS/时间的
+    /// 内嵌读侧尚未接线（回执已列），不谎报成功。
+    func applyGeoAndDate(
+        _ input: Confirmed<MetadataGeoDateInput>
+    ) async throws -> MetadataTemplateApplyOutcome
+
+    /// 盘上当前 GPS 坐标与拍摄时间（编辑器初值；与 diskDescriptive 同口径的读盘）。
+    /// nil = 未接线 / 读不到（调用方退回缓存投影，不得当成"盘上为空"）。
+    func diskGeoDate(photoId: String) async throws -> MetadataGeoDateSnapshot?
 }
 
 // MARK: - 默认实现（未接线 / 测试替身）
@@ -148,6 +164,21 @@ public extension MetadataAPI {
         _ = input
         throw GatherError.invalidParameter(
             field: "cleanupRetention", reason: "metadata maintenance API not wired")
+    }
+
+    /// Wave5（batch5）：未接线时显式失败（INVALID_PARAM），不返回"什么都没写"的空 outcome。
+    func applyGeoAndDate(
+        _ input: Confirmed<MetadataGeoDateInput>
+    ) async throws -> MetadataTemplateApplyOutcome {
+        _ = input
+        throw GatherError.invalidParameter(
+            field: "applyGeoAndDate", reason: "geo/date API not wired")
+    }
+
+    /// 未接线/读不到返回 nil（= 未知）；调用方不得把它当成"盘上为空"。
+    func diskGeoDate(photoId: String) async throws -> MetadataGeoDateSnapshot? {
+        _ = photoId
+        return nil
     }
 }
 

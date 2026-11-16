@@ -1,5 +1,6 @@
 // desktop/native/gather-app/Sources/GatherApp/GatherAutomationIntents.swift
-// Wave3 / task-21：Shortcuts / App Intents 动作面（4 个动作，全部复用既有 typed API）。
+// Wave3 / task-21：Shortcuts / App Intents 动作面（4 个动作）+ Wave5 batch5 的 2 个
+// 「脚本能用 Gather」动作（查询照片 / 写评级·色标·保留），全部复用既有 typed API。
 //
 // 设计边界：
 // - 本文件只声明 AppIntent + 参数 + dialog，不碰业务规则；所有能力经
@@ -123,6 +124,95 @@ struct WorkspaceStatusIntent: AppIntent {
     }
 }
 
+// MARK: - Wave5 batch5：查询照片（只读）
+
+/// 按工作区查询照片：返回匹配总数、ID 列表与前几个文件名。
+///
+/// 参数校验不在这里重复实现：GatherAutomationPhotoQuery（GatherHost）是 URL scheme 与
+/// Shortcuts 共用的唯一归一化入口（sessionId/关键词/星级/limit 的合法值集合只有一份）。
+struct QueryPhotosIntent: AppIntent {
+    static var title: LocalizedStringResource { "查询照片" }
+    static var description: IntentDescription? {
+        "只读查询工作区里的照片：可按关键词与最低星级过滤，返回数量、照片 ID 与前几个文件名。"
+    }
+    static var openAppWhenRun: Bool { false }
+
+    @Parameter(title: "工作区 ID")
+    var sessionId: String
+
+    @Parameter(title: "关键词", description: "留空 = 不按关键词过滤")
+    var keyword: String?
+
+    @Parameter(title: "最低星级", description: "0…5；留空 = 不按星级过滤")
+    var minRating: String?
+
+    @Parameter(title: "上限", description: "最多返回多少张（1…500，留空 = 100）")
+    var limit: String?
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let runtime = GatherAutomationRuntimeRegistry.current else {
+            throw GatherAutomationError.runtimeUnavailable
+        }
+        let query = try GatherAutomationPhotoQuery.parse(
+            sessionId: sessionId,
+            keyword: keyword ?? "",
+            minRating: minRating ?? "",
+            limit: limit ?? "")
+        let result = try await runtime.queryPhotos(query)
+        let samples = result.samples
+            .map { "\($0.photoId)（\($0.filename)）" }
+            .joined(separator: "、")
+        let suffix = samples.isEmpty ? "" : "；示例：\(samples)"
+        return .result(dialog: IntentDialog(stringLiteral:
+            "匹配 \(result.total) 张，返回 \(result.photoIds.count) 张\(suffix)。"))
+    }
+}
+
+// MARK: - Wave5 batch5：写评级/色标/保留
+
+/// 按照片 ID 批量写判断（rating / 色标 / keep·reject）。
+///
+/// 非破坏性：只写挑片判断（与挑片页的星级/色标/保留同一套 CullingAPI），
+/// 不删除、不移动、不改文件名。参数校验同样复用 GatherAutomationDecisionPatch.parse。
+struct RatePhotosIntent: AppIntent {
+    static var title: LocalizedStringResource { "设置照片评级/标记" }
+    static var description: IntentDescription? {
+        "按照片 ID 批量设置星级、色标与保留/淘汰；留空的字段不改。"
+    }
+    static var openAppWhenRun: Bool { true }
+
+    @Parameter(title: "工作区 ID")
+    var sessionId: String
+
+    @Parameter(title: "照片 ID", description: "多个用换行分隔")
+    var photoIds: String
+
+    @Parameter(title: "星级", description: "0…5；留空 = 不改")
+    var rating: String?
+
+    @Parameter(title: "色标", description: "none/red/orange/yellow/green/blue/pink/purple；留空 = 不改")
+    var label: String?
+
+    @Parameter(title: "保留/淘汰", description: "keep 或 reject；留空 = 不改")
+    var pick: String?
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let runtime = GatherAutomationRuntimeRegistry.current else {
+            throw GatherAutomationError.runtimeUnavailable
+        }
+        let ids = photoIds
+            .split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !ids.isEmpty else { throw GatherAutomationError.noPhotoIds }
+        let patch = try GatherAutomationDecisionPatch.parse(
+            rating: rating ?? "", label: label ?? "", pick: pick ?? "")
+        let summary = try await runtime.applyDecisions(sessionId, ids, patch)
+        return .result(dialog: IntentDialog(stringLiteral:
+            "已更新 \(summary.written) 张照片的判断（跳过 \(summary.skipped) 张）。"))
+    }
+}
+
 // MARK: - Shortcuts 短语
 
 struct GatherAppShortcutsProvider: AppShortcutsProvider {
@@ -147,5 +237,16 @@ struct GatherAppShortcutsProvider: AppShortcutsProvider {
             phrases: ["用 \(.applicationName) 查询工作区状态"],
             shortTitle: "工作区状态",
             systemImageName: "info.circle")
+        // Wave5 batch5：自动化第二层（查询 + 写判断），保持上面 4 个旧动作不变。
+        AppShortcut(
+            intent: QueryPhotosIntent(),
+            phrases: ["用 \(.applicationName) 查询照片"],
+            shortTitle: "查询照片",
+            systemImageName: "magnifyingglass")
+        AppShortcut(
+            intent: RatePhotosIntent(),
+            phrases: ["用 \(.applicationName) 设置照片评级"],
+            shortTitle: "设置评级",
+            systemImageName: "star")
     }
 }
