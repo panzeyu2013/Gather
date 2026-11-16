@@ -26,16 +26,16 @@ extension SimilarityView {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             HStack {
                 Text(l10n("分组关键字写回"))
-                    .font(.headline)
+                    .font(GatherFont.cardTitle)
                 Spacer(minLength: 0)
                 // 计数属于内容语义 → .callout（旧版 10pt footnote）。
                 Text(l10n.format("已选 %lld 组", viewModel.selectedGroupIds.count))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
             Text(l10n("选择相似分组，关键词会合并写入每张照片旁的 .xmp 文件，不修改原图。"))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
             if viewModel.isAnalyzing || viewModel.isReclustering {
                 Text(l10n("相似度分析/聚类进行中，写回已暂时禁用。"))
@@ -68,17 +68,17 @@ extension SimilarityView {
                 .disabled(!viewModel.canPreviewWriteback)
             }
             Text(l10n("写入后在 Capture One 中选择这些照片，执行「图像 → 加载元数据」；确认关键词已进入目录后，再点击「确认同步」和「清理」。"))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
             if let notice = viewModel.notice {
                 Text(notice.resolve(with: l10n))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
             }
             if let preview = viewModel.writebackPreview {
                 writebackPreviewList(preview)
             } else if viewModel.result != nil {
                 Text(l10n("选择分组并生成预览后才可以写回。"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
             if let result = viewModel.writebackResult {
@@ -93,9 +93,9 @@ extension SimilarityView {
     private func writebackPreviewList(_ preview: WritebackPreview) -> some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
             Text(l10n("XMP 写回预览"))
-                .font(.subheadline.weight(.semibold))
+                .font(GatherFont.eyebrow)
             Text(l10n.format("预览完成：%lld 张照片将合并这些关键词。", preview.affectedPhotos))
-                .font(.callout)
+                .font(GatherFont.secondary)
             VStack(spacing: 0) {
                 ForEach(preview.items.prefix(SimilarityViewModel.previewItemLimit), id: \.xmpPath) { item in
                     writebackPreviewRow(item)
@@ -103,7 +103,7 @@ extension SimilarityView {
                 }
                 if preview.items.count > SimilarityViewModel.previewItemLimit {
                     Text(l10n.format("另有 %lld 项未展开", preview.items.count - SimilarityViewModel.previewItemLimit))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                         .padding(.top, GatherMetrics.Space.controlGap)
                 }
@@ -118,12 +118,12 @@ extension SimilarityView {
         return VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
             // 文件名是内容语义 → .callout（旧版 10pt footnote）。
             Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
-                .font(.callout.weight(.semibold))
+                .font(GatherFont.secondaryStrong)
                 .lineLimit(1)
                 .help(item.xmpPath)
                 .textSelection(.enabled)
             Text("\(writebackKeywordsText(before)) → \(writebackKeywordsText(after))")
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .lineLimit(1)
                 .textSelection(.enabled)
             HStack(spacing: 0) {
@@ -136,7 +136,7 @@ extension SimilarityView {
                 }
                 Text(l10n(" · 来源：相似组"))
             }
-            .font(.callout)
+            .font(GatherFont.secondary)
             .foregroundStyle(.secondary)
         }
         .padding(.vertical, GatherMetrics.Space.s)
@@ -153,7 +153,7 @@ extension SimilarityView {
         return VStack(alignment: .leading, spacing: 10) {
             // 同步状态文案（TS syncStatusCopy）。
             Text(l10n.format("同步状态：%@", l10n.resolve(controls.statusText)))
-                .font(.callout)
+                .font(GatherFont.secondary)
             WritebackReportCard(
                 written: result.written,
                 failed: result.failed,
@@ -202,7 +202,7 @@ extension SimilarityView {
                 Text(controls.canLoadMetadata
                     ? l10n("先在 Capture One 中 Load Metadata，再返回 Gather 确认同步")
                     : (controls.loadHint.map { l10n.resolve($0) } ?? ""))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
         }

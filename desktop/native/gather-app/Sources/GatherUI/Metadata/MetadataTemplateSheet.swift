@@ -68,7 +68,7 @@ struct MetadataTemplateSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("元数据模板"))
-                .font(.headline)
+                .font(GatherFont.cardTitle)
 
             // Wave5（Batch5 / task-23）：模板可导出成 JSON 分享、也可从 JSON 导入；
             // 导入是"先预览后确认"（同名默认跳过），不静默改掉本机既有模板。

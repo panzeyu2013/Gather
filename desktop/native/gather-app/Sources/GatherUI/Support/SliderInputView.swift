@@ -34,7 +34,7 @@ public struct SliderInputView: View {
         HStack(spacing: 10) {
             // 标签自适应（旧版是 110pt 固定列宽 = CSS 栅格直译）。
             Text(title)
-                .font(.body)
+                .font(GatherFont.body)
                 .lineLimit(1)
                 .layoutPriority(1)
             Slider(value: $value, in: range, step: step ?? 0)
@@ -95,7 +95,7 @@ public struct SliderInputIntView: View {
     public var body: some View {
         HStack(spacing: 10) {
             Text(title)
-                .font(.body)
+                .font(GatherFont.body)
                 .lineLimit(1)
                 .layoutPriority(1)
             Slider(value: Binding(

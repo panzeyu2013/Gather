@@ -27,7 +27,7 @@ struct FaceClusterMontage: View {
                 if cluster.members.isEmpty {
                     ZStack {
                         RoundedRectangle(cornerRadius: GatherTheme.Radius.panel)
-                            .fill(GatherTheme.secondaryContentBackground)
+                            .fill(GatherTheme.surfaceMuted)
                         Text("\(cluster.size)")
                             .font(.title.weight(.semibold))
                             .foregroundStyle(GatherTheme.accent)
@@ -50,7 +50,7 @@ struct FaceClusterMontage: View {
                                         .clipped()
                                     } else {
                                         Rectangle()
-                                            .fill(GatherTheme.secondaryContentBackground.opacity(0.5))
+                                            .fill(GatherTheme.surfaceMuted.opacity(0.5))
                                             .frame(width: cell, height: cell)
                                     }
                                 }

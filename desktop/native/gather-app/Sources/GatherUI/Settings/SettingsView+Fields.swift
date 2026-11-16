@@ -24,7 +24,7 @@ extension SettingsView {
             Text(l10n(title))
             if let description, !description.isEmpty {
                 Text(l10n(description))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

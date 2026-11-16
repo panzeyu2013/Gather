@@ -15,13 +15,13 @@ struct ExportResultSection: View {
         if let result = viewModel.result {
             Section(l10n("结果")) {
                 Text(l10n.format("导出完成：成功 %lld，失败 %lld，跳过 %lld", result.exported, result.failed, result.skipped))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(result.failed > 0 ? GatherTheme.errorText : GatherTheme.successText)
                 // P2-1：默认 3 条，可展开全部；错误多时不静默截断。
                 let visibleErrors = showAllErrors ? result.errors : Array(result.errors.prefix(3))
                 ForEach(visibleErrors, id: \.self) { error in
                     Text(ExportViewModel.translateErrorLine(error, with: l10n))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(GatherTheme.errorText)
                 }
                 if result.errors.count > 3 {
@@ -51,7 +51,7 @@ struct ExportResultSection: View {
                 }
                 if let report = viewModel.report {
                     Text(report.path)
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)

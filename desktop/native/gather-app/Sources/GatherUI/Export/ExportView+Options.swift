@@ -42,7 +42,7 @@ struct ExportOptionsSection: View {
                         ), in: 1...100, step: 1)
                         .accessibilityLabel(l10n("JPEG 质量"))
                         Text(l10n.format("质量： %@", viewModel.quality))
-                            .font(.callout.monospacedDigit())
+                            .font(GatherFont.mono)
                             .frame(width: 70, alignment: .trailing)
                     }
                 }
@@ -263,7 +263,7 @@ struct ExportOptionsSection: View {
             }
             // 对齐旧版 export.folderHint 警告（TS L301-303）。
             Text(l10n("请选择导出文件夹。不要选择工作区导入目录，否则导出的文件会被重新导入当前工作区。"))
-                .font(.callout).foregroundStyle(.secondary)
+                .font(GatherFont.secondary).foregroundStyle(.secondary)
             ExportFieldErrorText(field: .destination, viewModel: viewModel)
         }
     }

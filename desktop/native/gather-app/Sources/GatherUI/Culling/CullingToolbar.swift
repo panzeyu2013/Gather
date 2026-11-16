@@ -27,7 +27,7 @@ struct CullingToolbar: View {
                 .fixedSize(horizontal: true, vertical: false)
             compactToolbar
         }
-        .background(GatherTheme.contentBackground)
+        .background(GatherTheme.surface)
         .overlay(alignment: .bottom) { Divider() }
     }
 

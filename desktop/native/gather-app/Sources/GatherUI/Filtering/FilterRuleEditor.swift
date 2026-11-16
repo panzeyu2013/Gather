@@ -221,6 +221,7 @@ private struct FilterGroupEditor: View {
                 }
                 .buttonStyle(.borderless)
                 .help(l10n("删除这个 NOT 组"))
+                .accessibilityLabel(l10n("删除这个 NOT 组"))
             }
         }
     }
@@ -334,6 +335,7 @@ private struct FilterGroupEditor: View {
         }
         .buttonStyle(.borderless)
         .help(l10n("删除条件"))
+        .accessibilityLabel(l10n("删除条件"))
     }
 
     @ViewBuilder

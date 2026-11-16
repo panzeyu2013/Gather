@@ -37,14 +37,14 @@ struct ExportPreviewSection: View {
                         preview.sidecarCount,
                         preview.physicalFileCount
                     ))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                 }
                 if preview.issueCount > 0 {
                     Label(
                         l10n.format("其中 %lld 项存在问题，导出时会失败。", preview.issueCount),
                         systemImage: "exclamationmark.triangle"
                     )
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(GatherTheme.warningText)
                 }
                 ForEach(preview.files.prefix(8), id: \.photoId) { file in
@@ -66,11 +66,11 @@ struct ExportPreviewSection: View {
                         Text("\(file.isSizeEstimate ? "≈" : "")" + ByteCountFormatter.string(fromByteCount: Int64(file.fileSize), countStyle: .file))
                             .foregroundStyle(.secondary)
                     }
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                 }
                 if preview.files.count > 8 {
                     Text(l10n.format("还有 %lld 个文件…", preview.files.count - 8))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                 }
             }

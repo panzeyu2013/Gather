@@ -94,7 +94,7 @@ extension SimilarityView {
             ProgressView()
                 .controlSize(.small)
             Text(l10n("加载结果中…"))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -145,7 +145,7 @@ extension SimilarityView {
                         .accessibilityLabel(l10n("分析进度"))
                         .accessibilityValue("\(progressPercent)%")
                     Text("\(progressPercent)%")
-                        .font(.callout.monospacedDigit())
+                        .font(GatherFont.mono)
                         .foregroundStyle(.secondary)
                         .frame(width: 44, alignment: .trailing)
                 }
@@ -156,13 +156,13 @@ extension SimilarityView {
                     ProgressView()
                         .controlSize(.small)
                     Text(l10n("处理中…"))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                 }
             }
             HStack {
                 Text(l10n.progressPhaseText(viewModel.progressMessage))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 // 取消分析：busy 时禁用并显示处理中文案。

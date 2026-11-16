@@ -99,7 +99,7 @@ extension SettingsView {
     private func queueCell(_ label: String, _ value: Int, alert: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(value, format: .number)
-                .font(.title3.monospacedDigit())
+                .font(GatherFont.heroSubtitle.monospacedDigit())
                 .foregroundStyle(alert && value > 0 ? GatherTheme.warningText : Color.primary)
             Text(label)
                 .font(.caption)

@@ -127,7 +127,7 @@ struct DuplicatesGroupCardView: View {
         .padding(GatherMetrics.Space.s)
         .background(
             RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
-                .fill(member.isKept ? GatherTheme.contentBackground : GatherTheme.secondaryContentBackground)
+                .fill(member.isKept ? GatherTheme.surface : GatherTheme.surfaceMuted)
         )
         .overlay(
             // 保留/排除用语义色描边区分；排除态不靠整卡降透明（可读性）。

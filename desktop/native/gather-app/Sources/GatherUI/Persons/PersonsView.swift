@@ -284,7 +284,7 @@ private struct PersonListRow: View {
             ZStack {
                 GatherTheme.accent.opacity(0.18)
                 Text(String(person.name.prefix(1)))
-                    .font(.callout.weight(.semibold))
+                    .font(GatherFont.secondaryStrong)
                     .foregroundStyle(GatherTheme.primaryText)
             }
         }
@@ -343,7 +343,7 @@ private struct PersonDetailView: View {
                     Text(person.name).font(GatherFont.pageTitle)
                     Text(l10n.plural("%lld 张照片", count: person.totalPhotoCount)
                         + " · " + l10n.plural("%lld 个工作区", count: person.sessionCount))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -395,7 +395,7 @@ private struct PersonDetailView: View {
                         Text(l10n("尚未设置人物关键字")).foregroundStyle(.secondary)
                     } else {
                         Text(person.keywords.joined(separator: ", "))
-                            .font(.callout)
+                            .font(GatherFont.secondary)
                     }
                     LabeledContent(l10n("匹配阈值"), value: String(format: "%.2f", person.matchThreshold))
                     if let target = reviewTarget {
@@ -440,9 +440,9 @@ private struct PersonDetailView: View {
                                         .aspectRatio(3 / 2, contentMode: .fill)
                                         .frame(maxWidth: .infinity)
                                         .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.thumbnail))
-                                        Text(photo.filename).font(.callout).lineLimit(1)
+                                        Text(photo.filename).font(GatherFont.secondary).lineLimit(1)
                                         Text(photo.sessionName)
-                                            .font(.callout)
+                                            .font(GatherFont.secondary)
                                             .foregroundStyle(.secondary)
                                             .lineLimit(1)
                                     }
@@ -592,7 +592,7 @@ private struct PersonDetailView: View {
             ZStack {
                 Circle().fill(GatherTheme.accent.opacity(0.18))
                 Text(String(person.name.prefix(1)))
-                    .font(.title2.weight(.semibold))
+                    .font(GatherFont.pageTitle)
                     .foregroundStyle(GatherTheme.primaryText)
             }
             .frame(width: 80, height: 80)
@@ -605,14 +605,13 @@ private struct PersonDetailView: View {
     /// 英文日期）。zh 固定 `yyyy年M月d日`，en 用 l10n.locale（en_US）的 yMd 短模板。
     private static func dateText(_ iso: String, with l10n: L10n) -> String {
         guard let date = parseISO8601Date(iso) else { return iso }
-        let formatter = DateFormatter()
-        formatter.locale = l10n.locale
+        // perf-ui 性能审计：详情每次渲染调用两次，旧实现每次新建 DateFormatter；
+        // 改走共享缓存，zh 固定 pattern / en yMd 短模板的输出逐字节不变。
+        let formatters = DisplayDateFormatters.shared
         if l10n.isChinese {
-            formatter.dateFormat = "yyyy年M月d日"
-        } else {
-            formatter.setLocalizedDateFormatFromTemplate("yMd")
+            return formatters.pattern(date, format: "yyyy年M月d日", locale: l10n.locale)
         }
-        return formatter.string(from: date)
+        return formatters.localizedTemplate(date, template: "yMd", locale: l10n.locale)
     }
 }
 
@@ -643,7 +642,7 @@ private struct CreatePersonSheet: View {
                         .foregroundStyle(GatherTheme.error)
                         .accessibilityHidden(true)
                     Text(l10n.format("操作失败：%@", CommandErrorText.resolve(error, with: l10n)))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                 }
             }
             HStack {

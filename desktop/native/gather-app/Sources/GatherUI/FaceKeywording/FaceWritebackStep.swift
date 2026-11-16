@@ -92,7 +92,7 @@ extension FaceKeywordingView {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
             HStack(spacing: 7) {
                 Text(cluster.binding?.roleName ?? "")
-                    .font(.body.weight(.semibold))
+                    .font(GatherFont.bodyStrong)
                 GatherBadge(l10n.format("%lld 个人脸样本", cluster.size))
                 if let keywords = cluster.binding?.keywords, !keywords.isEmpty {
                     Text(keywords.joined(separator: ", "))
@@ -148,7 +148,7 @@ extension FaceKeywordingView {
     private func xmpPreviewRow(_ item: WritebackItem) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
-                .font(.callout.weight(.semibold))
+                .font(GatherFont.secondaryStrong)
                 .lineLimit(1)
             Text("\(xmpKeywordsText(item.preview?.before.keywords)) → \(xmpKeywordsText(item.preview?.after.keywords ?? item.keywords))")
                 .font(GatherFont.secondary)

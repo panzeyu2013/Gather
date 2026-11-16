@@ -9,10 +9,10 @@ extension SessionControlView {
 
     var actionCard: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
-            Text(l10n("分析与索引")).font(.title3.weight(.semibold))
+            Text(l10n("分析与索引")).font(GatherFont.sectionTitle)
             // 文案只说真实存在的操作（旧版承诺「查看/取消」但界面没有这两个入口）。
             Text(l10n("扫描索引与质量分析会入队后台任务，进度显示在「当前任务」中；失败的任务可重试。"))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
             HStack(spacing: GatherMetrics.Space.s) {
                 Button(l10n("扫描索引"), systemImage: "magnifyingglass") { Task { await viewModel.scanIndex() } }

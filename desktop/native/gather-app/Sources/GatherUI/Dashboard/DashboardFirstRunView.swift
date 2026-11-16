@@ -283,7 +283,7 @@ private struct DashboardHeroCollage: View {
             .overlay(alignment: .topTrailing) {
                 if selected {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.title3)
+                        .font(GatherFont.heroSubtitle)
                         .symbolRenderingMode(.palette)
                         .foregroundStyle(.white, GatherTheme.selection)
                         .padding(GatherMetrics.Space.s)

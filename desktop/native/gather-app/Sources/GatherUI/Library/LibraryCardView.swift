@@ -95,7 +95,7 @@ struct LibraryCardView: View {
                 // 占位/加载中/失败三态同尺寸（防跳动）：固定高 110 并撑满卡宽。
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .frame(height: 110)
-                .background(GatherTheme.contentBackground)
+                .background(GatherTheme.surface)
                 .clipShape(RoundedRectangle(cornerRadius: GatherTheme.Radius.media, style: .continuous))
             if photo.status == "missing" {
                 // 角标压在缩略图上：材质底 + 主文字色（不再用红底白字，深色模式对比不足）。

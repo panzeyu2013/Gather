@@ -45,7 +45,7 @@ struct SessionRowView: View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
             HStack(spacing: GatherMetrics.Space.s) {
                 Text(session.name)
-                    .font(.headline)
+                    .font(GatherFont.cardTitle)
                     .lineLimit(1)
                 statusBadge
             }
@@ -62,7 +62,7 @@ struct SessionRowView: View {
     private var metadataRow: some View {
         HStack(spacing: 10) {
             Text(photoCountLabel.resolve(with: l10n))
-                .font(.callout)
+                .font(GatherFont.secondary)
             if let status {
                 if status.xmp.pending > 0 {
                     statusPill(
@@ -87,7 +87,7 @@ struct SessionRowView: View {
                 }
                 if status.offlinePhotos > 0 {
                     Text(l10n.format("离线 %lld", status.offlinePhotos))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -104,7 +104,7 @@ struct SessionRowView: View {
                 .foregroundStyle(color)
                 .accessibilityHidden(true)
             Text(text)
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.primary)
         }
         .padding(.horizontal, GatherMetrics.Space.controlGap)

@@ -12,7 +12,7 @@ struct ExportFieldErrorText: View {
     var body: some View {
         if viewModel.fieldError == field, let message = viewModel.errorMessage {
             Text(CommandErrorText.resolve(message, with: l10n))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(GatherTheme.errorText)
         }
     }

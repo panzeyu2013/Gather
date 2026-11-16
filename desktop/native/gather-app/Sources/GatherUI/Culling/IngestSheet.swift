@@ -47,7 +47,7 @@ struct IngestSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
             Text(l10n("摄取到当前会话"))
-                .font(.headline)
+                .font(GatherFont.cardTitle)
 
             // Wave5 batch3：预设行只在宿主注入了 SettingsAPI 时展示（预览/单测无设置域）。
             if IngestPresetBridge.settings != nil {
@@ -91,7 +91,7 @@ struct IngestSheet: View {
             LabeledContent(l10n("重命名模板")) {
                 TextField("{yyyy}/{MM}/{dd}/{orig}-{seq:4}.{ext}", text: $renameTemplate)
                     .labelsHidden()
-                    .font(.body.monospaced())
+                    .font(GatherFont.body.monospaced())
             }
             Text(l10n("占位符：{yyyy} {MM} {dd} {HH} {mm} {ss} {orig} {ext} {seq:4} {camera}"))
                 .font(.caption)

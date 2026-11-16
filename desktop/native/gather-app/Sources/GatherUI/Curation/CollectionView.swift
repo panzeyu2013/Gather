@@ -243,11 +243,13 @@ private struct CollectionContent: View {
             }
             .buttonStyle(.plain)
             .help(l10n("重新载入"))
+            .accessibilityLabel(l10n("重新载入"))
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
             }
             .buttonStyle(.plain)
             .help(l10n("返回图库"))
+            .accessibilityLabel(l10n("返回图库"))
         }
         .padding(.horizontal, GatherMetrics.Layout.pageGutter)
         .padding(.vertical, GatherMetrics.Space.m)
@@ -443,11 +445,13 @@ private struct CrossWorkspaceDuplicatesContent: View {
             .buttonStyle(.plain)
             .disabled(model.isScanning)
             .help(l10n("重新扫描"))
+            .accessibilityLabel(l10n("重新扫描"))
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
             }
             .buttonStyle(.plain)
             .help(l10n("返回图库"))
+            .accessibilityLabel(l10n("返回图库"))
         }
         .padding(.horizontal, GatherMetrics.Layout.pageGutter)
         .padding(.vertical, GatherMetrics.Space.m)

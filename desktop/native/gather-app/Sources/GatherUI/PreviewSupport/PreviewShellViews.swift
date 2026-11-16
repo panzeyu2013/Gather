@@ -130,9 +130,9 @@ struct PreviewShellChrome: View {
                     .font(.system(size: 34))
                     .foregroundStyle(.secondary)
                 Text("Shared session chrome")
-                    .font(.title3.weight(.semibold))
+                    .font(GatherFont.sectionTitle)
                 Text("Browse / Similarity / Control / Face / Duplicates / Culling / Export")
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

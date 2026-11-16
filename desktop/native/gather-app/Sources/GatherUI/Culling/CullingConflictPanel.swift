@@ -57,7 +57,7 @@ struct CullingConflictPanel: View {
                     .foregroundStyle(GatherTheme.errorText)
                 Spacer()
                 Text(URL(fileURLWithPath: conflict.xmpPath).lastPathComponent)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .help(conflict.xmpPath)
@@ -71,7 +71,7 @@ struct CullingConflictPanel: View {
             }
             if conflict.fields.isEmpty {
                 Text(l10n("该冲突行没有可逐字段裁决的差异：直接结清即可（保留 Gather 值并以当前磁盘状态为新基线重写）。"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
             ForEach(conflict.fields, id: \.field.rawValue) { field in
@@ -81,11 +81,11 @@ struct CullingConflictPanel: View {
                         .font(GatherFont.secondaryStrong)
                         .frame(minWidth: 64, alignment: .leading)
                     Text(l10n.format("Gather：%@", CullingDisplayFormat.valueLabel(field.local, with: l10n)))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .lineLimit(1)
                         .help(CullingDisplayFormat.valueLabel(field.local, with: l10n))
                     Text(l10n.format("外部：%@", CullingDisplayFormat.valueLabel(field.remote, with: l10n)))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .lineLimit(1)
                         .help(CullingDisplayFormat.valueLabel(field.remote, with: l10n))
                     Picker(l10n("处理"), selection: Binding(
@@ -103,14 +103,14 @@ struct CullingConflictPanel: View {
                 .padding(GatherMetrics.Space.s)
                 .background(
                     RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
-                        .fill(GatherTheme.secondaryContentBackground)
+                        .fill(GatherTheme.surfaceMuted)
                 )
             }
             HStack {
                 Text(viewModel.conflicts.count > 1
                     ? l10n.format("还有 %lld 个冲突", viewModel.conflicts.count - 1)
                     : l10n("这是最后一个冲突"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button(l10n("采用外部值")) {
@@ -148,7 +148,7 @@ struct CullingConflictPanel: View {
             ForEach(Array(viewModel.failedSyncItems.prefix(3)), id: \.xmpPath) { item in
                 VStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
                     Text(URL(fileURLWithPath: item.xmpPath).lastPathComponent)
-                        .font(.callout.weight(.medium))
+                        .font(GatherFont.secondary.weight(.medium))
                     // 上屏走错误码漏斗；原始诊断已由 applySyncStatus 写日志。
                     Text(item.errorMessage.isEmpty
                         ? l10n("未记录原因")
@@ -162,12 +162,12 @@ struct CullingConflictPanel: View {
                 .padding(GatherMetrics.Space.controlGap)
                 .background(
                     RoundedRectangle(cornerRadius: GatherTheme.Radius.panel, style: .continuous)
-                        .fill(GatherTheme.secondaryContentBackground)
+                        .fill(GatherTheme.surfaceMuted)
                 )
             }
             if viewModel.failedSyncItems.count > 3 {
                 Text(l10n.format("另有 %lld 项失败", viewModel.failedSyncItems.count - 3))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
         }

@@ -63,7 +63,7 @@
 "正在解压…" = "Extracting…";
 "人脸模型已安装" = "Face Model Installed";
 "Capture One 健康" = "Capture One Health";
-"四层连接预检" = "Four-Step Connection Check";
+"四层连接预检" = "Four-Layer Connection Check";
 "检测中…" = "Checking…";
 "预检失败：无法连接 Capture One 自动化通道" = "Check failed: cannot connect to the Capture One automation channel";
 "Capture One 可达" = "Capture One Reachable";
@@ -77,7 +77,7 @@
 "已同步" = "Synced";
 "失败" = "Failed";
 "冲突" = "Conflict";
-"同步状态读取失败" = "Failed to Read Sync Status";
+"同步状态读取失败" = "Failed to read sync status";
 "无工作区，写回队列来自当前会话" = "No workspace; the writeback queue comes from the current session";
 "读取中" = "Reading";
 "最近一次命令耗时" = "Last Command Duration";
@@ -118,7 +118,7 @@
 "已处理元数据冲突" = "Metadata conflict resolved";
 "评分" = "Rating";
 "批量操作" = "Batch Actions";
-"确认批量操作？" = "Confirm Batch Action?";
+"确认批量操作？" = "Confirm batch action?";
 "应用批量更改" = "Apply Batch Changes";
 "将对 %lld 张照片执行“%@”；会立即写入数据库。" = "Apply this to %lld photos: “%@”? This writes to the database immediately.";
 "颜色标签" = "Color Label";
@@ -130,7 +130,7 @@
 "返回" = "Back";
 "挑片与写回" = "Culling & Writeback";
 "范围" = "Scope";
-"开始整套交付？" = "Start Full Delivery?";
+"开始整套交付？" = "Start full delivery?";
 "将按以下配方写入交付目录。确认后不会再弹参数编辑；已有同名文件由配方/导出策略处理。" = "The delivery will be written to the target folder using the recipes below. Parameters cannot be edited after confirmation; existing files follow the recipe/export policy.";
 "目标目录" = "Destination Folder";
 "预计文件" = "Estimated Files";
@@ -443,9 +443,9 @@
 "已在 Capture One 中加载元数据，返回后请确认同步" = "Metadata loaded in Capture One; confirm the sync when you return";
 "已确认 Capture One 完成「加载元数据」，现在可以安全清理临时 XMP 变更。" = "Capture One confirmed “Load Metadata”; it is now safe to clean up temporary XMP changes.";
 "同步中：Gather 正在写入 XMP…" = "Syncing: Gather is writing XMP…";
-"Gather 已写入，等待 C1 读取" = "Gather has written; waiting for C1 to read";
-"C1 已读取，可安全清理" = "C1 has read; safe to clean up";
-"Capture One 未连接" = "Capture One Not Connected";
+"Gather 已写入，等待 C1 读取" = "Gather has written; waiting for Capture One to read";
+"C1 已读取，可安全清理" = "Capture One has read; safe to clean up";
+"Capture One 未连接" = "Capture One not connected";
 "已连接 Capture One，暂无写入" = "Connected to Capture One; no writes yet";
 "同步状态加载中…" = "Loading sync status…";
 /* Sources/GatherUI/Library/LibraryViewModel.swift */
@@ -530,8 +530,8 @@
 "Capture One 预检未通过，请按上方提示处理后再创建。" = "The Capture One check did not pass. Follow the steps above before creating.";
 /* Sources/GatherUI/Dashboard/DashboardViewModel.swift */
 "可连接 Capture One（AppleScript）" = "Can Connect to Capture One (AppleScript)";
-"Capture One 正在运行" = "Capture One Is Running";
-"Capture One 已打开文档" = "Capture One Has a Document Open";
+"Capture One 正在运行" = "Capture One Running";
+"Capture One 已打开文档" = "Document Open";
 "检测超时" = "Check Timed Out";
 "检测超时，请重试" = "Check timed out; try again";
 "无法通过 AppleScript 访问 Capture One。请确认系统环境正常，然后重新检查。" = "Cannot access Capture One via AppleScript. Make sure your system is set up correctly, then check again.";
@@ -545,12 +545,12 @@
 "目录超过 50,000 张照片，已导入前 50,000 张，剩余照片将在后台索引中补齐" = "The catalog has more than 50,000 photos; the first 50,000 were imported, and the rest will be added by background indexing";
 /* Sources/GatherUI/Support/C1StatusCapsule.swift */
 "状态未知" = "Unknown Status";
-"无法获取同步状态" = "Could Not Get Sync Status";
+"无法获取同步状态" = "Could not get sync status";
 "正在检测同步状态" = "Checking Sync Status";
-"存在 XMP 冲突" = "XMP Conflicts Exist";
+"存在 XMP 冲突" = "XMP conflicts exist";
 "有写入失败项" = "Some Writes Failed";
 "同步中" = "Syncing";
-"已写入待读取" = "Written, Awaiting Read";
+"已写入待读取" = "Written, awaiting read";
 "已同步可清理" = "Synced, Ready to Clean Up";
 "已同步且可安全清理备份" = "Synced; safe to clean up backups";
 "元数据已同步" = "Metadata Synced";
@@ -580,7 +580,7 @@
 "名称" = "Name";
 "备注" = "Notes";
 "人物信息已保存" = "Person info saved";
-"保存失败" = "Save Failed";
+"保存失败" = "Save failed";
 "人脸匹配" = "Face Matching";
 "尚未设置人物关键字" = "No keywords set for this person";
 "匹配阈值" = "Matching Threshold";
@@ -594,22 +594,22 @@
 "合并到…" = "Merge Into…";
 "%@（%lld 张）" = "%@ (%lld photos)";
 "把此人物合并到另一个人物" = "Merge this person into another person";
-"合并人物？" = "Merge People?";
+"合并人物？" = "Merge these people?";
 "将把「%@」（%lld 张）合并到「%@」（%lld 张），源人物的绑定会转移并删除；此操作不可撤销。" = "Merge “%@” (%lld photos) into “%@” (%lld photos); the source person's bindings move over and the source is deleted. This cannot be undone.";
 "已合并人物" = "People merged";
 "合并失败" = "Merge failed";
 "移除此照片" = "Remove This Photo";
-"移除此照片？" = "Remove This Photo?";
+"移除此照片？" = "Remove this photo?";
 "只断开该照片与本人物的人脸绑定，不删除照片文件。" = "Only the face binding between this photo and this person is removed; the photo file is not deleted.";
 "移除" = "Remove";
 "已从人物移除照片" = "Photo removed from person";
 "移除失败" = "Remove failed";
 "人物已删除" = "Person deleted";
-"删除失败" = "Delete Failed";
+"删除失败" = "Delete failed";
 "yyyy年M月d日" = "yyyy/M/d";
 "输入人物姓名" = "Enter a name for this person";
 "人物已创建" = "Person created";
-"创建失败" = "Create Failed";
+"创建失败" = "Create failed";
 /* Export/ExportView.swift */
 ".扩展名" = ".Extension";
 "导出任务已完成" = "Export complete";
@@ -664,7 +664,7 @@
 "未发现视觉相似的照片" = "No visually similar photos found";
 "保留最佳" = "Keep Best";
 "保留全部" = "Keep All";
-"恢复未处理？" = "Reset to Unprocessed?";
+"恢复未处理？" = "Reset to unprocessed?";
 "恢复未处理" = "Reset to Unprocessed";
 "将清空组 #%lld 的处置标记，并把全部成员恢复为保留、未处理状态；可重新选择保留最佳或保留全部。" = "This clears group #%lld's resolution and restores all members to kept/unprocessed; you can then choose Keep Best or Keep All again.";
 "已恢复重复组 #%lld 为未处理" = "Duplicate group #%lld reset to unprocessed";
@@ -884,7 +884,7 @@
 
 /* Wave4b task-45 */
 "被减数" = "Minuend";
-"被减数「%@」减去其余已选集合" = "Minuend \"%@\" minus the other selected collections";
+"被减数「%@」减去其余已选集合" = "Minuend “%@” minus the other selected collections";
 "重复处置" = "Duplicate Handling";
 "跳过库内已存在的照片" = "Skip photos already in the library";
 "并存（再存一份）" = "Keep both (import another copy)";
@@ -936,7 +936,7 @@
 "在 Capture One 中选中这些照片；只改变选中，不导入" = "Select these photos in Capture One; changes the selection only, no import";
 "我已在 Capture One 手动加载元数据" = "I loaded metadata manually in Capture One";
 "在 Capture One 手动执行 Load Metadata 后点击；记录重载确认，解除确认/结束同步的门禁" = "Click after running Load Metadata manually in Capture One; records the reload confirmation so confirm/finalize are unblocked";
-"让 Capture One 重新读取本次写回（对 C1 当前选中的照片生效）" = "Make Capture One re-read this writeback (applies to the photos currently selected in C1)";
+"让 Capture One 重新读取本次写回（对 C1 当前选中的照片生效）" = "Make Capture One re-read this writeback (applies to the photos currently selected in Capture One)";
 "已记录手动加载，可以确认同步" = "Manual load recorded; you can confirm the sync";
 "已记录：你在 Capture One 中手动加载了元数据，现在可以确认同步" = "Recorded: you loaded metadata manually in Capture One; you can now confirm the sync";
 "请先选择照片（或让当前照片可见）" = "Select photos first (or make the current photo visible)";
@@ -1192,7 +1192,7 @@
 "已恢复默认设置并清除所选用户内容" = "Defaults restored and selected user content removed";
 "查看影响范围后选择要重置的内容（会先确认）" = "Review the impact and choose what to reset (confirmation required)";
 "确认下载并安装人脸模型？" = "Download and install the face model?";
-"下载并覆盖" = "Download and overwrite";
+"下载并覆盖" = "Download and Overwrite";
 "下载并安装人脸模型" = "Download and install the face model";
 "已取消删除「%@」，未执行任何更改" = "Cancelled deleting “%@”; nothing was changed";
 "确定要删除「%@」吗？将从人脸库移除该人物及其 %lld 张关联照片、%lld 个工作区的人脸绑定数据。此操作不可撤销。" = "Delete “%@”? This removes the person from the face library along with %lld linked photos and face-binding data in %lld workspaces. This cannot be undone.";
@@ -1265,7 +1265,7 @@
 "%@ 张" = "%@ items";
 "%@ 线程" = "%@ threads";
 "%@（快捷键 %@）" = "%@ (shortcut %@)";
-"XMP 写回项 %@" = "XMP write-back item %@";
+"XMP 写回项 %@" = "XMP writeback item %@";
 "「清理备份」会在确认同步后开放。" = "“Clean up backups” becomes available once sync is confirmed.";
 "上一张（←）" = "Previous (←)";
 "上次处理失败" = "Last attempt failed";
@@ -1274,7 +1274,7 @@
 "人物列表" = "People list";
 "人脸关键词步骤" = "Face keyword steps";
 "从左侧列表选择一个人物" = "Select a person from the list on the left";
-"会把「%@」下已登记的文件路径改写为「%@」（该卷共 %lld 个离线文件），并重新索引这些文件。原目录不会被修改或删除。" = "Rewrites the registered file paths under “%@” to “%@” (%lld offline files on that volume) and re-indexes them. The original directory is not modified or deleted.";
+"会把「%@」下已登记的文件路径改写为「%@」（该卷共 %lld 个离线文件），并重新索引这些文件。原目录不会被修改或删除。" = "Rewrites the registered file paths under “%@” to “%@” (%lld offline files on that volume) and reindexes them. The original directory is not modified or deleted.";
 "会用备份覆盖照片文件「%@」，当前内容将被替换，此操作不可撤销。" = "Overwrites the photo file “%@” with the backup. The current contents will be replaced and this cannot be undone.";
 "停止正在运行的人脸分析" = "Stop the running face analysis";
 "全部角色" = "All roles";
@@ -1286,7 +1286,7 @@
 "列出将写入的 XMP 项，不写盘" = "List the XMP entries that would be written, without writing";
 "初始化失败" = "Initialization failed";
 "删除人物" = "Delete person";
-"删除本次写回生成的 XMP 备份文件" = "Delete the XMP backup files created by this write-back";
+"删除本次写回生成的 XMP 备份文件" = "Delete the XMP backup files created by this writeback";
 "删除该人物及其人脸绑定数据" = "Delete this person and their face bindings";
 "刷新人脸簇" = "Refresh face clusters";
 "刷新工作区状态" = "Refresh workspace status";
@@ -1297,7 +1297,7 @@
 "只看某个角色的簇" = "Show clusters for one role only";
 "可适当放宽匹配强度后重新扫描。" = "You can loosen the matching strength and rescan.";
 "图库" = "Gallery";
-"在分析、审核、写回之间切换" = "Switch between analyze, review and write-back";
+"在分析、审核、写回之间切换" = "Switch between analysis, review, and writeback";
 "在访达中显示" = "Reveal in Finder";
 "在访达中显示该模型所在目录" = "Reveal the model directory in Finder";
 "对新增照片运行人脸检测与聚类" = "Run face detection and clustering on new photos";
@@ -1323,10 +1323,10 @@
 "拒绝关联" = "Reject link";
 "拒绝资产关联？" = "Reject the asset link?";
 "按当前参数重建全部人脸簇（会还原人工绑定）" = "Rebuild all face clusters with the current parameters (restores manual bindings)";
-"按统一格式、命名规则导出照片及元数据" = "Export photos and metadata with a consistent format and naming rule";
+"按统一格式、命名规则导出照片及元数据" = "Export photos and metadata with a consistent format and naming rules";
 "按角色筛选簇" = "Filter clusters by role";
 "按预设调整相似度下限与最少出现次数" = "Adjust the similarity threshold and minimum occurrences by preset";
-"接受并合并" = "Accept and merge";
+"接受并合并" = "Accept and Merge";
 "接受资产关联？" = "Accept the asset link?";
 "撤销该簇已写入的人脸关键词" = "Revert the face keywords written for this cluster";
 "放大（⌘=）" = "Zoom in (⌘=)";
@@ -1348,7 +1348,7 @@
 "点击清除筛选" = "Click to clear filters";
 "索引进度" = "Indexing progress";
 "绑定角色" = "Bind role";
-"结清本次写回，之后才可清理备份" = "Finish this write-back before backups can be cleaned up";
+"结清本次写回，之后才可清理备份" = "Finish this writeback before backups can be cleaned up";
 "继续加载剩余的人脸簇" = "Load the remaining face clusters";
 "缩小（⌘−）" = "Zoom out (⌘−)";
 "网格尺寸" = "Grid size";
@@ -1365,8 +1365,8 @@
 "选择分组" = "Select group";
 "通过" = "Passed";
 "重复类型" = "Duplicate type";
-"重新关联" = "Re-link";
-"重新关联离线存储卷？" = "Re-link the offline volume?";
+"重新关联" = "Relink";
+"重新关联离线存储卷？" = "Relink the offline volume?";
 "重新写入 %lld 个失败项" = "Rewrite %lld failed items";
 "重新扫描工作区，让索引保持最新" = "Rescan the workspace to keep the index up to date";
 "重新排队索引扫描" = "Re-queue the index scan";
@@ -1425,7 +1425,7 @@
 
 /* F11 设置分块与保存规则 */
 "文本与数字在离开输入框或按回车时保存；下拉选择立即保存，结果会显示在顶部提示条。" = "Text and number fields are saved when you leave the field or press Return; pop-up choices are saved immediately. The result appears in the banner at the top.";
-"模型、推理与性能参数" = "Model, inference and performance settings";
+"模型、推理与性能参数" = "Model, inference, and performance settings";
 
 "清除评分" = "Clear rating";
 "资料库" = "Library";
@@ -1444,7 +1444,7 @@
 
 /* N07 图库照片动作 */
 "打开照片" = "Open Photo";
-"打开所在工作区" = "Open Workspace";
+"打开所在工作区" = "Open Containing Workspace";
 
 /* N10 人脸库空态与新建表单 */
 "人脸库还是空的" = "The people library is empty";
@@ -1459,7 +1459,7 @@
 "返回到上一页" = "Back to the previous page";
 "图库还没有照片" = "The library has no photos yet";
 "导入一个文件夹后，这里会汇总所有工作区的照片。" = "Import a folder and photos from all workspaces will be collected here.";
-"可以放宽阈值或改用「宽松」预设后重新聚类。" = "Loosen the threshold or use the Loose preset, then re-cluster.";
+"可以放宽阈值或改用「宽松」预设后重新聚类。" = "Loosen the threshold or use the Loose preset, then recluster.";
 "当前匹配强度为 %lld，上面的结果来自 %lld；请重新扫描。" = "The current matching strength is %lld but the results above came from %lld; please scan again.";
 "按工作区筛选" = "Filter by workspace";
 "无色标" = "No color label";
@@ -1471,8 +1471,8 @@
 /* ── 深度审查 D01–D03：交付真实性 ── */
 "导出完成：成功 %lld 张，失败 %lld 张，请在结果中查看失败原因。" = "Export finished: %lld succeeded, %lld failed. See the results for failure reasons.";
 "导出参数已变化，请确认新的导出计划" = "The export settings changed; please confirm the updated export plan.";
-"在「%@」复核人脸" = "Review faces in \"%@\"";
-"在该工作区的人脸审核页按角色「%@」复核" = "Review this role (\"%@\") on that workspace's face review page";
+"在「%@」复核人脸" = "Review faces in “%@”";
+"在该工作区的人脸审核页按角色「%@」复核" = "Review this role (“%@”) on that workspace’s face review page";
 "复核人脸" = "Review faces";
 "查看照片" = "View photo";
 "当前范围没有可导出的照片，未写入任何文件。" = "There are no photos to export in the current scope; no files were written.";
@@ -1485,7 +1485,7 @@
 "本次导出没有产生任何文件，请在导出结果中查看失败原因。" = "This export produced no files at all. See the export result for the failure details.";
 "源文件不存在" = "Source file is missing";
 "源文件不可读（权限或所在卷离线）" = "Source file is unreadable (permissions or the volume is offline)";
-"分组参数已变更，上面的分组来自旧参数；请重新聚类。" = "The grouping settings changed; the groups above were computed with the previous settings. Please re-cluster.";
+"分组参数已变更，上面的分组来自旧参数；请重新聚类。" = "The grouping settings changed; the groups above were computed with the previous settings. Please recluster.";
 "目标照片在已加载范围之外，请用搜索缩小范围后再试。" = "The photo is beyond the loaded range; narrow the search and try again.";
 "定位照片时中断，请重试。" = "Locating the photo was interrupted. Please try again.";
 
@@ -1507,7 +1507,7 @@
    另 4 条来自同源扫描：SelectOption 标签（XMP Sidecar / Embedded）与
    Host 侧栏菜单标题（显示侧栏 / 隐藏侧栏，en 界面此前一直显示中文）。 */
 
-"重新分析人脸" = "Re-analyze faces";
+"重新分析人脸" = "Reanalyze faces";
 "将写入 %lld 张照片 + %lld 个 XMP 附属文件，共 %lld 个文件。" = "Will write %lld photos + %lld XMP sidecars, %lld files in total.";
 "其中 %lld 项存在问题，导出时会失败。" = "%lld items have issues and will fail to export.";
 "未在当前工作区找到这张照片（可能已被移除或不在本工作区）。" = "This photo was not found in the current workspace (it may have been removed or belong to another workspace).";
@@ -1519,7 +1519,7 @@
 "隐藏侧栏" = "Hide Sidebar";
 
 /* P2：Delivery 备份/收尾/replay 错误码与动作标题 */
-"交付记录缺少 XMP 路径，无法校验备份位置。请重新索引该照片后重试清理；若仍失败，请保留现场并联系支持。" = "The delivery has no XMP path, so its backup location cannot be validated. Re-index the photo and retry cleanup; if it still fails, keep the files and contact support.";
+"交付记录缺少 XMP 路径，无法校验备份位置。请重新索引该照片后重试清理；若仍失败，请保留现场并联系支持。" = "The delivery has no XMP path, so its backup location cannot be validated. Reindex the photo and retry cleanup; if it still fails, keep the files and contact support.";
 
 /* 2026-10-23 样式统一：新增页面文案 / 动态标题 / 胶片条与筛选控件 */
 "%lld 个人物" = "%lld people";
@@ -1564,7 +1564,7 @@
 "未发现待复核成员" = "No members need review";
 "该簇没有成员" = "This cluster has no members";
 "这组人脸看起来一致；可显示全部成员后再判断。" = "These faces look consistent; show all members to check.";
-"重新分析或调整聚类参数后再试。" = "Re-analyze or adjust clustering settings and try again.";
+"重新分析或调整聚类参数后再试。" = "Reanalyze or adjust clustering settings and try again.";
 "显示全部成员" = "Show All Members";
 "加载更多成员" = "Load More Members";
 "待复核成员" = "Members to Review";
@@ -1582,7 +1582,7 @@
 "确认拆分所选成员？" = "Split the selected members?";
 "拆分为新簇" = "Split into New Cluster";
 "拆分簇 #%lld" = "Split cluster #%lld";
-"将把 %lld 个成员拆到新簇「%@」，原簇保留 %lld 个成员。拆分会在重新聚类后保持，此操作不可撤销。" = "Move %lld members to a new cluster \"%@\"; the original cluster keeps %lld members. The split survives reclustering and cannot be undone.";
+"将把 %lld 个成员拆到新簇「%@」，原簇保留 %lld 个成员。拆分会在重新聚类后保持，此操作不可撤销。" = "Move %lld members to a new cluster “%@”; the original cluster keeps %lld members. The split survives reclustering and cannot be undone.";
 "新簇" = "New Cluster";
 "未确认，已取消拆分" = "Not confirmed; split canceled";
 "请选择至少一个成员" = "Select at least one member";
@@ -1910,8 +1910,8 @@
 "撤销上次建议写回" = "Undo Last Suggestion Writeback";
 "把全会话的建议写成评级？" = "Write session-wide suggestions as ratings?";
 "会写入全会话所有 keep/reject 建议的私有信号；rating 只写空值。" = "Writes the private signal for every keep/reject suggestion in the session; only empty ratings are written.";
-"撤销上次建议写回？" = "Undo the last suggestion write-back?";
-"撤销这次写回？" = "Undo this write-back?";
+"撤销上次建议写回？" = "Undo the last suggestion writeback?";
+"撤销这次写回？" = "Undo this writeback?";
 "还原 rating/关键词，并清除私有命名空间信号。" = "Restores ratings/keywords and clears the private namespace signal.";
 "还原这批照片的描述性字段。" = "Restores descriptive fields for these photos.";
 "还原这批照片的描述性字段；冲突字段按套用前快照恢复。" = "Restores descriptive fields for these photos; conflicting fields are restored from the pre-apply snapshot.";
@@ -1919,11 +1919,11 @@
 "其中 %lld 个字段会被清空" = "of which %lld fields will be cleared";
 
 "已复制但未登记：%lld 张" = "Copied but not registered: %lld";
-"最近套用与写回" = "Recent Applies and Write-backs";
+"最近套用与写回" = "Recent Applies and Writebacks";
 "没有可撤销的批次" = "No undoable batches";
 "已撤销" = "Undone";
 "历史与撤销…" = "History and Undo…";
-"查看最近套用/写回批次并撤销" = "Review recent apply/write-back batches and undo them";
+"查看最近套用/写回批次并撤销" = "Review recent apply/writeback batches and undo them";
 "%lld 张 · %@" = "%lld photos · %@";
 "放弃未保存的改动？" = "Discard unsaved changes?";
 "放弃并关闭" = "Discard and Close";
@@ -2078,7 +2078,7 @@
 "保留本地的冲突项（%lld）" = "Kept local value for %lld conflict(s)";
 "保精确率 %.0f%% → 阈值 %.2f" = "Precision %.0f%% → threshold %.2f";
 "允许下载大图与成片" = "Allow downloading large previews and finals";
-"元数据已写盘，但 Capture One 还没加载；在 C1 中执行 Load Metadata 后确认同步" = "Metadata is written, but Capture One has not loaded it yet. Run Load Metadata in C1, then confirm.";
+"元数据已写盘，但 Capture One 还没加载；在 C1 中执行 Load Metadata 后确认同步" = "Metadata is written, but Capture One has not loaded it yet. Run Load Metadata in Capture One, then confirm.";
 "冲突默认保留本地值；客户值可在检查器里逐张确认。" = "Conflicts keep the local value by default; review client values per photo in the inspector.";
 "凭据保存在钥匙串；只上传本次交付的产物，不会上传整个目录。" = "Credentials are stored in the keychain; only this run's artifacts are uploaded, never the whole folder.";
 "切换仅亮度 / 三通道" = "Toggle luminance / RGB channels";
@@ -2093,7 +2093,7 @@
 "合焦提示" = "Focus hint";
 "同一张照片在多个工作区出现时会列在这里。" = "Photos that appear in multiple workspaces are listed here.";
 "同名会覆盖同作用域里已有的查询。" = "The same name overwrites an existing search in the same scope.";
-"同步与备份" = "Sync & backups";
+"同步与备份" = "Sync & Backups";
 "在图库里选中照片，再通过「加入集合」放进这里。" = "Select photos in the library and add them here via Add to Collection.";
 "在访达显示" = "Reveal in Finder";
 "基于预览" = "Based on preview";
@@ -2186,7 +2186,7 @@
 "高级筛选规则" = "Advanced filter rules";
 "高级筛选规则…" = "Advanced filter rules…";
 "高置信" = "High confidence";
-"Capture One 未自动重载（%@），请在 C1 手动 Load Metadata" = "Capture One was not reloaded automatically (%@). Run Load Metadata in C1.";
+"Capture One 未自动重载（%@），请在 C1 手动 Load Metadata" = "Capture One was not reloaded automatically (%@). Run Load Metadata in Capture One.";
 "关键词层级" = "Keyword hierarchy";
 "当前没有筛选条件" = "No filters applied";
 "查找相似照片…" = "Find similar photos…";
@@ -2223,7 +2223,7 @@
 "堆栈名称" = "Stack Name";
 "堆栈名称不能为空。" = "The stack name cannot be empty.";
 "取消堆叠需要确认。" = "Unstacking requires confirmation.";
-"已重新关联 %lld 个文件：%@" = "%lld files re-linked: %@";
+"已重新关联 %lld 个文件：%@" = "%lld files relinked: %@";
 "已更新根目录映射，但新目录下没有匹配到文件：%@" = "Root folder mapping updated, but no files matched under the new folder: %@";
 
 /* Wave1 task-8 */
@@ -2270,7 +2270,7 @@
 "大图长边" = "Large max edge";
 "子目录" = "Subdirectory";
 "子目录 %@" = "Subdirectory %@";
-"携带评分与关键词等元数据" = "Carry rating, keywords and other metadata";
+"携带评分与关键词等元数据" = "Carry ratings, keywords, and other metadata";
 "文字水印" = "Text watermark";
 "显示取舍边框" = "Show pick border";
 "显示色标圆点" = "Show color label dot";
@@ -2318,7 +2318,7 @@
 "关键词库" = "Keyword library";
 "词库只影响补全与检索；改名/合并不会立刻改写 XMP，下次关键词写回才写入 dc:subject 与 lr:hierarchicalSubject。" = "The keyword library only affects suggestions and search. Rename/merge does not rewrite XMP now; canonical paths are written to dc:subject and lr:hierarchicalSubject on the next keyword writeback.";
 "删除这个关键词？" = "Delete this keyword?";
-"级联删除（含子孙与照片关键词）" = "Cascade delete (words and photo keywords)";
+"级联删除（含子孙与照片关键词）" = "Cascade delete (including descendants and photo keywords)";
 "将删除该词及其全部子孙，并从照片关键词索引里移除。XMP 不会自动改写。" = "Deletes this keyword and all descendants and removes them from the photo keyword index. XMP is not rewritten automatically.";
 "只有无照片、无子级、无同义词的关键词可以删除。" = "Only keywords with no photos, children, or synonyms can be deleted.";
 "词库树" = "Keyword tree";
@@ -2444,11 +2444,11 @@
 /* Wave2 task-13 收口补漏（Lead） */
 "词库操作失败：%@" = "Keyword library operation failed: %@";
 /* Wave3 task-18 */
-"Capture One Hot Folder 未检测：C1 不提供读取该设置的接口；若该目录被 C1 监视，导入或移出可能重复。" = "Capture One Hot Folder undetected: C1 does not expose a way to read that setting; if C1 watches this folder, imports or moves may be duplicated.";
-"在 Capture One 中写回判断（变体级）" = "Write Judgments to Capture One (per Variant)";
+"Capture One Hot Folder 未检测：C1 不提供读取该设置的接口；若该目录被 C1 监视，导入或移出可能重复。" = "Capture One Hot Folder undetected: Capture One does not expose a way to read that setting; if Capture One watches this folder, imports or moves may be duplicated.";
+"在 Capture One 中写回判断（变体级）" = "Write Judgments to Capture One (per variant)";
 "已在 Capture One 中写回 %lld 个变体" = "Wrote %lld variants in Capture One";
-"C1 Session：已识别 Capture/Selects/Trash，仅导入 Capture" = "C1 Session: Capture/Selects/Trash recognized; only Capture is imported";
-"Trash 中的淘汰件不会被导入或复活；Selects 不与 Capture 重复导入；目录角色仅作标注，不改写 C1" = "Items in Trash are not imported or revived; Selects is not imported twice; folder roles are annotations only and C1 is never modified";
+"C1 Session：已识别 Capture/Selects/Trash，仅导入 Capture" = "Capture One session: Capture/Selects/Trash recognized; only Capture is imported";
+"Trash 中的淘汰件不会被导入或复活；Selects 不与 Capture 重复导入；目录角色仅作标注，不改写 C1" = "Items in Trash are not imported or revived; Selects is not imported twice; folder roles are annotations only and Capture One is never modified";
 /* Wave3 task-18 */
 "Selects 中与 Capture 不同名的文件不会被导入" = "Files in Selects whose names differ from Capture are not imported";
 "变体级写回未完成（%@）：请改用「写回 XMP…」写盘，再在 Capture One 手动 Load Metadata（或点「我已在 Capture One 手动加载元数据」）" = "Per-variant writeback did not complete (%@): use “Write XMP…” instead, then run Load Metadata manually in Capture One (or click “I loaded metadata manually in Capture One”)";
@@ -2501,7 +2501,7 @@
 "关闭第二屏窗口；主窗口不受影响" = "Closes the second display window; the main window is unaffected.";
 "主窗口尚未打开挑片页" = "The main window has not opened the culling page yet";
 "在主窗口进入挑片页后，第二屏会自动跟随当前照片与对比布局。" = "Once the culling page is open in the main window, this display follows the current photo and comparison layout automatically.";
-"主窗口已关闭" = "The Main Window Is Closed";
+"主窗口已关闭" = "The main window is closed";
 "重新打开主窗口并进入挑片页后，第二屏会自动恢复；本窗口可保持打开。" = "Reopen the main window and enter the culling page to resume; this window can stay open.";
 "主窗口尚未载入挑片页" = "The culling page has not loaded yet";
 "在主窗口进入挑片页并载入照片后，第二屏会显示当前照片。" = "Once photos are loaded in the main window's culling page, this display shows the current photo.";
@@ -2570,11 +2570,11 @@
 "堆栈成员" = "Stack member";
 /* Wave4a task-35 */
 "仅当前页：已写回 %lld/%lld 张（其它页未写回；跨页请分批，或用「写回 XMP…」覆盖全部）" = "Current page only: %lld/%lld written (other pages are not written; write in batches or use “Write XMP…” for all)";
-"已写回 %lld 个变体；%lld 个不在当前目录、%lld 张超上限未写回（未解除 C1 重载门禁：可改用「写回 XMP…」并手动 Load）" = "Wrote %lld variants; %lld not in this folder and %lld beyond the batch limit were not written (C1 reload gate stays locked: use “Write XMP…” and Load Metadata manually)";
-"C1 Session：扫描根是 Session 根，Trash 可能已被导入（仅新导入入口只扫 Capture）" = "C1 Session: scan root is the session root, so Trash may already be imported (only new imports scan Capture)";
+"已写回 %lld 个变体；%lld 个不在当前目录、%lld 张超上限未写回（未解除 C1 重载门禁：可改用「写回 XMP…」并手动 Load）" = "Wrote %lld variants; %lld not in this folder and %lld beyond the batch limit were not written (Capture One reload gate stays locked: use “Write XMP…” and Load Metadata manually)";
+"C1 Session：扫描根是 Session 根，Trash 可能已被导入（仅新导入入口只扫 Capture）" = "Capture One session: scan root is the session root, so Trash may already be imported (only new imports scan Capture)";
 "旧会话/未重定向入口不会自动迁移；如需排除 Trash，请用「导入文件夹/新建工作区」重新导入，或按目录自行核查" = "Existing sessions and non-redirected entries are not migrated automatically; re-import via “Import Folder/New Workspace” to exclude Trash, or review folders manually";
 "已识别 Capture One Session：只索引 Capture（Trash/Selects 不导入）" = "Capture One session detected: only Capture is indexed (Trash/Selects are not imported)";
-"写回星级/色标/保留（keep）到 C1 当前页；C1 无淘汰位（淘汰不写回），跨页请分批" = "Write rating/color label/keep to C1 for the current page; C1 has no reject flag (rejects are not written back), so write other pages in batches";
+"写回星级/色标/保留（keep）到 C1 当前页；C1 无淘汰位（淘汰不写回），跨页请分批" = "Write rating/color label/keep to Capture One for the current page; Capture One has no reject flag (rejects are not written back), so write other pages in batches";
 
 /* Wave4a task-36 */
 "加载完成后目标已变化，已丢弃加载期间排队的操作" = "The target changed after loading finished, so the queued action was discarded.";
@@ -2610,17 +2610,17 @@
 "撤销上一次写回…" = "Undo last writeback…";
 "上一次写回可撤销：关闭面板或重启 App 后仍可撤销。" = "The last writeback can be undone: it stays available after closing the panel or restarting the app.";
 /* Wave4c task-48 */
-"有 %lld 项 C1 判断待重试（扫描未成功，写入可能被覆盖）" = "%lld C1 judgments are waiting to retry (scan did not succeed; writes may be overwritten)";
+"有 %lld 项 C1 判断待重试（扫描未成功，写入可能被覆盖）" = "%lld Capture One judgments are waiting to retry (scan did not succeed; writes may be overwritten)";
 "重试同步" = "Retry Sync";
 
 /* Wave5 / Batch1（C1 写回正确性 / 分享链接 / 格式白名单）：新增文案 */
-"已写回 %lld 个变体；%lld 张多变体未写回、%lld 张不在 C1 当前集合、%lld 张超上限未写回（未解除 C1 重载门禁）" = "Wrote %lld variants; %lld multi-variant photos skipped, %lld outside the current C1 collection, %lld over the limit (C1 reload gate not released)";
+"已写回 %lld 个变体；%lld 张多变体未写回、%lld 张不在 C1 当前集合、%lld 张超上限未写回（未解除 C1 重载门禁）" = "Wrote %lld variants; %lld multi-variant photos skipped, %lld outside the current Capture One collection, %lld over the limit (Capture One reload gate not released)";
 "%lld 张多变体未写回：请在 C1 选择变体后重试，或改用写回 XMP（「写回 XMP…」）" = "%lld multi-variant photos were not written back: select a variant in Capture One and retry, or use “Write XMP…” instead";
-"C1 当前集合未包含这些照片（%lld 张）：已尝试让 C1 切换到目标目录；可改用「写回 XMP…」" = "The current Capture One collection does not contain %lld of these photos. Tried browsing C1 to the target folder; use “Write XMP…” instead if needed.";
-"已在 Capture One 中显示 %lld 张，%lld 张不在 C1 当前集合" = "Revealed %lld photos in Capture One; %lld are not in the current C1 collection";
-"把已决策照片的当前评分/色标写回 XMP（挑片关键词不写 XMP，避免污染 C1 词库）" = "Write the current rating/color label of decided photos to XMP (culling keywords are not written to XMP to avoid polluting the C1 keyword library)";
+"C1 当前集合未包含这些照片（%lld 张）：已尝试让 C1 切换到目标目录；可改用「写回 XMP…」" = "The current Capture One collection does not contain %lld of these photos. Tried browsing Capture One to the target folder; use “Write XMP…” instead if needed.";
+"已在 Capture One 中显示 %lld 张，%lld 张不在 C1 当前集合" = "Revealed %lld photos in Capture One; %lld are not in the current Capture One collection";
+"把已决策照片的当前评分/色标写回 XMP（挑片关键词不写 XMP，避免污染 C1 词库）" = "Write the current rating/color label of decided photos to XMP (culling keywords are not written to XMP to avoid polluting the Capture One keyword library)";
 "挑片关键词写回（已停用）" = "Culling keyword writeback (disabled)";
-"挑片关键词写回已停用：不再把 culling:keep / culling:reject 写进 XMP（避免 C1 载入后污染它的词库）。" = "Culling keyword writeback is disabled: culling:keep / culling:reject are no longer written to XMP (they polluted the C1 keyword library on load).";
+"挑片关键词写回已停用：不再把 culling:keep / culling:reject 写进 XMP（避免 C1 载入后污染它的词库）。" = "Culling keyword writeback is disabled: culling:keep / culling:reject are no longer written to XMP (they polluted the Capture One keyword library on load).";
 "客户链接" = "Client link";
 "复制链接" = "Copy Link";
 "在浏览器中打开" = "Open in Browser";
@@ -2819,13 +2819,13 @@
 "跳过同名（保留本机模板）" = "Skip same-name (keep local templates)";
 
 /* Wave5 / Batch6（C1 红标/调整提示 · 文件夹树新建工作区） */
-"在 C1 中标记淘汰（红标，覆盖现有色标）" = "Mark Rejected in Capture One (Red Tag, Overwrites Color Label)";
+"在 C1 中标记淘汰（红标，覆盖现有色标）" = "Mark Rejected in Capture One (Red Color Label, Overwrites Existing Label)";
 "当前会话没有淘汰照片" = "No rejected photos in this session";
-"在 C1 中把 %lld 张淘汰照片标为红标？" = "Mark %lld rejected photos with a red tag in Capture One?";
+"在 C1 中把 %lld 张淘汰照片标为红标？" = "Mark %lld rejected photos with a red color label in Capture One?";
 "只会把这些照片在 C1 里的色标改为红色（覆盖原色标）；不写星级、不写关键词、不改 pick。含多个 variant 的照片会跳过。" = "Only the color label of these photos in Capture One is set to red (overwriting the existing label); ratings, keywords, and pick are not written. Photos with multiple variants are skipped.";
 "标记红标" = "Mark Red";
-"已在 C1 中把 %lld 张淘汰照片标为红标" = "Marked %lld rejected photos with a red tag in Capture One";
-"已在 C1 中标红 %lld 张；%lld 张不在 C1 当前集合、%lld 张有多个变体未处理、%lld 张超过单次上限（回 C1 选定变体或分批后可重试）" = "Marked %lld photos red in Capture One; %lld outside the current C1 collection, %lld with multiple variants skipped, %lld over the batch limit (select variants in C1 or retry in batches)";
+"已在 C1 中把 %lld 张淘汰照片标为红标" = "Marked %lld rejected photos with a red color label in Capture One";
+"已在 C1 中标红 %lld 张；%lld 张不在 C1 当前集合、%lld 张有多个变体未处理、%lld 张超过单次上限（回 C1 选定变体或分批后可重试）" = "Marked %lld photos red in Capture One; %lld outside the current Capture One collection, %lld with multiple variants skipped, %lld over the batch limit (select variants in Capture One or retry in batches)";
 "在 C1 中标记淘汰未完成（%@）：请在 Capture One 里手动把淘汰照片的色标改为红色" = "Marking rejected photos in Capture One did not complete (%@): manually set their color label to red in Capture One";
 "当前会话没有淘汰照片，无需在 C1 中标记" = "There are no rejected photos in this session, so nothing needs marking in Capture One";
 "把这些淘汰照片在 C1 里的色标改为红色（覆盖原色标）；不写星级、关键词与 pick" = "Set the color label of these rejected photos to red in Capture One (overwriting the existing label); ratings, keywords, and pick are not written";
@@ -2874,7 +2874,7 @@
 /* Wave5 / Batch7 补漏 */
 "可写 %lld / %lld 张" = "Writable %lld / %lld photos";
 "未知原因" = "Unknown reason";
-"没有命中这些标签的照片；中文「%@」暂无映射，可换用英文或常见中文名（如 海滩、婚礼）。" = "No photos matched these labels; there is no Chinese mapping for \"%@\" yet. Try English or a common English name (e.g. beach, wedding).";
+"没有命中这些标签的照片；中文「%@」暂无映射，可换用英文或常见中文名（如 海滩、婚礼）。" = "No photos matched these labels; there is no Chinese mapping for “%@” yet. Try English or a common English name (e.g. beach, wedding).";
 
 /* Wave5 / Batch8（场景标签入口 · 文件夹树摄取） */
 "语义检索未接线，暂不可用。" = "Semantic search is not wired yet; unavailable.";

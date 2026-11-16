@@ -20,7 +20,7 @@ extension SessionControlView {
                             .progressViewStyle(.linear)
                         if let percent = copy.percent {
                             Text(indexPercentText(percent, with: l10n))
-                                .font(.callout.monospacedDigit())
+                                .font(GatherFont.mono)
                                 .foregroundStyle(.secondary)
                         }
                     } else {

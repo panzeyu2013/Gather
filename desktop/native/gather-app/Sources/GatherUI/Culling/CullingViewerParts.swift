@@ -27,7 +27,7 @@ struct ViewerBadge: View {
                     .accessibilityHidden(true)
             }
         }
-        .font(.callout)
+        .font(GatherFont.secondary)
         .lineLimit(1)
         .padding(.horizontal, GatherMetrics.Space.s)
         .padding(.vertical, GatherMetrics.Space.xs)

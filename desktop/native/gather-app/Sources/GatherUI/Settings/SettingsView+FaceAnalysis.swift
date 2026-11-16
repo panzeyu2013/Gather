@@ -32,7 +32,7 @@ extension SettingsView {
                 .accessibilityValue(Text(sliderValueWithUnit(slider)))
 
                 Text(sliderValueWithUnit(slider))
-                    .font(.callout.monospacedDigit())
+                    .font(GatherFont.mono)
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 56, alignment: .trailing)
             }

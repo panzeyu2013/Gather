@@ -38,7 +38,7 @@ extension SessionControlView {
                     }
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(view.title).font(.callout.weight(.semibold))
+                            Text(view.title).font(GatherFont.secondaryStrong)
                             Text(view.detail).font(GatherFont.secondary).foregroundStyle(.secondary)
                         }
                         Spacer()

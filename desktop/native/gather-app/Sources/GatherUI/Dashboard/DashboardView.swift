@@ -465,7 +465,7 @@ package struct DashboardView: View {
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            .font(.callout)
+            .font(GatherFont.secondary)
         }
     }
 

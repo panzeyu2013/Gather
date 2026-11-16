@@ -20,7 +20,7 @@ extension SettingsView {
                     ForEach(SettingsViewModel.advancedGroups) { group in
                         VStack(alignment: .leading, spacing: 10) {
                             Text(l10n(group.titleZh))
-                                .font(.headline)
+                                .font(GatherFont.cardTitle)
                             ForEach(group.fields) { field in
                                 fieldRow(field)
                             }
@@ -74,7 +74,7 @@ extension SettingsView {
                 LabeledContent(l10n("模型目录")) {
                     HStack(spacing: GatherMetrics.Space.s) {
                         Text(model.modelResourcesDir)
-                            .font(.body.monospaced())
+                            .font(GatherFont.body.monospaced())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -124,7 +124,7 @@ extension SettingsView {
                     get: { viewModel.edits[key] ?? viewModel.values[key] ?? "" },
                     set: { viewModel.edits[key] = $0 }
                 ))
-                .font(.body.monospaced())
+                .font(GatherFont.body.monospaced())
                 // N06：模型路径原先只响应回车，与首屏「文本与数字在离开输入框
                 // 或按回车时保存」的承诺不一致（Tab 走开看起来改了、其实没写库）。
                 // 这里与普通字段同一套语义：失焦提交 + 回车提交。
@@ -157,7 +157,7 @@ extension SettingsView {
             .foregroundStyle(GatherTheme.warningText)
 
             Text(model.modelResourcesDir)
-                .font(.callout.monospaced())
+                .font(GatherFont.secondary.monospaced())
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
 
@@ -184,14 +184,14 @@ extension SettingsView {
                     Text(step == .extracting
                         ? l10n("正在解压…")
                         : l10n.format("已下载 %d%%（%@）", Int(percent), filename))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                 }
             case .done:
                 Label(l10n("人脸模型已安装"), systemImage: "checkmark.circle.fill")
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(GatherTheme.successText)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
             default:
                 EmptyView()
             }

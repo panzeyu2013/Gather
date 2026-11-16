@@ -112,6 +112,7 @@ struct MetadataSyncBar: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help(l10n("删除已确认交付的备份与交付记录；XMP 文件保留"))
+                .accessibilityLabel(l10n("清理备份"))
                 Button {
                     Task { await refresh() }
                 } label: {

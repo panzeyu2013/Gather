@@ -316,14 +316,17 @@ struct C1StatusCapsule: View {
         return parts.joined(separator: "\n")
     }
 
+    /// 胶囊时间：解析器/展示 formatter 都走共享缓存（perf-ui 性能审计）。
+    ///
+    /// body 每帧经 syncedAtText（正文）与 tooltip（.help）各调一次，旧实现每次
+    /// 新建 ISO 解析器 + DateFormatter；这里复用 DisplayDateFormatters 里折叠的
+    /// 解析器访问器 / pattern 缓存，解析失败回退与展示格式不变。
     private func formatTime(_ iso: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        guard let date = formatter.date(from: iso) else { return String(iso.prefix(16)) }
-        let output = DateFormatter()
-        output.locale = l10n.locale
-        output.dateFormat = l10n.language == .zhCN ? "MM/dd HH:mm" : "MM/dd/yyyy HH:mm"
-        return output.string(from: date)
+        guard let date = DisplayDateFormatters.shared.internetDateTime(iso) else {
+            return String(iso.prefix(16))
+        }
+        let format = l10n.language == .zhCN ? "MM/dd HH:mm" : "MM/dd/yyyy HH:mm"
+        return DisplayDateFormatters.shared.pattern(date, format: format, locale: l10n.locale)
     }
     private static func dynamicText(light: String, dark: String) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in

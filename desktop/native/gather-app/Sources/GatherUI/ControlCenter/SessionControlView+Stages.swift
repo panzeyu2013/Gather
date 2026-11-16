@@ -108,7 +108,7 @@ extension SessionControlView {
                     .foregroundStyle(GatherTheme.secondaryText)
             }
         }
-        .font(.title3)
+        .font(GatherFont.heroSubtitle)
         .frame(width: stageDotDiameter, height: stageDotDiameter)
         .accessibilityHidden(true)
     }

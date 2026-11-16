@@ -64,6 +64,11 @@ struct CullingInspector: View {
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     var body: some View {
+        // 性能（perf-ui 审计）：下面三个派生各会扫已加载页（最多 500 张）/服务端组一次。
+        // 旧实现在 body 内分别读取 3~4 次 ⇒ 同一帧重复 filter + Set 分配；这里各算一次。
+        let summary = viewModel.selectionSummary
+        let groupAssets = currentGroupAssets
+        let groupKnownCount = knownGroupCount(for: groupAssets)
         ScrollView {
             VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
                 // 当前照片：决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）
@@ -94,7 +99,6 @@ struct CullingInspector: View {
                     // 旧实现是 "1★"/"2★" 文字按钮：窄列宽下六个按钮会被压缩成「…」，
                     // 整行不可读。图标按钮只占约 22pt/个，检查器任意列宽下都完整可见。
                     VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
-                        let summary = viewModel.selectionSummary
                         Text(l10n("星级")).controlLabelStyle()
                         if summary?.hasMixedRating == true {
                             Text(l10n("混合"))
@@ -136,7 +140,6 @@ struct CullingInspector: View {
                     // C1 色标是数据本身（非状态色），沿用固定色值。
                     VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
                         Text(l10n("颜色")).controlLabelStyle()
-                        let summary = viewModel.selectionSummary
                         if summary?.hasMixedColorLabel == true {
                             Text(l10n("混合"))
                                 .font(.caption)
@@ -450,13 +453,13 @@ struct CullingInspector: View {
                 }
 
                 // 相似组决策（对齐旧版 groupDecision：仅当前照片所在组 >1 张时显示）。
-                if knownGroupCount > 1, let current = viewModel.currentAsset {
-                    let groupIds = Set(currentGroupAssets.map(\.photo.id))
+                if groupKnownCount > 1, let current = viewModel.currentAsset {
+                    let groupIds = Set(groupAssets.map(\.photo.id))
                     let selectedInGroup = viewModel.selectedPhotoIds.intersection(groupIds)
-                    let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < knownGroupCount
+                    let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < groupKnownCount
                     GatherInspectorSection(
-                        l10n.format("相似组 · %lld 张", knownGroupCount),
-                        subtitle: l10n.format("当前视图 %lld 张；其余将自动淘汰", currentGroupAssets.count)
+                        l10n.format("相似组 · %lld 张", groupKnownCount),
+                        subtitle: l10n.format("当前视图 %lld 张；其余将自动淘汰", groupAssets.count)
                     ) {
                         Button(l10n("保留当前 1 张")) {
                             Task {
@@ -728,13 +731,15 @@ struct CullingInspector: View {
     }
 
     /// P1-8：完整组员数（服务端 groups）；未加载时回退当前视图，避免阻塞渲染。
-    private var knownGroupCount: Int {
+    ///
+    /// 性能（perf-ui 审计）：入参是本次 body 已算好的当前组资产，避免每处读取再扫一遍页。
+    private func knownGroupCount(for groupAssets: [CullingAsset]) -> Int {
         guard let groupId = viewModel.currentAsset?.similarityGroupId else {
-            return currentGroupAssets.count
+            return groupAssets.count
         }
         return viewModel.similarityGroups
             .first(where: { $0.groupId == groupId })?
-            .images.count ?? currentGroupAssets.count
+            .images.count ?? groupAssets.count
     }
 
     /// 先加载完整组、生成影响面，再交给统一确认弹窗（不直接执行）。

@@ -212,12 +212,11 @@ public final class ExportViewModel: SessionPageModel {
     /// Cut 4 / 4b-2h：文案（"工作区" / ".扩展名"）由调用方传入的 L10n 在渲染期解析，
     /// VM 不读进程级 appLanguage。
     public func namingPreview(with l10n: L10n) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        let date = formatter.string(from: Date())
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "HH-mm-ss"
-        let time = timeFormatter.string(from: Date())
+        // perf-ui 性能审计：命名预览在导出选项 body 里随输入实时求值，旧实现每次
+        // 新建两个 DateFormatter；改走共享缓存（固定 pattern + 调用时 locale）。
+        let formatters = DisplayDateFormatters.shared
+        let date = formatters.pattern(Date(), format: "yyyy-MM-dd", locale: .current)
+        let time = formatters.pattern(Date(), format: "HH-mm-ss", locale: .current)
         var name = namingPattern
         name = name.replacingOccurrences(of: "{date}", with: date)
         name = name.replacingOccurrences(of: "{time}", with: time)

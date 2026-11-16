@@ -431,6 +431,7 @@ private struct DeliveryRecipeRow: View {
                 }
                 .buttonStyle(.borderless)
                 .help(l10n("删除配方"))
+                .accessibilityLabel(l10n("删除配方"))
             }
             Text(summaryText)
                 .font(GatherFont.secondary)

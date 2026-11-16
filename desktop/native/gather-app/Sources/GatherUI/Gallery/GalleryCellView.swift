@@ -118,7 +118,7 @@ struct GalleryCellView: View {
     /// 选中勾：品牌选中色 + 白勾。
     private var selectionCheck: some View {
         Image(systemName: "checkmark.circle.fill")
-            .font(.title3)
+            .font(GatherFont.heroSubtitle)
             .symbolRenderingMode(.palette)
             .foregroundStyle(.white, GatherTheme.selection)
             .padding(GatherMetrics.Space.controlGap)

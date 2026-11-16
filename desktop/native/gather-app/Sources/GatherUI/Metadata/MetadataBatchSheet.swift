@@ -99,16 +99,16 @@ struct MetadataBatchSheet: View {
         }
     }
 
+    /// 批次行时间：解析/格式化都走共享缓存（perf-ui 性能审计）。
+    ///
+    /// 旧实现在**每一行**渲染时新建 3 个 formatter（带小数秒解析器 + 兜底解析器
+    /// + 展示 formatter）；这里复用 DisplayDateFormatters 里折叠的解析器访问器
+    /// 与 mediumShort 缓存，解析顺序与展示样式（medium + short + 界面 locale）逐字节不变。
     private func displayDate(_ raw: String) -> String {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = iso.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
-        guard let date else { return raw }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        formatter.locale = l10n.locale
-        return formatter.string(from: date)
+        let formatters = DisplayDateFormatters.shared
+        guard let date = formatters.internetDateTimeWithFractionalSeconds(raw)
+            ?? formatters.internetDateTime(raw) else { return raw }
+        return formatters.mediumShort(date, locale: l10n.locale)
     }
 
     private func undo(_ batch: MetadataBatchSummary) async {

@@ -40,7 +40,7 @@ extension SettingsView {
                 l10n("文本与数字在离开输入框或按回车时保存；下拉选择立即保存，结果会显示在顶部提示条。"),
                 systemImage: "info.circle"
             )
-            .font(.callout)
+            .font(GatherFont.secondary)
             .foregroundStyle(.secondary)
         }
     }
@@ -60,7 +60,7 @@ extension SettingsView {
                 .frame(width: 180)
             }
             Text(l10n("切换语言后菜单与全部页面文案立即更新，并持久化保存。"))
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
         }
     }

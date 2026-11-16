@@ -514,7 +514,7 @@ struct FolderTreePanel: View {
                         }
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, GatherMetrics.Space.xxs)
             }
         } else {
             // setRoot 的同步读取只占一帧；给个进度指示，避免面板空白闪一下。

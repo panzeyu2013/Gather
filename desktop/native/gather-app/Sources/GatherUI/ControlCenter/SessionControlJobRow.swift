@@ -28,7 +28,7 @@ struct SessionControlJobRow: View {
                         ProgressView(value: Double(job.progressCurrent), total: Double(job.progressTotal))
                             .progressViewStyle(.linear)
                         Text("\(job.progressCurrent)/\(job.progressTotal)")
-                            .font(.callout.monospacedDigit())
+                            .font(GatherFont.mono)
                             .foregroundStyle(.secondary)
                         Text(l10n.progressPhaseText(job.progressMessage))
                             .font(GatherFont.secondary)

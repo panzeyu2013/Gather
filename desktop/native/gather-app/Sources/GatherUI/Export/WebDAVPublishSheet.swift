@@ -367,14 +367,14 @@ struct WebDAVPublishSheet: View {
     }
 
     /// 发布记录时间（ISO-8601 → 本地短格式；解析失败原样显示，不猜时间）。
+    ///
+    /// perf-ui 性能审计：逐行渲染路径，旧实现每次新建 ISO 解析器 + 展示 formatter；
+    /// 改为共享缓存。解析语义/样式（short + short，调用时 locale）不变。
     static func historyTime(_ iso8601: String) -> String {
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime]
-        guard let date = parser.date(from: iso8601) else { return iso8601 }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
+        guard let date = DisplayDateFormatters.shared.internetDateTime(iso8601) else {
+            return iso8601
+        }
+        return DisplayDateFormatters.shared.shortShort(date, locale: .current)
     }
 }
 
@@ -436,9 +436,8 @@ struct SharePublishResultView: View {
 
     /// 预签名链接剩余时长文案（解析失败不显示，不猜假时长）。
     static func linkExpiryText(_ expiresAt: String, with l10n: L10n) -> String? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        guard let date = formatter.date(from: expiresAt) else { return nil }
+        // perf-ui 性能审计：共享解析器缓存（旧实现每次新建 ISO8601DateFormatter）。
+        guard let date = DisplayDateFormatters.shared.internetDateTime(expiresAt) else { return nil }
         let hours = max(1, Int((date.timeIntervalSinceNow / 3600).rounded()))
         return l10n.format("链接 %lld 小时后过期", hours)
     }

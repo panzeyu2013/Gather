@@ -56,15 +56,15 @@ struct JobRowView: View {
     private var identityColumn: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(Self.typeLabel(job, with: l10n))
-                .font(.subheadline.weight(.semibold))
+                .font(GatherFont.eyebrow)
                 .lineLimit(1)
             Text(scopeText)
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             if !compact {
                 Text(l10n.format("尝试 %lld 次", job.attemptCount))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
             if !job.errorMessage.isEmpty {

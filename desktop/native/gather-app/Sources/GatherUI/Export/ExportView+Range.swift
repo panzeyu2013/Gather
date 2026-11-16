@@ -38,21 +38,21 @@ struct ExportRangeSection: View {
                 }
                 if viewModel.scope == .filtered, preview.totalFiles == 0 {
                     Text(l10n("当前没有「保留」的照片：请先在挑片页做出保留决策，或把范围改为「工作区全部照片」。"))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                 }
             } else if viewModel.destinationIsEmpty {
                 Text(l10n("选择导出目录后显示本次将导出的文件数。"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             } else if viewModel.isPlanning || viewModel.isPlanRefreshScheduled {
                 // 去抖 pending 期间也要占位（否则参数一变摘要行整行消失、无任何提示）。
                 Text(l10n("正在计算本次导出的文件数…"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             } else if let planError = viewModel.planError {
                 Text(l10n.format("无法计算导出计划：%@", CommandErrorText.resolve(planError, with: l10n)))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(GatherTheme.errorText)
             }
         }

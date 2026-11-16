@@ -51,7 +51,7 @@ extension LibraryView {
 
             HStack(spacing: 5) {
                 Text(l10n("工作区"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
                     .fixedSize()
                 GatherMenuField(
@@ -157,7 +157,7 @@ extension LibraryView {
                 advancedFilters
             } label: {
                 Text(moreFiltersLabel)
-                    .font(.callout)
+                    .font(GatherFont.secondary)
             }
         }
         .padding(.horizontal, GatherMetrics.Space.xl)
@@ -231,7 +231,7 @@ extension LibraryView {
     ) -> some View {
         HStack(spacing: GatherMetrics.Space.controlGap) {
             Text(title)
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
                 .fixedSize()
             // 字段名由左侧 Text 承载；菜单里只显示当前值（N09 的重复文案不再出现）。

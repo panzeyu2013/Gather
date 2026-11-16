@@ -53,11 +53,11 @@ public struct WritebackReportCard: View {
             if !failedItems.isEmpty {
                 VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
                     Text(l10n.format("失败项（%lld）", failedItems.count))
-                        .font(.callout.weight(.semibold))
+                        .font(GatherFont.secondaryStrong)
                     ForEach(failedItems) { item in
                         HStack(alignment: .firstTextBaseline, spacing: GatherMetrics.Space.s) {
                             Text(item.path)
-                                .font(.callout)
+                                .font(GatherFont.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .textSelection(.enabled)
@@ -65,7 +65,7 @@ public struct WritebackReportCard: View {
                             Spacer(minLength: 8)
                             if !item.message.isEmpty {
                                 Text(l10n.errorText(item.message))
-                                    .font(.callout)
+                                    .font(GatherFont.secondary)
                                     .foregroundStyle(.secondary)
                                     .multilineTextAlignment(.trailing)
                             }

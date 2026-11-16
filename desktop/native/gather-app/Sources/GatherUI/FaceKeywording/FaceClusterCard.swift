@@ -44,7 +44,7 @@ extension FaceKeywordingView {
                 RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)
                     .fill(isSelected
                         ? GatherTheme.selectionFill
-                        : (isHovered ? GatherTheme.secondaryContentBackground : GatherTheme.contentBackground))
+                        : (isHovered ? GatherTheme.surfaceMuted : GatherTheme.surface))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: GatherTheme.Radius.card, style: .continuous)

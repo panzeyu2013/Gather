@@ -209,7 +209,7 @@ extension GalleryView {
         switch copy.kind {
         case .scanning:
             Text(copy.text)
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
             if let percent = copy.percent {
                 // TS ProgressBar 语义 → 原生线性进度条 + 百分比（计数：.callout）。
@@ -219,7 +219,7 @@ extension GalleryView {
                     .accessibilityLabel(l10n("索引进度"))
                     .accessibilityValue("\(percent)%")
                 Text("\(percent)%")
-                    .font(.callout.monospacedDigit())
+                    .font(GatherFont.mono)
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 36, alignment: .trailing)
             }
@@ -231,7 +231,7 @@ extension GalleryView {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(GatherTheme.error)
             }
-            .font(.callout)
+            .font(GatherFont.secondary)
             // TS index.tsx:179-183 —— 旧版一体「索引失败，点击重试」
             // 拆为「索引失败」+ 独立「重试」按钮。
             Button(l10n("重试")) {
@@ -240,7 +240,7 @@ extension GalleryView {
             .gatherButton(.secondary, size: .small)
         case .count:
             Text(copy.text)
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
         }
     }

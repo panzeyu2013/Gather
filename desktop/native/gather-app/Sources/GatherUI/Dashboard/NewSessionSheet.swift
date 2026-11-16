@@ -270,7 +270,7 @@ struct NewSessionSheet: View {
                 ProgressView()
                     .controlSize(.small)
                 Text(l10n("正在检查 Capture One 连接…"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
         case .finished(let result):
@@ -279,7 +279,7 @@ struct NewSessionSheet: View {
                     check.label.resolve(with: l10n),
                     systemImage: check.passed ? "checkmark.circle.fill" : "xmark.circle.fill"
                 )
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .foregroundStyle(check.passed ? GatherTheme.success : GatherTheme.error)
             }
             if result.passed {

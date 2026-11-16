@@ -12,25 +12,25 @@ extension LibraryView {
         HStack(spacing: GatherMetrics.Space.m) {
             if viewModel.phase == .loading {
                 Text(l10n("加载中…"))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             } else {
                 Text(l10n.format("共 %lld 张逻辑照片", viewModel.total))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                 Text(l10n.resolve(viewModel.rangeText))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                     .foregroundStyle(.secondary)
             }
             // Wave5 batch4：目录筛选生效时给面包屑 + 清除出口（左栏折叠时也能看见/清除）。
             if let selected = viewModel.selectedDirectoryPath,
                let breadcrumb = DirectoryFilterRule.breadcrumb(
                    root: folderTreeRootPath, filterPrefix: viewModel.filter.directory) {
-                HStack(spacing: 4) {
+                HStack(spacing: GatherMetrics.Space.xs) {
                     Image(systemName: "folder")
                         .font(GatherFont.label)
                         .foregroundStyle(GatherTheme.accent)
                     Text(breadcrumb)
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(selected)
@@ -172,7 +172,7 @@ extension LibraryView {
             .gatherButton(.secondary, size: .small)
             .disabled(viewModel.page == 0)
             Text("\(viewModel.page + 1) / \(max(1, Int(ceil(Double(viewModel.total) / Double(LibraryViewModel.pageSize)))))")
-                .font(.callout)
+                .font(GatherFont.secondary)
                 .monospacedDigit()
             Button(l10n("下一页")) {
                 viewModel.nextPage()

@@ -24,7 +24,7 @@ struct ExportProgressSection: View {
                     .accessibilityLabel(l10n("导出进度"))
                     .accessibilityValue(Text(percentText))
                 Text(l10n.format("第 %lld/%lld 张%@", progress.current, progress.total, currentFileSuffix))
-                    .font(.callout.monospacedDigit())
+                    .font(GatherFont.mono)
                     .foregroundStyle(.secondary)
             }
         } else if viewModel.isExporting {

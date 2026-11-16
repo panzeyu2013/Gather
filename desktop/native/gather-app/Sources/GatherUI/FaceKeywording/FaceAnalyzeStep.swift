@@ -144,11 +144,11 @@ extension FaceKeywordingView {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
             HStack {
                 Text(l10n.progressPhaseText(viewModel.progressPhase))
-                    .font(.callout)
+                    .font(GatherFont.secondary)
                 Spacer()
                 if viewModel.progressTotal > 0 {
                     Text("\(viewModel.progressCurrent)/\(viewModel.progressTotal)")
-                        .font(.callout.monospacedDigit())
+                        .font(GatherFont.mono)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -163,7 +163,7 @@ extension FaceKeywordingView {
                 HStack(spacing: GatherMetrics.Space.s) {
                     ProgressView()
                     Text(l10n("处理中…"))
-                        .font(.callout)
+                        .font(GatherFont.secondary)
                         .foregroundStyle(.secondary)
                 }
             }
