@@ -53,6 +53,8 @@ PUBLISHERS = {
     "Metadata/MetadataSyncBar.swift": {"metadata"},
     # #11 补广播：集合/堆栈是库级数据（侧栏计数、图库「加入集合」菜单都读它）。
     "Gallery/GalleryViewModel+Load.swift": {"library"},
+    # Wave5 batch8：文件夹树「摄取到此工作区」成功后广播 library 域刷新图库。
+    "Shell/RootView.swift": {"library"},
     "Curation/CollectionView.swift": {"library"},
     "Curation/CollectionSidebar.swift": {"library"},
     # Wave3 task-24：迁移卡片在 importLibraryPackage / migrateExternalMetadata 成功后发事件。

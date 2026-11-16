@@ -34,17 +34,22 @@ package struct LibraryView: View {
     /// 文件夹树右键「用此目录新建工作区…」：传当前目录绝对路径。默认 no-op，
     /// 便于预览/独立测试；生产由 RootView 注入（切工作台 + 预填新建表单目录）。
     let onCreateWorkspace: @MainActor (String) -> Void
+    /// 文件夹树右键「摄取到此工作区…」（确认后触发）：传
+    /// (sessionId, 工作区 sourcePath, 要摄取的目录绝对路径)。默认 no-op。
+    let onIngestFolder: @MainActor (String, String, String) -> Void
 
     package init(
         viewModel: LibraryViewModel,
         onOpenSession: @escaping (String) -> Void = { _ in },
         onOpenPhoto: @escaping (String, String) -> Void = { _, _ in },
-        onCreateWorkspace: @escaping @MainActor (String) -> Void = { _ in }
+        onCreateWorkspace: @escaping @MainActor (String) -> Void = { _ in },
+        onIngestFolder: @escaping @MainActor (String, String, String) -> Void = { _, _, _ in }
     ) {
         self.viewModel = viewModel
         self.onOpenSession = onOpenSession
         self.onOpenPhoto = onOpenPhoto
         self.onCreateWorkspace = onCreateWorkspace
+        self.onIngestFolder = onIngestFolder
     }
 
     /// Cut 4 / 4a-3b-2b：语言源由外壳经 environment 下发（RootView）。
@@ -76,11 +81,23 @@ package struct LibraryView: View {
     @State var pendingRelink: PendingRelink?
     /// 「恢复原片」确认的目标（不可逆覆盖操作）。
     @State var pendingRestoreOrphan: MetadataOrphan?
+    /// 「摄取到此工作区」的待确认目标（非空即弹确认；取消不发命令）。
+    @State var pendingIngestFolder: PendingIngestFolder?
 
     /// 待确认的重新关联：oldRoot → newRoot 由用户选目录后填充。
     struct PendingRelink: Equatable {
         let oldRoot: String
         let newRoot: String
+    }
+
+    /// 「摄取到此工作区」确认项：确认后才把目录交给外壳执行摄取。
+    /// 张数在摄取计划阶段才知道，确认文案只描述"复制/登记、不改源目录"。
+    struct PendingIngestFolder: Equatable {
+        let sessionId: String
+        let sessionSourcePath: String
+        let workspaceName: String
+        let folderPath: String
+        let folderName: String
     }
     /// jobProgress 去抖 Task 保留在 View（Cut 4 / 4c-2j 显式决策）：它只服务
     /// 本页这一处事件接线，生命周期与页面一致；VM 的 scheduleEventRefresh 已有
@@ -130,6 +147,48 @@ package struct LibraryView: View {
         return viewModel.sessions.first { $0.id == viewModel.sessionFilter }?.name
     }
 
+    /// 纯映射（测试直接驱动）：目录右键 → 待确认的摄取上下文。
+    ///
+    /// 未选工作区 / 空路径 / 目录就是工作区根 → nil（不弹确认、不发请求）。
+    static func pendingIngestFolder(
+        sessionId: String,
+        workspaceRoot: String?,
+        workspaceName: String?,
+        folderPath: String
+    ) -> PendingIngestFolder? {
+        let id = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, let workspaceRoot else { return nil }
+        let root = DirectoryFilterRule.normalizedPath(workspaceRoot)
+        let folder = DirectoryFilterRule.normalizedPath(folderPath)
+        guard !root.isEmpty, !folder.isEmpty, folder != root else { return nil }
+        let fallbackName = (root as NSString).lastPathComponent
+        let folderName = (folder as NSString).lastPathComponent
+        let name = (workspaceName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return PendingIngestFolder(
+            sessionId: id,
+            sessionSourcePath: root,
+            workspaceName: name.isEmpty ? fallbackName : name,
+            folderPath: folder,
+            folderName: folderName.isEmpty ? folder : folderName)
+    }
+
+    /// 面板发起「摄取到此工作区…」：解析当前工作区并弹确认（真正执行在外壳）。
+    /// internal（非 private）：+Content 的 host 装配在另一个文件里调用。
+    func requestIngestFolder(_ folderPath: String) {
+        let workspaceName = viewModel.sessions
+            .first { $0.id == viewModel.sessionFilter }?.name
+        guard let pending = Self.pendingIngestFolder(
+            sessionId: viewModel.sessionFilter,
+            workspaceRoot: folderTreeRootPath,
+            workspaceName: workspaceName,
+            folderPath: folderPath
+        ) else {
+            viewModel.actionError = CommandError.localized(l10n("无法摄取：目录或工作区无效"))
+            return
+        }
+        pendingIngestFolder = pending
+    }
+
     /// 窗口副标题：加载完成后显示库存摘要，避免固定营销句占满标题栏。
     private var browseSubtitle: String {
         guard viewModel.phase == .loaded else {
@@ -176,6 +235,29 @@ package struct LibraryView: View {
         .gatherAnimatePresence(viewModel.actionError != nil || viewModel.lastRelink != nil)
         // 页面 chrome：frame / 表面 / 标题 / 副标题统一由 GatherPage 骨架提供。
         .gatherPage(title: l10n("全局图库"), subtitle: browseSubtitle)
+        // Wave5 batch8（task-32）：文件夹树「摄取到此工作区」的确认弹窗。
+        // 摄取会复制/登记照片到工作区（不改源目录），确认后才交给外壳执行。
+        .gatherDestructiveConfirm(
+            pending: $pendingIngestFolder,
+            title: l10n("摄取到此工作区"),
+            confirmLabel: { _ in l10n("开始摄取") },
+            message: { pending in
+                l10n.format(
+                    "将把「%@」中的照片复制并登记到工作区「%@」；不改动源目录中的文件。",
+                    pending.folderName,
+                    pending.workspaceName)
+            },
+            onConfirm: { pending in
+                // 落到 MainActor 上执行（确认弹窗回调本身不是 @Sendable 契约）。
+                let sessionId = pending.sessionId
+                let sourcePath = pending.sessionSourcePath
+                let folder = pending.folderPath
+                Task { @MainActor in
+                    onIngestFolder(sessionId, sourcePath, folder)
+                }
+            },
+            onCancel: { _ in }
+        )
         // 文件名搜索：内容区搜索框（不用 .searchable toolbar 形态）。
         // 打开右侧 inspector 时，系统 toolbar search 会横跨内容列 + 检查器；
         // 搜索属于照片内容，必须留在内容列内，和筛选项待在同一个 surface 里。

@@ -1,6 +1,11 @@
 import CaptureOnePlugins
 import Cocoa
 
+// Gather 的 Capture One「Open With」插件：把 C1 选中文件交给 gather://import。
+//
+// Wave5 batch8（A2/N4）：URL 显式带 source=capture-one，Host 侧由
+// GatherAppDelegate.isCaptureOneSource(_:) 识别并走 C1 语义导入（判断快照 +
+// capture-one 来源标 + C1 默认命名），不再是"通用本地导入"。
 class GatherLink: COPluginBase, COOpenWithPlugin {
     func openWithActions(withFileInfo info: [String: NSNumber], pluginRole _: COOpenWithPluginRole) throws -> [COPluginAction] {
         let fileCount = info.values.map { $0.intValue }.reduce(0, +)
@@ -16,9 +21,12 @@ class GatherLink: COPluginBase, COOpenWithPlugin {
         var components = URLComponents()
         components.scheme = "gather"
         components.host = "import"
-        components.queryItems = files.map {
-            URLQueryItem(name: "file", value: $0)
-        }
+        // Wave5 batch8（A2/N4）：source=capture-one 与 file 并列放在同一 query。
+        // Host 的路由形状不变（仍是 .importFiles），source 只决定导入语义；
+        // 解析器只读 file item，多余的 source 不影响文件提取（见
+        // GatherDeepLink.importFiles 与 GatherAppDelegate.isCaptureOneSource）。
+        components.queryItems = [URLQueryItem(name: "source", value: "capture-one")]
+            + files.map { URLQueryItem(name: "file", value: $0) }
 
         guard let url = components.url else {
             throw GatherLinkError.invalidURL

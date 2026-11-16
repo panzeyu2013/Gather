@@ -36,7 +36,7 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 
 ## 快速开始
 
-- macOS 26+、Xcode 26+（Swift 6.2+）；Capture One 可选。
+- macOS 26+、Xcode 26+（Swift 6.2+）；Capture One 可选。Open With 插件（`desktop/coplugin/GatherLink`）走 `gather://import?source=capture-one`，导入时保留 Capture One 来源标记与判断数据。
 - 测试入口：`./scripts/test.sh core|app`（或 `all`）。
 - 完整 `.app` 只在发布/打包时构建：`./desktop/native/build.sh`。
 

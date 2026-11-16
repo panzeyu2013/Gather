@@ -94,6 +94,47 @@ extension GalleryView {
     /// 评分与色标：GalleryViewModel 未暴露 rating/colorLabel 过滤状态
     ///（photo.list_page 行本身不含评分/色标字段，见本文件「写路径广播」注），
     /// 无可绑定模型 → 不设该分区（约束：不新增 ViewModel API）。
+    /// Wave5 batch8：场景标签种子/可开判定（选择集优先，无选择时用键盘游标/当前照片）。
+    private var gallerySceneTagSeedIds: [String] {
+        // 键盘游标可能指向已翻页/被筛掉的照片：不在已加载页就视为没有当前照片。
+        let current = keyboardCursorId.flatMap { id in
+            viewModel.loadedPhotos.contains(where: { $0.id == id }) ? id : nil
+        }
+        return SceneTagsEntryPolicy.seedPhotoIds(
+            selection: viewModel.selectedIds.sorted(),
+            currentPhotoId: current)
+    }
+
+    /// 常驻「场景标签…」入口：语义 API 未接线时禁用并说明；无种子也禁用。
+    @ViewBuilder
+    private var gallerySceneTagsSection: some View {
+        let seedIds = gallerySceneTagSeedIds
+        let canOpen = SceneTagsEntryPolicy.canOpenSceneTags(
+            hasSemanticAPI: viewModel.photoAPI != nil, selection: seedIds)
+        GatherInspectorSection(l10n("场景标签")) {
+            Button {
+                inspectorSheet = .sceneTags
+            } label: {
+                Label(l10n("场景标签…"), systemImage: "tag")
+                    .frame(maxWidth: .infinity)
+            }
+            .gatherButton(.secondary)
+            .disabled(!canOpen)
+            .help(l10n("按场景标签检索照片，或把 Vision 场景标签写成关键词"))
+            if viewModel.photoAPI == nil {
+                Text(l10n("语义检索未接线，暂不可用。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if seedIds.isEmpty {
+                Text(l10n("先选择照片（或定位到一张）再打开场景标签。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     var inspector: some View {
         // 约束循环修复（F01）：grouped Form 挂在 .inspector 上会在 AppKit 的
         // 约束更新阶段抛 NSGenericException（"more Update Constraints in Window
@@ -123,6 +164,8 @@ extension GalleryView {
                         variantsToggle
                     }
                 }
+                // Wave5 batch8：场景标签常驻入口（选择集优先；无选择时用当前照片）。
+                gallerySceneTagsSection
                 // P1 / A3：选中单张时的只读元数据（EXIF + IPTC Core/Extension）。
                 if viewModel.selectedIds.count == 1 {
                     MetadataSections(detail: viewModel.metadataDetail)
@@ -166,6 +209,20 @@ extension GalleryView {
                         },
                         onSelect: { id in
                             // 命中可能不在当前筛选/已加载页：先清条件再定位（见方法注释）。
+                            Task { await locateSemanticHit(id) }
+                        })
+                }
+            case .sceneTags:
+                if let api = viewModel.photoAPI {
+                    // 场景标签：选择集/当前照片做种子；检索结果定位走同一入口。
+                    SemanticSearchSheet(
+                        api: api,
+                        sessionId: viewModel.sessionId,
+                        seedPhotoIds: gallerySceneTagSeedIds,
+                        nameFor: { id in
+                            viewModel.loadedPhotos.first(where: { $0.id == id })?.filename ?? id
+                        },
+                        onSelect: { id in
                             Task { await locateSemanticHit(id) }
                         })
                 }

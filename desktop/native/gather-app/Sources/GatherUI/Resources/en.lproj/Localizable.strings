@@ -2875,3 +2875,16 @@
 "可写 %lld / %lld 张" = "Writable %lld / %lld photos";
 "未知原因" = "Unknown reason";
 "没有命中这些标签的照片；中文「%@」暂无映射，可换用英文或常见中文名（如 海滩、婚礼）。" = "No photos matched these labels; there is no Chinese mapping for \"%@\" yet. Try English or a common English name (e.g. beach, wedding).";
+
+/* Wave5 / Batch8（场景标签入口 · 文件夹树摄取） */
+"语义检索未接线，暂不可用。" = "Semantic search is not wired yet; unavailable.";
+"先选择照片（或定位到一张）再打开场景标签。" = "Select photos (or focus one) before opening scene tags.";
+"外部位置" = "External Locations";
+"摄取到此工作区" = "Ingest into Workspace";
+"摄取到此工作区…" = "Ingest into Workspace…";
+"将把「%@」中的照片复制并登记到工作区「%@」；不改动源目录中的文件。" = "Copy and register photos from “%@” into workspace “%@”; source files are not modified.";
+"正在摄取「%@」到工作区「%@」…" = "Ingesting “%@” into workspace “%@”…";
+"已摄取 %lld 张到工作区「%@」；跳过 %lld 张" = "Ingested %lld photos into workspace “%@”; %lld skipped";
+"未新增照片：目录为空、照片都已存在，或文件不可读" = "No new photos: the folder is empty, all photos already exist, or files are unreadable";
+"无法摄取：目录或工作区无效" = "Cannot ingest: invalid folder or workspace";
+"摄取失败：%@" = "Ingest failed: %@";

@@ -262,6 +262,108 @@ extension RootView {
     }
 }
 
+// MARK: - 文件夹树「摄取到此工作区」（Wave5 batch8 / task-32）
+
+extension RootView {
+    /// 摄取成功广播的 origin（与其他入口区分；图库按 .library 域刷新）。
+    static let ingestChangeOrigin = "root-shell.ingest-folder"
+
+    /// 文件夹树右键「摄取到此工作区…」（LibraryView 已弹确认）：把外部目录里的
+    /// 照片复制/登记进工作区 sourcePath。异步执行、不阻塞 UI；结果走既有 Toast。
+    ///
+    /// 只做复制/登记：不移动/删除源文件、不写第二目的地（UI 默认空）。
+    @MainActor
+    func handleIngestFolderRequest(
+        sessionId: String,
+        sessionSourcePath: String,
+        folderPath: String
+    ) {
+        let l10nNow = l10n
+        let input: SessionIngestInput
+        do {
+            guard let mapped = try Self.ingestFolderInput(
+                sessionId: sessionId,
+                sessionSourcePath: sessionSourcePath,
+                folderPath: folderPath
+            ) else {
+                GatherToastCenter.shared.show(
+                    type: .warning, message: l10nNow("无法摄取：目录或工作区无效"))
+                return
+            }
+            input = mapped
+        } catch {
+            GatherToastCenter.shared.show(
+                type: .error,
+                message: l10nNow.format(
+                    "摄取失败：%@",
+                    CommandErrorText.resolve(CommandError(error), with: l10nNow)))
+            return
+        }
+        let workspaceName = (DirectoryFilterRule.normalizedPath(sessionSourcePath) as NSString)
+            .lastPathComponent
+        var folderName = (DirectoryFilterRule.normalizedPath(folderPath) as NSString)
+            .lastPathComponent
+        if folderName.isEmpty { folderName = folderPath }
+        // 摄取是 job 化长操作：先给一条"已开始"的可见反馈，结果稍后由成功/失败 toast 收口。
+        GatherToastCenter.shared.show(
+            type: .info,
+            message: l10nNow.format("正在摄取「%@」到工作区「%@」…", folderName, workspaceName))
+        let sessionAPI = deps.session
+        Task { @MainActor in
+            do {
+                let result = try await sessionAPI.ingest(Confirmed(input, source: .userDialog))
+                // 摄取登记了新照片：广播 .library（图库/侧栏按域刷新；与导入面板同口径）。
+                if result.registered > 0 {
+                    GatherEventCenter.postDomainChange(
+                        .library, sessionId: input.sessionId, origin: Self.ingestChangeOrigin)
+                }
+                let skipped = result.skipped.count + (result.libraryDuplicatesSkipped ?? 0)
+                if result.registered > 0 {
+                    GatherToastCenter.shared.show(
+                        type: .success,
+                        message: l10nNow.format(
+                            "已摄取 %lld 张到工作区「%@」；跳过 %lld 张",
+                            result.registered, workspaceName, skipped))
+                } else {
+                    GatherToastCenter.shared.show(
+                        type: .info,
+                        message: l10nNow("未新增照片：目录为空、照片都已存在，或文件不可读"))
+                }
+            } catch {
+                GatherToastCenter.shared.show(
+                    type: .error,
+                    message: l10nNow.format(
+                        "摄取失败：%@",
+                        CommandErrorText.resolve(CommandError(error), with: l10nNow)))
+            }
+        }
+    }
+
+    /// 纯映射（不碰 UI，供 FolderTreeTests 直接断言）：
+    /// 外部目录 → SessionIngestInput（复制/登记到工作区根；默认改名模板、
+    /// 校验开启、重复处置 skip、不写第二目的地）。空路径或目录=工作区根 → nil。
+    nonisolated static func ingestFolderInput(
+        sessionId: String,
+        sessionSourcePath: String,
+        folderPath: String
+    ) throws -> SessionIngestInput? {
+        let id = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = DirectoryFilterRule.normalizedPath(sessionSourcePath)
+        let folder = DirectoryFilterRule.normalizedPath(folderPath)
+        guard !id.isEmpty, !source.isEmpty, !folder.isEmpty, folder != source else {
+            return nil
+        }
+        return try SessionIngestInput(
+            sessionId: id,
+            sourcePaths: [folder],
+            destinationRoot: source,
+            renameTemplate: "{yyyy}/{MM}/{dd}/{orig}-{seq:4}.{ext}",
+            secondDestinationRoot: nil,
+            verifyChecksum: true,
+            duplicatePolicy: .skip)
+    }
+}
+
 extension RootView {
     /// 菜单命令 -> 当前窗口动作。RootView 是唯一知道这些动作如何落地的地方。
     func installCommandHandlers() {

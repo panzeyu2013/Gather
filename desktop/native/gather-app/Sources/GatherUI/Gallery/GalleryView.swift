@@ -46,6 +46,8 @@ package struct GalleryView: View {
     enum GallerySheet: String, Identifiable {
         case metadata
         case semantic
+        /// Wave5 batch8：场景标签常驻入口（检索/写回；与相似照片面板分开）。
+        case sceneTags
         var id: String { rawValue }
     }
     @State var inspectorSheet: GallerySheet?

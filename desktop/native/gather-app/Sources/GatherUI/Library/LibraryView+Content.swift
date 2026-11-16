@@ -73,7 +73,8 @@ extension LibraryView {
             folderTreeSelectedPrefix: viewModel.filter.directory,
             onSelectDirectory: { viewModel.toggleDirectoryFilter($0) },
             onClearDirectory: { viewModel.clearDirectoryFilter() },
-            onCreateWorkspace: onCreateWorkspace
+            onCreateWorkspace: onCreateWorkspace,
+            onIngestFolder: { requestIngestFolder($0) }
         ) {
             browseContent
         }
@@ -214,6 +215,7 @@ struct LibraryCurationHost<Browse: View>: View {
     private let onSelectDirectory: (String) -> Void
     private let onClearDirectory: () -> Void
     private let onCreateWorkspace: @MainActor (String) -> Void
+    private let onIngestFolder: @MainActor (String) -> Void
     private let browse: Browse
 
     @State private var showsSidebar = true
@@ -228,6 +230,7 @@ struct LibraryCurationHost<Browse: View>: View {
         onSelectDirectory: @escaping (String) -> Void = { _ in },
         onClearDirectory: @escaping () -> Void = {},
         onCreateWorkspace: @escaping @MainActor (String) -> Void = { _ in },
+        onIngestFolder: @escaping @MainActor (String) -> Void = { _ in },
         @ViewBuilder browse: () -> Browse
     ) {
         self.sessionId = sessionId
@@ -237,6 +240,7 @@ struct LibraryCurationHost<Browse: View>: View {
         self.onSelectDirectory = onSelectDirectory
         self.onClearDirectory = onClearDirectory
         self.onCreateWorkspace = onCreateWorkspace
+        self.onIngestFolder = onIngestFolder
         self.browse = browse()
     }
 
@@ -293,7 +297,8 @@ struct LibraryCurationHost<Browse: View>: View {
                         // 先结束集合浏览再交给外壳（与目录筛选同一入口语义）。
                         selection = nil
                         onCreateWorkspace(path)
-                    }
+                    },
+                    onIngestFolder: onIngestFolder
                 )
             case .collections:
                 CollectionSidebar(sessionId: sessionId, selection: $selection)

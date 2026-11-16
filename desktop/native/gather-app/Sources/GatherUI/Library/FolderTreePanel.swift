@@ -6,7 +6,10 @@
 // - 树只做导航：点击目录 = 在资料库既有筛选上加 directory 前缀条件（复用
 //   LibraryFilterState.directory → buildLibraryCriteria，不新增后端）；
 // - 懒加载：展开某目录时才 FileManager 列它的一层子目录（隐藏目录/符号链接跳过）；
-// - 根 = 当前筛选工作区的 sourcePath；没有选工作区时给空态提示。
+// - 根 = 当前筛选工作区的 sourcePath；没有选工作区时给空态提示；
+// - Wave5 batch8（task-32）：树尾追加**外部位置**（已挂载的其它卷，F1 修法的
+//   「工作区 sourcePath 为根 + 外部盘」）。外部目录才有「摄取到此工作区」动作：
+//   工作区内的目录已被本工作区扫描覆盖，重新摄取只会重复登记。
 // 插桩点：LibraryCurationHost 的左栏（“文件夹 / 集合”两个页签），见 LibraryView+Content。
 import SwiftUI
 import AppKit
@@ -134,6 +137,48 @@ enum FolderTreeLoader {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
     }
+
+    /// 已挂载的其它卷（外部位置）：卷根本身不摄取、工作区所在卷不重复列出。
+    ///
+    /// 只保留「不在工作区 sourcePath 内、且不包含工作区根」的卷：从工作区所在盘
+    /// 的卷根摄取只会命中同一批文件的去重，属于误操作面；外部盘才是 F1 的目标。
+    static func mountedExternalRoots(
+        workspaceRoot: String?, fileManager: FileManager = .default
+    ) -> [FolderTreeItem] {
+        guard let workspaceRoot, !workspaceRoot.isEmpty else { return [] }
+        let urls = fileManager.mountedVolumeURLs(
+            includingResourceValuesForKeys: nil,
+            options: [.skipHiddenVolumes]) ?? []
+        let candidates = urls.map { url in
+            FolderTreeItem(path: url.path, name: url.lastPathComponent)
+        }
+        return selectExternalRoots(candidates: candidates, workspaceRoot: workspaceRoot)
+    }
+
+    /// 纯筛选（测试直接驱动）：候选卷 → 外部根列表。
+    static func selectExternalRoots(
+        candidates: [FolderTreeItem], workspaceRoot: String?
+    ) -> [FolderTreeItem] {
+        guard let workspaceRoot else { return [] }
+        let root = DirectoryFilterRule.normalizedPath(workspaceRoot)
+        guard !root.isEmpty else { return [] }
+        var seen = Set<String>()
+        var result: [FolderTreeItem] = []
+        for candidate in candidates {
+            let path = DirectoryFilterRule.normalizedPath(candidate.path)
+            // 卷根 "/" 是系统盘、不是外部位置；工作区所在卷（含工作区根）也不列。
+            guard !path.isEmpty, path != "/", path != root else { continue }
+            guard !root.hasPrefix(path + "/") else { continue }
+            guard seen.insert(path).inserted else { continue }
+            let name = candidate.name.isEmpty
+                ? (path as NSString).lastPathComponent
+                : candidate.name
+            result.append(FolderTreeItem(path: path, name: name))
+        }
+        return result.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
 }
 
 // MARK: - 懒加载树模型
@@ -154,6 +199,23 @@ struct FolderTreeRow: Identifiable, Equatable, Sendable {
     /// 只有真实目录行才提供「用此目录新建工作区…」：空目录占位/不可读占位
     /// 没有可用的绝对路径，右键菜单里也不该出现该动作。
     var canCreateWorkspace: Bool { kind == .directory }
+
+    /// 是否提供「摄取到此工作区…」（Wave5 batch8 / task-32）。
+    ///
+    /// 只有「工作区之外的真实目录」才需要摄取到该工作区：
+    /// - 未选工作区 / 空/不可读占位行 → false；
+    /// - 树根（depth 0）→ false：目录 = 工作区根（或卷根）不摄取，避免把工作区
+    ///   重新摄取到自己；
+    /// - 工作区 sourcePath 内的目录 → false：已在当前工作区扫描范围内，再摄取只会
+    ///   命中全库去重（默认 skip）而重复登记；
+    /// - 外部挂载卷下的目录（不在 sourcePath 内）→ true。
+    func canIngestToWorkspace(workspaceRoot: String?) -> Bool {
+        guard kind == .directory, depth > 0, let workspaceRoot else { return false }
+        let root = DirectoryFilterRule.normalizedPath(workspaceRoot)
+        let folder = DirectoryFilterRule.normalizedPath(path)
+        guard !root.isEmpty, !folder.isEmpty, folder != root else { return false }
+        return !folder.hasPrefix(root + "/")
+    }
 
     var id: String {
         switch kind {
@@ -294,10 +356,15 @@ struct FolderTreePanel: View {
     /// 右键「用此目录新建工作区…」：传当前目录绝对路径。默认 no-op，便于
     /// 预览/独立测试；生产由 LibraryView ← RootView 注入（切工作台 + 预填目录）。
     let onCreateWorkspace: @MainActor (String) -> Void
+    /// 右键「摄取到此工作区…」：传当前目录绝对路径（仅外部位置的真实目录行）。
+    /// 默认 no-op；确认弹窗在 LibraryView（本面板只负责发起）。
+    let onIngestFolder: @MainActor (String) -> Void
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
     @State private var model = FolderTreeModel()
+    /// 树尾「外部位置」的卷根（挂载卷枚举，刷新按钮/换根时更新）。
+    @State private var externalRootPaths: [String] = []
 
     init(
         rootPath: String?,
@@ -305,7 +372,8 @@ struct FolderTreePanel: View {
         selectedDirectoryPrefix: String,
         onSelectDirectory: @escaping (String) -> Void,
         onClearDirectory: @escaping () -> Void,
-        onCreateWorkspace: @escaping @MainActor (String) -> Void = { _ in }
+        onCreateWorkspace: @escaping @MainActor (String) -> Void = { _ in },
+        onIngestFolder: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         self.rootPath = rootPath
         self.rootTitle = rootTitle
@@ -313,6 +381,7 @@ struct FolderTreePanel: View {
         self.onSelectDirectory = onSelectDirectory
         self.onClearDirectory = onClearDirectory
         self.onCreateWorkspace = onCreateWorkspace
+        self.onIngestFolder = onIngestFolder
     }
 
     var body: some View {
@@ -325,7 +394,21 @@ struct FolderTreePanel: View {
         .padding(GatherMetrics.Space.m)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(GatherTheme.surfaceMuted)
-        .task(id: rootPath) { model.setRoot(rootPath) }
+        .task(id: rootPath) { reloadTree(forceReload: false) }
+    }
+
+    /// 重读工作区根 + 重新枚举外部位置（换根/手动刷新/根错误重试共用）。
+    ///
+    /// forceReload = true 时即使根没变也强制重读一层（刷新按钮/错误重试）；
+    /// 换根路径由 setRoot 自己读取（force 为 false 避免重复扫描）。
+    private func reloadTree(forceReload: Bool) {
+        model.setRoot(rootPath)
+        if forceReload {
+            model.reload()
+        }
+        externalRootPaths = rootPath == nil
+            ? []
+            : FolderTreeLoader.mountedExternalRoots(workspaceRoot: rootPath).map(\.path)
     }
 
     private var header: some View {
@@ -335,7 +418,7 @@ struct FolderTreePanel: View {
                     .font(GatherFont.eyebrow)
                     .foregroundStyle(GatherTheme.secondaryText)
                 Spacer(minLength: 0)
-                Button { model.reload() } label: {
+                Button { reloadTree(forceReload: true) } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(GatherFont.label)
                         .foregroundStyle(GatherTheme.secondaryText)
@@ -397,7 +480,7 @@ struct FolderTreePanel: View {
                     .font(GatherFont.labelRegular)
                     .foregroundStyle(GatherTheme.errorText)
                     .fixedSize(horizontal: false, vertical: true)
-                Button(l10n("重试")) { model.reload() }
+                Button(l10n("重试")) { reloadTree(forceReload: true) }
                     .gatherButton(.secondary, size: .small)
             }
         } else if model.root != nil {
@@ -409,7 +492,26 @@ struct FolderTreePanel: View {
                             model: model,
                             selectedDirectoryPrefix: selectedDirectoryPrefix,
                             onSelect: onSelectDirectory,
-                            onCreateWorkspace: onCreateWorkspace)
+                            onCreateWorkspace: onCreateWorkspace,
+                            onIngestFolder: onIngestFolder,
+                            workspaceRootPath: rootPath,
+                            isExternalRoot: false)
+                    }
+                    if !externalRootPaths.isEmpty {
+                        Divider()
+                            .padding(.vertical, GatherMetrics.Space.xs)
+                        Label(l10n("外部位置"), systemImage: "externaldrive")
+                            .font(GatherFont.eyebrow)
+                            .foregroundStyle(GatherTheme.secondaryText)
+                        ForEach(externalRootPaths, id: \.self) { path in
+                            FolderTreeExternalRootView(
+                                rootPath: path,
+                                workspaceRootPath: rootPath,
+                                selectedDirectoryPrefix: selectedDirectoryPrefix,
+                                onSelect: onSelectDirectory,
+                                onCreateWorkspace: onCreateWorkspace,
+                                onIngestFolder: onIngestFolder)
+                        }
                     }
                 }
                 .padding(.vertical, 2)
@@ -437,6 +539,11 @@ private struct FolderTreeRowView: View {
     let selectedDirectoryPrefix: String
     let onSelect: (String) -> Void
     let onCreateWorkspace: @MainActor (String) -> Void
+    let onIngestFolder: @MainActor (String) -> Void
+    /// 当前工作区 sourcePath（判断「摄取到此工作区」是否可用）；nil = 未选工作区。
+    let workspaceRootPath: String?
+    /// 外部位置的卷根行：用磁盘图标区分，不当作工作区内的目录。
+    let isExternalRoot: Bool
 
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
@@ -461,7 +568,7 @@ private struct FolderTreeRowView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(model.isExpanded(row.path)
                     ? l10n("收起目录") : l10n("展开目录"))
-                Image(systemName: "folder")
+                Image(systemName: isExternalRoot ? "externaldrive" : "folder")
                     .font(GatherFont.labelRegular)
                     .foregroundStyle(isSelected ? GatherTheme.accent : GatherTheme.secondaryText)
                 Text(row.name)
@@ -501,7 +608,13 @@ private struct FolderTreeRowView: View {
 
     @ViewBuilder
     private var contextMenu: some View {
-        if row.canCreateWorkspace {
+        if row.kind == .directory {
+            if row.canIngestToWorkspace(workspaceRoot: workspaceRootPath) {
+                Button(l10n("摄取到此工作区…")) {
+                    onIngestFolder(row.path)
+                }
+                Divider()
+            }
             Button(l10n("用此目录新建工作区…")) {
                 onCreateWorkspace(row.path)
             }
@@ -518,5 +631,48 @@ private struct FolderTreeRowView: View {
                     type: .info, message: l10n("已复制目录路径"))
             }
         }
+    }
+}
+
+// MARK: - 外部位置（挂载卷）
+
+/// 外部位置的一棵懒加载树：每个挂载卷独立 model（卸载/不可读时整段退化为提示）。
+///
+/// 外部目录是唯一可「摄取到此工作区」的目录：工作区 sourcePath 内的目录已被
+/// 本工作区扫描覆盖，重新摄取只会命中库内去重。行视图与工作区树共用，
+/// 卷根行用 externaldrive 图标区分。
+private struct FolderTreeExternalRootView: View {
+    let rootPath: String
+    let workspaceRootPath: String?
+    let selectedDirectoryPrefix: String
+    let onSelect: (String) -> Void
+    let onCreateWorkspace: @MainActor (String) -> Void
+    let onIngestFolder: @MainActor (String) -> Void
+
+    @Environment(\.languageStore) private var languageStore
+    private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
+    @State private var model = FolderTreeModel()
+
+    var body: some View {
+        Group {
+            if model.rootError != nil {
+                Text(l10n("无法读取该目录"))
+                    .font(GatherFont.labelRegular)
+                    .foregroundStyle(GatherTheme.errorText)
+            } else {
+                ForEach(model.visibleRows()) { row in
+                    FolderTreeRowView(
+                        row: row,
+                        model: model,
+                        selectedDirectoryPrefix: selectedDirectoryPrefix,
+                        onSelect: onSelect,
+                        onCreateWorkspace: onCreateWorkspace,
+                        onIngestFolder: onIngestFolder,
+                        workspaceRootPath: workspaceRootPath,
+                        isExternalRoot: row.depth == 0)
+                }
+            }
+        }
+        .task(id: rootPath) { model.setRoot(rootPath) }
     }
 }

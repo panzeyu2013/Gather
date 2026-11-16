@@ -226,3 +226,33 @@
 3. 批量时间偏移是逐张调用（200 上限），无单批事务；写后 GPS/时间缓存投影不刷新（编辑器重开读盘正确）。
 4. 场景标签未做自动关键词/中文同义词写回；内嵌 GPS/时间 slow path 写回可能镜像相机 EXIF 到 XMP（读侧一致性取舍）。
 5. Batch 8：发布端点扩展、剩余 P2、真机验收清单更新、最终收口台账。
+
+## Batch 8（task-31 ~ task-33）
+
+| task | 域 | owner | 结论 |
+| --- | --- | --- | --- |
+| task-31 | 场景标签入口上移 | ai-similarity | 挑片检查器常驻「场景标签」段；Gallery 检查器常驻入口（选择集优先、无选择回退当前游标）；删除 Beta 卡旧入口避免双 sheet；API 未接线/无种子时禁用并说明 |
+| task-32 | 文件夹树摄取到此工作区 | ingest-export | 目录树右键「摄取到此工作区…」+ 确认弹窗；外部卷「外部位置」区（排除系统盘/工作区所在卷）；RootView 走 SessionAPI.ingest（默认模板/校验/skip，目的地=工作区 sourcePath）；成功广播 library 域；目录=工作区根禁止自我摄取 |
+| task-33 | GatherLink 插件 source 参数 | c1-fix | 插件 gather://import URL 增加 source=capture-one；Host 已有识别；docs/README 一句说明；插件 SDK typecheck 通过 |
+
+### 关键设计取舍
+
+- 场景标签入口：删除 Beta 卡旧按钮，常规入口单点；Gallery 无持久 currentPhoto，回退键盘游标并在已加载页内校验。
+- 文件夹摄取：工作区内目录已被扫描覆盖，重摄取会命中 skip 去重；真正可达路径是外部卷；不做移动/删除/第二目的地 UI。
+- GatherLink：旧版已安装插件不带 source 时仍按通用导入（向后兼容），重装/重启 C1 后生效；插件产物需 make 重建。
+
+### 验证（Lead 执行，2026-11-16）
+
+- 构建：gather-core / gather-app swift build --build-tests --disable-sandbox 均通过；GatherLink 插件 swiftc -typecheck 通过。
+- 测试：core 1964 / 289 + 串行 25 / 4；app 1256 / 183；全绿。
+- 门禁 14 项全绿（含 warnings；domain-events 登记 RootView 发布点后通过；protocol-surface 无增长）。
+- 文档：新增 98-final-audit.md（P0/P1 对账、剩余 P2/明确不做、真机清单）；96 号追加 Wave5 真机验收补充。
+- Lead 修：Batch8 新增 11 条 l10n en；domain-events 发布点登记；审计/验收文档。
+
+### 未闭环/下一批
+
+1. Metadata D3 尾巴：JPEG 有 sidecar 时内嵌 IPTC 清理、非 JPEG 只写 sidecar、双源静默取 sidecar（P1 尾巴，需单独写策略）。
+2. AI E4 自动关键词写回未做（当前手动写回为产品口径）；C1 关键词 apply keyword 未接（P2）。
+3. C1 插件往返 role/Edit/Publish、安装/诊断面未做（P2）；插件产物未重建。
+4. 发布端点 FTP/SFTP/网盘、剩余 P2（色彩管理/幻灯片/多窗口等按决策不做）。
+5. 真机验收清单已更新但未执行（人工）。

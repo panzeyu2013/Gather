@@ -23,8 +23,6 @@ struct CullingTriageCard: View {
     @State private var showWhy = false
     /// 校准面板状态：打开 sheet 时创建并按需拉取（关闭即丢弃，不占挑片 VM）。
     @State private var calibrationModel: TriageCalibrationViewModel?
-    /// Wave2 / task-14：场景标签检索/写回入口的展开状态（photoAPI 未接线时整段隐藏）。
-    @State private var showSemanticSearch = false
     @Environment(\.languageStore) private var languageStore
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
@@ -95,22 +93,6 @@ struct CullingTriageCard: View {
         }
         .sheet(isPresented: $showCalibration) {
             calibrationSheet
-        }
-        .sheet(isPresented: $showSemanticSearch) {
-            if let photoAPI = viewModel.photoAPI {
-                SemanticSearchSheet(
-                    api: photoAPI,
-                    sessionId: viewModel.sessionId,
-                    seedPhotoIds: semanticSeedPhotoIds,
-                    nameFor: { id in
-                        viewModel.page?.assets.first { $0.photo.id == id }?.photo.filename
-                            ?? String(id.prefix(8))
-                    },
-                    onSelect: { id in
-                        viewModel.gridClick(id, modifiers: [])
-                        layoutMode = .grid
-                    })
-            }
         }
         .task(id: showCalibration) {
             guard showCalibration else { return }
@@ -297,16 +279,6 @@ struct CullingTriageCard: View {
     }
 
     /// 相似检索种子：优先用网格多选（≥2 张时取平均向量），否则用当前照片。
-    private var semanticSeedPhotoIds: [String] {
-        if viewModel.selectedPhotoIds.count > 1 {
-            return viewModel.selectedPhotoIds.sorted()
-        }
-        if let current = viewModel.currentAsset?.photo.id {
-            return [current]
-        }
-        return []
-    }
-
     // MARK: - 动作
 
     @ViewBuilder
@@ -324,19 +296,6 @@ struct CullingTriageCard: View {
         .help(calibration == nil
               ? l10n("校准未接线")
               : l10n("用人工反馈校准置信度阈值（只在你确认后写入设置）"))
-
-        // Wave2 / task-14：场景标签闭环入口（检索标签照片 / 多选找相似 / 标签写回关键词）。
-        if viewModel.photoAPI != nil {
-            Button {
-                showSemanticSearch = true
-            } label: {
-                Label(l10n("场景标签…"), systemImage: "tag")
-                    .frame(maxWidth: .infinity)
-            }
-            .gatherButton(.secondary)
-            .disabled(busy)
-            .help(l10n("按场景标签检索照片，或把 Vision 场景标签写成关键词"))
-        }
 
         HStack(spacing: GatherMetrics.Space.s) {
             Button {

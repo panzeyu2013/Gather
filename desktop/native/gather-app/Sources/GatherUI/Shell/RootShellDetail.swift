@@ -24,6 +24,12 @@ extension RootView {
                     },
                     onCreateWorkspace: { directoryPath in
                         handleCreateWorkspaceRequest(at: directoryPath)
+                    },
+                    onIngestFolder: { sessionId, sessionSourcePath, folderPath in
+                        handleIngestFolderRequest(
+                            sessionId: sessionId,
+                            sessionSourcePath: sessionSourcePath,
+                            folderPath: folderPath)
                     }
                 )
             case .persons:

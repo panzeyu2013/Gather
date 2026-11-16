@@ -225,3 +225,43 @@ struct SemanticSearchChineseDisplayTests {
         #expect(model.plannedKeywords.isEmpty)
     }
 }
+
+// MARK: - Wave5 batch8：场景标签入口上移（挑片/Gallery 常驻入口）
+
+@Suite("场景标签入口 gating（Wave5 batch8）")
+struct SceneTagsEntryTests {
+    @Test("有语义 API + 有种子才可开；无 API / 无种子都禁用")
+    func gating() {
+        #expect(SceneTagsEntryPolicy.canOpenSceneTags(
+            hasSemanticAPI: true, selection: ["p1"]))
+        #expect(!SceneTagsEntryPolicy.canOpenSceneTags(
+            hasSemanticAPI: false, selection: ["p1"]),
+            "photoAPI 未接线时必须禁用并说明，不能静默无反应")
+        #expect(!SceneTagsEntryPolicy.canOpenSceneTags(
+            hasSemanticAPI: true, selection: []))
+    }
+
+    @Test("种子选择集映射：选择集优先、去重排序；无选择用当前照片；都无则空")
+    func seedMapping() {
+        #expect(SceneTagsEntryPolicy.seedPhotoIds(
+            selection: ["p2", "p1", "p2"], currentPhotoId: "p9") == ["p1", "p2"],
+            "有选择集时用选择集（排序稳定），忽略当前照片")
+        #expect(SceneTagsEntryPolicy.seedPhotoIds(
+            selection: [], currentPhotoId: "p9") == ["p9"],
+            "无选择时回退当前照片")
+        #expect(SceneTagsEntryPolicy.seedPhotoIds(
+            selection: [], currentPhotoId: nil) == [])
+        #expect(SceneTagsEntryPolicy.seedPhotoIds(
+            selection: [""], currentPhotoId: nil) == [],
+            "空 id 不算有效种子")
+    }
+
+    @Test("Gallery sheet 路由唯一：场景标签与相似照片/元数据不共 case（只弹一个 sheet）")
+    func gallerySheetRoutesAreDistinct() {
+        #expect(GalleryView.GallerySheet.sceneTags.id == "sceneTags")
+        #expect(GalleryView.GallerySheet.sceneTags.id
+            != GalleryView.GallerySheet.semantic.id)
+        #expect(GalleryView.GallerySheet.sceneTags.id
+            != GalleryView.GallerySheet.metadata.id)
+    }
+}
