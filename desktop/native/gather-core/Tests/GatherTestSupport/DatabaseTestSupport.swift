@@ -63,6 +63,12 @@ public func insertAssetFile(
     ])
 }
 
+/// fixture 文件缺失：让用例抛错失败，而不是 preconditionFailure 杀掉整个测试进程。
+public struct MissingFixtureFileError: Error, CustomStringConvertible {
+    public let path: String
+    public var description: String { "fixture file missing: \(path)" }
+}
+
 /// 按**真实文件**的身份登记 asset_files 行：storedPath 是登记路径（可以已不存在，
 /// 模拟"文件被移走"），statPath 是磁盘上取身份证据（dev/ino/size/mtime）的文件。
 /// relinkRoot 只接受通过身份校验的行，故重链接用例必须用本函数而非裸 insertAssetFile。
@@ -74,7 +80,7 @@ public func insertTrackedFile(
     checksum: String = ""
 ) throws {
     guard let info = tsStat(statPath) else {
-        preconditionFailure("fixture file missing: \(statPath)")
+        throw MissingFixtureFileError(path: statPath)
     }
     try insertAssetFile(
         db, id: id, normalizedPath: storedPath, checksum: checksum,

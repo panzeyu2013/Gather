@@ -12,17 +12,17 @@ import Testing
 struct ModelReviewTests {
 
     @Test("眼睛几何：睁眼 EAR 高、闭眼 EAR 低，分数单调")
-    func eyeOpenGeometry() {
+    func eyeOpenGeometry() throws {
         // 6 点绕眼一周；上下眼睑距离决定 EAR。
         let open = [(0.0, 0.0), (0.3, 0.10), (0.7, 0.10), (1.0, 0.0), (0.7, -0.10), (0.3, -0.10)]
             .map { (x: $0.0, y: $0.1) }
         let closed = [(0.0, 0.0), (0.3, 0.01), (0.7, 0.01), (1.0, 0.0), (0.7, -0.01), (0.3, -0.01)]
             .map { (x: $0.0, y: $0.1) }
-        let openEAR = try? #require(EyeOpenGeometry.eyeAspectRatio(open))
-        let closedEAR = try? #require(EyeOpenGeometry.eyeAspectRatio(closed))
-        #expect((openEAR ?? 0) > (closedEAR ?? 0))
-        #expect(EyeOpenGeometry.score(ear: closedEAR ?? 0) < 0.05)
-        #expect(EyeOpenGeometry.score(ear: openEAR ?? 0) > 0.5)
+        let openEAR = try #require(EyeOpenGeometry.eyeAspectRatio(open))
+        let closedEAR = try #require(EyeOpenGeometry.eyeAspectRatio(closed))
+        #expect(openEAR > closedEAR)
+        #expect(EyeOpenGeometry.score(ear: closedEAR) < 0.05)
+        #expect(EyeOpenGeometry.score(ear: openEAR) > 0.5)
         #expect(EyeOpenGeometry.score(ear: 0) == 0)
         #expect(EyeOpenGeometry.score(ear: 1) == 1)
     }

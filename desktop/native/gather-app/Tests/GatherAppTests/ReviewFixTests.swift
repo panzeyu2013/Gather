@@ -295,11 +295,12 @@ struct ReviewFixTests {
 
     /// 400×200 蓝底 + 目标人脸区域（归一化左上原点 x 0.45–0.55、y 0.2–0.3）红块。
     /// CGContext 原点在左下，因此红块像素 y 取 140–160（= 1 − 0.3 … 1 − 0.2）。
-    private func makeFaceFixtureImage() -> NSImage {
+    private func makeFaceFixtureImage() throws -> NSImage {
         let width = 400
         let height = 200
         let space = CGColorSpaceCreateDeviceRGB()
-        guard let context = CGContext(
+        // CGContext 创建失败属于环境问题：抛出让用例失败，而不是 fatalError 杀掉整个测试进程。
+        let context = try #require(CGContext(
             data: nil,
             width: width,
             height: height,
@@ -307,22 +308,18 @@ struct ReviewFixTests {
             bytesPerRow: 0,
             space: space,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            fatalError("无法创建测试位图上下文")
-        }
+        ), "无法创建测试位图上下文")
         context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
         context.fill(CGRect(x: 180, y: 140, width: 40, height: 20))
-        guard let cgImage = context.makeImage() else {
-            fatalError("无法生成测试位图")
-        }
+        let cgImage = try #require(context.makeImage(), "无法生成测试位图")
         return NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
     }
 
     @Test("F05/N02：裁切后脸必须落在视图中心（真实渲染像素）")
     func faceCropPutsBoundingBoxAtCenterInRenderedPixels() throws {
-        let source = makeFaceFixtureImage()
+        let source = try makeFaceFixtureImage()
         let view = FaceCropThumbnailView(previewImage: source, bbox: [0.45, 0.2, 0.1, 0.1])
             .frame(width: 100, height: 100)
         let renderer = ImageRenderer(content: view)
@@ -346,7 +343,7 @@ struct ReviewFixTests {
 
     @Test("F05/N02：margin=0 时中心仍被对齐到人脸")
     func faceCropAlignsTightBoundingBox() throws {
-        let source = makeFaceFixtureImage()
+        let source = try makeFaceFixtureImage()
         let view = FaceCropThumbnailView(previewImage: source, bbox: [0.45, 0.2, 0.1, 0.1], margin: 0)
             .frame(width: 60, height: 60)
         let renderer = ImageRenderer(content: view)

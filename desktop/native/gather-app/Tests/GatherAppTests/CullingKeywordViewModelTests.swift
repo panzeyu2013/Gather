@@ -113,7 +113,7 @@ struct CullingKeywordViewModelTests {
     }
 
     @Test("预览记录 photoIds/added/removed 入参")
-    func previewInputs() async {
+    func previewInputs() async throws {
         let (vm, metadata, _) = makeKeywordVM()
         seedSelection(vm)
         metadata.keywordPreviewResult = WritebackPreview(items: [], totalCount: 1, affectedPhotos: 2)
@@ -122,16 +122,16 @@ struct CullingKeywordViewModelTests {
 
         await vm.previewKeywordWriteback()
 
-        let input = try? #require(metadata.keywordPreviewInputs.first)
-        #expect(input?.photoIds == ["p1", "p2"])
-        #expect(input?.addedKeywords == ["新娘"])
-        #expect(input?.removedKeywords == ["仪式"])
+        let input = try #require(metadata.keywordPreviewInputs.first)
+        #expect(input.photoIds == ["p1", "p2"])
+        #expect(input.addedKeywords == ["新娘"])
+        #expect(input.removedKeywords == ["仪式"])
         #expect(vm.keywordPreview != nil)
         #expect(vm.keywordCanApply)
     }
 
     @Test("应用构造 Confirmed 入参、成功后清空草稿")
-    func applyInputsAndReset() async {
+    func applyInputsAndReset() async throws {
         let (vm, metadata, _) = makeKeywordVM()
         seedSelection(vm)
         metadata.keywordPreviewResult = WritebackPreview(items: [], totalCount: 1, affectedPhotos: 2)
@@ -147,9 +147,9 @@ struct CullingKeywordViewModelTests {
         await vm.previewKeywordWriteback()
         await vm.applyKeywordWriteback()
 
-        let confirmed = try? #require(metadata.keywordApplyInputs.first)
-        #expect(confirmed?.value.addedKeywords == ["新娘"])
-        #expect(confirmed?.source == .userDialog)
+        let confirmed = try #require(metadata.keywordApplyInputs.first)
+        #expect(confirmed.value.addedKeywords == ["新娘"])
+        #expect(confirmed.source == .userDialog)
         #expect(vm.keywordAdded.isEmpty)
         #expect(vm.keywordPreview == nil)
         #expect(vm.keywordResult?.result.written == 2)

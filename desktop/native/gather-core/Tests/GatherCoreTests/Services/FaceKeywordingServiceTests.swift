@@ -194,12 +194,17 @@ private func runRow(_ db: DBConnection, _ sessionId: String) throws -> DBRow? {
 /// SFace（37MB CoreML 包）——哪怕本次只跑一个无关用例；修复前实测每次
 /// `swift test` 都会因此产生一份 37MB 的临时编译产物。
 private enum DefaultSignatures {
-    static let analysisSignatureForDefaults = FaceKwService.makeAnalysisSignature(
-        detectorPath: "det.onnx", encoderPath: "enc.onnx",
-        primaryDetectionSize: 640, secondaryDetectionSize: 128,
-        confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 128,
-        previewMaxDimension: 2048, embeddingSpec: try! FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature
-    )
+    /// 抛错而不是 try!：模型加载失败应让用例失败，而不是杀掉测试进程。
+    /// 用 static func 而不是 static let，仍保持惰性求值（只有请求默认签名的用例才触发加载）。
+    static func analysisSignature() throws -> String {
+        FaceKwService.makeAnalysisSignature(
+            detectorPath: "det.onnx", encoderPath: "enc.onnx",
+            primaryDetectionSize: 640, secondaryDetectionSize: 128,
+            confidenceThreshold: 0.5, encoderInputSize: 112, embeddingDim: 128,
+            previewMaxDimension: 2048,
+            embeddingSpec: try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature
+        )
+    }
 }
 
 // MARK: - 参数校验（TS: face-parameters.test.ts）
@@ -280,7 +285,8 @@ struct FaceKwObservationRetentionTests {
         #expect(observations[0].bboxH == 40)
         #expect(observations[0].confidence == 0.95)
         let state = try harness.faceRepo.getAnalysisStates(harness.sessionId)
-        #expect(state["photo-1"]?.analysisSignature == DefaultSignatures.analysisSignatureForDefaults)
+        let defaultSignature = try DefaultSignatures.analysisSignature()
+        #expect(state["photo-1"]?.analysisSignature == defaultSignature)
         // 终态真相源是 analysis_runs（sessions.analysis_status 无人写）。
         #expect(try runRow(harness.db, harness.sessionId)?[6].textValue == "ok")
     }
@@ -360,7 +366,7 @@ struct FaceKwAnalyzeFlowTests {
         try harness.faceRepo.upsertAnalysisState(
             sessionId: harness.sessionId, photoId: "photo-1",
             sourceFileSize: stat.size, sourceFileMtimeMs: stat.mtimeMs,
-            analysisSignature: DefaultSignatures.analysisSignatureForDefaults)
+            analysisSignature: try DefaultSignatures.analysisSignature())
         // 聚类签名（缓存键）含质量门槛与二遍阈值：用生产同一构造函数，避免格式漂移导致
         // 该用例悄悄退化为"重聚类"（本测试断言的是缓存快路径）。
         let seededClusterOptions = FaceKwService.clusterOptions(from: ClosureSettingsReader { _ in nil })
@@ -1365,7 +1371,7 @@ struct PersonLibraryTests {
 
         let person = try repo.get(id: id)!
         #expect(person.name == "Alice")
-        #expect(((try? JSONValue.parse(person.keywords)) as JSONValue?)?.arrayValue == ["kw1"])
+        #expect(try JSONValue.parse(person.keywords).arrayValue == ["kw1"])
 
         try repo.update(id: id, fields: PersonUpdateFields(name: "Alice B.", keywords: ["kw1", "kw2"], notes: "note", matchThreshold: 0.6))
         let updated = try repo.get(id: id)!
@@ -1391,7 +1397,7 @@ struct PersonLibraryTests {
         let again = try repo.upsertByName(name: "Alice", keywords: ["kw2"])
         #expect(first == again)
         let person = try repo.get(id: first)!
-        #expect(((try? JSONValue.parse(person.keywords)) as JSONValue?)?.arrayValue == ["kw1", "kw2"])
+        #expect(try JSONValue.parse(person.keywords).arrayValue == ["kw1", "kw2"])
 
         try repo.addPhotos(personId: first, sessionId: sessionId, photos: [
             PersonPhotoInput(photoId: photoIds[0], faceBbox: [1, 2, 3, 4], confidence: 0.9),
@@ -1674,7 +1680,8 @@ struct FaceAlgorithmWiringTests {
         #expect(signature("vision-v1") != signature("vision-v2"))
         // 生产走 FaceEncoder.embeddingSpec；测试里的默认签名常量必须与之一致，
         // 否则"缓存快路径"用例会悄悄退化成重推理。
-        #expect(signature(try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature) == DefaultSignatures.analysisSignatureForDefaults)
+        let defaultSignature = try DefaultSignatures.analysisSignature()
+        #expect(signature(try FaceEmbeddingModelFactory.spec(modelPath: "", modelVersion: "").signature) == defaultSignature)
     }
 }
 

@@ -209,17 +209,17 @@ struct CollectionTreeTests {
     }
 
     @Test("既有集合同时有子集合：节点仍可选；纯分组节点没有集合记录")
-    func mixedNodes() {
+    func mixedNodes() throws {
         let tree = CollectionTree.build([
             summary("1", "X"),
             summary("2", "X/Y"),
             summary("3", "P/Q/R"),
         ])
         // 根节点按名称排序（P 在 X 前），不能按下标断言。
-        let x = try! #require(tree.first { $0.path == "X" })
+        let x = try #require(tree.first { $0.path == "X" })
         #expect(!x.isGroup)
         #expect(x.children.map(\.displayName) == ["Y"])
-        let p = try! #require(tree.first { $0.path == "P" })
+        let p = try #require(tree.first { $0.path == "P" })
         #expect(p.isGroup)
         #expect(p.children[0].isGroup)
         #expect(p.children[0].children[0].collection?.id == "3")

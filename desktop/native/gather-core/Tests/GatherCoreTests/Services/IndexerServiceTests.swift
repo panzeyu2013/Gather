@@ -1068,10 +1068,10 @@ struct IndexScanScopeTests {
     /// 同一个键（/tmp → private/tmp、/var → private/var，macOS 实测符号链接）。
     /// 变异「删掉 /private/tmp 折叠」可杀。
     @Test("canonical folds /private so both spellings of /tmp and /var agree")
-    func canonicalFoldsPrivatePrefix() {
+    func canonicalFoldsPrivatePrefix() throws {
         // 独立 oracle：/tmp、/var 是指向 /private/* 的符号链接（不是实现自证）。
-        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: "/tmp")) == "private/tmp")
-        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: "/var")) == "private/var")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: "/tmp") == "private/tmp")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: "/var") == "private/var")
         #expect(ScanPath.canonical("/private/tmp/gather-fold/photo.jpg")
                 == ScanPath.canonical("/tmp/gather-fold/photo.jpg"),
                 "/tmp 两种拼写必须归一到同一个键")
