@@ -76,6 +76,10 @@ jobs:
       # 必须与源码计算一致（targets/API/schema/本地化 key/门禁脚本数）。
       - name: Docs facts
         run: ./scripts/check-docs-facts.sh
+      # 性能反模式 ratchet：per-call DateFormatter/JSONEncoder/NSRegularExpression/...
+      # 构造点不得高于 docs/perf-baseline.json（只许降，新增热点必须走共享缓存）。
+      - name: Perf ratchet
+        run: ./scripts/check-perf-ratchet.sh
 
   gather-core:
     name: gather-core tests

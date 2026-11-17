@@ -18,6 +18,8 @@
 #     user_version=1）与 DDL 字面量实测计数交叉核对
 #   - 门禁脚本：scripts/check-*.sh 总数减 check-appintents.sh（自检，非门禁），
 #     并列出清单，便于 docs/DEVELOPMENT 的门禁清单与 docs/README 的门禁数同步
+#   - 性能 ratchet：docs/perf-baseline.json 的构造点基线 + Sources 当前实测
+#     （口径同 scripts/check-perf-ratchet.sh：非纯注释行计数，Tests 不计）
 #   - ratchet baseline：docs/protocol-surface-baseline.json、
 #     docs/protocol-surface-modules-baseline.json、docs/cleanup-baseline.json 的字段值
 #
@@ -409,6 +411,60 @@ gate_names = [p.name for p in gate_files if p.name != 'check-appintents.sh']
 row('门禁脚本数', len(gate_names))
 note('排除：check-appintents.sh（需要已组装的 .app，是自检不是门禁）')
 note('清单：' + ', '.join(gate_names))
+
+
+# ---------------------------------------------------------------- 6b) 性能 ratchet
+section('性能 ratchet（docs/perf-baseline.json + 当前实测；口径同 check-perf-ratchet.sh）')
+PERF_SOURCES = [
+    Path('desktop/native/gather-core/Sources'),
+    Path('desktop/native/gather-app/Sources'),
+]
+PERF_METRICS = [
+    ('raw_date_formatter', r'(^|[^A-Za-z0-9_])DateFormatter\(\)'),
+    ('raw_iso_formatter', r'(^|[^A-Za-z0-9_])ISO8601DateFormatter\(\)'),
+    ('raw_json_encoder', r'(^|[^A-Za-z0-9_])JSONEncoder\(\)'),
+    ('raw_json_decoder', r'(^|[^A-Za-z0-9_])JSONDecoder\(\)'),
+    ('raw_regex_compile', r'(^|[^A-Za-z0-9_])NSRegularExpression\('),
+    ('raw_byte_formatter', r'(^|[^A-Za-z0-9_])ByteCountFormatter\(\)'),
+    ('blocking_sleep', r'(^|[^A-Za-z0-9_])Thread\.sleep\('),
+]
+perf_files = sorted(p for root in PERF_SOURCES for p in root.rglob('*.swift'))
+perf_current = {key: 0 for key, _ in PERF_METRICS}
+for path in perf_files:
+    if not path.is_file():
+        continue
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith('//') or stripped.startswith('*'):
+            continue
+        for key, pattern in PERF_METRICS:
+            if re.search(pattern, line):
+                perf_current[key] += 1
+row('扫描面', '%d 个 Sources Swift 文件（Tests 不计）' % len(perf_files))
+PERF_BASELINE = Path('docs/perf-baseline.json')
+if not PERF_BASELINE.is_file():
+    row('baseline', 'MISSING docs/perf-baseline.json（check-perf-ratchet.sh 会 FAIL）')
+else:
+    try:
+        perf_data = json.loads(PERF_BASELINE.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError) as exc:
+        row('baseline', 'UNREADABLE docs/perf-baseline.json（%s）' % exc)
+        perf_data = {}
+    base_metrics = perf_data.get('metrics', {}) if isinstance(perf_data, dict) else {}
+    row('baseline 元信息', '%s（generated_at %s）'
+        % (perf_data.get('generated_by', '?'), perf_data.get('generated_at', '?')))
+    for key, cur in perf_current.items():
+        base = base_metrics.get(key)
+        if base is None:
+            status = 'baseline 缺 key（门禁 FAIL）'
+        elif cur > base:
+            status = 'FAIL (+%d)' % (cur - base)
+        elif cur < base:
+            status = 'improved (-%d；可收紧 baseline)' % (base - cur)
+        else:
+            status = 'ok'
+        row(key, 'current %d / baseline %s  %s'
+            % (cur, base if base is not None else '?', status))
 
 
 # ---------------------------------------------------------------- 7) ratchet baselines

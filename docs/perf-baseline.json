@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated_at": "2026-11-17T03:49:42Z",
+  "generated_by": "scripts/check-perf-ratchet.sh --write-baseline",
+  "counting": "matching non-comment lines (lines whose first non-space chars are // or * are ignored; at most 1 per line)",
+  "scope": "desktop/native/*/Sources/**/*.swift (Tests excluded; no file-level exclusions)",
+  "metrics": {
+    "raw_date_formatter": 28,
+    "raw_iso_formatter": 30,
+    "raw_json_encoder": 46,
+    "raw_json_decoder": 39,
+    "raw_regex_compile": 3,
+    "raw_byte_formatter": 1,
+    "blocking_sleep": 1
+  },
+  "notes": {
+    "blocking_sleep": "current 1 = GatherApplication/Services/Job/JobService+Settle.swift:210 Thread.sleep(forTimeInterval: 0.2)：罕见错误路径（瞬时 DB 错误）的终态写重试，位于同步 helper；目标 0，待未来轮次改为 async 重试后归零。基线钉在实测值，防止新增阻塞睡眠。",
+    "caches": "允许的共享缓存构造点（已计入基线）：GatherUI/Support/DateFormatting.swift（DateFormatter/ISO8601/ByteCountFormatter per-locale 缓存）、Support/JSONValueDecoding.swift（JSONEncoder/Decoder）、GatherApplication 的 RepoJSONCoding / RepositoryDateFormatters、以及 Synchronization.Mutex 锁盒子内的 NSRegularExpression 缓存。扩缓存同样需要显式改基线。"
+  },
+  "scopes": {
+    "raw_date_formatter": "desktop/native/*/Sources/**/*.swift",
+    "raw_iso_formatter": "desktop/native/*/Sources/**/*.swift",
+    "raw_json_encoder": "desktop/native/*/Sources/**/*.swift",
+    "raw_json_decoder": "desktop/native/*/Sources/**/*.swift",
+    "raw_regex_compile": "desktop/native/*/Sources/**/*.swift",
+    "raw_byte_formatter": "desktop/native/*/Sources/**/*.swift",
+    "blocking_sleep": "desktop/native/*/Sources/**/*.swift"
+  }
+}

@@ -16,6 +16,7 @@
 | 2026-11-11 | 功能缺口复核（Wave1–4c 修复后，约 950 行分册） | 已完成 | [00-synthesis.md](2026-11-11-competitive-gap-rereview/00-synthesis.md) |
 | 2026-11-17 | 全仓质量加固审计（整洁度 / 规范 / 测试 / 设计 / 性能，round-1） | 已完成（round-1 提交） | [00-overview.md](2026-11-17-quality-hardening/00-overview.md) |
 | 2026-11-17 | 第二轮全量加固审计（性能 / 测试 / 门禁 / 国际化 / 设计） | 已完成（round-2） | [00-overview.md](2026-11-17-round2-hardening/00-overview.md) |
+| 2026-11-17 | 第三轮性能专项加固审计（DB / 查询、渲染、启动 / 缓存、性能门禁） | 已完成（round-3） | [00-overview.md](2026-11-17-round3-perf/00-overview.md) |
 
 ## 单篇评审 / 台账
 
