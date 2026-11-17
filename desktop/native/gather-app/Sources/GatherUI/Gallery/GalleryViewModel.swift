@@ -335,7 +335,8 @@ public final class GalleryViewModel: SessionPageModel {
     /// 要 flatMap+filter 各若干遍（1 万行含 lowercased 实测 3.6-3.9ms/遍）。
     /// 现在按代数 + 过滤参数缓存，只在真的变化时重算（派生计算在 +Derived）。
     var pagesGeneration = 0
-    var flatCache: (generation: Int, photos: [GalleryPhotoData])?
+    /// 拍平照片 + 同代数的 id 集合（perf-ui task-10：body 里的命中判断走 O(1) Set）。
+    var flatCache: (generation: Int, photos: [GalleryPhotoData], ids: Set<String>)?
     var filteredCache: (key: String, photos: [GalleryPhotoData])?
 
     public init(

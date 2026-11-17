@@ -97,8 +97,11 @@ extension GalleryView {
     /// Wave5 batch8：场景标签种子/可开判定（选择集优先，无选择时用键盘游标/当前照片）。
     private var gallerySceneTagSeedIds: [String] {
         // 键盘游标可能指向已翻页/被筛掉的照片：不在已加载页就视为没有当前照片。
+        // perf-ui task-10：旧实现 body 每帧两次 `loadedPhotos.contains(where:)`（O(n)），
+        // 改用 VM 同代数缓存的 id 集合（O(1)）。
+        let loadedIDs = viewModel.loadedPhotoIdSet
         let current = keyboardCursorId.flatMap { id in
-            viewModel.loadedPhotos.contains(where: { $0.id == id }) ? id : nil
+            loadedIDs.contains(id) ? id : nil
         }
         return SceneTagsEntryPolicy.seedPhotoIds(
             selection: viewModel.selectedIds.sorted(),

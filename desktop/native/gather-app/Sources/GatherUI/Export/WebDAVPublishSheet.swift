@@ -72,9 +72,8 @@ struct WebDAVPublishSheet: View {
 
     private var proofExpiresAt: String? {
         guard useExpiry else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.string(from: expiryDate)
+        // task-10：body 每次求值原本新建 ISO8601DateFormatter；复用共享缓存（同 formatOptions）。
+        return DisplayDateFormatters.shared.internetDateTimeString(from: expiryDate)
     }
 
     private var shareOptions: OutputShareOptions {

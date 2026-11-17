@@ -18,7 +18,7 @@
 // - 浏览选项（筛选 / 显示）移出工具栏 → 右侧 .inspector（Bridge 右栏 /
 //   Capture One 工具页范式：工具栏只留模式与瞬时动作，浏览/筛选选项进检查器；
 //   显示/隐藏按钮由系统提供，不自绘）；
-// - 搜索改 .searchable；空态 / 无结果 / 加载失败改 ContentUnavailableView；
+// - 搜索改 .searchable；页面级空态 / 无结果 / 加载失败用 GatherEmptyState（2026-11-17 品牌空态）；
 // - 选中栏改用系统选中色（selectedContentBackgroundColor / …TextColor），
 //   不再用「白字压品牌色」；
 // - 灯箱 ←/→ 改 .onKeyPress + .focusable，删除 NSEvent 本地监听；

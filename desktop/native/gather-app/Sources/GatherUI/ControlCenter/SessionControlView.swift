@@ -156,18 +156,15 @@ public struct SessionControlView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(GatherMetrics.Space.xl)
                     } else {
-                        // 加载失败必须给出口（不再渲染空面板）。
-                        ContentUnavailableView {
-                            Label(
-                                viewModel.errorMessage == nil
-                                    ? l10n("暂无工作区状态")
-                                    : l10n("加载失败"),
-                                systemImage: "tray"
-                            )
-                        } description: {
-                            Text(viewModel.errorMessage.map { CommandErrorText.resolve($0, with: l10n) }
-                                ?? l10n("无法读取该工作区的状态，请刷新后重试。"))
-                        } actions: {
+                        // 加载失败必须给出口（不再渲染空面板）；页面级空态/失败态统一用品牌空态。
+                        GatherEmptyState(
+                            icon: "tray",
+                            title: viewModel.errorMessage == nil
+                                ? l10n("暂无工作区状态")
+                                : l10n("加载失败"),
+                            message: viewModel.errorMessage.map { CommandErrorText.resolve($0, with: l10n) }
+                                ?? l10n("无法读取该工作区的状态，请刷新后重试。")
+                        ) {
                             Button(l10n("刷新"), systemImage: "arrow.clockwise") {
                                 Task { await viewModel.load() }
                             }

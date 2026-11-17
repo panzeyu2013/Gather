@@ -67,7 +67,7 @@ struct IngestSheet: View {
 
             LabeledContent(l10n("来源")) {
                 HStack {
-                    Text(sources.isEmpty ? l10n("未选择") : sources.joined(separator: "、"))
+                    Text(sources.isEmpty ? l10n("未选择") : sources.joined(separator: l10n("、")))
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .foregroundStyle(sources.isEmpty ? .secondary : .primary)

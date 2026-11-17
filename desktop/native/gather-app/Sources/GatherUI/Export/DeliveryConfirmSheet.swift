@@ -13,7 +13,7 @@ struct DeliveryConfirmSheet: View {
     private var l10n: L10n { languageStore?.l10n ?? L10n(language: .zhCN) }
 
     private func sizeText(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        DisplayDateFormatters.shared.fileSize(Int64(bytes))
     }
 
     /// 空间不足或全部配方预检失败时不允许开始交付。

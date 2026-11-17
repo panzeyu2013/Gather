@@ -18,8 +18,8 @@ func parseISO8601Date(_ iso: String) -> Date? {
     return try? Date.ISO8601FormatStyle().parse(iso)
 }
 
-/// 展示用日期格式化/解析：**缓存 DateFormatter 与 ISO8601DateFormatter**
-/// （C-8/C-1 + perf-ui 性能修复，但输出与旧实现逐字节一致）。
+/// 展示用 formatter/解析器缓存：**DateFormatter / ISO8601DateFormatter /
+/// ByteCountFormatter**（C-8/C-1 + perf-ui 性能修复，输出与旧实现逐字节一致）。
 ///
 /// 教训（第二轮自查）：曾尝试改成 `Date.FormatStyle`——解析路径等价（实测 0 差异），
 /// 但**展示**路径 zh 下 `time: .shortened` 输出 "9:46"，旧实现是 "09:46"（缺前导零）
@@ -29,6 +29,11 @@ final class DisplayDateFormatters: @unchecked Sendable {
 
     private let lock = NSLock()
     private var cache: [String: DateFormatter] = [:]
+    /// 文件大小 formatter（task-10：类方法每次调用都新建实例）。
+    /// 只有 locale 变化时才重建，其它配置与
+    /// `ByteCountFormatter.string(fromByteCount:countStyle: .file)` 完全一致。
+    private var byteCountFormatter: ByteCountFormatter?
+    private var byteCountFormatterLocaleID = ""
     /// 展示层 ISO-8601 解析器（构造昂贵，进程内复用）。
     ///
     /// formatOptions 与旧实现逐字节一致：一个 `[.withInternetDateTime]`，
@@ -117,6 +122,58 @@ final class DisplayDateFormatters: @unchecked Sendable {
             return f
         }
         return formatter.string(from: date)
+    }
+
+    /// 文件大小展示：等价于旧调用的
+    /// `ByteCountFormatter.string(fromByteCount:countStyle: .file)`（逐字节一致）。
+    /// 持锁格式化（ByteCountFormatter 的并发安全没有 DateFormatter 那样的公开承诺）。
+    func fileSize(_ bytes: Int64) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let localeID = Locale.current.identifier
+        if let byteCountFormatter, byteCountFormatterLocaleID == localeID {
+            return byteCountFormatter.string(fromByteCount: bytes)
+        }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        byteCountFormatter = formatter
+        byteCountFormatterLocaleID = localeID
+        return formatter.string(fromByteCount: bytes)
+    }
+
+    /// ISO-8601 输出：等价于旧实现的
+    /// `ISO8601DateFormatter()` + `[.withInternetDateTime]`（WebDAV 到期时间）。
+    func internetDateTimeString(from date: Date) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return internetDateTimeFormatter.string(from: date)
+    }
+
+    /// 固定 UTC + `en_US_POSIX` 的墙上时间解析（EXIF DateTimeOriginal 的批量偏移）。
+    /// 与旧实现同 locale/timeZone/dateFormat；持锁保证跨线程（测试并行）安全。
+    func parseFixedUTC(_ string: String, format: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return fixedUTCFormatter(format: format).date(from: string)
+    }
+
+    /// `parseFixedUTC` 的格式化方向；同样是固定 UTC + `en_US_POSIX`。
+    func formatFixedUTC(_ date: Date, format: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return fixedUTCFormatter(format: format).string(from: date)
+    }
+
+    /// 调用方必须已持有 `lock`（避免与其它 formatter 读取/创建并发）。
+    private func fixedUTCFormatter(format: String) -> DateFormatter {
+        let key = "fixedUTC|\(format)"
+        if let existing = cache[key] { return existing }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = format
+        cache[key] = formatter
+        return formatter
     }
 
     /// 缓存键里的隐式环境：旧实现每次新建 ⇒ locale / calendar / timeZone 取调用时值。

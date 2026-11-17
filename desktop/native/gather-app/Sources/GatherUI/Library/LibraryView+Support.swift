@@ -267,7 +267,7 @@ extension LibraryView {
             } else {
                 ForEach(offlineVolumes, id: \.volumeId) { volume in
                     VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
-                        Text(volume.roots.joined(separator: "、").isEmpty ? volume.volumeId : volume.roots.joined(separator: "、"))
+                        Text(volume.roots.joined(separator: l10n("、")).isEmpty ? volume.volumeId : volume.roots.joined(separator: l10n("、")))
                             .font(GatherFont.secondary)
                             .lineLimit(2)
                             .help(volume.roots.joined(separator: "\n"))

@@ -275,7 +275,7 @@ struct SemanticSearchSheet: View {
                 .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)
             Text(model.plannedKeywords.prefix(10)
-                .map { "\($0.displayName)（\($0.englishLabel)）" }
+                .map { l10n.format("%@（%@）", $0.displayName, $0.englishLabel) }
                 .joined(separator: " · "))
                 .font(GatherFont.secondary)
                 .foregroundStyle(.secondary)

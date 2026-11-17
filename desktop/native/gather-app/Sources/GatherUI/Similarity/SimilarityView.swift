@@ -13,7 +13,7 @@
 // - 手绘卡片背景/描边 → .gatherCard()（语义底色 + 系统分隔线）；
 // - 手绘分组网格（列数公式 + 行高估算 + 内嵌 ScrollView）→ LazyVGrid + 原生
 //   DisclosureGroup（自然高度，去掉嵌套滚动与手工高度估算）；
-// - 空态/错误态 → ContentUnavailableView；分隔线 → Divider()；
+// - 空态/错误态 → GatherEmptyState（2026-11-17 品牌空态）；分隔线 → Divider()；
 // - 排版：内容语义升到 .callout/.headline，去掉 10pt 承载计数/文件名。
 //
 // Cut 4 / 4c-2h：1010 行 -> 8 文件（行为不变）。本文件只留外壳：4 个 Pending

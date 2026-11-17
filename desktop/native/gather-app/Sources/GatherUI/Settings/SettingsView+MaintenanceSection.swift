@@ -240,7 +240,8 @@ private struct MaintenanceSettingsSection: View {
     }
 
     private func sizeText(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        // task-10：逐行路径复用共享 ByteCountFormatter（输出与类方法一致）。
+        DisplayDateFormatters.shared.fileSize(bytes)
     }
 
     /// 备份时间：跟随**界面语言**，不是系统 locale（F-P2：切英文后仍显示中文日期）。

@@ -136,7 +136,7 @@ struct DuplicatesTabSelector: View {
     }
 }
 
-/// 空态 / 失败态：全部走系统 ContentUnavailableView；
+/// 空态 / 失败态：页面级统一走品牌 GatherEmptyState；
 /// 加载失败必须给重试出口（不渲染误导性的「先运行扫描」）。
 struct DuplicatesEmptyState: View {
     let viewModel: DuplicatesViewModel
@@ -146,11 +146,11 @@ struct DuplicatesEmptyState: View {
 
     var body: some View {
         if let error = viewModel.errorMessage, viewModel.scanResult == nil {
-            ContentUnavailableView {
-                Label(l10n("载入重复照片失败"), systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(CommandErrorText.resolve(error, with: l10n))
-            } actions: {
+            GatherEmptyState(
+                icon: "exclamationmark.triangle",
+                title: l10n("载入重复照片失败"),
+                message: CommandErrorText.resolve(error, with: l10n)
+            ) {
                 // 失败态不是整页出口：上面的扫描卡（「开始扫描」= 本页唯一 primary）
                 // 仍在同一屏，重试只做局部恢复，按重试层级用 secondary。
                 Button(l10n("重试")) { Task { await viewModel.load() } }
@@ -159,22 +159,22 @@ struct DuplicatesEmptyState: View {
             }
         } else if viewModel.scanResult == nil {
             // F13：空态不再放第二个同权「开始扫描」——上面控制卡里的主动作就是它。
-            ContentUnavailableView {
-                Label(l10n("尚未扫描"), systemImage: "square.on.square")
-            } description: {
-                Text(l10n("用上方的「开始扫描」检测内容完全一致的文件与视觉近似候选。"))
-            }
+            GatherEmptyState(
+                icon: "square.on.square",
+                title: l10n("尚未扫描"),
+                message: l10n("用上方的「开始扫描」检测内容完全一致的文件与视觉近似候选。")
+            )
         } else if viewModel.showExact {
-            ContentUnavailableView(
-                l10n("未发现完全重复的照片"),
-                systemImage: "square.on.square",
-                description: Text(l10n("当前工作区没有内容完全一致的文件。"))
+            GatherEmptyState(
+                icon: "square.on.square",
+                title: l10n("未发现完全重复的照片"),
+                message: l10n("当前工作区没有内容完全一致的文件。")
             )
         } else {
-            ContentUnavailableView(
-                l10n("未发现视觉相似的照片"),
-                systemImage: "square.on.square",
-                description: Text(l10n("可适当放宽匹配强度后重新扫描。"))
+            GatherEmptyState(
+                icon: "square.on.square",
+                title: l10n("未发现视觉相似的照片"),
+                message: l10n("可适当放宽匹配强度后重新扫描。")
             )
         }
     }

@@ -35,7 +35,13 @@ public final class CullingViewModel: SessionPageModel {
     /// Cut 3 / 3b-3（E-17）：只持 Protocol 能力面（CaptureOneBridging）。
     let captureOne: any CaptureOneBridging
     public let sessionId: String
-    public internal(set) var page: CullingPage?
+    /// 页内容。`didSet` 让 `currentAsset` 的 O(1) 索引缓存**在任何赋值路径**上失效
+    /// （含扩展/测试里的 internal 赋值；缓存本身按 `pageVersion` 命中，见 currentAsset）。
+    public internal(set) var page: CullingPage? {
+        didSet {
+            pageAssetIndexCache = nil
+        }
+    }
     public internal(set) var summary: CullingSummary?
     public internal(set) var syncStatus: MetadataSyncSummary?
     public internal(set) var history: [CullingHistoryOperation] = []
@@ -122,9 +128,62 @@ public final class CullingViewModel: SessionPageModel {
     public static let defaultQualityPollIntervalMilliseconds = 500
     private let qualityPollIntervalMilliseconds: Int
     public internal(set) var currentPhotoId: String?
+    /// `currentAsset` 的 O(1) 索引缓存（perf-ui task-10 / P0）。
+    ///
+    /// 旧实现每次读取都线性扫 `page.assets.first(where:)`：CullingInspector 一帧
+    /// 直接/间接读 ~18 次、CullingWorkbenchViewer 25 处、InfoBar/SecondDisplay 等
+    /// 也读，页 500 张时每帧上万次 id 比较。索引按 `pageVersion` 命中；
+    /// `page.didSet` 会在任何赋值路径上清空它（双保险：`pageVersion` 目前由
+    /// +Load/+Grid/+Actions 的 7 处生产赋值点各自 bump，见审计文档）。
+    /// 决策回显同样替换 page ⇒ 位置索引随 pageVersion 重建，返回的资产始终从当前 page 现取。
+    @ObservationIgnored private var pageAssetIndexCache: PageAssetIndex?
+
+    /// 页内 photoId→下标索引（位置索引，而不是复制整页资产）。
+    ///
+    /// 取舍（Linux Swift 6.2 实测，500 张页、每帧 18 次读取，仅供参考）：
+    /// - 旧实现 18 次 `first(where:)`：~20µs/帧；
+    /// - `[photoId: CullingAsset]` 索引重建 + 18 次读取：~121µs（整页资产复制/释放主导）；
+    /// - 位置索引重建 + 18 次读取：~77µs；
+    /// - 两者命中（同 pageVersion）：~0.37µs/帧。
+    /// 位置索引还保证返回的资产 state 永远来自当前 page（不会持有旧快照）。
+    private struct PageAssetIndex {
+        let pageVersion: Int
+        /// 重复 photoId 保留**首个**（与旧实现 `first(where:)` 同义）。
+        let assetIndexByPhotoID: [String: Int]
+    }
+
+    private var pageAssetIndex: PageAssetIndex {
+        if let cached = pageAssetIndexCache, cached.pageVersion == pageVersion {
+            return cached
+        }
+        let assets = page?.assets ?? []
+        var byPhotoID: [String: Int] = [:]
+        byPhotoID.reserveCapacity(assets.count)
+        for (index, asset) in assets.enumerated() where byPhotoID[asset.photo.id] == nil {
+            // 重复 id 保留首个（与旧实现 `first(where:)` 同义）。
+            byPhotoID[asset.photo.id] = index
+        }
+        let index = PageAssetIndex(
+            pageVersion: pageVersion,
+            assetIndexByPhotoID: byPhotoID
+        )
+        pageAssetIndexCache = index
+        return index
+    }
+
+    /// 当前照片资产（O(1) 读取；语义与旧实现完全一致）：
+    /// - currentPhotoId 为空 → page 首张；
+    /// - currentPhotoId 不在当前页 → page 首张（旧实现 `?? page?.assets.first`）；
+    /// - 页为空 → nil。
     public var currentAsset: CullingAsset? {
-        guard let currentPhotoId else { return page?.assets.first }
-        return page?.assets.first { $0.photo.id == currentPhotoId } ?? page?.assets.first
+        let index = pageAssetIndex
+        guard let page else { return nil }
+        guard let currentPhotoId,
+              let position = index.assetIndexByPhotoID[currentPhotoId],
+              page.assets.indices.contains(position) else {
+            return page.assets.first
+        }
+        return page.assets[position]
     }
     public internal(set) var selectedPhotoIds: Set<String> = []
     /// ⇧ 范围选择的稳定锚点：普通/⌘ 点击更新，⇧ 点击只移动 current，不改锚点。

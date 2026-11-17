@@ -101,14 +101,14 @@ extension SimilarityView {
         .gatherCard()
     }
 
-    /// 加载/轮询失败错误态（TS index.tsx:994-999）：系统空态视图 + 重试出口
+    /// 加载/轮询失败错误态（TS index.tsx:994-999）：品牌空态视图 + 重试出口
     /// （重跑 load()：重新查询结果并做挂载恢复）。
     private var errorState: some View {
-        ContentUnavailableView {
-            Label(l10n("加载结果失败"), systemImage: "exclamationmark.triangle")
-        } description: {
-            Text(l10n.format("错误：%@", loadErrorMessage))
-        } actions: {
+        GatherEmptyState(
+            icon: "exclamationmark.triangle",
+            title: l10n("加载结果失败"),
+            message: l10n.format("错误：%@", loadErrorMessage)
+        ) {
             Button(l10n("重试")) {
                 Task { await viewModel.load() }
             }
@@ -250,11 +250,11 @@ extension SimilarityView {
     /// 页顶那个才是主动作；这里改为解释原因 + 提供「重新聚类」这一补救动作
     ///（放宽阈值后重聚类），不再复制一个主按钮。
     private var emptyGroupsState: some View {
-        ContentUnavailableView {
-            Label(l10n("当前参数未找到相似分组。"), systemImage: "square.stack.3d.up.slash")
-        } description: {
-            Text(l10n("可以放宽阈值或改用「宽松」预设后重新聚类。"))
-        } actions: {
+        GatherEmptyState(
+            icon: "square.stack.3d.up.slash",
+            title: l10n("当前参数未找到相似分组。"),
+            message: l10n("可以放宽阈值或改用「宽松」预设后重新聚类。")
+        ) {
             Button(viewModel.isReclustering ? l10n("聚类中…") : l10n("重新聚类")) {
                 Task { await viewModel.recluster() }
             }

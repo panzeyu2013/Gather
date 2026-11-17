@@ -114,7 +114,7 @@ extension LibraryView {
         }
     }
 
-    /// 无结果态：系统 ContentUnavailableView + 「清除筛选」出口。
+    /// 无结果态：GatherEmptyState + 「清除筛选」出口。
     private var emptyState: some View {
         // E 报告：空库（没有任何筛选条件）时旧实现只给一个**被禁用**的
         //「清除筛选」——用户面对死路。这里分两种语义：

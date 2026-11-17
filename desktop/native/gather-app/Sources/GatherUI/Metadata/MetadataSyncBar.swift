@@ -241,7 +241,7 @@ struct MetadataSyncBar: View {
     private var backupText: String {
         let bytes = state?.backupBytes ?? 0
         guard bytes > 0 else { return l10n("0 KB") }
-        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        return DisplayDateFormatters.shared.fileSize(bytes)
     }
 
     /// 只在"C1 待重载"时出现：门禁生效 + 仍有已写盘未确认的行。

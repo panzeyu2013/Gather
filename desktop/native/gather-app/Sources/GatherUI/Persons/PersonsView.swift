@@ -143,11 +143,11 @@ package struct PersonsView: View {
         case .failed(let error):
             // 加载失败必须给出口（不再是自绘感叹号 + 裸按钮）。
             // 4a-3b-2a：错误以 `CommandError` 传入，文案在渲染期按当前语言解析。
-            ContentUnavailableView {
-                Label(l10n("加载失败"), systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(l10n.format("加载失败：%@", CommandErrorText.resolve(error, with: l10n)))
-            } actions: {
+            GatherEmptyState(
+                icon: "exclamationmark.triangle",
+                title: l10n("加载失败"),
+                message: l10n.format("加载失败：%@", CommandErrorText.resolve(error, with: l10n))
+            ) {
                 Button(l10n("重试")) {
                     Task { await viewModel.load() }
                 }
@@ -226,17 +226,17 @@ package struct PersonsView: View {
             // N10：空库时的主动作只有一个——左侧空态已经给出「新建人物」，
             // 右侧不再放第二个同权按钮（旧实现工具栏 + 左 + 右三处并列，
             // 而右侧还写着「从左侧列表选择一个人物」，指向一个空列表）。
-            ContentUnavailableView {
-                Label(l10n("人脸库还是空的"), systemImage: "person.crop.circle")
-            } description: {
-                Text(l10n("新建人物后，就可以把工作区里的人脸簇绑定到角色上。"))
-            }
+            GatherEmptyState(
+                icon: "person.crop.circle",
+                title: l10n("人脸库还是空的"),
+                message: l10n("新建人物后，就可以把工作区里的人脸簇绑定到角色上。")
+            )
         } else {
-            ContentUnavailableView {
-                Label(l10n("未选择人物"), systemImage: "person.crop.circle")
-            } description: {
-                Text(l10n("从左侧列表选择一个人物"))
-            }
+            GatherEmptyState(
+                icon: "person.crop.circle",
+                title: l10n("未选择人物"),
+                message: l10n("从左侧列表选择一个人物")
+            )
         }
     }
 }

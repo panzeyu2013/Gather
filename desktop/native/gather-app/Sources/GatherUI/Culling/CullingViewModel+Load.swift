@@ -188,6 +188,9 @@ extension CullingViewModel {
     ///   后续 loadMore 仍按 pageLimit 走。
     func loadPage(reset: Bool, initialLimit: Int? = nil) async {
         guard !sessionId.isEmpty else {
+            // 无会话 = 清空页；pageVersion 同样要前进（审计：这是唯一没有显式
+            // bump 的 page 赋值路径），保证 currentAsset 索引与在途守卫一起失效。
+            pageVersion += 1
             page = nil
             summary = nil
             return

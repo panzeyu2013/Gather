@@ -67,12 +67,12 @@ extension CullingView {
                     )
                 }
             } else if let error = viewModel.errorMessage {
-                // 加载失败不留空面板/黑屏：系统空态 + 重试出口。
-                ContentUnavailableView {
-                    Label(l10n("载入挑片工作台失败"), systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(CommandErrorText.resolve(error, with: l10n))
-                } actions: {
+                // 加载失败不留空面板/黑屏：品牌空态 + 重试出口。
+                GatherEmptyState(
+                    icon: "exclamationmark.triangle",
+                    title: l10n("载入挑片工作台失败"),
+                    message: CommandErrorText.resolve(error, with: l10n)
+                ) {
                     Button(l10n("重试")) { Task { await viewModel.load() } }
                         .gatherButton(.primary)
                 }
@@ -207,11 +207,7 @@ extension CullingView {
         actionTitle: String? = nil,
         action: (() -> Void)? = nil
     ) -> some View {
-        ContentUnavailableView {
-            Label(title, systemImage: systemImage)
-        } description: {
-            Text(message)
-        } actions: {
+        GatherEmptyState(icon: systemImage, title: title, message: message) {
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
                     .gatherButton(.secondary)

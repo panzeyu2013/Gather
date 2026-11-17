@@ -143,6 +143,9 @@ struct DuplicatesGroupCardView: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(member.filename)，\(member.isKept ? l10n("保留") : l10n("丢弃"))")
+        .accessibilityLabel(l10n.format(
+            "%@，%@",
+            member.filename,
+            member.isKept ? l10n("保留") : l10n("丢弃")))
     }
 }

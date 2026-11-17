@@ -8,7 +8,7 @@
 // - 手搓多选（selectMode + 自绘 checkbox 图标）→ List(selection:) 原生多选：
 //   ⌘ 点选、⇧ 连选、行内选中高亮与 Delete 键命令全部由系统负责；
 // - 自绘卡片底 / 描边 / 悬停态 → .gatherCard() 分组容器 + 系统 Divider；
-// - 空态 / 错误态 → ContentUnavailableView（macOS 14+），失败一定带重试出口；
+// - 空态 / 错误态 → 页面级用品牌 GatherEmptyState，List Section 内联仍用系统 ContentUnavailableView；失败一定带重试出口；
 // - 计数与状态改走系统文本样式；warning 不再做正文前景色（图标 + 低透明度底色）。
 //
 // Cut 4 / 4c-2i：Dashboard 拆分（行为不变）。本文件只保留页面壳（状态/接线/

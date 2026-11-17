@@ -23,6 +23,9 @@ struct CullingInfoBar: View {
         // 「同名 RAW/JPEG 共用 XMP…」整句 + 4~5 位计数，这些**只在实际数据下
         // 出现**的内容一旦同时出现就会顶破最小窗口的 680pt 预算。
         // 放进横向滚动容器后，本行的最小宽度不再等于内容总宽。
+        // perf-ui task-10：currentIndex 是 O(page) firstIndex，正文两处各读一次；
+        // 这里先算一次复用（滚动/决策重绘时不再扫两遍已加载页）。
+        let index = currentIndex
         ScrollView(.horizontal) {
             HStack(spacing: GatherMetrics.Space.m) {
             // 上一张/下一张：可见按钮承载 ←/→ 裸键快捷键（取代窗口级 NSEvent 监听）。
@@ -45,11 +48,11 @@ struct CullingInfoBar: View {
                 .accessibilityLabel(l10n("下一张"))
             }
             if let page = viewModel.page {
-                Text("\(currentIndex + 1) / \(viewModel.page?.total ?? page.assets.count)")
+                Text("\(index + 1) / \(viewModel.page?.total ?? page.assets.count)")
                     .font(GatherFont.bodyStrong)
                     .monospacedDigit()
                     .foregroundStyle(.primary)
-                    .accessibilityLabel(l10n.format("第 %lld 张，共 %lld 张", currentIndex + 1, viewModel.page?.total ?? page.assets.count))
+                    .accessibilityLabel(l10n.format("第 %lld 张，共 %lld 张", index + 1, viewModel.page?.total ?? page.assets.count))
             }
             // B1 / 20-culling-viewer §2 P1：对比/Survey 的多选是构造画面的手段，
             // 不能同时悄悄变成批量写入目标（旧实现「盯着 A 按 X」会标掉 B…I）。

@@ -198,7 +198,7 @@ struct PhotoRenameSheet: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
                     ForEach(result.failed, id: \.photoId) { failure in
-                        Text("\(failure.path)：\(failure.message)")
+                        Text(l10n.format("%@：%@", failure.path, failure.message))
                             .font(GatherFont.labelRegular)
                             .foregroundStyle(.red)
                     }
@@ -299,7 +299,7 @@ struct PhotoMoveSheet: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: GatherMetrics.Space.xxs) {
                     ForEach(result.failed, id: \.photoId) { failure in
-                        Text("\(failure.path)：\(failure.message)")
+                        Text(l10n.format("%@：%@", failure.path, failure.message))
                             .font(GatherFont.labelRegular)
                             .foregroundStyle(.red)
                     }

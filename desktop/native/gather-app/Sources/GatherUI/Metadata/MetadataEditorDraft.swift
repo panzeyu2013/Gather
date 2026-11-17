@@ -236,13 +236,13 @@ enum MetadataEditorDraft {
     /// 进位由 Date 的绝对时间算术负责。
     static func shiftedDateTime(_ raw: String, bySeconds seconds: Int) -> String? {
         guard let normalized = MetadataGeoDateInput.normalizedDateTime(raw) else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-        guard let date = formatter.date(from: normalized) else { return nil }
-        let shifted = date.addingTimeInterval(TimeInterval(seconds))
-        return formatter.string(from: shifted)
+        // perf-ui task-10：批量时间预演对每张照片（上限 200）调用一次，旧实现每次
+        // 新建 DateFormatter；复用共享缓存（同 en_US_POSIX / UTC / 固定 pattern）。
+        let formatters = DisplayDateFormatters.shared
+        let format = "yyyy-MM-dd'T'HH:mm:ss"
+        guard let date = formatters.parseFixedUTC(normalized, format: format) else { return nil }
+        return formatters.formatFixedUTC(
+            date.addingTimeInterval(TimeInterval(seconds)), format: format)
     }
 
     private static func normalized(_ text: String?) -> String {

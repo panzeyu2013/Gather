@@ -36,15 +36,27 @@ extension GalleryViewModel {
             || !committedFacetSelection.values.allSatisfy { $0.isEmpty }
             || !committedRules.conditions.isEmpty
     }
-    /// TS: loadedPhotos（全部已加载页拍平）。
-    public var loadedPhotos: [GalleryPhotoData] {
+    /// TS: loadedPhotos（全部已加载页拍平 + 同代数缓存的 id 集合）。
+    ///
+    /// perf-ui task-10：id 集合与照片数组用**同一份**缓存构建，供 body 做 O(1)
+    /// 命中判断（GalleryInspector 原先每帧 2 次 `loadedPhotos.contains(where:)`）。
+    private func loadedPhotosAndIDs() -> (photos: [GalleryPhotoData], ids: Set<String>) {
         if let flatCache, flatCache.generation == pagesGeneration {
-            return flatCache.photos
+            return (flatCache.photos, flatCache.ids)
         }
         let photos = pages.flatMap { $0 }
-        flatCache = (pagesGeneration, photos)
-        return photos
+        var ids = Set<String>()
+        ids.reserveCapacity(photos.count)
+        for photo in photos { ids.insert(photo.id) }
+        flatCache = (pagesGeneration, photos, ids)
+        return (photos, ids)
     }
+
+    /// TS: loadedPhotos（全部已加载页拍平）。
+    public var loadedPhotos: [GalleryPhotoData] { loadedPhotosAndIDs().photos }
+
+    /// 已加载照片 id 集合（与 loadedPhotos 同代数、同缓存；O(1) 命中判断用）。
+    var loadedPhotoIdSet: Set<String> { loadedPhotosAndIDs().ids }
 
     /// TS: filtered —— 客户端过滤（文件名 contains + faceCount 判定）。
     ///

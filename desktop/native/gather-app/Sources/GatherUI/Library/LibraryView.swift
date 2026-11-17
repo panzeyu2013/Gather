@@ -8,7 +8,7 @@
 //   否则右侧 inspector 打开时会横跨内容列与检查器）；
 // - 「更多筛选」手搓展开 → 系统 DisclosureGroup；筛选字段走 LabeledContent 标签列；
 // - 自绘卡片底 / 描边 / 悬停态 → .gatherCard() 分组容器；
-// - 空态 / 无结果 / 加载失败 → ContentUnavailableView（macOS 14+）+ 重试/清除筛选出口；
+// - 空态 / 无结果 / 加载失败 → GatherEmptyState（品牌空态）+ 重试/清除筛选出口；
 // - 排版走系统文本样式（计数、文件名、状态不再是 10pt footnote），
 //   颜色一律语义色（去掉自造 hex 星级色与红底白字离线角标）。
 //

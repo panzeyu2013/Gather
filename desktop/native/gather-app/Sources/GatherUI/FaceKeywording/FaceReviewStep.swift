@@ -13,14 +13,11 @@ extension FaceKeywordingView {
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if viewModel.clusters.isEmpty {
-                ContentUnavailableView {
-                    Label(
-                        l10n("暂无人脸簇"),
-                        systemImage: "person.crop.circle.badge.questionmark"
-                    )
-                } description: {
-                    Text(l10n("先运行人脸分析"))
-                } actions: {
+                GatherEmptyState(
+                    icon: "person.crop.circle.badge.questionmark",
+                    title: l10n("暂无人脸簇"),
+                    message: l10n("先运行人脸分析")
+                ) {
                     Button(l10n("前往分析")) {
                         viewModel.setStep(.analyze)
                     }
@@ -157,11 +154,11 @@ extension FaceKeywordingView {
                     await viewModel.loadReview(clusterId: cluster.id, reset: true)
                 }
             } else {
-                ContentUnavailableView {
-                    Label(l10n("未选择人脸簇"), systemImage: "person.crop.square")
-                } description: {
-                    Text(l10n("点击左侧簇卡片查看成员与绑定编辑"))
-                }
+                GatherEmptyState(
+                    icon: "person.crop.square",
+                    title: l10n("未选择人脸簇"),
+                    message: l10n("点击左侧簇卡片查看成员与绑定编辑")
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

@@ -15,10 +15,10 @@ struct ExportPreviewSection: View {
         if let preview = viewModel.preview, !viewModel.isPlanStale {
             Section(l10n("预览")) {
                 LabeledContent(l10n("文件"), value: "\(preview.totalFiles)")
-                LabeledContent(l10n("大小"), value: ByteCountFormatter.string(fromByteCount: Int64(preview.totalSizeBytes), countStyle: .file))
+                LabeledContent(l10n("大小"), value: DisplayDateFormatters.shared.fileSize(Int64(preview.totalSizeBytes)))
                 // TS export.tsx:320-325：freeSpaceBytes<0 时隐藏该行且无警告。
                 if preview.freeSpaceBytes >= 0 {
-                    LabeledContent(l10n("可用空间"), value: ByteCountFormatter.string(fromByteCount: Int64(preview.freeSpaceBytes), countStyle: .file))
+                    LabeledContent(l10n("可用空间"), value: DisplayDateFormatters.shared.fileSize(Int64(preview.freeSpaceBytes)))
                 }
                 if viewModel.spaceInsufficient {
                     // warning 对比度不足以做正文前景色：改用原生提示条（图标 + 低透明度底色）。
@@ -63,7 +63,7 @@ struct ExportPreviewSection: View {
                                 .foregroundStyle(GatherTheme.warningText)
                         }
                         Spacer(minLength: 0)
-                        Text("\(file.isSizeEstimate ? "≈" : "")" + ByteCountFormatter.string(fromByteCount: Int64(file.fileSize), countStyle: .file))
+                        Text("\(file.isSizeEstimate ? "≈" : "")" + DisplayDateFormatters.shared.fileSize(Int64(file.fileSize)))
                             .foregroundStyle(.secondary)
                     }
                     .font(GatherFont.secondary)

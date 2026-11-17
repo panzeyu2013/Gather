@@ -449,15 +449,13 @@ extension GalleryView {
         }
     }
 
-    /// 加载失败：系统空态视图 + 明确出口（重试），不再是裸红字。
+    /// 加载失败：品牌空态视图 + 明确出口（重试），不再是裸红字。
     /// 4a-3b-2a：错误以 `CommandError` 传入，文案在渲染期按当前语言解析。
     private func loadFailureView(_ error: CommandError) -> some View {
-        ContentUnavailableView {
-            Label(
-                l10n.format("加载照片失败：%@", CommandErrorText.resolve(error, with: l10n)),
-                systemImage: "exclamationmark.triangle"
-            )
-        } actions: {
+        GatherEmptyState(
+            icon: "exclamationmark.triangle",
+            title: l10n.format("加载照片失败：%@", CommandErrorText.resolve(error, with: l10n))
+        ) {
             Button(l10n("重试")) {
                 Task { await viewModel.load() }
             }
@@ -483,11 +481,11 @@ extension GalleryView {
 
     /// 真空库：给「导入文件夹 / 前往控制中心 / 刷新」三条出口，而不是错误文案。
     private var emptyLibraryView: some View {
-        ContentUnavailableView {
-            Label(l10n("暂无照片"), systemImage: "photo.on.rectangle.angled")
-        } description: {
-            Text(l10n("索引完成后照片将显示在这里"))
-        } actions: {
+        GatherEmptyState(
+            icon: "photo.on.rectangle.angled",
+            title: l10n("暂无照片"),
+            message: l10n("索引完成后照片将显示在这里")
+        ) {
             Button(l10n("导入文件夹")) {
                 // F02：走统一入口（宿主打开目录选择器）。不再 post 带 nil 载荷的
                 // menuImportFolder——旧通知的语义是「已选好目录」，接收方要求 URL，
@@ -511,11 +509,11 @@ extension GalleryView {
 
     /// 搜索/筛选无结果：清除筛选永远可点。
     private var noMatchView: some View {
-        ContentUnavailableView {
-            Label(l10n("没有符合条件的照片"), systemImage: "line.3.horizontal.decrease.circle")
-        } description: {
-            Text(l10n("调整或清除筛选条件以查看全部照片"))
-        } actions: {
+        GatherEmptyState(
+            icon: "line.3.horizontal.decrease.circle",
+            title: l10n("没有符合条件的照片"),
+            message: l10n("调整或清除筛选条件以查看全部照片")
+        ) {
             Button(l10n("清除筛选")) {
                 viewModel.search = ""
                 viewModel.filter = .all

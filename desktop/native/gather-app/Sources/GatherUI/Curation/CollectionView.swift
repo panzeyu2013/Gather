@@ -568,7 +568,7 @@ private struct CrossWorkspaceDuplicatesContent: View {
             }
             Spacer(minLength: 0)
             if member.fileSize > 0 {
-                Text(ByteCountFormatter.string(fromByteCount: member.fileSize, countStyle: .file))
+                Text(DisplayDateFormatters.shared.fileSize(member.fileSize))
                     .font(GatherFont.mono)
                     .foregroundStyle(GatherTheme.secondaryText)
             }

@@ -2891,3 +2891,7 @@
 
 /* Wave5 / Batch9（双源冲突提示） */
 "内嵌元数据与 sidecar 不一致（字段：%@）；当前以 sidecar 为准，内嵌不会自动清理。" = "Embedded metadata differs from the sidecar (fields: %@). The sidecar is canonical; embedded metadata is not cleaned automatically.";
+
+/* Round2 / task-13：CJK 标点分隔符与组合模板（中文 key，英文值；禁止把全角标点硬编码进 UI 文案） */
+"%@，%@" = "%@, %@";
+"%@（%@）" = "%@ (%@)";
