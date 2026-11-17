@@ -49,16 +49,19 @@ struct ReadPoolTests {
         }
         // 断言提前抛出时也要放行后台事务，避免 5s 兜底超时拖尾。
         defer { releaseCommit.signal() }
-        for _ in 0..<200 where !(entered.lock.withLock { entered.entered }) {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        #expect(entered.lock.withLock { entered.entered }, "写事务必须已开始")
+        // 条件等待（共享 helper）：写事务真正进入后再断言，不靠固定 sleep 轮询。
+        #expect(
+            await waitUntilCondition(timeout: 1) { entered.lock.withLock { entered.entered } },
+            "写事务必须已开始")
 
-        let started = Date()
+        let clock = ContinuousClock()
+        let started = clock.now
         let row = try conn.prepare("SELECT COUNT(*) FROM t").get()
-        let elapsed = Date().timeIntervalSince(started)
+        let elapsed = clock.now - started
         #expect(row?[0].intValue == 1, "读到事务前的已提交快照")
-        #expect(elapsed < 0.6, "SELECT 不应等待写事务（实测 \(Int(elapsed * 1000))ms）")
+        // 宽上限：内存库 SELECT 实测亚毫秒；1s 仍能拦住"等写事务释放"的病态
+        // 回归（那会等满 5s 兜底），又不会因 CI 满载的调度抖动误报。
+        #expect(elapsed < .seconds(1), "SELECT 不应等待写事务（实测 \(elapsed)）")
 
         // 读路径已经验证完毕，放行写事务提交。
         releaseCommit.signal()

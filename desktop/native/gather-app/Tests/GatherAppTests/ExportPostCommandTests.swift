@@ -50,13 +50,17 @@ struct ExportPostCommandTests {
     }
 
     @Test func timesOutWithoutThrowing() async throws {
-        let started = Date()
+        let clock = ContinuousClock()
+        let started = clock.now
+        // 子进程 sleep 30s、超时 1s：宽上限 10s 只拦「没按 timeout 终止、等满子进程」
+        // 的病态回归，不因 CI 满载的调度抖动误报（实测 ~1s）。
         let outcome = await ExportPostCommandRunner.run(
-            ExportPostCommandConfiguration(template: "/bin/sleep 5", timeoutSeconds: 1),
+            ExportPostCommandConfiguration(template: "/bin/sleep 30", timeoutSeconds: 1),
             sessionId: "s", destinationRoot: "/tmp", manifestPath: "/tmp/m.json")
         #expect(outcome.timedOut)
         #expect(outcome.exitCode == nil)
-        #expect(Date().timeIntervalSince(started) < 4)
+        let elapsed = clock.now - started
+        #expect(elapsed < .seconds(10), "超时必须按 1s 截止，不得等子进程（30s）；实测 \(elapsed)")
     }
 
     @Test func missingExecutableIsReportedAsTypedError() async throws {
@@ -149,18 +153,22 @@ struct ExportPostCommandTests {
 
     @Test("C5：取消 run 立即终止进程，不阻塞到超时")
     func cancellationTerminatesProcess() async {
-        let started = Date()
+        let clock = ContinuousClock()
+        let started = clock.now
         let task = Task {
             await ExportPostCommandRunner.run(
                 ExportPostCommandConfiguration(
-                    template: "/bin/sleep 5", timeoutSeconds: 30),
+                    template: "/bin/sleep 30", timeoutSeconds: 30),
                 sessionId: "s", destinationRoot: "/tmp", manifestPath: "/tmp/m.json")
         }
-        try? await Task.sleep(for: .milliseconds(150))
+        // 启动余量：等子进程起来再取消（有界窗口，不是断言窗口；无可观察的
+        // "进程已启动"探针）。10s 上限只拦「取消未生效、等满 30s」的病态回归。
+        await awaitNegativeWindow(.milliseconds(150))
         task.cancel()
         let outcome = await task.value
-        #expect(Date().timeIntervalSince(started) < 3,
-                "取消必须及时返回，而不是等 30s 超时")
+        let elapsed = clock.now - started
+        #expect(elapsed < .seconds(10),
+                "取消必须及时返回，而不是等 30s 超时；实测 \(elapsed)")
         #expect(outcome.timedOut == false)
         #expect(outcome.error == "cancelled")
     }

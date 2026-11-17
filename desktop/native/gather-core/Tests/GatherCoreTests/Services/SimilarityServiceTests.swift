@@ -45,19 +45,6 @@ private func seedAssetFileRow(_ db: DBConnection, _ id: String) throws {
 
 // AsyncGate 已抽到 Tests/GatherTestSupport/AsyncGate.swift（GatherTestSupport target 共享）。
 
-/// 轮询等待条件成立（swift-testing 并行下 Task 调度延迟明显，避免固定 sleep）。
-private func waitUntil(
-    timeoutMs: Double = 5000,
-    _ condition: () throws -> Bool
-) throws -> Bool {
-    let deadline = Date().addingTimeInterval(timeoutMs / 1000)
-    while Date() < deadline {
-        if try condition() { return true }
-        Thread.sleep(forTimeInterval: 0.02)
-    }
-    return try condition()
-}
-
 /// 线程安全说明（Swift 6 `Sendable`）：全部存储属性构造后不可变（db/service/
 /// sessionRepo/sessionId/photoPath），Task 会按值捕获整个 harness；DBConnection 自带
 /// 连接锁、SimilarityService 的并发调用由会话占用槽串行化。结构无锁、无写者，
@@ -336,7 +323,7 @@ struct SimilarityRunRecordTests {
             )
         }
 
-        let runningSeen = try waitUntil {
+        let runningSeen = try await waitUntilCondition {
             guard let row = try runRow(harness.db, harness.sessionId) else { return false }
             return row[6].textValue == "running"
         }
@@ -645,7 +632,7 @@ struct SimilarityCancellationTests {
         }
 
         // 等分析进入解码窗口（run 行已写入）再取消。
-        let runningSeen = try waitUntil {
+        let runningSeen = try await waitUntilCondition {
             guard let row = try runRow(harness.db, harness.sessionId) else { return false }
             return row[6].textValue == "running"
         }
@@ -942,7 +929,7 @@ struct SimilarityReclusterJobTests {
             return uniformPixels
         })
         let analyzeTask = Task { try await harness.service.analyze(sessionId: harness.sessionId) }
-        let runningSeen = try waitUntil {
+        let runningSeen = try await waitUntilCondition {
             guard let row = try runRow(harness.db, harness.sessionId) else { return false }
             return row[6].textValue == "running"
         }
@@ -969,7 +956,7 @@ struct SimilarityReclusterJobTests {
         let reclusterTask = Task {
             try await harness2.service.recluster(sessionId: harness2.sessionId, threshold: 4, minGroupSize: 2)
         }
-        #expect(try waitUntil { blocked.value })
+        #expect(try await waitUntilCondition { blocked.value })
         await #expect(throws: SimilarityServiceError.analysisRunning) {
             try await harness2.service.analyze(sessionId: harness2.sessionId)
         }

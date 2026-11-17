@@ -44,14 +44,10 @@ private func waitForJob(
     type: AnalysisJobType,
     timeout: TimeInterval = 2
 ) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if try jobService.list(includeCheckpoint: false).contains(where: { $0.type == type }) {
-            return
-        }
-        try await Task.sleep(for: .milliseconds(5))
+    let seen = try await waitUntilCondition(timeout: timeout) {
+        try jobService.list(includeCheckpoint: false).contains(where: { $0.type == type })
     }
-    throw APIExportMetadataFixtureError.jobNotCreated
+    guard seen else { throw APIExportMetadataFixtureError.jobNotCreated }
 }
 
 private func gatherError<T>(_ body: () throws -> T) -> GatherError? {
@@ -249,10 +245,18 @@ struct APIExportTests {
 
         let first = Task { try await api.execute(Confirmed(input, source: .test)) }
         try await waitForJob(fixture.jobService, type: .outputRun)
-        let second = Task { try await api.execute(Confirmed(input, source: .test)) }
-        // 给第二个 Task 进入 jobService.create（拿到同一活跃 job）并阻塞在
-        // waitForResult 的机会；门未放行前第一个 job 不会终态。
-        try await Task.sleep(for: .milliseconds(500))
+        // 第二个 execute 能否**复用**既有活跃 job，取决于它是否在门放行前进入
+        // jobService.create → waitForResult 的 dedupe 等待。该状态不可直接观测，
+        // 故用有界负向窗口兜底：门放行前第二个 execute 不得终态（完成即说明它
+        // 没走 dedupe 等待，用例会明确失败而不是靠固定 sleep 赌调度）。
+        let secondFinished = LockedFlag()
+        let second = Task {
+            defer { secondFinished.set() }
+            return try await api.execute(Confirmed(input, source: .test))
+        }
+        #expect(
+            !(await waitUntilCondition(timeout: 0.5) { secondFinished.isSet }),
+            "第二个 execute 不得在门放行前终态（应阻塞在既有活跃 job 上）")
         gate.release()
 
         let firstResult = try await first.value
@@ -417,20 +421,6 @@ private final class LockedFlag: @unchecked Sendable {
         defer { lock.unlock() }
         return value
     }
-}
-
-/// 异步条件轮询（锁 actor 的 waiterCount 等）；有界失败上限，满足即返回。
-private func waitUntilAsyncCondition(
-    timeout: TimeInterval = 3,
-    _ condition: () async -> Bool
-) async -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if await condition() { return true }
-        if Task.isCancelled { return false }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return await condition()
 }
 
 /// 一次性触发标记（注入钩子防重入）。
@@ -1097,7 +1087,7 @@ struct APIMetadataTests {
                 source: .test))
         }
 
-        #expect(await waitUntilAsyncCondition { entered.isSet }, "restore 必须进入文件阶段")
+        #expect(await waitUntilCondition { entered.isSet }, "restore 必须进入文件阶段")
         #expect(
             await lock.isActive(path: xmpPath),
             "复核→restore→事后复核期间必须持有共享锁")
@@ -1108,7 +1098,7 @@ struct APIMetadataTests {
             try await lock.run(path: xmpPath) { competitorEntered.set() }
         }
         #expect(
-            await waitUntilAsyncCondition {
+            await waitUntilConditionAsync {
                 await lock.waiterCount(path: xmpPath) == 1
             },
             "竞争者应排在同一个共享实例上")
@@ -1156,7 +1146,7 @@ struct APIMetadataTests {
                 try MetadataResolveOrphanInput(xmpPath: xmpPath, action: .restore),
                 source: .test))
         }
-        #expect(await waitUntilAsyncCondition { restoreEntered.isSet }, "先进入慢 restore 并持锁")
+        #expect(await waitUntilCondition { restoreEntered.isSet }, "先进入慢 restore 并持锁")
 
         // 新输入 + 真实 writeback：preview 推进 revision 并重开交付；execute 的
         // backup/read/write 必须与 orphan restore 共用同一把锁而排队。
@@ -1185,12 +1175,12 @@ struct APIMetadataTests {
         }
 
         #expect(
-            await waitUntilAsyncCondition {
+            await waitUntilCondition {
                 (try? repo.get(xmpPath)?.revision) == 1
             },
             "新输入必须先把孤儿交付推进到 revision 1")
         #expect(
-            await waitUntilAsyncCondition {
+            await waitUntilConditionAsync {
                 await lock.waiterCount(path: xmpPath) == 1
             },
             "writeback 必须排队等 orphan restore 释放锁")

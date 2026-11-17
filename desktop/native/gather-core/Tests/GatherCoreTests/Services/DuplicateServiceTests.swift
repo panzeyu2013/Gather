@@ -85,19 +85,6 @@ private final class CallCounter: @unchecked Sendable {
     }
 }
 
-/// 轮询等待条件成立（swift-testing 并行下 Task 调度延迟明显，避免固定 sleep）。
-private func waitUntil(
-    timeoutMs: Double = 5000,
-    _ condition: () throws -> Bool
-) throws -> Bool {
-    let deadline = Date().addingTimeInterval(timeoutMs / 1000)
-    while Date() < deadline {
-        if try condition() { return true }
-        Thread.sleep(forTimeInterval: 0.02)
-    }
-    return try condition()
-}
-
 private struct DuplicateHarness {
     let db: DBConnection
     let service: DuplicateService
@@ -502,7 +489,7 @@ struct DuplicateScanTests {
             try await harness.service.scanDuplicates(sessionId: harness.sessionId)
         }
         // 等首扫进入视觉 hash 阶段（provider 已卡在 gate 上）。
-        let entered = try waitUntil { calls.value > 0 }
+        let entered = try await waitUntilCondition { calls.value > 0 }
         #expect(entered)
 
         // 不同参数 → busy（经 Task 包装制造真实挂起点，避免无 async 操作警告）。

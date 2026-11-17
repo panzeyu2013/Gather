@@ -15,6 +15,14 @@ import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
 
+/// 线程安全布尔旗标（Task 闭包内标记完成；负向窗口断言用）。
+private final class ReviewFixFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
+}
+
 /// Cut 4 / 4a-2a-2：`SessionControlView(workspace:)` 的生产装配需要完整
 /// SessionWorkspace；本文件只关心 control VM，其余 6 个 VM 用空桩。
 private struct ReviewGalleryProviderStub: GalleryDataProvider {
@@ -1061,9 +1069,16 @@ struct ReviewFixTests {
     func decodeGateSerializesBeyondLimit() async {
         let gate = PhotoDecodeGate(limit: 1)
         #expect(await gate.acquire() == true)
-        let waiter = Task { await gate.acquire() }
-        // 名额未释放：等待者仍未被唤醒（sleep 后状态不变即视为排队中）。
-        try? await Task.sleep(for: .milliseconds(80))
+        let waiterDone = ReviewFixFlag()
+        let waiter = Task { () -> Bool in
+            let acquired = await gate.acquire()
+            waiterDone.set()
+            return acquired
+        }
+        // 负向窗口：名额未释放时等待者不得完成（完成即排队语义失效）。
+        #expect(
+            !(await waitUntilAsync(timeout: 0.08) { waiterDone.isSet }),
+            "limit=1 时第二个请求必须排队，不得提前获得名额")
         await gate.release()
         let second = await waiter.value
         #expect(second == true, "名额释放后排队者必须获得名额")
@@ -1074,10 +1089,15 @@ struct ReviewFixTests {
     func decodeGateCancellationDoesNotHang() async {
         let gate = PhotoDecodeGate(limit: 1)
         #expect(await gate.acquire() == true)
+        let waiterDone = ReviewFixFlag()
         let waiter = Task { () -> Bool in
-            await gate.acquire()
+            let acquired = await gate.acquire()
+            waiterDone.set()
+            return acquired
         }
-        try? await Task.sleep(for: .milliseconds(40))
+        // 有界负向窗口：等待者必须仍在排队（未完成）才取消，才能覆盖
+        // "取消已排队的等待者"这条路径（无可观察的排队状态，用有界窗口兜底）。
+        #expect(!(await waitUntilAsync(timeout: 0.04) { waiterDone.isSet }), "等待者应仍在排队")
         waiter.cancel()
         let acquired = await waiter.value
         #expect(acquired == false, "被取消的等待者必须返回 false（否则 inFlight 永不清理）")

@@ -49,19 +49,6 @@ private final class LockedFlag: @unchecked Sendable {
     }
 }
 
-/// 轮询等待条件成立（避免固定 sleep）。
-private func waitUntil(
-    timeoutMs: Double = 5000,
-    _ condition: () throws -> Bool
-) throws -> Bool {
-    let deadline = Date().addingTimeInterval(timeoutMs / 1000)
-    while Date() < deadline {
-        if try condition() { return true }
-        Thread.sleep(forTimeInterval: 0.02)
-    }
-    return try condition()
-}
-
 /// 线程安全说明（Swift 6 `Sendable`）：全部存储属性构造后不可变，Task 会按值
 /// 捕获整个 harness；DBConnection 自带连接锁，FaceKwService 的并发调用由会话
 /// 占用槽串行化。结构无锁、无写者，故标注 `@unchecked`（不可变性即此处承诺）。
@@ -401,7 +388,7 @@ struct FaceKwAnalyzeFlowTests {
             try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
         }
-        _ = try waitUntil { entered.value }
+        #expect(try await waitUntilCondition { entered.value })
         harness.service.cancel(sessionId: harness.sessionId)
         gate.release()
 
@@ -424,9 +411,9 @@ struct FaceKwAnalyzeFlowTests {
             try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
         }
-        _ = try waitUntil {
+        #expect(try await waitUntilCondition {
             try runRow(harness.db, harness.sessionId)?[6].textValue == "running"
-        }
+        })
 
         await #expect(throws: FaceKwServiceError.analysisRunning) {
             try await harness.service.analyze(
@@ -1891,7 +1878,7 @@ struct FaceKwStageBoundaryTests {
             try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
         }
-        _ = try waitUntil { entered.value }
+        #expect(try await waitUntilCondition { entered.value })
         harness.service.cancel(sessionId: harness.sessionId)
         gate.signal()
         let result = try await task.value
@@ -1958,7 +1945,7 @@ struct FaceKwStageBoundaryTests {
             try await harness.service.analyze(
                 sessionId: harness.sessionId, detectorPath: "det.onnx", encoderPath: "enc.onnx")
         }
-        _ = try waitUntil { entered.value }
+        #expect(try await waitUntilCondition { entered.value })
 
         // 取 3 次最小值以降低调度抖动；旧实现把聚类放在 connection.transaction 内，
         // 这里的读会一直阻塞到 gate 释放（> 1 s），断言会硬失败。

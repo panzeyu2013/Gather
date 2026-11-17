@@ -215,14 +215,18 @@ struct LayoutBudgetTests {
             jobs: B5bJobAPIStub(),
             captureOne: CaptureOneBridge()
         )
-        // 先显式 reload 让 clusters 落地；页面 .task 还会再 reload 一次，
-        // 用异步让出（而非阻塞 RunLoop）等它落定，避免测到加载态骨架。
+        // 先显式 reload 让 clusters 落地（用条件等待断言加载已落定，而不是固定
+        // sleep）；页面挂载后的 .task reload 由下方 fittingSize(pump:) 的异步让出覆盖。
         await viewModel.reload()
         let view = FaceKeywordingView(
             workspace: makeWorkspace(face: viewModel),
             culling: B8CullingAPIStub()
         )
-        try? await Task.sleep(for: .milliseconds(80))
+        #expect(
+            await waitUntilAsync {
+                viewModel.clusters.count == 1 && !viewModel.isLoading && viewModel.step == .review
+            },
+            "人脸页审核分支必须在测量前就绪")
         #expect(viewModel.clusters.count == 1)
         #expect(!viewModel.isLoading)
         #expect(viewModel.step == .review)

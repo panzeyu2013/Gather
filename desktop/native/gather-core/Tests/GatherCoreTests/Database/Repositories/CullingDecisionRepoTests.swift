@@ -31,14 +31,19 @@ struct CullingDecisionRepoTests {
         #expect(row?.createdAt != "")
 
         // 同一 (session, photo) 重复 upsert 走 ON CONFLICT 更新，不新增行。
-        // 等 2ms 确保 updated_at 时间戳前进（ISO 毫秒精度，同毫秒内两次写
-        // 会产生相同时间戳，断言会误失败）。
-        Thread.sleep(forTimeInterval: 0.002)
+        // 依赖墙钟毫秒分辨率（同毫秒两次写会让 updatedAt == createdAt）会引入
+        // 2ms sleep；改为把 created_at 钉到固定旧时间戳——确定性验证 ON CONFLICT
+        // 保留 created_at、只推进 updated_at。
+        let pinnedCreatedAt = "2020-01-01T00:00:00.000Z"
+        _ = try db.prepare(
+            "UPDATE culling_decisions SET created_at = ? WHERE session_id = ? AND photo_id = ?"
+        ).run([.text(pinnedCreatedAt), .text("s1"), .text("p1")])
         try repo.upsert(sessionId: "s1", photoId: "p1", groupId: "g2", decision: "reject")
         row = try repo.getDecision(sessionId: "s1", photoId: "p1")
         #expect(row?.decision == "reject")
         #expect(row?.groupId == "g2")
-        #expect(row?.updatedAt != row?.createdAt)
+        #expect(row?.createdAt == pinnedCreatedAt, "ON CONFLICT 必须保留 created_at")
+        #expect(row?.updatedAt != row?.createdAt, "ON CONFLICT 必须推进 updated_at")
         #expect(try rowCount(db, "SELECT COUNT(*) FROM culling_decisions") == 1)
     }
 

@@ -78,13 +78,10 @@ struct C1PendingJudgementReplayTests {
             judgements: [wave48Judgement()],
             skippedReason: "timed out waiting metadata.scan")
 
-        var spins = 0
-        while true {
-            let remaining = await replay.pendingCount(sessionId: "s1")
-            if remaining == 0 || spins >= 1_000 { break }
-            spins += 1
-            do { try await Task.sleep(for: .milliseconds(2)) } catch { break }
-        }
+        // 有界条件等待（共享 helper，超时上限兜底），替代手写 spin + 固定 sleep。
+        #expect(
+            await waitUntilConditionAsync { await replay.pendingCount(sessionId: "s1") == 0 },
+            "watcher 重试成功后 pending 必须清零")
         #expect(await replay.pendingCount(sessionId: "s1") == 0)
         #expect(state.lock.withLock { state.calls } == 3)
     }

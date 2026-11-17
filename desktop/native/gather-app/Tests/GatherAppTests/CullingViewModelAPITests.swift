@@ -219,6 +219,7 @@ private actor StubCullingAPI: CullingAPI {
 
     func update(_ input: CullingUpdateInput) async throws -> CullingUpdateResult {
         updateInputs.append(input)
+        // 替身注入的响应延迟：模拟真实 CullingService 的异步写入，不是"等落定"的固定 sleep。
         if updateDelay > .zero { try? await Task.sleep(for: updateDelay) }
         if let updateError { throw updateError }
         return updateResult

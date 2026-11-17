@@ -31,6 +31,14 @@ private enum DuplicateQualityFixtureError: Error {
     case jobNotCreated
 }
 
+/// 线程安全布尔旗标（@Sendable Task 闭包内标记完成用；负向窗口断言）。
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
+}
+
 private struct DuplicateQualityFixture {
     let db: DBConnection
     let sessionId: String
@@ -160,20 +168,16 @@ private struct DuplicateQualityFixture {
 
 // MARK: - 等待与错误辅助
 
-/// 等 JobService 出现指定类型的 job（替代固定 sleep）。
+/// 等 JobService 出现指定类型的 job（共享异步条件等待，替代固定 sleep）。
 private func waitForJob(
     _ jobService: JobService,
     type: AnalysisJobType,
     timeout: TimeInterval = 2
 ) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if try jobService.list(includeCheckpoint: false).contains(where: { $0.type == type }) {
-            return
-        }
-        try await Task.sleep(for: .milliseconds(5))
+    let seen = try await waitUntilCondition(timeout: timeout) {
+        try jobService.list(includeCheckpoint: false).contains(where: { $0.type == type })
     }
-    throw DuplicateQualityFixtureError.jobNotCreated
+    guard seen else { throw DuplicateQualityFixtureError.jobNotCreated }
 }
 
 private func gatherError<T>(_ body: () throws -> T) -> GatherError? {
@@ -266,11 +270,17 @@ struct APIDuplicateTests {
         let first = Task { try await api.scan(input) }
         try await waitForJob(fixture.jobService, type: .duplicateScan)
 
-        let second = Task { try await api.scan(input) }
-        // 给第二个 Task 进入 jobService.create（拿到同一活跃 job）并阻塞在
-        // waitForResult 的机会；门未放行前第一个 job 不会终态。500ms 是并行
-        // 套件调度下的余量（不是断言窗口）。
-        try await Task.sleep(for: .milliseconds(500))
+        // 第二个 scan 必须走 jobService 的活跃 job 复用（阻塞在 waitForResult），
+        // 而不是新建 job；该内部状态不可直接观测，故用有界负向窗口：门放行前
+        // 第二个 scan 不得终态（完成即说明它没进入复用等待，用例明确失败）。
+        let secondFinished = LockedFlag()
+        let second = Task {
+            defer { secondFinished.set() }
+            return try await api.scan(input)
+        }
+        #expect(
+            !(await waitUntilCondition(timeout: 0.5) { secondFinished.isSet }),
+            "第二个 scan 不得在门放行前终态（应复用既有活跃 job 并阻塞等待）")
         gate.release()
 
         let firstResult = try await first.value

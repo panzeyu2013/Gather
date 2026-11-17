@@ -171,15 +171,14 @@ private func waitForTerminal(
     jobId: String,
     timeout: TimeInterval = 15
 ) async throws -> AnalysisJobData? {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if let job = try jobService.list(includeCheckpoint: true).first(where: { $0.id == jobId }),
-           job.status == .succeeded || job.status == .failed || job.status == .cancelled {
-            return job
+    let terminal = try await waitUntilCondition(timeout: timeout) {
+        guard let job = try jobService.list(includeCheckpoint: true).first(where: { $0.id == jobId }) else {
+            return false
         }
-        try await Task.sleep(for: .milliseconds(10))
+        return job.status == .succeeded || job.status == .failed || job.status == .cancelled
     }
-    return nil
+    guard terminal else { return nil }
+    return try jobService.list(includeCheckpoint: true).first(where: { $0.id == jobId })
 }
 
 private func seedMissingSourcePhoto(_ fixture: WorkflowFixture, photoId: String) throws {

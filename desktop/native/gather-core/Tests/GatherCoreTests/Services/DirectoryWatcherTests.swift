@@ -4,6 +4,7 @@
 
 import Foundation
 import Testing
+import GatherTestSupport
 @testable import GatherApplication
 
 private final class ChangeBox: @unchecked Sendable {
@@ -43,18 +44,17 @@ struct DirectoryWatcherTests {
         }
         #expect(watcher.start(), "真实目录必须起得来")
         defer { watcher.stop() }
-        // 给 FSEventStream 一点启动时间，避免把"流尚未就绪"误判成不回调。
+        // FSEventStream 没有可观察的"就绪"状态：保留一个有界的启动warming窗口，
+        // 避免把"流尚未就绪"误判成不回调（不是断言窗口）。
         try await Task.sleep(for: .milliseconds(300))
 
         let file = (dir as NSString).appendingPathComponent("new.CR3")
         try Data("x".utf8).write(to: URL(fileURLWithPath: file))
 
-        let deadline = Date().addingTimeInterval(8)
-        while Date() < deadline {
-            if box.contains(dir) { break }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        #expect(box.contains(dir), "创建文件后 8 秒内必须收到目录变更")
+        // 条件等待（共享 helper）：满足即返回，8s 只是失败上限。
+        #expect(
+            await waitUntilCondition(timeout: 8) { box.contains(dir) },
+            "创建文件后 8 秒内必须收到目录变更")
         #expect(box.lastEventID > 0, "eventId 为 0 时无法续传")
     }
 

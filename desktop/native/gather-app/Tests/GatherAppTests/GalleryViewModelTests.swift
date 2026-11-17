@@ -121,6 +121,7 @@ private final class StubGalleryProvider: GalleryDataProvider {
             return (box.thrownError, box.pageError, box.rows, box.pageDelay)
         }
         if delay > .zero {
+            // 替身注入的取页延迟：构造"在途悬挂的旧响应"，不是"等落定"的固定 sleep。
             try? await Task.sleep(for: delay)
         }
         if let thrown { throw thrown }

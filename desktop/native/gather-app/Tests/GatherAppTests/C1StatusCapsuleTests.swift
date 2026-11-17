@@ -126,7 +126,8 @@ struct C1StatusCapsuleTests {
         let service = makeService(api)
 
         let first = Task { await service.refresh(sessionId: "s1") }
-        try? await Task.sleep(for: .milliseconds(20))
+        // 条件等待：第一次 refresh 必须已经发出请求（stub 记录调用），再发起第二次。
+        #expect(await waitUntilAsync { api.syncStatusCalls.count == 1 }, "第一次 refresh 必须先发出请求")
         await service.refresh(sessionId: "s1")
         await first.value
 
