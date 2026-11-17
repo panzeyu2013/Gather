@@ -15,10 +15,13 @@ extension DeliveryRepo {
         var map: [String: DeliveryRow] = [:]
         let paths = Array(Set(xmpPaths.map { TSPath.normalize($0) })).filter { !$0.isEmpty }
         guard !paths.isEmpty else { return map }
+        // 分块 IN 复用满块预编译语句（性能审计 R3：旧实现每块 prepare 一次）。
+        // DBStatementCache limit=1：只占 1 条只读池连接；末块现场 prepare。
+        let statements = DBStatementCache()
         for chunkStart in stride(from: 0, to: paths.count, by: 400) {
             let chunk = paths[chunkStart..<min(chunkStart + 400, paths.count)]
             let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-            let rows = try connection.prepare("""
+            let rows = try statements.statement(connection, """
                 SELECT \(DeliveryRow.selectList) FROM deliveries
                 WHERE xmp_path IN (\(placeholders))
                 """).query(chunk.map { DBValue.text($0) })

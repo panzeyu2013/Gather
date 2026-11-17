@@ -265,9 +265,13 @@ public final class CullingReadQuery {
     /// 会话内存在的照片 id（分块 IN；历史重放的跳过规则）。
     public func existingPhotoIds(sessionId: String, photoIds: [String]) throws -> Set<String> {
         var found = Set<String>()
+        // 分块 IN 复用满块预编译语句（性能审计 R3：旧实现每块 prepare 一次）。
+        // DBStatementCache limit=1：只占 1 条只读池连接；末块现场 prepare。
+        let statements = DBStatementCache()
         for chunk in photoIds.chunked(by: Self.chunkSize) where !chunk.isEmpty {
             let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
-            let rows = try connection.prepare(
+            let rows = try statements.statement(
+                connection,
                 "SELECT id FROM photos WHERE session_id = ? AND id IN (\(placeholders))"
             ).query([.text(sessionId)] + chunk.map { .text($0) })
             for row in rows {
@@ -324,9 +328,11 @@ public final class CullingReadQuery {
 
     /// reset 的投影撤回：只清 rating/label，不触碰 cached_at。
     public func clearCullingProjection(photoIds: [String]) throws {
+        // 分块 UPDATE 复用预编译语句（性能审计 R3：旧实现每块 prepare 一次）。
+        let statements = DBStatementCache()
         for chunk in photoIds.chunked(by: Self.chunkSize) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            _ = try connection.prepare("""
+            _ = try statements.statement(connection, """
                 UPDATE photo_metadata_cache
                 SET rating = 0, label = 'None'
                 WHERE photo_id IN (\(placeholders))

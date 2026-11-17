@@ -398,10 +398,15 @@ public final class PhotoRepo: Sendable {
     public func getLookupByIds(_ photoIds: [String]) throws -> [PhotoLookupRow] {
         if photoIds.isEmpty { return [] }
         var photos: [PhotoLookupRow] = []
+        // 分块循环复用满块 SQL 的预编译语句（性能审计 R3：旧实现每块 prepare 一次）。
+        // DBStatementCache 默认 limit=1（只读池 readPoolSize=2，一次作用域最多占 1 条
+        // 池连接）；占位符不同的末块现场 prepare、用完即释放。
+        let statements = DBStatementCache()
         for chunkStart in stride(from: 0, to: photoIds.count, by: 800) {
             let chunk = Array(photoIds[chunkStart..<min(chunkStart + 800, photoIds.count)])
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            let rows = try connection.prepare(
+            let rows = try statements.statement(
+                connection,
                 "SELECT id, session_id, filepath FROM photos WHERE id IN (\(placeholders))"
             ).query(chunk.map { .text($0) })
             photos.append(contentsOf: rows.map {

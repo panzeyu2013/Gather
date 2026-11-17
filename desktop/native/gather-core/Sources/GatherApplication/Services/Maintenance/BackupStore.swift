@@ -87,6 +87,12 @@ public struct BackupStore {
             try fm.contentsOfDirectory(atPath: directory.path)
         }) else { return [] }
         var records: [BackupRecord] = []
+        // round-3 性能：sidecar 解码器与兜底时间 formatter 提到循环外。
+        // 托管目录上限 = backup_retention（≤20 个文件），但 JSONDecoder /
+        // ISO8601DateFormatter 都是一次性昂贵配置，而 list() 会被 backup /
+        // restore / verify / 设置页反复调用；两者默认配置相同，复用不改变输出。
+        let sidecarDecoder = JSONDecoder()
+        let fallbackCreatedAtFormatter = ISO8601DateFormatter()
         for name in names where name.hasPrefix(Self.prefix) && name.hasSuffix(".sqlite") {
             let url = directory.appendingPathComponent(name)
             let sidecarURL = directory.appendingPathComponent(name + ".json")
@@ -94,7 +100,7 @@ public struct BackupStore {
                    try Data(contentsOf: sidecarURL)
                }),
                let sidecar = BestEffort.optional("decode backup sidecar", {
-                   try JSONDecoder().decode(BackupSidecar.self, from: data)
+                   try sidecarDecoder.decode(BackupSidecar.self, from: data)
                }) {
                 records.append(BackupRecord(
                     fileName: name, createdAt: sidecar.createdAt,
@@ -109,7 +115,7 @@ public struct BackupStore {
                 let date = BestEffort.value("backup file date", default: "") {
                     guard let modified = try fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
                     else { return "" }
-                    return ISO8601DateFormatter().string(from: modified)
+                    return fallbackCreatedAtFormatter.string(from: modified)
                 }
                 records.append(BackupRecord(
                     fileName: name, createdAt: date, sizeBytes: size,

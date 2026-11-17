@@ -54,8 +54,15 @@ extension AssetRepo {
                 var batchMigrated: Int64 = 0
                 var batchOffline: Int64 = 0
                 try connection.transaction {
+                    // per-photo 语句缓存（性能审计 R3）：旧实现每张照片重新 prepare ~14 条 SQL。
+                    // 缓存建在事务闭包内（资源生命周期=本批事务）：14 条语句全部在事务内创建，
+                    // 走**写连接**（DBConnection.prepare 只在 depth==0 时才借只读池），因此
+                    // 不占 readPoolSize 连接（见 DBStatementCache 文件头的 limit 说明）；
+                    // 语句随闭包结束 deinit，不跨事务边界复用。
+                    let statements = DBStatementCache(limit: 14)
                     for photo in photos {
-                        let result = try ensurePhoto(sessionId: sessionId, photo: photo)
+                        let result = try ensurePhoto(
+                            sessionId: sessionId, photo: photo, statements: statements)
                         batchMigrated += result.migrated
                         batchOffline += result.offline
                         cursor = photo.migrationRowid
@@ -91,6 +98,12 @@ extension AssetRepo {
     // ─────────────────────────── 私有：RAW/JPEG 候选 ───────────────────────────
 
     private func createRawJpegCandidates(_ sessionId: String) throws -> Int64 {
+        // 分块 IN 的 SQL 只有「满块/末块」两种；候选 INSERT 是固定 SQL，循环外 prepare
+        // 一次即可（性能审计 R3：旧实现每对 RAW/JPEG 重新 prepare 一条 INSERT）。
+        let candidateInsert = try connection.prepare("""
+            INSERT INTO asset_link_candidates (id, left_file_id, right_file_id, relation_type, confidence, evidence_json, status, created_at, updated_at)
+            VALUES (?, ?, ?, 'raw_jpeg', ?, ?, ?, ?, ?)
+          """)
         let files = try connection.prepare("""
             SELECT DISTINCT af.id, af.filename, af.normalized_path, af.extension
             FROM asset_files af
@@ -161,10 +174,7 @@ extension AssetRepo {
                         "leftRole": JSONValue.string(memberRole(raw.fileExtension)),
                         "rightRole": JSONValue.string(memberRole(jpeg.fileExtension)),
                     ])
-                    _ = try connection.prepare("""
-                        INSERT INTO asset_link_candidates (id, left_file_id, right_file_id, relation_type, confidence, evidence_json, status, created_at, updated_at)
-                        VALUES (?, ?, ?, 'raw_jpeg', ?, ?, ?, ?, ?)
-                      """).run([
+                    _ = try candidateInsert.run([
                         .text(candidateId),
                         .text(raw.id),
                         .text(jpeg.id),
@@ -183,7 +193,11 @@ extension AssetRepo {
 
     // ─────────────────────────── 私有：单照片 ───────────────────────────
 
-    private func ensurePhoto(sessionId: String, photo: PhotoBackfillRow) throws -> (migrated: Int64, offline: Int64) {
+    private func ensurePhoto(
+        sessionId: String,
+        photo: PhotoBackfillRow,
+        statements: DBStatementCache
+    ) throws -> (migrated: Int64, offline: Int64) {
         let absolute = TSPath.resolve(photo.filepath)
         let normalizedPath = TSPath.normalize(absolute)
         let extensionWithDot = TSPath.extname(absolute).lowercased()
@@ -213,7 +227,7 @@ extension AssetRepo {
         var file: AssetFileRefRow?
         if !fileIdentity.isEmpty {
             // asset_files：14 列（TableColumns.assetFiles；内联读取 0=id / 3=normalized_path）
-            file = try connection.prepare("""
+            file = try statements.statement(connection, """
                 SELECT \(TableColumns.sql(TableColumns.assetFiles)) FROM asset_files
                 WHERE volume_id = ? AND file_identity = ?
                 ORDER BY updated_at DESC LIMIT 1
@@ -223,7 +237,8 @@ extension AssetRepo {
         }
         if file == nil {
             // asset_files：14 列（TableColumns.assetFiles；内联读取 0=id / 3=normalized_path）
-            file = try connection.prepare(
+            file = try statements.statement(
+                connection,
                 "SELECT \(TableColumns.sql(TableColumns.assetFiles)) FROM asset_files WHERE normalized_path = ? ORDER BY updated_at DESC LIMIT 1"
             ).get([.text(normalizedPath)]).map {
                 AssetFileRefRow(id: $0[0].textValue ?? "", normalizedPath: $0[3].textValue ?? "")
@@ -231,7 +246,7 @@ extension AssetRepo {
         }
         if let file {
             let previousPath = file.normalizedPath
-            _ = try connection.prepare("""
+            _ = try statements.statement(connection, """
                 UPDATE asset_files
                 SET volume_id = ?, file_identity = CASE WHEN ? != '' THEN ? ELSE file_identity END,
                     normalized_path = ?, filename = ?, extension = ?,
@@ -258,7 +273,7 @@ extension AssetRepo {
             }
         } else {
             let fileId = newUUIDString()
-            _ = try connection.prepare("""
+            _ = try statements.statement(connection, """
                 INSERT INTO asset_files (
                   id, volume_id, file_identity, normalized_path, filename, extension, media_type,
                   file_size, file_mtime_ms, checksum, online_status, last_seen_at, created_at, updated_at
@@ -274,20 +289,20 @@ extension AssetRepo {
         }
 
         let fileId = file!.id
-        var membership = try connection.prepare(
+        var membership = try statements.statement(connection,
             "SELECT asset_id FROM asset_members WHERE file_id = ?"
         ).get([.text(fileId)])?[0].textValue
         if membership == nil {
             let assetId = newUUIDString()
             // V1 assets 已删除 capture_fingerprint（指纹由 asset_members/files 派生）。
-            _ = try connection.prepare(
+            _ = try statements.statement(connection,
                 "INSERT INTO assets (id, status, created_at, updated_at) VALUES (?, ?, ?, ?)"
             ).run([
                 .text(assetId),
                 .text(onlineStatus == "online" ? "active" : "offline_unverified"),
                 .text(timestamp), .text(timestamp),
             ])
-            _ = try connection.prepare(
+            _ = try statements.statement(connection,
                 "INSERT INTO asset_members (asset_id, file_id, member_role, is_primary, binding_source) VALUES (?, ?, ?, 1, ?)"
             ).run([.text(assetId), .text(fileId), .text(memberRole(extensionWithDot)), .text("backfill")])
             membership = assetId
@@ -297,10 +312,10 @@ extension AssetRepo {
         if photo.migrationRowid != 0 {
             importOrder = photo.migrationRowid
         } else {
-            importOrder = Int64((try connection.prepare("SELECT rowid FROM photos WHERE id = ?")
+            importOrder = Int64((try statements.statement(connection, "SELECT rowid FROM photos WHERE id = ?")
                 .get([.text(photo.id)])?[0].intValue) ?? 0)
         }
-        _ = try connection.prepare("""
+        _ = try statements.statement(connection, """
             INSERT INTO session_assets (session_id, asset_id, display_file_id, import_order, added_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(session_id, asset_id) DO UPDATE SET display_file_id = excluded.display_file_id
@@ -308,17 +323,17 @@ extension AssetRepo {
             .text(sessionId), .text(membership ?? ""), .text(fileId),
             .int(importOrder), .text(timestamp),
         ])
-        _ = try connection.prepare("UPDATE assets SET status = ?, updated_at = ? WHERE id = ?")
+        _ = try statements.statement(connection, "UPDATE assets SET status = ?, updated_at = ? WHERE id = ?")
             .run([
                 .text(onlineStatus == "online" ? "active" : "offline_unverified"),
                 .text(timestamp), .text(membership ?? ""),
             ])
-        _ = try connection.prepare("UPDATE photos SET asset_id = ?, asset_file_id = ? WHERE id = ?")
+        _ = try statements.statement(connection, "UPDATE photos SET asset_id = ?, asset_file_id = ? WHERE id = ?")
             .run([.text(membership ?? ""), .text(fileId), .text(photo.id)])
 
         let sidecarPath = TSPath.xmpSidecarPath(absolute)
         let bindingId = newUUIDString()
-        _ = try connection.prepare("""
+        _ = try statements.statement(connection, """
             INSERT INTO sidecar_bindings (id, xmp_path, normalized_xmp_path, binding_rule, created_at, updated_at)
             VALUES (?, ?, ?, 'same_basename', ?, ?)
             ON CONFLICT(normalized_xmp_path) DO UPDATE SET updated_at = excluded.updated_at
@@ -326,10 +341,10 @@ extension AssetRepo {
             .text(bindingId), .text(sidecarPath), .text(TSPath.normalize(sidecarPath)),
             .text(timestamp), .text(timestamp),
         ])
-        let binding = try connection.prepare(
+        let binding = try statements.statement(connection,
             "SELECT id FROM sidecar_bindings WHERE normalized_xmp_path = ?"
         ).get([.text(TSPath.normalize(sidecarPath))])
-        _ = try connection.prepare(
+        _ = try statements.statement(connection,
             "INSERT OR IGNORE INTO sidecar_binding_files (sidecar_binding_id, file_id) VALUES (?, ?)"
         ).run([.text(binding?[0].textValue ?? ""), .text(fileId)])
 

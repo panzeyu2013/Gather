@@ -123,6 +123,19 @@ public struct MetadataKeywordWriter: Sendable {
 
         // 500 张/共享 sidecar 时串行读 XMP 是秒级；按 8 路分块并发读，保持原顺序。
         let snapshots = await readKeywordSnapshots(targets)
+        // round-3 性能：缓存行改为**一次批量读**（getBatch，内部按 800/块分片），
+        // 不再在循环里逐张 SELECT——模板批量预览 500 张时旧实现是 500 条查询。
+        // 读取失败整批按「无缓存行」处理：与原实现逐张 do/catch → cachedRow = nil
+        // 的可观测行为一致（预览/应用都不因缓存读失败而失败，externalChanged 退化为
+        // 仅看 conflictedXmpPaths）。
+        let cachedRows: [MetadataCacheRow]
+        do {
+            cachedRows = try cacheStore.getBatch(targets.map(\.photo.id))
+        } catch {
+            cachedRows = []
+        }
+        var cachedRowByPhotoId: [String: MetadataCacheRow] = [:]
+        for row in cachedRows { cachedRowByPhotoId[row.photoId] = row }
         var items: [WritebackItem] = []
         var blockedKeyword: String?
         var blockedSource: MetadataMutationSource?
@@ -131,8 +144,7 @@ public struct MetadataKeywordWriter: Sendable {
             let snapshot = snapshots[target.xmpPath]
             let disk = snapshot?.0 ?? []
             let readFailed = snapshot?.1 ?? true
-            let cachedRow: MetadataCacheRow?
-            do { cachedRow = try cacheStore.get(target.photo.id) } catch { cachedRow = nil }
+            let cachedRow = cachedRowByPhotoId[target.photo.id]
             let cachedKeywords = cachedRow?.keywords ?? []
             // origin 可能比磁盘陈旧（外部已删词）：只把盘上仍存在的词视为 owned，
             // 避免 K0 误报 KEYWORD_OWNED_BY_SOURCE。

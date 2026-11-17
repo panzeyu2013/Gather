@@ -119,9 +119,12 @@ public struct GlobalDuplicateQuery: Sendable {
         let unique = Array(Set(checksums.filter { !$0.isEmpty })).sorted()
         guard !unique.isEmpty else { return [] }
         var result: [GlobalDuplicatePhotoRow] = []
+        // 分块 IN 复用满块预编译语句（性能审计 R3：旧实现每块 prepare 一次）。
+        // DBStatementCache limit=1：只占 1 条只读池连接；末块现场 prepare。
+        let statements = DBStatementCache()
         for chunk in unique.chunked(maxSize: 400) {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-            let rows = try connection.prepare("""
+            let rows = try statements.statement(connection, """
                 SELECT p.id, p.session_id, COALESCE(s.name, ''), p.filepath, p.filename,
                        p.checksum, p.checksum_file_size,
                        COALESCE((SELECT MIN(sh.hash_hex) FROM similarity_hashes sh

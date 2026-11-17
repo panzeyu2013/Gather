@@ -142,8 +142,15 @@ public final class PhotoFilterQuery {
     ) throws -> [FilteredPhotoRow] {
         let clause = try buildWhereClause(criteria)
         let sessionFilter = sessionId == "__global__" ? "1=1" : "p.session_id = ?"
+        // 无 DISTINCT（性能审计 R3）：这条查询**没有任何可增殖行的 JOIN** ——
+        // (a) `LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id` 是 1:1
+        //     （Schema: photo_metadata_cache.photo_id UNIQUE）；
+        // (b) buildWhereClause 只生成标量比较 / EXISTS / 子查询（person、keywords、
+        //     keyword_path、collection/stack、has_face、volume 全是 EXISTS），不 JOIN 主查询。
+        // 因此每张照片至多一行，DISTINCT 去掉不改变结果集与顺序，只省掉一次
+        // TEMP B-TREE（bench: scripts/perf-sqlite-bench.py --compare）。
         let sql = [
-            "SELECT DISTINCT p.id AS id, p.session_id AS session_id, p.filepath AS filepath,",
+            "SELECT p.id AS id, p.session_id AS session_id, p.filepath AS filepath,",
             "p.filename AS filename, p.checksum AS checksum, p.status AS status,",
             "p.created_at AS created_at, p.updated_at AS updated_at,",
             "(SELECT COUNT(*) FROM face_observations fo WHERE fo.photo_id = p.id AND fo.session_id = p.session_id) AS face_count",
