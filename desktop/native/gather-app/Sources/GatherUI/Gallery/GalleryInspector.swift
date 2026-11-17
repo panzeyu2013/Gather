@@ -208,7 +208,8 @@ extension GalleryView {
                         sessionId: viewModel.sessionId,
                         api: api,
                         nameFor: { id in
-                            viewModel.loadedPhotos.first(where: { $0.id == id })?.filename ?? id
+                            // O(1)：id→文件名表与 flatCache 同代数构建（旧实现每次 O(n) 扫）。
+                            viewModel.loadedPhotoLookup.filenamesByID[id] ?? id
                         },
                         onSelect: { id in
                             // 命中可能不在当前筛选/已加载页：先清条件再定位（见方法注释）。
@@ -223,7 +224,8 @@ extension GalleryView {
                         sessionId: viewModel.sessionId,
                         seedPhotoIds: gallerySceneTagSeedIds,
                         nameFor: { id in
-                            viewModel.loadedPhotos.first(where: { $0.id == id })?.filename ?? id
+                            // O(1)：id→文件名表与 flatCache 同代数构建（旧实现每次 O(n) 扫）。
+                            viewModel.loadedPhotoLookup.filenamesByID[id] ?? id
                         },
                         onSelect: { id in
                             Task { await locateSemanticHit(id) }
@@ -253,7 +255,8 @@ extension GalleryView {
     /// outOfRange 的既有文案已经提示"用搜索缩小范围后再试"。
     @MainActor
     private func locateSemanticHit(_ photoId: String) async {
-        let alreadyVisible = viewModel.filteredPhotos.contains { $0.id == photoId }
+        // task-17：O(1) 命中判断（与 filteredPhotos 同 key 的 id 集合）。
+        let alreadyVisible = viewModel.filteredPhotoIdSet.contains(photoId)
         let hasFacetCondition = !viewModel.facetSelection.values.allSatisfy { $0.isEmpty }
         if !alreadyVisible, hasFacetCondition || viewModel.filter != .all {
             if viewModel.filter != .all { viewModel.filter = .all }

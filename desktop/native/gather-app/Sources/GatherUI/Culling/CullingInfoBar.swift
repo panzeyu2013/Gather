@@ -236,8 +236,7 @@ struct CullingInfoBar: View {
     }
 
     private var currentIndex: Int {
-        guard let id = viewModel.currentPhotoId,
-              let found = viewModel.page?.assets.firstIndex(where: { $0.photo.id == id }) else { return 0 }
-        return found
+        // O(1)：复用 pageVersion 索引（无页/无当前照片/不在页内 → 0）。
+        viewModel.currentPageIndex() ?? 0
     }
 }

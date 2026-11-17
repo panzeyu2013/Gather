@@ -40,6 +40,7 @@ public final class CullingViewModel: SessionPageModel {
     public internal(set) var page: CullingPage? {
         didSet {
             pageAssetIndexCache = nil
+            selectionSummaryCache = nil
         }
     }
     public internal(set) var summary: CullingSummary?
@@ -185,7 +186,42 @@ public final class CullingViewModel: SessionPageModel {
         }
         return page.assets[position]
     }
-    public internal(set) var selectedPhotoIds: Set<String> = []
+
+    /// O(1)：photoId 在**当前页**的下标（nil = 无页/不在当前页；重复 id 取首个）。
+    /// 语义等价于旧的 `page?.assets.firstIndex(where: { $0.photo.id == photoId })`。
+    func pageIndex(ofPhotoId photoId: String) -> Int? {
+        guard let page else { return nil }
+        let index = pageAssetIndex
+        guard let position = index.assetIndexByPhotoID[photoId],
+              page.assets.indices.contains(position) else { return nil }
+        return position
+    }
+
+    /// O(1)：按 photoId 取当前页资产（nil = 无页/不在当前页）。
+    func pageAsset(forPhotoId photoId: String) -> CullingAsset? {
+        guard let position = pageIndex(ofPhotoId: photoId) else { return nil }
+        return page?.assets[position]
+    }
+
+    /// O(1)：当前照片在当前页的下标；无页/空页 → nil；currentPhotoId 为空/不在页内
+    /// → 0（与各查看器既有 `currentIndex` 的回退口径一致）。
+    func currentPageIndex() -> Int? {
+        guard let page, !page.assets.isEmpty else { return nil }
+        guard let currentPhotoId, let index = pageIndex(ofPhotoId: currentPhotoId) else {
+            return 0
+        }
+        return index
+    }
+
+    /// selectionSummary 缓存键的"选择代数"：selectedPhotoIds 每次写入由 didSet 自增。
+    @ObservationIgnored private(set) var selectionVersion = 0
+    /// `selectionSummary` 的缓存（key = pageVersion + selectionVersion；见 +Actions getter）。
+    @ObservationIgnored var selectionSummaryCache: SelectionSummaryCache?
+    public internal(set) var selectedPhotoIds: Set<String> = [] {
+        // 选择集每次写入（含 insert/remove/formIntersection 等 mutate）都自增，
+        // 供 selectionSummary / 后续派生缓存做 O(1) 失效键（见 +Actions）。
+        didSet { selectionVersion &+= 1 }
+    }
     /// ⇧ 范围选择的稳定锚点：普通/⌘ 点击更新，⇧ 点击只移动 current，不改锚点。
     /// 旧实现用 currentPhotoId 当锚点，第二次 ⇧ 会丢掉第一次的范围。
     var selectionAnchorId: String?

@@ -21,6 +21,12 @@ struct LightboxView: View {
     /// 当前照片 id（photos 变化时按 id 重新定位；TS Lightbox.tsx:122
     /// if (!photo) return null 语义，避免事件刷新缩水后下标崩溃）。
     @State private var currentID: String?
+    /// photoId→photos 下标（与 photos 同步重建）。
+    ///
+    /// perf-ui task-17：灯箱 body 在缩放/平移期间逐帧求值，旧实现每帧都
+    /// `photos.first { $0.id == currentID }` + `photos.firstIndex { ... }`（O(n) ×2，
+    /// 图库可上万张）；这里缓存映射后两处都是 O(1)。重复 id 保留首个（与旧 first 同义）。
+    @State private var indexByID: [String: Int] = [:]
     /// 可见区域细节层（去抖 150ms 后更新）。
     @State private var detailTileState: PhotoViewerGeometry.DetailTile?
     @State private var detailTileTask: Task<Void, Never>?
@@ -40,17 +46,24 @@ struct LightboxView: View {
         self.onClose = onClose
         // 越界保护：initialIndex 越界时回退到第一张（photos 为空则 nil → 占位）。
         _currentID = State(initialValue: photos.indices.contains(initialIndex) ? photos[initialIndex].id : photos.first?.id)
+        _indexByID = State(initialValue: Self.makeIndex(photos))
     }
 
     /// TS Lightbox.tsx:122 if (!photo) return null —— 按 id 定位，取不到渲染占位。
-    private var currentPhoto: GalleryPhotoData? {
+    /// O(1)：优先查 indexByID；映射滞后（photos 已换但 onChange 尚未跑）时回退一次线性查找。
+    private var resolvedCurrentIndex: Int? {
         guard let currentID else { return nil }
-        return photos.first { $0.id == currentID }
+        if let index = indexByID[currentID], photos.indices.contains(index) { return index }
+        return photos.firstIndex { $0.id == currentID }
+    }
+
+    private var currentPhoto: GalleryPhotoData? {
+        guard let index = resolvedCurrentIndex, photos.indices.contains(index) else { return nil }
+        return photos[index]
     }
 
     private var currentIndex: Int {
-        guard let currentID else { return 0 }
-        return photos.firstIndex { $0.id == currentID } ?? 0
+        resolvedCurrentIndex ?? 0
     }
 
     var body: some View {
@@ -77,10 +90,12 @@ struct LightboxView: View {
         }
         .onAppear { keysFocused = true }
         .onChange(of: photos) { oldPhotos, newPhotos in
-            // 事件刷新后 photos 变化：当前照片 id 消失时不关闭（旧版「数组变化
-            // 不重置」语义）——新数组非空则就近定位（沿用旧下标，钳制到边界）
-            // 继续浏览，全空则停留占位态。
-            guard let currentID, !newPhotos.contains(where: { $0.id == currentID }) else { return }
+            // 事件刷新后 photos 变化：先重建 O(1) 下标表；当前照片 id 消失时不关闭
+            // （旧版「数组变化不重置」语义）——新数组非空则就近定位（沿用旧下标，
+            // 钳制到边界）继续浏览，全空则停留占位态。
+            let newIndex = Self.makeIndex(newPhotos)
+            indexByID = newIndex
+            guard let currentID, newIndex[currentID] == nil else { return }
             if !newPhotos.isEmpty {
                 let previousIndex = oldPhotos.firstIndex { $0.id == currentID } ?? 0
                 let fallback = min(max(0, previousIndex), newPhotos.count - 1)
@@ -90,7 +105,7 @@ struct LightboxView: View {
         }
         .task(id: currentID) {
             // TS Lightbox.tsx:143-146 —— 相邻照片 preview 预加载（best-effort）。
-            await Self.prefetchAdjacent(photos: photos, currentID: currentID)
+            await Self.prefetchAdjacent(photos: photos, currentIndex: resolvedCurrentIndex)
         }
     }
 
@@ -312,8 +327,8 @@ struct LightboxView: View {
 
     /// TS Lightbox.tsx:143-146 —— 预取 index±1、±2 的 preview（best-effort，
     /// 失败静默）；解码结果落入 PhotoThumbnailCache，翻页即命中。
-    private static func prefetchAdjacent(photos: [GalleryPhotoData], currentID: String?) async {
-        guard let currentID, let index = photos.firstIndex(where: { $0.id == currentID }) else { return }
+    private static func prefetchAdjacent(photos: [GalleryPhotoData], currentIndex: Int?) async {
+        guard let index = currentIndex, photos.indices.contains(index) else { return }
         // 只预取紧邻的两张（-2/+2 的收益远低于它占用的解码名额）。
         let paths = [-1, 1].compactMap { offset -> String? in
             let target = index + offset
@@ -338,6 +353,16 @@ struct LightboxView: View {
             guard !Task.isCancelled, let image = NSImage(data: data) else { continue }
             PhotoThumbnailCache.setImage(image, for: key)
         }
+    }
+
+    /// photoId→下标（重复 id 保留首个，与 `first(where:)` 同义）。
+    private static func makeIndex(_ photos: [GalleryPhotoData]) -> [String: Int] {
+        var indexByID: [String: Int] = [:]
+        indexByID.reserveCapacity(photos.count)
+        for (index, photo) in photos.enumerated() where indexByID[photo.id] == nil {
+            indexByID[photo.id] = index
+        }
+        return indexByID
     }
 
     private func resetTransform() {

@@ -62,9 +62,22 @@ enum CullingPreloadPlanner {
         currentPhotoId: String?,
         radius: Int = CullingPreloadPlanner.radius
     ) -> CullingPreloadPlan {
+        plan(
+            assets: assets,
+            currentPhotoIndex: currentIndex(assets: assets, currentPhotoId: currentPhotoId),
+            radius: radius)
+    }
+
+    /// 调用方已用 O(1) 索引定位当前照片时的入口（VM 热路径：不再扫整页）。
+    /// 语义与 `plan(assets:currentPhotoId:)` 完全一致（单测仍走旧入口）。
+    static func plan(
+        assets: [CullingAsset],
+        currentPhotoIndex: Int?,
+        radius: Int = CullingPreloadPlanner.radius
+    ) -> CullingPreloadPlan {
         let safeRadius = max(1, radius)
-        guard !assets.isEmpty,
-              let index = currentIndex(assets: assets, currentPhotoId: currentPhotoId) else {
+        guard !assets.isEmpty, let index = currentPhotoIndex,
+              assets.indices.contains(index) else {
             return CullingPreloadPlan(nearRing: [], farRing: [], nextTarget: nil)
         }
         func candidate(_ offset: Int) -> CullingPreloadCandidate? {
@@ -122,7 +135,7 @@ enum CullingPreloadPlanner {
 
 extension CullingViewModel {
     /// 预取用的显示档位：与查看器底层整图位图同键（PhotoDetailTier.baseDimension）。
-    static let preloadPreviewDimension = PhotoDetailTier.baseDimension
+    nonisolated static let preloadPreviewDimension = PhotoDetailTier.baseDimension
     /// 宿主侧远邻预热的档位（Wave4b / P2-4）：远邻是投机预热，**不再整解显示档
     /// 2560**——宿主解码结果本来就不进 GUI 缓存，整解只是和近邻/当前图抢 CPU。
     /// 降到 1024 仅用于喂 OS 页缓存/ImageIO，真正的"翻过去零等待"由近邻 GUI
@@ -160,17 +173,25 @@ extension CullingViewModel {
     /// 执行一次邻张预取（去抖后的实际工作；internal 供测试直接驱动，不等去抖）。
     func runNeighborPreload() async {
         guard !isShutdown, !isCancelledPreload() else { return }
+        guard let assets = page?.assets, !assets.isEmpty else { return }
         let plan = CullingPreloadPlanner.plan(
-            assets: page?.assets ?? [],
-            currentPhotoId: currentPhotoId
+            assets: assets,
+            currentPhotoIndex: currentPageIndex()
         )
         guard !plan.isEmpty else { return }
 
         // 先按「当前缓存状态」算出未命中集合：预热开始后再判定会把刚预热成功的
         // 也算成命中，宿主侧通道就永远不发（也会掩盖真正的重复解码）。
-        let nearMisses = plan.nearRing.filter { !isViewerPreviewCached(path: $0.path) }
-        let farMisses = plan.farRing.filter { !isViewerPreviewCached(path: $0.path) }
-        let nextIsMiss = plan.nextTarget.map { !isViewerPreviewCached(path: $0.path) } ?? false
+        // task-17：探测（含磁盘 stat/读）放到后台，避免主线程同步 I/O。
+        let misses = await Self.computePreloadMisses(
+            near: plan.nearRing,
+            far: plan.farRing,
+            next: plan.nextTarget
+        )
+        guard !Task.isCancelled, !isShutdown else { return }
+        let nearMisses = misses.nearMisses
+        let farMisses = misses.farMisses
+        let nextIsMiss = misses.nextIsMiss
 
         // 下一张：先发宿主缩略图优先级信号（按 → 时把目标排到宿主队列前的既有语义）。
         // 放在近邻预热之前：这是"优先级"信号，晚发就等于没发。
@@ -218,10 +239,38 @@ extension CullingViewModel {
             })
     }
 
+    /// 在**主线程外**计算近邻/远邻/下一张的缓存未命中集合（perf-ui task-17）。
+    ///
+    /// 旧实现在 MainActor 上逐条 `isViewerPreviewCached`：磁盘探针会 stat + 读整张
+    /// 预览 JPEG（baseDimension 2560，可达数 MB）并 touch mtime，一次翻片最多 5 条
+    /// ⇒ 主线程同步 I/O。内存 NSCache 与 ThumbnailDiskCache 都自带锁，可安全在
+    /// 后台查询；查询结果只用于"要不要预热"，跳过与否不影响正确性。
+    nonisolated static func computePreloadMisses(
+        near: [CullingPreloadCandidate],
+        far: [CullingPreloadCandidate],
+        next: CullingPreloadCandidate?
+    ) async -> (nearMisses: [CullingPreloadCandidate], farMisses: [CullingPreloadCandidate], nextIsMiss: Bool) {
+        await Task.detached(priority: .utility) {
+            func cached(_ path: String) -> Bool {
+                Self.isViewerPreviewCached(
+                    path: path,
+                    memoryHit: { key in PhotoThumbnailCache.image(for: key) != nil },
+                    diskHit: { p, s, preview in
+                        ThumbnailDiskCache.data(path: p, size: s, preview: preview) != nil
+                    })
+            }
+            return (
+                near.filter { !cached($0.path) },
+                far.filter { !cached($0.path) },
+                next.map { !cached($0.path) } ?? false
+            )
+        }.value
+    }
+
     /// 命中判定的纯形式（注入内存/磁盘探针）：内存命中直接 true；否则还必须查
     /// 磁盘缓存——GUI 显示路径本来就会先命中 ThumbnailDiskCache，只查内存会把
     /// "上次已解好落盘"的图判成 miss（Wave4b / P2-5）。
-    static func isViewerPreviewCached(
+    nonisolated static func isViewerPreviewCached(
         path: String,
         memoryHit: (String) -> Bool,
         diskHit: (String, Int, Bool) -> Bool

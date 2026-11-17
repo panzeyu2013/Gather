@@ -803,9 +803,23 @@ public enum PhotoThumbnailCache {
     public static func setImage(_ image: NSImage, for key: String) {
         box.lock.lock()
         defer { box.lock.unlock() }
-        let size = image.size.width * image.size.height
+        // round-3 性能：cost 改用**位图像素**而不是 NSImage.size（点）。
+        // 由 JPEG data 构造的 NSImage 会按文件里的 DPI 元数据折算 size：300dpi 的
+        // 2048px 图 size 只有约 491pt，按点计 cost 会把真实内存低估 ~17 倍，
+        // 512MB 的 totalCostLimit 于是形同虚设（相机直出多为 72dpi 时两者相等，
+        // 所以旧值在常见路径上看起来是对的）。NSImageRep.pixelsWide/High 是真实
+        // 位图尺寸，取最大 representation 以免多 rep 时低估。
+        var pixelWidth = Int(image.size.width.rounded())
+        var pixelHeight = Int(image.size.height.rounded())
+        for rep in image.representations where rep.pixelsWide > 0 && rep.pixelsHigh > 0 {
+            if rep.pixelsWide * rep.pixelsHigh > pixelWidth * pixelHeight {
+                pixelWidth = rep.pixelsWide
+                pixelHeight = rep.pixelsHigh
+            }
+        }
+        let pixels = max(0, pixelWidth) * max(0, pixelHeight)
         // 粗估：RGBA 4B/像素 + 20% 元数据开销；小图下限 256KB 防过度淘汰。
-        let cost = max(256 * 1024, Int(size * 4 * 1.2))
+        let cost = max(256 * 1024, Int(Double(pixels) * 4 * 1.2))
         box.cache.setObject(image, forKey: key as NSString, cost: cost)
     }
 }

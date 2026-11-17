@@ -331,10 +331,12 @@ extension GalleryView {
     func moveGalleryCursor(by delta: Int) {
         let photos = viewModel.filteredPhotos
         guard !photos.isEmpty else { return }
-        // 多选时 Set 无序：锚点按可见顺序取首个选中项，方向键才不会跳随机照片。
+        // perf-ui task-17：逐键路径改走 filtered 同 key 的 id→下标表（O(1)）。
+        let indexByID = viewModel.filteredPhotoIndexByID
+        // 多选时 Set 无序：锚点按可见顺序取首个选中项（= 最小可见下标），方向键才不会跳随机照片。
         let anchor = keyboardCursorId
-            ?? photos.first(where: { viewModel.selectedIds.contains($0.id) })?.id
-        let start = anchor.flatMap { id in photos.firstIndex { $0.id == id } } ?? 0
+            ?? viewModel.selectedIds.compactMap { indexByID[$0] }.min().map { photos[$0].id }
+        let start = anchor.flatMap { indexByID[$0] } ?? 0
         let next = min(max(0, start + delta), photos.count - 1)
         let id = photos[next].id
         keyboardCursorId = id
@@ -355,12 +357,12 @@ extension GalleryView {
         guard !photos.isEmpty else { return }
         // 游标可能停在筛选前的旧照片：必须回落到当前可见集合，
         // 否则空格会把“看不见的照片”选进批次。
+        // task-17：命中判断改走 filtered 同 key 的 O(1) id 集合。
+        let visibleIDs = viewModel.filteredPhotoIdSet
         let id: String
-        if let cursor = keyboardCursorId, photos.contains(where: { $0.id == cursor }) {
+        if let cursor = keyboardCursorId, visibleIDs.contains(cursor) {
             id = cursor
-        } else if let selected = viewModel.selectedIds.first(where: { candidate in
-            photos.contains { $0.id == candidate }
-        }) {
+        } else if let selected = viewModel.selectedIds.first(where: { visibleIDs.contains($0) }) {
             id = selected
         } else {
             id = photos[0].id
@@ -375,15 +377,16 @@ extension GalleryView {
         let id = keyboardCursorId
             ?? viewModel.selectedIds.first
             ?? photos[0].id
-        if let index = photos.firstIndex(where: { $0.id == id }) {
+        // task-17：filtered id→首下标表 O(1) 定位。
+        if let index = viewModel.filteredPhotoIndexByID[id] {
             lightboxIndex = index
         }
     }
     /// P2-2：批量动作——灯箱打开首个选中项（灯箱内可继续 ←/→）。
     func openSelectedInLightbox() {
-        guard let id = viewModel.filteredPhotos
-            .first(where: { viewModel.selectedIds.contains($0.id) })?.id,
-              let index = viewModel.filteredPhotos.firstIndex(where: { $0.id == id }) else {
+        // task-17：首个可见选中项 = 选中 id 在 filtered 顺序里的最小下标（O(1) 查表）。
+        let indexByID = viewModel.filteredPhotoIndexByID
+        guard let index = viewModel.selectedIds.compactMap({ indexByID[$0] }).min() else {
             return
         }
         lightboxIndex = index

@@ -144,7 +144,7 @@ extension CullingViewModel {
             return
         }
         guard let assets = page?.assets, let current = currentPhotoId,
-              let currentIndex = assets.firstIndex(where: { $0.photo.id == current }) else { return }
+              let currentIndex = pageIndex(ofPhotoId: current) else { return }
         let currentGroupId = assets[currentIndex].similarityGroupId
         guard let next = assets.dropFirst(currentIndex + 1)
             .first(where: { $0.similarityGroupId != currentGroupId }) else { return }
@@ -246,9 +246,7 @@ extension CullingViewModel {
                 patch: patch
             )
             // 先快照 before，再 await：等待期间后台刷新可能已经改了 page。
-            let before = page?.assets
-                .first(where: { $0.photo.id == asset.photo.id })
-                .map { snapshot(of: $0.state) }
+            let before = pageAsset(forPhotoId: asset.photo.id).map { snapshot(of: $0.state) }
             let result = try await cullingAPI.update(input)
             applyDecisionStates(result.states)
             if let id = result.historyOperationId, let before {
@@ -493,7 +491,7 @@ extension CullingViewModel {
             return
         }
         if targets.count == 1,
-           let asset = page?.assets.first(where: { $0.photo.id == targets[0] }) {
+           let asset = pageAsset(forPhotoId: targets[0]) {
             let nextId = shouldAdvance && autoAdvance ? nextPhotoId(after: targets[0]) : nil
             await update(asset, patch: patch, nextPhotoId: nextId)
         } else {
@@ -604,21 +602,52 @@ extension CullingViewModel {
         public var hasMixedColorLabel: Bool { colorLabel == nil }
     }
 
+    /// `selectionSummary` 的缓存键：页代数 + 选择代数（都是 O(1) 单调计数器）。
+    ///
+    /// 一致性证明：两个输入都不会"绕过计数器"变化——
+    /// - page 写入：7 处生产赋值点全部 bump `pageVersion`（round-2 审计），且
+    ///   `page.didSet` 还会清空本缓存（测试/未来代码直接赋值也安全）；
+    /// - selection 写入：`selectedPhotoIds` 的 didSet 对任何赋值/Set mutate
+    ///   （insert/remove/formIntersection/subtract…）都自增 `selectionVersion`。
+    /// 两者在 MainActor 同步段内更新，因此键相同 ⇒ 两个输入都未变 ⇒ 摘要有效。
+    struct SelectionSummaryCache {
+        let pageVersion: Int
+        let selectionVersion: Int
+        let summary: SelectionSummary?
+    }
+
     public var selectionSummary: SelectionSummary? {
-        guard !selectedPhotoIds.isEmpty, let assets = page?.assets else { return nil }
-        let selected = assets.filter { selectedPhotoIds.contains($0.photo.id) }
-        guard !selected.isEmpty else { return nil }
-        return SelectionSummary(
-            selectedCount: selectedPhotoIds.count,
-            loadedCount: selected.count,
-            ratings: Set(selected.map { Int($0.state.rating) }),
-            colorLabels: Set(selected.map(\.state.colorLabel))
-        )
+        // Observation 依赖（必须无条件读）：即使命中缓存也要读 `selectedPhotoIds`
+        // 与 `pageVersion`，否则 SwiftUI body 不会在"只改选择集"时重算摘要
+        // （selectionVersion 是 @ObservationIgnored 的纯缓存键）。缓存命中仍是 O(1)。
+        let selectionCount = selectedPhotoIds.count   // 观察依赖：选择集
+        if let cached = selectionSummaryCache,
+           cached.pageVersion == pageVersion,
+           cached.selectionVersion == selectionVersion {
+            return cached.summary
+        }
+        let summary: SelectionSummary?
+        if selectionCount > 0, let assets = page?.assets {
+            let selected = assets.filter { selectedPhotoIds.contains($0.photo.id) }
+            summary = selected.isEmpty ? nil : SelectionSummary(
+                selectedCount: selectionCount,
+                loadedCount: selected.count,
+                ratings: Set(selected.map { Int($0.state.rating) }),
+                colorLabels: Set(selected.map(\.state.colorLabel))
+            )
+        } else {
+            summary = nil
+        }
+        selectionSummaryCache = SelectionSummaryCache(
+            pageVersion: pageVersion,
+            selectionVersion: selectionVersion,
+            summary: summary)
+        return summary
     }
 
     public func nextPhotoId(after photoId: String) -> String? {
         guard let assets = page?.assets,
-              let index = assets.firstIndex(where: { $0.photo.id == photoId }) else { return nil }
+              let index = pageIndex(ofPhotoId: photoId) else { return nil }
         return assets.indices.contains(index + 1) ? assets[index + 1].photo.id : nil
     }
 
@@ -628,7 +657,7 @@ extension CullingViewModel {
     /// 随后 P/X 会按 selectedPhotoIds 批量写入，导致“点在 A、改的是 B/C”。
     /// 普通点击 = 单选，必须同时清空多选（与网格 gridClick 的普通点击语义一致）。
     public func selectCurrent(_ photoId: String) {
-        guard page?.assets.contains(where: { $0.photo.id == photoId }) == true else { return }
+        guard pageIndex(ofPhotoId: photoId) != nil else { return }
         currentPhotoId = photoId
         selectedPhotoIds = [photoId]
         selectionAnchorId = photoId
@@ -638,7 +667,7 @@ extension CullingViewModel {
     /// TS advance：←/→ 翻页；到达已加载窗口末尾且还有下一页时后台加载。
     public func advanceCurrent() {
         guard let assets = page?.assets, !assets.isEmpty else { return }
-        if let current = currentPhotoId, let index = assets.firstIndex(where: { $0.photo.id == current }) {
+        if let current = currentPhotoId, let index = pageIndex(ofPhotoId: current) {
             if index < assets.count - 1 {
                 let next = assets[index + 1].photo.id
                 currentPhotoId = next
@@ -651,7 +680,7 @@ extension CullingViewModel {
                     await loadMore()
                     guard let assets = page?.assets,
                           let current = currentPhotoId,
-                          let index = assets.firstIndex(where: { $0.photo.id == current }),
+                          let index = pageIndex(ofPhotoId: current),
                           index + 1 < assets.count
                     else { return }
                     currentPhotoId = assets[index + 1].photo.id
@@ -667,7 +696,7 @@ extension CullingViewModel {
 
     public func retreatCurrent() {
         guard let assets = page?.assets, !assets.isEmpty else { return }
-        if let current = currentPhotoId, let index = assets.firstIndex(where: { $0.photo.id == current }) {
+        if let current = currentPhotoId, let index = pageIndex(ofPhotoId: current) {
             let previous = assets[max(0, index - 1)].photo.id
             currentPhotoId = previous
             selectedPhotoIds = [previous]

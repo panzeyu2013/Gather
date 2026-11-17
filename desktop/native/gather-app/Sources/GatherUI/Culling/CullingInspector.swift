@@ -228,7 +228,8 @@ struct CullingInspector: View {
                                 sessionId: viewModel.sessionId,
                                 seedPhotoIds: cullingSceneTagSeedIds,
                                 nameFor: { id in
-                                    viewModel.page?.assets.first { $0.photo.id == id }?
+                                    // O(1)：命中行的文件名从 pageVersion 索引取。
+                                    viewModel.pageAsset(forPhotoId: id)?
                                         .photo.filename ?? String(id.prefix(8))
                                 },
                                 onSelect: { id in

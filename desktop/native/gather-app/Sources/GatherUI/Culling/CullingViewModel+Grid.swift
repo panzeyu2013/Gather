@@ -49,9 +49,10 @@ extension CullingViewModel {
     }
 
     /// 当前照片在已加载页里的下标（nil = 无当前照片 / 不在已加载页内）。
+    /// O(1)：复用 pageVersion 位置索引。
     var currentLoadedIndex: Int? {
-        guard let currentPhotoId, let assets = page?.assets else { return nil }
-        return assets.firstIndex { $0.photo.id == currentPhotoId }
+        guard let currentPhotoId else { return nil }
+        return pageIndex(ofPhotoId: currentPhotoId)
     }
 
     /// 首屏加载前静默设置页大小（不触发第二次请求）。
@@ -142,7 +143,7 @@ extension CullingViewModel {
         // 锚点保持上一次普通/⌘ 点击的位置；current 只用于显示/决策目标。
         // 页切换后锚点可能已不可见：回落到 current，避免 ⇧ 无反应。
         let anchor = (selectionAnchorId.flatMap { candidate in
-            page?.assets.contains(where: { $0.photo.id == candidate }) == true ? candidate : nil
+            pageIndex(ofPhotoId: candidate) != nil ? candidate : nil
         }) ?? current
         selectRange(from: anchor, to: photoId)
         currentPhotoId = photoId
@@ -151,8 +152,8 @@ extension CullingViewModel {
     /// ⇧ 范围选择：当前照片到目标照片（按当前页顺序）。
     public func selectRange(from anchor: String, to target: String) {
         guard let assets = page?.assets,
-              let start = assets.firstIndex(where: { $0.photo.id == anchor }),
-              let end = assets.firstIndex(where: { $0.photo.id == target }) else { return }
+              let start = pageIndex(ofPhotoId: anchor),
+              let end = pageIndex(ofPhotoId: target) else { return }
         let range = start <= end ? start...end : end...start
         // ⇧ 是“本次锚点区间”而不是并集：反复 ⇧ 不应累积区间外的旧选择。
         selectedPhotoIds = Set(range.map { assets[$0].photo.id })
@@ -163,8 +164,7 @@ extension CullingViewModel {
     public func gridClick(_ photoId: String, modifiers: NSEvent.ModifierFlags) {
         if modifiers.contains(.shift), let current = currentPhotoId {
             let anchor = (selectionAnchorId.flatMap { candidate in
-                page?.assets.contains(where: { $0.photo.id == candidate }) == true
-                    ? candidate : nil
+                pageIndex(ofPhotoId: candidate) != nil ? candidate : nil
             }) ?? current
             selectRange(from: anchor, to: photoId)
             currentPhotoId = photoId

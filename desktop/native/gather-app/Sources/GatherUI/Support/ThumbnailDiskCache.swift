@@ -25,6 +25,8 @@ private final class ThumbnailDiskCacheState: @unchecked Sendable {
     var bytesSincePrune = 0
     var lastPruneAt = Date.distantPast
     var overridden: URL?
+    /// 启动一次性 prune 是否已调度（round-3 性能；见 pruneAtStartupIfNeeded）。
+    var didStartupPrune = false
 }
 
 public enum ThumbnailDiskCache {
@@ -34,6 +36,25 @@ public enum ThumbnailDiskCache {
     public static var isEnabled: Bool {
         get { state.lock.lock(); defer { state.lock.unlock() }; return state.enabled }
         set { state.lock.lock(); defer { state.lock.unlock() }; state.enabled = newValue }
+    }
+
+    /// 启动时一次性后台 prune（round-3 性能）。
+    ///
+    /// 为什么需要：上限 512MB 只在「下一次 store」才会检查——上次进程异常退出/
+    /// 降版本可能留下超限目录，而且枚举目录的成本会落在触发它的那次解码后台线程上，
+    /// 让首屏缩略图变慢。启动时把清理丢到 utility 队列，与本次解码解耦。
+    ///
+    /// 边界：只删 thumb-cache 目录内的缓存 JPEG（pruneIfNeeded 既有语义），
+    /// 不触碰用户照片/设置；进程内至多调度一次；缓存未开启时不做任何事。
+    package static func pruneAtStartupIfNeeded() {
+        state.lock.lock()
+        let firstCall = !state.didStartupPrune
+        state.didStartupPrune = true
+        state.lock.unlock()
+        guard firstCall, isEnabled else { return }
+        Task.detached(priority: .utility) {
+            pruneIfNeeded()
+        }
     }
 
     /// 上限 512MB（与内存缓存同量级）；超限按修改时间从旧到新删除。

@@ -189,8 +189,8 @@ private struct CullingSecondDisplayCanvas: View {
     private var assets: [CullingAsset] { viewModel.page?.assets ?? [] }
 
     private var currentAsset: CullingAsset? {
-        guard let id = viewModel.currentPhotoId else { return assets.first }
-        return assets.first { $0.photo.id == id } ?? assets.first
+        // O(1)：与 VM.currentAsset 同一语义（无 id/不在页内 → 页首张）。
+        viewModel.currentAsset
     }
 
     /// 与主查看器同一套选片规则（2/3/4 图显式选择优先；Survey 由选择集决定）。
@@ -293,9 +293,8 @@ private struct CullingSecondDisplayCanvas: View {
     }
 
     private var currentIndex: Int {
-        guard let id = viewModel.currentPhotoId,
-              let index = assets.firstIndex(where: { $0.photo.id == id }) else { return 0 }
-        return index
+        // O(1)：复用 pageVersion 索引（无页/无当前照片/不在页内 → 0，与旧口径一致）。
+        viewModel.currentPageIndex() ?? 0
     }
 
     private func groupCells(_ visible: [CullingAsset], columns: Int) -> [[ViewerCell]] {

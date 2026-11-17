@@ -11,6 +11,7 @@
 // - IntersectionObserver 哨兵 → 视图滚近末尾调用 loadMoreIfNeeded()。
 import Foundation
 import GatherProtocol
+import Observation
 
 /// TS: photo.list_page 的 rows 元素（photo.ipc.ts assemblePhotos 输出形状）。
 public struct GalleryPhotoData: Codable, Equatable, Sendable {
@@ -337,7 +338,10 @@ public final class GalleryViewModel: SessionPageModel {
     var pagesGeneration = 0
     /// 拍平照片 + 同代数的 id 集合（perf-ui task-10：body 里的命中判断走 O(1) Set）。
     var flatCache: (generation: Int, photos: [GalleryPhotoData], ids: Set<String>)?
-    var filteredCache: (key: String, photos: [GalleryPhotoData])?
+    /// filtered 行缓存 + 同 key 的 id 集合 / id→首下标（键盘游标、选中定位 O(1) 查询）。
+    var filteredCache: (key: String, photos: [GalleryPhotoData], ids: Set<String>, indexByID: [String: Int])?
+    /// 已加载照片的 O(1) 查询表（与 pagesGeneration 同步失效；懒构建，见 +Derived）。
+    @ObservationIgnored var loadedPhotoLookupCache: (generation: Int, lookup: GalleryLoadedPhotoLookup)?
 
     public init(
         sessionId: String,

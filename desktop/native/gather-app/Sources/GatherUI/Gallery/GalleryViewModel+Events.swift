@@ -98,7 +98,8 @@ extension GalleryViewModel {
             // P2-1（审计 2）：事件刷新会丢弃已删除行，逐张勾选的选择集必须随之收敛。
             // 服务端全范围选择（⌘A）不能被刷新裁回已加载页——那会把“已选 20k”变成“已选 200”。
             if !isScopeSelection {
-                selectedIds.formIntersection(loadedPhotos.map(\.id))
+                // task-17：用同代 id 集合（避免每次事件刷新 map 出一份临时数组）。
+                selectedIds.formIntersection(loadedPhotoIdSet)
             }
             actionError = nil
         } catch is CancellationError {

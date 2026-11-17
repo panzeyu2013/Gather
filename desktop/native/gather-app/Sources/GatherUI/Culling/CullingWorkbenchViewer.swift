@@ -195,10 +195,9 @@ struct CullingWorkbenchViewer: View {
     }
 
     /// 当前项下标：按 photo.id 查找；找不到时回退 0（非空列表）。
+    /// O(1)：复用 pageVersion 索引，不再逐帧扫已加载页。
     private var currentIndex: Int {
-        guard let id = viewModel.currentPhotoId,
-              let found = assets.firstIndex(where: { $0.photo.id == id }) else { return 0 }
-        return found
+        viewModel.currentPageIndex() ?? 0
     }
 
     /// 越界保护的下标访问；列表为空时返回 nil。
@@ -667,7 +666,7 @@ struct CullingWorkbenchViewer: View {
             // 细节贴片与 onUnavailable 的整图高档位兜底共用同一个预算（由 body 按
             // 实际同屏张数分配：4 格各解 8192px 会瞬时吃掉约 1GB）。
             let referenceAsset = overlayState.referencePhotoId.flatMap { id in
-                assets.first(where: { $0.photo.id == id })
+                viewModel.pageAsset(forPhotoId: id)
             }
             // 叠加层坐标系：与 .fit 图像 + scaleEffect/offset 完全一致，而不是单元格矩形。
             let imageRect = Self.displayedImageRect(
@@ -1074,7 +1073,7 @@ struct CullingWorkbenchViewer: View {
     private func scheduleDetailTileUpdate(for photoId: String) {
         guard let size = cellSizes[photoId],
               size.width > 0, size.height > 0,
-              let asset = assets.first(where: { $0.photo.id == photoId }) else { return }
+              let asset = viewModel.pageAsset(forPhotoId: photoId) else { return }
         let imageSize = CGSize(width: Double(asset.photo.width), height: Double(asset.photo.height))
         let zoom = effectiveZoom
         let align = faceAlign ? alignOffset(for: asset, imageSize: imageSize, cellSize: size) : .zero

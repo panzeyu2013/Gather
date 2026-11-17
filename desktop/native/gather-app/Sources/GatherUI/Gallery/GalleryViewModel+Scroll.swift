@@ -62,24 +62,23 @@ extension GalleryViewModel {
 
     public func locatePendingPhoto(photoId: String?, photoPath: String?) async -> PhotoLocateOutcome {
         guard photoId != nil || photoPath != nil else { return .notFound }
+        // perf-ui task-17：取页循环里每轮都判一次"是否已加载"，旧实现 O(n) 扫
+        // loadedPhotos（链式拉满时上万行）；改用与 flatCache 同代数的 O(1) 集合。
+        // 语义：任一行 id 命中或路径命中（变体表同理），与原 `contains { ... }` 等价。
         func isFound() -> Bool {
-            loadedPhotos.contains { row in
-                if let photoId, row.id == photoId { return true }
-                if let photoPath, row.filepath == photoPath { return true }
-                return false
-            }
+            let lookup = loadedPhotoLookup
+            if let photoId, lookup.ids.contains(photoId) { return true }
+            if let photoPath, lookup.filepaths.contains(photoPath) { return true }
+            return false
         }
         /// 目标可能是被折叠的兄弟变体（RAW/JPEG 对里非首选那张）：这时它在
         /// loadedPhotos 里根本不存在（list_page 默认每资产只回首选行），
         /// 旧实现会扫完上限后误报「已被移除」（审计 2 P2-3）。
         func isFoldedVariant() -> Bool {
-            loadedPhotos.contains { row in
-                row.variants.contains { variant in
-                    if let photoId, variant.photoId == photoId { return true }
-                    if let photoPath, variant.filepath == photoPath { return true }
-                    return false
-                }
-            }
+            let lookup = loadedPhotoLookup
+            if let photoId, lookup.variantIDs.contains(photoId) { return true }
+            if let photoPath, lookup.variantFilepaths.contains(photoPath) { return true }
+            return false
         }
         if isFound() { return .found }
         if isFoldedVariant(), !expandVariants {

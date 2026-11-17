@@ -58,6 +58,52 @@ extension GalleryViewModel {
     /// 已加载照片 id 集合（与 loadedPhotos 同代数、同缓存；O(1) 命中判断用）。
     var loadedPhotoIdSet: Set<String> { loadedPhotosAndIDs().ids }
 
+    /// 已加载照片的 O(1) 查询表（id / 路径 / 变体 / 文件名）。
+    ///
+    /// perf-ui task-17：定位流程在取页循环里反复 `loadedPhotos.contains`，场景标签
+    /// 面板的 `nameFor` 也逐行 `first(where:)`；这里一次构表后全部 O(1)。
+    /// 与 `flatCache` 用**同一个** pagesGeneration 失效，重复 id 的语义按"首个"保留。
+    struct GalleryLoadedPhotoLookup {
+        let ids: Set<String>
+        let filepaths: Set<String>
+        let variantIDs: Set<String>
+        let variantFilepaths: Set<String>
+        let filenamesByID: [String: String]
+    }
+
+    var loadedPhotoLookup: GalleryLoadedPhotoLookup {
+        if let cached = loadedPhotoLookupCache, cached.generation == pagesGeneration {
+            return cached.lookup
+        }
+        let photos = loadedPhotos
+        var ids = Set<String>()
+        var filepaths = Set<String>()
+        var variantIDs = Set<String>()
+        var variantFilepaths = Set<String>()
+        var filenamesByID: [String: String] = [:]
+        ids.reserveCapacity(photos.count)
+        filepaths.reserveCapacity(photos.count)
+        filenamesByID.reserveCapacity(photos.count)
+        for photo in photos {
+            ids.insert(photo.id)
+            filepaths.insert(photo.filepath)
+            // 与旧 `first(where:)` 同义：重复 id 取首个文件名。
+            if filenamesByID[photo.id] == nil { filenamesByID[photo.id] = photo.filename }
+            for variant in photo.variants {
+                variantIDs.insert(variant.photoId)
+                variantFilepaths.insert(variant.filepath)
+            }
+        }
+        let lookup = GalleryLoadedPhotoLookup(
+            ids: ids,
+            filepaths: filepaths,
+            variantIDs: variantIDs,
+            variantFilepaths: variantFilepaths,
+            filenamesByID: filenamesByID)
+        loadedPhotoLookupCache = (pagesGeneration, lookup)
+        return lookup
+    }
+
     /// TS: filtered —— 客户端过滤（文件名 contains + faceCount 判定）。
     ///
     /// P1 下一波：criteria 走服务端时**不再客户端再筛一遍**——服务端已经按同一套
@@ -71,8 +117,7 @@ extension GalleryViewModel {
         if usesServerCriteria {
             let photos = Self.folded(
                 Self.sorted(loadedPhotos, by: sortMode), index: stackFolds)
-            filteredCache = (key, photos)
-            return photos
+            return storeFilteredPhotos(photos, key: key)
         }
         // 过滤词只小写一次（旧实现写在闭包里 = 每行一次分配）。
         let needle = committedSearch.lowercased()
@@ -97,8 +142,33 @@ extension GalleryViewModel {
             }
         let sorted = Self.sorted(photos, by: sortMode)
         let folded = Self.folded(sorted, index: stackFolds)
-        filteredCache = (key, folded)
-        return folded
+        return storeFilteredPhotos(folded, key: key)
+    }
+
+    /// 写入 filtered 缓存，同时构建 id 集合与 id→**首个**下标（供键盘游标/选中定位）。
+    private func storeFilteredPhotos(_ photos: [GalleryPhotoData], key: String) -> [GalleryPhotoData] {
+        var indexByID: [String: Int] = [:]
+        var ids = Set<String>()
+        indexByID.reserveCapacity(photos.count)
+        ids.reserveCapacity(photos.count)
+        for (index, photo) in photos.enumerated() {
+            ids.insert(photo.id)
+            if indexByID[photo.id] == nil { indexByID[photo.id] = index }
+        }
+        filteredCache = (key, photos, ids, indexByID)
+        return photos
+    }
+
+    /// filtered 行的 id 集合（与 filteredPhotos 同一缓存 key；O(1) 命中判断）。
+    var filteredPhotoIdSet: Set<String> {
+        _ = filteredPhotos
+        return filteredCache?.ids ?? []
+    }
+
+    /// filtered 行 id→首下标（与 filteredPhotos 同一缓存 key；键盘游标定位 O(1)）。
+    var filteredPhotoIndexByID: [String: Int] {
+        _ = filteredPhotos
+        return filteredCache?.indexByID ?? [:]
     }
 
     /// 堆栈折叠：每个堆栈只显示代表张（封面优先），徽标由格子读取 badgeCount。

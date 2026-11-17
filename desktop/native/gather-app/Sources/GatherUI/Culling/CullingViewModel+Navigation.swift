@@ -338,6 +338,6 @@ extension CullingViewModel {
     }
 
     private func fileName(forPhotoId photoId: String) -> String {
-        page?.assets.first { $0.photo.id == photoId }?.photo.filename ?? photoId
+        pageAsset(forPhotoId: photoId)?.photo.filename ?? photoId
     }
 }

@@ -13,6 +13,7 @@
 //
 // 可测入口：`startup(delegate:applicationSupportDirectory:)` / `shutdown()` 均为
 // internal，且 `applicationSupportDirectory` 可指向临时目录（nil = 生产路径）。
+import Dispatch
 import Foundation
 import GatherProtocol
 import GatherPersistence
@@ -20,6 +21,41 @@ import GatherAnalysis
 import GatherApplication
 import Observation
 import GatherUI
+
+// MARK: - 启动阶段计时（2026-11-17 round-3 perf-runtime）
+
+/// 一次冷启动的阶段耗时。
+///
+/// 只在 `startup` / `makeScene` 的 MainActor 上下文里累加，不跨任务、不加锁；
+/// 每次冷启动只产出**一行** info 日志（阶段数固定 7），常驻成本可忽略。
+/// 目的：给「启动慢」一份可复核的阶段拆分（DB open / 组合根 / 语言播种 /
+/// 运行时启动 / embedding 迁移 / provider 接线 / 首帧），避免只能猜总时长。
+private struct StartupPhaseTimings {
+    private(set) var entries: [(label: String, text: String)] = []
+
+    /// 记录一个已完成阶段的耗时；`start` 来自 `startupTicks()`。
+    mutating func record(_ label: String, since start: UInt64) {
+        entries.append((label, startupMillisecondsText(since: start)))
+    }
+
+    /// `restore=0.8ms dbOpen=41.2ms …`（0.1ms 精度，顺序 = 记录顺序）。
+    var summary: String {
+        entries.map { "\($0.label)=\($0.text)ms" }.joined(separator: " ")
+    }
+}
+
+/// 启动计时的单调时钟（纳秒）。用 DispatchTime.uptimeNanoseconds 而不是 Date：
+/// 不受系统时钟调整影响，阶段差值才有意义。
+private func startupTicks() -> UInt64 {
+    DispatchTime.now().uptimeNanoseconds
+}
+
+/// 从 `start` 到现在，格式化为 0.1ms 精度（无 locale/格式化器依赖）。
+private func startupMillisecondsText(since start: UInt64) -> String {
+    let elapsed = DispatchTime.now().uptimeNanoseconds &- start
+    let tenths = (elapsed &+ 50_000) / 100_000
+    return "\(tenths / 10).\(tenths % 10)"
+}
 
 @MainActor
 @Observable
@@ -94,8 +130,10 @@ package final class AppBootstrap {
     @ObservationIgnored private var c1PendingReplay: C1PendingJudgementReplay?
 
     /// 启动装配。顺序与拆分前 `GatherApp.bootstrap` 逐行一致：
-    /// 目录 → 库 → 组合根 → AppServices → 冷启动语言 → runtime.start →
+    /// 目录 → 库 → 组合根 → AppServices → 冷启动语言 ∥ runtime.start →
     /// 事件总线 → embedding 迁移 → provider → C1 桥/Delegate 回调 → 发布场景。
+    /// （round-3 起语言播种与 runtime.start 并行；两者互不依赖，见 makeScene 内
+    /// 的并行安全证明。冷启动/失败各打一行阶段耗时日志。）
     ///
     /// - Parameters:
     ///   - delegate: 生产恒为 `GatherAppDelegate`；nil 仅用于测试（不接线）。
@@ -109,17 +147,24 @@ package final class AppBootstrap {
         errorMessage = nil
         noticeMessage = nil
         defer { isStarting = false }
+        // round-3 性能观测：一次启动的阶段拆分（成功/失败各一行 info/error 日志；
+        // 不改变控制流，也不引入任何新状态）。口径见 StartupPhaseTimings。
+        let startupStartedAt = startupTicks()
         do {
-            let (state, runtime, maintenance, archived, c1PendingReplay) = try await Self.makeScene(
-                delegate: delegate,
-                applicationSupportDirectory: applicationSupportDirectory,
-                // 4a-3a：语言唯一写入口由装配层持有，冷启动在这里播种。
-                languageStore: languageStore,
-                commandCenter: commandCenter
-            )
+            let (state, runtime, maintenance, archived, c1PendingReplay, phaseTimings) =
+                try await Self.makeScene(
+                    delegate: delegate,
+                    applicationSupportDirectory: applicationSupportDirectory,
+                    // 4a-3a：语言唯一写入口由装配层持有，冷启动在这里播种。
+                    languageStore: languageStore,
+                    commandCenter: commandCenter
+                )
             self.runtime = runtime
             self.maintenanceService = maintenance
             self.scene = state
+            // “firstScene”口径 = startup 入口 → scene 首次发布的墙钟（SwiftUI 首帧的
+            // 上界；真正 draw call 发生在场景渲染后，本文件观测不到）。
+            let firstScene = startupMillisecondsText(since: startupStartedAt)
             self.c1PendingReplay = c1PendingReplay
             // Wave4c / task-48：状态条"重试同步"按钮 → pending 重放器（同一 apply 口径）。
             C1PendingJudgementStore.shared.onRetry = { sessionId in
@@ -141,10 +186,18 @@ package final class AppBootstrap {
                     await self?.shutdown()
                 }
             }
+            // 一行/次冷启动：total = 启动入口 → 接线完成；firstScene = 场景首发时刻；
+            // 其余为各阶段自耗时（languageSeed 与 runtimeStart 并行，各自计时）。
+            GatherLogger.log(
+                "startup phases: total=\(startupMillisecondsText(since: startupStartedAt))ms"
+                    + " firstScene=\(firstScene)ms \(phaseTimings.summary)",
+                level: .info)
         } catch {
             // 装配失败时清掉预设桥，避免指向半初始化的 SettingsService。
             IngestPresetBridge.settings = nil
-            GatherLogger.log("bootstrap failed: \(error)", level: .error)
+            GatherLogger.log(
+                "bootstrap failed after \(startupMillisecondsText(since: startupStartedAt))ms: \(error)",
+                level: .error)
             // 旧库/损坏库给可执行的归档指引；其余错误仍走统一漏斗。
             if let unrecoverable = error as? RestoreUnrecoverableError {
                 self.errorMessage = languageStore.l10n.errorText(
@@ -197,8 +250,11 @@ package final class AppBootstrap {
         languageStore: LanguageStore,
         commandCenter: AppCommandCenter
     ) async throws -> (
-        SceneState, AppRuntime, MaintenanceService, ArchivedDatabase?, C1PendingJudgementReplay
+        SceneState, AppRuntime, MaintenanceService, ArchivedDatabase?, C1PendingJudgementReplay,
+        StartupPhaseTimings
     ) {
+        // 阶段计时只在本函数内累加；随返回值交给 startup 统一打一行日志。
+        var phaseTimings = StartupPhaseTimings()
         let applicationSupport: URL
         if let applicationSupportDirectory {
             applicationSupport = applicationSupportDirectory
@@ -219,6 +275,9 @@ package final class AppBootstrap {
         let dbURL = appDir.appendingPathComponent("gather.sqlite")
         // A-3：打开持久化缩略图缓存（测试默认关闭）。
         ThumbnailDiskCache.isEnabled = true
+        // round-3 性能：上次进程可能留下超限缓存；启动时后台清一次，别让枚举目录
+        // 的成本落在首屏第一次解码（write+prune）的后台线程上。
+        ThumbnailDiskCache.pruneAtStartupIfNeeded()
         // Cut 3 / 3b-3（E-04）：注册页面解码端口（RAWDecoder 在 GatherAnalysis，
         // GatherUI 只能经 ImageDecoderPort 拿到；重复注册按后者生效）。
         ImageDecodingRegistry.install(RAWImageDecoder())
@@ -235,6 +294,7 @@ package final class AppBootstrap {
 
         // B0：跨进程恢复。journal 存在时先拿恢复锁，在 Database.open 前 swap；
         // 成功 open 后 finalize，失败回滚旧库。
+        let restoreStartedAt = startupTicks()
         var didRestore = false
         let restoreLock: RestoreLock?
         if RestoreCoordinator.hasPending(dbPath: dbURL.path) {
@@ -258,10 +318,12 @@ package final class AppBootstrap {
             restoreLock = nil
         }
         defer { restoreLock?.release() }
+        phaseTimings.record("restore", since: restoreStartedAt)
 
         // 复审 P2（C5）：Database.open 会做 schema inspect/assertReady（并可能迁移/恢复），
         // 是启动期最重的同步 IO；放到 detached 任务，主线程可继续绘制“初始化中…”。
         // Database/DBConnection 均为 @unchecked Sendable（句柄访问由 connectionLock 串行）。
+        let dbOpenStartedAt = startupTicks()
         let openDatabase: @Sendable () async throws -> Database = {
             try await Task.detached(priority: .userInitiated) {
                 var openOptions = Database.Options.default
@@ -299,8 +361,10 @@ package final class AppBootstrap {
         } else {
             database = try await openDatabase()
         }
+        phaseTimings.record("dbOpen", since: dbOpenStartedAt)
         // 旧库被归档重建时记下现场，启动完成后给一次性提示；
         // 否则用户升级首启动只会看到「会话/照片/评分全空」而以为数据丢了。
+        let compositionStartedAt = startupTicks()
         var archivedDatabase: ArchivedDatabase?
         if case .reset(_, let previousVersion, let backup) = database.outcome {
             archivedDatabase = ArchivedDatabase(backup: backup, previousVersion: previousVersion)
@@ -330,33 +394,61 @@ package final class AppBootstrap {
         // Wave5 batch3（task-19）：摄取面板的预设持久化接缝（GatherUI 不能 import
         // GatherHost，也不该为一个面板改 CullingViewModel 的 30+ 测试构造点）。
         IngestPresetBridge.settings = appServices.settings
-        // 冷启动应用持久化界面语言：settings.ui_language 是唯一真相源；
-        // 未设置时保持系统语言检测（不再「设置显示中文、界面是英文」）。
-        // 4a-3a：写入口是 LanguageStore.seed（同步旧全局但不广播——启动阶段
-        // 还没有订阅方，持久化也早已完成，不应触发一次假的「设置页切换」）。
-        if let stored = await storedInterfaceLanguage(using: appServices.settings) {
-            languageStore.seed(L10n.Language(rawLanguage: stored))
-        }
+        phaseTimings.record("composition", since: compositionStartedAt)
+        // B0：刚完成跨进程恢复时不再回放 pending delivery（恢复前的语义已由 journal 承接）。
+        let replayPendingDeliveries = !didRestore
         // B8.3b-1：注册 8 个 executor 并启动 JobService（start 在已启动时幂等、
         // shutdown 后失败可见）。start 之后还会在后台回放未完成的
         // delivery_intents（不阻塞 UI；失败写 runtime.deliveryReplayFailure）。
         // 复审 C5：start 内部会查库（recoverStale/resumeInterrupted）并注册 executor，
         // 放到 detached 执行；AppRuntime 是 @unchecked Sendable（内部 NSLock 保护生命周期）。
-        // B0：刚完成跨进程恢复时不再回放 pending delivery（恢复前的语义已由 journal 承接）。
-        let replayPendingDeliveries = !didRestore
-        // start 返回本次恢复的 job 类型列表，这里不需要（恢复结果由 runtime 内部落库）。
-        _ = try await Task.detached(priority: .userInitiated) {
+        //
+        // round-3 性能：runtime.start 先发射，冷启动语言播种与其**并行**（两份都是
+        // 异步等待，互不依赖）。并行安全证明：
+        //   · 语言播种只读 settings.ui_language（SettingsAPI.get，单条 SELECT）并写
+        //     LanguageStore.seed —— MainActor 独占，且 seed 按注释**不广播**（启动
+        //     阶段没有订阅方，持久化早已完成）；
+        //   · runtime.start 只碰 executor 注册 / JobService.start() / 后台 delivery
+        //     回放，不认识 languageStore；两者没有共享可变内存状态。seed 顺带写的
+        //     进程级 GatherLocalization.setAppLanguage 只被 UI 文案出口读取，
+        //     runtime.start 路径（JobService/AppRuntime/WorkflowRegistry）零引用；
+        //   · DB 访问：都经同一个 DBConnection（句柄访问由 connectionLock 串行；
+        //     只读池另有小锁），不存在把同一行写出两种值的事务交叉；
+        //   · 可观测顺序不变：scene 发布前两者都已 await 完成；语言播种早/晚几十 µs
+        //     对用户不可见（首个读 l10n 的视图在 scene 发布后）。
+        // 不并行的候选（证据见 docs/reviews/2026-11-17-round3-perf/perf-runtime.md）：
+        // AppImport.prepareNativeEmbeddingRerun 会 jobService.create，必须严格在
+        // runtime.start（recoverStale/resumeInterrupted）之后，否则恢复与新建的
+        // 先后不可证 —— 保持串行。
+        let runtimeStartStartedAt = startupTicks()
+        let runtimeStartTask = Task.detached(priority: .userInitiated) {
             try runtime.start(replayPendingDeliveries: replayPendingDeliveries)
-        }.value
+        }
+        // 冷启动应用持久化界面语言：settings.ui_language 是唯一真相源；
+        // 未设置时保持系统语言检测（不再「设置显示中文、界面是英文」）。
+        // 4a-3a：写入口是 LanguageStore.seed（同步旧全局但不广播——启动阶段
+        // 还没有订阅方，持久化也早已完成，不应触发一次假的「设置页切换」）。
+        let languageSeedStartedAt = startupTicks()
+        if let stored = await storedInterfaceLanguage(using: appServices.settings) {
+            languageStore.seed(L10n.Language(rawLanguage: stored))
+        }
+        phaseTimings.record("languageSeed", since: languageSeedStartedAt)
+        // start 返回本次恢复的 job 类型列表，这里不需要（恢复结果由 runtime 内部落库）。
+        // 语言播种已结束；必须等 start 收尾后才能接线事件总线 / embedding 迁移。
+        _ = try await runtimeStartTask.value
+        phaseTimings.record("runtimeStart", since: runtimeStartStartedAt)
         // P1：后台维护（元数据备份 GC + 关键词回填），不阻塞启动。
         scheduleBackgroundMaintenance(composition: composition)
         // UI 对齐（§十一 11.9-1）：jobs:progress 事件总线接线。
         GatherEventCenter.shared.wire(jobEvents: runtime.jobService)
+        // 一次性 migration（每个 DB 只跑一次；marker 命中时立即返回，≈0ms）。
+        let embeddingPrepStartedAt = startupTicks()
         await AppImport.prepareNativeEmbeddingRerun(
             composition: composition,
             settings: appServices.settings,
             databasePath: dbURL.path
         )
+        phaseTimings.record("embeddingPrep", since: embeddingPrepStartedAt)
 
         // 3.2/3.3 页面 provider：全部域都走 AppServices 的 typed API；
         // provider 只做渲染形状适配，不再持有字符串命令面。
@@ -593,6 +685,7 @@ package final class AppBootstrap {
             })
         GatherAutomationRuntimeRegistry.current = automationRuntime
 
+        let wireStartedAt = startupTicks()
         let c1PendingReplay = wire(
             delegate: delegate,
             composition: composition,
@@ -617,6 +710,7 @@ package final class AppBootstrap {
             // 没有 environment，只能在动作发生时读同一个 store）。
             languageStore: languageStore
         )
+        phaseTimings.record("wire", since: wireStartedAt)
 
         // Cut 4 / 4a-2a-1：壳层依赖包 + 工作区工厂（只装配引用，不 new 服务）。
         // 放在既有启动步骤之后，原有顺序逐行不变；rootDeps 的每个字段都来自
@@ -693,7 +787,8 @@ package final class AppBootstrap {
             runtime,
             composition.maintenanceService,
             archivedDatabase,
-            c1PendingReplay
+            c1PendingReplay,
+            phaseTimings
         )
     }
 
