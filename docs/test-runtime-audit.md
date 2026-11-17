@@ -7,9 +7,9 @@
 > `--skip-build` 单次运行（只统计测试进程，不含编译）。覆盖率用 `--enable-code-coverage`
 > + `llvm-cov report`，行覆盖（line coverage）为主。数字随机器负载浮动。
 
-> **当前基线（2026-11-17 核对）**：本文其余数字是 2026-10-29 的审计快照，保留作历史对照。
-> 当前声明口径（`check-test-catalog.sh` 剥注释计数）为 core 1,995 `@Test` / 234 `@Suite`、
-> app 1,260 / 183；最近一次 macOS 运行（2026-11-16）为 core 1,970 / 290 + 串行 25 / 4、
+> **当前基线（2026-11-17 第二轮加固后核对）**：本文其余数字是 2026-10-29 的审计快照，保留作历史对照。
+> 当前声明口径（`check-test-catalog.sh` 剥注释计数）为 core 2,001 `@Test` / 235 `@Suite`、
+> app 1,266 / 184；最近一次 macOS 运行（2026-11-16）为 core 1,970 / 290 + 串行 25 / 4、
 > app 1,260 / 184。日常命令与当前基线见 [DEVELOPMENT.md](DEVELOPMENT.md) 与 [README.md](README.md)。
 
 ## 1. 结论

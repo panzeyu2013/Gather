@@ -14,7 +14,7 @@
 | 代码规范 | `check-domain-writes.sh` 未闭合 heredoc 修复；shellcheck 5→0；Sources `as!` 1→0；清理 ratchet 5→9 指标并收紧 `try_optional` 261→260；`@unchecked Sendable` 60/60 未增长 | `standards.md`、`scripts/check-cleanup-ratchet.sh` |
 | 测试文件 | 测试内 `try!` 3→0、`fatalError` 2→0、`preconditionFailure` 1→0、`try? #require` 4→0；断言 +2；catalog/ratchet 全绿；输出 flaky 清单（sleep/墙钟/非 hermetic）与后续建议 | `check-test-catalog.sh --strict`；本次 diff |
 | 软件美观度/一致性 | 69 条英文文案按 HIG 打磨（0 个 key 变更）；7 个 icon-only 控件补 8 个 accessibilityLabel（残留真实缺口 0）；116 处设计令牌精确等价替换（43 文件），`font.callout` 84→0、`theme.legacyAlias` 15→5，设计 ratchet 基线收紧 | `design-system.md`、`check-design-system.sh` |
-| 性能 | gather-core 7 组修复（10 文件）：JSON coder 逐行分配收口、日期解析共享化、O(n²)→O(n) 等；GatherUI 7 项修复（7 文件）：渲染路径 formatter/解析器缓存、检查器重复派生 hoist；另产出静态热点清单（FK 缺索引 10 列、N+1 2 处、逐次正则编译 3 处） | `perf-core.md`、`perf-ui.md` |
+| 性能 | gather-core 7 组修复（10 文件）：JSON coder 逐行分配收口、日期解析共享化、O(n²)→O(n) 等；GatherUI 7 项修复（7 文件）：渲染路径 formatter/解析器缓存、检查器重复派生 hoist；另产出静态热点清单（FK 缺前导索引经第二轮复核为 1 个且无查询使用，详见 §7 更正；N+1 2 处、逐次正则编译 3 处） | `perf-core.md`、`perf-ui.md` |
 | 文档 | README / docs 基线校准：API 172→195 方法、功能 target 8→9（总 16→18）、门禁 12/14→15、en 键 2,020→2,680、测试声明口径与最近 macOS 运行分列；新增 `scripts/report-baseline.sh` 只读事实报告，防止文档再次漂移 | 本次 diff；`report-baseline.sh` |
 
 **门禁状态**：可 Linux 执行的 14 道门禁全绿（新增 `check-repo-hygiene.sh`，含 shellcheck）；第 15 道 `check-warnings.sh` 需要 macOS SDK，按 CI 口径待 macOS runner 复验。`check-repo-hygiene` 六节、`check-design-system`、`check-protocol-surface --strict`、`check-test-catalog --strict` 等均有本地实时输出。
@@ -66,7 +66,7 @@
 
 - **gather-core**（`perf-core.md`，7 组 / 10 文件）：`JSONValue` 编解码器共享实例（收口全仓 57 处调用与元数据缓存 4 coder/行）；TriageRepo/QualityService/RepositorySupport/PersonRepo/CullingHistoryRepo 逐行 coder hoist；NavigationService 日期解析共享 + 分组逐行预计算（每行少 2×3 formatter + 2×正则编译）；Sidecar 读取去掉冗余 stat；`applyRelativeRanks` O(n²)→O(n)。
 - **GatherUI**（`perf-ui.md`，7 项 / 7 文件）：`DisplayDateFormatters` 增加 pattern/template/shortShort 缓存与 ISO 解析器（折叠进既有锁盒子）；C1 状态胶囊、元数据批次行、导出命名预览、WebDAV 发布历史、人物详情改为缓存；`CullingInspector` body 重复派生 hoist（500 张页每次渲染少 ~2 次全页 filter/扫描）。
-- **静态热点（只报告，未改）**：SQLite 55 表/86 索引/81 FK 中 **10 个 FK 子列无前导索引**（`session_assets.display_file_id`、`role_bindings.cluster_id`、`photo_semantics.photo_id`、`triage_suggestions.photo_id` 等；改 schema 需 fingerprint/计数联动与 macOS 复验，建议随下一次 schema bump 处理）；N+1 2 处（`CullingService+Commands` 逐照片 `getDecision`、`LibraryPackageService` 逐 binding `personsRepo.get`）；逐次 `NSRegularExpression` 编译 3 处（sidecar IPTC 读侧、`NavigationService.filenameSequence`）。
+- **静态热点（只报告，未改）**：SQLite 55 表/86 索引/81 FK 的 FK 子列索引结论已由第二轮更正（查询计划审计见 `../2026-11-17-round2-hardening/perf-core-round2.md` §5.1，schema 未变）：**计入 SQLite PK/UNIQUE 自动索引后，真正缺前导索引的 FK 子列只有 1 个** —— `session_assets.display_file_id` → `asset_files`，且源码中没有任何按 `display_file_id` 过滤的查询（只在 INSERT/UPDATE 写入），当前无实际性能影响；若只计显式 `CREATE INDEX`、忽略 `sqlite_autoindex` 则为 19 个，但自动索引同样是可用 BTREE，不应算缺失（两种口径都复现不出「10」）。改 schema 需 fingerprint/计数联动与 macOS 复验，建议随下一次 schema bump 处理；N+1 2 处（`CullingService+Commands` 逐照片 `getDecision`、`LibraryPackageService` 逐 binding `personsRepo.get`）；逐次 `NSRegularExpression` 编译 3 处（sidecar IPTC 读侧、`NavigationService.filenameSequence`）。
 - **收益表述纪律**：所有"消除 N 次分配"均为按代码路径推导的构造次数，不是实测耗时；运行时收益需 macOS Instruments 复测。
 
 ## 8. 文档与基线校准
@@ -99,7 +99,7 @@ git diff --check → 干净；scripts 无 CRLF；1225 文本文件 editorconfig 
 
 1. **本轮未编译/未运行**：所有 Swift 改动的最终类型检查与运行时套件需 macOS CI 首跑确认（改动均为行为保持的最小变换，风险点已在各分册列出：`#require` 在 throwing helper 中的用法、静态 formatter/coder 的 Foundation Sendable 标注、UTF 展示格式逐字节等价性）。`check-warnings.sh`（-warnings-as-errors）同样待 macOS。
 2. **收益需实测**：性能改动只做到"构造次数/复杂度"层面，建议 macOS 上跑 `gather-core-benchmarks` 与 Instruments 时间线复核。
-3. **schema 性能项**：10 个 FK 子列缺前导索引，建议在下次 `user_version` 迁移时加索引并同步 `expectedExplicitIndexCount`/`expectedShapeFingerprint`（需 macOS 跑 schema 测试生成指纹）。
+3. **schema 性能项**：按第二轮查询计划审计（`../2026-11-17-round2-hardening/perf-core-round2.md` §5.1），计入 SQLite PK/UNIQUE 自动索引后仅 1 个 FK 子列缺前导索引（`session_assets.display_file_id`，当前无查询使用；只计显式 `CREATE INDEX` 时为 19 个）。若后续补索引，建议在下次 `user_version` 迁移时加 `session_assets(display_file_id)` 索引并同步 `expectedExplicitIndexCount`/`expectedShapeFingerprint`（需 macOS 跑 schema 测试生成指纹）。
 4. **shellcheck 版本漂移**：门禁 [f] 依赖 `shellcheck`（本地 0.10.0，CI 用 ubuntu-latest 自带版本，未 pin）；如 CI 升版引入新规则，需按门禁提示同步修脚本。
 5. **AppIntents 自检**：`scripts/check-appintents.sh` 默认仍硬性要求 Wave3 的 4 个 intent，而应用当前提供 6 个动作（docs/DEVELOPMENT 已如实分列）；是否把新 2 个动作纳入硬性预期，建议随下次真机验收决定。
 6. **文案测试钉死项**："New Workspace"/"Import Folder" 等菜单标题、`Cancelled/Canceled` 拼写等被测试精确断言，HIG 收尾需测试所有者一起改，本轮未动。

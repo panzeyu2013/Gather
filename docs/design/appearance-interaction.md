@@ -12,9 +12,9 @@
 Sources/GatherUI/
   DesignSystem/
     Tokens/       颜色、字体、间距、圆角、阴影、chrome 尺寸
-    Components/   Card / Section / Badge / Banner / EmptyState / Toast
-    Patterns/     GatherPage（全局页骨架）
-    Modifiers/    gatherSurface / gatherText
+    Components/   Badge / Banner / Button / EmptyState / MenuField / SearchField / Toast
+    Patterns/     GatherPage（全局页骨架）/ GatherInspectorSection / GatherCollapsibleSection
+    Modifiers/    gatherSurface / gatherText / gatherPresence
   Interaction/    路由、命令、事件、生命周期（GatherSessionPage / SessionPage）
   Dashboard/ Library/ Culling/ …  按功能分目录（不再有 Features/ 层）
   Shell/          RootView / Scene 装配 / Overlay
@@ -42,7 +42,9 @@ Sources/GatherUI/
 | `GatherTheme.hairline` | 卡片/面板边界（不用 `separator` 代替） |
 
 页面背景用 `.gatherSurface(.canvas)`（或 `.gatherPage` 自带），不要在页面里手写
-`.background(GatherTheme.canvas)` 与 `.background(GatherTheme.windowBackground)` 两套名字。
+`.background(GatherTheme.canvas)`。旧别名 `windowBackground` 已删除；`contentBackground` /
+`secondaryContentBackground` 只是 `surface` / `surfaceMuted` 的兼容别名，新代码不要再用
+（门禁 metric `theme.legacyAlias` 只降不升）。
 
 ### 文字
 
@@ -109,14 +111,19 @@ VStack(spacing: 0) {
 ### 分区
 
 ```swift
-GatherSection(l10n("任务中心")) {
+Section {
     jobsContent
+} header: {
+    Text(l10n("任务中心"))
+        .font(GatherFont.label)
+        .foregroundStyle(.secondary)
 }
 ```
 
-`GatherSection` = 标题 + `gatherCard` 表面。适合 Dashboard / Library / Persons 的
-内容分区；检查器请用后续的 `GatherInspectorSection`（不要用 `Form` 进 `.inspector`，
-会触发 AppKit 约束循环）。
+页面内容分区用系统 `Section`（放在 `List` / `Form` 里，标题走 `header:`）；需要卡片
+表面时内容自己套 `gatherCard()`。**没有**通用 `GatherSection` 组件（早期规划名，未
+落地，勿引用）。检查器分区用 `GatherInspectorSection` / `GatherCollapsibleSection`
+（`DesignSystem/Patterns/`）；不要用 `Form` 进 `.inspector`，会触发 AppKit 约束循环。
 
 ### 空态
 
@@ -132,9 +139,10 @@ GatherEmptyState(
 ```
 
 `GatherEmptyState` 是品牌色空态（2026-10-30 起自绘，不再是 `ContentUnavailableView` 包装）：
-- 页面级空态用它；
+- 页面级空态用它；页面级加载失败/错误态同样用它（必须保留重试/清除筛选等出口）；
 - List Section 行内（会被行高约束）继续用 `ContentUnavailableView`，不要强行塞入；
-- 错误态必须保留重试/清除筛选等出口。
+- 采纳进度由门禁 metric `empty.contentUnavailable` 度量（`./scripts/check-design-system.sh`，
+  统计 GatherUI 内 `ContentUnavailableView` 出现次数、含注释；只降不升）。
 
 ### 按钮
 
@@ -232,7 +240,8 @@ swift test --package-path desktop/native/gather-app --no-parallel \
   --cache-path desktop/native/gather-app/.build/shared-cache \
   --scratch-path desktop/native/gather-app/.build/scratch
 
-# 只允许下降；增加会 exit 1
+# 只允许下降；增加会 exit 1。基线含空态采纳指标 empty.contentUnavailable
+#（页面级空态改用 GatherEmptyState 会压低它；List Section 行内保留项见基线/审计文档）
 ./scripts/check-design-system.sh
 
 # 有意更新基线（review 后）
@@ -259,14 +268,14 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
 | 阶段 | 状态 |
 | --- | --- |
 | 主题/共享叶子迁入 `DesignSystem/` | ✅ 本轮 |
-| `GatherPage` / `GatherSection` / `GatherEmptyState` / `GatherChromeMetrics` | ✅ 本轮 |
+| `GatherPage` / `GatherEmptyState` / `GatherChromeMetrics` | ✅ 本轮 |
 | Dashboard / Library / Persons / Settings 使用 `gatherPage` | ✅ 第一里程碑 |
 | 7 个会话页使用 `GatherSessionPage` + 生命周期 | ✅ Phase 2 |
 | `AppRoute` / `SessionPage` / `\.navigator` environment | ✅ Phase 3（旧 `Destination` / `SessionTab` 已删除） |
 | `AppCommandCenter` 菜单命令 | ✅ Phase 4：菜单可执行性由 `AppCommandCenter.installed` 驱动并置灰；undo/redo 仅挑片页自建历史栈，其他页面保留系统撤销/重做 |
 | `refreshOnDomainEvents` / `refreshOnJobTerminal` | ✅ Phase 4 |
 | `GatherSessionToolbar` 共享工具栏 | ✅ P2（7 页迁移；Control/Face 改 @Bindable 修 SIGSEGV） |
-| `GatherInspectorSection` 共享检查器 | 下一阶段 |
+| `GatherInspectorSection` / `GatherCollapsibleSection` 共享检查器 | ✅ Phase 5（Metadata / Gallery / Library / Culling 检查器已迁移） |
 | 按钮语义层（`GatherButton` + 门禁） | ✅ 本轮：内容层角色化；toolbar/浮层用功能层 helper；Lightbox 用 viewer helper |
 | 删除 `Destination` / `SessionTab` 兼容层 | ✅ P2 |
 

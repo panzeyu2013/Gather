@@ -278,7 +278,8 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 ./scripts/check-coded-errors.sh
 ./scripts/check-backlog-evidence.sh
 ./scripts/check-design-system.sh
-./scripts/check-repo-hygiene.sh          # 仓库层卫生 6 节：bash -n/执行位/CRLF、.editorconfig、Markdown 链接、本地化表、无缓存产物、shellcheck（-S warning；缺失即 FAIL，需预装）
+./scripts/check-repo-hygiene.sh          # 仓库层卫生 7 节：bash -n/执行位/CRLF、.editorconfig、Markdown 链接、本地化表、无缓存产物、shellcheck（-S warning，缺失即 FAIL，需预装）、本地化用法守卫
+./scripts/check-docs-facts.sh            # 文档事实：README/docs 的基线数字须与源码计算一致（targets/域 API/schema/en key/门禁数）
 ./scripts/check-warnings.sh              # core/app Sources -warnings-as-errors
 ```
 
