@@ -16,6 +16,8 @@
 #     （含转义引号、行注释、块注释；不依赖按行 grep）
 #   - schema：SchemaCurrent.swift 的 expected* 常量（55 表/451 列/86 索引/81 外键/
 #     user_version=1）与 DDL 字面量实测计数交叉核对
+#   - 门禁脚本：scripts/check-*.sh 总数减 check-appintents.sh（自检，非门禁），
+#     并列出清单，便于 docs/DEVELOPMENT 的门禁清单与 docs/README 的门禁数同步
 #   - ratchet baseline：docs/protocol-surface-baseline.json、
 #     docs/protocol-surface-modules-baseline.json、docs/cleanup-baseline.json 的字段值
 #
@@ -400,7 +402,16 @@ else:
 row('shape fingerprint', m_fp.group(1) if m_fp else '?')
 
 
-# ---------------------------------------------------------------- 6) ratchet baselines
+# ---------------------------------------------------------------- 6) 门禁脚本
+section('门禁脚本（scripts/check-*.sh，docs 口径）')
+gate_files = sorted(Path('scripts').glob('check-*.sh'))
+gate_names = [p.name for p in gate_files if p.name != 'check-appintents.sh']
+row('门禁脚本数', len(gate_names))
+note('排除：check-appintents.sh（需要已组装的 .app，是自检不是门禁）')
+note('清单：' + ', '.join(gate_names))
+
+
+# ---------------------------------------------------------------- 7) ratchet baselines
 def flatten(obj, prefix=''):
     out = []
     if isinstance(obj, dict):

@@ -35,7 +35,9 @@ METRICS = {
     "empty.contentUnavailable": (re.compile(r"ContentUnavailableView"), "inline empty state"),
     "container.groupBox": (re.compile(r"GroupBox[ \t]*\{"), "inline GroupBox"),
     "theme.legacyAlias": (
-        re.compile(r"GatherTheme\.(windowBackground|contentBackground|secondaryContentBackground|primary|primarySoft|background|border)"),
+        # \b 必须加：旧模式里 primary 会前缀命中 GatherTheme.primaryText（4 处误报，
+        # 2026-11-17 修）。精确 token 边界后只数真正的 legacy 别名。
+        re.compile(r"GatherTheme\.(windowBackground|contentBackground|secondaryContentBackground|primary|primarySoft|background|border)\b"),
         "legacy theme alias",
     ),
     "radius.legacyAlias": (

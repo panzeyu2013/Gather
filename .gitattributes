@@ -1,0 +1,55 @@
+# Git 行尾与文本归一化（2026-11-17）。与 .editorconfig（end_of_line=lf）配合；
+# 工作树实际行尾由 scripts/check-repo-hygiene.sh [a]/[b] 校验。
+#
+# 策略：
+#   - 默认按内容自动识别文本，文本在仓库与工作树一律 LF（eol=lf），避免 Windows
+#     检出/编辑器引入 CRLF 后撞行尾门禁；
+#   - 显式列出仓库实际使用的文本类型，防止自动识别误判（如 .strings/.modulemap）；
+#   - 二进制产物显式标 binary，禁止任何行尾转换与文本合并。
+* text=auto eol=lf
+
+# --- 文本 ---
+*.swift        text eol=lf
+*.md           text eol=lf
+*.sh           text eol=lf
+*.py           text eol=lf
+*.json         text eol=lf
+*.yml          text eol=lf
+*.yaml         text eol=lf
+*.strings      text eol=lf
+*.txt          text eol=lf
+*.tsv          text eol=lf
+*.plist        text eol=lf
+*.pbxproj      text eol=lf
+*.entitlements text eol=lf
+*.xcconfig     text eol=lf
+*.modulemap    text eol=lf
+.editorconfig  text eol=lf
+.gitattributes text eol=lf
+.gitignore     text eol=lf
+
+# --- 二进制（CoreML 模型包 / 图片 / 数据库 / 归档）---
+# 注意：带斜杠的 gitattributes 模式从仓库根锚定，* 不跨目录，所以 mlpackage 用 **/ 前缀；
+# 裸 *.mlpackage/** 只会命中根目录下的包（2026-11-17 用 git check-attr 实测）。
+**/*.mlpackage/** binary
+**/*.mlmodelc/**  binary
+*.mlmodel      binary
+*.bin          binary
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.webp         binary
+*.gif          binary
+*.heic         binary
+*.icns         binary
+*.pdf          binary
+*.sqlite       binary
+*.sqlite3      binary
+*.db           binary
+*.zip          binary
+
+# --- 生成的 ratchet baseline：GitHub 上折叠 diff、不计入手写语言统计 ---
+docs/protocol-surface-baseline.json          linguist-generated=true
+docs/protocol-surface-modules-baseline.json  linguist-generated=true
+docs/cleanup-baseline.json                   linguist-generated=true
+scripts/design-system-baseline.json          linguist-generated=true

@@ -69,9 +69,13 @@ jobs:
       - name: Backlog evidence
         run: ./scripts/check-backlog-evidence.sh
       # 仓库层卫生：脚本语法（bash -n stderr 为空）/editorconfig/Markdown 相对链接/
-      # 本地化表安全/scripts 缓存产物。纯 Linux、无 Swift 依赖，与上面各门禁同 job。
+      # 本地化用法/scripts 缓存产物/shellcheck。纯 Linux、无 Swift 依赖，与上面各门禁同 job。
       - name: Repo hygiene
         run: ./scripts/check-repo-hygiene.sh
+      # 文档事实：README / docs/README / docs/DEVELOPMENT 的基线数字与门禁清单
+      # 必须与源码计算一致（targets/API/schema/本地化 key/门禁脚本数）。
+      - name: Docs facts
+        run: ./scripts/check-docs-facts.sh
 
   gather-core:
     name: gather-core tests

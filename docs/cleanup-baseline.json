@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-16T16:32:57Z",
+  "generated_at": "2026-11-17T03:23:17Z",
   "generated_by": "scripts/check-cleanup-ratchet.sh --write-baseline",
   "counting": "matching non-comment lines (lines whose first non-space chars are // or * are ignored)",
   "metrics": {
     "unchecked_sendable": 60,
-    "try_optional": 260,
+    "try_optional": 257,
     "try_bang": 0,
     "as_bang": 0,
     "fatal_error": 0,

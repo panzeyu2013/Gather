@@ -10,7 +10,8 @@
 #       - scripts 下 *.py 过 python3 -m py_compile（字节码落临时目录，不污染仓库）；
 #       - 所有 tracked 的 shebang 文件必须有执行位（chmod +x）；
 #       - *.sh 不得含 CR（CRLF / 孤 CR 都会让 shebang 失效）。
-#   [b] .editorconfig 一致性（tracked 文本文件：swift/md/sh/py/json/yml/yaml/strings/txt + .editorconfig）
+#   [b] .editorconfig 一致性（tracked 文本文件：swift/md/sh/py/json/yml/yaml/strings/txt
+#       + .editorconfig / .gitattributes）
 #       - end_of_line=lf；trim_trailing_whitespace（含纯空白行）；insert_final_newline；charset=utf-8。
 #   [c] Markdown 相对链接
 #       - tracked *.md 中 [x](path) / ![x](path) 必须解析到 tracked 文件（CI checkout 里也存在）；
@@ -27,12 +28,20 @@
 #       - 全部 tracked *.sh 过 shellcheck -S warning -f gcc；任何 finding 即 FAIL（打印 file:line:col）；
 #       - SHELLCHECK_OPTS 置空，避免本机环境变量改规则（如 -e SCxxxx）导致门禁结果不确定；
 #       - 扫描量下限 15 个 *.sh；shellcheck 缺失时本节 FAIL 并打印安装提示。
+#   [g] 本地化用法（GatherUI 的 UI 文案）
+#       - Sources/GatherUI/**/*.swift 中传给 UI API（Text/Label/Button/Toggle/Picker/
+#         Section/LabeledContent/.help/accessibilityLabel/accessibilityHint/navigationTitle/
+#         alert/confirmationDialog 等）的 CJK 字符串字面量，必须位于本地化包装
+#         （l10n(...) / l(...) / LocalizedText(...) / CullingNotice / FaceNotice /
+#         SimilarityNotice / CommandError.localized / …）内部；否则 FAIL 并打印 file:line。
+#       - 平衡括号解析多行调用；跳过注释、#Preview 块和 PreviewSupport/ 预览夹具目录
+#         （那里的中文是示例数据，不是产品文案）。
 #
 # 防「静默 0 命中」守卫：每个检查面都有扫描量下限（文件数 / 链接数 / key 数 / 占位符数），
 # 低于下限直接 FAIL，避免路径或解析器失效时门禁变绿。
 #
 # 用法：./scripts/check-repo-hygiene.sh
-# exit 0 = 六节全过；exit 1 = 至少一节失败（消息含节名与文件行号）。
+# exit 0 = 七节全过；exit 1 = 至少一节失败（消息含节名与文件行号）。
 # 非目标：不做 macOS 构建、不改文件、不检查 docs 措辞（事实校准见 scripts/report-baseline.sh）。
 set -euo pipefail
 
@@ -175,7 +184,7 @@ EDITORCONFIG = '.editorconfig'
 
 tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
 tracked = sorted(p.decode('utf-8', 'surrogateescape') for p in tracked if p)
-files = [p for p in tracked if p.endswith(TEXT_EXT) or p == EDITORCONFIG]
+files = [p for p in tracked if p.endswith(TEXT_EXT) or p in (EDITORCONFIG, '.gitattributes')]
 
 fail = False
 if len(files) < 1000:
@@ -564,6 +573,307 @@ else
   fi
 fi
 if [ "$F_BAD" -eq 0 ]; then
+  echo "    PASS"
+else
+  echo "    FAIL"
+  FAIL=1
+fi
+
+# ===== [g] 本地化用法（GatherUI 的 UI 文案必须走本地化包装） =====
+echo "[g] 本地化用法（UI 文案 CJK 字面量必须走 l10n/LocalizedText/…）"
+if python3 - <<'PY_G'
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path.cwd()
+UI = ROOT / 'desktop' / 'native' / 'gather-app' / 'Sources' / 'GatherUI'
+
+CJK = re.compile('[\u2e80-\u2fff\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf'
+                 '\u4e00-\u9fff\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]')
+# UI API：SwiftUI 里承接“可见文案/无障碍文案”的调用名（最后一段匹配）。
+UI_APIS = {
+    'Text', 'Label', 'Button', 'Toggle', 'Picker', 'Section', 'NavigationLink', 'Menu',
+    'Stepper', 'TextField', 'SecureField', 'TextEditor', 'ProgressView', 'GroupBox',
+    'DisclosureGroup', 'Link', 'TabView', 'LabeledContent', 'ContentUnavailableView',
+    'Gauge', 'ColorPicker', 'Slider', 'DatePicker', 'Table', 'ControlGroup',
+    'help', 'accessibilityLabel', 'accessibilityHint', 'accessibilityValue',
+    'navigationTitle', 'navigationSubtitle', 'alert', 'confirmationDialog',
+    'badge', 'sheet', 'popover',
+}
+# 本地化包装：l10n(...) / l(...) / LocalizedText(...) / *Notice(...) / 错误展示漏斗。
+WRAPPER_LAST = {'l', 'l10n', 'LocalizedText', 'CullingNotice', 'FaceNotice',
+                'SimilarityNotice', 'ErrorPresentation', 'DeliveryErrorPresentation',
+                'APIErrorPresentation'}
+WRAPPER_CHAIN = {'CommandError.localized'}
+WRAPPER_PREFIX = {'l10n'}  # l10n.format / l10n.text / l10n.plural / ...
+IDENT_START = re.compile(r'[A-Za-z_$\u00a1-\uffff]')
+IDENT_RE = re.compile(r'[A-Za-z0-9_$\u00a1-\uffff]+')
+TOK_IDENT, TOK_STRING, TOK_PUNCT = 'ident', 'string', 'punct'
+
+
+def tokenize(text):
+    """词法扫描：产出 ident / string / punct token；跳过注释，字符串只保留字面文本段。"""
+    toks = []
+    n = len(text)
+    i = 0
+    line = 1
+
+    def skip_block_comment(i):
+        depth = 0
+        while i < n:
+            if text.startswith('/*', i):
+                depth += 1
+                i += 2
+                continue
+            if text.startswith('*/', i):
+                depth -= 1
+                i += 2
+                if depth == 0:
+                    return i
+                continue
+            i += 1
+        return n
+
+    def skip_interpolation(i):
+        depth = 1
+        while i < n:
+            if text.startswith('//', i):
+                j = text.find('\n', i)
+                i = n if j < 0 else j
+                continue
+            if text.startswith('/*', i):
+                i = skip_block_comment(i)
+                continue
+            if text[i] == '"':
+                i, _ = skip_string(i)
+                continue
+            if text[i] == '(':
+                depth += 1
+            elif text[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+            i += 1
+        return n
+
+    def skip_string(i):
+        nonlocal line
+        multi = text.startswith('"""', i)
+        i += 3 if multi else 1
+        parts = []
+        while i < n:
+            c = text[i]
+            if c == '\n':
+                line += 1
+                if not multi:
+                    break
+                parts.append('\n')
+                i += 1
+                continue
+            if c == '\\':
+                if i + 1 < n and text[i + 1] == '(':
+                    i = skip_interpolation(i + 2)
+                    continue
+                if i + 1 < n:
+                    parts.append({'n': '\n', 't': '\t', 'r': '\r', '\\': '\\',
+                                  '"': '"', "'": "'"}.get(text[i + 1], text[i + 1]))
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if multi:
+                if text.startswith('"""', i):
+                    return i + 3, ''.join(parts)
+            elif c == '"':
+                return i + 1, ''.join(parts)
+            parts.append(c)
+            i += 1
+        return i, ''.join(parts)
+
+    while i < n:
+        c = text[i]
+        if c == '\n':
+            line += 1
+            i += 1
+        elif c in ' \t\r':
+            i += 1
+        elif text.startswith('//', i):
+            j = text.find('\n', i)
+            i = n if j < 0 else j
+        elif text.startswith('/*', i):
+            i = skip_block_comment(i)
+        elif c == '"':
+            start_line = line
+            j, parts = skip_string(i)
+            toks.append((TOK_STRING, parts, start_line, i))
+            i = j
+        elif c == '#':
+            toks.append((TOK_PUNCT, '#', line, i))
+            i += 1
+        elif IDENT_START.match(c):
+            m = IDENT_RE.match(text, i)
+            toks.append((TOK_IDENT, m.group(0), line, i))
+            i = m.end()
+        else:
+            toks.append((TOK_PUNCT, c, line, i))
+            i += 1
+    return toks
+
+
+OPEN = {'(': ')', '[': ']', '{': '}'}
+CLOSE = {v: k for k, v in OPEN.items()}
+
+
+def chain_before(toks, idx):
+    """取 '(' 前的点号调用链（如 l10n.format / CommandError.localized）。"""
+    parts = []
+    j = idx - 1
+    if j < 0 or toks[j][0] != TOK_IDENT:
+        return ''
+    parts.append(toks[j][1])
+    j -= 1
+    while j >= 1 and toks[j][1] == '.' and toks[j - 1][0] == TOK_IDENT:
+        parts.append(toks[j - 1][1])
+        j -= 2
+    return '.'.join(reversed(parts))
+
+
+def is_wrapper(chain):
+    if not chain:
+        return False
+    if chain in WRAPPER_CHAIN:
+        return True
+    first = chain.split('.')[0]
+    last = chain.split('.')[-1]
+    return first in WRAPPER_PREFIX or last in WRAPPER_LAST
+
+
+def ui_match(chain):
+    if not chain:
+        return None
+    last = chain.split('.')[-1]
+    return last if last in UI_APIS else None
+
+
+def analyze(path):
+    text = path.read_text(encoding='utf-8')
+    toks = tokenize(text)
+    n = len(toks)
+    stack, frames, frame_at = [], {}, [None] * n
+    serial = 0
+    for i, (kind, val, ln, pos) in enumerate(toks):
+        if kind == TOK_PUNCT and val in OPEN:
+            serial += 1
+            frames[serial] = {'serial': serial, 'open': i, 'close': None,
+                              'callee': chain_before(toks, i) if val == '(' else '',
+                              'parent': stack[-1]['serial'] if stack else None}
+            frame_at[i] = serial
+            stack.append(frames[serial])
+        elif kind == TOK_PUNCT and val in CLOSE and stack:
+            frame = stack.pop()
+            frame['close'] = i
+            frame_at[i] = frame['serial']
+        else:
+            frame_at[i] = stack[-1]['serial'] if stack else None
+
+    # #Preview { ... } 块里的中文是示例数据，跳过。
+    preview = [False] * n
+    k = 0
+    while k < n - 1:
+        if toks[k][1] == '#' and toks[k + 1][0] == TOK_IDENT and toks[k + 1][1] == 'Preview':
+            j = k + 2
+            while j < n and not (toks[j][0] == TOK_PUNCT and toks[j][1] == '{'):
+                j += 1
+            if j < n and frame_at[j] is not None:
+                end = frames[frame_at[j]]['close']
+                if end is None:
+                    end = n - 1
+                for x in range(k, end + 1):
+                    preview[x] = True
+                k = end + 1
+                continue
+        k += 1
+
+    violations = []
+    ui_calls = 0
+    cjk_total = 0
+    for serial, frame in frames.items():
+        if frame['close'] is None:
+            continue
+        ui = ui_match(frame['callee'])
+        if not ui:
+            continue
+        ui_calls += 1
+        for i in range(frame['open'] + 1, frame['close']):
+            if preview[i]:
+                continue
+            kind, parts, ln, pos = toks[i]
+            if kind != TOK_STRING or not CJK.search(parts):
+                continue
+            cjk_total += 1
+            chain = []
+            s = frame_at[i]
+            while s is not None:
+                chain.append(s)
+                s = frames[s]['parent']
+            wrapped = False
+            for sid in chain:
+                if sid == serial:
+                    break
+                if is_wrapper(frames[sid]['callee']):
+                    wrapped = True
+                    break
+            if not wrapped:
+                violations.append((str(path.relative_to(ROOT)), ln, ui, parts))
+    return violations, ui_calls, cjk_total
+
+
+def main():
+    if not UI.is_dir():
+        print('    FAIL 缺少 GatherUI 目录：%s' % UI)
+        sys.exit(1)
+    files = sorted(p for p in UI.rglob('*.swift') if 'PreviewSupport' not in p.parts)
+    fail = False
+    violations = []
+    ui_calls = 0
+    cjk_total = 0
+    for path in files:
+        try:
+            found, calls, cjk = analyze(path)
+        except (OSError, UnicodeDecodeError) as exc:
+            print('    FAIL 无法解析 %s：%s' % (path.relative_to(ROOT), exc))
+            fail = True
+            continue
+        violations.extend(found)
+        ui_calls += calls
+        cjk_total += cjk
+    if len(files) < 200:
+        print('    FAIL 只扫到 %d 个 GatherUI Swift 文件（<200），疑似扫描面失效' % len(files))
+        fail = True
+    if ui_calls < 300:
+        print('    FAIL 只识别到 %d 处 UI 文案调用（<300），疑似解析器失效' % ui_calls)
+        fail = True
+    if cjk_total < 20:
+        print('    FAIL 只发现 %d 个 UI 调用内的 CJK 字面量（<20），疑似解析器失效' % cjk_total)
+        fail = True
+    if violations:
+        fail = True
+        for path, line, api, parts in sorted(violations):
+            text = parts.replace('\n', '\\n')
+            print("    FAIL %s:%d  [%s] %r 未走本地化包装（改用 l10n(...)/LocalizedText(...)/"
+                  "l10n.format(...) 组合）" % (path, line, api, text))
+        print('    FAIL 未包裹 CJK 字面量 %d 处（共 %d 个 UI 调用内 CJK 字面量，已包裹 %d）'
+              % (len(violations), cjk_total, cjk_total - len(violations)))
+    if fail:
+        sys.exit(1)
+    print('    ok    %d 文件 / %d 处 UI 文案调用 / CJK 字面量 %d（全部已包裹）'
+          % (len(files), ui_calls, cjk_total))
+
+
+main()
+PY_G
+then
   echo "    PASS"
 else
   echo "    FAIL"
