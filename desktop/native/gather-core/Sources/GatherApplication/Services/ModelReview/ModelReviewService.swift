@@ -61,6 +61,10 @@ public final class ModelReviewService: @unchecked Sendable {
     private let semantics: (any PhotoSemanticsStore)?
     /// semantic_index_enabled（默认 0）。每次 analyze 读一次快照，避免逐张读设置。
     private let semanticsEnabled: () -> Bool
+    /// 逐行 JSON 编解码复用（性能审计 R2）：旧实现每条结果新建 2 个 JSONEncoder、
+    /// 每条缓存命中新建 1 个 JSONDecoder（1 万张 ≈ 2 万次分配）。
+    private let jsonEncoder = JSONEncoder()
+    private let jsonDecoder = JSONDecoder()
 
     public init(
         photoRepo: any PhotoRepository,
@@ -152,7 +156,7 @@ public final class ModelReviewService: @unchecked Sendable {
             // 只复用成功行：失败行不得因指纹相同被永久缓存。
             var cachedResult: ModelReviewResult?
             if !force, let hit = cached[photo.id], hit.fingerprint == fingerprint,
-               let decoded = Self.decodeCached(hit.json), decoded.status == .succeeded {
+               let decoded = decodeCached(hit.json), decoded.status == .succeeded {
                 cachedResult = decoded
             }
             work.append(WorkItem(
@@ -207,7 +211,7 @@ public final class ModelReviewService: @unchecked Sendable {
                 // 让 triage 指纹（count+max updated_at）反复变化、建议永久 stale。
                 guard result.status == .succeeded else { continue }
                 if let assetFileId = photos[item.index].assetFileId,
-                   let insert = Self.makeInsert(result: result, assetFileId: assetFileId) {
+                   let insert = makeInsert(result: result, assetFileId: assetFileId) {
                     batchInserts.append(insert)
                 }
             }
@@ -391,24 +395,24 @@ public final class ModelReviewService: @unchecked Sendable {
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
-    static func decodeCached(_ json: String) -> ModelReviewResult? {
+    func decodeCached(_ json: String) -> ModelReviewResult? {
         do {
-            return try JSONDecoder().decode(ModelReviewResult.self, from: Data(json.utf8))
+            return try jsonDecoder.decode(ModelReviewResult.self, from: Data(json.utf8))
         } catch {
             return nil
         }
     }
 
-    static func makeInsert(result: ModelReviewResult, assetFileId: String) -> ModelReviewInsert? {
+    func makeInsert(result: ModelReviewResult, assetFileId: String) -> ModelReviewInsert? {
         let json: Data
         do {
-            json = try JSONEncoder().encode(result)
+            json = try jsonEncoder.encode(result)
         } catch {
             return nil
         }
         let warnings: String
         do {
-            warnings = String(data: try JSONEncoder().encode(result.warnings), encoding: .utf8) ?? "[]"
+            warnings = String(data: try jsonEncoder.encode(result.warnings), encoding: .utf8) ?? "[]"
         } catch {
             warnings = "[]"
         }

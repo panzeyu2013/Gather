@@ -4,7 +4,40 @@
 // 独立于既有 SidecarXMLDelegate（那个只管 rating/label/keywords/urgency/EXIF 六项）。
 // 单文件二次解析的代价可忽略（sidecar 通常 < 20KB），换来的是不用改动已验证的旧解析路径。
 import Foundation
+import Synchronization
 import GatherProtocol
+
+/// sidecar 读写路径的编译后正则缓存（性能审计 R2）。
+///
+/// 这些正则出现在逐照片（读）/逐字段（写）路径；旧实现每次调用
+/// `NSRegularExpression(pattern:)` 重新编译。NSRegularExpression 创建后不可变，
+/// 但未标注 Sendable，故按项目并发约定用 `Synchronization.Mutex` 锁盒子持有
+/// （与 `OSAllocatedUnfairLock` 同类的锁盒子写法；不新增 @unchecked Sendable /
+/// nonisolated(unsafe)）。匹配也在锁内执行、只把 Sendable 结果带出——不依赖
+/// 「正则匹配跨线程安全」这类未写进文档的假设；模式与匹配语义逐字不变。
+enum SidecarRegexCache {
+    private static let storage = Mutex<[String: NSRegularExpression]>([:])
+
+    static func withRegex<T: Sendable>(
+        _ pattern: String,
+        options: NSRegularExpression.Options = [],
+        _ body: (NSRegularExpression) -> T?
+    ) -> T? {
+        let key = String(options.rawValue) + "|" + pattern
+        return storage.withLock { cache -> T? in
+            let compiled: NSRegularExpression
+            if let cached = cache[key] {
+                compiled = cached
+            } else if let fresh = try? NSRegularExpression(pattern: pattern, options: options) {
+                cache[key] = fresh
+                compiled = fresh
+            } else {
+                return nil
+            }
+            return body(compiled)
+        }
+    }
+}
 
 extension SidecarXMPProvider {
     /// 已知命名空间 → 规范前缀（与 XMPFieldDescriptor 表、写入侧共用）。
@@ -34,13 +67,17 @@ extension SidecarXMPProvider {
     static func normalizeKnownPrefixes(_ text: String) -> PrefixNormalization {
         let nsText = text as NSString
         let fullRange = NSRange(location: 0, length: nsText.length)
-        guard let declRegex = try? NSRegularExpression(
-            pattern: #"xmlns:([A-Za-z_][-\w.]*)\s*=\s*["']([^"']*)["']"#)
+        guard let declarations: [(prefix: String, uri: String)] = SidecarRegexCache.withRegex(
+            #"xmlns:([A-Za-z_][-\w.]*)\s*=\s*["']([^"']*)["']"#,
+            { regex in
+                regex.matches(in: text, range: fullRange).map {
+                    (nsText.substring(with: $0.range(at: 1)), nsText.substring(with: $0.range(at: 2)))
+                }
+            })
         else { return PrefixNormalization(text: text, introduced: []) }
         var declared: [String: String] = [:]
-        for match in declRegex.matches(in: text, range: fullRange) {
-            declared[nsText.substring(with: match.range(at: 1))] =
-                nsText.substring(with: match.range(at: 2))
+        for (prefix, uri) in declarations {
+            declared[prefix] = uri
         }
         var replacements: [(from: String, to: String)] = []
         var introduced: [(prefix: String, uri: String)] = []
@@ -56,15 +93,20 @@ extension SidecarXMPProvider {
             }
         }
         guard !replacements.isEmpty,
-              let tagRegex = try? NSRegularExpression(pattern: #"<[^>]*>"#)
+              let tagRanges: [NSRange] = SidecarRegexCache.withRegex(
+                  #"<[^>]*>"#,
+                  { regex in regex.matches(in: text, range: fullRange).map(\.range) })
         else { return PrefixNormalization(text: text, introduced: []) }
         var result = text
+        // escapedPattern 与 tag 无关：每个替换前缀只算一次（性能审计 R2）。
+        let escapedReplacements = replacements.map {
+            (escaped: NSRegularExpression.escapedPattern(for: $0.from), to: $0.to)
+        }
         // 逆序替换：前面的 range 不受后面编辑影响。
-        for match in tagRegex.matches(in: text, range: fullRange).reversed() {
-            guard let range = Range(match.range, in: result) else { continue }
+        for tagRange in tagRanges.reversed() {
+            guard let range = Range(tagRange, in: result) else { continue }
             var segment = String(result[range])
-            for (from, to) in replacements {
-                let escaped = NSRegularExpression.escapedPattern(for: from)
+            for (escaped, to) in escapedReplacements {
                 // 前缀前的字符：空白/属性分隔、开标签的 <、闭标签的 /。
                 segment = segment.replacingOccurrences(
                     of: "([\\s</])" + escaped, with: "$1" + to, options: .regularExpression)

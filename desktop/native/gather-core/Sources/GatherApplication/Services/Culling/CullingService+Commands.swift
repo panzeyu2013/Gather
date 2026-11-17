@@ -406,18 +406,57 @@ extension CullingDecisionService {
         var results: [CullingUpdateResult] = []
         var failed = 0
         var appliedPhotoIds: [String] = []
+        // 批前一次取齐决策行（性能审计 R2 / N+1）：旧实现每张照片点查一次、
+        // 再对同资产变体逐个点查（几百张勾选 ≈ 上千次单行查询）。这里按「勾选照片 +
+        // 其资产变体」的并集批量读（getByPhotoIds 内部按 800 分块）；本批自己写过的
+        // 照片/资产在后续迭代改用实时单行读，保证 revision 与逐张实现一致。
+        var preloadIds: [String] = []
+        var preloadSeen = Set<String>()
         for photoId in photoIds {
             guard let photo = context.photoById[photoId] else { continue }
-            let existing = try cullingDecisionRepo.getDecision(
-                sessionId: sessionId, photoId: photoId)
+            if preloadSeen.insert(photoId).inserted {
+                preloadIds.append(photoId)
+            }
+            if let assetId = photo.assetId {
+                for variant in context.photosByAssetId[assetId] ?? [] where variant.id != photoId {
+                    if preloadSeen.insert(variant.id).inserted {
+                        preloadIds.append(variant.id)
+                    }
+                }
+            }
+        }
+        let preloadedDecisions: [String: CullingDecisionRow]
+        if preloadIds.isEmpty {
+            preloadedDecisions = [:]
+        } else {
+            preloadedDecisions = Dictionary(
+                uniqueKeysWithValues: try cullingDecisionRepo
+                    .getByPhotoIds(sessionId: sessionId, photoIds: preloadIds)
+                    .map { ($0.photoId, $0) })
+        }
+        // 本批已写过的照片/资产其 revision 已被 updateState 改写；后续迭代必须实时读。
+        var touchedPhotoIds = Set<String>()
+        var touchedAssetIds = Set<String>()
+        for photoId in photoIds {
+            guard let photo = context.photoById[photoId] else { continue }
+            let needsLiveRead = touchedPhotoIds.contains(photoId)
+                || (photo.assetId.map { touchedAssetIds.contains($0) } ?? false)
+            let existing: CullingDecisionRow?
+            if needsLiveRead {
+                existing = try cullingDecisionRepo.getDecision(
+                    sessionId: sessionId, photoId: photoId)
+            } else {
+                existing = preloadedDecisions[photoId]
+            }
             // 人工决策优先（变体级）：updateState 会把同资产的全部变体一起改写，
             // 所以只要任一 RAW/JPEG 变体被人工决策过，就不能被客户勾选覆盖。
             if let assetId = photo.assetId {
                 var manuallyDecided = existing?.decisionSource == CullingDecisionSource.manual.rawValue
                 if !manuallyDecided {
                     for variant in context.photosByAssetId[assetId] ?? [] where variant.id != photoId {
-                        if let decision = try cullingDecisionRepo.getDecision(
-                            sessionId: sessionId, photoId: variant.id),
+                        // 变体 decision_source 不受本批写入影响（本批只写 imported；人工行
+                        // 在进入 updateState 前已被跳过），批量快照与实时读同义。
+                        if let decision = preloadedDecisions[variant.id],
                            decision.decisionSource == CullingDecisionSource.manual.rawValue {
                             manuallyDecided = true
                             break
@@ -439,9 +478,14 @@ extension CullingDecisionService {
                     preloadedDecision: existing,
                     source: .imported))
                 appliedPhotoIds.append(photoId)
+                touchedPhotoIds.insert(photoId)
+                if let assetId = photo.assetId { touchedAssetIds.insert(assetId) }
             } catch is CullingServiceError {
                 // 并发冲突/非法状态属于「这一张没成」：计入失败并继续，不吞 DB 错误
                 //（持久化失败仍会以 DatabaseError 上抛，此时已应用项已有历史可审计）。
+                // 失败迭代也可能已触碰资产（保守按已读写处理，后续迭代走实时读）。
+                touchedPhotoIds.insert(photoId)
+                if let assetId = photo.assetId { touchedAssetIds.insert(assetId) }
                 failed += 1
                 continue
             }

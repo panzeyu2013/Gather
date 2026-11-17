@@ -25,6 +25,10 @@ import GatherPersistence
 public typealias LibraryScanEnqueuer = @Sendable (_ sessionId: String, _ requestedPaths: [String]) throws -> String
 
 public struct LibraryPackageService: Sendable {
+    /// 逐行 JSON 解码复用（性能审计 R2）：包导出/导入对每张照片各解一次
+    /// keywords/descriptive，旧实现每次新建 JSONDecoder（数千张 ⇒ 数千次分配）。
+    private static let jsonDecoder = JSONDecoder()
+
     private let connection: DBConnection
     /// 导入成功后的索引扫描入队接缝（nil = 生产实现）。
     private let enqueueScan: LibraryScanEnqueuer?
@@ -453,9 +457,19 @@ public struct LibraryPackageService: Sendable {
         // 人物绑定：身份按「包内 personId → 同名身份 → 新建」三级解析，照片经 idMap 映射。
         // 不迁移 face cluster id / 人脸向量：那属跨库不可靠映射（见 DTO 注释）。
         let personsRepo = PersonRepo(connection: connection)
+        // 人物库一次读全（性能审计 R2）：旧实现对每条绑定再按 id 点查一次
+        // （包内绑定可达数千条 ⇒ 数千次单行查询），而本函数本就要 list() 建姓名索引。
+        // 这里把同一份 list() 结果同时用作「id 是否已存在」的判定集合；随后
+        // upsertByName 新建的 id 也并入集合，判定口径与逐条 get 等价（单进程导入路径）。
+        let existingPersons = try personsRepo.list()
+        var knownPersonIDs = Set<String>()
         var personIDByName: [String: String] = [:]
-        for person in try personsRepo.list() where personIDByName[person.name] == nil {
-            personIDByName[person.name] = person.id
+        knownPersonIDs.reserveCapacity(existingPersons.count)
+        for person in existingPersons {
+            knownPersonIDs.insert(person.id)
+            if personIDByName[person.name] == nil {
+                personIDByName[person.name] = person.id
+            }
         }
         var photosByPersonID: [String: [PersonPhotoInput]] = [:]
         for binding in package.personBindings {
@@ -469,12 +483,13 @@ public struct LibraryPackageService: Sendable {
                 continue
             }
             let targetPersonId: String
-            if (try personsRepo.get(id: binding.personId)) != nil {
+            if knownPersonIDs.contains(binding.personId) {
                 targetPersonId = binding.personId
             } else if let existingID = personIDByName[name] {
                 targetPersonId = existingID
             } else {
                 targetPersonId = try personsRepo.upsertByName(name: name)
+                knownPersonIDs.insert(targetPersonId)
                 personIDByName[name] = targetPersonId
             }
             photosByPersonID[targetPersonId, default: []].append(
@@ -835,7 +850,7 @@ public struct LibraryPackageService: Sendable {
     static func decodeKeywords(_ json: String) -> [String] {
         guard let data = json.data(using: .utf8) else { return [] }
         do {
-            return try JSONDecoder().decode([String].self, from: data)
+            return try jsonDecoder.decode([String].self, from: data)
         } catch {
             GatherLogger.log("package keywords decode failed: \(error)", level: .debug)
             return []
@@ -847,7 +862,7 @@ public struct LibraryPackageService: Sendable {
         guard !trimmed.isEmpty, trimmed != "{}" else { return nil }
         guard let data = trimmed.data(using: .utf8) else { return nil }
         do {
-            return try JSONDecoder().decode(DescriptiveMetadata.self, from: data)
+            return try jsonDecoder.decode(DescriptiveMetadata.self, from: data)
         } catch {
             GatherLogger.log("package descriptive decode failed: \(error)", level: .debug)
             return nil

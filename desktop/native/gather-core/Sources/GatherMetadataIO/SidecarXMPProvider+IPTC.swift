@@ -100,13 +100,20 @@ extension SidecarXMPProvider {
         let text = existing as NSString
         let pattern = #"<rdf:li\b([^>]*)>(.*?)</rdf:li>"#
         var kept: [String] = []
-        if let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) {
-            for match in regex.matches(in: existing, range: NSRange(location: 0, length: text.length)) {
-                let attributes = text.substring(with: match.range(at: 1))
-                let lang = langAttribute(attributes)
+        let liMatches: [(attributes: String, whole: String)]? = SidecarRegexCache.withRegex(
+            pattern,
+            options: [.dotMatchesLineSeparators],
+            { regex in
+                regex.matches(in: existing, range: NSRange(location: 0, length: text.length)).map {
+                    (text.substring(with: $0.range(at: 1)), text.substring(with: $0.range))
+                }
+            })
+        if let liMatches {
+            for item in liMatches {
+                let lang = langAttribute(item.attributes)
                 // 默认语言槽位由本次写入决定；无 lang 的 li 视作默认（旧文件兼容）。
                 guard let lang, lang != "x-default" else { continue }
-                kept.append(text.substring(with: match.range).trimmingCharacters(in: .whitespacesAndNewlines))
+                kept.append(item.whole.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
         if defaultText == nil, kept.isEmpty { return "" }
@@ -126,11 +133,13 @@ extension SidecarXMPProvider {
 
     private static func langAttribute(_ attributes: String) -> String? {
         let pattern = #"xml:lang\s*=\s*["']([^"']*)["']"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         let text = attributes as NSString
-        guard let match = regex.firstMatch(
-            in: attributes, range: NSRange(location: 0, length: text.length)) else { return nil }
-        return text.substring(with: match.range(at: 1))
+        return SidecarRegexCache.withRegex(
+            pattern,
+            { regex in
+                regex.firstMatch(in: attributes, range: NSRange(location: 0, length: text.length))
+                    .map { text.substring(with: $0.range(at: 1)) }
+            })
     }
 
     /// Contact Info 必须是结构（内嵌 rdf:Description），成员各为其子元素。

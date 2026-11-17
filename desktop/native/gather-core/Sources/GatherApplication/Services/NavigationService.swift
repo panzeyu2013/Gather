@@ -23,6 +23,7 @@
 //   - path.basename/dirname → URL 处理；Date.parse → ISO8601DateFormatter
 //   - 无 worker：captureRows 单次查询 + IN chunk 800 一致
 import Foundation
+import Synchronization
 import GatherPersistence
 import GatherProtocol
 
@@ -110,9 +111,16 @@ public final class NavigationService {
         }
 
         let byId = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // 逐行预计算一次（性能审计 R2）：时间戳/文件名序号在 burst 与 scene 两个
+        // 分组 pass 里共用；旧实现每个 pass 各算一遍（1 万行 ≈ 2 万次日期解析 +
+        // 2 万次正则匹配）。预计算不改变取值/比较顺序/NaN 语义。
+        let timestamps = rows.map { parseISODate($0.capturedAt) }
+        let sequences = rows.map { filenameSequence($0.filename) }
         let groups = (
-            group(rows: rows, type: .burst, gapSeconds: burstGapSeconds)
-                + group(rows: rows, type: .scene, gapSeconds: sceneGapSeconds)
+            group(rows: rows, type: .burst, gapSeconds: burstGapSeconds,
+                  timestamps: timestamps, sequences: sequences)
+                + group(rows: rows, type: .scene, gapSeconds: sceneGapSeconds,
+                        timestamps: timestamps, sequences: sequences)
         ).map { withLead(group: $0, byId: byId) }
 
         if !dryRun {
@@ -272,7 +280,13 @@ public final class NavigationService {
     // MARK: 分组
 
     /// TS: group —— 顺序扫描 + 边界判定（见文件头红线）。
-    private func group(rows: [CaptureRow], type: NavigationGroupType, gapSeconds: Double) -> [NavigationGroup] {
+    private func group(
+        rows: [CaptureRow],
+        type: NavigationGroupType,
+        gapSeconds: Double,
+        timestamps: [Double],
+        sequences: [Int?]
+    ) -> [NavigationGroup] {
         var groups: [NavigationGroup] = []
         var current: [CaptureRow] = []
         let flush = {
@@ -289,12 +303,8 @@ public final class NavigationService {
             }
             current = []
         }
-        // 逐行只算一次（性能审计 2026-11-17）：旧实现每行对「当前行 + 上一行」各
-        // 解析一次时间戳、各编译一次文件名数字正则（1 万行 ≈ 4 万次重活）。预计算
-        // 不改变取值、比较顺序与 NaN 语义（previous 存在时其行号恒为 index - 1：
-        // current 是连续后缀，只在边界 flush 后重新累积）。
-        let timestamps = rows.map { parseISODate($0.capturedAt) }
-        let sequences = rows.map { filenameSequence($0.filename) }
+        // timestamps/sequences 由 analyze 预计算并传入（见调用处注释）；
+        // previous 存在时其行号恒为 index - 1：current 是连续后缀，只在边界 flush 后重新累积。
         for (index, row) in rows.enumerated() {
             let previous = current.last
             let gap = previous == nil ? 0 : (timestamps[index] - timestamps[index - 1]) / 1000
@@ -441,15 +451,30 @@ public final class NavigationService {
 
 // MARK: - 纯函数（对账友好，独立测试）
 
+/// filenameSequence 的编译后正则缓存（性能审计 R2）。
+///
+/// 旧实现每次调用都 `NSRegularExpression(pattern:)` 编译一次，而它是逐行分组路径
+/// （1 万张会话两遍分组 ≈ 1-2 万次调用）。`NSRegularExpression` 创建后不可变，
+/// 但未标注 Sendable，故按项目并发约定用 `Synchronization.Mutex` 锁盒子持有
+/// （与 `OSAllocatedUnfairLock` 同类的「锁盒子」写法；不新增 @unchecked Sendable /
+/// nonisolated(unsafe)，cleanup-ratchet 指标不变）。首次调用编译，之后命中缓存；
+/// 模式与匹配语义逐字不变（仍是同一个 NSRegularExpression 引擎）。
+private let filenameSequenceRegex = Mutex<NSRegularExpression?>(nil)
+
 /// TS: filenameSequence —— 文件名尾部数字序列（无数字 → nil）。
 func filenameSequence(_ filename: String) -> Int? {
     let basename = (filename as NSString).deletingPathExtension
-    let pattern = #"(\d+)(?!.*\d)"#
-    guard let regex = try? NSRegularExpression(pattern: pattern),
-          let match = regex.firstMatch(in: basename, range: NSRange(location: 0, length: (basename as NSString).length))
-    else { return nil }
-    let range = match.range(at: 1)
-    return Int((basename as NSString).substring(with: range))
+    let fullRange = NSRange(location: 0, length: (basename as NSString).length)
+    return filenameSequenceRegex.withLock { regex -> Int? in
+        if regex == nil {
+            regex = try? NSRegularExpression(pattern: #"(\d+)(?!.*\d)"#)
+        }
+        guard let regex,
+              let match = regex.firstMatch(in: basename, range: fullRange)
+        else { return nil }
+        let range = match.range(at: 1)
+        return Int((basename as NSString).substring(with: range))
+    }
 }
 
 /// TS: hammingDistance —— 16 位 hex 的汉明距离（popcount）。

@@ -134,6 +134,10 @@ public final class QualityService: @unchecked Sendable {
     private let statProvider: StatProvider
     /// TS: culling?.invalidateSessionLookup（可选依赖）。
     private let invalidateCullingLookup: ((String) -> Void)?
+    /// 逐行 JSON 编码复用（性能审计 R2）：旧实现每张照片的 result/warnings 各新建一个
+    /// JSONEncoder（1 万张 ≈ 2 万个）。默认配置无跨调用可变状态，与 Protocol/Persistence
+    /// 的共享 coder 先例一致（jsonEncoder 自身不可变配置）。
+    private let jsonEncoder = JSONEncoder()
 
     public init(
         photoRepo: any PhotoRepository,
@@ -502,7 +506,7 @@ public final class QualityService: @unchecked Sendable {
     }
 
     private func encodeJSON<T: Encodable>(_ value: T) throws -> String {
-        let data = try JSONEncoder().encode(value)
+        let data = try jsonEncoder.encode(value)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 }
