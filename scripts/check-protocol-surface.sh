@@ -71,8 +71,9 @@ proto_file_n=$(wc -l < "$TMP/proto-files" | tr -d ' ')
 proto_line_n=$(while IFS= read -r f; do cat "$f"; done < "$TMP/proto-files" | wc -l | tr -d ' ')
 
 # 顶层声明：行首必须是 public，排除缩进的嵌套类型。
-# 文件清单用 xargs 逐行传入：未加引号的 $(cat ...) 依赖 word splitting（SC2046），
-# 路径含空白时会拆错。与下方 module-metrics 的逐模块统计同一写法。
+# 文件清单用 while read 逐行传入（评审 R4-F22：旧 xargs -I{} 对含单引号路径会直接失败；
+# 未加引号的 $(cat ...) 依赖 word splitting（SC2046），路径含空白时会拆错）。
+# 与下方 module-metrics 的逐模块统计同一写法。
 while IFS= read -r f; do cat "$f"; done < "$TMP/proto-files" \
   | grep -hE '^public (struct|enum|indirect enum|final class|class|protocol|actor) [A-Za-z_][A-Za-z0-9_]*' \
   > "$TMP/decls" || true
@@ -80,7 +81,7 @@ sed -E 's/^public (struct|enum|indirect enum|final class|class|protocol|actor) (
   "$TMP/decls" | LC_ALL=C sort > "$TMP/type-names"
 public_types=$(wc -l < "$TMP/type-names" | tr -d ' ')
 # 评审 R4-F22：扫描量下限守卫，防止 proto-files 为空/被截断时把 0 当合规。
-if [ "$proto_file_n" -lt 50 ] || [ "$public_types" -lt 100 ]; then
+if [ "$proto_file_n" -lt 100 ] || [ "$public_types" -lt 400 ]; then
   echo "FAIL 扫描量异常：proto_file_n=$proto_file_n public_types=$public_types" >&2
   exit 2
 fi

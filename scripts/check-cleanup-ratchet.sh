@@ -79,7 +79,8 @@ count_matches() {
 
 metric() {
   case "$1" in
-    unchecked_sendable) count_matches '@unchecked Sendable' "$CORE_SRC" "$APP_SRC" ;;
+    # 评审 R2T-09：用空白类而非单空格，避免 '@unchecked  Sendable'（双空格）绕过计数。
+    unchecked_sendable) count_matches '@unchecked[[:space:]][[:space:]]*Sendable' "$CORE_SRC" "$APP_SRC" ;;
     try_optional)       count_matches 'try\?' "$CORE_SRC" "$APP_SRC" ;;
     try_bang)           count_matches 'try!' "$CORE_SRC" "$APP_SRC" ;;
     as_bang)            count_matches 'as!' "$CORE_SRC" "$APP_SRC" ;;

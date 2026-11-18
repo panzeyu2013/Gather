@@ -483,7 +483,8 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 #    2026-10-31 残留收口：errorFill 边界断言 +2（源码 11,500）− 注释内 2 条（剥注释后不计数）
 #    → 11498，与上一轮持平；基线仍按剥注释口径钉死。
 #    2026-10-31 渲染采样：+11（3 例的像素断言）→ 11509。
-BASELINE_ASSERT=14954
+# 2026-11-18 round-2 评审：断言基线重钉到实测（14954 -> 14959：修复测试 +4、JSON 格式漂移守卫 +1）。
+BASELINE_ASSERT=14959
 if [ "$assert_n" -lt "$BASELINE_ASSERT" ]; then
   echo "FAIL 断言数回落：$assert_n < baseline $BASELINE_ASSERT（删断言/换空壳用例必须显式下调并记账）" >&2
   ratchet_bad=1

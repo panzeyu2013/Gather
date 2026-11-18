@@ -183,7 +183,7 @@ TEXT_EXT = (
     '.plist', '.entitlements', '.modulemap', '.h', '.c', '.tsv', '.pbxproj',
     '.xcconfig', '.m', '.mm',
 )
-TEXT_FILENAMES = ('Makefile', 'LICENSE', 'SHA256SUMS')
+TEXT_FILENAMES = ('Makefile', 'LICENSE', 'SHA256SUMS', '.gitignore')
 EDITORCONFIG = '.editorconfig'
 
 tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
@@ -207,6 +207,9 @@ for path in files:
         data = open(path, 'rb').read()
     except OSError as exc:
         problems.append((path, 'read error: %s' % exc))
+        continue
+    if data.startswith(b'\xef\xbb\xbf'):
+        problems.append((path, 'has UTF-8 BOM (charset=utf-8)'));
         continue
     if b'\r' in data:
         problems.append((path, 'has CR (end_of_line=lf)'))

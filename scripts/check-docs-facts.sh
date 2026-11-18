@@ -369,7 +369,8 @@ if not dev.is_file():
     fail('缺少 docs/DEVELOPMENT.md')
 else:
     dev_text = dev.read_text(encoding='utf-8')
-    # 评审 R4-F1：只校验「## 门禁」小节内的清单；正文其它位置提到脚本名不算数。
+    # 评审 R4-F1 / round-2 R2D-04：只认「## 门禁」小节里以清单项形式出现的脚本行，
+    # 正文/注释里提到脚本名不算数。
     gate_section = ''
     start = dev_text.find('\n## 门禁')
     if start >= 0:
@@ -378,10 +379,22 @@ else:
         gate_section = rest if nxt < 0 else rest[:nxt]
     if not gate_section:
         fail('docs/DEVELOPMENT.md 缺少「## 门禁」小节')
+    listed = set()
+    listed_cmds = []
+    for line in gate_section.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            continue
+        if stripped.startswith('- '):
+            stripped = stripped[2:].strip()
+        if stripped.startswith('./scripts/'):
+            cmd = stripped.split('  #')[0].split(' #')[0].strip()
+            listed_cmds.append(cmd)
+            listed.add(cmd.split()[0])
     missing = []
     for name in gate_scripts:
         needle = './scripts/' + name
-        if needle not in gate_section:
+        if needle not in listed:
             missing.append(needle)
     if missing:
         for needle in missing:
@@ -394,13 +407,33 @@ else:
     if not ci.is_file():
         fail('缺少 .github/workflows/ci.yml')
     else:
-        ci_text = ci.read_text(encoding='utf-8')
-        unwired = [n for n in gate_scripts if ('./scripts/' + n) not in ci_text]
+        ci_lines = []
+        for line in ci.read_text(encoding='utf-8').splitlines():
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            ci_lines.append(line)
+        ci_text = '\n'.join(ci_lines)
+        unwired = []
+        masked = []
+        for cmd in listed_cmds:
+            script = cmd.split()[0].rsplit('/', 1)[-1]
+            if script not in gate_scripts:
+                continue  # 门禁小节里的非门禁辅助脚本（如 report-baseline）不参与接线断言
+            hits = [ln for ln in ci_lines if cmd in ln]
+            if not hits:
+                unwired.append(cmd)
+                continue
+            if any('|| true' in ln or '|| :' in ln for ln in hits):
+                masked.append(cmd)
         if unwired:
-            for n in unwired:
-                fail('CI 未接入门禁：./scripts/%s' % n)
-        else:
-            ok('CI 已接入全部 %d 个门禁脚本' % gate_count)
+            for cmd in unwired:
+                fail('CI 未按文档命令接入门禁：%s' % cmd)
+        if masked:
+            for cmd in masked:
+                fail('CI 门禁命令被 || true 掩码（失败不会红）：%s' % cmd)
+        if not unwired and not masked:
+            ok('CI 已按文档命令接入全部 %d 个门禁脚本' % gate_count)
 
 print('----')
 if FAIL:

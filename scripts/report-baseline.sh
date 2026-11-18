@@ -15,7 +15,7 @@
 #   - 本地化：完整解析 en.lproj / zh-Hans.lproj Localizable.strings 的 key 数
 #     （含转义引号、行注释、块注释；不依赖按行 grep）
 #   - schema：SchemaCurrent.swift 的 expected* 常量（55 表/451 列/86 索引/81 外键/
-#     user_version=1）与 DDL 字面量实测计数交叉核对
+#     user_version=1）；tables/indexes/FKs 与 DDL 字面量实测交叉核对（columns 取 expected 常量）
 #   - 门禁脚本：scripts/check-*.sh 总数减 check-appintents.sh（自检，非门禁），
 #     并列出清单，便于 docs/DEVELOPMENT 的门禁清单与 docs/README 的门禁数同步
 #   - 性能 ratchet：docs/perf-baseline.json 的构造点基线 + Sources 当前实测
