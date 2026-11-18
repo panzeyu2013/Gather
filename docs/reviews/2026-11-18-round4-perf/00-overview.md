@@ -10,9 +10,9 @@
 
 | 维度 | 本轮增量 | 关键数字/证据 |
 | --- | --- | --- |
-| SQLite / 查询 | 新增 `PRAGMA mmap_size=256MB`（读写连接 + 只读池 + 备份校验连接）；关闭时 best-effort `PRAGMA optimize`；再修 6 处 prepare 热点；bench 工具支持文件库/PRAGMA A-B/排序/facet 查询 | mmap A/B（20k 合成库）：metadata 批读 **1.37x**、sort rating **1.39x**、asset_page CTE 1.20x、list_page 1.12x；点查无回归；`PRAGMA optimize` 无 schema 变更 |
+| SQLite / 查询 | 新增 `PRAGMA mmap_size=256MB`（读写连接 + 只读池 + 备份校验连接）；关闭时 `PRAGMA optimize`（**评审 CORE-02 后移除**，见 §3）；再修 6 处 prepare 热点；bench 工具支持文件库/PRAGMA A-B/排序/facet 查询 | mmap A/B（20k 合成库）：metadata 批读 **1.37x**、sort rating **1.39x**、asset_page CTE 1.20x、list_page 1.12x；点查无回归；`PRAGMA optimize` 无 schema 变更 |
 | GatherUI 渲染 | Culling 页索引在 state-only 更新时复用；网格布局缓存同几何复用；导航组大小/选择排序/相似组资产缓存；零分配 `activeFilterCount`；ForEach 去掉 `Array(enumerated)`；Gallery item→row O(1) | 决策帧 **155.5µs → 44.5µs**（200 帧仅 1 次重建）；网格 relayout **23.9µs → 0.4µs/决策**；9 文件 +250/−47 |
-| 运行时 / 任务 / 内存 | `JobService` 终态写重试改 async（阻塞睡眠清零）；磁盘缩略图缓存 mtime 触碰节流（1h 窗口）；EmbeddingModel provider 缓存 LRU 上限 4；Metadata 冲突读盘有界并发；外部元数据迁移 decoder 复用；图片主线程惰性解码给了完整落地设计与延期理由 | 性能 ratchet：`blocking_sleep 1→0`、`try_optional 256/257`、`raw_json_decode_chain 23→22`；模型缓存由无界→4；冲突读盘并发 4 且取消安全 |
+| 运行时 / 任务 / 内存 | `JobService` 终态写重试改 async（阻塞睡眠清零）；磁盘缩略图缓存 mtime 触碰节流（1h 窗口）；EmbeddingModel provider 缓存 LRU 上限 4；Metadata 冲突读盘有界并发；外部元数据迁移 decoder 复用；图片主线程惰性解码给了完整落地设计与延期理由 | 性能 ratchet：`blocking_sleep 1→0`、`try_optional 256/257`（评审修复后新增 1 处 detached sleep 的 try?，基线钉到 257/257）、`raw_json_decode_chain 23→22`；模型缓存由无界→4；冲突读盘并发 4 且取消安全 |
 | 性能门禁/仪表 | 性能 ratchet 7→**9 指标**（新增内联 JSON 编解码链），基线收紧；`report-baseline` 同步 9 指标输出；本轮修复 lead 侧 `JSONValueDecoding` 逐次 coder | 基线：DateFormatter 28 / ISO 30 / JSON enc 45 / dec 38 / enc-chain 20 / dec-chain 22 / regex 3 / byte 1 / blocking_sleep 0 |
 | 文档 | 新增本轮总览 + 4 分册；docs 收尾同步 9 指标与审计索引 | 文档事实门禁（17 门禁）保持绿 |
 
@@ -29,7 +29,7 @@
 ## 3. SQLite / 查询（`perf-db4.md`）
 
 - **`PRAGMA mmap_size = 256MB`（采纳）**：`DBConnection.open()` 对文件库（读写连接、只读池、备份校验连接）统一设置，`:memory:` 跳过；失败走既有 `applyPragma`（warn + 保留 SQLite 值）。bench A/B（`--file-db --pragma-ab mmap_size=...`，20k 合成库，默认↔设定↔恢复复测、取 min 基线）：list_page 5.00→4.48ms（**1.12x**）、metadata 批读 4.48→3.28ms（**1.37x**）、asset_page CTE 2.45→2.04ms（**1.20x**）、sort filename 1.19x、sort rating **1.39x**、facet.camera 1.21x、facet.person 1.24x；点查/小结果集 0.97–1.01x 无回归。语义：mmap 只影响 DB 文件读页（WAL/写/事务不变）；256MB 是单连接映射上限非预分配；网络卷上 SQLite 自动回退普通 pager。
-- **`PRAGMA optimize`（关闭时 best-effort）**：`Database.close()` 在最终关闭前临时收紧 `busy_timeout=250ms` 后执行，失败只记 warn；不改变 close 幂等/不抛错/.closed 语义；未放到 `checkpoint()`（保持其纯 WAL 收尾语义）。SQLite 推荐在关闭前运行，让规划器用上最新统计（统计已新时成本很低，无 schema 变更）。
+- **~~`PRAGMA optimize`（关闭时 best-effort）~~（评审 CORE-02 后移除）**：2026-11-18 独立评审指出三点：① `PRAGMA optimize` 可能写 `sqlite_stat1`（ANALYZE），使文档声明「只读」的 CLI（`gather-triage-eval`）在退出时写库；② 首次 ANALYZE 耗时无上界且发生在 close 持有 `Database.stateLock` 的退出路径；③ 收益接近零（统计通常已新）。已从 `Database.close()` 移除；需要刷新统计应走显式维护任务，不在 close 隐式写库。
 - **prepare 复用再扩 6 处**（沿用 round-3 `DBStatementCache`）：`CollectionRepo.existingPhotoIds/removeItems`、`StackRepo.stackIdsByPhoto/removeMembers/detachPhotos`、`FaceRepo+Observations.invalidateDerivedResults`（每块 5 条写语句，10k 照片≈125 次 prepare → 事务内复用）。只读池边界同 round-3（SELECT 缓存默认 limit=1）。
 - **bench 工具扩展**（`scripts/perf-sqlite-bench.py`，仍为开发工具不进 CI）：新增 `--file-db`（PRAGMA 实验必需）、`--pragma NAME=VALUE`、`--pragma-ab NAME=VALUE`（默认↔设定↔恢复逐查询 A/B）、gallery 排序模式 ×3（filename/date_taken CASE/rating）、facet 查询 ×3（camera ROW_NUMBER 代表行、keyword 顶级桶、person 桶，SQL 与 `FacetQuery` 同构），新增 persons/person_photos/photo_keywords 合成数据；默认 5k 与 20k 均跑通。
 - **查询审计（无 schema 改动）**：三种 gallery 排序全部 `USE TEMP B-TREE FOR ORDER BY`（filename 无复合索引；date_taken 为 CASE 表达式不可普通索引；rating 在 JOIN 侧）；20k 实测 filterPhotos≈5.0ms vs `asset_page` 游标 CTE≈2.45ms ⇒ 纯翻页/选片路径推荐走已有 cursor 实现；facet 实测 camera 5.53ms / keyword 11.45ms / person 2.66ms，建议服务层按（session, criteria 指纹）缓存、关键字维懒加载/限 limit；候选索引（如 `photos(session_id, filename)`）留待下次 `user_version` 迁移统一评估并同步指纹。

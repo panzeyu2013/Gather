@@ -61,8 +61,9 @@ blocking_sleep 1→0（perf-runtime：同步重试改 async）；raw_json_decode
 - 收敛热点后重跑 --write-baseline 把基线钉到新值；CI 只读基线。
 - 文档同步（docs-steward）：docs/DEVELOPMENT.md 的「7 类/7 指标」需改为「9 类/9 指标」并补
   两个新指标名；门禁总数不变（仍 17）。
-- report-baseline：其「性能 ratchet」节当前硬编码 7 项指标清单（scripts/report-baseline.sh:422），
-  本轮 baseline 已有 9 项；如需报表同步展示新指标，需要在 scripts/report-baseline.sh 的
+- ~~report-baseline：其「性能 ratchet」节当前硬编码 7 项指标清单~~ 已在收尾修复为 9 项
+  （评审 R4-F10 复核；同时修正了该脚本 POSIX/Python 正则差异导致的 2 项恒 0）。原记录：
+  如需报表同步展示新指标，需要在 scripts/report-baseline.sh 的
   PERF_METRICS 列表补两行（本轮 write scope 未包含该文件，作为 follow-up 报告给 lead）。
 - 集成说明：本文件所在审计目录在集成时由 2026-11-18-round4-perf 改名为
   2026-11-18-round4-perf；正文不引用自身目录路径，改名不影响内容/链接。
@@ -71,7 +72,7 @@ blocking_sleep 1→0（perf-runtime：同步重试改 async）；raw_json_decode
 
 - bash -n scripts/check-perf-ratchet.sh：无输出；shellcheck 0.10.0 -S warning：0 findings。
 - ./scripts/check-perf-ratchet.sh：9 项全 ok，OK，rc=0；连续两次运行 stdout 逐字节一致。
-- ./scripts/report-baseline.sh：rc=0（性能节输出 baseline 元信息 + 现有 7 项 current/baseline；
+- ./scripts/report-baseline.sh：rc=0（性能节输出 baseline 元信息 + **9 项** current/baseline；
   新指标展示见 §4 的 follow-up）。
 - .github/workflows/ci.yml：无需改动（"Perf ratchet" step 已在，PyYAML 解析 OK）。
 - ./scripts/check-repo-hygiene.sh：7/7 节 PASS。

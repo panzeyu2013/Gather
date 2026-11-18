@@ -10,7 +10,7 @@
 
 | # | 修复 | 文件 | 主要收益 |
 |---|------|------|----------|
-| R1 | N+1：`applyImportedPicks` 批前一次取齐决策行 | CullingService+Commands.swift | 几百张勾选从 ~1000 次单行查询 → ≤1 次批量查询（800/块），且保留 revision/人工保护语义 |
+| R1 | N+1：`applyImportedPicks` 批前一次取齐决策行 | CullingService+Commands.swift | 几百张勾选从 ~1000 次单行查询 → 每张 1 次实时读 + 2 次批量预载（2026-11-18 评审 CORE-01 修正：批前快照不能当 revision 冲突检测的 currentRow，未触碰照片恢复逐张实时读；人工保护语义保留） |
 | R2 | N+1：包导入人物绑定复用 `list()` | LibraryPackageService.swift | 每条绑定一次点查 → 0 次（数千条绑定） |
 | R3 | 正则：`Mutex` 锁盒子缓存 NSRegularExpression | NavigationService.swift | 逐行分组路径每次调用一次正则编译 → 首次编译后 0 次 |
 | R4 | 正则：sidecar 读写路径 4 个正则编译缓存 | SidecarXMPProvider+IPTCReading.swift / +IPTC.swift | 逐照片（读）/逐字段（写）路径每次重新编译 → 0 次 |
@@ -43,9 +43,11 @@
 - **After**（:406-497）：
   1. 先按「勾选照片 ∪ 其资产变体」并集收集 `preloadIds`（去重、保持首见顺序）；
   2. 一次 `getByPhotoIds(sessionId:photoIds:)`（仓库内部已按 800 分块）建 `photoId → CullingDecisionRow`；
-  3. 主循环按原顺序逐张处理；**本批已写过的照片/资产**（`touchedPhotoIds`/`touchedAssetIds`）
+  3. 主循环按原顺序逐张处理；~~**本批已写过的照片/资产**（`touchedPhotoIds`/`touchedAssetIds`）
      后续迭代回退到实时 `getDecision`，因此同资产多张勾选/重复 photoId 时 revision 与逐张
-     实现一致（不会因批前快照误报 `revisionConflict`）；
+     实现一致~~ → **评审 CORE-01 修正（2026-11-18）**：批前快照同源会让「未触碰照片」的
+     expectedRevision 校验变成恒等式；现已让所有照片在 updateState 前实时 `getDecision`
+     （每张 1 次），`touched*` 集合仅保留给变体判定注释口径，批量收益来自变体预载；
   4. 兄弟变体的人工保护检查读批前快照：本批写入只会把非人工源改成 `imported`，人工行在
      `updateState` 前已被跳过 ⇒ `decisionSource == manual` 判定与逐张实时读同义（注释 :460-462）。
 - **语义保持**：结果顺序、`appliedPhotoIds`、`failed` 计数、历史合并、错误分支不变；唯一

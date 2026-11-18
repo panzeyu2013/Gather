@@ -280,8 +280,9 @@ GatherApplication（服务编排；交付在 GatherDelivery）
   Linux / macOS 均可跑；数字受机器与 IO 影响，只用于相对比较。
 - **SQLite 默认 PRAGMA（round-4）**：文件库连接（读写连接、只读池、备份校验连接）默认
   `PRAGMA mmap_size=256MB`（单连接映射上限，不是预分配；`:memory:` 跳过，设置失败 warn 后
-  保留 SQLite 自身值）；`Database.close()` 在最终关闭前 best-effort 执行 `PRAGMA optimize`
-  （失败只 warn，不改变 close 幂等/不抛错/WAL checkpoint 语义）。
+  保留 SQLite 自身值）。~~`Database.close()` 在最终关闭前 best-effort 执行 `PRAGMA optimize`~~
+  （2026-11-18 独立评审 CORE-02 后移除：写 ANALYZE 破坏只读 CLI 语义、耗时无上界、收益接近零；
+  需要刷新统计走显式维护任务）。
 - **启动阶段计时**：每次冷启动成功/失败各一行日志（7 阶段、0.1ms 精度），格式
   `startup phases: total=<ms> firstScene=<ms> restore=… dbOpen=… composition=… languageSeed=…
   runtimeStart=… embeddingPrep=… wire=…`。`firstScene` = 启动入口 → scene 首次发布的墙钟上界；

@@ -56,7 +56,7 @@
 - **共享异步等待**：新增 `GatherTestSupport/AsyncWait.swift`（sync + async 条件等待，`ContinuousClock` 单调计时、`Task.isCancelled`、超时返回最后求值），core/app 测试共用；删除 app 侧私有 `waitUntilAsyncCondition` 副本与 core 三份 `Thread.sleep(0.02)` 轮询 helper（4→0）。
 - **替换清单**：App 固定"等落定"等待 17→4（余下 4 处为有意的负向窗口/替身延迟，已注释并断言）；Core `ReadPoolTests`/`DirectoryWatcherTests` 的 deadline+sleep 轮询迁到共享 helper；sleep 站点 49→32、`Thread.sleep` 6→2。
 - **墙钟容忍度**：`ReadPoolTests` 改 `ContinuousClock` + <1s；`ExportPostCommandTests` 子进程 5s→30s、上界 <10s；`CullingDecisionRepoTests` 删除 2ms 播种、改固定时间戳断言 ON CONFLICT **保留 created_at 且推进 updated_at**（比原断言更强且确定性）。
-- **新增回归测试**：`DisplayDateFormattersTests`（6 个：缓存输出 vs 每次新建 oracle 逐字节、zh/en、两种 ISO 解析、fallback 语义）、`JSONValueCodingTests`（6 个：共享 coder vs 默认 coder 逐字节/逐值/往返/损坏输入错误一致）。@Test 3,255→3,267、@Suite 417→419、断言 14,911→14,954。
+- **新增回归测试**：`DisplayDateFormattersTests`（6 个：缓存输出 vs 每次新建 oracle 逐字节、zh/en、两种 ISO 解析、fallback 语义）、`JSONValueCodingTests`（6 个：共享 coder vs 默认 coder 值等价/往返/损坏输入错误一致；原「逐字节」断言经 2026-11-18 评审 R3-T01/R5-02 修正——Foundation 不承诺对象键序字节稳定，已改为值等价 + 标量/数组字节断言）。@Test 3,255→3,267、@Suite 417→419、断言 14,911→14,954。
 
 ## 7. 国际化与设计一致性
 

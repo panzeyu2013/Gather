@@ -40,7 +40,7 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 - 测试入口：`./scripts/test.sh core|app`（或 `all`）。
 - 完整 `.app` 只在发布/打包时构建：`./desktop/native/build.sh`。
 
-## 当前基线（2026-11-17 第二轮加固后采样，以脚本输出为准）
+## 当前基线（2026-11-18 四轮加固后采样，以脚本输出为准）
 
 - 9 个功能 target（含测试/工具共 18 个）；16 个域 API / 195 个类型化方法。
 - **声明口径**（`check-test-catalog.sh` 的 ratchet，按剥注释后的 `@Test`/`@Suite` 声明计）：

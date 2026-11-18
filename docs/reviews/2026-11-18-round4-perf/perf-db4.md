@@ -12,7 +12,7 @@
 | # | 交付 | 结论 |
 |---|------|------|
 | P1 | `PRAGMA mmap_size` | **采纳**：读写连接 + 只读池连接统一设 256MB 上限（internal 常量）。Linux 20k 合成库实测读/排序/facet 查询 **1.1–1.39x**，点查不变；失败只记 warn 并回退（SQLite 语义）。 |
-| P2 | 关闭时 `PRAGMA optimize` | **采纳（best-effort）**：`Database.close()` 关闭前执行一次，失败只记日志；执行前把 busy_timeout 临时收紧到 250ms，避免外部进程持写锁时拖慢关闭。无 schema 变更、close 的幂等/不抛错语义不变。 |
+| P2 | 关闭时 `PRAGMA optimize` | **采纳后经独立评审移除（CORE-02）**：它会写 `sqlite_stat1`、破坏只读 CLI 的「退出不写库」语义，且首次 ANALYZE 耗时无上界、发生在退出路径；收益接近零。close 幂等/不抛错语义保持。 |
 | P3 | bench 工具扩展 | 新增 gallery 排序模式（filename / date_taken 表达式 / rating）、facet 查询（camera / keyword / person，与 FacetQuery 同构）、`--file-db` / `--pragma` / `--pragma-ab`。默认 5k 与 `--rows 20000` 均 exit 0；纯标准库、确定性、不进 CI。 |
 | P4 | 查询审计 | 三种 gallery 排序全部 `TEMP B-TREE FOR ORDER BY`（filename 无索引 / date_taken 是 CASE 表达式 / rating 在 JOIN 侧）；facet 有 GROUP BY + count(DISTINCT) 临时 B 树；list_page 5.0ms vs 游标资产页 2.45ms（20k）。建议：排序走游标/未来 user_version 加索引，本轮不改 schema。 |
 | P5 | 剩余 Persistence prepare 热点 | 再修 6 处（CollectionRepo×2、StackRepo×3、FaceRepo+Observations×1），分块循环 prepare 降到「满块 1 次 + 末块现场」/ 事务内固定语句集一次。 |
@@ -62,7 +62,11 @@
 Instruments 复核为准**。可用 `python3 scripts/perf-sqlite-bench.py --rows 20000 --file-db
 --pragma-ab mmap_size=268435456` 复现（含完整 EXPLAIN）。
 
-## 3. P2：关闭时 `PRAGMA optimize`（best-effort）
+## 3. P2：关闭时 `PRAGMA optimize`（2026-11-18 评审后已移除）
+
+> **评审修正（2026-11-18）**：本节是 round-4 当时的实现记录。独立评审 CORE-02 后该逻辑已从
+> `Database.close()` 移除（写 `sqlite_stat1` 破坏只读 CLI 语义、ANALYZE 耗时不界、收益接近零）。
+> 下面是当时的实现与理由，保留作决策历史。
 
 - SQLite 官方建议：应用**关闭连接前/周期性**跑 `PRAGMA optimize`，让查询规划器利用最新统计；
   统计已新鲜时成本很低，不需要改 schema（不产生 user_version/fingerprint 变化）。
