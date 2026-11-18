@@ -326,6 +326,16 @@ public final class Database: @unchecked Sendable {
         defer { stateLock.unlock() }
         guard !closed else { return }
         closed = true
+        // 性能审计 R4：SQLite 推荐在关闭前跑一次 `PRAGMA optimize`，让查询规划器
+        // 用上最新统计（统计已是最新时成本很低，无需 schema 变更）。
+        // best-effort：失败（连接已外部关闭/事务中）只记日志，不改变 close 的
+        // 幂等与「关闭后调用稳定抛 .closed」语义。
+        BestEffort.attempt("PRAGMA optimize before close") {
+            // 关闭在即：临时收紧 busy_timeout，避免外部进程持写锁时 close 被拖到 5s；
+            // 成功后连接随即关闭，无需恢复原值。
+            try connection.exec("PRAGMA busy_timeout = 250;")
+            try connection.exec("PRAGMA optimize;")
+        }
         connection.close()
     }
 

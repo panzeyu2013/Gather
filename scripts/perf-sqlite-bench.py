@@ -15,6 +15,18 @@
   python3 scripts/perf-sqlite-bench.py --compare       # A/B：旧 SQL vs 新 SQL
   python3 scripts/perf-sqlite-bench.py --repeats 31 --json   # 原始数字
   python3 scripts/perf-sqlite-bench.py --keep-db /tmp/gather-bench.db  # 保留建好的库
+  python3 scripts/perf-sqlite-bench.py --file-db               # 文件库（测量 PRAGMA/mmap 效果）
+  python3 scripts/perf-sqlite-bench.py --file-db --pragma mmap_size=268435456   # 应用 PRAGMA
+  python3 scripts/perf-sqlite-bench.py --file-db --pragma-ab mmap_size=268435456 # 同库 A/B（默认 vs 设定）
+  python3 scripts/perf-sqlite-bench.py --rows 20000 --file-db --pragma-ab mmap_size=268435456
+
+扩展（R4）:
+  - 新增 gallery 排序模式查询（filename / date_taken 表达式 / rating）揭示 TEMP B-TREE 路径；
+  - 新增 facet 查询（camera CTE / keyword 顶级桶 / person 桶，SQL 与 FacetQuery 同构）；
+  - --file-db 用临时文件库代替 :memory:，使 mmap_size 等 PRAGMA 实验可测；
+  - --pragma name=value 应用到基准连接（可重复）；
+  - --pragma-ab name=value 在同一库上先测默认、再设 PRAGMA、最后恢复默认重测，
+    输出逐查询 A/B（降低冷热/顺序偏差）；
 
 确定性说明
   - 数据由 --seed（默认 42）决定；同 --rows/--seed 的数据内容与 EXPLAIN 输出可复现。
@@ -25,11 +37,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import re
 import sqlite3
 import statistics
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -321,6 +335,33 @@ class Seeder:
         self.insert("asset_members", len(member_photo_indexes), members_overrides)
         self.insert("session_assets", len(sa), session_assets_overrides)
         self.insert("photos", rows, photos_overrides)
+        npersons = max(10, rows // 100)
+        person_ids = [f"per{i:04d}" for i in range(npersons)]
+
+        def persons_overrides(i):
+            return {"id": person_ids[i], "name": f"Person {i:03d}", "keywords": "[]",
+                    "thumbnail_base64": "", "notes": "", "match_threshold": 0.65,
+                    "created_at": ID_TIME, "updated_at": ID_TIME}
+
+        # 每 3 张照片有一个人物绑定（facet person 维输入；unique(person,photo) 不冲突）
+        person_photo_indexes = [i for i in range(rows) if i % 3 == 0]
+
+        def person_photos_overrides(j):
+            i = person_photo_indexes[j]
+            return {"person_id": person_ids[(i * 7) % npersons], "photo_id": f"p{i:08d}",
+                    "session_id": session_of_photo[i], "face_bbox": "[]",
+                    "confidence": 0.9, "created_at": ID_TIME}
+
+        # 每张照片 3 条关键词（facet keyword 维输入；顶级桶 = 首段 Places/People/Scenes）
+        keyword_paths = ["Places|Paris", "People|Family", "Scenes|Landscape"]
+
+        def photo_keywords_overrides(k):
+            return {"photo_id": f"p{k // 3:08d}", "keyword_path": keyword_paths[k % 3],
+                    "source": "xmp", "updated_at": ID_TIME}
+
+        self.insert("persons", npersons, persons_overrides)
+        self.insert("person_photos", len(person_photo_indexes), person_photos_overrides)
+        self.insert("photo_keywords", rows * 3, photo_keywords_overrides)
         self.insert("photo_metadata_cache", rows, cache_overrides)
         self.insert("face_observations", rows // 3, face_overrides)
         self.insert("similarity_hashes", rows // 2, hash_overrides)
@@ -334,7 +375,8 @@ class Seeder:
         self.conn.execute("PRAGMA foreign_keys = ON")
         for table in ("photos", "asset_files", "asset_members", "session_assets", "photo_metadata_cache",
                       "face_observations", "similarity_hashes", "culling_decisions", "analysis_jobs",
-                      "triage_suggestions", "deliveries", "delivery_items"):
+                      "triage_suggestions", "deliveries", "delivery_items",
+                      "persons", "person_photos", "photo_keywords"):
             n = self.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
             assert n > 0, f"seed produced no rows in {table}"
 
@@ -366,6 +408,65 @@ def hot_queries(rows: int, sessions: list[str], gids: list[str], deliveries: int
     )
     no_order_sql = photo_page_sql.split(" ORDER BY ")[0]
     distinct_no_order = distinct_variant.split(" ORDER BY ")[0]
+    def gallery_sorted(order_expr: str) -> str:
+        return (
+            "SELECT p.id AS id, p.session_id AS session_id, p.filepath AS filepath, "
+            "p.filename AS filename, p.checksum AS checksum, p.status AS status, "
+            "p.created_at AS created_at, p.updated_at AS updated_at, "
+            "pmc.rating AS rating, pmc.date_taken AS date_taken "
+            "FROM photos p LEFT JOIN photo_metadata_cache pmc ON p.id = pmc.photo_id "
+            "WHERE p.session_id = ? AND p.archived_at IS NULL "
+            f"ORDER BY {order_expr} DESC LIMIT ?"
+        )
+
+    # PhotoFilterQuery.normalizedDateTaken（EXIF 冒号日期归一）
+    normalized_date = (
+        "CASE WHEN pmc.date_taken LIKE '____:__:__%' "
+        "THEN replace(substr(pmc.date_taken, 1, 10), ':', '-') || substr(pmc.date_taken, 11) "
+        "ELSE pmc.date_taken END"
+    )
+    # FacetQuery.buckets（camera 维）：与生产 SQL 同构（代表行规则用 p.rowid 近似）
+    camera_facet = """
+        WITH ranked AS (
+          SELECT pmc.camera_model AS v,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY COALESCE(NULLIF(p.asset_id, ''), p.id) ORDER BY p.rowid
+                 ) AS rn
+          FROM photos p
+          LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
+          WHERE p.session_id = ? AND (1=1) AND p.archived_at IS NULL
+        )
+        SELECT v, COUNT(*) AS n FROM ranked
+        WHERE rn = 1 AND v IS NOT NULL AND v <> ''
+        GROUP BY v ORDER BY n DESC, v ASC LIMIT ?
+    """
+    # FacetQuery.keywordBuckets（顶级桶；无 prefix）
+    keyword_facet = """
+        SELECT v, COUNT(DISTINCT asset_key) AS n FROM (
+          SELECT CASE WHEN instr(pk.keyword_path, '|') > 0
+                      THEN substr(pk.keyword_path, 1, instr(pk.keyword_path, '|') - 1)
+                      ELSE pk.keyword_path END AS v,
+                 COALESCE(NULLIF(p.asset_id, ''), p.id) AS asset_key
+          FROM photo_keywords pk
+          JOIN photos p ON p.id = pk.photo_id
+          LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
+          WHERE p.session_id = ? AND (1=1) AND p.archived_at IS NULL
+        )
+        WHERE v IS NOT NULL AND v <> ''
+        GROUP BY v ORDER BY n DESC, v ASC LIMIT ?
+    """
+    # FacetQuery.personBuckets
+    person_facet = """
+        SELECT per.name AS v, COUNT(DISTINCT COALESCE(NULLIF(p.asset_id, ''), p.id)) AS n
+        FROM person_photos pp
+        JOIN persons per ON per.id = pp.person_id
+        JOIN photos p ON p.id = pp.photo_id
+        LEFT JOIN photo_metadata_cache pmc ON pmc.photo_id = p.id
+        WHERE p.session_id = ? AND (1=1) AND p.archived_at IS NULL
+          AND per.name IS NOT NULL AND per.name <> ''
+        GROUP BY per.name ORDER BY n DESC, v ASC LIMIT ?
+    """
+
     return [
         ("photo.list_page A (DISTINCT, before)", distinct_variant, (sid, 200), None,
          "改动前：SELECT DISTINCT + LEFT JOIN 1:1"),
@@ -406,6 +507,18 @@ def hot_queries(rows: int, sessions: list[str], gids: list[str], deliveries: int
          "SELECT id, session_id, filepath FROM photos WHERE id IN ("
          f"{','.join('?' for _ in range(800))})",
          tuple(f"p{i:08d}" for i in range(800)), None, "getLookupByIds 单块"),
+        ("gallery.sort filename (ORDER BY p.filename)", gallery_sorted("p.filename"), (sid, 200), None,
+         "非索引列排序 ⇒ 全量 TEMP B-TREE"),
+        ("gallery.sort date_taken (expr)", gallery_sorted(normalized_date), (sid, 200), None,
+         "CASE 表达式 ⇒ 无法走索引，TEMP B-TREE"),
+        ("gallery.sort rating (pmc.rating)", gallery_sorted("pmc.rating"), (sid, 200), None,
+         "JOIN 侧列排序 ⇒ TEMP B-TREE"),
+        ("facet.camera (ROW_NUMBER 代表行)", camera_facet, (sid, 60), None,
+         "FacetQuery camera 维同构 SQL"),
+        ("facet.keyword_top (COUNT DISTINCT asset)", keyword_facet, (sid, 60), None,
+         "FacetQuery keyword 维同构 SQL"),
+        ("facet.person (COUNT DISTINCT asset)", person_facet, (sid, 60), None,
+         "FacetQuery person 维同构 SQL"),
     ]
 
 
@@ -471,6 +584,35 @@ def loop_prepare_bench(conn: sqlite3.Connection, repeats: int, iters: int = 1000
         "per_prepare_us": (prepare_each - reuse) * 1000.0 / iters,
     }
 
+def _cleanup_db(conn: sqlite3.Connection, tmpdir, db_path) -> None:
+    conn.close()
+    if tmpdir is None:
+        return
+    try:
+        if db_path and os.path.exists(db_path):
+            os.remove(db_path)
+        os.rmdir(tmpdir)
+    except OSError:  # 清理是 best-effort（诊断时可能保留了文件）
+        pass
+
+
+def _read_pragma(conn: sqlite3.Connection, name: str):
+    row = conn.execute(f"PRAGMA {name}").fetchone()
+    return row[0] if row else None
+
+
+def _apply_pragma(conn: sqlite3.Connection, spec: str) -> tuple[str, object, object]:
+    """应用 "name=value" 形式的 PRAGMA；返回 (name, before, after)。"""
+    name, _, value = spec.partition("=")
+    name, value = name.strip(), value.strip()
+    if not name or value == "":
+        raise SystemExit(f"perf-sqlite-bench: --pragma/--pragma-ab 需要 NAME=VALUE，收到 {spec!r}")
+    before = _read_pragma(conn, name)
+    conn.execute(f"PRAGMA {name} = {value}")
+    after = _read_pragma(conn, name)
+    return name, before, after
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Gather 热点 SQL 基准（真实 DDL + 合成数据；开发工具，不进 CI）")
     ap.add_argument("--rows", type=int, default=5000, help="合成照片数（默认 5000；20k/50k 用于放大）")
@@ -479,12 +621,32 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--compare", action="store_true", help="额外跑 A/B（改动前 SQL 变体）并打印加速比")
     ap.add_argument("--json", action="store_true", help="输出 JSON（含原始 ms 与 plan）")
     ap.add_argument("--keep-db", metavar="PATH", help="保留合成库文件到指定路径（默认临时库用完即删）")
+    ap.add_argument("--file-db", action="store_true",
+                    help="用临时文件库代替 :memory:（mmap_size 等 PRAGMA 实验需要；默认内存库）")
+    ap.add_argument("--pragma", action="append", default=[], metavar="NAME=VALUE",
+                    help="应用到基准连接的 PRAGMA（可重复；打印读回值）")
+    ap.add_argument("--pragma-ab", action="append", default=[], metavar="NAME=VALUE",
+                    help="同库 A/B：默认值 vs 设定值（可重复；恢复默认后重测以抵消预热偏差）")
     args = ap.parse_args(argv)
     if args.rows < 100:
         raise SystemExit("perf-sqlite-bench: --rows 至少 100")
 
     ddl = extract_ddl()
-    conn = sqlite3.connect(":memory:")
+    tmpdir = None
+    db_path = None
+    if args.file_db:
+        if args.keep_db:
+            db_path = args.keep_db
+            if os.path.exists(db_path):
+                os.remove(db_path)
+        else:
+            tmpdir = tempfile.mkdtemp(prefix="gather-bench-")
+            db_path = os.path.join(tmpdir, "bench.db")
+        conn = sqlite3.connect(db_path)
+        db_label = db_path
+    else:
+        conn = sqlite3.connect(":memory:")
+        db_label = "memory"
     conn.executescript(ddl)
     tables, indexes, fks = schema_facts(conn)
     if (tables, indexes, fks) != (EXPECTED_TABLES, EXPECTED_INDEXES, EXPECTED_FKS):
@@ -495,19 +657,23 @@ def main(argv: list[str]) -> int:
     Seeder(conn, args.rows, args.seed).seed()
     seed_ms = (time.perf_counter() - t0) * 1000.0
 
+    # 应用 --pragma（例如 mmap_size=268435456）；在查询测量前生效，打印实际读回值。
+    applied_pragmas = []
+    for spec in args.pragma:
+        name, before, after = _apply_pragma(conn, spec)
+        applied_pragmas.append({"pragma": name, "before": before, "after": after})
+
     sessions = [f"s{i:03d}" for i in range(session_count(args.rows))]
     gids = [f"a{i:08d}" for i in range(200)]
     deliveries = max(50, args.rows // 10)
 
     queries = hot_queries(args.rows, sessions, gids, deliveries)
-    results = []
-    for name, sql, params, alt, note in queries:
-        plan = explain(conn, sql, params)
-        ms = time_query(conn, sql, params, args.repeats)
-        entry = {"name": name, "ms": round(ms, 3), "note": note, "plan": plan}
-        if alt:
-            entry["alt_ms"] = compare_distinct(conn, sql, params, alt, args.repeats)["old_ms"]
-        results.append(entry)
+    plans = {name: explain(conn, sql, params) for name, sql, params, _alt, _note in queries}
+    baseline_ms = {name: time_query(conn, sql, params, args.repeats)
+                   for name, sql, params, _alt, _note in queries}
+    results = [{"name": name, "ms": round(baseline_ms[name], 3), "note": note,
+                "plan": plans[name]}
+               for name, _sql, _params, _alt, note in queries]
 
     ab = None
     ab2 = None
@@ -524,7 +690,27 @@ def main(argv: list[str]) -> int:
         ab2["b"] = b2_name
     prepare_ab = loop_prepare_bench(conn, max(5, args.repeats // 2)) if args.compare else None
 
-    if args.keep_db:
+    pragma_ab = []
+    if args.pragma_ab:
+        for spec in args.pragma_ab:
+            name, before, after = _apply_pragma(conn, spec)
+            with_pragma_ms = {q_name: time_query(conn, q_sql, q_params, args.repeats)
+                              for q_name, q_sql, q_params, _a, _n in queries}
+            # 恢复默认值后重测（抹平「B 阶段刚跑过、页面更热」的顺序偏差）：
+            if before is not None:
+                conn.execute(f"PRAGMA {name} = {before}")
+            restored_ms = {q_name: time_query(conn, q_sql, q_params, args.repeats)
+                           for q_name, q_sql, q_params, _a, _n in queries}
+            rows = []
+            for q_name, _q_sql, _q_params, _a, _n in queries:
+                base = min(baseline_ms[q_name], restored_ms[q_name])
+                cand = with_pragma_ms[q_name]
+                rows.append({"query": q_name, "baseline_ms": round(base, 3),
+                             "pragma_ms": round(cand, 3),
+                             "speedup": round(base / cand, 3) if cand else None})
+            pragma_ab.append({"pragma": name, "before": before, "after": after, "rows": rows})
+
+    if args.keep_db and not args.file_db:
         disk = sqlite3.connect(args.keep_db)
         with disk:
             conn.backup(disk)
@@ -532,21 +718,26 @@ def main(argv: list[str]) -> int:
 
     if args.json:
         print(json.dumps({"rows": args.rows, "seed": args.seed, "repeats": args.repeats,
+                          "file_db": args.file_db,
                           "schema": {"tables": tables, "indexes": indexes, "fks": fks},
-                          "seed_ms": round(seed_ms, 1), "queries": results,
+                          "seed_ms": round(seed_ms, 1), "pragmas": applied_pragmas,
+                          "queries": results,
                           "compare": ab, "compare_no_order": ab2,
-                          "prepare_ab": prepare_ab},
+                          "pragma_ab": pragma_ab, "prepare_ab": prepare_ab},
                          ensure_ascii=False, indent=2))
+        _cleanup_db(conn, tmpdir, db_path)
         return 0
 
-    print(f"perf-sqlite-bench: rows={args.rows} seed={args.seed} repeats={args.repeats} "
-          f"db={'temp' if not args.keep_db else args.keep_db}")
+    print(f"perf-sqlite-bench: rows={args.rows} seed={args.seed} repeats={args.repeats} db={db_label}")
     print(f"schema: tables={tables} indexes={indexes} fks={fks}（与 SchemaCurrent.expected* 一致）")
-    print(f"seed: {seed_ms:.0f} ms（确定性合成数据）\n")
-    print(f"{'query':<46}{'median ms':>11}  note")
-    print("-" * 100)
+    print(f"seed: {seed_ms:.0f} ms（确定性合成数据）")
+    for entry in applied_pragmas:
+        print(f"pragma: {entry['pragma']} {entry['before']} -> {entry['after']}")
+    print()
+    print(f"{'query':<52}{'median ms':>11}  note")
+    print("-" * 110)
     for entry in results:
-        print(f"{entry['name']:<46}{entry['ms']:>11.3f}  {entry['note']}")
+        print(f"{entry['name']:<52}{entry['ms']:>11.3f}  {entry['note']}")
     print("\nEXPLAIN QUERY PLAN:")
     for entry in results:
         print(f"  [{entry['name']}]")
@@ -559,6 +750,12 @@ def main(argv: list[str]) -> int:
         print(f"  A: {pair['a']}  {pair['old_ms']:.3f} ms")
         print(f"  B: {pair['b']}  {pair['new_ms']:.3f} ms")
         print(f"  加速比: {pair['speedup']:.2f}x")
+    for experiment in pragma_ab:
+        print(f"\nPRAGMA A/B（--pragma-ab {experiment['pragma']}={experiment['after']}，"
+              f"baseline={experiment['before']}）:")
+        for row in experiment["rows"]:
+            speed = "n/a" if row["speedup"] is None else f"{row['speedup']:.2f}x"
+            print(f"  {row['query']:<52}{row['baseline_ms']:>9.3f} -> {row['pragma_ms']:>9.3f} ms  {speed}")
     if prepare_ab:
         print("\nprepare hoist 微基准（--compare；单行 SELECT × %d，Python wrapper 近似）:" % prepare_ab["iters"])
         print(f"  A: 每轮重新 prepare（SQL 文本唯一） {prepare_ab['prepare_each_ms']:.2f} ms")
@@ -567,6 +764,7 @@ def main(argv: list[str]) -> int:
               f"（{prepare_ab['speedup']:.1f}x）—— 用于估算循环内 prepare 的数量级成本")
     if args.keep_db:
         print(f"\n合成库已保留: {args.keep_db}")
+    _cleanup_db(conn, tmpdir, db_path)
     return 0
 
 

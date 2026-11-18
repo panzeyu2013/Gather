@@ -50,6 +50,13 @@ public struct ExternalMigrationEvaluation: Sendable {
 public struct ExternalMetadataMigrationService: Sendable {
     private let xmp: any XMPProvider
 
+    /// 逐行解码 keywordsJSON 的共享解码器（round-4 性能）。
+    ///
+    /// decodeKeywords 在 evaluate 的逐候选循环里被调用（一行一次；迁移可扫到上万张）。
+    /// JSONDecoder 无跨调用可变状态且已标 Sendable（与 GatherPersistence 的
+    /// RepoJSONCoding 同一依据），复用不改变输出字节与失败语义（失败仍按空列表）。
+    private static let keywordDecoder = JSONDecoder()
+
     public init(xmp: any XMPProvider) {
         self.xmp = xmp
     }
@@ -149,7 +156,7 @@ public struct ExternalMetadataMigrationService: Sendable {
     private static func decodeKeywords(_ json: String) -> [String] {
         guard let data = json.data(using: .utf8) else { return [] }
         do {
-            return try JSONDecoder().decode([String].self, from: data)
+            return try keywordDecoder.decode([String].self, from: data)
         } catch {
             GatherLogger.log("migration keywords decode failed: \(error)", level: .debug)
             return []

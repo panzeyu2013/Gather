@@ -40,11 +40,45 @@ public struct MetadataDispositionService: Sendable {
     }
 
     public func conflicts(_ sessionId: String) async throws -> [MetadataConflict] {
+        let rows = try deliveries.conflictDeliveries(sessionId: sessionId)
+        guard !rows.isEmpty else { return [] }
+        // 交付项按行串行读：端口只有 items(deliveryId:) 单行 API（不改公开协议），
+        // 且是进程内 SQLite 读；冲突行数 = 待裁决 sidecar 数，通常个位数。
+        var itemsByDelivery: [[DeliveryItemRow]] = []
+        itemsByDelivery.reserveCapacity(rows.count)
+        for delivery in rows {
+            itemsByDelivery.append(try deliveries.items(deliveryId: delivery.id))
+        }
+        // round-4 性能：逐条 XMP 读盘改**有界并发**（4 路）。旧实现串行 await，
+        // 冲突多时被磁盘延迟线性拖长；XMPProvider 是 Sendable，且「同路径串行」
+        // 只是**写**路径契约（见 SidecarXMPProvider 并发契约），不同 sidecar 的
+        // 只读并行安全；单条读失败仍按 try?-empty 处理（不伪造冲突值）。
+        //
+        // 取消隔离：BatchRunner 的取消契约是「调用方取消后停发新号，返回已完成项的
+        // 部分结果」（保序但**缺项**）。旧串行实现不响应取消（逐条 try?-empty 继续），
+        // 直接把部分结果按下标对齐会错位/越界。这里把整批读放进 detached 子任务：
+        // 不随调用方取消，结果与 rows 严格一一对应，语义与旧实现一致（一次调用
+        // 一个 detached，成本可忽略；读盘仍在并发上限内）。
+        let xmp = self.xmp
+        let rowsForRead = rows
+        let remotes: [MetadataWriteAttributes] = await Task.detached(priority: .userInitiated) {
+            do {
+                return try await batchAsync(rowsForRead, concurrency: 4) { delivery in
+                    (try? await xmp.readAttributes(photoPath: delivery.photoPath))
+                        ?? MetadataWriteAttributes()
+                }
+            } catch {
+                // body 全部 try? 收敛，理论不可达；保守返回空表，下面按空属性处理。
+                return []
+            }
+        }.value
         var conflicts: [MetadataConflict] = []
-        for delivery in try deliveries.conflictDeliveries(sessionId: sessionId) {
-            let items = try deliveries.items(deliveryId: delivery.id)
-            let remote = (try? await xmp.readAttributes(photoPath: delivery.photoPath))
-                ?? MetadataWriteAttributes()
+        conflicts.reserveCapacity(rows.count)
+        for (index, delivery) in rows.enumerated() {
+            let items = itemsByDelivery[index]
+            // remotes 与 rows 一一对应（detached 批读不随取消截断）；防御性兜底：
+            // 万一为空（理论不可达）按「读失败 = 空属性」处理，绝不越界。
+            let remote = index < remotes.count ? remotes[index] : MetadataWriteAttributes()
             let fields = Self.dirtyFields(items: items).map { field in
                 MetadataConflictField(
                     field: field,

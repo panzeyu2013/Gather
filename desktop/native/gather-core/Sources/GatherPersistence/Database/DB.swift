@@ -10,6 +10,14 @@ import CSQLite
 import GatherProtocol
 
 public final class DBConnection: @unchecked Sendable {
+    /// `PRAGMA mmap_size` 的单连接映射上限（性能审计 R4）。
+    ///
+    /// 256MB 常量：本地磁盘上让 SQLite 直接 mmap DB 文件页，省掉 page-cache→用户态拷贝。
+    /// Linux 合成 20k 库（`scripts/perf-sqlite-bench.py --file-db --pragma-ab mmap_size=…`）
+    /// 实测列表/排序/元数据批读快 1.1–1.4x；点查/小结果集无变化。仅本地磁盘语义：
+    /// 网络卷上 mmap 可能不可靠，SQLite 会自动回退到普通 pager（PRAGMA 不报错）。
+    static let mmapSizeBytes: Int = 256 * 1024 * 1024
+
     private var handle: OpaquePointer?
     /// 连接代数（D6 深审）：每次 open/close 自增。DBStatement 记录创建时的代数，
     /// reopen 后旧语句（指针属于**旧** SQLite 连接）必须失效，不能在新连接上
@@ -122,6 +130,11 @@ public final class DBConnection: @unchecked Sendable {
             // db_cache_size_mb 并暴露在设置 UI，但全仓无消费者——用户改了不生效。
             // 这里在打开连接时读取设置并落成 PRAGMA（缺省 normal / 64MB，与 TS 一致）。
             applyPerformancePragmas()
+        }
+        // 性能审计 R4：mmap_size 对读写连接与只读池连接一致（每连接独立设置）。
+        // :memory: 无文件可映射，跳过以免无意义；失败由 applyPragma 记 warn 并保留 SQLite 值。
+        if path != ":memory:" {
+            applyPragma("PRAGMA mmap_size = \(Self.mmapSizeBytes);")
         }
     }
 

@@ -687,8 +687,19 @@ public enum FaceEmbeddingModelFactory {
     final class Cache: @unchecked Sendable {
         typealias Loader = @Sendable (URL, String) throws -> FaceEmbeddingProvider
 
+        /// provider 缓存条目上限（round-4 性能）。
+        ///
+        /// 缓存键含「递归 stat 指纹 + computeUnits」：同一路径反复换模型权重/
+        /// 计算单元会不断编译新的 CoreML provider（每个都是几十 MB 级模型实例），
+        /// 旧实现因此让进程内存无界增长；热路径（一次运行一个模型）不受影响。
+        /// 4 个上限覆盖「内置模型 + 用户模型 + 偶发切换」的常见组合，仍保留
+        /// 单飞（单飞靠下面的锁：编译在锁内串行，不会重复编译同一份权重）。
+        static let maxProviders = 4
+
         private let lock = NSLock()
         private var providers: [String: FaceEmbeddingProvider] = [:]
+        /// 访问序（LRU 近似）：最近命中的 key 在尾部，驱逐时删头部。
+        private var recency: [String] = []
 
         /// 键 = 路径 + 版本 + 递归 stat 指纹（包内每个文件的相对路径 + 大小 + mtime）。
         /// 为什么不是单看目录 stat：原地替换 `.mlmodelc` 包内的权重文件**不会**改变
@@ -719,7 +730,10 @@ public enum FaceEmbeddingModelFactory {
             // when multiple sessions start concurrently.
             lock.lock()
             defer { lock.unlock() }
-            if let cached = providers[cacheKey] { return cached }
+            if let cached = providers[cacheKey] {
+                markUsedLocked(cacheKey)
+                return cached
+            }
             let provider: FaceEmbeddingProvider
             if let loader {
                 provider = try loader(url, version)
@@ -730,8 +744,29 @@ public enum FaceEmbeddingModelFactory {
                 throw FaceEmbeddingError.unsupportedInput("当前平台没有 CoreML，无法加载专用人脸模型")
 #endif
             }
-            providers[cacheKey] = provider
+            installLocked(provider, for: cacheKey)
             return provider
+        }
+
+        /// 命中时把 key 挪到访问序尾部（调用方必须已持 lock）。
+        private func markUsedLocked(_ key: String) {
+            if let index = recency.firstIndex(of: key) {
+                recency.remove(at: index)
+            }
+            recency.append(key)
+        }
+
+        /// 插入新 provider 并按 maxProviders 驱逐最久未使用项（调用方必须已持 lock）。
+        ///
+        /// 驱逐只丢缓存引用：正在推理的调用方持有 provider 强引用（FaceInferenceEngine
+        /// init 时取一次），不会被回收；下次同键请求重新加载，语义与冷启动一致。
+        private func installLocked(_ provider: FaceEmbeddingProvider, for key: String) {
+            providers[key] = provider
+            markUsedLocked(key)
+            while recency.count > Self.maxProviders {
+                let evicted = recency.removeFirst()
+                providers.removeValue(forKey: evicted)
+            }
         }
 
         /// 仅供测试：清空缓存。
@@ -739,6 +774,7 @@ public enum FaceEmbeddingModelFactory {
             lock.lock()
             defer { lock.unlock() }
             providers.removeAll()
+            recency.removeAll()
         }
     }
 }

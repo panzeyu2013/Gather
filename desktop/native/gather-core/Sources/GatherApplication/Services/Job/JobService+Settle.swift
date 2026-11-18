@@ -91,7 +91,10 @@ extension JobService {
     }
 
     /// 终态收尾：先写库（原子条件 UPDATE），成功才登记结果并广播真实终态帧。
-    func settle(job: AnalysisJobData, outcome: Result<Any?, Error>, controller: JobAbortSignal) {
+    ///
+    /// round-4：改为 async —— 瞬时写失败的重试等待从 `Thread.sleep` 改为
+    /// `Task.sleep`，不再阻塞 Swift 并发协作线程池（旧实现会卡住整个线程 200ms）。
+    func settle(job: AnalysisJobData, outcome: Result<Any?, Error>, controller: JobAbortSignal) async {
         let value: Any?
         let error: Error?
         switch outcome {
@@ -113,7 +116,7 @@ extension JobService {
             let code = (error as? CodedError)?.code.rawValue
                 ?? Self.gatherErrorCode(from: message)
                 ?? "worker_error"
-            switch writeTerminal({
+            switch await writeTerminal({
                 try repo.finish(id: job.id, leaseOwner: leaseOwner, status: .failed, error: (code, message))
             }) {
             case .written:
@@ -137,7 +140,7 @@ extension JobService {
         if cancelled {
             // 应用停机导致的取消不是用户取消 → interrupted，供下次启动恢复。
             if stoppedNow {
-                switch writeTerminal({ try repo.interrupt(id: job.id, leaseOwner: leaseOwner) }) {
+                switch await writeTerminal({ try repo.interrupt(id: job.id, leaseOwner: leaseOwner) }) {
                 case .written:
                     Self.logJob(
                         job.id,
@@ -153,7 +156,7 @@ extension JobService {
                     break
                 }
             }
-            switch writeTerminal({
+            switch await writeTerminal({
                 try repo.finish(id: job.id, leaseOwner: leaseOwner, status: .cancelled)
             }) {
             case .written:
@@ -175,7 +178,7 @@ extension JobService {
             return
         }
 
-        switch writeTerminal({
+        switch await writeTerminal({
             try repo.finish(id: job.id, leaseOwner: leaseOwner, status: .succeeded)
         }) {
         case .written:
@@ -202,12 +205,20 @@ extension JobService {
 
     /// 写终态：SQL 错误与 0 行必须分开（P1）。瞬时错误重试一次；仍失败返回
     /// .failed，由调用方保留真实错误并显式上报，不再伪装成 leaseLost。
-    private func writeTerminal(_ body: () throws -> Bool) -> TerminalWriteOutcome {
+    ///
+    /// round-4：重试等待由阻塞式 `Thread.sleep(0.2)` 改为 `Task.sleep(for: .milliseconds(200))`。
+    /// 语义（等 200ms → 原样重试一次、仍失败才返回 .failed）不变；取消不是错误：
+    /// 停机时 sleep 立即返回，仍会执行那一次重试（写终态是停机前必须尝试的收尾）。
+    private func writeTerminal(_ body: () throws -> Bool) async -> TerminalWriteOutcome {
         do {
             return try body() ? .written : .missed
         } catch {
             do {
-                Thread.sleep(forTimeInterval: 0.2)
+                try await Task.sleep(for: .milliseconds(200))
+            } catch {
+                // Task 取消：跳过等待，立即重试一次（与旧实现「至少重试一次」一致）。
+            }
+            do {
                 return try body() ? .written : .missed
             } catch let retryError {
                 return .failed(retryError)

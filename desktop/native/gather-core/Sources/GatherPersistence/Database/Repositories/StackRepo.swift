@@ -184,9 +184,11 @@ public struct StackRepo: Sendable {
         let unique = Self.unique(photoIds)
         guard !unique.isEmpty else { return [:] }
         var map: [String: String] = [:]
+        // 分块 IN 复用满块预编译语句（性能审计 R4；DBStatementCache limit=1）。
+        let statements = DBStatementCache()
         for chunk in unique.chunked(by: 400) where !chunk.isEmpty {
             let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-            let rows = try connection.prepare("""
+            let rows = try statements.statement(connection, """
                 SELECT photo_id, stack_id FROM photo_stack_members
                 WHERE photo_id IN (\(placeholders))
                 ORDER BY photo_id, position
@@ -317,9 +319,11 @@ public struct StackRepo: Sendable {
         guard !ordered.isEmpty else { return 0 }
         return try connection.transaction {
             var removed = 0
+            // 分块 DELETE 复用满块预编译语句（性能审计 R4；事务内写连接）。
+            let statements = DBStatementCache()
             for chunk in ordered.chunked(by: 400) where !chunk.isEmpty {
                 let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                removed += try connection.prepare("""
+                removed += try statements.statement(connection, """
                     DELETE FROM photo_stack_members
                     WHERE stack_id = ? AND photo_id IN (\(placeholders))
                     """).run([.text(stackId)] + chunk.map(DBValue.text))
@@ -340,14 +344,17 @@ public struct StackRepo: Sendable {
         return try connection.transaction {
             var affectedStacks = Set<String>()
             var removed = 0
+            // 每块固定两条语句（SELECT + DELETE），事务内写连接、非只读池 ⇒ limit=2。
+            let statements = DBStatementCache(limit: 2)
             for chunk in ordered.chunked(by: 400) where !chunk.isEmpty {
                 let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                let rows = try connection.prepare("""
+                let rows = try statements.statement(connection, """
                     SELECT DISTINCT stack_id FROM photo_stack_members
                     WHERE photo_id IN (\(placeholders))
                     """).query(chunk.map(DBValue.text))
                 affectedStacks.formUnion(rows.compactMap { $0[0].textValue })
-                removed += try connection.prepare(
+                removed += try statements.statement(
+                    connection,
                     "DELETE FROM photo_stack_members WHERE photo_id IN (\(placeholders))"
                 ).run(chunk.map(DBValue.text))
             }

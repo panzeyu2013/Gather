@@ -310,10 +310,13 @@ public struct CollectionRepo: Sendable {
         let unique = Self.unique(photoIds)
         guard !unique.isEmpty else { return [] }
         var found = Set<String>()
+        // 分块 IN 复用满块预编译语句（性能审计 R4；DBStatementCache limit=1：只占
+        // 1 条只读池连接；占位符不同的末块现场 prepare）。
+        let statements = DBStatementCache()
         for offset in stride(from: 0, to: unique.count, by: 400) {
             let chunk = Array(unique[offset..<Swift.min(offset + 400, unique.count)])
             let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-            let rows = try connection.prepare("""
+            let rows = try statements.statement(connection, """
                 SELECT id FROM photos
                 WHERE session_id = ? AND id IN (\(placeholders))
                 """).query([.text(sessionId)] + chunk.map(DBValue.text))
@@ -371,9 +374,11 @@ public struct CollectionRepo: Sendable {
         guard !ordered.isEmpty else { return 0 }
         return try connection.transaction {
             var removed = 0
+            // 分块 DELETE 复用满块预编译语句（性能审计 R4；事务内写连接，非只读池）。
+            let statements = DBStatementCache()
             for chunk in ordered.chunked(by: 400) where !chunk.isEmpty {
                 let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-                removed += try connection.prepare("""
+                removed += try statements.statement(connection, """
                     DELETE FROM collection_items
                     WHERE collection_id = ? AND photo_id IN (\(placeholders))
                     """).run([.text(collectionId)] + chunk.map(DBValue.text))

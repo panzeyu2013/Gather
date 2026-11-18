@@ -180,7 +180,7 @@ extension JobService {
             outcome = .failure(error)
         }
         heartbeat.cancel()
-        settle(job: job, outcome: outcome, controller: controller)
+        await settle(job: job, outcome: outcome, controller: controller)
         removeActiveRun(id: job.id)
         clearGraceTask(id: job.id)
         pump()

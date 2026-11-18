@@ -489,31 +489,36 @@ extension FaceRepo {
     /// role_bindings、face_clusters、metadata_keyword_origins、person_* 一律不动。
     public func invalidateDerivedResults(sessionId: String, photoIds: [String]) throws {
         try connection.transaction {
+            // 每块固定 5 条写语句，事务内写连接（非只读池）⇒ limit=5；
+            // 性能审计 R4：旧实现每块重新 prepare 5 条（10k 照片 ≈ 25 块 × 5 = 125 次）。
+            let statements = DBStatementCache(limit: 5)
             for chunk in photoIds.chunked(by: 400) where !chunk.isEmpty {
                 let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
                 // 1) 先解除成员对观察的引用（否则删除观察会破坏外键）。
-                _ = try connection.prepare("""
+                _ = try statements.statement(connection, """
                     UPDATE face_cluster_members SET observation_id = NULL
                     WHERE session_id = ? AND photo_id IN (\(placeholders)) AND observation_id IS NOT NULL
                     """).run([.text(sessionId)] + chunk.map { .text($0) })
                 // 2) 照片行已消失 → 成员行是孤儿，删除。
-                _ = try connection.prepare("""
+                _ = try statements.statement(connection, """
                     DELETE FROM face_cluster_members
                     WHERE session_id = ? AND photo_id IN (\(placeholders))
                       AND photo_id NOT IN (SELECT id FROM photos)
                     """).run([.text(sessionId)] + chunk.map { .text($0) })
                 // 3) 观察消失前先删除其 person_embeddings 向量：否则跨会话匹配
                 // 会命中已不存在的人脸（库与观察必须同生命周期）。
-                _ = try connection.prepare("""
+                _ = try statements.statement(connection, """
                     DELETE FROM person_embeddings WHERE face_observation_id IN (
                       SELECT id FROM face_observations WHERE session_id = ? AND photo_id IN (\(placeholders))
                     )
                     """).run([.text(sessionId)] + chunk.map { .text($0) })
                 // 4) 派生观察与缓存状态。
-                _ = try connection.prepare(
+                _ = try statements.statement(
+                    connection,
                     "DELETE FROM face_observations WHERE session_id = ? AND photo_id IN (\(placeholders))"
                 ).run([.text(sessionId)] + chunk.map { .text($0) })
-                _ = try connection.prepare(
+                _ = try statements.statement(
+                    connection,
                     "DELETE FROM face_analysis_state WHERE session_id = ? AND photo_id IN (\(placeholders))"
                 ).run([.text(sessionId)] + chunk.map { .text($0) })
             }
