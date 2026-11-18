@@ -6,6 +6,7 @@
 // 跨文件 extension 只能访问 internal 成员：原 `private` 依赖/可写状态改为 internal
 // （`public internal(set)` 保留只读对外语义），行为与访问路径不变。
 import Foundation
+import Observation
 import SwiftUI
 import GatherProtocol
 

@@ -125,9 +125,9 @@ public struct MetadataKeywordWriter: Sendable {
         let snapshots = await readKeywordSnapshots(targets)
         // round-3 性能：缓存行改为**一次批量读**（getBatch，内部按 800/块分片），
         // 不再在循环里逐张 SELECT——模板批量预览 500 张时旧实现是 500 条查询。
-        // 读取失败整批按「无缓存行」处理：与原实现逐张 do/catch → cachedRow = nil
-        // 的可观测行为一致（预览/应用都不因缓存读失败而失败，externalChanged 退化为
-        // 仅看 conflictedXmpPaths）。
+        // 读取失败（DB 级错误）回退逐行 get：与旧实现逐张 do/catch 的可观测行为一致
+        // （预览/应用都不因缓存读失败而失败；单行仍失败则该行按无缓存行走，
+        // externalChanged 退化为仅看 conflictedXmpPaths）。
         let cachedRows: [MetadataCacheRow]
         do {
             cachedRows = try cacheStore.getBatch(targets.map(\.photo.id))

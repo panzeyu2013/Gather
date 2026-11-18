@@ -18,7 +18,8 @@ import GatherProtocol
 enum SidecarRegexCache {
     private static let storage = Mutex<[String: NSRegularExpression]>([:])
 
-    // round-6 评审（CORE-04/R2C-04）：原签名要求 T: Sendable，调用点会返回 [NSRange]；
+    // 注意：body 在全局非递归 Mutex 的锁内执行——闭包内禁止再调用 withRegex（会自死锁）。
+    // 第二轮评审（CORE-04/R2C-04）：原签名要求 T: Sendable，调用点会返回 [NSRange]；
     // Darwin SDK 是否给 NSRange 标 Sendable 在本机不可证（macOS 编译风险）。Mutex 的
     // withLock 本身不要求返回值 Sendable（工具链接口已确认），故去掉约束，语义不变。
     static func withRegex<T>(

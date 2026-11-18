@@ -330,7 +330,7 @@ public final class Database: @unchecked Sendable {
         // 原因：① 它可能写 sqlite_stat1（ANALYZE），使文档声明只读的 CLI
         // （gather-triage-eval）在退出时写库；② 大库首次 ANALYZE 耗时无上界且发生在
         // 退出路径（busy_timeout 只限制锁等待、不限制 ANALYZE 本身）；③ 收益接近零
-        // （统计通常已新）。需要统计刷新时应走显式维护任务，而不是 close 隐式写库。
+        // （统计通常已新）。如需刷新统计应在维护流程显式执行，当前无自动任务。
         // close 的幂等/不抛错/.closed 语义不变。
         connection.close()
     }

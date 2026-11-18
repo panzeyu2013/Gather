@@ -69,6 +69,9 @@ public struct MetadataDispositionService: Sendable {
                 }
             } catch {
                 // body 全部 try? 收敛，理论不可达；保守返回空表，下面按空属性处理。
+                // 评审 R3C-11：不静默——留一条 warn 便于发现 batchAsync 语义变化。
+                GatherLogger.log(
+                    "metadata conflict XMP batch read failed: \(error)", level: .warn)
                 return []
             }
         }.value

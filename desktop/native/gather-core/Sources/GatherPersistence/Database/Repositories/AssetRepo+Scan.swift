@@ -59,7 +59,9 @@ extension AssetRepo {
                     // 走**写连接**（DBConnection.prepare 只在 depth==0 时才借只读池），因此
                     // 不占 readPoolSize 连接（见 DBStatementCache 文件头的 limit 说明）；
                     // 语句随闭包结束 deinit，不跨事务边界复用。
-                    let statements = DBStatementCache(limit: 14)
+                    // 当前 ensurePhoto 使用 14 条 distinct SQL；留 2 条余量（评审 R3C-07：
+                    // 恰好相等时未来新增第 15 条会静默退化为逐张 prepare）。
+                    let statements = DBStatementCache(limit: 16)
                     for photo in photos {
                         let result = try ensurePhoto(
                             sessionId: sessionId, photo: photo, statements: statements)

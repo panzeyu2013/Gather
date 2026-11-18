@@ -41,7 +41,7 @@ final class GalleryLayoutCache {
         rowByItemIndex = map
     }
 
-    /// 某个 filtered 下标落在哪一行；缓存为空（首帧/筛选刚变更）返回 nil。
+    /// 某个 filtered 下标落在哪一行；优先 O(1) 映射，映射未命中（缓存为空/首帧/直接写 rows 的测试路径）回退线性扫。
     func rowIndex(containing index: Int) -> Int? {
         if let hit = rowByItemIndex[index] { return hit }
         // 评审 R2-A0：既有测试/未来路径会直接写 rows（不走 store），映射可能为空；

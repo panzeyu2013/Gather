@@ -406,42 +406,13 @@ extension CullingDecisionService {
         var results: [CullingUpdateResult] = []
         var failed = 0
         var appliedPhotoIds: [String] = []
-        // 批前一次取齐决策行（性能审计 R2 / N+1）：旧实现每张照片点查一次、
-        // 再对同资产变体逐个点查（几百张勾选 ≈ 上千次单行查询）。这里按「勾选照片 +
-        // 其资产变体」的并集批量读（getByPhotoIds 内部按 800 分块）。
-        // 用法边界（round-2 评审 R2C-02/R2C-03 修正）：预载快照只用于**变体人工保护**
-        // （批窗口内的新人工决策可能漏看，窗口=整批）；主照片在下方每张实时 getDecision，
-        // 把丢失更新窗口缩回上游的逐张 µs 级。updateState 内部的 revision 比较与传入的
-        // preloadedDecision 同源（上游亦然），本批不声称恢复了 DB 级乐观锁。
-        var preloadIds: [String] = []
-        var preloadSeen = Set<String>()
+        // 评审 CORE-01b / R2C-02 / R3C-01：批前快照会把「变体人工保护」的窗口从上游的
+        // 逐张 µs 级放大到整批（几百张可达秒级），期间另一写者（UI 人工决策，LiveCullingAPI
+        // 在 Task.detached 执行）提交的 manual 决策可能被本批 imported 覆盖。正确性优先：
+        // 本函数回退到上游的逐张实时读语义（主照片 1 次 + 每个资产变体各 1 次）。
+        // 原先的「批前一次取齐决策行」N+1 优化被撤销——该收益不值得引入行为窗口放大。
         for photoId in photoIds {
             guard let photo = context.photoById[photoId] else { continue }
-            if preloadSeen.insert(photoId).inserted {
-                preloadIds.append(photoId)
-            }
-            if let assetId = photo.assetId {
-                for variant in context.photosByAssetId[assetId] ?? [] where variant.id != photoId {
-                    if preloadSeen.insert(variant.id).inserted {
-                        preloadIds.append(variant.id)
-                    }
-                }
-            }
-        }
-        let preloadedDecisions: [String: CullingDecisionRow]
-        if preloadIds.isEmpty {
-            preloadedDecisions = [:]
-        } else {
-            preloadedDecisions = Dictionary(
-                uniqueKeysWithValues: try cullingDecisionRepo
-                    .getByPhotoIds(sessionId: sessionId, photoIds: preloadIds)
-                    .map { ($0.photoId, $0) })
-        }
-        for photoId in photoIds {
-            guard let photo = context.photoById[photoId] else { continue }
-            // 评审 CORE-01/R2C-02：主照片每张实时 getDecision（1 次/张），把批前快照的
-            // 整批丢失更新窗口缩回上游逐张实现的 µs 级（updateState 的 revision 比较
-            // 仍与传入行同源，属上游既有设计，本轮不扩大为 DB 级乐观锁）。
             let existing = try cullingDecisionRepo.getDecision(
                 sessionId: sessionId, photoId: photoId)
             // 人工决策优先（变体级）：updateState 会把同资产的全部变体一起改写，
@@ -450,9 +421,8 @@ extension CullingDecisionService {
                 var manuallyDecided = existing?.decisionSource == CullingDecisionSource.manual.rawValue
                 if !manuallyDecided {
                     for variant in context.photosByAssetId[assetId] ?? [] where variant.id != photoId {
-                        // 变体 decision_source 不受本批写入影响（本批只写 imported；人工行
-                        // 在进入 updateState 前已被跳过），批量快照与实时读同义。
-                        if let decision = preloadedDecisions[variant.id],
+                        if let decision = try cullingDecisionRepo.getDecision(
+                            sessionId: sessionId, photoId: variant.id),
                            decision.decisionSource == CullingDecisionSource.manual.rawValue {
                             manuallyDecided = true
                             break
