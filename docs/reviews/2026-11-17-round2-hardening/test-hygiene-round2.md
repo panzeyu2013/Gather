@@ -81,7 +81,7 @@ oracle = 每次新建默认配置 JSONEncoder/JSONDecoder：
 - parse 与 baseline decoder 结果一致（转义 unicode、空白、标量）；
 - JSONValue(encoding:) 与「新建 encoder→decoder」路径一致且模型往返无损；
 - decode(_:) 往返一致；
-- stringify → parse 无损且与 baseline 编码值等价（防 .sortedKeys/.prettyPrinted 配置漂移；对象不做裸字节比较，见评审 R3-T01）；
+- stringify → parse 无损且与 baseline 编码值等价（对象不做裸字节比较，见评审 R3-T01；`.prettyPrinted` 漂移由「默认输出无换行」断言拦截，`.sortedKeys` 不在比较范围）；
 - 损坏输入：JSONValue.parse 与新建 decoder 均抛 DecodingError（失败语义不变）。
 
 声明数变化（供 docs 校准）：@Test 3255 → 3267（+12）、@Suite 417 → 419（+2）、

@@ -188,8 +188,8 @@ check-perf-ratchet.sh               → OK（raw formatter/coder/regex 计数不
 ```
 
 **Linux 验证上限**：Persistence target 依赖 `os` 模块，Linux 不可 `swift build`（仅 GatherProtocol 可类型检查），
-因此 PRAGMA/prepare 改动只有语法解析 + 门禁；行为正确性（尤其 close 时 optimize 与 mmap 的 macOS
-表现、读写连接/只读池）需 **macOS CI** 首跑复核（DatabasePragmaTests / close 语义 / WAL checkpoint 测试）。
+因此 PRAGMA/prepare 改动只有语法解析 + 门禁；行为正确性（尤其 mmap 的 macOS 表现、读写连接/只读池）
+需 **macOS CI** 首跑复核（DatabasePragmaTests / close 语义 / WAL checkpoint 测试；close 时 optimize 已因评审移除）。
 
 ## 8. 改动文件清单
 

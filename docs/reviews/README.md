@@ -20,6 +20,7 @@
 | 2026-11-18 | 第四轮性能专项审计（SQLite / 查询、渲染缓存、任务 / 内存、性能门禁） | 已完成（round-4） | [00-overview.md](2026-11-18-round4-perf/00-overview.md) |
 | 2026-11-18 | 本地 vs 上游全量独立评审（16 commits / 220 files，5 路：core / app / tests / tooling / optimality） | 已完成（review + 修复） | [00-overview.md](2026-11-18-local-changes-review/00-overview.md) |
 | 2026-11-18 | 第二轮全量独立评审（19 commits / 226 files；验证第一轮修复 + 新视角重扫，暴露 3 个 P0 编译中断） | 已完成（review + 修复） | [00-overview.md](2026-11-18-local-changes-review-round2/00-overview.md) |
+| 2026-11-18 | 第三轮全量检查（22 commits / 234 files；系统化编译风险审计 + 门禁对抗复核，确认 round-2 修复闭环） | 已完成（review + 修复） | [00-overview.md](2026-11-18-local-changes-review-round3/00-overview.md) |
 
 ## 单篇评审 / 台账
 

@@ -48,7 +48,7 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 - **最近一次 macOS 运行**（2026-11-16，当前 Linux 环境无法复跑）：core 1,970 tests / 290 suites +
   串行 25 tests / 4 suites（合计 1,995 / 294）；app 1,260 tests / 184 suites。core 声明 235 个
   `@Suite` 与运行时 294 的差额来自只有 `@Test`、没有 `@Suite` 的测试文件（运行时每个文件算一个隐式套件）。
-- 17 个 `check-*.sh` 门禁（其中 16 项在 2026-11-17 本地全绿，`check-warnings` 需 macOS SDK、按 CI 口径待
+- 17 个 `check-*.sh` 门禁（其中 16 项在 2026-11-18 本地全绿，`check-warnings` 需 macOS SDK、按 CI 口径待
   macOS runner 复验；新增三个 Linux 只读门禁：`check-repo-hygiene.sh`（7 节，含 shellcheck 与本地化用法守卫）、
   `check-docs-facts.sh`（文档基线数字须与源码事实一致）与 `check-perf-ratchet.sh`（性能反模式构造点只降不升，
   基线 docs/perf-baseline.json）；清单见 [DEVELOPMENT.md](DEVELOPMENT.md)）；

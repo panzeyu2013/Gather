@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | DB / 查询 | 证明并移除 gallery 主查询的冗余 `SELECT DISTINCT`；7 个热点的 `prepare` 从逐行/逐块改为复用（新增 internal `DBStatementCache`）；新增可复现 SQLite 基准工具 | gallery 查询 bench A/B **1.34–1.37x**（5k/20k 行）；AssetRepo 扫描 1 万张 ≈ **14 万次 prepare → 每 250 张批 ≤14 次（≈99.6%↓）**；prepare 成本微基准 ~2.0µs/次 |
 | GatherUI 渲染 | `selectionSummary` O(1) 缓存（含 Observation 依赖修复）；`currentAsset` 同源 O(1) 页索引 helper 替换 11+ 处 O(page) 查找；Gallery 三套 O(1) 查询表 + 灯箱 O(1) 定位；预取磁盘探针移出主线程 | 500 张页 18 次查找 18.79µs → **0.71µs（≈26x）**；16 文件 +311/−94；800/600 组随机序列新旧对拍一致 |
-| 启动 / 缓存 | 启动阶段唯一可证安全并行（语言播种 ∥ runtime.start）；新增 7 阶段启动计时日志；缩略图内存缓存 cost 改为真实位图像素；磁盘缓存启动后台 prune；关键词预览缓存行 500 条 SELECT → 1 条批量 | 300dpi 2048px 图旧 cost 低估 **17.4x**（512MB 上限失效）；关键词预览 500→1 次查询；启动计时一行/冷启动 |
+| 启动 / 缓存 | 启动阶段唯一可证安全并行（语言播种 ∥ runtime.start）；新增 7 阶段启动计时日志；缩略图内存缓存 cost 改为真实位图像素；磁盘缓存启动后台 prune；关键词预览缓存行 500 条 SELECT → 1 条批量 | 缩略图 cost 计量修正的 **17.4x/512MB 失效前提已被 round-2 复评审证伪**（App 自编码预览 JPEG 无 DPI，点≈像素；真实残余是 512MB 对 2560 预览容量有限，需真机实测）；关键词预览 500→1 次查询；启动计时一行/冷启动 |
 | 性能门禁/仪表 | 新增 **gate #17 性能反模式 ratchet**（7 指标 + 基线 + CI）；`scripts/perf-sqlite-bench.py` 可复现 SQLite 基准（真实 DDL + 合成数据 + EXPLAIN + A/B，不进 CI）；report-baseline 增加性能基线输出 | 门禁 16→**17**；基线：raw DateFormatter 28 / ISO 30 / JSON enc 46 / dec 39 / regex 3 / byte 1 / blocking_sleep 1（均只降不升） |
 | 文档 | 新增本轮总览 + 4 分册；docs 收尾同步门禁数/性能工作流/审计索引 | 文档事实门禁（round-2 引入）同步到 17 门禁后全绿 |
 
@@ -46,7 +46,7 @@
 
 - **启动**：round-2 已把 `Database.open` 与 `runtime.start` detach；本轮找到并落实**唯一可证安全**的并行——语言播种（settings 单条 SELECT + MainActor `LanguageStore.seed`，不广播）∥ `runtime.start`（executor/JobService/delivery 回放），await 顺序仍「语言先、start 后」以保持失败文案语言；四条安全性论证见分册 §1.3（无共享可变内存 / DB 锁语义 / 可观测顺序 / 取消与优先级）。其余（组合根同步装配、embedding 一次性迁移、恢复 journal）明确不并行。
 - **启动计时**：新增 `StartupPhaseTimings`（单调时钟、MainActor 局部、无锁），冷启动成功/失败各 **1 行**日志：`restore / dbOpen / composition / languageSeed / runtimeStart / embeddingPrep / wire + firstScene / total`，为 macOS 实测提供数据入口（无逐帧成本）。
-- **缩略图内存缓存计量**：`PhotoThumbnailCache` 的 NSCache cost 由 `NSImage.size`（点）改为 `NSImageRep.pixelsWide/High`（真实位图像素，取最大 rep）。由 JPEG data 构造的 NSImage 会按 DPI 折算 size：300dpi 的 2048px 图旧 cost 0.77MB vs 实际 13.4MB（**低估 17.4x**，512MB 上限形同虚设）；72dpi 相机直出两者相等，故旧值“看起来对”。
+- **缩略图内存缓存计量**：`PhotoThumbnailCache` 的 NSCache cost 由 `NSImage.size`（点）改为 `NSImageRep.pixelsWide/High`（真实位图像素，取最大 rep）。**2026-11-18 round-2 复评审修正前提**：缓存里的 NSImage 均来自 App 自编码预览 JPEG（`RAWDecoder.encodeJPEG` 不写 DPI），此时点尺寸≈位图像素，新旧 cost 基本相同——原“300dpi 2048px 低估 17.4x、512MB 上限失效”的推论不成立于本仓实际数据；真实残余是 512MB 预算对 2560 预览容量有限（约 24 张量级），需真机实测后决定调预算/分桶（可重生缓存，风险低）。
 - **磁盘缩略图缓存启动 prune**：旧实现只有“下一次 store”才检查 512MB 上限，枚举成本落在首屏解码线程；新增 `pruneAtStartupIfNeeded()` 启动时丢到 `Task.detached(utility)`，进程内至多一次、仅删 thumb-cache 内缓存 JPEG。
 - **服务批量**：`MetadataKeywordWriter` 关键词预览缓存行读取从循环内逐张 `get`（500 张=500 条 SELECT）→ 循环前一次 `getBatch`（800/块 IN）；失败整批按无缓存行处理，与逐张 catch→nil 的可观测语义一致。`BackupStore.list()` 的 `JSONDecoder` 与兜底 `ISO8601DateFormatter` 从逐文件构造提到循环外（≤20 文件）。
 - **缓存审计结论**：已审无需改的有 NSCache 键（模式+path+size+epoch）、PhotoDecodeGate 在飞表归零、WatermarkLogoCache maxEntries=8、L10n 4096 整清、AF 机型表生产恒空、toast 上限 3、日志 5MB×5、模板撤销 retention=20 等；**记录未改**的需求决策项：人脸 `EmbeddingModel` provider 缓存无上限（建议 LRU 2–4）、控制中心 `jobs` 全量 list、图库 pages/loadedPhotos 长会话无上限（需 macOS 验证后窗口化）、MetadataDispositionService 冲突列表 N+1（需扩 public 端口）。

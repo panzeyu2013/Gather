@@ -10,7 +10,7 @@
 
 | # | 修复 | 文件 | 主要收益 |
 |---|------|------|----------|
-| R1 | N+1：`applyImportedPicks` 批前一次取齐决策行 | CullingService+Commands.swift | 几百张勾选从 ~1000 次单行查询 → 每张 1 次实时读 + 2 次批量预载（2026-11-18 评审 CORE-01 修正：批前快照不能当 revision 冲突检测的 currentRow，未触碰照片恢复逐张实时读；人工保护语义保留） |
+| R1 | ~~N+1：`applyImportedPicks` 批前一次取齐决策行~~ **已回退** | CullingService+Commands.swift | **round-3 评审 R3C-01 决定整体回退**：批前快照把变体人工保护窗口从上游逐张 µs 级放大到整批（几百张可达秒级），正确性优先、撤销该 N+1 优化，恢复上游「主照片 + 每个变体各自实时 getDecision」语义；其余轮次 N+1 优化不受影响 |
 | R2 | N+1：包导入人物绑定复用 `list()` | LibraryPackageService.swift | 每条绑定一次点查 → 0 次（数千条绑定） |
 | R3 | 正则：`Mutex` 锁盒子缓存 NSRegularExpression | NavigationService.swift | 逐行分组路径每次调用一次正则编译 → 首次编译后 0 次 |
 | R4 | 正则：sidecar 读写路径 4 个正则编译缓存 | SidecarXMPProvider+IPTCReading.swift / +IPTC.swift | 逐照片（读）/逐字段（写）路径每次重新编译 → 0 次 |
@@ -36,6 +36,8 @@
 ## 3. N+1 修复（before → after）
 
 ### R1 `CullingService+Commands.applyImportedPicks`（客户校样勾选应用）
+
+> **round-3 评审结论（2026-11-18）**：本优化**已整体回退**到上游逐张实时读语义（主照片 + 每个变体各自 getDecision）。理由：批前快照使「变体人工保护」的窗口从 µs 级放大到整批，并发写者提交的 manual 决策可能被 imported 覆盖；该 N+1 收益不值得引入行为窗口放大。下面的 round-2 记录保留作决策历史。
 
 - **Before**（HEAD :409-425）：每张 photoId 一次 `cullingDecisionRepo.getDecision`，若照片有
   assetId 再对同资产每个兄弟变体各点查一次直到发现人工决策（几百张勾选 ≈ 上千次单行查询）。

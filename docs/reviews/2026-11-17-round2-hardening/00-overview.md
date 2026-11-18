@@ -37,7 +37,7 @@
 ## 4. 性能：gather-core（`perf-core-round2.md`）
 
 - **N+1 批量化**：
-  - `CullingService+Commands.applyImportedPicks`：旧实现逐 photoId `getDecision` + 逐兄弟变体点查（几百张勾选≈上千次单行查询）→ 先按「勾选 ∪ 资产变体」并集一次 `getByPhotoIds`（800 分块）；本批已写过的照片/资产回退实时读，**revision/人工保护/结果顺序/失败计数与逐张实现一致**。
+  - ~~`CullingService+Commands.applyImportedPicks`：旧实现逐 photoId `getDecision` + 逐兄弟变体点查 → 先按「勾选 ∪ 资产变体」并集一次 `getByPhotoIds`~~ → **round-3 评审已整体回退**：批前快照把变体人工保护窗口放大到整批（并发写者可能被覆盖），正确性优先，恢复上游逐张实时读；本轮其余 N+1 优化保留。
   - `LibraryPackageService` 导入：逐 binding `personsRepo.get(id:)`（数千次）→ 复用已加载的人群列表建 `knownPersonIDs` 集合；新 id 并入集合；三级身份解析顺序不变。
 - **逐次正则编译 → 锁盒子缓存**：实测 Swift `Regex` 在 Swift 6.2 下**非 Sendable** 且 `\d` 语义与 ICU 不等价（5,000 随机串差分 1,412 处），故不采用静态 Swift Regex；改用 `Synchronization.Mutex` 锁盒子缓存 `NSRegularExpression`（不新增 `@unchecked Sendable`，ratchet 60/60）：`NavigationService.filenameSequence`（逐行路径 + burst/scene 两 pass 预计算上提）、sidecar IPTC 读取（decl/tag/rdf:li/xml:lang）。
 - **formatter/coder 收口**：`QualityService`（1 万张≈2 万次 encoder→0）、`ModelReviewService`（逐条 decoder/encoder）、`LibraryPackageService`（逐照片 JSON 解码）改用实例/共享 coder；其余 per-call 站点已分类并记录"为何不修"。
