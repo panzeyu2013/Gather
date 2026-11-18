@@ -29,7 +29,7 @@
 ## 3. SQLite / 查询（`perf-db4.md`）
 
 - **`PRAGMA mmap_size = 256MB`（采纳）**：`DBConnection.open()` 对文件库（读写连接、只读池、备份校验连接）统一设置，`:memory:` 跳过；失败走既有 `applyPragma`（warn + 保留 SQLite 值）。bench A/B（`--file-db --pragma-ab mmap_size=...`，20k 合成库，默认↔设定↔恢复复测、取 min 基线）：list_page 5.00→4.48ms（**1.12x**）、metadata 批读 4.48→3.28ms（**1.37x**）、asset_page CTE 2.45→2.04ms（**1.20x**）、sort filename 1.19x、sort rating **1.39x**、facet.camera 1.21x、facet.person 1.24x；点查/小结果集 0.97–1.01x 无回归。语义：mmap 只影响 DB 文件读页（WAL/写/事务不变）；256MB 是单连接映射上限非预分配；网络卷上 SQLite 自动回退普通 pager。
-- **~~`PRAGMA optimize`（关闭时 best-effort）~~（评审 CORE-02 后移除）**：2026-11-18 独立评审指出三点：① `PRAGMA optimize` 可能写 `sqlite_stat1`（ANALYZE），使文档声明「只读」的 CLI（`gather-triage-eval`）在退出时写库；② 首次 ANALYZE 耗时无上界且发生在 close 持有 `Database.stateLock` 的退出路径；③ 收益接近零（统计通常已新）。已从 `Database.close()` 移除；需要刷新统计应走显式维护任务，不在 close 隐式写库。
+- **~~`PRAGMA optimize`（关闭时 best-effort）~~（评审 CORE-02 后移除）**：2026-11-18 独立评审指出三点：① `PRAGMA optimize` 可能写 `sqlite_stat1`（ANALYZE），使文档声明「只读」的 CLI（`gather-triage-eval`）在退出时写库；② 首次 ANALYZE 耗时无上界且发生在 close 持有 `Database.stateLock` 的退出路径；③ 收益接近零（统计通常已新）。已从 `Database.close()` 移除；如需刷新统计应在维护流程里显式执行（当前无自动任务）。
 - **prepare 复用再扩 6 处**（沿用 round-3 `DBStatementCache`）：`CollectionRepo.existingPhotoIds/removeItems`、`StackRepo.stackIdsByPhoto/removeMembers/detachPhotos`、`FaceRepo+Observations.invalidateDerivedResults`（每块 5 条写语句，10k 照片≈125 次 prepare → 事务内复用）。只读池边界同 round-3（SELECT 缓存默认 limit=1）。
 - **bench 工具扩展**（`scripts/perf-sqlite-bench.py`，仍为开发工具不进 CI）：新增 `--file-db`（PRAGMA 实验必需）、`--pragma NAME=VALUE`、`--pragma-ab NAME=VALUE`（默认↔设定↔恢复逐查询 A/B）、gallery 排序模式 ×3（filename/date_taken CASE/rating）、facet 查询 ×3（camera ROW_NUMBER 代表行、keyword 顶级桶、person 桶，SQL 与 `FacetQuery` 同构），新增 persons/person_photos/photo_keywords 合成数据；默认 5k 与 20k 均跑通。
 - **查询审计（无 schema 改动）**：三种 gallery 排序全部 `USE TEMP B-TREE FOR ORDER BY`（filename 无复合索引；date_taken 为 CASE 表达式不可普通索引；rating 在 JOIN 侧）；20k 实测 filterPhotos≈5.0ms vs `asset_page` 游标 CTE≈2.45ms ⇒ 纯翻页/选片路径推荐走已有 cursor 实现；facet 实测 camera 5.53ms / keyword 11.45ms / person 2.66ms，建议服务层按（session, criteria 指纹）缓存、关键字维懒加载/限 limit；候选索引（如 `photos(session_id, filename)`）留待下次 `user_version` 迁移统一评估并同步指纹。
@@ -80,7 +80,7 @@ LRU/retry/throttle/conflicts 探针（Swift 6 -warnings-as-errors 编译级）�
 
 ## 8. 风险与后续建议
 
-1. **未编译/未运行**：mmap/optimize、prepare 复用、SwiftUI 缓存、Job async、模型 LRU、Metadata 并发都需 macOS CI 首跑确认（重点：DatabasePragmaTests、close 语义/WAL、并发诊断、UI 渲染/交互回归、check-warnings）。
+1. **未编译/未运行**：mmap（close optimize 已移除）、prepare 复用、SwiftUI 缓存、Job async、模型 LRU、Metadata 并发都需 macOS CI 首跑确认（重点：DatabasePragmaTests、close 语义/WAL、并发诊断、UI 渲染/交互回归、check-warnings）。
 2. **性能数字**：Python SQLite（同引擎非 Swift 封装）相对 A/B + Linux 同环境探针/成本模型；mmap 在 macOS 冷启动通常更明显，最终以 macOS 复核。
 3. **schema 级建议（下次 user_version 迁移）**：`photos(session_id, filename)` 与 `triage_suggestions(session_id, photo_id)` 索引、facet 查询缓存/懒加载；需同步 `expectedExplicitIndexCount`/指纹。
 4. **需 macOS 才能推进的项**：NSImage 惰性解码（方案已备）、ForEach 身份类型变化类改动、缩略图解码桶调优、模板预览批量 API（需公开面扩张）、sidecar 单次解析。

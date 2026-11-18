@@ -18,7 +18,7 @@
 
 ## 2. 已修复项（本轮 review-fix）
 
-修复提交：`6e940350`（代码/测试）、`9be6a000`（门禁/基线）、`33ef7313`（本轮评审归档与文档修正）。
+修复提交：`6e940350`（代码/测试）、`9be6a000`（门禁/基线）、`0288ea8d`（本轮评审归档与文档修正；其父 `33ef7313` 在 amend 后为 dangling）。
 
 | # | 来源 | 修复 |
 | --- | --- | --- |
@@ -39,7 +39,7 @@
 | 15 | R4-F22（P3，真实回归） | `check-protocol-surface.sh` 的 `xargs -I{} cat {}` 对含单引号路径回退 → 改 `while IFS= read -r` + 扫描量下限守卫 |
 | 16 | R4-F3（P2 门禁） | hygiene [b] 文本文件面从硬编码 9 类扩到 plist/entitlements/modulemap/h/c/tsv/pbxproj/xcconfig/m/mm/Makefile/LICENSE/SHA256SUMS（实测 0 违规） |
 | 17 | R4-F1/F2（P2 门禁） | docs-facts 门禁清单改为只校验「## 门禁」小节；新增 CI wiring 断言（17 道门禁必须出现在 ci.yml） |
-| 18 | R4-F7/F8/F9/F11（P3） | design-system 基线 empty.contentUnavailable 10→6；cleanup try_optional 钉到 257；`.gitattributes` 补 `docs/perf-baseline.json linguist-generated`；protocol 基线说明性字段更新 |
+| 18 | R4-F7/F8/F9/F11（P3） | design-system 基线 empty.contentUnavailable 10→6；cleanup try_optional 钉到 257；`.gitattributes` 补 `docs/perf-baseline.json linguist-generated`；protocol 基线说明性字段仅记录漂移（未改基线/比较语义，见 §3.8） |
 | 19 | 文档漂移 | round-1/2/3/4 审计文档的过时/错误论断修正（JSON 字节语义、close optimize、test-catalog/报告基线、NSCache 淘汰悬崖、采样日期/轮次、报告基线 9 项等）；docs/DEVELOPMENT/README/ROADMAP 同步 |
 
 ## 3. 未修复 / 后续建议（已记录，均需 macOS 或下一轮）
@@ -51,7 +51,7 @@
 5. **CORE-04**：`SidecarRegexCache.withRegex<T: Sendable>` 依赖 Darwin `NSRange` 的 Sendable 声明（Linux 不可证），macOS CI 首跑若报错改为非泛型返回形态。
 6. **既有 P3 认知**：启动计时标签 runtimeStart 含并行 languageSeed 的"墙钟"口径建议改名；Gallery 光标锚点 O(k)；`ThumbnailDiskCache` 1h touch 粒度；report-baseline 与 perf-ratchet 双实现（已验 parity）；shellcheck 版本未 pin / 无 actionlint。
 7. **CORE-01b（残余）**：applyImportedPicks 中「兄弟变体的人工决策保护」仍读批前快照（主照片已实时读）；批次窗口内新提交的人工决策仍可能被 imported 覆盖。彻底修复需每变体实时读（重新引入 N+1）或给 updateState 加 DB 级条件更新；建议下一轮评估。
-8. **协议基线说明性字段**：`protocol_lines`（17177→17192）不参与比较，本轮仅更新文件不改比较语义（避免对注释行过度敏感）。
+8. **协议基线说明性字段**：`protocol_lines`（17177→17192）不参与比较；本轮仅记录漂移，未改基线文件与比较语义（避免对注释行过度敏感）。
 
 ## 4. 验证（2026-11-18 修复后实跑）
 

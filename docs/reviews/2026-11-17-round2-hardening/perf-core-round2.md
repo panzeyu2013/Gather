@@ -47,7 +47,8 @@
      后续迭代回退到实时 `getDecision`，因此同资产多张勾选/重复 photoId 时 revision 与逐张
      实现一致~~ → **评审 CORE-01 修正（2026-11-18）**：批前快照同源会让「未触碰照片」的
      expectedRevision 校验变成恒等式；现已让所有照片在 updateState 前实时 `getDecision`
-     （每张 1 次），`touched*` 集合仅保留给变体判定注释口径，批量收益来自变体预载；
+     （每张 1 次），touched* 集合已随修复删除；批量收益仅来自变体预载，
+     updateState 内部比较仍与传入行同源（上游既有设计，不声称恢复 DB 级乐观锁）；
   4. 兄弟变体的人工保护检查读批前快照：本批写入只会把非人工源改成 `imported`，人工行在
      `updateState` 前已被跳过 ⇒ `decisionSource == manual` 判定与逐张实时读同义（注释 :460-462）。
 - **语义保持**：结果顺序、`appliedPhotoIds`、`failed` 计数、历史合并、错误分支不变；唯一

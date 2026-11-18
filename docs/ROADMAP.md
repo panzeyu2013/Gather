@@ -41,7 +41,7 @@
   缩略图缓存计量修正、gate #17 `check-perf-ratchet` 性能反模式 ratchet；Linux 源码级 + 探针/基准
   验证，macOS 实测（Instruments / 真机启动）待 CI 与真机。
 - 2026-11-18 第四轮性能专项加固（SQLite/查询、渲染缓存、任务/内存、perf ratchet）：文件库默认
-  `PRAGMA mmap_size=256MB`、关闭前 best-effort `PRAGMA optimize`、再扩 6 处 `prepare` 复用；
+  `PRAGMA mmap_size=256MB`（close 时 `PRAGMA optimize` 经独立评审后移除：写 ANALYZE 破坏只读 CLI 语义、耗时不界、收益≈0）、再扩 6 处 `prepare` 复用；
   Culling 页索引/网格布局 state-only 复用；Job 终态写重试 async（`blocking_sleep` 归零）、
   EmbeddingModel provider LRU、Metadata 冲突读盘有界并发；perf ratchet 7→9 指标；Linux 源码级 +
   探针/基准验证，macOS CI/Instruments 待跑。
