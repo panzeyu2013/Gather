@@ -424,6 +424,8 @@ PERF_METRICS = [
     ('raw_iso_formatter', r'(^|[^A-Za-z0-9_])ISO8601DateFormatter\(\)'),
     ('raw_json_encoder', r'(^|[^A-Za-z0-9_])JSONEncoder\(\)'),
     ('raw_json_decoder', r'(^|[^A-Za-z0-9_])JSONDecoder\(\)'),
+    ('raw_json_encode_chain', r'(^|[^A-Za-z0-9_])JSONEncoder\(\)\s*\.\s*encode'),
+    ('raw_json_decode_chain', r'(^|[^A-Za-z0-9_])JSONDecoder\(\)\s*\.\s*decode'),
     ('raw_regex_compile', r'(^|[^A-Za-z0-9_])NSRegularExpression\('),
     ('raw_byte_formatter', r'(^|[^A-Za-z0-9_])ByteCountFormatter\(\)'),
     ('blocking_sleep', r'(^|[^A-Za-z0-9_])Thread\.sleep\('),

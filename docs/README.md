@@ -70,6 +70,7 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 | [reviews/2026-11-17-quality-hardening/00-overview.md](reviews/2026-11-17-quality-hardening/00-overview.md) | 2026-11-17 质量加固审计（round-1）：整洁度 / 规范 / 测试 / 设计 / 性能 |
 | [reviews/2026-11-17-round2-hardening/00-overview.md](reviews/2026-11-17-round2-hardening/00-overview.md) | 2026-11-17 第二轮全量加固审计：性能 / 测试 / 门禁 / 国际化 / 设计 |
 | [reviews/2026-11-17-round3-perf/00-overview.md](reviews/2026-11-17-round3-perf/00-overview.md) | 2026-11-17 第三轮性能专项加固审计：DB / 查询 · 渲染 · 启动 / 缓存 · 性能门禁 |
+| [reviews/2026-11-18-round4-perf/00-overview.md](reviews/2026-11-18-round4-perf/00-overview.md) | 2026-11-18 第四轮性能专项：SQLite / 查询 · 渲染缓存 · 任务 / 内存 · 性能门禁 |
 | [reviews/README.md](reviews/README.md) | 评审与审计索引（分轮报告入口与门禁基线记账约定） |
 
 ## 许可证

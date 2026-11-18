@@ -6,18 +6,24 @@
 # round-1/2 已实测过滚动掉帧与查询放大；round-3 起把「构造点数量」钉成基线：只许降不许涨，
 # 新增热点必须走既有缓存/共享实例，而不是再造一个。
 #
+# round-4 增补（构造点被缓存后最常见的回潮形态）：
+#   raw_json_encode_chain / raw_json_decode_chain —— 统计「JSONEncoder()/JSONDecoder() 之后
+#   立即 .encode/.decode」的内联链。构造点指标（raw_json_encoder/decoder）可能因缓存化下降，
+#   但新代码仍可能写成 JSONEncoder().encode(...) 的一次性链；单独计数才能把这类回潮钉住。
+#
 # 指标（Sources/**/*.swift 的「非纯注释行」匹配行数；整行首非空字符为 // 或 * 的行不计，
 # 同一行多处只计 1 行 —— 与 scripts/check-cleanup-ratchet.sh 同口径）：
 #   raw_date_formatter   DateFormatter()          → 用 DisplayDateFormatters / RepositoryDateFormatters
 #   raw_iso_formatter    ISO8601DateFormatter()   → 用 DisplayDateFormatters 的共享 ISO 解析器
 #   raw_json_encoder     JSONEncoder()            → 用 JSONValueCoding / RepoJSONCoding 等编解码器
 #   raw_json_decoder     JSONDecoder()            → 同上
+#   raw_json_encode_chain JSONEncoder().encode    → 内联链回潮守卫：改走 JSONValueCoding / 共享 coder
+#   raw_json_decode_chain JSONDecoder().decode    → 同上
 #   raw_regex_compile    NSRegularExpression(     → 用 Synchronization.Mutex 锁盒子缓存编译结果
 #   raw_byte_formatter   ByteCountFormatter()     → 用 DisplayDateFormatters.fileSize
-#   blocking_sleep       Thread.sleep(            → 目标 0；唯一在册例外见 docs/perf-baseline.json 的 notes：
-#                                                   GatherApplication/Services/Job/JobService+Settle.swift 的
-#                                                   罕见错误路径终态写重试（0.2s，同步 helper）；待未来
-#                                                   轮次改成 async 重试后归零。基线钉实测值，只防新增。
+#   blocking_sleep       Thread.sleep(            → 目标 0（round-4 已把 JobService+Settle 的罕见错误路径
+#                                                   同步重试改为 async，当前 Sources 实测 0；基线 0 即
+#                                                   零容忍，任何新增阻塞睡眠都会 FAIL）。
 #
 # 扫描面与排除：
 #   - desktop/native/gather-core/Sources + desktop/native/gather-app/Sources（Tests 不计：
@@ -46,7 +52,7 @@ cd "$ROOT"
 CORE_SRC="desktop/native/gather-core/Sources"
 APP_SRC="desktop/native/gather-app/Sources"
 BASELINE="docs/perf-baseline.json"
-METRICS="raw_date_formatter raw_iso_formatter raw_json_encoder raw_json_decoder raw_regex_compile raw_byte_formatter blocking_sleep"
+METRICS="raw_date_formatter raw_iso_formatter raw_json_encoder raw_json_decoder raw_json_encode_chain raw_json_decode_chain raw_regex_compile raw_byte_formatter blocking_sleep"
 
 for d in "$CORE_SRC" "$APP_SRC"; do
   if [ ! -d "$d" ]; then
@@ -99,6 +105,8 @@ metric() {
     raw_iso_formatter)  count_matches '(^|[^A-Za-z0-9_])ISO8601DateFormatter\(\)' "$CORE_SRC" "$APP_SRC" ;;
     raw_json_encoder)   count_matches '(^|[^A-Za-z0-9_])JSONEncoder\(\)' "$CORE_SRC" "$APP_SRC" ;;
     raw_json_decoder)   count_matches '(^|[^A-Za-z0-9_])JSONDecoder\(\)' "$CORE_SRC" "$APP_SRC" ;;
+    raw_json_encode_chain) count_matches '(^|[^A-Za-z0-9_])JSONEncoder\(\)[[:space:]]*\.[[:space:]]*encode' "$CORE_SRC" "$APP_SRC" ;;
+    raw_json_decode_chain) count_matches '(^|[^A-Za-z0-9_])JSONDecoder\(\)[[:space:]]*\.[[:space:]]*decode' "$CORE_SRC" "$APP_SRC" ;;
     raw_regex_compile)  count_matches '(^|[^A-Za-z0-9_])NSRegularExpression\(' "$CORE_SRC" "$APP_SRC" ;;
     raw_byte_formatter) count_matches '(^|[^A-Za-z0-9_])ByteCountFormatter\(\)' "$CORE_SRC" "$APP_SRC" ;;
     blocking_sleep)     count_matches '(^|[^A-Za-z0-9_])Thread\.sleep\(' "$CORE_SRC" "$APP_SRC" ;;
@@ -122,19 +130,24 @@ write_baseline() {
     "raw_iso_formatter": $(metric raw_iso_formatter),
     "raw_json_encoder": $(metric raw_json_encoder),
     "raw_json_decoder": $(metric raw_json_decoder),
+    "raw_json_encode_chain": $(metric raw_json_encode_chain),
+    "raw_json_decode_chain": $(metric raw_json_decode_chain),
     "raw_regex_compile": $(metric raw_regex_compile),
     "raw_byte_formatter": $(metric raw_byte_formatter),
     "blocking_sleep": $(metric blocking_sleep)
   },
   "notes": {
-    "blocking_sleep": "current 1 = GatherApplication/Services/Job/JobService+Settle.swift:210 Thread.sleep(forTimeInterval: 0.2)：罕见错误路径（瞬时 DB 错误）的终态写重试，位于同步 helper；目标 0，待未来轮次改为 async 重试后归零。基线钉在实测值，防止新增阻塞睡眠。",
-    "caches": "允许的共享缓存构造点（已计入基线）：GatherUI/Support/DateFormatting.swift（DateFormatter/ISO8601/ByteCountFormatter per-locale 缓存）、Support/JSONValueDecoding.swift（JSONEncoder/Decoder）、GatherApplication 的 RepoJSONCoding / RepositoryDateFormatters、以及 Synchronization.Mutex 锁盒子内的 NSRegularExpression 缓存。扩缓存同样需要显式改基线。"
+    "blocking_sleep": "round-4 起归零：GatherApplication/Services/Job/JobService+Settle.swift 的罕见错误路径（瞬时 DB 错误）终态写重试已从同步 Thread.sleep(0.2) 改为 async 重试，Sources 实测 0；基线 0 为零容忍，任何新增阻塞睡眠都会让门禁 FAIL。",
+    "caches": "允许的共享缓存构造点（已计入基线）：GatherUI/Support/DateFormatting.swift（DateFormatter/ISO8601/ByteCountFormatter per-locale 缓存）、Support/JSONValueDecoding.swift（JSONValueCoding 共享编解码器）、GatherApplication 的 RepoJSONCoding / RepositoryDateFormatters、以及 Synchronization.Mutex 锁盒子内的 NSRegularExpression 缓存。扩缓存同样需要显式改基线。",
+    "json_chains": "raw_json_encode_chain / raw_json_decode_chain 统计『JSONEncoder()/JSONDecoder() 后立即 .encode/.decode』的内联链（round-4 增补）：构造点指标被缓存化后，内联链是最常见的回潮形态；两道指标互补，新增代码应走 JSONValueCoding / 共享 coder。"
   },
   "scopes": {
     "raw_date_formatter": "desktop/native/*/Sources/**/*.swift",
     "raw_iso_formatter": "desktop/native/*/Sources/**/*.swift",
     "raw_json_encoder": "desktop/native/*/Sources/**/*.swift",
     "raw_json_decoder": "desktop/native/*/Sources/**/*.swift",
+    "raw_json_encode_chain": "desktop/native/*/Sources/**/*.swift",
+    "raw_json_decode_chain": "desktop/native/*/Sources/**/*.swift",
     "raw_regex_compile": "desktop/native/*/Sources/**/*.swift",
     "raw_byte_formatter": "desktop/native/*/Sources/**/*.swift",
     "blocking_sleep": "desktop/native/*/Sources/**/*.swift"

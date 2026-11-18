@@ -262,11 +262,14 @@ GatherApplication（服务编排；交付在 GatherDelivery）
 ## 性能
 
 - **性能反模式 ratchet（gate #17）**：`scripts/check-perf-ratchet.sh` 统计
-  `desktop/native/*/Sources/**/*.swift`（Tests 不计）的 7 类「一次性昂贵构造」行数：
+  `desktop/native/*/Sources/**/*.swift`（Tests 不计）的 9 类「一次性昂贵构造/内联链」行数：
   `raw_date_formatter` / `raw_iso_formatter` / `raw_json_encoder` / `raw_json_decoder` /
-  `raw_regex_compile` / `raw_byte_formatter` / `blocking_sleep`。基线在
+  `raw_json_encode_chain` / `raw_json_decode_chain` / `raw_regex_compile` /
+  `raw_byte_formatter` / `blocking_sleep`（两条 chain 统计 `JSONEncoder()`/`JSONDecoder()`
+  后立即 `.encode/.decode` 的内联回潮形态；`blocking_sleep` 已归零 = 零容忍）。基线在
   `docs/perf-baseline.json`，只降不升；指标回落时用 `--write-baseline` 收紧（确需扩张必须
-  `--allow-growth` 并在 `docs/reviews/` 记账）。**新增热点代码必须复用既有共享缓存**：
+  `--allow-growth` 并在 `docs/reviews/` 记账）；`./scripts/report-baseline.sh` 的性能段同步输出
+  这 9 项 current/baseline/status。**新增热点代码必须复用既有共享缓存**：
   `DisplayDateFormatters`（GatherUI/Support/DateFormatting.swift）、`JSONValueCoding`、
   `RepoJSONCoding`、`RepositoryDateFormatters`，以及 `Synchronization.Mutex` 锁盒子内的
   `NSRegularExpression` 缓存；不要新造裸构造点。
@@ -275,6 +278,10 @@ GatherApplication（服务编排；交付在 GatherDelivery）
   （校验 55 表 / 86 索引 / 81 外键），固定 seed 合成数据后跑热点查询（warm + median）与
   `EXPLAIN QUERY PLAN`；`--compare` 输出旧/新 SQL 的 A/B 与加速比。只依赖 python3 标准库，
   Linux / macOS 均可跑；数字受机器与 IO 影响，只用于相对比较。
+- **SQLite 默认 PRAGMA（round-4）**：文件库连接（读写连接、只读池、备份校验连接）默认
+  `PRAGMA mmap_size=256MB`（单连接映射上限，不是预分配；`:memory:` 跳过，设置失败 warn 后
+  保留 SQLite 自身值）；`Database.close()` 在最终关闭前 best-effort 执行 `PRAGMA optimize`
+  （失败只 warn，不改变 close 幂等/不抛错/WAL checkpoint 语义）。
 - **启动阶段计时**：每次冷启动成功/失败各一行日志（7 阶段、0.1ms 精度），格式
   `startup phases: total=<ms> firstScene=<ms> restore=… dbOpen=… composition=… languageSeed=…
   runtimeStart=… embeddingPrep=… wire=…`。`firstScene` = 启动入口 → scene 首次发布的墙钟上界；
@@ -305,7 +312,7 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 ./scripts/check-design-system.sh
 ./scripts/check-repo-hygiene.sh          # 仓库层卫生 7 节：bash -n/执行位/CRLF、.editorconfig、Markdown 链接、本地化表、无缓存产物、shellcheck（-S warning，缺失即 FAIL，需预装）、本地化用法守卫
 ./scripts/check-docs-facts.sh            # 文档事实：README/docs 的基线数字须与源码计算一致（targets/域 API/schema/en key/门禁数）
-./scripts/check-perf-ratchet.sh          # 性能反模式构造点只降不升（7 指标；基线 docs/perf-baseline.json，--write-baseline 收紧）
+./scripts/check-perf-ratchet.sh          # 性能反模式构造点只降不升（9 指标；基线 docs/perf-baseline.json，--write-baseline 收紧）
 ./scripts/check-warnings.sh              # core/app Sources -warnings-as-errors
 ```
 
@@ -315,7 +322,7 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 文档基线数字用只读事实报告取（**不是门禁**、不接入 CI；口径与各门禁一致）：
 
 ```bash
-./scripts/report-baseline.sh  # 只读事实报告（非门禁）：targets / API / 测试声明 / 本地化 / schema / protocol / cleanup / 性能 ratchet 基线
+./scripts/report-baseline.sh  # 只读事实报告（非门禁）：targets / API / 测试声明 / 本地化 / schema / protocol / cleanup / 性能 ratchet（9 指标）基线
 ```
 
 ## 类型化 API 契约

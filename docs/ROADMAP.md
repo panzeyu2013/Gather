@@ -1,6 +1,6 @@
 # Gather 产品与技术 Roadmap
 
-> 状态：2026-10-30 整理，2026-11-17（第二、三轮加固后）校准当前基线。已完成阶段只保留结论；逐日基线与过程记录在 git 历史。
+> 状态：2026-10-30 整理，2026-11-18（第二、三、四轮加固后）校准当前基线。已完成阶段只保留结论；逐日基线与过程记录在 git 历史。
 > 现行口径以 [README.md](README.md)、[DEVELOPMENT.md](DEVELOPMENT.md)、[ADR.md](ADR.md) 为准。
 
 ## 一、用户痛点与优先级
@@ -31,7 +31,7 @@
 - **D（已完成）**：SQLite 持久化 + angular LSH（`Face/VectorIndex.swift`）；
   HNSW 已随 Cut 5 删除，召回由对账门禁覆盖。
 
-## 三、当前状态（2026-11-17 第三轮性能专项加固后校准；原 2026-10-30 采样）
+## 三、当前状态（2026-11-18 第四轮性能专项加固后校准；原 2026-10-30 采样）
 
 - 9 个功能 target（含测试/工具共 18 个）；16 域 API / 195 方法；SQLite 单一 schema（55 表 /
   451 列 / 86 索引 / 81 外键，user_version=1）；声明口径 core 2,001 @Test / 235 @Suite、
@@ -40,6 +40,11 @@
   `DISTINCT`、热点查询 `prepare` 复用（`DBStatementCache`）、UI 渲染 O(1) 化、启动 7 阶段计时与
   缩略图缓存计量修正、gate #17 `check-perf-ratchet` 性能反模式 ratchet；Linux 源码级 + 探针/基准
   验证，macOS 实测（Instruments / 真机启动）待 CI 与真机。
+- 2026-11-18 第四轮性能专项加固（SQLite/查询、渲染缓存、任务/内存、perf ratchet）：文件库默认
+  `PRAGMA mmap_size=256MB`、关闭前 best-effort `PRAGMA optimize`、再扩 6 处 `prepare` 复用；
+  Culling 页索引/网格布局 state-only 复用；Job 终态写重试 async（`blocking_sleep` 归零）、
+  EmbeddingModel provider LRU、Metadata 冲突读盘有界并发；perf ratchet 7→9 指标；Linux 源码级 +
+  探针/基准验证，macOS CI/Instruments 待跑。
 - 已完成：原生迁移、分页、阈值多档、任务化、Vision 人脸、聚类/向量对账、
   写回可靠性、本地化、主题与无障碍。
 - 未接通：真实人脸质量门（外部标注集）、C1 人工 Load-Metadata 矩阵（发布前）。
