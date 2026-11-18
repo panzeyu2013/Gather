@@ -24,6 +24,15 @@ enum SceneTagsEntryPolicy {
         guard let currentPhotoId, !currentPhotoId.isEmpty else { return [] }
         return [currentPhotoId]
     }
+
+    /// 已排序/去重/去空串选择集的快路径（调用方持有 O(1) 选择快照时）。
+    /// 与 `seedPhotoIds(selection:currentPhotoId:)` 语义一致；快照已按同一口径清洗，
+    /// 因此这里直接 O(1) 判空返回（旧调用方每帧还要再 Set+sort 一次）。
+    static func seedPhotoIds(sortedSelection: [String], currentPhotoId: String?) -> [String] {
+        if !sortedSelection.isEmpty { return sortedSelection }
+        guard let currentPhotoId, !currentPhotoId.isEmpty else { return [] }
+        return [currentPhotoId]
+    }
 }
 
 // MARK: 右侧检查器（Bridge / Capture One 式：选项面板交给系统 .inspector，
@@ -685,8 +694,9 @@ struct CullingInspector: View {
 
     /// Wave5 batch8：场景标签入口的种子/可开判定（选择集优先，无选择用当前照片）。
     private var cullingSceneTagSeedIds: [String] {
+        // task-22：选择集已由 VM 按选择代数缓存排序（旧实现 body 每帧 sort 2 万条）。
         SceneTagsEntryPolicy.seedPhotoIds(
-            selection: viewModel.selectedPhotoIds.sorted(),
+            sortedSelection: viewModel.sortedSelectedIds,
             currentPhotoId: viewModel.currentAsset?.photo.id)
     }
 
@@ -799,9 +809,11 @@ struct CullingInspector: View {
     }
 
     /// 当前照片所在相似组（已加载范围内）成员，对齐 TS currentGroupAssets。
+    /// task-22：filter 结果按（page 赋值代数, groupId）缓存在 VM；选择/当前照片变化
+    /// 不再每帧重扫整页（页被替换时才重算一次）。
     private var currentGroupAssets: [CullingAsset] {
         guard let current = viewModel.currentAsset, let groupId = current.similarityGroupId else { return [] }
-        return viewModel.page?.assets.filter { $0.similarityGroupId == groupId } ?? []
+        return viewModel.similarGroupAssets(inCurrentPage: groupId)
     }
 
     private var sortBinding: Binding<CullingSort> {

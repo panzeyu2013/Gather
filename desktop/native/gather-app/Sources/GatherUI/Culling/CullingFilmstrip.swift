@@ -69,12 +69,16 @@ struct CullingFilmstrip: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: GatherMetrics.Space.s) {
-                    ForEach(Array((viewModel.page?.assets ?? []).enumerated()), id: \.element.photo.id) { index, asset in
+                    // task-22：旧实现每次 body 都 `Array(assets.enumerated())`（≤500 元组分配）。
+                    // ForEach 身份仍是 photo.id（与旧 `id: \.element.photo.id` 相同）；
+                    // 续页判断所需下标改为 onAppear 时 O(1) 查 pageVersion 索引。
+                    ForEach(viewModel.page?.assets ?? [], id: \.photo.id) { asset in
                         CullingFilmThumbView(viewModel: viewModel, asset: asset)
                             .id(asset.photo.id)
                             // 横向滚动近尾自动续页：尾部 4 个缩略图出现即 loadMore。
                             .onAppear {
                                 let count = viewModel.page?.assets.count ?? 0
+                                let index = viewModel.pageIndex(ofPhotoId: asset.photo.id) ?? 0
                                 if index >= count - 4, viewModel.hasMore {
                                     Task { await viewModel.loadMore() }
                                 }

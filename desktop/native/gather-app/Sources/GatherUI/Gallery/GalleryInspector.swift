@@ -103,8 +103,9 @@ extension GalleryView {
         let current = keyboardCursorId.flatMap { id in
             loadedIDs.contains(id) ? id : nil
         }
+        // task-22：VM 已按选择代数缓存排序（旧实现 body 每帧 sort + policy 再 Set+sort）。
         return SceneTagsEntryPolicy.seedPhotoIds(
-            selection: viewModel.selectedIds.sorted(),
+            sortedSelection: viewModel.sortedSelectedIds,
             currentPhotoId: current)
     }
 

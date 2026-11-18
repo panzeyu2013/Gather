@@ -228,11 +228,18 @@ extension CullingViewModel {
     }
 
     /// photoId -> 所属组组员数（网格「组 N 张」折叠计数；只收 >=2 的组）。
+    ///
+    /// task-22：旧实现每次读取 O(组×成员) 重建字典，而 CullingGrid body 每帧读一次；
+    /// 现在按 navigationGroups 赋值代数缓存（O(1) 键），语义不变（同一份数据）。
     var navigationGroupSizeByPhotoID: [String: Int] {
+        if let cached = navigationGroupSizeCache, cached.version == navigationGroupsVersion {
+            return cached.sizes
+        }
         var result: [String: Int] = [:]
         for group in navigationGroups where group.photoIds.count >= 2 {
             for id in group.photoIds { result[id] = group.photoIds.count }
         }
+        navigationGroupSizeCache = (navigationGroupsVersion, result)
         return result
     }
 

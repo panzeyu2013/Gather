@@ -159,6 +159,22 @@ extension GalleryViewModel {
         return photos
     }
 
+    /// 选择集的稳定排序快照（按 id 升序、去重、去空串；场景标签种子等 body 派生用）。
+    ///
+    /// task-22：旧实现每帧 `selectedIds.sorted()` + policy 内再 Set+sort；
+    /// 现在按 selectionVersion（O(1) 键）缓存。Observation 依赖：命中缓存也先读
+    /// `selectedIds.count`，保证只改选择集时 body 会重算。
+    var sortedSelectedIds: [String] {
+        let selectionCount = selectedIds.count
+        if let cached = sortedSelectionCache, cached.version == selectionVersion {
+            return cached.ids
+        }
+        // 与旧 SceneTagsEntryPolicy.seedPhotoIds 的"去空串后排序"同口径，缓存后每帧 O(1)。
+        let ids = selectionCount == 0 ? [] : selectedIds.filter { !$0.isEmpty }.sorted()
+        sortedSelectionCache = (selectionVersion, ids)
+        return ids
+    }
+
     /// filtered 行的 id 集合（与 filteredPhotos 同一缓存 key；O(1) 命中判断）。
     var filteredPhotoIdSet: Set<String> {
         _ = filteredPhotos

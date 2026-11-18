@@ -214,11 +214,25 @@ struct CullingGridRow: Identifiable {
     var id: Int { offset }
 }
 
-/// 只依赖（资产数、容器宽度、目标行高）的布局缓存：
-/// body 每帧对全部已加载资产重跑 justified layout 在已加载上千张时是 O(n) 热点。
+/// 布局缓存：body 每帧对全部已加载资产重跑 justified layout 在已加载上千张时是 O(n) 热点。
+///
+/// task-22：旧实现只要 pageVersion 变了就重跑布局（决策回显每次 +1 ⇒ 每拍一次
+/// O(n) relayout，500 张实测约数百 µs）。布局只依赖「资产顺序 + 宽高 + 容器宽度 +
+/// 目标行高 + gap」：决策回显只改 state、顺序/宽高不变 ⇒ 现在用 O(n) 的
+/// (id, w, h) 序列比较复用旧行；重排/筛选/换页才真正 relayout。
 @MainActor
 final class CullingGridLayoutCache {
-    private var key = ""
+    private var cachedVersion = Int.min
+    private var cachedWidthKey = Int.min
+    private var cachedRowHeightKey = Int.min
+    /// 建行时的精确宽度/目标行高：同 id 序列复用还要求这两个值完全相同，
+    /// 否则按旧实现"重建"的语义重算（避免亚像素几何漂移）。
+    private var cachedExactWidth = Double.nan
+    private var cachedExactRowHeight = Double.nan
+    private var cachedCount = -1
+    /// 建行时的资产 id 顺序与量化宽高（用于"只改 state"的同几何替换判定）。
+    private var cachedIDs: [String] = []
+    private var cachedSizes: [UInt64] = []
     private var cached: [CullingGridRow] = []
 
     func rows(
@@ -228,10 +242,22 @@ final class CullingGridLayoutCache {
         targetRowHeight: Double,
         gap: Double
     ) -> [CullingGridRow] {
-        // 键含 pageVersion：排序/筛选后“数量相同但内容不同”时必须重算，
-        // 否则行宽会套在上一次的结果上。选择变化不改变 pageVersion，仍命中缓存。
-        let newKey = "\(version)|\(assets.count)|\(Int(containerWidth))|\(Int(targetRowHeight))"
-        if newKey == key { return cached }
+        // 宽度/行高沿用旧口径取整：旧 key 就是这么折叠小数宽度的（保持缓存命中行为）。
+        let widthKey = Int(containerWidth)
+        let rowHeightKey = Int(targetRowHeight)
+        if version == cachedVersion,
+           widthKey == cachedWidthKey,
+           rowHeightKey == cachedRowHeightKey,
+           assets.count == cachedCount {
+            return cached
+        }
+        if containerWidth == cachedExactWidth,
+           targetRowHeight == cachedExactRowHeight,
+           sameGeometry(assets) {
+            // 同 id 序列 + 同精确宽高（决策回显/同页刷新）：行几何不变，直接复用。
+            cachedVersion = version
+            return cached
+        }
         let source = assets.map {
             GalleryAspectItem(
                 width: Double(max(1, $0.photo.width)),
@@ -246,8 +272,33 @@ final class CullingGridLayoutCache {
         ).enumerated().map {
             CullingGridRow(offset: $0.offset, height: $0.element.height, items: $0.element.items)
         }
-        key = newKey
+        cachedVersion = version
+        cachedWidthKey = widthKey
+        cachedRowHeightKey = rowHeightKey
+        cachedExactWidth = containerWidth
+        cachedExactRowHeight = targetRowHeight
+        cachedCount = assets.count
+        cachedIDs = assets.map { $0.photo.id }
+        cachedSizes = assets.map { Self.packedSize($0.photo) }
         return cached
+    }
+
+    /// 与缓存相比：id 顺序与量化宽高完全一致（O(n) 字符串/整数比较，远低于 relayout）。
+    private func sameGeometry(_ assets: [CullingAsset]) -> Bool {
+        guard assets.count == cachedIDs.count, assets.count == cachedSizes.count else { return false }
+        for index in assets.indices {
+            let photo = assets[index].photo
+            if photo.id != cachedIDs[index] { return false }
+            if Self.packedSize(photo) != cachedSizes[index] { return false }
+        }
+        return true
+    }
+
+    /// 宽高打包成一个 UInt64（布局只消费 max(1, w/h)，所以先 clamp 再打包）。
+    private static func packedSize(_ photo: PhotoData) -> UInt64 {
+        let width = UInt64(max(1, photo.width))
+        let height = UInt64(max(1, photo.height))
+        return (width << 32) | (height & 0xFFFF_FFFF)
     }
 }
 
@@ -275,7 +326,10 @@ struct CullingGridView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
-                            ForEach(rows(containerWidth: max(1, geometry.size.width - 48)), id: \.offset) { row in
+                            // task-22：rows(…) 已缓存；旧 ForEach 每帧再包一层
+                            // Array(rows.enumerated())（行数级分配）。CullingGridRow 的
+                            // id == offset，直接遍历身份完全一致。
+                            ForEach(rows(containerWidth: max(1, geometry.size.width - 48))) { row in
                                 HStack(spacing: GatherMetrics.Space.s) {
                                     ForEach(row.items, id: \.index) { item in
                                         if assets.indices.contains(item.index) {

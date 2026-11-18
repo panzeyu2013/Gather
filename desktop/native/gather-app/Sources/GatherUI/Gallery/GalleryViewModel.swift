@@ -259,7 +259,15 @@ public final class GalleryViewModel: SessionPageModel {
 
     public var isFetchingNextPage: Bool { fetchingGeneration != nil }
     public internal(set) var actionError: CommandError?
-    public internal(set) var selectedIds: Set<String> = []
+    public internal(set) var selectedIds: Set<String> = [] {
+        // 选择集每次写入（含 insert/remove/formUnion 等 mutate）都自增，
+        // 供 sortedSelectedIds 做 O(1) 失效键（task-22；与 Culling VM 同机制）。
+        didSet { selectionVersion &+= 1 }
+    }
+    /// selectedIds 的赋值代数（@ObservationIgnored：纯缓存键）。
+    @ObservationIgnored private(set) var selectionVersion = 0
+    /// 选择集稳定排序快照缓存。
+    @ObservationIgnored var sortedSelectionCache: (version: Int, ids: [String])?
     /// ⌘A 的服务端全范围选择：事件刷新不得把它裁回已加载页（P2-1）。
     public internal(set) var isScopeSelection = false
     /// 图库批量写入后的本地回显：list_page 行不含挑片状态，只能靠服务端返回的 states 叠加。

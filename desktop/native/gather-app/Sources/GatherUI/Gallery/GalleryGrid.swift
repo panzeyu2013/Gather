@@ -14,18 +14,36 @@ import GatherProtocol
 final class GalleryLayoutCache {
     var key = ""
     var rows: [JustifiedLayoutRow] = []
+    /// filtered 下标 → 行号（与 rows 同一次写入重建；键盘游标定位 O(1)）。
+    ///
+    /// task-22：旧 `rowIndex(containing:)` 对 rows×items 线性扫；方向键每次移动都会
+    /// 调一次（filtered 可上万，合计 O(n)/键）。改为建行时顺手建表。
+    private var rowByItemIndex: [Int: Int] = [:]
 
     func reset() {
         key = ""
         rows = []
+        rowByItemIndex = [:]
+    }
+
+    /// 写入一份新布局（rows 与 item→row 映射必须同时更新）。
+    func store(key: String, rows: [JustifiedLayoutRow]) {
+        self.key = key
+        self.rows = rows
+        var map: [Int: Int] = [:]
+        map.reserveCapacity(rows.reduce(0) { $0 + $1.items.count })
+        for (rowIndex, row) in rows.enumerated() {
+            // 与旧 `firstIndex { row.items.contains(index) }` 同义：重复下标取首个。
+            for item in row.items where map[item.index] == nil {
+                map[item.index] = rowIndex
+            }
+        }
+        rowByItemIndex = map
     }
 
     /// 某个 filtered 下标落在哪一行；缓存为空（首帧/筛选刚变更）返回 nil。
     func rowIndex(containing index: Int) -> Int? {
-        guard !rows.isEmpty else { return nil }
-        return rows.firstIndex { row in
-            row.items.contains { $0.index == index }
-        }
+        rowByItemIndex[index]
     }
 }
 
@@ -42,7 +60,10 @@ extension GalleryView {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: GatherMetrics.Space.s) {
-                        ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                        // task-22：旧实现每帧 Array(rows.enumerated()) 包一层；
+                        // 行身份本来就是 Int 下标（\.offset == index），直接遍历 indices。
+                        ForEach(rows.indices, id: \.self) { index in
+                            let row = rows[index]
                             rowView(row, filtered: filtered)
                                 .frame(height: row.height)
                                 // 行 id：键盘游标移动时 scrollTo 的目标。
@@ -117,8 +138,7 @@ extension GalleryView {
                 justified: false
             )
         }
-        layoutCache.key = key
-        layoutCache.rows = rows
+        layoutCache.store(key: key, rows: rows)
         return rows
     }
 

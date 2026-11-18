@@ -102,13 +102,43 @@ public enum ThumbnailDiskCache {
         return directory.appendingPathComponent("\(digest).jpg")
     }
 
+    /// 命中时 mtime 触碰的节流窗口（round-4 性能）。
+    ///
+    /// 旧实现每次命中都 `setAttributes(.modificationDate)`：一次缓存读 = stat 源文件
+    /// + 读整份 JPEG + 一次 inode 元数据写。滚动回看时每个缩略图都写一次，属写放大
+    /// （还会弄脏文件系统 journal）。LRU 只需要「最近一段时间有没有被用过」的粗粒度，
+    /// 1h 内重复命中不再写；代价是多一次 stat（比元数据写便宜，且不产生写）。
+    static let touchInterval: TimeInterval = 3600
+
     public static func data(path: String, size: Int, preview: Bool) -> Data? {
         guard isEnabled, let key = key(path: path, size: size, preview: preview),
               let url = fileURL(for: key) else { return nil }
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
-        // 触碰 mtime，供 LRU 清理（失败不影响读取）。
-        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+        touchIfStale(url)
         return data
+    }
+
+    /// 触碰缓存文件 mtime 供 LRU 清理；touchInterval 内已触碰过的跳过（失败不影响读取）。
+    ///
+    /// LRU 正确性：prune 按 mtime 从旧到新删除，最多让热文件的 mtime 滞后 1h——
+    /// 只有「超过 512MB 且已连续 1h 未被读取」的项才可能被判旧删掉。淘汰目标是清掉
+    /// 真正的冷缓存，1h 粒度足够；且窗口内不写保证了读路径不产生元数据写。
+    private static func touchIfStale(_ url: URL) {
+        let now = Date()
+        var lastModified: Date?
+        do {
+            lastModified = try FileManager.default
+                .attributesOfItem(atPath: url.path)[.modificationDate] as? Date
+        } catch {
+            lastModified = nil
+        }
+        if let lastModified, now.timeIntervalSince(lastModified) < touchInterval { return }
+        do {
+            try FileManager.default.setAttributes(
+                [.modificationDate: now], ofItemAtPath: url.path)
+        } catch {
+            // mtime 触碰失败不影响读取（与旧实现一致：只影响 LRU 精度）。
+        }
     }
 
     public static func store(_ data: Data, path: String, size: Int, preview: Bool) {

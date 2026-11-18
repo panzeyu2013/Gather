@@ -35,12 +35,18 @@ public final class CullingViewModel: SessionPageModel {
     /// Cut 3 / 3b-3（E-17）：只持 Protocol 能力面（CaptureOneBridging）。
     let captureOne: any CaptureOneBridging
     public let sessionId: String
-    /// 页内容。`didSet` 让 `currentAsset` 的 O(1) 索引缓存**在任何赋值路径**上失效
-    /// （含扩展/测试里的 internal 赋值；缓存本身按 `pageVersion` 命中，见 currentAsset）。
+    /// 页内容。`didSet` 完成两件事（perf-ui task-22）：
+    /// 1. `pageAssignmentCount` 自增——**任何赋值路径**（含扩展/测试 internal 赋值、
+    ///    不 bump pageVersion 的直接赋值）都能让 `currentAsset` 索引走一次惰性校验；
+    /// 2. `selectionSummaryCache = nil`——state 变化会影响摘要（必须失效）。
+    ///
+    /// 位置索引**不再盲目清空**：决策回显用同 id 序列的新 page 替换（只改 state），
+    /// 位置索引仍有效，由 `pageAssetIndex` 做 O(n) id 序列比较后复用（见下）。
     public internal(set) var page: CullingPage? {
         didSet {
-            pageAssetIndexCache = nil
+            pageAssignmentCount &+= 1
             selectionSummaryCache = nil
+            if page == nil { pageAssetIndexCache = nil }
         }
     }
     public internal(set) var summary: CullingSummary?
@@ -99,16 +105,18 @@ public final class CullingViewModel: SessionPageModel {
     public var filterState = FilterState()
 
     /// P2-3：活跃筛选维度数（检查器与工具栏 chip 同一真相源）。
+    /// task-22：旧实现每次读取构造 7 元素数组再 filter（检查器/工具栏每帧读）；
+    /// 改为直接计数，零分配，结果不变。
     public var activeFilterCount: Int {
-        [
-            filterState.unreviewedOnly,
-            filterState.pickState != nil,
-            filterState.rating != nil,
-            filterState.colorLabel != nil,
-            filterState.qualityStatus != nil,
-            filterState.metadataConflictOnly,
-            filterState.triageVerdicts?.isEmpty == false,
-        ].filter { $0 }.count
+        var count = 0
+        if filterState.unreviewedOnly { count += 1 }
+        if filterState.pickState != nil { count += 1 }
+        if filterState.rating != nil { count += 1 }
+        if filterState.colorLabel != nil { count += 1 }
+        if filterState.qualityStatus != nil { count += 1 }
+        if filterState.metadataConflictOnly { count += 1 }
+        if filterState.triageVerdicts?.isEmpty == false { count += 1 }
+        return count
     }
     public var autoAdvance = true
     /// 审计 P1-并发：可见性门控——画质分析 500ms 轮询在页面离开
@@ -129,47 +137,76 @@ public final class CullingViewModel: SessionPageModel {
     public static let defaultQualityPollIntervalMilliseconds = 500
     private let qualityPollIntervalMilliseconds: Int
     public internal(set) var currentPhotoId: String?
-    /// `currentAsset` 的 O(1) 索引缓存（perf-ui task-10 / P0）。
+    /// `currentAsset` 的 O(1) 索引缓存（perf-ui task-10 / P0；task-22 增加复用）。
     ///
     /// 旧实现每次读取都线性扫 `page.assets.first(where:)`：CullingInspector 一帧
     /// 直接/间接读 ~18 次、CullingWorkbenchViewer 25 处、InfoBar/SecondDisplay 等
-    /// 也读，页 500 张时每帧上万次 id 比较。索引按 `pageVersion` 命中；
-    /// `page.didSet` 会在任何赋值路径上清空它（双保险：`pageVersion` 目前由
-    /// +Load/+Grid/+Actions 的 7 处生产赋值点各自 bump，见审计文档）。
-    /// 决策回显同样替换 page ⇒ 位置索引随 pageVersion 重建，返回的资产始终从当前 page 现取。
+    /// 也读，页 500 张时每帧上万次 id 比较。
+    ///
+    /// task-22：缓存键从 `pageVersion` 换成 `pageAssignmentCount`（page.didSet 自增），
+    /// 且 page 被**同 id 序列**替换（决策回显只改 state）时不再重建字典——只做一次
+    /// O(n) id 序列比较（500 张约 1-2µs）后沿用位置索引；重排/换页才重建
+    /// （500 张页实测约 84µs）。返回的资产始终从当前 page 现取，state 不会过期。
     @ObservationIgnored private var pageAssetIndexCache: PageAssetIndex?
+    /// page 的赋值代数（didSet 自增；任何赋值路径都覆盖，包括不 bump pageVersion 的直接赋值）。
+    @ObservationIgnored private var pageAssignmentCount = 0
 
     /// 页内 photoId→下标索引（位置索引，而不是复制整页资产）。
     ///
     /// 取舍（Linux Swift 6.2 实测，500 张页、每帧 18 次读取，仅供参考）：
     /// - 旧实现 18 次 `first(where:)`：~20µs/帧；
     /// - `[photoId: CullingAsset]` 索引重建 + 18 次读取：~121µs（整页资产复制/释放主导）；
-    /// - 位置索引重建 + 18 次读取：~77µs；
-    /// - 两者命中（同 pageVersion）：~0.37µs/帧。
-    /// 位置索引还保证返回的资产 state 永远来自当前 page（不会持有旧快照）。
+    /// - 位置索引重建 + 18 次读取：~77-84µs；
+    /// - 同 id 序列替换（决策回显）只做 O(n) id 比较（~µs 级）；
+    /// - 命中（同赋值代数）：~0.7µs/帧。
     private struct PageAssetIndex {
-        let pageVersion: Int
+        var pageAssignmentCount: Int
+        /// 建索引时的完整 id 序列（用于判断"只改 state"的同序列替换）。
+        let orderedPhotoIDs: [String]
         /// 重复 photoId 保留**首个**（与旧实现 `first(where:)` 同义）。
         let assetIndexByPhotoID: [String: Int]
     }
 
     private var pageAssetIndex: PageAssetIndex {
-        if let cached = pageAssetIndexCache, cached.pageVersion == pageVersion {
+        if let cached = pageAssetIndexCache, cached.pageAssignmentCount == pageAssignmentCount {
             return cached
+        }
+        if let cached = pageAssetIndexCache, pageAssetIDsMatch(cached.orderedPhotoIDs) {
+            // state-only 替换（决策回显/同页刷新）：位置索引仍然有效，只更新代数。
+            var reused = cached
+            reused.pageAssignmentCount = pageAssignmentCount
+            pageAssetIndexCache = reused
+            return reused
         }
         let assets = page?.assets ?? []
         var byPhotoID: [String: Int] = [:]
+        var orderedIDs: [String] = []
         byPhotoID.reserveCapacity(assets.count)
-        for (index, asset) in assets.enumerated() where byPhotoID[asset.photo.id] == nil {
+        orderedIDs.reserveCapacity(assets.count)
+        for (index, asset) in assets.enumerated() {
+            orderedIDs.append(asset.photo.id)
             // 重复 id 保留首个（与旧实现 `first(where:)` 同义）。
-            byPhotoID[asset.photo.id] = index
+            if byPhotoID[asset.photo.id] == nil { byPhotoID[asset.photo.id] = index }
         }
         let index = PageAssetIndex(
-            pageVersion: pageVersion,
+            pageAssignmentCount: pageAssignmentCount,
+            orderedPhotoIDs: orderedIDs,
             assetIndexByPhotoID: byPhotoID
         )
         pageAssetIndexCache = index
         return index
+    }
+
+    /// 当前 page 的 id 序列是否与缓存一致（O(n) 指针/字符串比较；只用于 page 赋值后的
+    /// 一次校验，命中缓存时完全不调用）。
+    private func pageAssetIDsMatch(_ cachedIDs: [String]) -> Bool {
+        guard let page else { return cachedIDs.isEmpty }
+        let assets = page.assets
+        guard assets.count == cachedIDs.count else { return false }
+        for index in assets.indices where assets[index].photo.id != cachedIDs[index] {
+            return false
+        }
+        return true
     }
 
     /// 当前照片资产（O(1) 读取；语义与旧实现完全一致）：
@@ -203,6 +240,24 @@ public final class CullingViewModel: SessionPageModel {
         return page?.assets[position]
     }
 
+    /// 当前页中属于指定相似组的成员（按页顺序）。
+    ///
+    /// task-22：inspector 的 currentGroupAssets 旧实现每次 body 都 filter 整页
+    /// （组视图/相似组决策打开时每帧 O(page)）。缓存键 = page 赋值代数 + groupId：
+    /// 选择/当前照片变化不重建；页被替换（含决策回显）才重算一次。
+    @ObservationIgnored private var similarGroupAssetsCache: (assignment: Int, groupId: String, assets: [CullingAsset])?
+
+    func similarGroupAssets(inCurrentPage groupId: String) -> [CullingAsset] {
+        if let cached = similarGroupAssetsCache,
+           cached.assignment == pageAssignmentCount,
+           cached.groupId == groupId {
+            return cached.assets
+        }
+        let assets = page?.assets.filter { $0.similarityGroupId == groupId } ?? []
+        similarGroupAssetsCache = (pageAssignmentCount, groupId, assets)
+        return assets
+    }
+
     /// O(1)：当前照片在当前页的下标；无页/空页 → nil；currentPhotoId 为空/不在页内
     /// → 0（与各查看器既有 `currentIndex` 的回退口径一致）。
     func currentPageIndex() -> Int? {
@@ -215,6 +270,26 @@ public final class CullingViewModel: SessionPageModel {
 
     /// selectionSummary 缓存键的"选择代数"：selectedPhotoIds 每次写入由 didSet 自增。
     @ObservationIgnored private(set) var selectionVersion = 0
+    /// 选择集的稳定排序快照缓存（场景标签种子等 body 派生用）。
+    @ObservationIgnored var sortedSelectionCache: (version: Int, ids: [String])?
+
+    /// 选择集的稳定排序快照（按 id 升序、去重、去空串；场景标签种子等 body 派生用）。
+    ///
+    /// task-22：旧实现每帧 `selectedPhotoIds.sorted()`（最大 2 万条选择集）；
+    /// 缓存键 = selectionVersion（O(1)）。Observation 依赖：即使命中缓存也先读
+    /// `selectedPhotoIds.count`，保证"只改选择集"时 body 会重算。
+    var sortedSelectedIds: [String] {
+        let selectionCount = selectedPhotoIds.count
+        if let cached = sortedSelectionCache, cached.version == selectionVersion {
+            return cached.ids
+        }
+        // 与旧 SceneTagsEntryPolicy.seedPhotoIds 的"去空串后排序"同口径，缓存后每帧 O(1)。
+        let ids = selectionCount == 0
+            ? []
+            : selectedPhotoIds.filter { !$0.isEmpty }.sorted()
+        sortedSelectionCache = (selectionVersion, ids)
+        return ids
+    }
     /// `selectionSummary` 的缓存（key = pageVersion + selectionVersion；见 +Actions getter）。
     @ObservationIgnored var selectionSummaryCache: SelectionSummaryCache?
     public internal(set) var selectedPhotoIds: Set<String> = [] {
@@ -233,7 +308,13 @@ public final class CullingViewModel: SessionPageModel {
     var loadedPhotoIds: Set<String> = []
     /// P0 / A2：triage 星级策略（产品未拍板前显式暴露；默认保持 3/1 不改现状）。
     public var triageRatingMode: TriageRatingMode = .keep3Reject1
-    public internal(set) var navigationGroups: [NavigationGroup] = []
+    public internal(set) var navigationGroups: [NavigationGroup] = [] {
+        didSet { navigationGroupsVersion &+= 1 }
+    }
+    /// navigationGroups 的赋值代数（给 navigationGroupSizeByPhotoID 做 O(1) 失效）。
+    @ObservationIgnored private var navigationGroupsVersion = 0
+    /// photoId→组员数 缓存（见 +Navigation；旧实现每次读取重建整个字典）。
+    @ObservationIgnored var navigationGroupSizeCache: (version: Int, sizes: [String: Int])?
     public internal(set) var isNavigationBusy = false
     public internal(set) var selectedNavigationGroupId = ""
     public internal(set) var selectedNavigationGroupIds: Set<String> = []

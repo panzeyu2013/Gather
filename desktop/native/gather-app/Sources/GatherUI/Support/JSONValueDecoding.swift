@@ -61,7 +61,9 @@ enum BridgeError: Error, CustomStringConvertible {
 public extension JSONValue {
     /// Encodable → JSONValue（checkpoint / 任务载荷的通用编码入口）。
     init<T: Encodable>(from value: T) throws {
-        let data = try JSONEncoder().encode(value)
-        self = try JSONDecoder().decode(JSONValue.self, from: data)
+        // round-4 性能：复用 GatherProtocol 的共享编解码器（JSONValueCoding），
+        // 与旧实现同为默认配置的一次编码+解码，输出逐字节一致；避免每次调用
+        // 新建 JSONEncoder/JSONDecoder（任务载荷/checkpoint 的通用出口）。
+        self = try JSONValue(encoding: value)
     }
 }
