@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-17T03:23:17Z",
+  "generated_at": "2026-11-18T02:41:14Z",
   "generated_by": "scripts/check-cleanup-ratchet.sh --write-baseline",
   "counting": "matching non-comment lines (lines whose first non-space chars are // or * are ignored)",
   "metrics": {

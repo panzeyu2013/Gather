@@ -73,13 +73,19 @@ proto_line_n=$(while IFS= read -r f; do cat "$f"; done < "$TMP/proto-files" | wc
 # 顶层声明：行首必须是 public，排除缩进的嵌套类型。
 # 文件清单用 xargs 逐行传入：未加引号的 $(cat ...) 依赖 word splitting（SC2046），
 # 路径含空白时会拆错。与下方 module-metrics 的逐模块统计同一写法。
-xargs -I{} cat {} < "$TMP/proto-files" \
+while IFS= read -r f; do cat "$f"; done < "$TMP/proto-files" \
   | grep -hE '^public (struct|enum|indirect enum|final class|class|protocol|actor) [A-Za-z_][A-Za-z0-9_]*' \
   > "$TMP/decls" || true
 sed -E 's/^public (struct|enum|indirect enum|final class|class|protocol|actor) ([A-Za-z_][A-Za-z0-9_]*).*/\2/' \
   "$TMP/decls" | LC_ALL=C sort > "$TMP/type-names"
 public_types=$(wc -l < "$TMP/type-names" | tr -d ' ')
-public_declarations=$(xargs -I{} cat {} < "$TMP/proto-files" \
+# 评审 R4-F22：扫描量下限守卫，防止 proto-files 为空/被截断时把 0 当合规。
+if [ "$proto_file_n" -lt 50 ] || [ "$public_types" -lt 100 ]; then
+  echo "FAIL 扫描量异常：proto_file_n=$proto_file_n public_types=$public_types" >&2
+  exit 2
+fi
+
+public_declarations=$(while IFS= read -r f; do cat "$f"; done < "$TMP/proto-files" \
   | grep -hE '^[[:space:]]*public[[:space:]]' | wc -l | tr -d ' ')
 
 # 每个类型名的声明次数（顶层同名不应出现；防御性保留）。
@@ -148,8 +154,8 @@ for mod in GatherPersistence GatherDelivery GatherAnalysis GatherApplication Gat
   dir="$CORE_SOURCES/$mod"
   [ -d "$dir" ] || continue
   find "$dir" -type f -name '*.swift' | LC_ALL=C sort > "$TMP/one-mod"
-  m_types=$(xargs -I{} cat {} < "$TMP/one-mod" | grep -cE '^public (struct|enum|indirect enum|final class|class|protocol|actor) [A-Za-z_][A-Za-z0-9_]*' || true)
-  m_decls=$(xargs -I{} cat {} < "$TMP/one-mod" | grep -cE '^[[:space:]]*public[[:space:]]' || true)
+  m_types=$(while IFS= read -r f; do cat "$f"; done < "$TMP/one-mod" | grep -cE '^public (struct|enum|indirect enum|final class|class|protocol|actor) [A-Za-z_][A-Za-z0-9_]*' || true)
+  m_decls=$(while IFS= read -r f; do cat "$f"; done < "$TMP/one-mod" | grep -cE '^[[:space:]]*public[[:space:]]' || true)
   lower=$(printf '%s' "$mod" | tr '[:upper:]' '[:lower:]')
   printf 'public_types_%s %s\n' "$lower" "$m_types" >> "$TMP/module-metrics"
   printf 'public_declarations_%s %s\n' "$lower" "$m_decls" >> "$TMP/module-metrics"

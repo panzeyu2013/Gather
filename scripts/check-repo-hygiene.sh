@@ -179,12 +179,19 @@ import sys
 
 TEXT_EXT = (
     '.swift', '.md', '.sh', '.py', '.json', '.yml', '.yaml', '.strings', '.txt',
+    # 评审 R4-F3：.editorconfig [*] 对所有文件生效，检查面不应只覆盖硬编码子集。
+    '.plist', '.entitlements', '.modulemap', '.h', '.c', '.tsv', '.pbxproj',
+    '.xcconfig', '.m', '.mm',
 )
+TEXT_FILENAMES = ('Makefile', 'LICENSE', 'SHA256SUMS')
 EDITORCONFIG = '.editorconfig'
 
 tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
 tracked = sorted(p.decode('utf-8', 'surrogateescape') for p in tracked if p)
-files = [p for p in tracked if p.endswith(TEXT_EXT) or p in (EDITORCONFIG, '.gitattributes')]
+files = [p for p in tracked
+         if p.endswith(TEXT_EXT)
+         or p in (EDITORCONFIG, '.gitattributes')
+         or p.rsplit('/', 1)[-1] in TEXT_FILENAMES]
 
 fail = False
 if len(files) < 1000:

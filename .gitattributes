@@ -52,4 +52,5 @@
 docs/protocol-surface-baseline.json          linguist-generated=true
 docs/protocol-surface-modules-baseline.json  linguist-generated=true
 docs/cleanup-baseline.json                   linguist-generated=true
+docs/perf-baseline.json                      linguist-generated=true
 scripts/design-system-baseline.json          linguist-generated=true

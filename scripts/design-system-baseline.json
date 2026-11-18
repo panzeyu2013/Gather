@@ -3,7 +3,7 @@
   "font.systemSize": 15,
   "spacing.literalPadding": 5,
   "spacing.literalSpacing": 86,
-  "empty.contentUnavailable": 10,
+  "empty.contentUnavailable": 6,
   "container.groupBox": 0,
   "theme.legacyAlias": 1,
   "radius.legacyAlias": 15

@@ -367,8 +367,10 @@ fi
 #    #expect( 不再计入，AsyncWait.swift 的说明性注释原本虚增 2 条）。
 #    2026-10-31 渲染采样：新增 ButtonRenderTests（3 例 + 1 个套件，把「按钮真的用了
 #    哪个 token」从文档承诺变成像素证据）→ 2502/283。
-BASELINE_TEST_DECL=2502
-BASELINE_SUITE_DECL=283
+# 2026-11-18 评审 R3-T05 / R4-F6：三个基线重钉到实测值（原值严重过期，
+# 可静默删 765 个 @Test / 3445 条断言才触发 FAIL）：2502/283/11509 -> 3267/419/14954。
+BASELINE_TEST_DECL=3267
+BASELINE_SUITE_DECL=419
 # 计数前先剥注释：注释里的 `#expect(` / `@Test` 不是真声明（例如 AsyncWait.swift 的
 # 说明性注释），旧实现直接 grep 源码文本，ratchet 数字系统性偏高。词法遮罩保留字符串
 # 原样，否则 "https://…" 里的 // 会被当成行注释截断本行、连带漏数后面的断言。
@@ -481,7 +483,7 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 #    2026-10-31 残留收口：errorFill 边界断言 +2（源码 11,500）− 注释内 2 条（剥注释后不计数）
 #    → 11498，与上一轮持平；基线仍按剥注释口径钉死。
 #    2026-10-31 渲染采样：+11（3 例的像素断言）→ 11509。
-BASELINE_ASSERT=11509
+BASELINE_ASSERT=14954
 if [ "$assert_n" -lt "$BASELINE_ASSERT" ]; then
   echo "FAIL 断言数回落：$assert_n < baseline $BASELINE_ASSERT（删断言/换空壳用例必须显式下调并记账）" >&2
   ratchet_bad=1

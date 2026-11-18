@@ -369,10 +369,19 @@ if not dev.is_file():
     fail('缺少 docs/DEVELOPMENT.md')
 else:
     dev_text = dev.read_text(encoding='utf-8')
+    # 评审 R4-F1：只校验「## 门禁」小节内的清单；正文其它位置提到脚本名不算数。
+    gate_section = ''
+    start = dev_text.find('\n## 门禁')
+    if start >= 0:
+        rest = dev_text[start + 1:]
+        nxt = rest.find('\n## ', 1)
+        gate_section = rest if nxt < 0 else rest[:nxt]
+    if not gate_section:
+        fail('docs/DEVELOPMENT.md 缺少「## 门禁」小节')
     missing = []
     for name in gate_scripts:
         needle = './scripts/' + name
-        if line_of(dev_text, needle) is None:
+        if needle not in gate_section:
             missing.append(needle)
     if missing:
         for needle in missing:
@@ -380,6 +389,18 @@ else:
     else:
         ok('docs/DEVELOPMENT.md 列出了全部 %d 个门禁脚本（check-appintents.sh 除外）'
            % gate_count)
+    # 评审 R4-F2：门禁声明必须与 CI 实际 wiring 一致，防止步骤被悄悄删掉。
+    ci = REPO / '.github/workflows/ci.yml'
+    if not ci.is_file():
+        fail('缺少 .github/workflows/ci.yml')
+    else:
+        ci_text = ci.read_text(encoding='utf-8')
+        unwired = [n for n in gate_scripts if ('./scripts/' + n) not in ci_text]
+        if unwired:
+            for n in unwired:
+                fail('CI 未接入门禁：./scripts/%s' % n)
+        else:
+            ok('CI 已接入全部 %d 个门禁脚本' % gate_count)
 
 print('----')
 if FAIL:
