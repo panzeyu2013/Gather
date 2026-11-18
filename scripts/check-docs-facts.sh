@@ -369,8 +369,8 @@ if not dev.is_file():
     fail('缺少 docs/DEVELOPMENT.md')
 else:
     dev_text = dev.read_text(encoding='utf-8')
-    # 评审 R4-F1 / round-2 R2D-04：只认「## 门禁」小节里以清单项形式出现的脚本行，
-    # 正文/注释里提到脚本名不算数。
+    # 评审 R4-F1 / round-2 R2D-04 / round-3 R3T-01~04：门禁清单只认「## 门禁」小节内
+    # fenced code block 里以 ./scripts/ 开头的命令行；正文/注释/裸行不算数。
     gate_section = ''
     start = dev_text.find('\n## 门禁')
     if start >= 0:
@@ -381,8 +381,14 @@ else:
         fail('docs/DEVELOPMENT.md 缺少「## 门禁」小节')
     listed = set()
     listed_cmds = []
+    in_fence = False
     for line in gate_section.splitlines():
         stripped = line.strip()
+        if stripped.startswith(BT * 3):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            continue
         if stripped.startswith('#'):
             continue
         if stripped.startswith('- '):
@@ -402,38 +408,142 @@ else:
     else:
         ok('docs/DEVELOPMENT.md 列出了全部 %d 个门禁脚本（check-appintents.sh 除外）'
            % gate_count)
-    # 评审 R4-F2：门禁声明必须与 CI 实际 wiring 一致，防止步骤被悄悄删掉。
+    # 评审 R4-F2 / round-3 R3T-01/02：CI wiring 必须是「真的会被执行」的精确 run 行：
+    # 完整命令行逐字符匹配；禁止附加参数/短路/包装/echo/注释；禁止 if:false 与
+    # continue-on-error；门禁 job 必须属于会跑的工作流 job（warnings 在测试 job）。
     ci = REPO / '.github/workflows/ci.yml'
     if not ci.is_file():
         fail('缺少 .github/workflows/ci.yml')
     else:
-        ci_lines = []
-        for line in ci.read_text(encoding='utf-8').splitlines():
-            stripped = line.strip()
-            if stripped.startswith('#'):
+        ci_all = ci.read_text(encoding='utf-8').splitlines()
+        jobs = {}
+        current_job = None
+        in_jobs = False
+        for idx, line in enumerate(ci_all):
+            if re.match(r'^jobs:\s*(#.*)?$', line):
+                in_jobs = True
                 continue
-            ci_lines.append(line)
-        ci_text = '\n'.join(ci_lines)
+            if not in_jobs:
+                continue
+            m = re.match(r'^  ([A-Za-z0-9_-]+):\s*(#.*)?$', line)
+            if m:
+                current_job = m.group(1)
+                jobs[current_job] = []
+                continue
+            if current_job is not None:
+                jobs[current_job].append((idx, line))
+
+        def norm_expr(value):
+            v = value.strip().lower()
+            v = re.sub(r'^\$\{\{\s*', '', v)
+            v = re.sub(r'\s*\}\}$', '', v)
+            return v.strip()
+
+        def guard_value(ln, key):
+            m = re.match(r'^\s*' + key + r':\s*(.*?)\s*$', ln)
+            if not m:
+                return None
+            return norm_expr(m.group(1))
+
+        def job_has_guard(lines):
+            # 只把 job 级（4 空格缩进）if/continue-on-error 视为禁用；step 级由 step_has_guard 判。
+            for _, ln in lines:
+                if ln.strip().startswith('#'):
+                    continue
+                if re.match(r'^    if:', ln) and guard_value(ln, 'if') == 'false':
+                    return True
+                if re.match(r'^    continue-on-error:', ln) and guard_value(ln, 'continue-on-error') == 'true':
+                    return True
+            return False
+
+        def step_has_guard(lines, run_idx):
+            start = 0
+            for pos, (_, ln) in enumerate(lines):
+                if re.match(r'^\s*-\s', ln) and pos <= run_idx:
+                    start = pos
+            for pos in range(start, len(lines)):
+                if pos > start and re.match(r'^\s*-\s', lines[pos][1]):
+                    break
+                ln = lines[pos][1]
+                if ln.strip().startswith('#'):
+                    continue
+                if guard_value(ln, 'if') == 'false' or guard_value(ln, 'continue-on-error') == 'true':
+                    return True
+            return False
+
+        def run_commands(lines, pos):
+            m = re.match(r'^\s*(?:-\s*)?run:\s*(.*?)\s*$', lines[pos][1])
+            if not m:
+                return None
+            value = m.group(1)
+            if value in ('|', '|-', '|+', '>', '>-', '>+'):
+                indent = len(lines[pos][1]) - len(lines[pos][1].lstrip())
+                out = []
+                for pos2 in range(pos + 1, len(lines)):
+                    ln = lines[pos2][1]
+                    if not ln.strip():
+                        continue
+                    if len(ln) - len(ln.lstrip()) <= indent:
+                        break
+                    out.append(ln.strip())
+                return out
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('\'', '"'):
+                return [value[1:-1]]
+            return [value]
+
+        allowed_jobs = {
+            'check-warnings.sh': ('gather-core', 'gather-app'),
+        }
+
+        def expected_jobs(script):
+            for key, val in allowed_jobs.items():
+                if script == key:
+                    return val
+            return ('boundary', 'gates')
+
         unwired = []
         masked = []
+        loose = []
         for cmd in listed_cmds:
             script = cmd.split()[0].rsplit('/', 1)[-1]
             if script not in gate_scripts:
                 continue  # 门禁小节里的非门禁辅助脚本（如 report-baseline）不参与接线断言
-            hits = [ln for ln in ci_lines if cmd in ln]
-            if not hits:
-                unwired.append(cmd)
+            exact = []
+            for job, lines in jobs.items():
+                if job not in expected_jobs(script):
+                    continue
+                for pos in range(len(lines)):
+                    cmds = run_commands(lines, pos)
+                    if cmds is None:
+                        continue
+                    if cmds != [cmd]:
+                        continue
+                    if job_has_guard(lines) or step_has_guard(lines, pos):
+                        masked.append(cmd)
+                    else:
+                        exact.append(job)
+            if exact:
                 continue
-            if any('|| true' in ln or '|| :' in ln for ln in hits):
-                masked.append(cmd)
+            containing = False
+            for job, lines in jobs.items():
+                for _, ln in lines:
+                    if cmd in ln and 'run:' in ln:
+                        containing = True
+            if containing:
+                loose.append(cmd)
+            else:
+                unwired.append(cmd)
         if unwired:
             for cmd in unwired:
-                fail('CI 未按文档命令接入门禁：%s' % cmd)
+                fail('CI 未按文档命令精确接入门禁：%s' % cmd)
+        if loose:
+            for cmd in loose:
+                fail('CI 门禁命令出现但非精确 run 行（包装/附加参数/短路风险）：%s' % cmd)
         if masked:
             for cmd in masked:
-                fail('CI 门禁命令被 || true 掩码（失败不会红）：%s' % cmd)
-        if not unwired and not masked:
-            ok('CI 已按文档命令接入全部 %d 个门禁脚本' % gate_count)
+                fail('CI 门禁命令被 if:false / continue-on-error 静默禁用：%s' % cmd)
+        if not unwired and not loose and not masked:
+            ok('CI 已按文档命令精确接入全部 %d 个门禁脚本（无禁用/短路）' % gate_count)
 
 print('----')
 if FAIL:

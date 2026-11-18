@@ -81,7 +81,7 @@ sed -E 's/^public (struct|enum|indirect enum|final class|class|protocol|actor) (
   "$TMP/decls" | LC_ALL=C sort > "$TMP/type-names"
 public_types=$(wc -l < "$TMP/type-names" | tr -d ' ')
 # 评审 R4-F22：扫描量下限守卫，防止 proto-files 为空/被截断时把 0 当合规。
-if [ "$proto_file_n" -lt 100 ] || [ "$public_types" -lt 400 ]; then
+if [ "$proto_file_n" -lt 110 ] || [ "$public_types" -lt 513 ]; then
   echo "FAIL 扫描量异常：proto_file_n=$proto_file_n public_types=$public_types" >&2
   exit 2
 fi
@@ -175,7 +175,7 @@ write_baseline() {
   cat > "$BASELINE" <<JSON
 {
   "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "note": "WP1 Protocol 公开面 ratchet；口径见 scripts/check-protocol-surface.sh 头注释。",
+  "note": "WP1 Protocol 公开面 ratchet；口径见 scripts/check-protocol-surface.sh 头注释。protocol_files/protocol_lines 为信息字段，不参与 compare_metric。",
   "protocol_files": $proto_file_n,
   "protocol_lines": $proto_line_n,
   "public_types": $public_types,
@@ -194,7 +194,10 @@ if [ "$WRITE_BASELINE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 
     key=$(printf '%s' "$kv" | cut -d: -f1)
     cur=$(printf '%s' "$kv" | cut -d: -f2-)
     base=$(baseline_value "$key" || true)
-    [ -n "$base" ] || continue
+    if [ -z "$base" ]; then
+      echo "  旧基线缺 key：$key（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+      exit 1
+    fi
     if [ "$cur" -gt "$base" ]; then
       echo "  涨：$key $base -> $cur" >&2
       grew=1
@@ -261,7 +264,10 @@ if [ "$WRITE_BASELINE" -eq 1 ]; then
     grew=0
     while read -r k v; do
       base=$(module_baseline_value "$k" || true)
-      [ -n "$base" ] || continue
+      if [ -z "$base" ]; then
+        echo "  模块基线缺 key：$k（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+        exit 1
+      fi
       if [ "$v" -gt "$base" ]; then echo "  涨：$k $base -> $v" >&2; grew=1; fi
     done < "$TMP/module-metrics"
     if [ "$grew" -ne 0 ]; then

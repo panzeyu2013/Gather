@@ -11,11 +11,14 @@
 #       - 所有 tracked 的 shebang 文件必须有执行位（chmod +x）；
 #       - *.sh 不得含 CR（CRLF / 孤 CR 都会让 shebang 失效）。
 #   [b] .editorconfig 一致性（tracked 文本文件：swift/md/sh/py/json/yml/yaml/strings/txt
-#       + .editorconfig / .gitattributes）
-#       - end_of_line=lf；trim_trailing_whitespace（含纯空白行）；insert_final_newline；charset=utf-8。
+#       + plist/entitlements/modulemap/h/c/tsv/pbxproj/xcconfig/m/mm；basename 另含
+#       Makefile/LICENSE/SHA256SUMS/.gitignore；再加 .editorconfig / .gitattributes）
+#       - end_of_line=lf；trim_trailing_whitespace（含纯空白行）；insert_final_newline；charset=utf-8
+#         （UTF-8 BOM 判 FAIL）。
 #   [c] Markdown 相对链接
-#       - tracked *.md 中 [x](path) / ![x](path) 必须解析到 tracked 文件（CI checkout 里也存在）；
-#       - 跳过 http(s)/mailto/其它 scheme、#锚点、协议相对 //、尖括号形式；
+#       - tracked *.md 中 [x](path)、![x](path)、带 title 的 [x](path "t")、引用式
+#         [x][ref] + [ref]: path 都必须解析到 tracked 文件（CI checkout 里也存在）；
+#       - 跳过 http(s)/mailto/其它 scheme、#锚点、协议相对 //、尖括号形式、未定义引用；
 #       - 跳过围栏代码块（三个反引号或三个波浪线）与行内代码（反引号包裹）——示例代码不是链接。
 #   [d] 本地化表安全（Resources 的 en.lproj / zh-Hans.lproj Localizable.strings）
 #       - 可完整解析（注释 + "key" = "value";），无残留非法片段；
@@ -257,7 +260,9 @@ import sys
 from urllib.parse import unquote
 
 BT = chr(96)
-LINK = re.compile(r'(!?)\[([^\]]*)\]\(([^()\s]*(?:\([^()]*\))?[^()\s]*)\)')
+LINK = re.compile(r'(!?)\[([^\]]*)\]\(\s*(<[^>]*>|[^()\s]*(?:\([^()]*\))?[^()\s]*)(?:\s+"[^"]*")?\s*\)')
+REF_USE = re.compile(r'!?\[([^\]]+)\]\[([^\]]*)\]')
+REF_DEF = re.compile(r'^\s{0,3}\[([^\]]+)\]:\s*(\S+)')
 SCHEME = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
 
 tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
@@ -299,22 +304,37 @@ for path in md_files:
     except (OSError, UnicodeDecodeError) as exc:
         problems.append((path, 'read error: %s' % exc))
         continue
-    for m in LINK.finditer(strip_code(text)):
-        url = m.group(3).strip()
+    clean = strip_code(text)
+    defs = {}
+    for line in clean.split('\n'):
+        dm = REF_DEF.match(line)
+        if dm:
+            defs[dm.group(1).lower()] = dm.group(2)
+
+    def check_url(url):
+        global link_n
         link_n += 1
-        if url.startswith('<') or url.endswith('>'):
-            continue
+        if url.startswith('<') and url.endswith('>'):
+            url = url[1:-1]
         if SCHEME.match(url) or url.startswith('//') or url.startswith('#'):
-            continue
+            return
         target = url.split('#', 1)[0]
         if not target:
-            continue
+            return
         target = unquote(target)
         resolved = os.path.normpath(os.path.join(os.path.dirname(path), target))
         if resolved not in tracked_set:
             problems.append((path, '链接目标不是 tracked 文件：%s' % url))
         elif not os.path.isfile(resolved):
             problems.append((path, '链接目标不在工作树：%s' % url))
+
+    for m in LINK.finditer(clean):
+        check_url(m.group(3).strip())
+    for m in REF_USE.finditer(clean):
+        label = (m.group(2) or m.group(1)).lower()
+        url = defs.get(label)
+        if url is not None:
+            check_url(url)
 
 if len(md_files) >= 60 and link_n < 100:
     print('    FAIL 只解析到 %d 个相对链接（<100），疑似扫描面失效' % link_n)

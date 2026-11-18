@@ -161,7 +161,10 @@ if [ "$WRITE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
   for key in $METRICS; do
     cur=$(metric "$key")
     base=$(grep -E "\"$key\"[[:space:]]*:[[:space:]]*[0-9]+" "$BASELINE" 2>/dev/null | grep -oE '[0-9]+' | head -n 1 || true)
-    [ -n "$base" ] || continue
+    if [ -z "$base" ]; then
+      echo "  旧基线缺 key：$key（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+      exit 1
+    fi
     if [ "$cur" -gt "$base" ]; then
       echo "  涨：$key $base -> $cur" >&2
       grew=1

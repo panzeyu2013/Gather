@@ -77,10 +77,34 @@ count_matches() {
   echo "$total"
 }
 
+# count_unchecked_sendable：跨行/注释间隔的 @unchecked Sendable 也要计数（评审 R3T-07）。
+# 逐文件剥掉纯注释行后做多行正则；与 count_matches 的“非纯注释行”口径一致。
+count_unchecked_sendable() {
+  python3 - "$@" <<'PY'
+import pathlib
+import re
+import sys
+
+total = 0
+for root in sys.argv[1:]:
+    for p in pathlib.Path(root).rglob('*.swift'):
+        if '/.build/' in str(p):
+            continue
+        try:
+            text = p.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)  # 块注释间隔也归一
+        lines = [l for l in text.splitlines() if not l.lstrip().startswith(('//', '*'))]
+        total += len(re.findall(r'@unchecked\s+Sendable', '\n'.join(lines)))
+print(total)
+PY
+}
+
 metric() {
   case "$1" in
-    # 评审 R2T-09：用空白类而非单空格，避免 '@unchecked  Sendable'（双空格）绕过计数。
-    unchecked_sendable) count_matches '@unchecked[[:space:]][[:space:]]*Sendable' "$CORE_SRC" "$APP_SRC" ;;
+    # 评审 R2T-09 / R3T-07：多行、块注释间隔、双空格、Tab 都计数（纯行注释不计）。
+    unchecked_sendable) count_unchecked_sendable "$CORE_SRC" "$APP_SRC" ;;
     try_optional)       count_matches 'try\?' "$CORE_SRC" "$APP_SRC" ;;
     try_bang)           count_matches 'try!' "$CORE_SRC" "$APP_SRC" ;;
     as_bang)            count_matches 'as!' "$CORE_SRC" "$APP_SRC" ;;
@@ -134,7 +158,10 @@ if [ "$WRITE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
   for key in $METRICS; do
     cur=$(metric "$key")
     base=$(grep -E "\"$key\"[[:space:]]*:[[:space:]]*[0-9]+" "$BASELINE" 2>/dev/null | grep -oE '[0-9]+' | head -n 1 || true)
-    [ -n "$base" ] || continue
+    if [ -z "$base" ]; then
+      echo "  旧基线缺 key：$key（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+      exit 1
+    fi
     if [ "$cur" -gt "$base" ]; then
       echo "  涨：$key $base -> $cur" >&2
       grew=1
