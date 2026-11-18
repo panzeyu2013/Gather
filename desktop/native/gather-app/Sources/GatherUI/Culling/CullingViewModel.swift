@@ -152,7 +152,8 @@ public final class CullingViewModel: SessionPageModel {
     /// （500 张页实测约 84µs）。返回的资产始终从当前 page 现取，state 不会过期。
     @ObservationIgnored private var pageAssetIndexCache: PageAssetIndex?
     /// page 的赋值代数（didSet 自增；任何赋值路径都覆盖，包括不 bump pageVersion 的直接赋值）。
-    @ObservationIgnored private var pageAssignmentCount = 0
+    /// 评审 round-2：+Preload.swift 的过期守卫要读它，故改 internal（与 navigationGroupsVersion 同口径）。
+    @ObservationIgnored private(set) var pageAssignmentCount = 0
 
     /// 页内 photoId→下标索引（位置索引，而不是复制整页资产）。
     ///
@@ -317,7 +318,8 @@ public final class CullingViewModel: SessionPageModel {
         didSet { navigationGroupsVersion &+= 1 }
     }
     /// navigationGroups 的赋值代数（给 navigationGroupSizeByPhotoID 做 O(1) 失效）。
-    @ObservationIgnored private var navigationGroupsVersion = 0
+    /// 评审 round-2：+Navigation.swift 跨文件读取，故 internal 只读（@ObservationIgnored 保持）。
+    @ObservationIgnored private(set) var navigationGroupsVersion = 0
     /// photoId→组员数 缓存（见 +Navigation；旧实现每次读取重建整个字典）。
     @ObservationIgnored var navigationGroupSizeCache: (version: Int, sizes: [String: Int])?
     public internal(set) var isNavigationBusy = false

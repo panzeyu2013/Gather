@@ -58,6 +58,7 @@ struct JSONValueCodingTests {
             .number(3.14159),
             .number(-1e-9),
             .string("引号\"反斜杠\\换行\n中文"),
+            .string("a/b 路径/转义"),
             .array([.number(1), .string("two"), .null, .bool(true)]),
             .object(["a": .number(1), "中文": .string("值"), "nested": .array([.null])]),
         ]
@@ -67,6 +68,8 @@ struct JSONValueCodingTests {
             #expect(try JSONValue.parse(cached) == JSONValue.parse(baseline),
                     "stringify 解码值漂移：\(value)")
             // 对象键序 Foundation 不承诺稳定，不做裸字节比较；标量/数组仍比字节。
+            // round-2 补：格式配置漂移（.prettyPrinted 会引入换行）仍可廉价拦截。
+            #expect(!cached.contains("\n"), "默认 encoder 不得输出换行（.prettyPrinted 漂移）：\(value)")
             if case .object = value { continue }
             #expect(cached == baseline, "非对象值 stringify 字节漂移：\(value)")
         }
@@ -124,8 +127,11 @@ struct JSONValueCodingTests {
         #expect(parsed == value, "stringify → parse 必须无损")
         let baseline = try baselineEncode(value)
         // 评审 R3-T01：对象键序不保证跨实例稳定，比较解码值而不是裸字节。
-        #expect(try JSONValue.parse(baseline) == value, "baseline 解码值必须与原始值一致")
-        #expect(try JSONValue.parse(json) == try JSONValue.parse(baseline), "编码值语义必须一致")
+        // round-2 评审 P0：try 不能出现在非赋值运算符右侧，先取值再断言。
+        let parsedBaseline = try JSONValue.parse(baseline)
+        // 复用上面已解析的 parsed，避免重复 decode（round-2 评审建议）。
+        #expect(parsedBaseline == value, "baseline 解码值必须与原始值一致")
+        #expect(parsed == parsedBaseline, "编码值语义必须一致")
     }
 
     @Test("损坏输入：parse 与新建 decoder 都抛 DecodingError（失败语义不变）")

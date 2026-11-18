@@ -132,7 +132,22 @@ public struct MetadataKeywordWriter: Sendable {
         do {
             cachedRows = try cacheStore.getBatch(targets.map(\.photo.id))
         } catch {
-            cachedRows = []
+            // 评审 R2C-05：getBatch 任一分片失败会整批抛出；旧实现逐张 get + 逐行 catch
+            // 只丢失败行。异常路径回退逐张读（N≤500、仅 DB 级错误时触发），保持
+            // externalChanged 判定不因单块失败而整批退化。
+            GatherLogger.log(
+                "keyword cache batch read failed, falling back to per-row: \(error)", level: .warn)
+            var fallbackRows: [MetadataCacheRow] = []
+            for target in targets {
+                do {
+                    if let row = try cacheStore.get(target.photo.id) {
+                        fallbackRows.append(row)
+                    }
+                } catch {
+                    continue
+                }
+            }
+            cachedRows = fallbackRows
         }
         var cachedRowByPhotoId: [String: MetadataCacheRow] = [:]
         for row in cachedRows { cachedRowByPhotoId[row.photoId] = row }

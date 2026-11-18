@@ -56,7 +56,7 @@ final class DisplayDateFormatters: @unchecked Sendable {
     /// 评审 R2-A4 / R5-03 同型：DateFormatter 非线程安全，旧写法"取到实例就释放锁、
     /// 再在锁外 string(from:)" 在并行测试或后台渲染下可并发使用同一实例（未定义行为）。
     /// 格式化本身是 O(µs)，持锁的串行代价可忽略；与 fileSize/ISO 解析的持锁口径统一。
-    private func withFormatter<T>(key: String, make: () -> DateFormatter, _ body: (DateFormatter) -> T) -> T {
+    private func withFormatter<T>(key: String, make: () -> DateFormatter, body: (DateFormatter) -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
         let formatter: DateFormatter

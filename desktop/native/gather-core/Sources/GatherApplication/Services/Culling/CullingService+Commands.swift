@@ -408,8 +408,11 @@ extension CullingDecisionService {
         var appliedPhotoIds: [String] = []
         // 批前一次取齐决策行（性能审计 R2 / N+1）：旧实现每张照片点查一次、
         // 再对同资产变体逐个点查（几百张勾选 ≈ 上千次单行查询）。这里按「勾选照片 +
-        // 其资产变体」的并集批量读（getByPhotoIds 内部按 800 分块）；本批自己写过的
-        // 照片/资产在后续迭代改用实时单行读，保证 revision 与逐张实现一致。
+        // 其资产变体」的并集批量读（getByPhotoIds 内部按 800 分块）。
+        // 用法边界（round-2 评审 R2C-02/R2C-03 修正）：预载快照只用于**变体人工保护**
+        // （批窗口内的新人工决策可能漏看，窗口=整批）；主照片在下方每张实时 getDecision，
+        // 把丢失更新窗口缩回上游的逐张 µs 级。updateState 内部的 revision 比较与传入的
+        // preloadedDecision 同源（上游亦然），本批不声称恢复了 DB 级乐观锁。
         var preloadIds: [String] = []
         var preloadSeen = Set<String>()
         for photoId in photoIds {
@@ -436,9 +439,9 @@ extension CullingDecisionService {
         }
         for photoId in photoIds {
             guard let photo = context.photoById[photoId] else { continue }
-            // 评审 CORE-01：批前快照不能当作 updateState 的 currentRow —— 那会让
-            // expectedRevision 与 currentRow 同源、把 revision 冲突检测变成恒等式。
-            // 主照片每张恢复实时 getDecision（1 次/张）；批量收益来自变体预载。
+            // 评审 CORE-01/R2C-02：主照片每张实时 getDecision（1 次/张），把批前快照的
+            // 整批丢失更新窗口缩回上游逐张实现的 µs 级（updateState 的 revision 比较
+            // 仍与传入行同源，属上游既有设计，本轮不扩大为 DB 级乐观锁）。
             let existing = try cullingDecisionRepo.getDecision(
                 sessionId: sessionId, photoId: photoId)
             // 人工决策优先（变体级）：updateState 会把同资产的全部变体一起改写，
