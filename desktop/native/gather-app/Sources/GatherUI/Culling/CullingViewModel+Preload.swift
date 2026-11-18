@@ -183,12 +183,18 @@ extension CullingViewModel {
         // 先按「当前缓存状态」算出未命中集合：预热开始后再判定会把刚预热成功的
         // 也算成命中，宿主侧通道就永远不发（也会掩盖真正的重复解码）。
         // task-17：探测（含磁盘 stat/读）放到后台，避免主线程同步 I/O。
+        // 评审 R5-06：await 回来后若页/当前照片已变，计划与 miss 集合都已过期，
+        // 继续消费会把预热/宿主优先级信号发到旧目标（浪费且干扰新页）。
+        let plannedAssignment = pageAssignmentCount
+        let plannedCurrentPhotoID = currentPhotoId
         let misses = await Self.computePreloadMisses(
             near: plan.nearRing,
             far: plan.farRing,
             next: plan.nextTarget
         )
-        guard !Task.isCancelled, !isShutdown else { return }
+        guard !Task.isCancelled, !isShutdown,
+              plannedAssignment == pageAssignmentCount,
+              plannedCurrentPhotoID == currentPhotoId else { return }
         let nearMisses = misses.nearMisses
         let farMisses = misses.farMisses
         let nextIsMiss = misses.nextIsMiss

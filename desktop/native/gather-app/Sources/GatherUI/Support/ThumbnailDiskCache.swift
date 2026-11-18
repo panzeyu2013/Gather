@@ -47,11 +47,14 @@ public enum ThumbnailDiskCache {
     /// 边界：只删 thumb-cache 目录内的缓存 JPEG（pruneIfNeeded 既有语义），
     /// 不触碰用户照片/设置；进程内至多调度一次；缓存未开启时不做任何事。
     package static func pruneAtStartupIfNeeded() {
+        // 评审 R2-A6：先确认启用再消费一次性标志，避免「未启用时调用一次就把启动
+        // prune 永久吃掉」的顺序陷阱。
+        guard isEnabled else { return }
         state.lock.lock()
         let firstCall = !state.didStartupPrune
         state.didStartupPrune = true
         state.lock.unlock()
-        guard firstCall, isEnabled else { return }
+        guard firstCall else { return }
         Task.detached(priority: .utility) {
             pruneIfNeeded()
         }

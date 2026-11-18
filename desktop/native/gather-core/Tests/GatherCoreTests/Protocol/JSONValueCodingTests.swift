@@ -1,12 +1,17 @@
 // desktop/native/gather-core/Tests/GatherCoreTests/Protocol/JSONValueCodingTests.swift
-// 性能审计回归（2026-11-17 perf-core）：JSONValue 的共享编解码器
-// （JSONValueCoding.encoder/decoder，被 JSONValue.parse/stringify 与
-// JSONValue.init(encoding:)/decode 复用）必须与「每次新建默认配置
-// JSONEncoder/JSONDecoder」逐字节 / 逐值等价；损坏输入的抛错语义也不得漂移。
+// 性能审计回归（2026-11-17 perf-core；2026-11-18 评审 R3-T01/R5-02 修正）：
+// JSONValue 的共享编解码器（JSONValueCoding.encoder/decoder，被 JSONValue.parse/
+// stringify 与 JSONValue.init(encoding:)/decode 复用）必须与「每次新建默认配置
+// JSONEncoder/JSONDecoder」**值等价**；损坏输入的抛错语义也不得漂移。
+//
+// 重要修正：Foundation 的 JSONEncoder 不承诺对含 Dictionary/对象的 JSON 输出稳定
+// 字节序（同值跨实例可不同；Linux swift-foundation 实测 encode→decode→encode 会
+// 翻转顺序）。因此本文件对对象只做「解析后值等价」，字节比较仅用于标量/数组/
+// 无重复键的稳定形态；需要字节断言时两侧都加 .sortedKeys 规范化。
 //
 // 背景：热路径曾每次调用新建两个 coder（元数据缓存 descriptive 逐行往返、
-// keywords/bbox/分析指纹解析）。复用默认配置实例的前提是「无可变状态 + 输出
-// 字节不变」，本文件用独立 baseline oracle 把该前提钉死。
+// keywords/bbox/分析指纹解析）。复用默认配置实例的前提是「无可变状态 + 解码值
+// 等价」，本文件用独立 baseline oracle 把该前提钉死。
 import Foundation
 import Testing
 import GatherProtocol
@@ -43,7 +48,7 @@ struct JSONValueCodingTests {
             unicode: "中文/emoji-🎞/规范")
     }
 
-    @Test("stringify 与默认配置 JSONEncoder 输出逐字节一致")
+    @Test("stringify 与默认配置 JSONEncoder 值等价（标量/数组字节一致）")
     func stringifyMatchesBaselineEncoder() throws {
         let values: [JSONValue] = [
             .null,
@@ -59,7 +64,11 @@ struct JSONValueCodingTests {
         for value in values {
             let cached = try JSONValue.stringify(value)
             let baseline = try baselineEncode(value)
-            #expect(cached == baseline, "stringify 输出漂移：\(value)")
+            #expect(try JSONValue.parse(cached) == JSONValue.parse(baseline),
+                    "stringify 解码值漂移：\(value)")
+            // 对象键序 Foundation 不承诺稳定，不做裸字节比较；标量/数组仍比字节。
+            if case .object = value { continue }
+            #expect(cached == baseline, "非对象值 stringify 字节漂移：\(value)")
         }
     }
 
@@ -103,7 +112,7 @@ struct JSONValueCodingTests {
         #expect(cached == baseline)
     }
 
-    @Test("stringify → parse 往返等价，且与 baseline 编码逐字节一致")
+    @Test("stringify → parse 往返等价，且与 baseline 编码值等价")
     func roundTripMatchesBaseline() throws {
         let value: JSONValue = .object([
             "id": .number(7),
@@ -114,7 +123,9 @@ struct JSONValueCodingTests {
         let parsed = try JSONValue.parse(json)
         #expect(parsed == value, "stringify → parse 必须无损")
         let baseline = try baselineEncode(value)
-        #expect(json == baseline, "缓存 encoder 与新建 encoder 的输出必须逐字节一致")
+        // 评审 R3-T01：对象键序不保证跨实例稳定，比较解码值而不是裸字节。
+        #expect(try JSONValue.parse(baseline) == value, "baseline 解码值必须与原始值一致")
+        #expect(try JSONValue.parse(json) == try JSONValue.parse(baseline), "编码值语义必须一致")
     }
 
     @Test("损坏输入：parse 与新建 decoder 都抛 DecodingError（失败语义不变）")

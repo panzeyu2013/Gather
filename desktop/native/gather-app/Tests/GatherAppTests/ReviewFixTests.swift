@@ -1069,12 +1069,16 @@ struct ReviewFixTests {
     func decodeGateSerializesBeyondLimit() async {
         let gate = PhotoDecodeGate(limit: 1)
         #expect(await gate.acquire() == true)
+        let waiterStarted = ReviewFixFlag()
         let waiterDone = ReviewFixFlag()
         let waiter = Task { () -> Bool in
+            waiterStarted.set()
             let acquired = await gate.acquire()
             waiterDone.set()
             return acquired
         }
+        // 评审 R3-T04：先正向等待「Task 已启动」，否则负向窗口可能只是 Task 未跑。
+        #expect(await waitUntilAsync(timeout: 0.5) { waiterStarted.isSet }, "等待者 Task 必须已启动")
         // 负向窗口：名额未释放时等待者不得完成（完成即排队语义失效）。
         #expect(
             !(await waitUntilAsync(timeout: 0.08) { waiterDone.isSet }),
@@ -1089,12 +1093,16 @@ struct ReviewFixTests {
     func decodeGateCancellationDoesNotHang() async {
         let gate = PhotoDecodeGate(limit: 1)
         #expect(await gate.acquire() == true)
+        let waiterStarted = ReviewFixFlag()
         let waiterDone = ReviewFixFlag()
         let waiter = Task { () -> Bool in
+            waiterStarted.set()
             let acquired = await gate.acquire()
             waiterDone.set()
             return acquired
         }
+        // 评审 R3-T04：先确认 Task 已启动，再做负向窗口（否则覆盖不到排队路径）。
+        #expect(await waitUntilAsync(timeout: 0.5) { waiterStarted.isSet }, "等待者 Task 必须已启动")
         // 有界负向窗口：等待者必须仍在排队（未完成）才取消，才能覆盖
         // "取消已排队的等待者"这条路径（无可观察的排队状态，用有界窗口兜底）。
         #expect(!(await waitUntilAsync(timeout: 0.04) { waiterDone.isSet }), "等待者应仍在排队")

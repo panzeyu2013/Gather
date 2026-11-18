@@ -51,25 +51,38 @@ final class DisplayDateFormatters: @unchecked Sendable {
         fractionalSecondsFormatter = fractional
     }
 
-    private func formatter(key: String, make: () -> DateFormatter) -> DateFormatter {
+    /// 取/建缓存 formatter 并在**持锁状态**下执行 body。
+    ///
+    /// 评审 R2-A4 / R5-03 同型：DateFormatter 非线程安全，旧写法"取到实例就释放锁、
+    /// 再在锁外 string(from:)" 在并行测试或后台渲染下可并发使用同一实例（未定义行为）。
+    /// 格式化本身是 O(µs)，持锁的串行代价可忽略；与 fileSize/ISO 解析的持锁口径统一。
+    private func withFormatter<T>(key: String, make: () -> DateFormatter, _ body: (DateFormatter) -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
-        if let existing = cache[key] { return existing }
-        let created = make()
-        cache[key] = created
-        return created
+        let formatter: DateFormatter
+        if let existing = cache[key] {
+            formatter = existing
+        } else {
+            formatter = make()
+            cache[key] = formatter
+        }
+        return body(formatter)
     }
 
     /// Dashboard：dateStyle .medium + timeStyle .short（跟随应用语言）。
+    ///
+    /// 评审 R3-T03：缓存键补上 calendar/timeZone（旧实现每次新建会跟随系统设置；
+    /// 只按 locale 缓存会把改过时区后的输出停在旧环境）。
     func mediumShort(_ date: Date, locale: Locale) -> String {
-        let formatter = formatter(key: "mediumShort|\(locale.identifier)") {
+        withFormatter(key: environmentKey("mediumShort", locale: locale)) {
             let f = DateFormatter()
             f.locale = locale
             f.dateStyle = .medium
             f.timeStyle = .short
             return f
+        } body: { formatter in
+            formatter.string(from: date)
         }
-        return formatter.string(from: date)
     }
 
     /// ISO-8601 解析；等价于旧实现的 `ISO8601DateFormatter()` + `[.withInternetDateTime]`。
@@ -92,36 +105,39 @@ final class DisplayDateFormatters: @unchecked Sendable {
     /// 在**调用时**取当前系统值；缓存键同样带上三者，运行中改系统设置会命中新
     /// 实例，输出不会停在旧环境（与旧实现一致，不引入展示差异）。
     func pattern(_ date: Date, format: String, locale: Locale) -> String {
-        let formatter = formatter(key: environmentKey("pattern|\(format)", locale: locale)) {
+        withFormatter(key: environmentKey("pattern|\(format)", locale: locale)) {
             let f = DateFormatter()
             f.locale = locale
             f.dateFormat = format
             return f
+        } body: { formatter in
+            formatter.string(from: date)
         }
-        return formatter.string(from: date)
     }
 
     /// `setLocalizedDateFormatFromTemplate` 的缓存版（Persons 详情 yMd 短模板）。
     func localizedTemplate(_ date: Date, template: String, locale: Locale) -> String {
-        let formatter = formatter(key: environmentKey("template|\(template)", locale: locale)) {
+        withFormatter(key: environmentKey("template|\(template)", locale: locale)) {
             let f = DateFormatter()
             f.locale = locale
             f.setLocalizedDateFormatFromTemplate(template)
             return f
+        } body: { formatter in
+            formatter.string(from: date)
         }
-        return formatter.string(from: date)
     }
 
     /// dateStyle `.short` + timeStyle `.short`（WebDAV 发布历史；旧实现不设 locale）。
     func shortShort(_ date: Date, locale: Locale) -> String {
-        let formatter = formatter(key: environmentKey("shortShort", locale: locale)) {
+        withFormatter(key: environmentKey("shortShort", locale: locale)) {
             let f = DateFormatter()
             f.locale = locale
             f.dateStyle = .short
             f.timeStyle = .short
             return f
+        } body: { formatter in
+            formatter.string(from: date)
         }
-        return formatter.string(from: date)
     }
 
     /// 文件大小展示：等价于旧调用的

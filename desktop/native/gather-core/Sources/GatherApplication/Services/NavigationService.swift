@@ -489,12 +489,31 @@ func hammingDistance(_ left: String, _ right: String) -> Int? {
 /// 旧实现每次调用新建 3 个 formatter（ISO8601 ×2 + DateFormatter ×1），而它被
 /// 逐行分组循环调用（1 万张照片 ≈ 2 万次调用 ≈ 6 万个 formatter）。带时区形态
 /// 复用仓库唯一的 ISO 解析器 tsParseISODate（同一对 formatOptions、同一兜底顺序）；
-/// 两种无时区形态做成只读静态 formatter（创建后不再改配置；与 IngestService 的
-/// 静态 exifDateFormatter 同一模式）。取值与顺序与原实现逐条一致。
+/// 两种无时区形态由锁盒子持有（见下，评审 R5-03 修正了无锁静态共享）。
+/// 取值与顺序与原实现逐条一致。
 private enum LegacyWallDateParsers {
-    static let exif = make("yyyy:MM:dd HH:mm:ss")
-    static let dashed = make("yyyy-MM-dd HH:mm:ss")
-    static let all = [exif, dashed]
+    private struct State {
+        var exif: DateFormatter?
+        var dashed: DateFormatter?
+    }
+
+    // 评审 R5-03：旧写法把两个 DateFormatter 放进 static let 无锁共享，违反本仓
+    // RepositoryDateFormatters 自己的「DateFormatter 非线程安全、必须加锁」约定。
+    // 现用 Synchronization.Mutex 锁盒子持有并在锁内解析（不新增 @unchecked Sendable /
+    // nonisolated(unsafe)，cleanup-ratchet 指标不变）。顺序仍是 exif → dashed。
+    private static let state = Mutex(State())
+
+    static func date(from value: String) -> Date? {
+        state.withLock { state -> Date? in
+            if state.exif == nil {
+                state.exif = make("yyyy:MM:dd HH:mm:ss")
+                state.dashed = make("yyyy-MM-dd HH:mm:ss")
+            }
+            if let exif = state.exif, let date = exif.date(from: value) { return date }
+            if let dashed = state.dashed, let date = dashed.date(from: value) { return date }
+            return nil
+        }
+    }
 
     private static func make(_ format: String) -> DateFormatter {
         let formatter = DateFormatter()
@@ -513,10 +532,8 @@ func parseISODate(_ value: String) -> Double {
     }
     // 生产库的 date_taken 是 EXIF 原值（"2026:07:30 10:00:00"），
     // 也兼容无 T 的 ISO 空格形式；否则 gap 恒 NaN → 每张自成一组。
-    for formatter in LegacyWallDateParsers.all {
-        if let date = formatter.date(from: value) {
-            return date.timeIntervalSince1970 * 1000
-        }
+    if let date = LegacyWallDateParsers.date(from: value) {
+        return date.timeIntervalSince1970 * 1000
     }
     return Double.nan
 }

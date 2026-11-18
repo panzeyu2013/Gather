@@ -46,6 +46,9 @@ public final class CullingViewModel: SessionPageModel {
         didSet {
             pageAssignmentCount &+= 1
             selectionSummaryCache = nil
+            // 评审 R2-A14：关键词目标索引按 (selectionKey, pageVersion) 失效；存在
+            // "直接赋值 page 但不 bump pageVersion" 的测试/未来路径，这里一并清空。
+            keywordTargetIndexCache = nil
             if page == nil { pageAssetIndexCache = nil }
         }
     }
@@ -248,6 +251,8 @@ public final class CullingViewModel: SessionPageModel {
     @ObservationIgnored private var similarGroupAssetsCache: (assignment: Int, groupId: String, assets: [CullingAsset])?
 
     func similarGroupAssets(inCurrentPage groupId: String) -> [CullingAsset] {
+        // 评审 R2-A1 同型防御：命中路径先无条件读 page，保留 Observation 依赖。
+        _ = page?.assets.count
         if let cached = similarGroupAssetsCache,
            cached.assignment == pageAssignmentCount,
            cached.groupId == groupId {

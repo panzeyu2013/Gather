@@ -31,7 +31,12 @@ import Foundation
 final class DBStatementCache {
     /// 最多缓存的语句数（只读池连接数上限）。默认 1，见文件头「只读池资源边界」。
     private let limit: Int
-    private var statements: [String: DBStatement] = [:]
+    private struct Entry {
+        let statement: DBStatement
+        /// 评审 CORE-05：记录语句所属连接，DEBUG 下拦截跨连接复用（语句绑定原连接）。
+        let owner: DBConnection
+    }
+    private var statements: [String: Entry] = [:]
 
     init(limit: Int = 1) {
         self.limit = max(1, limit)
@@ -40,10 +45,13 @@ final class DBStatementCache {
     /// 命中则复用；未命中则编译，并在未达 `limit` 时缓存。
     /// 未缓存的语句由调用方持有到表达式/作用域结束，随即释放（只读池连接随之归还）。
     func statement(_ connection: DBConnection, _ sql: String) throws -> DBStatement {
-        if let cached = statements[sql] { return cached }
+        if let cached = statements[sql] {
+            assert(cached.owner === connection, "DBStatementCache 禁止跨连接复用语句")
+            return cached.statement
+        }
         let fresh = try connection.prepare(sql)
         if statements.count < limit {
-            statements[sql] = fresh
+            statements[sql] = Entry(statement: fresh, owner: connection)
         }
         return fresh
     }

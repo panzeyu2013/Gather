@@ -53,7 +53,14 @@ struct LightboxView: View {
     /// O(1)：优先查 indexByID；映射滞后（photos 已换但 onChange 尚未跑）时回退一次线性查找。
     private var resolvedCurrentIndex: Int? {
         guard let currentID else { return nil }
-        if let index = indexByID[currentID], photos.indices.contains(index) { return index }
+        // 评审 R2-A2：photos 刷新后、onChange 重建 indexByID 之前的那次 body 里，
+        // 旧映射值可能落在"仍在界内但已换成另一张照片"的下标上；必须校验身份，
+        // 否则会闪错图并预热错的邻居（旧实现逐帧按 id 查找，无此窗口）。
+        if let index = indexByID[currentID],
+           photos.indices.contains(index),
+           photos[index].id == currentID {
+            return index
+        }
         return photos.firstIndex { $0.id == currentID }
     }
 

@@ -232,6 +232,9 @@ extension CullingViewModel {
     /// task-22：旧实现每次读取 O(组×成员) 重建字典，而 CullingGrid body 每帧读一次；
     /// 现在按 navigationGroups 赋值代数缓存（O(1) 键），语义不变（同一份数据）。
     var navigationGroupSizeByPhotoID: [String: Int] {
+        // 评审 R5-01 / R2-A1：缓存命中路径也必须无条件读一次被观察的 navigationGroups，
+        // 否则命中后 SwiftUI 不再登记该依赖，analyze/split/merge 后网格「组 N 张」不刷新。
+        _ = navigationGroups.count
         if let cached = navigationGroupSizeCache, cached.version == navigationGroupsVersion {
             return cached.sizes
         }

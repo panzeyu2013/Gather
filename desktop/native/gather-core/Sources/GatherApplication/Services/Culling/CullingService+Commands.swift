@@ -434,20 +434,13 @@ extension CullingDecisionService {
                     .getByPhotoIds(sessionId: sessionId, photoIds: preloadIds)
                     .map { ($0.photoId, $0) })
         }
-        // 本批已写过的照片/资产其 revision 已被 updateState 改写；后续迭代必须实时读。
-        var touchedPhotoIds = Set<String>()
-        var touchedAssetIds = Set<String>()
         for photoId in photoIds {
             guard let photo = context.photoById[photoId] else { continue }
-            let needsLiveRead = touchedPhotoIds.contains(photoId)
-                || (photo.assetId.map { touchedAssetIds.contains($0) } ?? false)
-            let existing: CullingDecisionRow?
-            if needsLiveRead {
-                existing = try cullingDecisionRepo.getDecision(
-                    sessionId: sessionId, photoId: photoId)
-            } else {
-                existing = preloadedDecisions[photoId]
-            }
+            // 评审 CORE-01：批前快照不能当作 updateState 的 currentRow —— 那会让
+            // expectedRevision 与 currentRow 同源、把 revision 冲突检测变成恒等式。
+            // 主照片每张恢复实时 getDecision（1 次/张）；批量收益来自变体预载。
+            let existing = try cullingDecisionRepo.getDecision(
+                sessionId: sessionId, photoId: photoId)
             // 人工决策优先（变体级）：updateState 会把同资产的全部变体一起改写，
             // 所以只要任一 RAW/JPEG 变体被人工决策过，就不能被客户勾选覆盖。
             if let assetId = photo.assetId {
@@ -478,14 +471,9 @@ extension CullingDecisionService {
                     preloadedDecision: existing,
                     source: .imported))
                 appliedPhotoIds.append(photoId)
-                touchedPhotoIds.insert(photoId)
-                if let assetId = photo.assetId { touchedAssetIds.insert(assetId) }
             } catch is CullingServiceError {
                 // 并发冲突/非法状态属于「这一张没成」：计入失败并继续，不吞 DB 错误
                 //（持久化失败仍会以 DatabaseError 上抛，此时已应用项已有历史可审计）。
-                // 失败迭代也可能已触碰资产（保守按已读写处理，后续迭代走实时读）。
-                touchedPhotoIds.insert(photoId)
-                if let assetId = photo.assetId { touchedAssetIds.insert(assetId) }
                 failed += 1
                 continue
             }

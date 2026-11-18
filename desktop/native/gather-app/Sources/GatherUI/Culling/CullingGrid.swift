@@ -296,9 +296,10 @@ final class CullingGridLayoutCache {
 
     /// 宽高打包成一个 UInt64（布局只消费 max(1, w/h)，所以先 clamp 再打包）。
     private static func packedSize(_ photo: PhotoData) -> UInt64 {
-        let width = UInt64(max(1, photo.width))
-        let height = UInt64(max(1, photo.height))
-        return (width << 32) | (height & 0xFFFF_FFFF)
+        // 评审 R2-A10：先 clamp 到 UInt32 范围再打包，避免 >2^32 px 时高位截断碰撞。
+        let width = UInt64(min(max(1, photo.width), Int(UInt32.max)))
+        let height = UInt64(min(max(1, photo.height), Int(UInt32.max)))
+        return (width << 32) | height
     }
 }
 

@@ -207,17 +207,18 @@ extension JobService {
     /// .failed，由调用方保留真实错误并显式上报，不再伪装成 leaseLost。
     ///
     /// round-4：重试等待由阻塞式 `Thread.sleep(0.2)` 改为 `Task.sleep(for: .milliseconds(200))`。
-    /// 语义（等 200ms → 原样重试一次、仍失败才返回 .failed）不变；取消不是错误：
-    /// 停机时 sleep 立即返回，仍会执行那一次重试（写终态是停机前必须尝试的收尾）。
+    /// 语义（等 200ms → 原样重试一次、仍失败才返回 .failed）不变；评审 R5-04 修正：
+    /// 取消时也不跳过等待（停机时 DB 写锁最紧张，保留旧实现的重试节奏）。
     private func writeTerminal(_ body: () throws -> Bool) async -> TerminalWriteOutcome {
         do {
             return try body() ? .written : .missed
         } catch {
-            do {
-                try await Task.sleep(for: .milliseconds(200))
-            } catch {
-                // Task 取消：跳过等待，立即重试一次（与旧实现「至少重试一次」一致）。
-            }
+            // 评审 R5-04：Task.sleep 在任务已取消时会立即抛出，会把旧实现的
+            // 「停机路径也等满 200ms 再重试」变成「立即重试」。detached 任务不受
+            // 父任务取消影响，严格保持「等 200ms → 重试一次」的旧语义而不阻塞线程池。
+            await Task.detached(priority: .utility) {
+                try? await Task.sleep(for: .milliseconds(200))
+            }.value
             do {
                 return try body() ? .written : .missed
             } catch let retryError {

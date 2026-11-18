@@ -75,17 +75,16 @@ extension GalleryViewModel {
         if let cached = loadedPhotoLookupCache, cached.generation == pagesGeneration {
             return cached.lookup
         }
-        let photos = loadedPhotos
-        var ids = Set<String>()
+        // 评审 R2-A11：id 集合直接复用 flatCache（同一 pagesGeneration），避免重复集合。
+        let (photos, loadedIDs) = loadedPhotosAndIDs()
+        let ids = loadedIDs
         var filepaths = Set<String>()
         var variantIDs = Set<String>()
         var variantFilepaths = Set<String>()
         var filenamesByID: [String: String] = [:]
-        ids.reserveCapacity(photos.count)
         filepaths.reserveCapacity(photos.count)
         filenamesByID.reserveCapacity(photos.count)
         for photo in photos {
-            ids.insert(photo.id)
             filepaths.insert(photo.filepath)
             // 与旧 `first(where:)` 同义：重复 id 取首个文件名。
             if filenamesByID[photo.id] == nil { filenamesByID[photo.id] = photo.filename }

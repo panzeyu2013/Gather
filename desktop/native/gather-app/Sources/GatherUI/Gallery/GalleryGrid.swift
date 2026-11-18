@@ -43,7 +43,10 @@ final class GalleryLayoutCache {
 
     /// 某个 filtered 下标落在哪一行；缓存为空（首帧/筛选刚变更）返回 nil。
     func rowIndex(containing index: Int) -> Int? {
-        rowByItemIndex[index]
+        if let hit = rowByItemIndex[index] { return hit }
+        // 评审 R2-A0：既有测试/未来路径会直接写 rows（不走 store），映射可能为空；
+        // 兜底回退线性扫（与 task-22 之前的实现同义），热路径仍走 O(1) 映射。
+        return rows.firstIndex { row in row.items.contains { $0.index == index } }
     }
 }
 
