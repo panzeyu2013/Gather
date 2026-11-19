@@ -9,6 +9,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherApplication
+import GatherTestSupport
 @testable import GatherMetadataIO
 
 // MARK: - 测试基建

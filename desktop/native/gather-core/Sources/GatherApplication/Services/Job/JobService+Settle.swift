@@ -20,6 +20,14 @@ extension JobService {
             throw JobServiceError.jobNotFound(jobId)
         }
         if persisted.status == .succeeded {
+            // 竞态：takeCompletedResult 之后、repo.get 之前任务恰好完成——结果已进内存但
+            // 这里只看到 succeeded 持久行。再取一次内存结果，避免把「已完成」误判成
+            // 「结果已被别人取走」返回 nil（LiveDuplicateAPI 会把 nil 映射成
+            // "empty duplicate.scan result" 失败）。
+            if let completed = takeCompletedResult(jobId: jobId) {
+                if let error = completed.error { throw error }
+                return completed.value as? T
+            }
             return nil
         }
         if [.failed, .interrupted, .cancelled].contains(persisted.status) {

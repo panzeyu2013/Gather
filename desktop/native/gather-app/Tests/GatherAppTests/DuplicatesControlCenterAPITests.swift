@@ -275,6 +275,32 @@ struct DuplicatesViewModelAPITests {
     }
 }
 
+/// 等待 `stub.getCalls.count` 在连续窗口内稳定：吸收「取消前已派发、尚未落到 stub」的
+/// 一次 session.get（测试注释里的调度窗口），同时仍能发现「取消后轮询没停」——那种情况
+/// 计数会持续变化，2s 内不可能连续 3 个窗口稳定。
+private func awaitStableGetCalls(
+    _ stub: B8SessionAPIStub,
+    window: Duration = .milliseconds(100),
+    stableWindows: Int = 3,
+    timeout: Duration = .seconds(2)
+) async -> Int {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    var last = stub.getCalls.count
+    var stable = 0
+    while clock.now < deadline && stable < stableWindows {
+        await awaitNegativeWindow(window)
+        let current = stub.getCalls.count
+        if current == last {
+            stable += 1
+        } else {
+            last = current
+            stable = 0
+        }
+    }
+    return last
+}
+
 // MARK: - ControlCenter
 
 @MainActor
@@ -430,10 +456,8 @@ struct ControlCenterAPITests {
         // 隐藏只取消轮询：隐藏前已交给 provider 的一次 session.get 可能仍在途
         //（非隔离 async 调用进入 stub 前有调度窗口）。先等它落定再取基线，
         // 窗口内再出现新调用才说明轮询没停。
-        await awaitNegativeWindow(.milliseconds(50))
-        let running = sessionAPI.getCalls.count
-        await awaitNegativeWindow(.milliseconds(100))
-        #expect(sessionAPI.getCalls.count == running, "隐藏后兜底轮询必须停止")
+        let running = await awaitStableGetCalls(sessionAPI)
+        #expect(await awaitStableGetCalls(sessionAPI) == running, "隐藏后兜底轮询必须停止")
 
         vm.setVisible(true)
         #expect(await waitUntilAsync { sessionAPI.getCalls.count > running }, "恢复可见后轮询必须重启")
@@ -441,9 +465,8 @@ struct ControlCenterAPITests {
         // stop 幂等：即使多调了 start，setVisible(false) 也必须全部停下。
         vm.setVisible(true)
         vm.setVisible(false)
-        let stopped = sessionAPI.getCalls.count
-        await awaitNegativeWindow(.milliseconds(100))
-        #expect(sessionAPI.getCalls.count == stopped)
+        let stopped = await awaitStableGetCalls(sessionAPI)
+        #expect(await awaitStableGetCalls(sessionAPI) == stopped)
 
         vm.setVisible(true)
         #expect(await waitUntilAsync { sessionAPI.getCalls.count > stopped })
@@ -451,11 +474,9 @@ struct ControlCenterAPITests {
         vm.shutdown()
         // 同隐藏窗口：关闭前已在途的 session.get 先落定，避免把旧请求记成
         // 关闭后的新轮询。
-        await awaitNegativeWindow(.milliseconds(50))
-        let shutDown = sessionAPI.getCalls.count
+        let shutDown = await awaitStableGetCalls(sessionAPI)
         vm.setVisible(true)
-        await awaitNegativeWindow(.milliseconds(100))
-        #expect(sessionAPI.getCalls.count == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
+        #expect(await awaitStableGetCalls(sessionAPI) == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
     }
 }
 
