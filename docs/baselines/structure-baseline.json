@@ -126,18 +126,18 @@
       },
       "packages": {
         "desktop/native/gather-core": {
-          "sources_loc": 102100,
-          "tests_loc": 62452,
+          "sources_loc": 102108,
+          "tests_loc": 62453,
           "sources_files": 427,
           "tests_files": 207,
-          "tests_to_sources_ratio": 0.6117
+          "tests_to_sources_ratio": 0.6116
         },
         "desktop/native/gather-app": {
           "sources_loc": 75128,
-          "tests_loc": 36924,
+          "tests_loc": 36960,
           "sources_files": 345,
           "tests_files": 133,
-          "tests_to_sources_ratio": 0.4915
+          "tests_to_sources_ratio": 0.492
         }
       },
       "targets": {
@@ -161,13 +161,13 @@
         },
         "GatherAppTests": {
           "files": 133,
-          "loc": 36924,
-          "max_file_loc": 1711,
+          "loc": 36960,
+          "max_file_loc": 1707,
           "max_file": "desktop/native/gather-app/Tests/GatherAppTests/CullingViewModelAPITests.swift"
         },
         "GatherApplication": {
           "files": 119,
-          "loc": 37677,
+          "loc": 37685,
           "max_file_loc": 917,
           "max_file": "desktop/native/gather-core/Sources/GatherApplication/Services/Output/S3ShareTransport.swift"
         },
@@ -179,7 +179,7 @@
         },
         "GatherCoreTests": {
           "files": 200,
-          "loc": 61585,
+          "loc": 61586,
           "max_file_loc": 2113,
           "max_file": "desktop/native/gather-core/Tests/GatherCoreTests/Services/CullingServiceTests.swift"
         },

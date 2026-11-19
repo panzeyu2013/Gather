@@ -149,3 +149,30 @@ func insertPhotoRow(
         ])
     }
 }
+
+/// 等待计数在连续窗口内稳定：吸收「取消/隐藏前已派发、尚未落到桩」的一次调用；
+/// 若轮询没真正停止，计数会持续变化、2s 内不会连续 3 个窗口稳定。
+@MainActor
+func awaitStableCount(
+    window: Duration = .milliseconds(100),
+    stableWindows: Int = 3,
+    timeout: Duration = .seconds(2),
+    _ count: @MainActor () -> Int
+) async -> Int {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    var last = count()
+    var stable = 0
+    while clock.now < deadline && stable < stableWindows {
+        await awaitNegativeWindow(window)
+        let current = count()
+        if current == last {
+            stable += 1
+        } else {
+            last = current
+            stable = 0
+        }
+    }
+    return last
+}
+

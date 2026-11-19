@@ -736,19 +736,17 @@ struct SimilarityViewModelTests {
         #expect(await waitUntilAsync { jobs.listFilters.count >= 1 })
 
         viewModel.setVisible(false)
-        let stopped = jobs.listFilters.count
-        await awaitNegativeWindow(.milliseconds(100))
-        #expect(jobs.listFilters.count == stopped, "隐藏后不得继续轮询 jobs.list")
+        let stopped = await awaitStableCount { jobs.listFilters.count }
+        #expect(await awaitStableCount { jobs.listFilters.count } == stopped, "隐藏后不得继续轮询 jobs.list")
 
         viewModel.setVisible(true)
         #expect(await waitUntilAsync { jobs.listFilters.count > stopped }, "恢复可见后进度轮询必须重启")
 
         viewModel.shutdown()
         gate.release()
+        let shutDown = await awaitStableCount { jobs.listFilters.count }
         viewModel.setVisible(true)
-        let shutDown = jobs.listFilters.count
-        await awaitNegativeWindow(.milliseconds(100))
-        #expect(jobs.listFilters.count == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
+        #expect(await awaitStableCount { jobs.listFilters.count } == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
     }
 
     // 结果轮询：无结果时的 2s 轮询同样随可见性启停，shutdown 后不复活。
@@ -758,17 +756,15 @@ struct SimilarityViewModelTests {
         #expect(await waitUntilAsync { api.resultQueries.count >= 1 })
 
         viewModel.setVisible(false)
-        let stopped = api.resultQueries.count
-        await awaitNegativeWindow(.milliseconds(100))
-        #expect(api.resultQueries.count == stopped, "隐藏后不得继续轮询 sim.result")
+        let stopped = await awaitStableCount { api.resultQueries.count }
+        #expect(await awaitStableCount { api.resultQueries.count } == stopped, "隐藏后不得继续轮询 sim.result")
 
         viewModel.setVisible(true)
         #expect(await waitUntilAsync { api.resultQueries.count > stopped }, "恢复可见后结果轮询必须重启")
 
         viewModel.shutdown()
+        let shutDown = await awaitStableCount { api.resultQueries.count }
         viewModel.setVisible(true)
-        let shutDown = api.resultQueries.count
-        await awaitNegativeWindow(.milliseconds(100))
-        #expect(api.resultQueries.count == shutDown, "shutdown 后 setVisible(true) 不得重启结果轮询")
+        #expect(await awaitStableCount { api.resultQueries.count } == shutDown, "shutdown 后 setVisible(true) 不得重启结果轮询")
     }
 }

@@ -969,10 +969,8 @@ struct CullingViewModelAPITests {
         #expect(vm.isActive == false)
         // 隐藏只取消轮询：隐藏前已在途的一次 jobs.list 可能尚未记上，先等它
         // 落定再取基线，随后窗口内再出现调用才说明轮询没停。
-        await awaitNegativeWindow(.milliseconds(100))
-        let stopped = jobs.listFilters.count
-        await awaitNegativeWindow(.milliseconds(200))
-        #expect(jobs.listFilters.count == stopped, "隐藏后不得继续轮询 JobAPI.list")
+        let stopped = await awaitStableCount { jobs.listFilters.count }
+        #expect(await awaitStableCount { jobs.listFilters.count } == stopped, "隐藏后不得继续轮询 JobAPI.list")
 
         // 恢复：仍在排队的画质任务重新开轮询（进度不丢）。
         vm.setVisible(true)
@@ -981,11 +979,9 @@ struct CullingViewModelAPITests {
         // 关闭：取消轮询；setVisible(true) 明确 no-op。
         vm.shutdown()
         // 同隐藏窗口：关闭前已在途的调用先落定。
-        await awaitNegativeWindow(.milliseconds(100))
-        let shutDown = jobs.listFilters.count
+        let shutDown = await awaitStableCount { jobs.listFilters.count }
         vm.setVisible(true)
-        await awaitNegativeWindow(.milliseconds(200))
-        #expect(jobs.listFilters.count == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
+        #expect(await awaitStableCount { jobs.listFilters.count } == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
     }
 
     @Test("4a-2b：隐藏期领域变更只登记，setVisible(true) 补刷")

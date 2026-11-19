@@ -1053,10 +1053,8 @@ struct GalleryViewModelTests {
         // 隐藏只取消轮询：隐藏前已交给 provider 的一次调用可能仍在途（非隔离
         // async 调用进入 stub 前有调度窗口）。先等它落定再取基线，窗口内再出现
         // 新调用才说明轮询没停。
-        await awaitNegativeWindow(.milliseconds(50))
-        let running = stub.workspaceStatusCalls
-        await awaitNegativeWindow(.milliseconds(100))
-        #expect(stub.workspaceStatusCalls == running, "隐藏后不得继续轮询 workspace.status")
+        let running = await awaitStableCount { stub.workspaceStatusCalls }
+        #expect(await awaitStableCount { stub.workspaceStatusCalls } == running, "隐藏后不得继续轮询 workspace.status")
 
         // 隐藏期事件只登记，不发取页命令。
         let basePages = stub.pageCalls.count
@@ -1072,10 +1070,8 @@ struct GalleryViewModelTests {
         // 关闭终态：setVisible(true) 不得重启轮询。
         viewModel.shutdown()
         // 同隐藏窗口：关闭前已在途的调用先落定，避免把旧请求记成关闭后的新轮询。
-        await awaitNegativeWindow(.milliseconds(50))
-        let shutDown = stub.workspaceStatusCalls
+        let shutDown = await awaitStableCount { stub.workspaceStatusCalls }
         viewModel.setVisible(true)
-        await awaitNegativeWindow(.milliseconds(100))
-        #expect(stub.workspaceStatusCalls == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
+        #expect(await awaitStableCount { stub.workspaceStatusCalls } == shutDown, "shutdown 后 setVisible(true) 不得重启轮询")
     }
 }
