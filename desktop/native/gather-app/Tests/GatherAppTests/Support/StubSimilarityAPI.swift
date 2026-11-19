@@ -11,7 +11,7 @@ import GatherPersistence
 import GatherAnalysis
 import GatherApplication
 
-private struct B8SimilarityState {
+struct B8SimilarityState {
     var resultValue: SimilarityResult?
     var tiers: [Int: SimilarityResult] = [:]
     var resultError: (any Error)?
@@ -64,139 +64,16 @@ private struct B8SimilarityState {
 }
 
 /// 可配置 SimilarityAPI：默认无结果、分析成功、写回空结果；记录全部类型化入参。
+@dynamicMemberLookup
 final class B8SimilarityAPIStub: SimilarityAPI, @unchecked Sendable {
     private let box = LockedBox(B8SimilarityState())
 
-    var resultValue: SimilarityResult? {
-        get { box.lock.withLock { box.resultValue } }
-        set { box.lock.withLock { box.resultValue = newValue } }
+    /// 状态字段经 LockedBox 动态转发：与逐属性访问器同一把锁、同一份状态；
+    /// 测试侧原有的赋值（记录数组/错误注入）语义不变。
+    subscript<T>(dynamicMember keyPath: WritableKeyPath<B8SimilarityState, T>) -> T {
+        get { box.lock.withLock { box[dynamicMember: keyPath] } }
+        set { box.lock.withLock { box[dynamicMember: keyPath] = newValue } }
     }
-
-    var tiers: [Int: SimilarityResult] {
-        get { box.lock.withLock { box.tiers } }
-        set { box.lock.withLock { box.tiers = newValue } }
-    }
-
-    var resultError: (any Error)? {
-        get { box.lock.withLock { box.resultError } }
-        set { box.lock.withLock { box.resultError = newValue } }
-    }
-
-    var analyzeResult: Bool {
-        get { box.lock.withLock { box.analyzeResult } }
-        set { box.lock.withLock { box.analyzeResult = newValue } }
-    }
-
-    var analyzeError: (any Error)? {
-        get { box.lock.withLock { box.analyzeError } }
-        set { box.lock.withLock { box.analyzeError = newValue } }
-    }
-
-    var analyzeGate: AsyncGate? {
-        get { box.lock.withLock { box.analyzeGate } }
-        set { box.lock.withLock { box.analyzeGate = newValue } }
-    }
-
-    var reclusterResultValue: SimilarityResult? {
-        get { box.lock.withLock { box.reclusterResultValue } }
-        set { box.lock.withLock { box.reclusterResultValue = newValue } }
-    }
-
-    var reclusterResults: [SimilarityResult] {
-        get { box.lock.withLock { box.reclusterResults } }
-        set { box.lock.withLock { box.reclusterResults = newValue } }
-    }
-
-    var reclusterError: (any Error)? {
-        get { box.lock.withLock { box.reclusterError } }
-        set { box.lock.withLock { box.reclusterError = newValue } }
-    }
-
-    var cancelResult: Bool {
-        get { box.lock.withLock { box.cancelResult } }
-        set { box.lock.withLock { box.cancelResult = newValue } }
-    }
-
-    var cancelError: (any Error)? {
-        get { box.lock.withLock { box.cancelError } }
-        set { box.lock.withLock { box.cancelError = newValue } }
-    }
-
-    var previewValue: WritebackPreview {
-        get { box.lock.withLock { box.previewValue } }
-        set { box.lock.withLock { box.previewValue = newValue } }
-    }
-
-    var previewError: (any Error)? {
-        get { box.lock.withLock { box.previewError } }
-        set { box.lock.withLock { box.previewError = newValue } }
-    }
-
-    var writebackItemsValue: [WritebackItem] {
-        get { box.lock.withLock { box.writebackItemsValue } }
-        set { box.lock.withLock { box.writebackItemsValue = newValue } }
-    }
-
-    var writebackItemsError: (any Error)? {
-        get { box.lock.withLock { box.writebackItemsError } }
-        set { box.lock.withLock { box.writebackItemsError = newValue } }
-    }
-
-    var writebackResultValue: WritebackResult {
-        get { box.lock.withLock { box.writebackResultValue } }
-        set { box.lock.withLock { box.writebackResultValue = newValue } }
-    }
-
-    var writebackError: (any Error)? {
-        get { box.lock.withLock { box.writebackError } }
-        set { box.lock.withLock { box.writebackError = newValue } }
-    }
-
-    var retryResultValue: WritebackResult {
-        get { box.lock.withLock { box.retryResultValue } }
-        set { box.lock.withLock { box.retryResultValue = newValue } }
-    }
-
-    var retryError: (any Error)? {
-        get { box.lock.withLock { box.retryError } }
-        set { box.lock.withLock { box.retryError = newValue } }
-    }
-
-    var confirmResult: Bool {
-        get { box.lock.withLock { box.confirmResult } }
-        set { box.lock.withLock { box.confirmResult = newValue } }
-    }
-
-    var confirmError: (any Error)? {
-        get { box.lock.withLock { box.confirmError } }
-        set { box.lock.withLock { box.confirmError = newValue } }
-    }
-
-    var cleanupResultValue: CleanupResult {
-        get { box.lock.withLock { box.cleanupResultValue } }
-        set { box.lock.withLock { box.cleanupResultValue = newValue } }
-    }
-
-    var cleanupError: (any Error)? {
-        get { box.lock.withLock { box.cleanupError } }
-        set { box.lock.withLock { box.cleanupError = newValue } }
-    }
-
-    var responseDelay: Duration {
-        get { box.lock.withLock { box.responseDelay } }
-        set { box.lock.withLock { box.responseDelay = newValue } }
-    }
-
-    var resultQueries: [SimilarityResultQuery] { box.lock.withLock { box.resultQueries } }
-    var analyzeInputs: [SimilarityAnalyzeInput] { box.lock.withLock { box.analyzeInputs } }
-    var reclusterInputs: [SimilarityAnalyzeInput] { box.lock.withLock { box.reclusterInputs } }
-    var cancelCalls: [String] { box.lock.withLock { box.cancelCalls } }
-    var previewInputs: [SimilarityPreviewWritebackInput] { box.lock.withLock { box.previewInputs } }
-    var writebackItemsCalls: [String] { box.lock.withLock { box.writebackItemsCalls } }
-    var writebackInputs: [Confirmed<SimilarityWritebackInput>] { box.lock.withLock { box.writebackInputs } }
-    var retryInputs: [Confirmed<SessionReference>] { box.lock.withLock { box.retryInputs } }
-    var confirmCalls: [String] { box.lock.withLock { box.confirmCalls } }
-    var cleanupInputs: [Confirmed<SessionReference>] { box.lock.withLock { box.cleanupInputs } }
 
     private func delayIfNeeded() async throws {
         let delay = box.lock.withLock { box.responseDelay }

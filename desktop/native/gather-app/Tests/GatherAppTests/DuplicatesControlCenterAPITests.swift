@@ -22,6 +22,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherApplication
+import GatherTestSupport
 @testable import GatherUI
 @testable import GatherHost
 
@@ -545,7 +546,7 @@ struct DuplicatesLocalizationTests {
             #expect(!text.isEmpty, "en 查询为空：\(key)")
             // "%.1f MB" 是语言中性的单位模板，其余 key 在 en 表必须与中文 key 不同。
             #expect(text != key || key == "%.1f MB", "en 表缺 key：\(key)")
-            #expect(!Self.containsCJK(text), "en 译文回落中文：\(key) -> \(text)")
+            #expect(!containsCJK(text), "en 译文回落中文：\(key) -> \(text)")
         }
     }
 
@@ -633,11 +634,4 @@ struct DuplicatesLocalizationTests {
         #expect(en.format("当前档位：%@", VisualPreset.strict.label(with: en)) == "Current preset: Strict")
     }
 
-    private static func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x3400...0x9FFF).contains(scalar.value)
-                || (0x3000...0x303F).contains(scalar.value)
-                || (0xFF00...0xFFEF).contains(scalar.value)
-        }
-    }
 }

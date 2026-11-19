@@ -14,7 +14,7 @@ import GatherApplication
 
 // MARK: - ExportAPI
 
-private struct B6bExportState {
+struct B6bExportState {
     var previewResult = ExportPreview(
         totalFiles: 0, totalSizeBytes: 0, freeSpaceBytes: 0, files: []
     )
@@ -34,53 +34,16 @@ private struct B6bExportState {
 }
 
 /// 可配置 ExportAPI：默认返回空预览/空结果，报告返回 md 占位。
+@dynamicMemberLookup
 final class B6bExportAPIStub: ExportAPI, @unchecked Sendable {
     private let box = LockedBox(B6bExportState())
 
-    var previewResult: ExportPreview {
-        get { box.lock.withLock { box.previewResult } }
-        set { box.lock.withLock { box.previewResult = newValue } }
+    /// 状态字段经 LockedBox 动态转发：与逐属性访问器同一把锁、同一份状态；
+    /// 测试侧原有的赋值（记录数组/错误注入）语义不变。
+    subscript<T>(dynamicMember keyPath: WritableKeyPath<B6bExportState, T>) -> T {
+        get { box.lock.withLock { box[dynamicMember: keyPath] } }
+        set { box.lock.withLock { box[dynamicMember: keyPath] = newValue } }
     }
-
-    var previewError: (any Error)? {
-        get { box.lock.withLock { box.previewError } }
-        set { box.lock.withLock { box.previewError = newValue } }
-    }
-
-    var executeResult: ExportResult {
-        get { box.lock.withLock { box.executeResult } }
-        set { box.lock.withLock { box.executeResult = newValue } }
-    }
-
-    var executeError: (any Error)? {
-        get { box.lock.withLock { box.executeError } }
-        set { box.lock.withLock { box.executeError = newValue } }
-    }
-
-    var cancelResult: Bool {
-        get { box.lock.withLock { box.cancelResult } }
-        set { box.lock.withLock { box.cancelResult = newValue } }
-    }
-
-    var cancelError: (any Error)? {
-        get { box.lock.withLock { box.cancelError } }
-        set { box.lock.withLock { box.cancelError = newValue } }
-    }
-
-    var reportResult: ReportData {
-        get { box.lock.withLock { box.reportResult } }
-        set { box.lock.withLock { box.reportResult = newValue } }
-    }
-
-    var reportError: (any Error)? {
-        get { box.lock.withLock { box.reportError } }
-        set { box.lock.withLock { box.reportError = newValue } }
-    }
-
-    var previewInputs: [ExportInput] { box.lock.withLock { box.previewInputs } }
-    var executeInputs: [Confirmed<ExportInput>] { box.lock.withLock { box.executeInputs } }
-    var cancelCalls: [String] { box.lock.withLock { box.cancelCalls } }
-    var reportInputs: [ExportReportInput] { box.lock.withLock { box.reportInputs } }
 
     func preview(_ input: ExportInput) async throws -> ExportPreview {
         let (error, result): ((any Error)?, ExportPreview) = box.lock.withLock {
@@ -146,7 +109,7 @@ private func emptyKeywordApplyResult() -> MetadataKeywordApplyResult {
     )
 }
 
-private struct B6bMetadataState {
+struct B6bMetadataState {
     var conflicts: [MetadataConflict] = []
     var conflictsError: (any Error)?
     var orphans: [MetadataOrphan] = []
@@ -174,8 +137,16 @@ private struct B6bMetadataState {
 }
 
 /// 可配置 MetadataAPI：默认冲突/孤儿为空；resolveOrphan 默认清空列表。
+@dynamicMemberLookup
 final class B6bMetadataAPIStub: MetadataAPI, @unchecked Sendable {
     private let box = LockedBox(B6bMetadataState())
+
+    /// 状态字段经 LockedBox 动态转发：与逐属性访问器同一把锁、同一份状态；
+    /// 测试侧原有的赋值（记录数组/错误注入）语义不变。
+    subscript<T>(dynamicMember keyPath: WritableKeyPath<B6bMetadataState, T>) -> T {
+        get { box.lock.withLock { box[dynamicMember: keyPath] } }
+        set { box.lock.withLock { box[dynamicMember: keyPath] = newValue } }
+    }
 
     var triageApplyResult: TriageWritebackResult?
 
@@ -259,90 +230,9 @@ final class B6bMetadataAPIStub: MetadataAPI, @unchecked Sendable {
         set { box.lock.withLock { box.conflicts = newValue } }
     }
 
-    var conflictsError: (any Error)? {
-        get { box.lock.withLock { box.conflictsError } }
-        set { box.lock.withLock { box.conflictsError = newValue } }
-    }
-
     var orphans: [MetadataOrphan] {
         get { box.lock.withLock { box.orphans } }
         set { box.lock.withLock { box.orphans = newValue } }
-    }
-
-    var orphansError: (any Error)? {
-        get { box.lock.withLock { box.orphansError } }
-        set { box.lock.withLock { box.orphansError = newValue } }
-    }
-
-    var resolveConflictResult: MetadataSyncSummary {
-        get { box.lock.withLock { box.resolveConflictResult } }
-        set { box.lock.withLock { box.resolveConflictResult = newValue } }
-    }
-
-    var resolveConflictError: (any Error)? {
-        get { box.lock.withLock { box.resolveConflictError } }
-        set { box.lock.withLock { box.resolveConflictError = newValue } }
-    }
-
-    var resolveOrphanResult: [MetadataOrphan]? {
-        get { box.lock.withLock { box.resolveOrphanResult } }
-        set { box.lock.withLock { box.resolveOrphanResult = newValue } }
-    }
-
-    var resolveOrphanError: (any Error)? {
-        get { box.lock.withLock { box.resolveOrphanError } }
-        set { box.lock.withLock { box.resolveOrphanError = newValue } }
-    }
-
-    var conflictCalls: [String] { box.lock.withLock { box.conflictCalls } }
-    var orphanCalls: Int { box.lock.withLock { box.orphanCalls } }
-    var resolveConflictInputs: [Confirmed<MetadataResolveConflictInput>] {
-        box.lock.withLock { box.resolveConflictInputs }
-    }
-    var resolveOrphanInputs: [Confirmed<MetadataResolveOrphanInput>] {
-        box.lock.withLock { box.resolveOrphanInputs }
-    }
-
-    var keywordPreviewResult: WritebackPreview {
-        get { box.lock.withLock { box.keywordPreviewResult } }
-        set { box.lock.withLock { box.keywordPreviewResult = newValue } }
-    }
-
-    var keywordPreviewError: (any Error)? {
-        get { box.lock.withLock { box.keywordPreviewError } }
-        set { box.lock.withLock { box.keywordPreviewError = newValue } }
-    }
-
-    var keywordApplyResult: MetadataKeywordApplyResult {
-        get { box.lock.withLock { box.keywordApplyResult } }
-        set { box.lock.withLock { box.keywordApplyResult = newValue } }
-    }
-
-    var keywordApplyError: (any Error)? {
-        get { box.lock.withLock { box.keywordApplyError } }
-        set { box.lock.withLock { box.keywordApplyError = newValue } }
-    }
-
-    var keywordRetryResult: MetadataKeywordApplyResult {
-        get { box.lock.withLock { box.keywordRetryResult } }
-        set { box.lock.withLock { box.keywordRetryResult = newValue } }
-    }
-
-    var keywordRetryError: (any Error)? {
-        get { box.lock.withLock { box.keywordRetryError } }
-        set { box.lock.withLock { box.keywordRetryError = newValue } }
-    }
-
-    var keywordPreviewInputs: [MetadataPreviewInput] {
-        box.lock.withLock { box.keywordPreviewInputs }
-    }
-
-    var keywordApplyInputs: [Confirmed<MetadataKeywordApplyInput>] {
-        box.lock.withLock { box.keywordApplyInputs }
-    }
-
-    var keywordRetryInputs: [Confirmed<SessionReference>] {
-        box.lock.withLock { box.keywordRetryInputs }
     }
 
     func preview(_ input: MetadataPreviewInput) async throws -> WritebackPreview {

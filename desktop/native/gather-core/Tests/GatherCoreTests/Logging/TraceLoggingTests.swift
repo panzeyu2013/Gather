@@ -79,78 +79,7 @@ private struct TracePathError: Error, CustomStringConvertible {
 }
 
 /// 写回租约测试的最小 XMP 假件：租约冲突发生在碰盘之前，所有文件操作都不应被调用。
-private final class TraceWritebackXMP: XMPProvider, @unchecked Sendable {
-    func readKeywords(photoPath: String) async throws -> [String] { [] }
-
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        MetadataWriteAttributes()
-    }
-
-    func writeAttributes(
-        photoPath: String, attributes: MetadataWriteAttributes
-    ) async throws {}
-
-    func backup(photoPath: String) async throws -> String { "" }
-
-    func restore(photoPath: String, backupPath: String) async throws {}
-
-    func fileExists(_ path: String) -> Bool { false }
-
-    func removeFile(_ path: String) async throws {}
-}
-
 /// 内存 XMP 假件：restore 覆盖写（幂等），removeFile 删除内存键；可注入失败。
-private final class TraceFilePort: DeliveryFilePort, @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [String: String] = [:]
-    private var restoreFailure: Error?
-    private var removeFailure: Error?
-
-    private func locked<T>(_ body: () throws -> T) rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return try body()
-    }
-
-    func setContents(_ path: String, _ value: String) {
-        locked { storage[path] = value }
-    }
-
-    func contents(_ path: String) -> String? {
-        locked { storage[path] }
-    }
-
-    func setRestoreFailure(_ error: Error?) {
-        locked { restoreFailure = error }
-    }
-
-    func setRemoveFailure(_ error: Error?) {
-        locked { removeFailure = error }
-    }
-
-    func fileExists(_ path: String) -> Bool {
-        locked { storage[path] != nil }
-    }
-
-    func restore(photoPath: String, backupPath: String) async throws {
-        let target = TSPath.xmpSidecarPath(photoPath)
-        try locked {
-            if let restoreFailure { throw restoreFailure }
-            guard let backup = storage[backupPath] else {
-                throw TraceFileError.injected
-            }
-            storage[target] = backup
-        }
-    }
-
-    func removeFile(_ path: String) async throws {
-        try locked {
-            if let removeFailure { throw removeFailure }
-            storage.removeValue(forKey: path)
-        }
-    }
-}
-
 private let traceXmp = "/v/wp7b-trace/IMG_TRACE.xmp"
 private let tracePhoto = "/v/wp7b-trace/IMG_TRACE.jpg"
 private let traceBackup = "/v/wp7b-trace/IMG_TRACE.xmp.gather-backup-test"
@@ -163,7 +92,7 @@ private struct TraceDeliveryFixture {
     let db: DBConnection
     let repo: DeliveryRepo
     let intents: DeliveryIntentRepo
-    let files: TraceFilePort
+    let files: RecordingDeliveryFilePort
     let coordinator: DeliveryCoordinator
     let delivery: DeliveryRow
 
@@ -173,7 +102,7 @@ private struct TraceDeliveryFixture {
         try insertPhoto(db, id: "wp7b-trace-p1", sessionId: traceSession)
         let repo = DeliveryRepo(connection: db)
         let intents = DeliveryIntentRepo(connection: db)
-        let files = TraceFilePort()
+        let files = RecordingDeliveryFilePort()
         files.setContents(traceXmp, "gather-written")
         files.setContents(backupPath, "original")
         let delivery = try repo.createOrGet(
@@ -752,7 +681,7 @@ struct TraceLoggingTests {
 
         let service = WritebackService(
             deliveryRepo: repo,
-            xmp: TraceWritebackXMP(),
+            xmp: RecordingXMPProvider(writeMode: .ignore),
             photoRepo: PhotoRepo(connection: db),
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,

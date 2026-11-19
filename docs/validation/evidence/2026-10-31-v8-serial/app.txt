@@ -1,2 +1,0 @@
-✔ Test run with 859 tests in 99 suites passed after 17.140 seconds.
-APP_EXIT:0

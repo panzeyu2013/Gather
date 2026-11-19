@@ -3,7 +3,7 @@
 #
 # 背景：SwiftPM 不会执行 Xcode 的 ExtractAppIntentsMetadata 构建步骤，直接
 # `swift build` 组装出的 .app 没有 Contents/Resources/Metadata.appintents，
-# Shortcuts.app 因此看不到 GatherAutomationIntents.swift 里的 4 个动作。
+# Shortcuts.app 因此看不到 GatherAutomationIntents.swift 里的 6 个动作。
 #
 # 本脚本做两件事（与 Xcode 的 appintentsmetadataprocessor 调用等价）：
 #   1) 对含 AppIntent/AppShortcutsProvider 的 Swift 源文件单独执行
@@ -19,14 +19,12 @@
 # - 非 strict（本地开发）：打印同样原因后 exit 0，让 build.sh 继续产出可运行的
 #   未签名 app（Shortcuts 发现性缺失但不阻塞本地调试）。
 #
-# 用法（一般由 desktop/native/build.sh 调用）：
+# 用法（唯一调用方是 desktop/native/build.sh）：source root 与 module 名收进脚本
+# 常量，deployment target 从 --target-triple 后缀派生（不再作为半常量参数传入）：
 #   scripts/build-appintents-metadata.sh \
 #     --app-bundle <path/Gather.app> \
 #     --bin-path <swift build --show-bin-path 输出> \
-#     --source-root desktop/native/gather-app/Sources/GatherApp \
-#     --module-name GatherApp \
-#     --target-triple arm64-apple-macos26.0 \
-#     --deployment-target 26.0 [--strict]
+#     --target-triple arm64-apple-macos26.0 [--strict]
 #
 # 环境变量：GATHER_APPINTENTS_VERBOSE=1 打印每条 swiftc 命令。
 set -euo pipefail
@@ -36,14 +34,14 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 APP_BUNDLE=""
 BIN_PATH=""
-SOURCE_ROOT=""
-MODULE_NAME="GatherApp"
 TARGET_TRIPLE=""
-DEPLOYMENT_TARGET="26.0"
 STRICT=0
+# 半常量参数收进脚本：唯一调用方传的永远是这些值；source root 从脚本位置推导。
+SOURCE_ROOT="$ROOT_DIR/desktop/native/gather-app/Sources/GatherApp"
+MODULE_NAME="GatherApp"
 
 usage() {
-  sed -n '2,40p' "$0"
+  sed -n '2,29p' "$0"
   exit 2
 }
 
@@ -51,10 +49,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --app-bundle) APP_BUNDLE="${2:-}"; shift 2 ;;
     --bin-path) BIN_PATH="${2:-}"; shift 2 ;;
-    --source-root) SOURCE_ROOT="${2:-}"; shift 2 ;;
-    --module-name) MODULE_NAME="${2:-}"; shift 2 ;;
     --target-triple) TARGET_TRIPLE="${2:-}"; shift 2 ;;
-    --deployment-target) DEPLOYMENT_TARGET="${2:-}"; shift 2 ;;
     --strict) STRICT=1; shift ;;
     -h|--help) usage ;;
     *) echo "build-appintents-metadata: unknown argument: $1" >&2; usage ;;
@@ -75,8 +70,11 @@ fail() {
 # ---- 参数与前置 ----
 [[ -n "$APP_BUNDLE" ]] || fail "missing --app-bundle"
 [[ -n "$BIN_PATH" ]] || fail "missing --bin-path"
-[[ -n "$SOURCE_ROOT" ]] || fail "missing --source-root"
 [[ -n "$TARGET_TRIPLE" ]] || fail "missing --target-triple"
+DEPLOYMENT_TARGET="${TARGET_TRIPLE##*apple-macos}"
+if [[ -z "$DEPLOYMENT_TARGET" || "$DEPLOYMENT_TARGET" == "$TARGET_TRIPLE" ]]; then
+  fail "cannot derive deployment target from --target-triple '$TARGET_TRIPLE' (want e.g. arm64-apple-macos26.0)"
+fi
 [[ -d "$APP_BUNDLE/Contents" ]] || fail "app bundle not assembled: $APP_BUNDLE"
 [[ -d "$SOURCE_ROOT" ]] || fail "GatherApp source root missing: $SOURCE_ROOT"
 [[ -d "$BIN_PATH" ]] || fail "SwiftPM bin path missing: $BIN_PATH (run swift build first)"
@@ -101,10 +99,6 @@ BUNDLE_ID=""
 if [[ -f "$APP_BUNDLE/Contents/Info.plist" ]]; then
   BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
 fi
-
-# 自检的 4 个 intent 标识（与 Sources/GatherApp/GatherAutomationIntents.swift 同步；
-# 测试/预发布验证可用 GATHER_APPINTENTS_EXPECTED 覆盖为逗号分隔列表）。
-EXPECTED_INTENTS="${GATHER_APPINTENTS_EXPECTED:-CreateWorkspaceAndImportIntent,ExportWorkspaceIntent,WritebackWorkspaceMetadataIntent,WorkspaceStatusIntent}"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gather-appintents.XXXXXX")"
 trap 'rm -rf "${TMP_DIR:-}"' EXIT
@@ -201,40 +195,11 @@ if ! "$PROCESSOR" "${processor_args[@]}" >"$TMP_DIR/processor.log" 2>&1; then
   sed -n '1,20p' "$TMP_DIR/processor.log" >&2
   fail "metadata extraction failed (Xcode/toolchain mismatch or stale SwiftPM modules)"
 fi
-ACTIONS_FILE="$RESOURCES_DIR/Metadata.appintents/extract.actionsdata"
-VERSION_FILE="$RESOURCES_DIR/Metadata.appintents/version.json"
-if [[ ! -s "$ACTIONS_FILE" || ! -s "$VERSION_FILE" ]]; then
+# ---- 4) 产物自检：复用 check-appintents.sh（唯一实现：6 个 intent 标识 + actions/version 完整性） ----
+if ! "$ROOT_DIR/scripts/check-appintents.sh" --meta "$RESOURCES_DIR/Metadata.appintents"; then
   echo "[appintents] processor log:" >&2
   sed -n '1,20p' "$TMP_DIR/processor.log" >&2
-  fail "processor produced no Metadata.appintents (App Intents symbols not found; check target membership/const-values emission)"
+  fail "Metadata.appintents is missing or does not contain all required intent identifiers"
 fi
 
-# ---- 4) 产物自检：4 个 intent 标识必须都在 actions 里 ----
-if ! python3 - "$ACTIONS_FILE" "$EXPECTED_INTENTS" <<'PY'
-import json, sys
-
-path, expected_raw = sys.argv[1], sys.argv[2]
-expected = [item for item in expected_raw.split(",") if item]
-data = json.load(open(path, encoding="utf-8"))
-actions = data.get("actions") or {}
-identifiers = set()
-for key, value in actions.items():
-    identifiers.add(key)
-    if isinstance(value, dict):
-        for field in ("identifier", "fullyQualifiedTypeName"):
-            value_field = value.get(field)
-            if isinstance(value_field, str) and value_field:
-                identifiers.add(value_field)
-                if "." in value_field:
-                    identifiers.add(value_field.rsplit(".", 1)[-1])
-missing = [item for item in expected if item not in identifiers]
-print("[appintents] intents: " + ", ".join(sorted(identifiers)))
-if missing:
-    print("[appintents] missing required intents: " + ", ".join(missing), file=sys.stderr)
-    sys.exit(1)
-PY
-then
-  fail "Metadata.appintents is missing one or more required intent identifiers"
-fi
-
-log "OK: $RESOURCES_DIR/Metadata.appintents ($(wc -c < "$ACTIONS_FILE" | tr -d ' ') bytes actionsdata)"
+log "OK: $RESOURCES_DIR/Metadata.appintents"

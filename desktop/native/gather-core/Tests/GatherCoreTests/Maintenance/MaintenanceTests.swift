@@ -2,15 +2,14 @@
 // P0 / B0：备份校验 / 恢复 journal / 诊断脱敏。
 import Foundation
 import Testing
+import GatherTestSupport
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherApplication
 
 private func makeTempDir(_ label: String) throws -> URL {
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-b0-\(label)-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    return url
+    // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+    URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: "gather-b0-\(label)"))
 }
 
 private func seedSession(_ database: Database, id: String) throws {

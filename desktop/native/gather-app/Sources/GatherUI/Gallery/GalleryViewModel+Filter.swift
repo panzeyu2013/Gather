@@ -117,8 +117,7 @@ extension GalleryViewModel {
         if wasActive && !nextActive {
             pages = Array(pages.prefix(1))
             pagesGeneration += 1
-            flatCache = nil
-            filteredCache = nil
+            invalidateDerivedCaches()
             pageCursors = Array(pageCursors.prefix(1))
             searchActiveWas = nextActive
             // 退出搜索/筛选：从首页重取，保证 limit 回到 pageSize（而不是

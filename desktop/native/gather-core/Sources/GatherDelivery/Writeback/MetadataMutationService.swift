@@ -130,7 +130,7 @@ public final class MetadataMutationService: MetadataMutationPort {
     /// 交付状态写入的唯一入口（WP2b）：applyMetadataMutation 的复合事务仍由 Repo 执行。
     private let stateWriter: DeliveryStateWriter
     private let xmp: any XMPProvider
-    private let assetResolver: PhotoAssetResolver
+    private let assetResolver: any PhotoAssetResolving
     private let chain = PathSerialChain()
 
     private let target: MetadataTargetResolver
@@ -138,7 +138,7 @@ public final class MetadataMutationService: MetadataMutationPort {
     public init(
         deliveryRepo: DeliveryRepo,
         xmp: any XMPProvider,
-        assetResolver: PhotoAssetResolver,
+        assetResolver: any PhotoAssetResolving,
         target: MetadataTargetResolver = .sidecar,
         flush: (@Sendable (String) async throws -> Void)? = nil
     ) {

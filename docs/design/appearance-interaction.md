@@ -259,7 +259,7 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache \
   --scratch-path desktop/native/gather-app/.build/scratch
 ```
 
-基线文件：`scripts/design-system-baseline.json`。
+基线文件：`docs/baselines/design-system-baseline.json`。
 
 ---
 

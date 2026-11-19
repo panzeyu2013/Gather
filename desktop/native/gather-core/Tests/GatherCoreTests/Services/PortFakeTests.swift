@@ -119,7 +119,7 @@ struct PortFakeCullingServiceTests {
             richQuery: richQuery,
             deliveryItems: PortFakeDeliveryRepo(),
             transactions: transactions,
-            metadataMutations: PortFakeMetadataMutation(),
+            metadataMutations: RecordingMetadataMutation(),
             writeback: PortFakeCullingWriteback(),
             cullingHistoryRepo: nil,
             delivery: PortFakeDeliveryAdapter(module: .culling)

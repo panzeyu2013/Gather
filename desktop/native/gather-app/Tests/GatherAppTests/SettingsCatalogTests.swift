@@ -93,11 +93,4 @@ struct SettingsCatalogTests {
         #expect(SettingsViewModel.label(for: "no_such_key", with: L10n(language: .en)) == "no_such_key")
     }
 
-    private func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x3000...0x303F).contains(scalar.value)
-                || (0x3400...0x9FFF).contains(scalar.value)
-                || (0xFF00...0xFFEF).contains(scalar.value)
-        }
-    }
 }

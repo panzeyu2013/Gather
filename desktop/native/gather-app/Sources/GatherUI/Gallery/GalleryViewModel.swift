@@ -351,6 +351,18 @@ public final class GalleryViewModel: SessionPageModel {
     /// 已加载照片的 O(1) 查询表（与 pagesGeneration 同步失效；懒构建，见 +Derived）。
     @ObservationIgnored var loadedPhotoLookupCache: (generation: Int, lookup: GalleryLoadedPhotoLookup)?
 
+    /// 派生缓存统一失效（task-6 / M4）：flatCache / filteredCache / loadedPhotoLookupCache 一起置 nil。
+    ///
+    /// 三个缓存都以 pagesGeneration 为失效依据（filteredCache 的 key 另含查询条件）；
+    /// 凡是要立刻丢弃派生结果的地方（reload / 事件重取 / 退出搜索筛选 / 堆栈折叠刷新）
+    /// 一律调用这里，避免散落的 "cache = nil" 漏清、或以后新增派生缓存时漏改。
+    /// 代数语义不变：pagesGeneration 的递增仍由各调用点按原语义自己做。
+    func invalidateDerivedCaches() {
+        flatCache = nil
+        filteredCache = nil
+        loadedPhotoLookupCache = nil
+    }
+
     public init(
         sessionId: String,
         provider: GalleryDataProvider,

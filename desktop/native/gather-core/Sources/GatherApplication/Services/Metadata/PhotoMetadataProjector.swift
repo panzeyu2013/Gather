@@ -12,13 +12,13 @@ import GatherPersistence
 
 public struct PhotoMetadataProjector: Sendable {
     private let xmp: any XMPProvider
-    private let assetResolver: PhotoAssetResolver?
+    private let assetResolver: (any PhotoAssetResolving)?
     /// 写目标解析（内嵌模式下写目标就是照片本身；nil = 恒按 sidecar 展示）。
     private let writeTarget: (@Sendable (String) -> MetadataTarget)?
 
     public init(
         xmp: any XMPProvider,
-        assetResolver: PhotoAssetResolver?,
+        assetResolver: (any PhotoAssetResolving)?,
         writeTarget: (@Sendable (String) -> MetadataTarget)?
     ) {
         self.xmp = xmp

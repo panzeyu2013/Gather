@@ -6,7 +6,7 @@
 // 401 个 id 的分块路径，以及照片未绑定 asset_file 时 JOIN 不命中。
 //
 // 注：`latestByAssetFile` 已在 main 的收口评审中确认零引用后删除
-// （见 docs/reviews/final-review-2026-10-29.md），本套件只覆盖保留的 `latest`。
+// （见历史 final review；文档已随 2026-11-18 文档清理移除），本套件只覆盖保留的 `latest`。
 
 import Foundation
 import Testing

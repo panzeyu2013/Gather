@@ -10,6 +10,7 @@
 import Foundation
 import Testing
 import GatherProtocol
+import GatherTestSupport
 @testable import GatherUI
 @testable import GatherHost
 

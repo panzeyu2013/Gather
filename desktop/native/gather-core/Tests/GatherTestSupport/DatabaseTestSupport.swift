@@ -14,6 +14,11 @@ import GatherPersistence
 ///
 /// 不写 user_version（夹具不参与版本门禁，版本由 Database.open 测）。
 /// 本函数是 core/app 测试唯一的建库入口。
+///
+/// 成本（task-43，Linux 微基准 .gather/round7/db-bench.txt）：单次 ≈3.1ms CPU，
+/// 其中 ≈3.08ms 是 SchemaCurrent.ddl 的 SQLite 执行（144 条语句 / 55 表 / 86 索引），
+/// 连接 open+close ≈0.024ms；DDL 事务包裹实测仅再省 ≈1.6%（噪声级），故保持现状。
+/// 用例内请一次建库、多断言，避免在循环里反复调用（N 次 ≈ N×3.1ms）。
 public func makeTestDB() throws -> DBConnection {
     let db = try DBConnection(path: ":memory:")
     try db.exec(SchemaCurrent.ddl)

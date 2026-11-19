@@ -240,14 +240,7 @@ private func makeLiveProvider() throws -> (LiveLibraryDataProvider, DBConnection
     ), db)
 }
 
-private func insertSession(_ db: DBConnection, _ id: String, name: String = "工作区") throws {
-    _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, created_at, updated_at)
-        VALUES (?, ?, 'photos_loaded', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(name)])
-}
-
-/// 照片 + 可选元数据缓存行（rating/label/keywords/status）。
+/// 照片 + 元数据缓存行（Library 过滤/排序依赖 cache 行）。
 private func insertPhoto(
     _ db: DBConnection,
     id: String,
@@ -257,17 +250,11 @@ private func insertPhoto(
     status: String = "ready",
     rating: Int = 0,
     label: String = "",
-    keywords: String = "[]",
-    createdAt: String = "2026-01-01T00:00:00.000Z"
+    keywords: String = "[]"
 ) throws {
-    _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', ?, ?, ?)
-    """).run([.text(id), .text(sessionId), .text("/tmp/\(id).jpg"), .text("\(id).jpg"), .text(status), .text(createdAt), .text(createdAt)])
-    _ = try db.prepare("""
-        INSERT INTO photo_metadata_cache (photo_id, session_id, rating, label, keywords, cached_at)
-        VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(sessionId), .int(Int64(rating)), .text(label), .text(keywords)])
+    try insertPhotoRow(
+        db, id: id, sessionId: sessionId, status: status,
+        metadata: (rating: rating, label: label, keywords: keywords))
 }
 
 // MARK: - 用例
@@ -671,8 +658,8 @@ struct LibraryViewModelTests {
     // 真实库：photos_global 按 rating/label 筛选 + total + 会话名聚合。
     @Test func liveProviderFiltersAndCountsGlobally() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1", name: "甲")
-        try insertSession(db, "s2", name: "乙")
+        try insertSessionRow(db, "s1", name: "甲")
+        try insertSessionRow(db, "s2", name: "乙")
         try insertPhoto(db, id: "p1", sessionId: "s1", rating: 5, label: "Red")
         try insertPhoto(db, id: "p2", sessionId: "s1", rating: 2)
         try insertPhoto(db, id: "p3", sessionId: "s2", rating: 4)
@@ -701,7 +688,7 @@ struct LibraryViewModelTests {
     // 真实库：status 筛选（missing 离线）与 keywords contains_any。
     @Test func liveProviderFiltersByStatusAndKeywords() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         try insertPhoto(db, id: "p1", sessionId: "s1", status: "missing", keywords: "[\"旅行\",\"风景\"]")
         try insertPhoto(db, id: "p2", sessionId: "s1", keywords: "[]")
 
@@ -726,7 +713,7 @@ struct LibraryViewModelTests {
     // 真实库：photo.list 会话下拉数据 + 分页 total 与 photos 一致性。
     @Test func liveProviderPaginationCountsTotal() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         for index in 0..<5 {
             try insertPhoto(db, id: "p\(index)", sessionId: "s1", rating: index % 3)
         }
@@ -742,7 +729,7 @@ struct LibraryViewModelTests {
     // 均必须可调用，不能只靠 UI stub 通过编译。
     @Test func liveProviderSupportsLibrarySupportCommands() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         try insertPhoto(db, id: "p1", sessionId: "s1", rating: 5)
 
         let criteria = FilterGroup(logic: .and, conditions: [

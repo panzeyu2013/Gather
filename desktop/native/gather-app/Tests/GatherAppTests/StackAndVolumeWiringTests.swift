@@ -14,18 +14,6 @@ import GatherTestSupport
 
 // MARK: - 测试替身
 
-/// Gallery 数据端口：本套件只用到堆栈写命令，分页恒空。
-private struct StackTestGalleryProvider: GalleryDataProvider {
-    func getSession(_ sessionId: String) async throws -> SessionData? { nil }
-
-    func photoPage(
-        sessionId: String,
-        afterFirstRowid: Int64?,
-        limit: Int,
-        expandVariants: Bool
-    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) { ([], nil) }
-}
-
 /// AlbumAPI 替身：记录堆栈写命令；堆栈/折叠列表由测试预置。
 private struct StackTestAlbumAPI: AlbumAPI {
     struct State {
@@ -130,7 +118,7 @@ private func makeStackFixtures() -> (GalleryViewModel, StackTestAlbumAPI) {
     )))
     let viewModel = GalleryViewModel(
         sessionId: "s1",
-        provider: StackTestGalleryProvider(),
+        provider: EmptyGalleryProvider(),
         job: B5bJobAPIStub(),
         album: album,
         debounceDelay: .milliseconds(1)

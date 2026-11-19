@@ -21,6 +21,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherApplication
+import GatherTestSupport
 @testable import GatherUI
 @testable import GatherHost
 
@@ -172,7 +173,7 @@ struct SettingsSaveSemanticsTests {
         let text = viewModel.errorMessage.map { CommandErrorText.resolve($0, with: en) } ?? ""
         #expect(text.contains(resolvedPath), "英文错误必须含真实路径，实际：\(text)")
         #expect(text.contains("Face embedding model not found"), "实际：\(text)")
-        #expect(!Self.containsCJK(text), "英文错误不得出现中文，实际：\(text)")
+        #expect(!containsCJK(text), "英文错误不得出现中文，实际：\(text)")
         #expect(viewModel.errorMessage?.code == SettingsViewModel.FaceModelPathIssue.modelNotFoundKey)
         #expect(settings.setInputs.isEmpty)
     }
@@ -194,7 +195,7 @@ struct SettingsSaveSemanticsTests {
         let text = viewModel.errorMessage.map { CommandErrorText.resolve($0, with: en) } ?? ""
         #expect(text.contains(".onnx"), "英文错误必须含扩展名，实际：\(text)")
         #expect(text.contains("Unsupported face embedding model extension"), "实际：\(text)")
-        #expect(!Self.containsCJK(text), "英文错误不得出现中文，实际：\(text)")
+        #expect(!containsCJK(text), "英文错误不得出现中文，实际：\(text)")
         #expect(viewModel.errorMessage?.code == SettingsViewModel.FaceModelPathIssue.unsupportedFormatKey)
         #expect(settings.setInputs.isEmpty)
     }
@@ -379,14 +380,6 @@ struct SettingsSaveSemanticsTests {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
-    }
-
-    private static func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x3000...0x303F).contains(scalar.value)
-                || (0x3400...0x9FFF).contains(scalar.value)
-                || (0xFF00...0xFFEF).contains(scalar.value)
-        }
     }
 
     @Test("numberText：整数不带小数，其余两位小数（zh/en 同值）")

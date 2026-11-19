@@ -1,0 +1,470 @@
+{
+  "schema": 2,
+  "generated_by": "scripts/check-port-row-surface.sh --write-baseline",
+  "note": "G6 端口/行类型表面 ratchet + 端口准入台账（M8/M10）。ports/port_methods/persistence_public_row_types 增长需 --allow-growth；ports_without_fake / ports_without_effective_fake / persistence_row_refs_in_application / dbrow_refs_outside_persistence 只降不升。",
+  "scan": {
+    "port_files": 35,
+    "ports": 44,
+    "app_sources": 119
+  },
+  "metrics": {
+    "ports": 44,
+    "port_methods": 340,
+    "ports_without_fake": 16,
+    "ports_without_effective_fake": 16,
+    "persistence_public_row_types": 76,
+    "persistence_row_refs_in_application": 46,
+    "dbrow_refs_outside_persistence": 0
+  },
+  "ports": [
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/AnalysisRunRepository.swift",
+      "name": "AnalysisRunRepository",
+      "methods": 2,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/AssetRepository.swift",
+      "name": "AssetRepository",
+      "methods": 4,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/CurationStores.swift",
+      "name": "CollectionStore",
+      "methods": 14,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/CullingDecisionLiteReading.swift",
+      "name": "CullingDecisionLiteReading",
+      "methods": 1,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/CullingDecisionRepository.swift",
+      "name": "CullingDecisionRepository",
+      "methods": 7,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/CullingHistoryRepository.swift",
+      "name": "CullingHistoryRepository",
+      "methods": 6,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/CullingRepository.swift",
+      "name": "CullingPageReading",
+      "methods": 4,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/CullingRepository.swift",
+      "name": "CullingRichReading",
+      "methods": 12,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/DeliveryItemBaselineReading.swift",
+      "name": "DeliveryItemBaselineReading",
+      "methods": 2,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/NarrowStores.swift",
+      "name": "DeliveryReadStore",
+      "methods": 1,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/DeliveryRepository.swift",
+      "name": "DeliveryRepository",
+      "methods": 3,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/DeliveryRowReading.swift",
+      "name": "DeliveryRowReading",
+      "methods": 2,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/DeliveryRepository.swift",
+      "name": "DeliverySummaryReading",
+      "methods": 3,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/DeliveryWriting.swift",
+      "name": "DeliveryWriting",
+      "methods": 22,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/DuplicateRepository.swift",
+      "name": "DuplicateGroupReading",
+      "methods": 6,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/DuplicateRepository.swift",
+      "name": "DuplicateRepository",
+      "methods": 19,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/ExportReportRepository.swift",
+      "name": "ExportReportRepository",
+      "methods": 4,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/FaceFeedbackRepository.swift",
+      "name": "FaceFeedbackRepository",
+      "methods": 3,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/FaceRepository.swift",
+      "name": "FaceRepository",
+      "methods": 48,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/CurationStores.swift",
+      "name": "GlobalDuplicateReading",
+      "methods": 5,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/IndexerRepository.swift",
+      "name": "IndexerRepository",
+      "methods": 18,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/JobRepository.swift",
+      "name": "JobRepository",
+      "methods": 20,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/KeywordIndexStore.swift",
+      "name": "KeywordIndexStore",
+      "methods": 5,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/LibraryPackageSnapshotting.swift",
+      "name": "LibraryPackageSnapshotting",
+      "methods": 3,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/NarrowStores.swift",
+      "name": "MetadataCacheStore",
+      "methods": 5,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/MetadataLifecycleStore.swift",
+      "name": "MetadataDeliveryReading",
+      "methods": 2,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/MetadataDispositionStore.swift",
+      "name": "MetadataDispositionReading",
+      "methods": 5,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/KeywordIndexStore.swift",
+      "name": "MetadataKeywordReading",
+      "methods": 1,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/MetadataRepository.swift",
+      "name": "MetadataRepository",
+      "methods": 8,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/MetadataLifecycleStore.swift",
+      "name": "MetadataRetentionStore",
+      "methods": 9,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/NavigationRepository.swift",
+      "name": "NavigationRepository",
+      "methods": 7,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/PersonRepository.swift",
+      "name": "PersonRepository",
+      "methods": 8,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/PhotoAssetResolving.swift",
+      "name": "PhotoAssetResolving",
+      "methods": 2,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/NarrowStores.swift",
+      "name": "PhotoReadStore",
+      "methods": 1,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/PhotoRepository.swift",
+      "name": "PhotoRepository",
+      "methods": 17,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/QualityRepository.swift",
+      "name": "QualityRepository",
+      "methods": 5,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/SessionRepository.swift",
+      "name": "SessionRepository",
+      "methods": 14,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/SettingsRepository.swift",
+      "name": "SettingsRepository",
+      "methods": 3,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/SimilarityRepository.swift",
+      "name": "SimilarityClusterStateRepository",
+      "methods": 3,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/SimilarityHashRepository.swift",
+      "name": "SimilarityHashRepository",
+      "methods": 5,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/SimilarityRepository.swift",
+      "name": "SimilarityRepository",
+      "methods": 8,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/CurationStores.swift",
+      "name": "StackStore",
+      "methods": 12,
+      "has_fake": false,
+      "has_effective_fake": false
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/TransactionRunner.swift",
+      "name": "TransactionRunner",
+      "methods": 1,
+      "has_fake": true,
+      "has_effective_fake": true
+    },
+    {
+      "file": "desktop/native/gather-core/Sources/GatherPersistence/Ports/TriageRepository.swift",
+      "name": "TriageRepository",
+      "methods": 10,
+      "has_fake": false,
+      "has_effective_fake": false
+    }
+  ],
+  "detail": {
+    "without_fake": [
+      "CollectionStore",
+      "CullingHistoryRepository",
+      "DeliveryWriting",
+      "DuplicateGroupReading",
+      "DuplicateRepository",
+      "ExportReportRepository",
+      "GlobalDuplicateReading",
+      "JobRepository",
+      "KeywordIndexStore",
+      "LibraryPackageSnapshotting",
+      "MetadataCacheStore",
+      "MetadataDispositionReading",
+      "MetadataRetentionStore",
+      "PhotoAssetResolving",
+      "StackStore",
+      "TriageRepository"
+    ],
+    "without_effective_fake": [
+      "CollectionStore",
+      "CullingHistoryRepository",
+      "DeliveryWriting",
+      "DuplicateGroupReading",
+      "DuplicateRepository",
+      "ExportReportRepository",
+      "GlobalDuplicateReading",
+      "JobRepository",
+      "KeywordIndexStore",
+      "LibraryPackageSnapshotting",
+      "MetadataCacheStore",
+      "MetadataDispositionReading",
+      "MetadataRetentionStore",
+      "PhotoAssetResolving",
+      "StackStore",
+      "TriageRepository"
+    ],
+    "row_type_names": [
+      "NamedRow",
+      "CullingFaceObservationRow",
+      "CullingPersonNameRow",
+      "CullingQualityResultRow",
+      "CullingTriageRow",
+      "CullingDeliveryModuleRow",
+      "DiagnosticsJobRow",
+      "GlobalDuplicateExactRow",
+      "GlobalDuplicatePhotoRow",
+      "FilteredPhotoRow",
+      "AnalysisJobRow",
+      "AssetFileRefRow",
+      "PhotoBackfillRow",
+      "LinkCandidateRow",
+      "ReconcileCandidateRow",
+      "AssetFileVolumeRow",
+      "SessionAssetRow",
+      "SidecarStateRow",
+      "CandidateLiteRow",
+      "RawJpegFileRow",
+      "CollectionRow",
+      "CollectionItemRow",
+      "CullingDecisionLiteRow",
+      "CullingHistoryRow",
+      "DeliveryIntentRow",
+      "DeliveryRow",
+      "ExportPersonBindingRow",
+      "FaceClusterMatchRow",
+      "RoleBindingRow",
+      "FaceObservationRow",
+      "AssetFileStatRow",
+      "AutomaticNavigationGroupRow",
+      "KeywordRow",
+      "LibraryPackageExportRow",
+      "ExternalMigrationCandidateRow",
+      "LibraryPackagePersonBindingRow",
+      "LibraryPackageDuplicateGroupRow",
+      "LibraryPackageDuplicateMemberRow",
+      "MetadataLifecycleRow",
+      "NavigationGroupRow",
+      "NavigationCaptureRow",
+      "OutputPresentationRow",
+      "PersonRow",
+      "PersonWithCountsRow",
+      "PersonPhotoRow",
+      "PhotoRow",
+      "PhotoSemanticsRow",
+      "ProofFeedbackRow",
+      "QualityCachedRow",
+      "QualityFaceRecord",
+      "SavedSearchRow",
+      "SessionRow",
+      "SettingsRow",
+      "SimilarityClusterMetaRow",
+      "SimilarityClusterStateRow",
+      "SimilarityHashRecord",
+      "SimilarityResultRow",
+      "SmartAlbumRow",
+      "StackRow",
+      "StackMemberRow",
+      "DeliveryBaselineRow",
+      "DuplicateVisualHashRow",
+      "DuplicateGroupRow",
+      "DuplicateMemberRow",
+      "FaceClusterConstraintRow",
+      "FaceClusterMemberRecord",
+      "FaceReviewMemberRow",
+      "ScanJobRecord",
+      "FailedJobRecord",
+      "PhotoLookupRow",
+      "PhotoReportRow",
+      "AnalysisRunRecord",
+      "TriageGroupRecord",
+      "TriageCandidateRecord",
+      "TriageVariantRecord",
+      "TriageApplyTargetRecord"
+    ],
+    "row_refs": {
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Queries.swift": 4,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Types.swift": 4,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingSyncService.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/CullingService.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/CurationService.swift": 6,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/DuplicateService.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Face/FaceKwService+Analyze.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Face/FaceKwService+Clusters.swift": 4,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Face/FaceKwService+Constraints.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Face/FaceKwService+Split.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Face/FaceReviewEngine.swift": 5,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/FileOps/PhotoFileOpsService.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Keyword/KeywordLibraryService.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Maintenance/DiagnosticsCollector.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Maintenance/ExternalMetadataMigrationService.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Metadata/MetadataDispositionService.swift": 4,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/MetadataService.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Output/OutputPresentationSource.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Semantic/SemanticIndex.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/SessionService.swift": 1,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/Triage/TriageService.swift": 2,
+      "desktop/native/gather-core/Sources/GatherApplication/Services/WorkspaceStatusService.swift": 3
+    },
+    "dbrow_refs": {}
+  }
+}

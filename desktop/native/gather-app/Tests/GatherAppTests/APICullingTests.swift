@@ -25,23 +25,6 @@ import GatherTestSupport
 
 // MARK: - Fake 端口
 
-/// MetadataMutationPort 的替身：本文件的用例只用 pickState 更新，写回不改真实
-/// outbox；方法返回可用的最小结果。
-private final class CullingTestMutationPort: MetadataMutationPort, @unchecked Sendable {
-    func queuePhotoValues(
-        sessionId: String,
-        photoId: String,
-        values: [String: JSONValue],
-        source: MetadataMutationSource,
-        schedule: Bool
-    ) throws -> MetadataMutationResult {
-        MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
-        )
-    }
-
-}
-
 /// CullingWritebackPort 的替身：只记录 writeback/retry 调用的模块与项，返回注入结果。
 /// `items` 同时是 getItems 的读模型：retryFailedWriteback 先按 status="failed"
 /// 读失败集、执行后再按 status=nil 读镜像行（与真实执行器同一两段读法）。
@@ -121,7 +104,7 @@ private struct CullingAPIFixture {
             similarityResultRepo: similarityRepo,
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,
-            metadataMutations: CullingTestMutationPort(),
+            metadataMutations: NoopMetadataMutationPort(),
             writeback: writeback,
             cullingHistoryRepo: CullingHistoryRepo(connection: db)
         )
@@ -907,7 +890,7 @@ struct APICullingTests {
             similarityResultRepo: SimilarityResultRepo(connection: db),
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,
-            metadataMutations: CullingTestMutationPort(),
+            metadataMutations: NoopMetadataMutationPort(),
             writeback: CullingTestWritebackPort(),
             cullingHistoryRepo: historyRepo
         )
@@ -986,7 +969,7 @@ struct APICullingTests {
             similarityResultRepo: SimilarityResultRepo(connection: db),
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,
-            metadataMutations: CullingTestMutationPort(),
+            metadataMutations: NoopMetadataMutationPort(),
             writeback: CullingTestWritebackPort(),
             cullingHistoryRepo: historyRepo
         )

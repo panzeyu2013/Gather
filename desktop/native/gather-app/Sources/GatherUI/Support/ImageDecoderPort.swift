@@ -64,24 +64,19 @@ public protocol ImageDecoderPort: Sendable {
 
 /// 进程级解码器注册表：GatherHost 启动时注册一次，视图层只读。
 ///
-/// 静态可变状态用 NSLock 串行化并标 nonisolated(unsafe)（与缩略图缓存同纪律）。
+/// M12（Wave5）：存储与互斥收口到 PortRegistry（单一进程级注册表），本类型只保留
+/// public API 以维持调用点不变。
 public enum ImageDecodingRegistry {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var decoder: (any ImageDecoderPort)?
-
     /// 注册实现（重复注册按后者生效：bootstrap 重试时替换）。
     public static func install(_ decoder: any ImageDecoderPort) {
-        lock.lock()
-        self.decoder = decoder
-        lock.unlock()
+        PortRegistry.install(imageDecoder: decoder)
     }
 
     /// 当前实现；未注册时抛 decoderUnavailable。
     public static func current() throws -> any ImageDecoderPort {
-        lock.lock()
-        let decoder = self.decoder
-        lock.unlock()
-        guard let decoder else { throw ImageDecodingError.decoderUnavailable }
+        guard let decoder = PortRegistry.imageDecoder() else {
+            throw ImageDecodingError.decoderUnavailable
+        }
         return decoder
     }
 }

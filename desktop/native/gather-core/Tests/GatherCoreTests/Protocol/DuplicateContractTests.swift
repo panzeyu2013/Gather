@@ -11,66 +11,46 @@ struct DuplicateContractTests {
     // MARK: - Enums
 
     @Test func dupResolutionRawValuesMatchTS() {
-        let cases: [(DupResolution, String)] = [
-            (.keepOne, "keep_one"),
-            (.keepAll, "keep_all"),
-        ]
+        let cases: [(DupResolution, String)] = [(.keepOne, "keep_one"), (.keepAll, "keep_all")]
         for (resolution, raw) in cases {
             #expect(resolution.rawValue == raw)
         }
     }
 
     @Test func duplicateGroupTypeRawValuesMatchTS() {
-        let cases: [(DuplicateGroupType, String)] = [
-            (.exact, "exact"),
-            (.visual, "visual"),
-        ]
+        let cases: [(DuplicateGroupType, String)] = [(.exact, "exact"), (.visual, "visual")]
         for (groupType, raw) in cases {
             #expect(groupType.rawValue == raw)
         }
     }
 
-    // MARK: - DuplicateScanResult
+    // MARK: - DuplicateScanResult（P2：roundtrip + keys 合并为共享模板）
 
     @Test func duplicateScanResultRoundTrip() throws {
-        let original = DuplicateScanResult(
+        try assertRoundTrip(DuplicateScanResult(
             exactGroups: [
                 DuplicateGroup(
-                    id: 1, groupType: .exact, checksum: "abc", hashHex: "0x01",
-                    memberCount: 2,
+                    id: 1, groupType: .exact, checksum: "abc", hashHex: "0x01", memberCount: 2,
                     members: [
                         DuplicateGroupMember(
                             id: 11, photoId: "p1", isKept: true, fileSize: 12345,
                             fileMtime: "2025-01-01T00:00:00Z", resolution: "keep_one",
-                            filepath: "/u/a.jpg", filename: "a.jpg"
-                        ),
+                            filepath: "/u/a.jpg", filename: "a.jpg"),
                         DuplicateGroupMember(
-                            id: 12, photoId: "p2", isKept: false, fileSize: nil,
-                            fileMtime: nil, resolution: nil,
-                            filepath: "/u/b.jpg", filename: "b.jpg"
-                        ),
+                            id: 12, photoId: "p2", isKept: false, fileSize: nil, fileMtime: nil,
+                            resolution: nil, filepath: "/u/b.jpg", filename: "b.jpg"),
                     ],
-                    resolution: "keep_one", createdAt: "t"
-                ),
+                    resolution: "keep_one", createdAt: "t"),
             ],
-            visualGroups: [],
-            totalDuplicates: 1
-        )
-
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(DuplicateScanResult.self, from: data)
-        #expect(decoded == original)
-
-        let keys = try jsonKeys(of: data)
-        #expect(Set(keys) == ["exactGroups", "visualGroups", "totalDuplicates"])
+            visualGroups: [], totalDuplicates: 1),
+            keys: ["exactGroups", "visualGroups", "totalDuplicates"])
     }
 
     // MARK: - null 字段编码为 JSON null（非省略 key）
 
     @Test func duplicateGroupResolutionNullAlwaysEncoded() throws {
         let group = DuplicateGroup(
-            id: 1, groupType: .visual, memberCount: 0, members: [], resolution: nil, createdAt: "t"
-        )
+            id: 1, groupType: .visual, memberCount: 0, members: [], resolution: nil, createdAt: "t")
         let object = try jsonObject(of: JSONEncoder().encode(group))
         #expect(object["resolution"] is NSNull, "TS resolution: string | null —— nil 必须编码为 null 且 key 恒存在")
         #expect(!Set(object.keys).contains("checksum"), "TS checksum? 为可选字段，nil 时省略 key")
@@ -80,8 +60,7 @@ struct DuplicateContractTests {
     @Test func duplicateGroupMemberNullsAlwaysEncoded() throws {
         let member = DuplicateGroupMember(
             id: 5, photoId: "p1", isKept: true, fileSize: nil, fileMtime: nil, resolution: nil,
-            filepath: "/u/a.jpg", filename: "a.jpg"
-        )
+            filepath: "/u/a.jpg", filename: "a.jpg")
         let object = try jsonObject(of: JSONEncoder().encode(member))
         #expect(object["fileSize"] is NSNull)
         #expect(object["fileMtime"] is NSNull)
@@ -94,19 +73,5 @@ struct DuplicateContractTests {
         #expect(decoded.fileSize == nil)
         #expect(decoded.fileMtime == nil)
         #expect(decoded.resolution == nil)
-    }
-    private func jsonKeys(of data: Data) throws -> [String] {
-        Array(try jsonObject(of: data).keys)
-    }
-
-    private func jsonObject(of data: Data) throws -> [String: Any] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ContractTestError.invalidJSON
-        }
-        return object
-    }
-
-    private enum ContractTestError: Error {
-        case invalidJSON
     }
 }

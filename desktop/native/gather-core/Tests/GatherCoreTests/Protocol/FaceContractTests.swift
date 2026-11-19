@@ -8,75 +8,36 @@ import Testing
 @testable import GatherProtocol
 
 struct FaceContractTests {
-    // MARK: - ClusterMember
+    // MARK: - DTO 往返 + key 冻结（P2：逐样本合并，含可选字段省略）
 
-    @Test func clusterMemberRoundTrip() throws {
-        let member = ClusterMember(memberId: 1, photoId: "p1", photoPath: "/u/a.jpg", filename: "a.jpg", bbox: [0.1, 0.2, 0.3, 0.4], confidence: 0.95)
-        let data = try JSONEncoder().encode(member)
-        #expect(try JSONDecoder().decode(ClusterMember.self, from: data) == member)
-        #expect(Set(try jsonKeys(of: data)) == ["memberId", "photoId", "photoPath", "filename", "bbox", "confidence"])
-    }
-
-    // MARK: - core.ts 跨域类型（WritebackOptions / WritebackItem）
-
-    @Test func writebackOptionsRoundTripAndKeys() throws {
-        let options = WritebackOptions(createAlbums: true, addPrefix: false)
-        let data = try JSONEncoder().encode(options)
-        #expect(try JSONDecoder().decode(WritebackOptions.self, from: data) == options)
-        #expect(Set(try jsonKeys(of: data)) == ["createAlbums", "addPrefix"])
-    }
-
-    @Test func writebackItemRoundTripAndKeys() throws {
-        let original = WritebackItem(
-            id: 5,
-            photoId: "p1",
-            photoPath: "/u/a.jpg",
-            sessionId: "s1",
-            module: "face-keyword",
-            keywords: ["妈妈"],
-            attributes: WritebackAttributes(keywords: ["妈妈"], rating: nil, label: nil),
-            xmpPath: "/u/a.xmp",
-            backupPath: "/u/.gather/a.xmp.bak",
-            xmpStatus: "pending",
-            errorMessage: "",
-            attemptCount: 1,
-            lastAttemptAt: "2025-01-01T00:00:00Z",
+    @Test("Face 契约 DTO：JSON 往返稳定 + camelCase key 冻结")
+    func faceDTOsRoundTripAndKeys() throws {
+        try assertRoundTrip(ClusterMember(memberId: 1, photoId: "p1", photoPath: "/u/a.jpg",
+                                          filename: "a.jpg", bbox: [0.1, 0.2, 0.3, 0.4], confidence: 0.95),
+                            keys: ["memberId", "photoId", "photoPath", "filename", "bbox", "confidence"])
+        try assertRoundTrip(WritebackOptions(createAlbums: true, addPrefix: false),
+                            keys: ["createAlbums", "addPrefix"])
+        try assertRoundTrip(WritebackItem(
+            id: 5, photoId: "p1", photoPath: "/u/a.jpg", sessionId: "s1", module: "face-keyword",
+            keywords: ["妈妈"], attributes: WritebackAttributes(keywords: ["妈妈"], rating: nil, label: nil),
+            xmpPath: "/u/a.xmp", backupPath: "/u/.gather/a.xmp.bak", xmpStatus: "pending",
+            errorMessage: "", attemptCount: 1, lastAttemptAt: "2025-01-01T00:00:00Z",
             preview: WritebackItemPreview(
                 dirtyFields: [.rating, .keywords],
-                before: WritebackAttributes(rating: 3),
-                after: WritebackAttributes(rating: 4),
-                source: "face-keyword",
-                sharedPhotoCount: 3,
-                externalChanged: false,
-                willCreate: true
-            )
-        )
-
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(WritebackItem.self, from: data)
-        #expect(decoded == original)
-
-        let keys = try jsonKeys(of: data)
-        let expected = [
-            "id", "photoId", "photoPath", "sessionId", "module", "keywords", "attributes",
-            "xmpPath", "backupPath", "xmpStatus", "errorMessage", "attemptCount",
-            "lastAttemptAt", "preview",
-        ]
-        #expect(Set(keys) == Set(expected), "WritebackItem JSON key 必须与 TS 字段名一致")
-        #expect(!keys.contains("photo_path"))
-        #expect(!keys.contains("last_attempt_at"))
-    }
-
-    @Test func writebackItemOptionalsOmittedWhenNil() throws {
-        let item = WritebackItem(
+                before: WritebackAttributes(rating: 3), after: WritebackAttributes(rating: 4),
+                source: "face-keyword", sharedPhotoCount: 3, externalChanged: false, willCreate: true)),
+            keys: [
+                "id", "photoId", "photoPath", "sessionId", "module", "keywords", "attributes",
+                "xmpPath", "backupPath", "xmpStatus", "errorMessage", "attemptCount",
+                "lastAttemptAt", "preview",
+            ],
+            forbiddenKeys: ["photo_path", "last_attempt_at"])
+        // id? / attributes? / preview? 未设置时省略 key。
+        try assertJSONKeys(WritebackItem(
             photoId: "p1", photoPath: "/u/a.jpg", sessionId: "s1", module: "culling",
             keywords: [], xmpPath: "/u/a.xmp", backupPath: "/u/b.xmp", xmpStatus: "clean",
-            errorMessage: "", attemptCount: 0, lastAttemptAt: "t"
-        )
-        let keys = try jsonKeys(of: JSONEncoder().encode(item))
-        #expect(!keys.contains("id"))
-        #expect(!keys.contains("attributes"))
-        #expect(!keys.contains("preview"))
+            errorMessage: "", attemptCount: 0, lastAttemptAt: "t"),
+            name: "WritebackItem(nil 可选字段)", forbiddenKeys: ["id", "attributes", "preview"])
     }
 
     @Test func writebackDirtyFieldRawValuesMatchTS() {
@@ -86,15 +47,5 @@ struct FaceContractTests {
         for (field, raw) in cases {
             #expect(field.rawValue == raw)
         }
-    }
-    private func jsonKeys(of data: Data) throws -> [String] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ContractTestError.invalidJSON
-        }
-        return Array(object.keys)
-    }
-
-    private enum ContractTestError: Error {
-        case invalidJSON
     }
 }

@@ -11,77 +11,33 @@ struct SimilarityContractTests {
     // MARK: - Enums
 
     @Test func similarityGroupingModeRawValuesMatchTS() {
-        let cases: [(SimilarityGroupingMode, String)] = [
-            (.sequential, "sequential"), (.global, "global"),
-        ]
+        let cases: [(SimilarityGroupingMode, String)] = [(.sequential, "sequential"), (.global, "global")]
         for (mode, raw) in cases {
             #expect(mode.rawValue == raw)
         }
     }
-    // MARK: - SimilarityGroup / SimilarityImage
 
-    @Test func similarityGroupRoundTripAndKeys() throws {
-        let original = SimilarityGroup(
-            id: 1,
-            label: "group_1",
-            count: 3,
-            images: [
-                SimilarityImage(path: "/u/a.jpg", representative: true),
-                SimilarityImage(path: "/u/b.jpg"),
-            ],
-            thumbnailBase64: "b64"
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(SimilarityGroup.self, from: data)
-        #expect(decoded == original)
+    // MARK: - DTO 往返 + key 冻结（P2：逐样本合并，含可选字段省略）
 
-        let expected = ["id", "label", "count", "images", "thumbnailBase64"]
-        #expect(Set(try jsonKeys(of: data)) == Set(expected))
-        #expect(!Set(try jsonKeys(of: data)).contains("thumbnail_base64"))
-    }
-
-    @Test func similarityImageRepresentativeOmittedWhenNil() throws {
-        let image = SimilarityImage(path: "/u/a.jpg")
-        let keys = try jsonKeys(of: JSONEncoder().encode(image))
-        #expect(Set(keys) == ["path"], "TS representative? 未设置时必须省略")
-    }
-
-    // MARK: - SimilarityResultStats
-
-    @Test func similarityResultStatsRoundTripAndKeys() throws {
-        let original = SimilarityResultStats(
+    @Test("Similarity 契约 DTO：JSON 往返稳定 + camelCase key 冻结")
+    func similarityDTOsRoundTripAndKeys() throws {
+        try assertRoundTrip(SimilarityGroup(
+            id: 1, label: "group_1", count: 3,
+            images: [SimilarityImage(path: "/u/a.jpg", representative: true), SimilarityImage(path: "/u/b.jpg")],
+            thumbnailBase64: "b64"),
+            keys: ["id", "label", "count", "images", "thumbnailBase64"],
+            forbiddenKeys: ["thumbnail_base64"])
+        try assertRoundTrip(SimilarityResultStats(
             totalGroups: 5, totalUngrouped: 12,
-            threshold: 0.8, minGroupSize: 3, groupingMode: .global,
-            precomputed: true
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(SimilarityResultStats.self, from: data)
-        #expect(decoded == original)
-
-        let expected = [
-            "totalGroups", "totalUngrouped", "threshold", "minGroupSize", "groupingMode", "precomputed",
-        ]
-        #expect(Set(try jsonKeys(of: data)) == Set(expected))
-        #expect(!Set(try jsonKeys(of: data)).contains("total_groups"))
-        #expect(!Set(try jsonKeys(of: data)).contains("min_group_size"))
-    }
-
-    @Test func similarityResultStatsPrecomputedOmittedWhenNil() throws {
-        let stats = SimilarityResultStats(
-            totalGroups: 1, totalUngrouped: 0,
-            threshold: 0.8, minGroupSize: 3, groupingMode: .sequential
-        )
-        let keys = try jsonKeys(of: JSONEncoder().encode(stats))
-        #expect(!keys.contains("precomputed"))
-    }
-    private func jsonKeys(of data: Data) throws -> [String] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ContractTestError.invalidJSON
-        }
-        return Array(object.keys)
-    }
-
-    private enum ContractTestError: Error {
-        case invalidJSON
+            threshold: 0.8, minGroupSize: 3, groupingMode: .global, precomputed: true),
+            keys: ["totalGroups", "totalUngrouped", "threshold", "minGroupSize", "groupingMode", "precomputed"],
+            forbiddenKeys: ["total_groups", "min_group_size"])
+        // representative? / precomputed? 未设置时省略 key（原 keys 断言保留为期望值）。
+        try assertJSONKeys(SimilarityImage(path: "/u/a.jpg"), keys: ["path"],
+                           name: "SimilarityImage(无 representative)")
+        try assertJSONKeys(SimilarityResultStats(totalGroups: 1, totalUngrouped: 0,
+                                                 threshold: 0.8, minGroupSize: 3, groupingMode: .sequential),
+                           name: "SimilarityResultStats(无 precomputed)",
+                           forbiddenKeys: ["precomputed"])
     }
 }

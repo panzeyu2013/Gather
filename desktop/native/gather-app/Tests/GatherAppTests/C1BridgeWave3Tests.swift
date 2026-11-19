@@ -175,10 +175,8 @@ private func makeWave3Bridge(
 
 /// R3 用例需要真实存在的目录与照片：browse 重试只对"文件在盘上、父目录唯一"生效。
 private func makeWave3PhotoDirectory() throws -> URL {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-wave5-c1-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory
+    // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+    URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: "gather-wave5-c1"))
 }
 
 private func removeWave3Directory(_ url: URL) {

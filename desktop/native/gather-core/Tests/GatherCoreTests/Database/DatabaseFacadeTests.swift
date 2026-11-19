@@ -15,6 +15,7 @@
 // SchemaCurrent 单版本定义（旧快照/迁移链已删除）。
 import Foundation
 import Testing
+import GatherTestSupport
 @testable import GatherProtocol
 @testable import GatherPersistence
 
@@ -26,11 +27,10 @@ private let expectedCurrentTableCount = 55
 private struct TestError: Error {}
 
 /// 每个用例独立的临时目录（避免并行执行的测试互相踩文件）。
+/// task-43：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记，进程退出兜底删除），
+/// 不再本地拼 temporaryDirectory + UUID（行为等价，只是清理路径统一）。
 private func makeTemporaryDirectory(_ label: String) throws -> URL {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-database-facade-\(label)-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory
+    URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: "gather-database-facade-\(label)"))
 }
 
 private func databasePath(in directory: URL) -> String {

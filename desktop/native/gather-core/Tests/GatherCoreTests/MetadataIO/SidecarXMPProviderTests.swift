@@ -14,10 +14,8 @@ import GatherApplication
 // MARK: - 测试基建
 
 private func makeTempDirectory() throws -> String {
-    let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-xmp-tests-" + UUID().uuidString, isDirectory: true).path
-    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-    return dir
+    // task-43：统一走共享 TempHygiene 登记路径。
+    try GatherTestSupport.makeTempDir(prefix: "gather-xmp-tests")
 }
 
 private func writeText(_ path: String, _ content: String) throws {

@@ -22,22 +22,14 @@ import GatherProtocol
 /// PreviewAnalysisPort 的进程级注册表（与 ImageDecodingRegistry 同构）。
 ///
 /// 未注册时 current() 返回 nil：叠加层显示"分析不可用"而不是崩或静默空图，
-/// 预览/单元测试也不需要宿主。
+/// 预览/单元测试也不需要宿主。M12（Wave5）：存储与互斥收口到 PortRegistry。
 public enum PreviewAnalysisRegistry {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var port: (any PreviewAnalysisPort)?
-
     public static func install(_ port: any PreviewAnalysisPort) {
-        lock.lock()
-        self.port = port
-        lock.unlock()
+        PortRegistry.install(previewAnalysis: port)
     }
 
     public static func current() -> (any PreviewAnalysisPort)? {
-        lock.lock()
-        let port = self.port
-        lock.unlock()
-        return port
+        PortRegistry.previewAnalysis()
     }
 }
 

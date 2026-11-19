@@ -15,6 +15,7 @@
 
 import Foundation
 import GatherPersistence
+import GatherProtocol
 
 extension DeliveryCleanupFlow {
     // MARK: - finalize

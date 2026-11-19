@@ -27,21 +27,6 @@ import GatherApplication
 @testable import GatherHost
 import GatherTestSupport
 
-/// Cut 4 / 4a-2a-2：workspace 装配只需要一个空返回的图库 provider
-///（本文件只测布局，不测取页行为；GalleryViewModel.init 的首屏补载会命中空页）。
-private struct LayoutGalleryProviderStub: GalleryDataProvider {
-    func getSession(_ sessionId: String) async throws -> SessionData? { nil }
-
-    func photoPage(
-        sessionId: String,
-        afterFirstRowid: Int64?,
-        limit: Int,
-        expandVariants: Bool
-    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
-        ([], nil)
-    }
-}
-
 @MainActor
 @Suite("layout budget", .serialized)
 struct LayoutBudgetTests {
@@ -56,15 +41,20 @@ struct LayoutBudgetTests {
     /// NSHostingView.fittingSize 就是 SwiftUI 交给 AppKit 约束系统的最小尺寸，
     /// 与 SplitViewChildController 询问的是同一份数据。
     private func fittingSize<V: View>(_ view: V, height: CGFloat = 780, pump: TimeInterval = 0) -> CGSize {
-        let host = NSHostingView(rootView: view)
-        host.frame = NSRect(x: 0, y: 0, width: 980, height: height)
-        host.layoutSubtreeIfNeeded()
-        if pump > 0 {
-            // 让 .task 里的异步加载跑完，页面才会进入真实分支（workbench）。
-            RunLoop.current.run(until: Date().addingTimeInterval(pump))
+        // 页面级预算用例会连续测量多个页面（每个都新建一棵 NSHostingView 视图树）：
+        // 局部 autoreleasepool 让上一棵视图树在 AppKit 内部创建的自动释放对象
+        // 在本轮结束回收，而不是全部攒到用例收尾（多页循环的峰值内存）。
+        return autoreleasepool {
+            let host = NSHostingView(rootView: view)
+            host.frame = NSRect(x: 0, y: 0, width: 980, height: height)
             host.layoutSubtreeIfNeeded()
+            if pump > 0 {
+                // 让 .task 里的异步加载跑完，页面才会进入真实分支（workbench）。
+                RunLoop.current.run(until: Date().addingTimeInterval(pump))
+                host.layoutSubtreeIfNeeded()
+            }
+            return host.fittingSize
         }
-        return host.fittingSize
     }
 
     /// 类型化 Culling 五依赖装配（culling/navigation/metadata/jobs/quality）。
@@ -119,7 +109,7 @@ struct LayoutBudgetTests {
             ),
             gallery: gallery ?? GalleryViewModel(
                 sessionId: sessionId,
-                provider: LayoutGalleryProviderStub(),
+                provider: EmptyGalleryProvider(),
                 job: B5bJobAPIStub()
             ),
             similarity: similarity ?? SimilarityViewModel(

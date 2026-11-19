@@ -49,8 +49,4 @@
 *.zip          binary
 
 # --- 生成的 ratchet baseline：GitHub 上折叠 diff、不计入手写语言统计 ---
-docs/protocol-surface-baseline.json          linguist-generated=true
-docs/protocol-surface-modules-baseline.json  linguist-generated=true
-docs/cleanup-baseline.json                   linguist-generated=true
-docs/perf-baseline.json                      linguist-generated=true
-scripts/design-system-baseline.json          linguist-generated=true
+docs/baselines/*.json                        linguist-generated=true

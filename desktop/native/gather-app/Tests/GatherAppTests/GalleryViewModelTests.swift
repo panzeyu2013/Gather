@@ -17,7 +17,7 @@ import GatherTestSupport
 
 // MARK: - Stub（错误态与调用记录）
 
-// 条件等待 waitUntilAsync 已抽到 Support/AsyncWait.swift（本 target 共享）。
+// 条件等待 waitUntilAsync 已抽到 GatherTestSupport/AsyncWait.swift（core/app 测试共享）。
 
 /// Swift 6 迁移：GalleryDataProvider 现经协议继承 Sendable，测试替身必须可跨隔离域。
 /// 可变状态全部收归共享 LockedBox（Support/LockedBox.swift；NSLock 保护的锁盒）：
@@ -227,14 +227,7 @@ private func makeLiveProvider() throws -> (LiveGalleryDataProvider, DBConnection
     ), db)
 }
 
-private func insertSession(_ db: DBConnection, _ id: String) throws {
-    _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, created_at, updated_at)
-        VALUES (?, '工作区', 'photos_loaded', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id)])
-}
-
-/// 照片行（asset_id/asset_file_id 可空；status 缺省 online）。
+/// 照片行（asset_id/asset_file_id 可空；status 缺省 ready）。
 private func insertPhoto(
     _ db: DBConnection,
     id: String,
@@ -246,16 +239,10 @@ private func insertPhoto(
     // 由 ViewModel 的 offline 过滤（status == "missing"）等价表达。
     status: String = "ready"
 ) throws {
-    let filepath = "/vault/\(id)"
-    _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, asset_id, asset_file_id, width, height, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', ?, ?, ?, 100, 100, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([
-        .text(id), .text(sessionId), .text(filepath), .text(filename ?? id),
-        .text(status),
-        assetId.map { .text($0) } ?? .null,
-        assetFileId.map { .text($0) } ?? .null,
-    ])
+    try insertPhotoRow(
+        db, id: id, sessionId: sessionId, filepath: "/vault/\(id)",
+        filename: filename ?? id, status: status, assetId: assetId,
+        assetFileId: assetFileId, width: 100, height: 100)
 }
 
 /// 逻辑资产（RAW/JPEG 变体）种子：asset + asset_file×2 + member_role +
@@ -832,7 +819,7 @@ struct GalleryViewModelTests {
     // 真实库：变体折叠（expandVariants=false 每资产一行，首选 raw）+ 展开。
     @Test func liveProviderFoldsAndExpandsVariants() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         try insertLinkedAsset(db, sessionId: "s1", rawId: "raw1", jpegId: "jpeg1")
         try insertPhoto(db, id: "solo", sessionId: "s1")
 
@@ -862,7 +849,7 @@ struct GalleryViewModelTests {
     // getNextPageParam 在空页后停（TS Gallery.tsx:75 同）。
     @Test func liveProviderKeysetPagination() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         for index in 0..<450 {
             try insertPhoto(db, id: "p\(String(format: "%03d", index))", sessionId: "s1")
         }
@@ -912,7 +899,7 @@ struct GalleryViewModelTests {
     // 真实库：faceCount 来自 face_observations 聚合（hasFace 过滤）。
     @Test func liveProviderFaceCountAggregates() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         try insertPhoto(db, id: "faced", sessionId: "s1")
         try insertPhoto(db, id: "plain", sessionId: "s1")
         try insertFace(db, photoId: "faced", sessionId: "s1")

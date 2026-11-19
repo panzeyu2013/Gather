@@ -23,7 +23,7 @@ public struct MetadataKeywordWriter: Sendable {
     private let flushPending: MetadataQueueFlush?
     private let retryFlush: MetadataQueueFlush?
     private let origins: MetadataKeywordOriginRepo?
-    private let assetResolver: PhotoAssetResolver?
+    private let assetResolver: (any PhotoAssetResolving)?
 
     public init(
         photoRepo: any PhotoRepository,
@@ -33,7 +33,7 @@ public struct MetadataKeywordWriter: Sendable {
         flushPending: MetadataQueueFlush?,
         retryFlush: MetadataQueueFlush?,
         origins: MetadataKeywordOriginRepo?,
-        assetResolver: PhotoAssetResolver?
+        assetResolver: (any PhotoAssetResolving)?
     ) {
         self.photoRepo = photoRepo
         self.xmpStore = xmp

@@ -74,13 +74,14 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh
 # Or both: ./scripts/test.sh all
 ```
 
-The split is implemented in `scripts/test.sh` and is meant for local runs.
-CI deliberately runs `swift test --no-parallel`: in-process parallelism plus
-blocking locks (logger / SQLite) starved the 3–4 vCPU CI runner's cooperative
-pool and stalled a whole run for 21 minutes (2026-10-29). Use
-`swift test --no-parallel` when diagnosing a single shared-state suite too.
-See `docs/test-runtime-audit.md` for timings, coverage, the SIGSEGV root cause
-and residual gaps.
+The split is implemented in `scripts/test.sh` (local parallel main batch plus a
+serial batch for tests that touch process-global logger/SQLite state). CI runs
+the same logic through `scripts/run-swift-tests.sh`, serial with a log file and a
+20-minute watchdog: in-process parallelism plus blocking locks starved the 3–4
+vCPU CI runner's cooperative pool (2026-10-29, documented in the workflow's
+`Core tests` step). Use `./scripts/test.sh <core|app> --no-parallel` as the single
+diagnostic command; the separate test-runtime audit document was removed in the
+2026-11-18 docs cleanup.
 
 The default suites are correctness-only. Quality/recall/F1 baselines and
 CoreML/Vision integration are opt-in and run manually (the scheduled nightly
@@ -136,7 +137,6 @@ See [Architecture Decisions](docs/ADR.md), [Development guide](docs/DEVELOPMENT.
 ## Documentation
 
 - [Development and contributing guide](docs/DEVELOPMENT.md)
-- [Test suite audit and runtime optimization](docs/test-runtime-audit.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decisions](docs/ADR.md)
 - [简体中文文档](docs/README.md)

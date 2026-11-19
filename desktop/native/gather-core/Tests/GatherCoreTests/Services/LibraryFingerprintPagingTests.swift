@@ -13,11 +13,8 @@ import GatherTestSupport
 // MARK: - 夹具
 
 private func makeTempDir(_ tag: String) throws -> String {
-    let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-wave4c-\(tag)-\(UUID().uuidString)", isDirectory: true)
-        .path
-    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-    return dir
+    // task-43：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+    try GatherTestSupport.makeTempDir(prefix: "gather-wave4c-\(tag)")
 }
 
 private func writeFile(_ path: String, _ content: String) throws {

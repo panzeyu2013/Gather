@@ -841,3 +841,22 @@ Repo 方法（约 30 个、跨读/写/事务/CAS）之后，整体端口化的�
   `triage-v2` 阈值（`eyeOpenMin`/`faceFocusMin`）与三个新理由码。
 - **交付管线**：`OutputRecipe` 多配方 + `output.run` 编排 + `manifest.json` + 联系表 PDF + 静态画廊/校样 +
   WebDAV（Keychain 凭据）。设计见 `docs/design/p2-review-delivery/plan-2026-10-28.md`。
+
+
+## ADR-038：行类型热点上移 Protocol 为只读投影（D2 第一阶段，2026-11-18）
+
+状态：第一阶段已实现（Wave 5 / M10），真投影阶段待定。
+
+- **背景**：D2 行类型穿端口——GatherPersistence 的数据库行类型被端口签名、Application 与 UI 直接引用，
+  schema 演进会沿端口一路震到上层。评审给出两条路线：物理上移（只读投影类型搬到 GatherProtocol，
+  字段仍是 DB 形状）与真投影（Protocol 侧 DTO 去掉列语义，Persistence 做显式映射）。
+- **决策**：第一阶段采用**物理上移**。把 CullingDecisionRow / PhotoProjectionRow / PhotoPageRow 三个热点
+  从 GatherPersistence 迁到 GatherProtocol/Protocol/ReadProjections.swift；Persistence 只保留
+  init(row: DBRow) 等 DB 映射 extension（同模块可见性不变）。三个跨模块必需的 memberwise init
+  以 **package** 可见性提供（同包内 Persistence 解码委托构造用；app 包不可见、不扩大公开面）。
+- **为什么不是真投影**：真投影要逐字段定义 DTO + 映射 + 迁移全部消费方（Application 76 处引用/80 个行类型），
+  属 L 级、需单独立项与 macOS 回归；物理上移是零行为变化的中间形态，先消除「Application/UI 直接依赖
+  Persistence 声明类型」这一层泄漏，并用 G6 行类型指标 ratchet 防止回潮。
+- **后续**：D2 每批按同一模式（一次 1–3 个类型、byte-identical 字段、Persistence 保留解码 extension）；
+  真投影（改名/去列语义）在 G6 行引用数降到可接受范围后单独评估并另立 ADR。
+- **约束**：G6 行类型指标只降不升；新增行类型必须带解码 extension 与 fake/测试；跨模块构造一律走 package init。

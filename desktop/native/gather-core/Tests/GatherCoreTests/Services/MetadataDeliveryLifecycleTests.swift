@@ -65,33 +65,6 @@ private final class LifecycleSettingsBox: @unchecked Sendable {
 ///
 /// 用 OSAllocatedUnfairLock 而不是 NSLock：removeFile 是 async 函数，
 /// NSLock.lock() 在异步上下文里是编译期错误（Swift 6）。
-private final class LifecycleFailingRemovePort: DeliveryFilePort, @unchecked Sendable {
-    private let inner = FileSystemDeliveryFilePort()
-    private let remainingFailures: OSAllocatedUnfairLock<Int>
-
-    init(failures: Int) {
-        self.remainingFailures = OSAllocatedUnfairLock(initialState: failures)
-    }
-
-    func fileExists(_ path: String) -> Bool {
-        inner.fileExists(path)
-    }
-
-    func restore(photoPath: String, backupPath: String) async throws {
-        try await inner.restore(photoPath: photoPath, backupPath: backupPath)
-    }
-
-    func removeFile(_ path: String) async throws {
-        let fail = remainingFailures.withLock { remaining -> Bool in
-            guard remaining > 0 else { return false }
-            remaining -= 1
-            return true
-        }
-        if fail { throw LifecycleInjectedError.removeFailed }
-        try await inner.removeFile(path)
-    }
-}
-
 private enum LifecycleInjectedError: Error, Equatable {
     case removeFailed
 }
@@ -418,7 +391,7 @@ private func lifecycleContents(_ path: String) -> String? {
 // MARK: - 5. 崩溃点：DB 成功 / 备份删除失败 → replay 补删
 
 @Test func finalizeBackupFailureKeepsAppliedIntentAndReplayFinishes() async throws {
-    let port = LifecycleFailingRemovePort(failures: 1)
+    let port = FailingRemoveFilePort(inner: FileSystemDeliveryFilePort(), failures: 1)
     let fixture = try makeLifecycleFixture(files: port)
     defer { fixture.cleanup() }
     let seeded = try seedLifecycleDelivery(

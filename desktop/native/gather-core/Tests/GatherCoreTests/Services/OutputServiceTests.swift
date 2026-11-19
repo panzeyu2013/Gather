@@ -51,7 +51,9 @@ struct OutputServiceTests {
         var paths: [String] = []
         for index in 0..<2 {
             let path = source.appendingPathComponent("IMG_\(index).jpg").path
-            try makeOutputJPEG(at: path)
+            // task-45：每轮新建 CGContext + ImageIO 编码；只把同步图像创建放进局部
+            // autoreleasepool，让上一轮的图像/编码临时对象在本轮结束即回收。
+            try autoreleasepool { try makeOutputJPEG(at: path) }
             try seedOutputPhoto(db, sessionId: session.id, photoId: "p\(index)", filepath: path)
             paths.append(path)
         }
@@ -336,7 +338,9 @@ struct OutputServiceCancelTests {
         var paths: [String] = []
         for index in 0..<2 {
             let path = source.appendingPathComponent("IMG_\(index).jpg").path
-            try makeOutputJPEG(at: path)
+            // task-45：每轮新建 CGContext + ImageIO 编码；只把同步图像创建放进局部
+            // autoreleasepool，让上一轮的图像/编码临时对象在本轮结束即回收。
+            try autoreleasepool { try makeOutputJPEG(at: path) }
             try seedOutputPhoto(db, sessionId: session.id, photoId: "p\(index)", filepath: path)
             paths.append(path)
         }
@@ -379,7 +383,8 @@ struct OutputServiceCancelTests {
             name: "Resume2", source: "local", sourcePath: source.path)
         for index in 0..<2 {
             let path = source.appendingPathComponent("R_\(index).jpg").path
-            try makeOutputJPEG(at: path)
+            // task-45：同上，逐轮图像创建放进局部 autoreleasepool。
+            try autoreleasepool { try makeOutputJPEG(at: path) }
             try seedOutputPhoto(db, sessionId: session.id, photoId: "r\(index)", filepath: path)
         }
         let service = OutputService(exportService: ExportService(
@@ -521,7 +526,8 @@ private func makeWave2OutputFixture() throws -> (DBConnection, String, String, [
     var paths: [String] = []
     for index in 0..<2 {
         let path = source.appendingPathComponent("IMG_\(index).jpg").path
-        try makeOutputJPEG(at: path)
+        // task-45：同上，逐轮图像创建放进局部 autoreleasepool。
+        try autoreleasepool { try makeOutputJPEG(at: path) }
         try seedOutputPhoto(db, sessionId: session.id, photoId: "p\(index)", filepath: path)
         paths.append(path)
     }

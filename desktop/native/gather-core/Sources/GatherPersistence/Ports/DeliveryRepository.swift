@@ -88,7 +88,9 @@ public extension DeliverySummaryReading {
 }
 
 // #6：CullingDecisionService 只用其中 2 个读方法，故同一实现额外声明窄端口（零成本）。
-extension DeliveryRepo: DeliveryRepository, DeliveryRowReading {
+// R2：FaceKwService 写回镜像只用 listItems(2 参) + itemBaseline，同样零成本加窄端口
+//（witness 复用上面 public extension 里的默认实现，实现仍只有 DeliveryRepo 一处）。
+extension DeliveryRepo: DeliveryRepository, DeliveryRowReading, DeliveryItemBaselineReading {
     /// DeliveryRepo.get 是无标签历史的入口；端口用显式标签，避免 Application 依赖旧拼写。
     public func getItem(xmpPath: String) throws -> DeliveryRow? {
         try get(xmpPath)

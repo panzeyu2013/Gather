@@ -288,36 +288,6 @@ private struct DualSourceStubExif: ExifProvider {
     }
 }
 
-/// 不可变的 sidecar 读侧替身（读盘只走它，文件存在性由夹具真实创建/删除）。
-private struct DualSourceFakeXMP: XMPProvider {
-    let attributes: MetadataWriteAttributes
-
-    func readKeywords(photoPath: String) async throws -> [String] {
-        attributes.keywords ?? []
-    }
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        attributes
-    }
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {}
-    func backup(photoPath: String) async throws -> String { "" }
-    func restore(photoPath: String, backupPath: String) async throws {}
-    func fileExists(_ path: String) -> Bool { true }
-    func removeFile(_ path: String) async throws {}
-}
-
-private struct DualSourceNoopMutations: MetadataMutationPort {
-    func queuePhotoValues(
-        sessionId: String,
-        photoId: String,
-        values: [String: JSONValue],
-        source: MetadataMutationSource,
-        schedule: Bool
-    ) throws -> MetadataMutationResult {
-        MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending")
-    }
-}
-
 @Suite("双源冲突：API 默认与警示映射（Wave5 batch9）")
 struct MetadataDualSourceConflictUITests {
     @Test("未接线的 stub：dualSourceConflict 返回 nil（未知，UI 不显示）")
@@ -382,12 +352,12 @@ struct MetadataDualSourceConflictUITests {
             sessionId: session.id,
             filepaths: [PhotoAddInput(filepath: photoURL.path, width: 100, height: 80)],
             "test").ids[0]
-        let xmp = DualSourceFakeXMP(attributes: sidecar)
+        let xmp = NoopXMPProvider(attributes: sidecar, existingFiles: true)
         let service = MetadataService(
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             xmp: xmp,
             connection: db,
-            mutations: DualSourceNoopMutations(),
+            mutations: NoopMetadataMutationPort(),
             exif: DualSourceStubExif(segments: embedded))
         let api = LiveMetadataAPI(
             metadataService: service,

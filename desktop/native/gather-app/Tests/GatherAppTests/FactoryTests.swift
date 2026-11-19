@@ -20,19 +20,6 @@ import GatherProtocol
 
 // MARK: - 仅满足 RootShellDependencies 形状的替身（工厂不调用它们）
 
-private struct FactoryGalleryProviderStub: GalleryDataProvider {
-    func getSession(_ sessionId: String) async throws -> SessionData? { nil }
-
-    func photoPage(
-        sessionId: String,
-        afterFirstRowid: Int64?,
-        limit: Int,
-        expandVariants: Bool
-    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
-        ([], nil)
-    }
-}
-
 private struct FactoryLibraryProviderStub: LibraryDataProvider {
     func listSessions() async throws -> [SessionData] { [] }
 
@@ -129,7 +116,7 @@ struct FactoryTests {
             person: FactoryPersonAPIStub(),
             captureOne: CaptureOneBridge(),
             libraryProvider: FactoryLibraryProviderStub(),
-            galleryProvider: FactoryGalleryProviderStub(),
+            galleryProvider: EmptyGalleryProvider(),
             dashboardProvider: dashboard
         )
     }

@@ -8,38 +8,53 @@ import Testing
 
 struct SessionContractTests {
 
-    // MARK: - SessionData
+    // MARK: - SessionData / PhotoData（P2：合并为逐样本断言，含可选字段省略）
 
-    @Test func sessionDataRoundTripAndCamelCaseKeys() throws {
-        let original = SessionData(
-            id: "sess_1",
-            name: "2025 街头",
-            status: .analyzing,
-            photoCount: 42,
-            analysisStatus: .running,
-            writebackStatus: .idle,
-            importSource: "manual",
-            sourcePath: "/Users/me/photos",
-            failedWritebackCount: 0,
-            truncatedImport: true,
-            createdAt: "2025-01-01T00:00:00.000Z",
-            updatedAt: "2025-01-02T00:00:00.000Z"
-        )
+    @Test("Session 契约 DTO：JSON 往返稳定 + camelCase key 冻结")
+    func sessionDTOsRoundTripAndCamelCaseKeys() throws {
+        try assertRoundTrip(SessionData(
+            id: "sess_1", name: "2025 街头", status: .analyzing, photoCount: 42,
+            analysisStatus: .running, writebackStatus: .idle, importSource: "manual",
+            sourcePath: "/Users/me/photos", failedWritebackCount: 0, truncatedImport: true,
+            createdAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-02T00:00:00.000Z"),
+            keys: [
+                "id", "name", "status", "photoCount", "analysisStatus", "writebackStatus",
+                "importSource", "sourcePath", "failedWritebackCount", "truncatedImport",
+                "createdAt", "updatedAt",
+            ],
+            forbiddenKeys: ["photo_count", "analysis_status", "import_source"])
 
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(SessionData.self, from: data)
-        #expect(decoded == original)
+        try assertRoundTrip(PhotoData(
+            id: "photo_1", sessionId: "sess_1", filepath: "/Users/me/photos/DSC0001.ARW",
+            filename: "DSC0001.ARW", checksum: "abc123", hasExistingXmp: true, faceCount: 2,
+            width: 6000, height: 4000,
+            metadata: ["keywords": .array([.string("街头"), .string("夜景")]), "rating": .number(4)],
+            result: ["faceCount": .number(2), "notes": .null], status: "indexed",
+            assetId: "asset_9", variantCount: 2,
+            variants: [
+                PhotoVariant(photoId: "photo_1", filepath: "/u/DSC0001.JPG", filename: "DSC0001.JPG", role: "preview"),
+                PhotoVariant(photoId: "photo_1", filepath: "/u/DSC0001.ARW", filename: "DSC0001.ARW", role: "original"),
+            ],
+            createdAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z"),
+            keys: [
+                "id", "sessionId", "filepath", "filename", "checksum", "hasExistingXmp",
+                "faceCount", "width", "height", "metadata", "result", "status",
+                "assetId", "variantCount", "variants", "createdAt", "updatedAt",
+            ],
+            forbiddenKeys: ["has_existing_xmp"]
+        ) { decoded in
+            // 正向键断言保留（精确键集合已隐含，显式写出防止将来改成子集断言时漏掉）。
+            let keys = try jsonKeys(of: JSONEncoder().encode(decoded))
+            #expect(keys.contains("hasExistingXmp"))
+            #expect(keys.contains("faceCount"))
+        }
 
-        let keys = try jsonKeys(of: data)
-        let expected = [
-            "id", "name", "status", "photoCount", "analysisStatus", "writebackStatus",
-            "importSource", "sourcePath", "failedWritebackCount", "truncatedImport",
-            "createdAt", "updatedAt",
-        ]
-        #expect(Set(keys) == Set(expected), "SessionData JSON key 必须与 TS 字段名一致")
-        #expect(!keys.contains("photo_count"), "禁止 snake_case 泄漏")
-        #expect(!keys.contains("analysis_status"))
-        #expect(!keys.contains("import_source"))
+        // nil 可选字段（assetId / variantCount / variants）不应输出 key。
+        try assertJSONKeys(PhotoData(
+            id: "p1", sessionId: "s1", filepath: "/u/a.jpg", filename: "a.jpg",
+            checksum: "c", hasExistingXmp: false, faceCount: 0, width: 1, height: 1,
+            metadata: [:], result: [:], status: "indexed", createdAt: "t", updatedAt: "t"),
+            name: "PhotoData(nil variants)", forbiddenKeys: ["assetId", "variantCount", "variants"])
     }
 
     @Test func sessionDataDecodesStatusRawValues() throws {
@@ -57,84 +72,24 @@ struct SessionContractTests {
         #expect(session.writebackStatus == .partial)
     }
 
-    // MARK: - PhotoData
-
-    @Test func photoDataRoundTripAndCamelCaseKeys() throws {
-        let original = PhotoData(
-            id: "photo_1",
-            sessionId: "sess_1",
-            filepath: "/Users/me/photos/DSC0001.ARW",
-            filename: "DSC0001.ARW",
-            checksum: "abc123",
-            hasExistingXmp: true,
-            faceCount: 2,
-            width: 6000,
-            height: 4000,
-            metadata: ["keywords": .array([.string("街头"), .string("夜景")]), "rating": .number(4)],
-            result: ["faceCount": .number(2), "notes": .null],
-            status: "indexed",
-            assetId: "asset_9",
-            variantCount: 2,
-            variants: [
-                PhotoVariant(photoId: "photo_1", filepath: "/u/DSC0001.JPG", filename: "DSC0001.JPG", role: "preview"),
-                PhotoVariant(photoId: "photo_1", filepath: "/u/DSC0001.ARW", filename: "DSC0001.ARW", role: "original"),
-            ],
-            createdAt: "2025-01-01T00:00:00.000Z",
-            updatedAt: "2025-01-01T00:00:00.000Z"
-        )
-
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(PhotoData.self, from: data)
-        #expect(decoded == original)
-
-        let keys = try jsonKeys(of: data)
-        let expected = [
-            "id", "sessionId", "filepath", "filename", "checksum", "hasExistingXmp",
-            "faceCount", "width", "height", "metadata", "result", "status",
-            "assetId", "variantCount", "variants", "createdAt", "updatedAt",
-        ]
-        #expect(Set(keys) == Set(expected), "PhotoData JSON key 必须与 TS 字段名一致")
-        #expect(keys.contains("hasExistingXmp"))
-        #expect(keys.contains("faceCount"))
-        #expect(!keys.contains("has_existing_xmp"))
-    }
-
     @Test func photoDataMetadataRoundTripsJSONValues() throws {
         let original = PhotoData(
             id: "p1", sessionId: "s1", filepath: "/u/a.jpg", filename: "a.jpg",
             checksum: "c", hasExistingXmp: false, faceCount: 0, width: 1, height: 1,
             metadata: ["keywords": .array([.string("a"), .string("b")]), "rating": .number(4)],
-            result: [String: JSONValue](), status: "indexed",
-            createdAt: "t", updatedAt: "t"
-        )
+            result: [String: JSONValue](), status: "indexed", createdAt: "t", updatedAt: "t")
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(PhotoData.self, from: data)
         #expect(decoded.metadata["keywords"] == .array([.string("a"), .string("b")]))
         #expect(decoded.metadata["rating"] == .number(4))
     }
 
-    @Test func photoDataOptionalVariantsOmittedWhenNil() throws {
-        let original = PhotoData(
-            id: "p1", sessionId: "s1", filepath: "/u/a.jpg", filename: "a.jpg",
-            checksum: "c", hasExistingXmp: false, faceCount: 0, width: 1, height: 1,
-            metadata: [:], result: [:], status: "indexed",
-            createdAt: "t", updatedAt: "t"
-        )
-        let data = try JSONEncoder().encode(original)
-        let keys = try jsonKeys(of: data)
-        #expect(!keys.contains("assetId"), "nil 可选字段不应输出 key")
-        #expect(!keys.contains("variantCount"))
-        #expect(!keys.contains("variants"))
-    }
     // MARK: - 状态枚举
 
     @Test func sessionStatusRawValuesMatchTS() {
         let cases: [(SessionStatus, String)] = [
-            (.draft, "draft"),
-            (.photosLoaded, "photos_loaded"),
-            (.analyzing, "analyzing"),
-            (.review, "review"),
-            (.completed, "completed"),
+            (.draft, "draft"), (.photosLoaded, "photos_loaded"), (.analyzing, "analyzing"),
+            (.review, "review"), (.completed, "completed"),
         ]
         for (status, raw) in cases {
             #expect(status.rawValue == raw)
@@ -193,15 +148,5 @@ struct SessionContractTests {
             let decoded = try JSONDecoder().decode(GatherErrorCode.self, from: data)
             #expect(decoded == code)
         }
-    }
-    private func jsonKeys(of data: Data) throws -> [String] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ContractTestError.invalidJSON
-        }
-        return Array(object.keys)
-    }
-
-    private enum ContractTestError: Error {
-        case invalidJSON
     }
 }

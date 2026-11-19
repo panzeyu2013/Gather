@@ -1,9 +1,10 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Database/Repositories/LibraryPackageStore.swift
 // Wave3（task-24）：可移植目录包的库侧读写原子。
 //
-// 边界：本文件只做 SQL（导出投影 + 导入去重查询 + 显式 id 的照片行写入）；
-// 包的文件格式、冲突策略、路径重绑定与报告都由 GatherApplication 的
-// LibraryPackageService 负责（Application 不得持 SQL —— services_prepare 预算 = 0）。
+// 边界（R1，2026-11-18）：本文件只做行级 SQL 原子（导出投影 + 导入去重查询 +
+// 显式 id 的照片行写入）；包级编排（导出快照 / 导入落库 / 组织资产映射 / 冲突策略）在
+// LibraryPackageStore+Snapshot.swift，经 LibraryPackageSnapshotting 端口暴露给
+// GatherApplication；包的文件格式与文件 IO 仍由 Application 的 LibraryPackageService 负责。
 //
 // 不改 schema：导出/导入全部落在既有 photos / photo_metadata_cache /
 // culling_decisions / collections / collection_items 上。
@@ -74,7 +75,9 @@ public struct LibraryPackageChecksumOwner: Equatable, Sendable {
 }
 
 public struct LibraryPackageStore: Sendable {
-    private let connection: DBConnection
+    /// R1：快照端口实现（LibraryPackageStore+Snapshot.swift）复用本连接；
+    /// internal 可见性仅限 GatherPersistence 模块内（Application 不可见）。
+    let connection: DBConnection
 
     public init(connection: DBConnection) {
         self.connection = connection

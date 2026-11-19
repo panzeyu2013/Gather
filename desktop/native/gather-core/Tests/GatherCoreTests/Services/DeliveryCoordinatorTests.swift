@@ -55,81 +55,9 @@ private func coordinatorInsertPhoto(
 }
 
 private enum FakeFileError: Error, Equatable {
-    case missingBackup(String)
     case injected
 }
 
-/// 内存 XMP 假件：restore 是覆盖写（幂等），removeFile 只删内存键。
-private final class FakeDeliveryFilePort: DeliveryFilePort, @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [String: String]
-    private var restoredTargets: [String] = []
-    private var removedPaths: [String] = []
-    private var restoreFailure: Error?
-    private var removeFailure: Error?
-    /// P1-1 顺序探针：removeFile 被调用时观察 DB 是否已删除交付行。
-    var onRemove: (@Sendable () throws -> Void)?
-
-    init(storage: [String: String] = [:]) {
-        self.storage = storage
-    }
-
-    private func locked<T>(_ body: () throws -> T) rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return try body()
-    }
-
-    func setContents(_ path: String, _ value: String) {
-        locked { storage[path] = value }
-    }
-
-    func contents(_ path: String) -> String? {
-        locked { storage[path] }
-    }
-
-    func setRestoreFailure(_ error: Error?) {
-        locked { restoreFailure = error }
-    }
-
-    func setRemoveFailure(_ error: Error?) {
-        locked { removeFailure = error }
-    }
-
-    var restoreCallCount: Int {
-        locked { restoredTargets.count }
-    }
-
-    var removedPathsSnapshot: [String] {
-        locked { removedPaths }
-    }
-
-    func fileExists(_ path: String) -> Bool {
-        locked { storage[path] != nil }
-    }
-
-    func restore(photoPath: String, backupPath: String) async throws {
-        // 与真实 XMPProvider 同一路径语义：photo.ext → photo.xmp（TSPath.xmpSidecarPath）。
-        let target = TSPath.xmpSidecarPath(photoPath)
-        try locked {
-            restoredTargets.append(target)
-            if let restoreFailure { throw restoreFailure }
-            guard let backup = storage[backupPath] else {
-                throw FakeFileError.missingBackup(backupPath)
-            }
-            storage[target] = backup
-        }
-    }
-
-    func removeFile(_ path: String) async throws {
-        try onRemove?()
-        try locked {
-            removedPaths.append(path)
-            if let removeFailure { throw removeFailure }
-            storage.removeValue(forKey: path)
-        }
-    }
-}
 
 /// P1-1 顺序探针：删除备份的那一刻，交付行必须已删、intent 必须已闭环。
 private final class FinalizeRemovalProbe: @unchecked Sendable {
@@ -152,7 +80,7 @@ private struct CoordinatorHarness {
     let deliveryRepo: DeliveryRepo
     let intentRepo: DeliveryIntentRepo
     let summaryQuery: DeliverySummaryQuery
-    let files: FakeDeliveryFilePort
+    let files: RecordingDeliveryFilePort
     let fileLock: XMPFileLock
     let coordinator: DeliveryCoordinator
 
@@ -165,7 +93,7 @@ private struct CoordinatorHarness {
         try coordinatorInsertSession(db, "s2")
         let deliveryRepo = DeliveryRepo(connection: db)
         let intentRepo = DeliveryIntentRepo(connection: db)
-        let files = FakeDeliveryFilePort()
+        let files = RecordingDeliveryFilePort()
         self.db = db
         self.deliveryRepo = deliveryRepo
         self.intentRepo = intentRepo

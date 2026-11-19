@@ -10,12 +10,14 @@ import GatherProtocol
 @testable import GatherPersistence
 
 private struct SortTestDB {
-    let database: Database
-    var db: DBConnection { database.connection }
+    let db: DBConnection
 }
 
 private func makeSortTestDB() throws -> SortTestDB {
-    SortTestDB(database: try Database.openInMemory())
+    // task-45：本套只测排序/分页查询语义，不测 Database.open 的版本/形态门禁；
+    // 用 makeTestDB（:memory: + SchemaCurrent.ddl）省掉 openInMemory 的建库后形态校验
+    //（Linux 微基准 15.6ms → 3.2ms/次，见 .gather/round7/db-bench.txt D2/A1）。
+    SortTestDB(db: try makeTestDB())
 }
 
 private func seedAsset(
@@ -72,7 +74,7 @@ struct CullingSortPaginationTests {
     @Test("capture_desc：20 页无重漏，nextCursor 可续页")
     func captureDescPagination() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         for index in 1...25 {
             try seedAsset(fixture.db, assetId: String(format: "a%02d", index), date: day(index), rating: index % 6)
@@ -104,7 +106,7 @@ struct CullingSortPaginationTests {
     @Test("capture：无拍摄时间按空串，ASC 最前、DESC 最后")
     func nullDatesNormalizeToEmptyString() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try seedAsset(fixture.db, assetId: "undated", date: nil, rating: nil)
         try seedAsset(fixture.db, assetId: "early", date: day(1), rating: 1)
@@ -129,7 +131,7 @@ struct CullingSortPaginationTests {
     @Test("rating_desc：并列按 first_rowid；无评分按 0")
     func ratingDescTiesUseRowid() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try seedAsset(fixture.db, assetId: "five-a", date: day(1), rating: 5)
         try seedAsset(fixture.db, assetId: "five-b", date: day(2), rating: 5)
@@ -150,7 +152,7 @@ struct CullingSortPaginationTests {
     @Test("triage verdict 过滤 + triageConfidenceAsc：只返回 review，按置信度升序")
     func triageFilterAndConfidenceSort() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try seedAsset(fixture.db, assetId: "lowest", date: day(1), rating: nil)
         try seedAsset(fixture.db, assetId: "middle", date: day(2), rating: nil)
@@ -186,7 +188,7 @@ struct CullingSortPaginationTests {
     @Test("triage 过滤排除人工决策资产（建议行仍在也不命中）")
     func triageFilterExcludesManualDecision() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try seedAsset(fixture.db, assetId: "auto", date: day(1), rating: nil)
         try seedAsset(fixture.db, assetId: "manual", date: day(2), rating: nil)
@@ -211,7 +213,7 @@ struct CullingSortPaginationTests {
     @Test("triageRows 页模式只取本页照片，不读整会话")
     func triageRowsPageScoped() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         for id in ["a1", "a2", "a3"] {
             try seedAsset(fixture.db, assetId: id, date: day(1), rating: nil)
@@ -236,7 +238,7 @@ struct CullingSortPaginationTests {
     @Test("all scope 也支持排序（不依赖 filtered 谓词）")
     func allScopeSorts() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try seedAsset(fixture.db, assetId: "one", date: day(1), rating: 1)
         try seedAsset(fixture.db, assetId: "two", date: day(2), rating: 2)
@@ -311,7 +313,7 @@ struct CullingSortPaginationTests {
     @Test("nextCursor 编解码与续页不重不漏")
     func nextCursorRoundTrip() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try seedAsset(fixture.db, assetId: "a", date: day(1), rating: nil)
         try seedAsset(fixture.db, assetId: "b", date: day(2), rating: nil)
@@ -339,7 +341,7 @@ struct CullingSortPaginationTests {
     @Test("all scope + triageConfidenceAsc：无建议排最后（2.0 哨兵）")
     func allScopeTriageNullsLast() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try seedAsset(fixture.db, assetId: "lowest", date: day(1), rating: nil)
         try seedAsset(fixture.db, assetId: "middle", date: day(2), rating: nil)
@@ -360,7 +362,7 @@ struct CullingSortPaginationTests {
     @Test("triageRows：只按代表行返回，变体映射到同一 gid")
     func triageRowsMapRepresentative() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try queryInsertAsset(fixture.db, id: "asset")
         try queryInsertPhoto(
@@ -384,7 +386,7 @@ struct CullingSortPaginationTests {
     @Test("capture_desc/asc：EXIF 冒号日期与 ISO 混排时按真实时间序")
     func captureSortNormalizesExifDates() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try seedAsset(fixture.db, assetId: "exif-old", date: "2024:05:01 10:20:30", rating: nil)
         try seedAsset(fixture.db, assetId: "iso-new", date: "2024-05-02T10:20:30.000Z", rating: nil)
@@ -409,7 +411,7 @@ struct CullingSortPaginationTests {
     @Test("rating_desc：跨页游标覆盖 0-5 星，不重不漏")
     func ratingSortPaginatesAllRatings() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         var seeded: [String] = []
         for index in 0..<24 {
@@ -442,7 +444,7 @@ struct CullingSortPaginationTests {
     @Test("triage 门控：指纹/策略不匹配的行不参与过滤与排序")
     func triageGateFiltersStaleRows() throws {
         let fixture = try makeSortTestDB()
-        defer { fixture.database.close() }
+        defer { fixture.db.close() }
         try queryInsertSession(fixture.db, id: "s")
         try seedAsset(fixture.db, assetId: "current", date: day(1), rating: nil)
         try seedAsset(fixture.db, assetId: "stale", date: day(2), rating: nil)

@@ -5,46 +5,30 @@
 import Foundation
 import GatherProtocol
 
-/// face_clusters 行 + 实时成员计数 + 身份匹配建议（V1 10 个结果列）。
-/// 列序: id(0), session_id(1), label(2), member_count(3), status(4),
-///       thumbnail_path(5), matched_person_id(6), match_confidence(7),
-///       created_at(8), updated_at(9)。
-/// V1 删除了 thumbnail_base64；缩略图文件由 thumbnail_path 承载。
-public struct FaceClusterRow {
+/// `FaceClusterRow` 的 DB 行解码与列清单（类型定义见 GatherProtocol/Protocol/ReadProjections.swift）。
+extension FaceClusterRow {
     /// SELECT 与位置解码共用的唯一列清单（member_count 为 COUNT 别名，非物理列）。
     public static let columns = [
         "id", "session_id", "label", "member_count", "status", "thumbnail_path",
         "matched_person_id", "match_confidence", "created_at", "updated_at",
     ]
-    public let id: Int64
-    public let sessionId: String
-    public let label: String
-    /// 实时 COUNT(face_cluster_members)，不是存档列。
-    public let memberCount: Int64
-    public let status: String
-    public let thumbnailPath: String
-    /// 身份链接（PersonRepo.bindRole / 跨会话匹配写入）。
-    public let matchedPersonId: String?
-    public let matchConfidence: Double?
-    public let createdAt: String
-    public let updatedAt: String
-    public var members: [FaceClusterMemberRow]?
-    public var binding: FaceBindingData?
 
     public init(row: DBRow) throws {
         guard row.count >= 10 else { throw DBError.message("FaceClusterRow 列数不足: \(row.count)") }
-        id = row[0].intValue ?? 0
-        sessionId = row[1].textValue ?? ""
-        label = row[2].textValue ?? ""
-        memberCount = row[3].intValue ?? 0
-        status = row[4].textValue ?? ""
-        thumbnailPath = row[5].textValue ?? ""
-        matchedPersonId = row[6].textValue
-        matchConfidence = row[7].doubleValue
-        createdAt = row[8].textValue ?? ""
-        updatedAt = row[9].textValue ?? ""
-        members = nil
-        binding = nil
+        self.init(
+            id: row[0].intValue ?? 0,
+            sessionId: row[1].textValue ?? "",
+            label: row[2].textValue ?? "",
+            memberCount: row[3].intValue ?? 0,
+            status: row[4].textValue ?? "",
+            thumbnailPath: row[5].textValue ?? "",
+            matchedPersonId: row[6].textValue,
+            matchConfidence: row[7].doubleValue,
+            createdAt: row[8].textValue ?? "",
+            updatedAt: row[9].textValue ?? "",
+            members: nil,
+            binding: nil,
+        )
     }
 }
 

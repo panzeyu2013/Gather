@@ -22,22 +22,6 @@ private struct ParallelExif: ExifProvider {
     }
 }
 
-private struct ParallelXMP: XMPProvider {
-    func readKeywords(photoPath: String) async throws -> [String] { [] }
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes { MetadataWriteAttributes() }
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {}
-    func backup(photoPath: String) async throws -> String { "" }
-    func restore(photoPath: String, backupPath: String) async throws {}
-    func fileExists(_ path: String) -> Bool { false }
-    func removeFile(_ path: String) async throws {}
-}
-
-private struct ParallelMutations: MetadataMutationPort {
-    func queuePhotoValues(sessionId: String, photoId: String, values: [String: JSONValue], source: MetadataMutationSource, schedule: Bool) throws -> MetadataMutationResult {
-        MetadataMutationResult(photoId: photoId, xmpPath: photoId + ".xmp", dirtyFields: [.rating], revision: 1, status: "pending")
-    }
-}
-
 @Suite("MetadataParallelBatch")
 struct MetadataParallelBatchTests {
     private func makeDB(photos: Int) throws -> (DBConnection, String, [String]) {
@@ -59,9 +43,9 @@ struct MetadataParallelBatchTests {
     private func service(_ db: DBConnection) -> MetadataService {
         MetadataService(
             metadataCacheRepo: MetadataCacheRepo(connection: db),
-            xmp: ParallelXMP(),
+            xmp: RecordingXMPProvider(writeMode: .ignore),
             connection: db,
-            mutations: ParallelMutations(),
+            mutations: RecordingMetadataMutation(),
             assetResolver: nil,
             exif: ParallelExif(),
             dimensions: nil,
@@ -82,7 +66,7 @@ struct MetadataParallelBatchTests {
         let (db, sessionId, ids) = try makeDB(photos: 64)
         let service = WritebackService(
             deliveryRepo: DeliveryRepo(connection: db),
-            xmp: ParallelXMP(),
+            xmp: RecordingXMPProvider(writeMode: .ignore),
             photoRepo: PhotoRepo(connection: db),
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,

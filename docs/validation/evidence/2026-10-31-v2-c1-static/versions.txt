@@ -1,8 +1,0 @@
-C1:
-16.7.8.16
-Bundle:
-com.captureone.captureone16
-Plugin:
-com.gather.capture-one-link
-PluginArchs:
-x86_64 arm64

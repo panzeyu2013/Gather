@@ -848,112 +848,6 @@ struct FaceKwClusterCommandTests {
 
 // MARK: - 写回（经注入 Provider）
 
-private final class FakeWritebackProvider: FaceWritebackProvider, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _removedEntries: [FaceKeywordEntry] = []
-    private var _previewArgs: (options: FaceKwWritebackOptions?, boundPhotoIds: Set<String>, additions: [String: [String]])?
-    private var _executedItems: [FaceKwWritebackItem] = []
-    private var _syncedSessionIds: [String] = []
-    private var _cleanupCalls: [String] = []
-
-    var removedKeywords: [String] = ["Alice"]
-    var previewResult = FaceKwWritebackPreview(items: [], totalCount: 0, affectedPhotos: 0)
-    var executeResult = FaceKwWritebackResult(
-        totalAffected: 0, written: 0, failed: 0, skipped: 0, errors: [], failedItems: [], report: "")
-    var cleanupResult = FaceKwCleanupResult(deletedCount: 0, errors: [])
-
-    var removedEntries: [FaceKeywordEntry] {
-        lock.lock()
-        defer { lock.unlock() }
-        return _removedEntries
-    }
-
-    var previewArgs: (options: FaceKwWritebackOptions?, boundPhotoIds: Set<String>, additions: [String: [String]])? {
-        lock.lock()
-        defer { lock.unlock() }
-        return _previewArgs
-    }
-
-    var executedItems: [FaceKwWritebackItem] {
-        lock.lock()
-        defer { lock.unlock() }
-        return _executedItems
-    }
-
-    var syncedSessionIds: [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return _syncedSessionIds
-    }
-
-    var cleanupCalls: [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return _cleanupCalls
-    }
-
-    /// 同步锁临界区辅助（Swift 6：async 上下文不得直接 lock/unlock）。
-    private func setRemovedEntries(_ entries: [FaceKeywordEntry]) {
-        lock.lock()
-        defer { lock.unlock() }
-        _removedEntries = entries
-    }
-
-    private func setPreviewArgs(
-        options: FaceKwWritebackOptions?, boundPhotoIds: Set<String>, additions: [String: [String]]
-    ) {
-        lock.lock()
-        defer { lock.unlock() }
-        _previewArgs = (options, boundPhotoIds, additions)
-    }
-
-    private func setExecutedItems(_ items: [FaceKwWritebackItem]) {
-        lock.lock()
-        defer { lock.unlock() }
-        _executedItems = items
-    }
-
-    private func appendSyncedSessionId(_ sessionId: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        _syncedSessionIds.append(sessionId)
-    }
-
-    private func appendCleanupCall(_ sessionId: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        _cleanupCalls.append(sessionId)
-    }
-
-    func removeOwnedFaceKeywords(sessionId: String, entries: [FaceKeywordEntry]) async throws -> [String] {
-        setRemovedEntries(entries)
-        return removedKeywords
-    }
-
-    func preview(
-        sessionId: String,
-        options: FaceKwWritebackOptions?,
-        boundPhotoIds: Set<String>,
-        additions: [String: [String]]
-    ) async throws -> FaceKwWritebackPreview {
-        setPreviewArgs(options: options, boundPhotoIds: boundPhotoIds, additions: additions)
-        return previewResult
-    }
-
-    func execute(sessionId: String, items: [FaceKwWritebackItem]) async throws -> FaceKwWritebackResult {
-        setExecutedItems(items)
-        return executeResult
-    }
-
-    func confirmSync(sessionId: String) async throws {
-        appendSyncedSessionId(sessionId)
-    }
-
-    func cleanup(sessionId: String) async throws -> FaceKwCleanupResult {
-        appendCleanupCall(sessionId)
-        return cleanupResult
-    }
-}
 
 /// DeliveryEngine 替身：WP2c 起服务只经 adapter.engine.replay() 触达引擎；
 /// 其余操作不经过它，空摘要保持接口完整。
@@ -1096,7 +990,7 @@ private func makeWritebackItem(photoId: String, id: Int64? = nil) -> FaceKwWrite
 struct FaceKwWritebackTests {
     @Test("fkw.unbind requires confirmation")
     func unbindRequiresConfirmation() async throws {
-        let writeback = FakeWritebackProvider()
+        let writeback = RecordingFaceWritebackProvider()
         let harness = try makeFaceKwHarness(writeback: writeback)
         await #expect(throws: FaceKwServiceError.unbindConfirmRequired) {
             _ = try await harness.service.unbind(sessionId: harness.sessionId, clusterId: 1, confirmed: false)
@@ -1105,7 +999,7 @@ struct FaceKwWritebackTests {
 
     @Test("fkw.unbind requires the cluster to exist")
     func unbindClusterNotFound() async throws {
-        let writeback = FakeWritebackProvider()
+        let writeback = RecordingFaceWritebackProvider()
         let harness = try makeFaceKwHarness(writeback: writeback)
         await #expect(throws: FaceKwServiceError.clusterNotFound) {
             _ = try await harness.service.unbind(sessionId: harness.sessionId, clusterId: 99, confirmed: true)
@@ -1114,7 +1008,7 @@ struct FaceKwWritebackTests {
 
     @Test("fkw.unbind removes owned keywords through the provider and unbinds")
     func unbindRemovesOwnedKeywords() async throws {
-        let writeback = FakeWritebackProvider()
+        let writeback = RecordingFaceWritebackProvider()
         writeback.removedKeywords = ["Alice", "kw1"]
         let harness = try makeFaceKwHarness(writeback: writeback)
         try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
@@ -1135,7 +1029,7 @@ struct FaceKwWritebackTests {
 
     @Test("fkw.unbind filters keywords protected by other bound clusters")
     func unbindFiltersProtectedKeywords() async throws {
-        let writeback = FakeWritebackProvider()
+        let writeback = RecordingFaceWritebackProvider()
         let harness = try makeFaceKwHarness(writeback: writeback)
         // 两个集群共享 photo-1：B（Bob）的绑定保护 "Bob"；A 的 Alice 关键词
         // 里也有 "Bob"——解除 A 时 "Bob" 必须被过滤。
@@ -1155,7 +1049,7 @@ struct FaceKwWritebackTests {
 
     @Test("fkw.preview builds additions and forwards them to the provider")
     func previewForwardsAdditions() async throws {
-        let writeback = FakeWritebackProvider()
+        let writeback = RecordingFaceWritebackProvider()
         writeback.previewResult = FaceKwWritebackPreview(items: [], totalCount: 1, affectedPhotos: 1)
         let harness = try makeFaceKwHarness(writeback: writeback)
         try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
@@ -1177,7 +1071,7 @@ struct FaceKwWritebackTests {
 
     @Test("fkw.writeback requires confirmation and passes items through")
     func writebackConfirmationAndPassthrough() async throws {
-        let writeback = FakeWritebackProvider()
+        let writeback = RecordingFaceWritebackProvider()
         writeback.executeResult = FaceKwWritebackResult(
             totalAffected: 1, written: 1, failed: 0, skipped: 0, errors: [], failedItems: [], report: "ok")
         let harness = try makeFaceKwHarness(writeback: writeback)
@@ -1211,7 +1105,7 @@ struct FaceKwWritebackTests {
 
     @Test("fkw.writeback rejects a preview token after bindings change")
     func writebackRejectsStalePreviewToken() async throws {
-        let writeback = FakeWritebackProvider()
+        let writeback = RecordingFaceWritebackProvider()
         writeback.previewResult = FaceKwWritebackPreview(items: [], totalCount: 1, affectedPhotos: 1)
         let harness = try makeFaceKwHarness(writeback: writeback)
         try seedCluster(harness.db, id: 1, sessionId: harness.sessionId,
@@ -1312,7 +1206,7 @@ struct FaceKwWritebackTests {
 
     @Test("fkw.writeback mirrors executed items into the delivery port")
     func writebackMirrorsIntoDelivery() async throws {
-        let writeback = FakeWritebackProvider()
+        let writeback = RecordingFaceWritebackProvider()
         writeback.executeResult = FaceKwWritebackResult(
             totalAffected: 1, written: 1, failed: 0, skipped: 0, errors: [], failedItems: [], report: "ok"
         )

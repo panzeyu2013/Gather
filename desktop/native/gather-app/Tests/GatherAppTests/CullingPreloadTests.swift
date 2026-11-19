@@ -11,6 +11,7 @@ import AppKit
 import Foundation
 import Testing
 import GatherProtocol
+import GatherTestSupport
 @testable import GatherUI
 @testable import GatherHost
 
@@ -156,12 +157,16 @@ struct CullingPreloadTests {
     func runPreloadSkipsCachedNeighbors() async {
         let (viewModel, photo) = makeStack()
         for id in ["p1", "p2", "p4", "p5"] {
-            let key = PhotoThumbnailCache.key(
-                path: "/shoot/\(id).jpg",
-                size: PhotoDetailTier.baseDimension,
-                preview: true
-            )
-            PhotoThumbnailCache.setImage(NSImage(size: NSSize(width: 2, height: 2)), for: key)
+            // 每轮创建一张 NSImage：缓存持有强引用，但 AppKit 创建的自动释放
+            // 包装对象放进局部池即可按轮回收（4 轮不会跨轮累积）。
+            autoreleasepool {
+                let key = PhotoThumbnailCache.key(
+                    path: "/shoot/\(id).jpg",
+                    size: PhotoDetailTier.baseDimension,
+                    preview: true
+                )
+                PhotoThumbnailCache.setImage(NSImage(size: NSSize(width: 2, height: 2)), for: key)
+            }
         }
         await viewModel.runNeighborPreload()
         #expect(photo.preloadInputs.isEmpty, "远邻全部在缓存里时不应再解一遍")

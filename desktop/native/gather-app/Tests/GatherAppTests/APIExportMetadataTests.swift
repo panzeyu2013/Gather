@@ -35,50 +35,7 @@ import GatherTestSupport
 // MARK: - 通用辅助
 
 private enum APIExportMetadataFixtureError: Error {
-    case jobNotCreated
     case photoMissing
-}
-
-private func waitForJob(
-    _ jobService: JobService,
-    type: AnalysisJobType,
-    timeout: TimeInterval = 2
-) async throws {
-    let seen = try await waitUntilCondition(timeout: timeout) {
-        try jobService.list(includeCheckpoint: false).contains(where: { $0.type == type })
-    }
-    guard seen else { throw APIExportMetadataFixtureError.jobNotCreated }
-}
-
-private func gatherError<T>(_ body: () throws -> T) -> GatherError? {
-    do {
-        _ = try body()
-        return nil
-    } catch let error as GatherError {
-        return error
-    } catch {
-        return nil
-    }
-}
-
-private func asyncGatherError<T>(_ body: () async throws -> T) async -> GatherError? {
-    do {
-        _ = try await body()
-        return nil
-    } catch let error as GatherError {
-        return error
-    } catch {
-        return nil
-    }
-}
-
-private func asyncError<T>(_ body: () async throws -> T) async -> Error? {
-    do {
-        _ = try await body()
-        return nil
-    } catch {
-        return error
-    }
 }
 
 // MARK: - Export 夹具
@@ -182,7 +139,7 @@ struct APIExportTests {
         let fixture = try ExportAPIFixture()
         defer { fixture.cleanup() }
 
-        let error = await asyncGatherError {
+        let error = await gatherError {
             try await fixture.api.preview(ExportInput(sessionId: fixture.sessionId))
         }
         #expect(error?.code == .EXPORT_PARAMS_INVALID)
@@ -197,7 +154,7 @@ struct APIExportTests {
         var options = fixture.options
         options.destination = "relative/output"
 
-        let error = await asyncGatherError {
+        let error = await gatherError {
             try await fixture.api.preview(
                 ExportInput(sessionId: fixture.sessionId, options: options)
             )
@@ -305,7 +262,7 @@ struct APIExportTests {
         let fixture = try ExportAPIFixture()
         defer { fixture.cleanup() }
 
-        let error = await asyncGatherError {
+        let error = await gatherError {
             try await fixture.api.execute(
                 Confirmed(ExportInput(sessionId: fixture.sessionId), source: .test)
             )
@@ -343,7 +300,7 @@ struct APIExportTests {
         let fixture = try ExportAPIFixture()
         defer { fixture.cleanup() }
 
-        let error = await asyncGatherError {
+        let error = await gatherError {
             try await fixture.api.cancel("  ")
         }
         #expect(error?.code == .INVALID_PARAM)
@@ -402,24 +359,6 @@ private final class MetadataTestGate: @unchecked Sendable {
         continuations.removeAll()
         lock.unlock()
         pending.forEach { $0.resume() }
-    }
-}
-
-/// 线程安全布尔探针（并发用例断言文件阶段是否进入/排队）。
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-
-    func set() {
-        lock.lock()
-        defer { lock.unlock() }
-        value = true
-    }
-
-    var isSet: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return value
     }
 }
 
@@ -539,21 +478,6 @@ private final class MetadataTestXMPProvider: XMPProvider, @unchecked Sendable {
     }
 }
 
-/// MetadataService 所需的 mutation 端口；只测读取路径，不记录写入。
-private struct MetadataTestMutationPort: MetadataMutationPort {
-    func queuePhotoValues(
-        sessionId: String,
-        photoId: String,
-        values: [String: JSONValue],
-        source: MetadataMutationSource,
-        schedule: Bool
-    ) throws -> MetadataMutationResult {
-        MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
-        )
-    }
-}
-
 // MARK: - Metadata 夹具
 
 private struct MetadataAPIFixture {
@@ -595,7 +519,7 @@ private struct MetadataAPIFixture {
         ).ids
 
         let metadataCacheRepo = MetadataCacheRepo(connection: db)
-        let mutations = MetadataTestMutationPort()
+        let mutations = NoopMetadataMutationPort()
         let metadataService = MetadataService(
             metadataCacheRepo: metadataCacheRepo,
             xmp: xmp,
@@ -998,7 +922,7 @@ struct APIMetadataTests {
         _ = try fixture.seedOrphan(photoId: photoId, status: .synced, backupPath: backup)
 
         // 备份不存在：XMP_BACKUP_MISSING，且行保留（可重试）。
-        let missing = await asyncGatherError {
+        let missing = await gatherError {
             let input = try MetadataResolveOrphanInput(xmpPath: xmpPath, action: .restore)
             return try await fixture.api.resolveOrphan(Confirmed(input, source: .test))
         }
@@ -1044,7 +968,7 @@ struct APIMetadataTests {
             )
         }
 
-        let error = await asyncGatherError {
+        let error = await gatherError {
             let input = try MetadataResolveOrphanInput(xmpPath: xmpPath, action: .restore)
             return try await fixture.api.resolveOrphan(Confirmed(input, source: .test))
         }
@@ -1187,7 +1111,7 @@ struct APIMetadataTests {
         #expect(xmp.writeCalls.isEmpty, "持锁期间 writeback 不得先写盘")
 
         gate.release()
-        let restoreError = await asyncGatherError { try await restoreTask.value }
+        let restoreError = await gatherError { try await restoreTask.value }
         let writeResult = try await writeTask.value
 
         // orphan 的事后复核看见新输入：显式冲突、行保留、不删备份。
@@ -1223,7 +1147,7 @@ struct APIMetadataTests {
             xmpPath: xmpPath, revision: 1,
             baseFingerprint: "fp", baseValues: .object([:]), backupPath: "")
         _ = try fixture.deliveryRepo.markSynced(xmpPath: xmpPath, revision: 1)
-        let notRetryable = await asyncGatherError {
+        let notRetryable = await gatherError {
             let input = try MetadataResolveOrphanInput(xmpPath: xmpPath, action: .retry)
             return try await fixture.api.resolveOrphan(Confirmed(input, source: .test))
         }
@@ -1236,13 +1160,13 @@ struct APIMetadataTests {
         defer { fixture.cleanup() }
         let photoId = try #require(fixture.photoIds.first)
 
-        let blankSession = await asyncGatherError {
+        let blankSession = await gatherError {
             try await fixture.api.conflicts("   ")
         }
         #expect(blankSession?.code == .INVALID_PARAM)
         #expect(blankSession?.params["field"] == "sessionId")
 
-        let missingConflict = await asyncGatherError {
+        let missingConflict = await gatherError {
             let input = try MetadataResolveConflictInput(
                 sessionId: fixture.sessionId,
                 xmpPath: "/tmp/gather-b6a-missing.xmp",
@@ -1252,7 +1176,7 @@ struct APIMetadataTests {
         }
         #expect(missingConflict?.code == .XMP_CONFLICT_NOT_FOUND)
 
-        let missingOrphan = await asyncGatherError {
+        let missingOrphan = await gatherError {
             let input = try MetadataResolveOrphanInput(
                 xmpPath: "/tmp/gather-b6a-missing.xmp",
                 action: .keep
@@ -1264,7 +1188,7 @@ struct APIMetadataTests {
         // 冲突裁决必须覆盖全部待裁决字段（旧 XMP_CHOICE_MISSING 语义）：
         // 该交付只有 rating 待裁决，只给 label 的选择必须被拒绝。
         let conflictPath = try fixture.seedConflict(photoId: photoId)
-        let choiceMissing = await asyncGatherError {
+        let choiceMissing = await gatherError {
             let input = try MetadataResolveConflictInput(
                 sessionId: fixture.sessionId,
                 xmpPath: conflictPath,
@@ -1275,7 +1199,7 @@ struct APIMetadataTests {
         #expect(choiceMissing?.code == .XMP_CHOICE_MISSING)
 
         #expect(
-            gatherError {
+            syncGatherError {
                 try MetadataResolveConflictInput(
                     sessionId: fixture.sessionId,
                     xmpPath: "/tmp/a.xmp",
@@ -1296,12 +1220,12 @@ struct APIMetadataTests {
         let base = try MetadataTemplateApplyInput(
             templateId: template.id, photoIds: [photoId])
 
-        let missing = await asyncGatherError {
+        let missing = await gatherError {
             try await fixture.api.applyTemplate(Confirmed(base, source: .test))
         }
         #expect(missing?.code == .METADATA_PREVIEW_STALE)
 
-        let stale = await asyncGatherError {
+        let stale = await gatherError {
             try await fixture.api.applyTemplate(Confirmed(
                 try MetadataTemplateApplyInput(
                     templateId: template.id, photoIds: [photoId],

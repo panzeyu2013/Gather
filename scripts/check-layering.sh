@@ -12,7 +12,11 @@
 #   GatherApplication    不得 import SwiftUI
 #
 # 20 条方向全部 fail-closed（Cut 0 的 "not split yet" 早退分支已删除，勿再加回）。
-# 用法：./scripts/check-layering.sh
+#
+# --self-test：负样本自测（mktemp fixture，不写仓库）。把本脚本原样复制进临时 fixture
+# 仓库，断言「GatherUI import GatherPersistence → FAIL」「合法依赖 → PASS」
+# （另含 @_exported import 负样本）。
+# 用法：./scripts/check-layering.sh [--self-test]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,6 +36,136 @@ METADATA_IO_DIR="$CORE_SRC/GatherMetadataIO"
 # 评审面 3 5.3：新模块 GatherPreviewData 也没进扫描表。两者补上。
 DELIVERY_DIR="$CORE_SRC/GatherDelivery"
 PREVIEW_DIR="$APP_SRC/GatherPreviewData"
+
+# ---------------------------------------------------------------------------
+# --self-test：负样本自测（mktemp fixture，不写仓库；fixture 不达预期即 exit 1）
+#   做法：把本脚本原样复制进临时 fixture 仓库，用同一份判定逻辑跑合成树，断言：
+#     1) GatherUI import GatherPersistence（含 @_exported 写法）→ FAIL（exit 1）
+#     2) 各层合法依赖（含 GatherHost 组合根引用 core、GatherApp 只 import GatherHost）→ PASS
+# ---------------------------------------------------------------------------
+SELFTEST_OUT=""
+SELFTEST_TMP=""
+SELFTEST_PROG="check-layering"
+SELFTEST_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+selftest_die() {
+  echo "$SELFTEST_PROG: self-test FAIL — $1" >&2
+  exit 1
+}
+
+# selftest_expect <期望退出码> <说明> <fixture 脚本>
+selftest_expect() {
+  local want="$1" desc="$2" script="$3"
+  local st=0
+  SELFTEST_OUT=$(bash "$script" 2>&1) || st=$?
+  if [ "$st" -ne "$want" ]; then
+    echo "$SELFTEST_PROG: self-test FAIL — $desc（期望 exit ${want}，实得 ${st}）" >&2
+    printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
+    exit 1
+  fi
+}
+
+# selftest_contains <期望子串> <说明>
+selftest_contains() {
+  case "$SELFTEST_OUT" in
+    *"$1"*) return 0 ;;
+  esac
+  echo "$SELFTEST_PROG: self-test FAIL — $2（输出里没有「$1」）" >&2
+  printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
+  exit 1
+}
+
+# selftest_filler <目录> <个数>：生成不参与任何 import 判定的占位 Swift 文件
+selftest_filler() {
+  local dir="$1" n="$2" i=0
+  mkdir -p "$dir"
+  while [ "$i" -lt "$n" ]; do
+    printf '// self-test 占位（无 import 语句）\nlet filler_%s = 0\n' "$i" > "$dir/F$i.swift"
+    i=$((i + 1))
+  done
+}
+
+selftest_cleanup() {
+  if [ -n "$SELFTEST_TMP" ]; then
+    rm -rf "${SELFTEST_TMP:?}"
+  fi
+}
+
+# selftest_fixture <fixture 根>：铺一层「全部方向合法」的最小分层仓库
+selftest_fixture() {
+  local fx="$1" src="$1/desktop/native"
+  mkdir -p "$fx/scripts" \
+    "$src/gather-core/Sources/GatherAnalysis" \
+    "$src/gather-core/Sources/GatherApplication" \
+    "$src/gather-core/Sources/GatherPersistence" \
+    "$src/gather-core/Sources/GatherMetadataIO" \
+    "$src/gather-core/Sources/GatherDelivery" \
+    "$src/gather-app/Sources/GatherUI" \
+    "$src/gather-app/Sources/GatherHost" \
+    "$src/gather-app/Sources/GatherApp" \
+    "$src/gather-app/Sources/GatherPreviewData"
+  selftest_filler "$src/gather-core/Sources/Filler" 300
+  # 合法依赖：UI 只碰 SwiftUI + GatherProtocol；Host 是组合根；App 只 import Host。
+  printf 'import SwiftUI\nimport GatherProtocol\n' > "$src/gather-app/Sources/GatherUI/UIFixture.swift"
+  printf 'import GatherApplication\nimport GatherPersistence\nimport GatherAnalysis\nimport GatherProtocol\n' \
+    > "$src/gather-app/Sources/GatherHost/HostFixture.swift"
+  printf 'import GatherHost\n' > "$src/gather-app/Sources/GatherApp/AppFixture.swift"
+  printf 'import GatherProtocol\n' > "$src/gather-core/Sources/GatherAnalysis/AnalysisFixture.swift"
+  printf 'import GatherProtocol\n' > "$src/gather-core/Sources/GatherApplication/ApplicationFixture.swift"
+  printf 'import GatherProtocol\n' > "$src/gather-core/Sources/GatherPersistence/PersistenceFixture.swift"
+  printf 'import GatherProtocol\nimport GatherPersistence\n' \
+    > "$src/gather-core/Sources/GatherMetadataIO/MetadataIOFixture.swift"
+  printf 'import GatherProtocol\nimport GatherPersistence\nimport GatherAnalysis\n' \
+    > "$src/gather-core/Sources/GatherDelivery/DeliveryFixture.swift"
+  printf 'import GatherProtocol\n' > "$src/gather-app/Sources/GatherPreviewData/PreviewFixture.swift"
+}
+
+self_test() {
+  local tmpbase="${TMPDIR:-/tmp}" fx ui
+  tmpbase="${tmpbase%/}"
+  SELFTEST_TMP=$(mktemp -d "${tmpbase}/check-layering-selftest.XXXXXX") ||
+    selftest_die "mktemp 创建临时目录失败"
+  trap selftest_cleanup EXIT
+  fx="$SELFTEST_TMP/fixture"
+  ui="$fx/desktop/native/gather-app/Sources/GatherUI/UIFixture.swift"
+  selftest_fixture "$fx"
+  cp "$SELFTEST_SELF" "$fx/scripts/$SELFTEST_PROG.sh"
+
+  # 断言 1：合法分层 → PASS（各层方向都留了正样本，避免「一律放行」的假绿）。
+  selftest_expect 0 "合法依赖应 PASS" "$fx/scripts/$SELFTEST_PROG.sh"
+  selftest_contains "check-layering: OK" "合法依赖应输出 OK"
+
+  # 断言 2：GatherUI import GatherPersistence → FAIL。
+  printf 'import SwiftUI\nimport GatherPersistence\n' > "$ui"
+  selftest_expect 1 "GatherUI import GatherPersistence 应 FAIL" "$fx/scripts/$SELFTEST_PROG.sh"
+  selftest_contains "不得 import GatherPersistence" "FAIL 行应点名 GatherPersistence"
+
+  # 断言 3：@_exported 写法同样不得绕过（复审 P2 的正则兼容性）。
+  printf '@_exported import GatherPersistence\n' > "$ui"
+  selftest_expect 1 "@_exported import GatherPersistence 应 FAIL" "$fx/scripts/$SELFTEST_PROG.sh"
+  selftest_contains "@_exported import GatherPersistence" "FAIL 行应打印命中行"
+
+  echo "$SELFTEST_PROG: self-test OK（GatherUI -> GatherPersistence（含 @_exported）FAIL；合法分层 PASS；3 条断言）"
+  return 0
+}
+
+# --self-test 必须在扫描根守卫与真实扫描前 short-circuit：fixture 不满足 300 文件下限，
+# 且自测不写仓库。
+SELFTEST=0
+for arg in "$@"; do
+  if [ "$arg" = "--self-test" ]; then
+    SELFTEST=1
+  fi
+done
+if [ "$SELFTEST" -eq 1 ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "check-layering: --self-test 只接受单独使用（不与其他参数混跑）" >&2
+    exit 2
+  fi
+  self_test
+  exit 0
+fi
+
 
 # 扫描根守卫：目录消失/改名不得静默跳过（Gate fail-open，复审 P1）。
 for d in "$UI_DIR" "$HOST_DIR" "$ENTRY_DIR" "$ANALYSIS_DIR" "$DOMAIN_DIR" "$PERSISTENCE_DIR" "$METADATA_IO_DIR" "$DELIVERY_DIR" "$PREVIEW_DIR"; do

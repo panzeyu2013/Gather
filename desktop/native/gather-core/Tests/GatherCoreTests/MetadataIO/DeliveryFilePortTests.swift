@@ -5,15 +5,15 @@ import Foundation
 import Testing
 import GatherDelivery
 import GatherProtocol
+import GatherTestSupport
 @testable import GatherMetadataIO
 
 @Suite("交付文件端口（删除守卫）")
 struct DeliveryFilePortTests {
     private func makeTempFile(_ name: String) throws -> String {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-port-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let path = dir.appendingPathComponent(name).path
+        // task-43：目录统一走共享 TempHygiene 登记路径（文件内容仍真实落盘）。
+        let dir = try GatherTestSupport.makeTempDir(prefix: "gather-port")
+        let path = (dir as NSString).appendingPathComponent(name)
         try Data("x".utf8).write(to: URL(fileURLWithPath: path))
         return path
     }

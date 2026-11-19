@@ -65,66 +65,30 @@ struct OutputContractTests {
         #expect(WebDAVError.noMatchingFiles.description == "WEBDAV_NO_MATCHING_FILES")
     }
 
-    // MARK: - Codable 往返（跨进程 JSON）
+    // MARK: - Codable 往返（跨进程 JSON；P2：合并为逐样本断言）
 
-    @Test func modelReviewResultRoundTrip() throws {
-        let result = ModelReviewResult(
-            photoId: "p1",
-            assetFileId: "af1",
-            status: .succeeded,
-            errorMessage: nil,
-            eyesOpenScore: 0.5,
-            smileScore: 0.25,
-            faceFocusScore: 0.75,
-            aestheticScore: 0.6,
-            isUtilityImage: false,
-            faces: [],
-            warnings: ["w"],
-            modelId: "m",
-            modelVersion: "1",
-            inputFingerprint: "fp",
-            updatedAt: "2026-10-28T00:00:00Z")
-        let data = try JSONEncoder().encode(result)
-        let decoded = try JSONDecoder().decode(ModelReviewResult.self, from: data)
-        #expect(decoded == result)
-    }
-
-    @Test func outputRecipeRoundTrip() throws {
-        let recipe = OutputRecipe(
-            id: "r1",
-            name: "Web 2048",
-            format: .jpeg,
-            quality: 80,
-            maxDimension: 2048,
-            naming: ExportNaming(pattern: "{recipe}"),
-            includeXmp: true,
-            destination: "",
-            artifacts: [.photos])
-        let data = try JSONEncoder().encode(recipe)
-        let decoded = try JSONDecoder().decode(OutputRecipe.self, from: data)
-        #expect(decoded == recipe)
+    @Test("Output 契约 DTO：JSON 往返稳定")
+    func outputDTOsRoundTrip() throws {
+        try assertRoundTrip(ModelReviewResult(
+            photoId: "p1", assetFileId: "af1", status: .succeeded, errorMessage: nil,
+            eyesOpenScore: 0.5, smileScore: 0.25, faceFocusScore: 0.75, aestheticScore: 0.6,
+            isUtilityImage: false, faces: [], warnings: ["w"], modelId: "m", modelVersion: "1",
+            inputFingerprint: "fp", updatedAt: "2026-10-28T00:00:00Z"),
+            name: "ModelReviewResult")
+        try assertRoundTrip(OutputRecipe(
+            id: "r1", name: "Web 2048", format: .jpeg, quality: 80, maxDimension: 2048,
+            naming: ExportNaming(pattern: "{recipe}"), includeXmp: true,
+            destination: "", artifacts: [.photos]),
+            name: "OutputRecipe")
         #expect(OutputArtifactKind.allCases.count >= 2)
-    }
-
-    // MARK: - P0-5（Wave1）：配方输出规格
-
-    @Test func outputRecipeOutputSpecsRoundTrip() throws {
-        let recipe = OutputRecipe(
-            id: "r2",
-            name: "Print 300dpi",
-            format: .tiff,
-            quality: nil,
-            maxDimension: nil,
-            colorSpace: .adobeRGB1998,
-            dpi: 300,
+        // P0-5（Wave1）：配方输出规格（色彩空间 / DPI / 锐化）。
+        try assertRoundTrip(OutputRecipe(
+            id: "r2", name: "Print 300dpi", format: .tiff, quality: nil, maxDimension: nil,
+            colorSpace: .adobeRGB1998, dpi: 300,
             sharpening: ExportSharpening(radius: 2, intensity: 0.8),
-            naming: ExportNaming(pattern: "{original}"),
-            includeXmp: false,
-            includeMetadata: true,
-            destination: "",
-            artifacts: [.photos])
-        let data = try JSONEncoder().encode(recipe)
-        #expect(try JSONDecoder().decode(OutputRecipe.self, from: data) == recipe)
+            naming: ExportNaming(pattern: "{original}"), includeXmp: false,
+            includeMetadata: true, destination: "", artifacts: [.photos]),
+            name: "OutputRecipe(输出规格)")
     }
 
     /// 旧版持久化的配方 JSON 没有新键：必须照常解码（nil = 保持原行为），

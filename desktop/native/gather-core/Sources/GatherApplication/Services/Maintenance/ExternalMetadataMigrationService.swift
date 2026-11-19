@@ -133,12 +133,11 @@ public struct ExternalMetadataMigrationService: Sendable {
         return ExternalMigrationEvaluation(report: report, updates: updates)
     }
 
-    /// 阶段 2：在调用方给定的写事务里落库（metadata 仓储由连接构造）。
+    /// 阶段 2：在调用方给定的写事务里落库（R1：注入窄写端口，不再自建仓储/连接）。
     public static func apply(
-        updates: [ExternalMigrationUpdate], connection: DBConnection
+        updates: [ExternalMigrationUpdate], into metadata: any MetadataCacheStore
     ) throws {
         guard !updates.isEmpty else { return }
-        let metadata = MetadataCacheRepo(connection: connection)
         for update in updates {
             for field in update.fields {
                 switch field {

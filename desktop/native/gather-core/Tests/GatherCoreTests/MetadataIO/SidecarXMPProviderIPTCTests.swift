@@ -11,11 +11,8 @@ import GatherTestSupport
 @testable import GatherMetadataIO
 
 private func makeTempDir() throws -> String {
-    let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-iptc-" + UUID().uuidString, isDirectory: true).path
-    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-    TempHygiene.track(path: dir)
-    return dir
+    // task-43：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+    try GatherTestSupport.makeTempDir(prefix: "gather-iptc")
 }
 
 private func makePhoto(_ dir: String, name: String = "IMG_0001.CR3") throws -> String {

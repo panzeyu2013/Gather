@@ -8,6 +8,7 @@ import Testing
 @testable import GatherProtocol
 @testable import GatherPersistence
 @testable import GatherApplication
+import GatherTestSupport
 
 private let t0 = "2026-10-25T00:00:00.000Z"
 
@@ -36,15 +37,16 @@ private func qualityResult(
 }
 
 private struct Harness {
-    let database: Database
     let db: DBConnection
     let repo: TriageRepo
     let service: TriageService
     let history: CullingHistoryRepo
 
     init() throws {
-        database = try Database.openInMemory()
-        db = database.connection
+        // task-43：本套只测 TriageService 逻辑，不测 Database.open 的版本/形态门禁；
+        // 用 makeTestDB（:memory: + SchemaCurrent.ddl）省掉 openInMemory 的建库后形态校验
+        //（Linux 微基准 ~8.1ms → ~3.1ms/次，见 .gather/round7/db-bench.txt）。
+        db = try makeTestDB()
         repo = TriageRepo(connection: db)
         history = CullingHistoryRepo(connection: db)
         service = TriageService(
@@ -56,7 +58,7 @@ private struct Harness {
         )
     }
 
-    func close() { database.close() }
+    func close() { db.close() }
 }
 
 private func insertSession(_ db: DBConnection, _ id: String = "s1") throws {

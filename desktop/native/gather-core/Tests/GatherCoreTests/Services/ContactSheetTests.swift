@@ -45,7 +45,8 @@ struct ContactSheetTests {
         var items: [ContactSheetItem] = []
         for index in 0..<3 {
             let path = directory.appendingPathComponent("IMG_\(index).jpg").path
-            try makeTestJPEG(at: path)
+            // task-45：只把同步图像创建/编码放进局部 autoreleasepool，避免跨轮累积。
+            try autoreleasepool { try makeTestJPEG(at: path) }
             items.append(ContactSheetItem(path: path, caption: "IMG_\(index).jpg"))
         }
         let output = directory.appendingPathComponent("sheet.pdf")
@@ -71,7 +72,8 @@ struct ContactSheetTests {
         var items: [ContactSheetItem] = []
         for index in 0..<20 {
             let path = directory.appendingPathComponent("IMG_\(index).jpg").path
-            try makeTestJPEG(at: path)
+            // task-45：同上（20 张），逐轮图像创建/编码放进局部 autoreleasepool。
+            try autoreleasepool { try makeTestJPEG(at: path) }
             items.append(ContactSheetItem(path: path, caption: "IMG_\(index).jpg"))
         }
         items.append(ContactSheetItem(path: directory.appendingPathComponent("missing.jpg").path, caption: "missing"))

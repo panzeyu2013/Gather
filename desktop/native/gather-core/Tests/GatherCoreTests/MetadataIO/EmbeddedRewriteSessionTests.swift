@@ -61,10 +61,8 @@ private func paddedJPEG(bytes: Int, iptc: [String: Any]? = nil) throws -> Data {
 }
 
 private func makeSessionDirectory(_ tag: String) throws -> URL {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-session-" + tag + "-" + UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory
+    // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+    URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: "gather-session-\(tag)"))
 }
 
 private func writeFixture(_ data: Data, name: String, in directory: URL) throws -> String {

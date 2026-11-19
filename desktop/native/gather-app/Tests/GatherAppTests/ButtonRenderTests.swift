@@ -39,25 +39,30 @@ struct ButtonRenderTests {
 
     /// 采样整张图（隔 2px 取一点），返回按出现次数降序的颜色直方图。
     private func samples(of view: some View) throws -> [Sample] {
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = 2
-        let image = try #require(renderer.cgImage, "ImageRenderer 没有产出位图（离屏渲染不可用）")
-        let rep = NSBitmapImageRep(cgImage: image)
-        var histogram: [String: (Sample, Int)] = [:]
-        for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
-            for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
-                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-                let sample = Sample(
-                    r: Int((c.redComponent * 255).rounded()),
-                    g: Int((c.greenComponent * 255).rounded()),
-                    b: Int((c.blueComponent * 255).rounded()),
-                    a: Double(c.alphaComponent)
-                )
-                let key = "\(sample.r),\(sample.g),\(sample.b),\(Int(sample.a * 100))"
-                histogram[key] = (sample, (histogram[key]?.1 ?? 0) + 1)
+        // 一条用例会取样多次（token 基准矩形 + 多个按钮）：离屏渲染产生的
+        // ImageRenderer/NSBitmapImageRep/CoreGraphics 自动释放对象包进局部
+        // autoreleasepool，上次取样的 AppKit 临时对象在下一次取样前回收。
+        try autoreleasepool {
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            let image = try #require(renderer.cgImage, "ImageRenderer 没有产出位图（离屏渲染不可用）")
+            let rep = NSBitmapImageRep(cgImage: image)
+            var histogram: [String: (Sample, Int)] = [:]
+            for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
+                for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
+                    guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                    let sample = Sample(
+                        r: Int((c.redComponent * 255).rounded()),
+                        g: Int((c.greenComponent * 255).rounded()),
+                        b: Int((c.blueComponent * 255).rounded()),
+                        a: Double(c.alphaComponent)
+                    )
+                    let key = "\(sample.r),\(sample.g),\(sample.b),\(Int(sample.a * 100))"
+                    histogram[key] = (sample, (histogram[key]?.1 ?? 0) + 1)
+                }
             }
+            return histogram.values.sorted { $0.1 > $1.1 }.map(\.0)
         }
-        return histogram.values.sorted { $0.1 > $1.1 }.map(\.0)
     }
 
     /// 同 token 的纯色矩形：按钮填充"应该长成"的基准。

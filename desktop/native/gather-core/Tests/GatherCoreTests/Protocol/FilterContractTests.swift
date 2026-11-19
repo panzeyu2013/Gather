@@ -9,13 +9,62 @@ import Testing
 
 struct FilterContractTests {
 
-    // MARK: - FilterRule / FilterGroup（递归判别联合）
+    // MARK: - DTO 往返 + key 冻结（P2：逐样本合并，含可选字段省略）
 
-    @Test func filterRuleRoundTripAndKeys() throws {
-        let original = FilterRule(field: "rating", operator: .gte, value: .number(4))
-        let data = try JSONEncoder().encode(original)
-        #expect(try JSONDecoder().decode(FilterRule.self, from: data) == original)
-        #expect(Set(try jsonKeys(of: data)) == ["field", "operator", "value"])
+    @Test("Filter 契约 DTO：JSON 往返稳定 + camelCase key 冻结")
+    func filterDTOsRoundTripAndKeys() throws {
+        try assertRoundTrip(FilterRule(field: "rating", operator: .gte, value: .number(4)),
+                            keys: ["field", "operator", "value"])
+        try assertRoundTrip(FilterGroup(
+            logic: .and,
+            conditions: [
+                .rule(FilterRule(field: "rating", operator: .gte, value: .number(4))),
+                .rule(FilterRule(field: "pickState", operator: .eq, value: .string("picked"))),
+            ]),
+            keys: ["logic", "conditions"])
+        try assertRoundTrip(AlbumCreateParams(
+            name: "街头", criteria: FilterGroup(logic: .and, conditions: []),
+            sortBy: "taken_at", sortOrder: "asc", description: "d", icon: "📷"),
+            keys: ["name", "criteria", "sortBy", "sortOrder", "description", "icon"])
+        try assertRoundTrip(AlbumUpdateParams(albumId: "a1", name: "新名字",
+                                              criteria: FilterGroup(logic: .and, conditions: [])),
+                            keys: ["albumId", "name", "criteria"])
+        try assertRoundTrip(FilterSuggestion(field: "keywords", values: ["街头", "夜景"]),
+                            keys: ["field", "values"])
+        try assertRoundTrip(GlobalPhotoResult(
+            photoId: "p1", assetId: "a1", sessionId: "s1", sessionName: "2025 街头",
+            sessionIds: ["s1"], sessionNames: ["2025 街头"],
+            filename: "a.jpg", filepath: "/u/a.jpg", status: "indexed",
+            rating: 4, label: "L", keywords: ["街头"]),
+            keys: [
+                "photoId", "assetId", "sessionId", "sessionName", "sessionIds", "sessionNames",
+                "filename", "filepath", "status", "rating", "label", "keywords",
+            ],
+            forbiddenKeys: ["session_ids", "photo_id"])
+        try assertRoundTrip(SmartAlbumData(
+            id: "a1", schemaVersion: 1, name: "街头", description: "d",
+            filterCriteria: FilterGroup(logic: .and, conditions: [
+                .rule(FilterRule(field: "keywords", operator: .contains, value: .string("街头"))),
+            ]),
+            sortBy: "rating", sortOrder: "desc", icon: "📷",
+            createdAt: "t", updatedAt: "t", validationError: "boom"),
+            keys: [
+                "id", "schemaVersion", "name", "description", "filterCriteria", "sortBy",
+                "sortOrder", "icon", "createdAt", "updatedAt", "validationError",
+            ],
+            forbiddenKeys: ["schema_version", "filter_criteria"])
+        let detailData = try assertRoundTrip(SmartAlbumDetailData(
+            id: "a1", schemaVersion: 1, name: "n", description: "",
+            filterCriteria: FilterGroup(logic: .and, conditions: []),
+            sortBy: "", sortOrder: "", icon: "", createdAt: "t", updatedAt: "t", photoCount: 42))
+        // 原用例只断言 photoCount 键存在（未锁完整键集合），保留原断言强度。
+        #expect(try jsonKeys(of: detailData).contains("photoCount"))
+        // validationError? 未设置时省略 key。
+        try assertJSONKeys(SmartAlbumData(
+            id: "a1", schemaVersion: 1, name: "n", description: "",
+            filterCriteria: FilterGroup(logic: .and, conditions: []),
+            sortBy: "", sortOrder: "", icon: "", createdAt: "t", updatedAt: "t"),
+            name: "SmartAlbumData(nil validationError)", forbiddenKeys: ["validationError"])
     }
 
     @Test func filterRuleOperatorRawValuesMatchTS() {
@@ -46,20 +95,6 @@ struct FilterContractTests {
         }
     }
 
-    @Test func filterGroupRoundTripWithRules() throws {
-        let original = FilterGroup(
-            logic: .and,
-            conditions: [
-                .rule(FilterRule(field: "rating", operator: .gte, value: .number(4))),
-                .rule(FilterRule(field: "pickState", operator: .eq, value: .string("picked"))),
-            ]
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(FilterGroup.self, from: data)
-        #expect(decoded == original)
-        #expect(Set(try jsonKeys(of: data)) == ["logic", "conditions"])
-    }
-
     @Test func filterGroupNestedConditionsRoundTrip() throws {
         let original = FilterGroup(
             logic: .or,
@@ -72,13 +107,10 @@ struct FilterContractTests {
                         .rule(FilterRule(field: "rating", operator: .lt, value: .number(2))),
                     ]
                 )),
-            ]
-        )
-
+            ])
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(FilterGroup.self, from: data)
         #expect(decoded == original)
-
         if case .group(let nested) = decoded.conditions[1] {
             #expect(nested.logic == .and)
             #expect(nested.conditions.count == 2)
@@ -90,113 +122,5 @@ struct FilterContractTests {
     @Test func filterLogicRawValuesMatchTS() {
         #expect(FilterLogic.and.rawValue == "and")
         #expect(FilterLogic.or.rawValue == "or")
-    }
-    // MARK: - Album params
-
-    @Test func albumCreateParamsRoundTrip() throws {
-        let params = AlbumCreateParams(
-            name: "街头",
-            criteria: FilterGroup(logic: .and, conditions: []),
-            sortBy: "taken_at", sortOrder: "asc",
-            description: "d", icon: "📷"
-        )
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(AlbumCreateParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["name", "criteria", "sortBy", "sortOrder", "description", "icon"])
-    }
-
-    @Test func albumUpdateParamsRoundTrip() throws {
-        let update = AlbumUpdateParams(albumId: "a1", name: "新名字", criteria: FilterGroup(logic: .and, conditions: []))
-        let updateData = try JSONEncoder().encode(update)
-        #expect(try JSONDecoder().decode(AlbumUpdateParams.self, from: updateData) == update)
-        #expect(Set(try jsonKeys(of: updateData)) == ["albumId", "name", "criteria"])
-    }
-
-    // MARK: - FilterSuggestion
-
-    @Test func filterSuggestionRoundTrip() throws {
-        let suggestion = FilterSuggestion(field: "keywords", values: ["街头", "夜景"])
-        let data = try JSONEncoder().encode(suggestion)
-        #expect(try JSONDecoder().decode(FilterSuggestion.self, from: data) == suggestion)
-        #expect(Set(try jsonKeys(of: data)) == ["field", "values"])
-    }
-
-    // MARK: - GlobalPhotoResult
-
-    @Test func globalPhotoResultRoundTripAndKeys() throws {
-        let original = GlobalPhotoResult(
-            photoId: "p1", assetId: "a1", sessionId: "s1", sessionName: "2025 街头",
-            sessionIds: ["s1"], sessionNames: ["2025 街头"],
-            filename: "a.jpg", filepath: "/u/a.jpg", status: "indexed",
-            rating: 4, label: "L", keywords: ["街头"]
-        )
-        let data = try JSONEncoder().encode(original)
-        #expect(try JSONDecoder().decode(GlobalPhotoResult.self, from: data) == original)
-
-        let keys = try jsonKeys(of: data)
-        let expected = [
-            "photoId", "assetId", "sessionId", "sessionName", "sessionIds", "sessionNames",
-            "filename", "filepath", "status", "rating", "label", "keywords",
-        ]
-        #expect(Set(keys) == Set(expected))
-        #expect(!keys.contains("session_ids"))
-        #expect(!keys.contains("photo_id"))
-    }
-
-    // MARK: - SmartAlbumData / SmartAlbumDetailData
-
-    @Test func smartAlbumDataRoundTripAndKeys() throws {
-        let original = SmartAlbumData(
-            id: "a1", schemaVersion: 1, name: "街头", description: "d",
-            filterCriteria: FilterGroup(logic: .and, conditions: [
-                .rule(FilterRule(field: "keywords", operator: .contains, value: .string("街头"))),
-            ]),
-            sortBy: "rating", sortOrder: "desc", icon: "📷",
-            createdAt: "t", updatedAt: "t", validationError: "boom"
-        )
-        let data = try JSONEncoder().encode(original)
-        #expect(try JSONDecoder().decode(SmartAlbumData.self, from: data) == original)
-
-        let keys = try jsonKeys(of: data)
-        let expected = [
-            "id", "schemaVersion", "name", "description", "filterCriteria", "sortBy",
-            "sortOrder", "icon", "createdAt", "updatedAt", "validationError",
-        ]
-        #expect(Set(keys) == Set(expected))
-        #expect(!keys.contains("schema_version"))
-        #expect(!keys.contains("filter_criteria"))
-    }
-
-    @Test func smartAlbumDataValidationErrorOmittedWhenNil() throws {
-        let album = SmartAlbumData(
-            id: "a1", schemaVersion: 1, name: "n", description: "",
-            filterCriteria: FilterGroup(logic: .and, conditions: []),
-            sortBy: "", sortOrder: "", icon: "", createdAt: "t", updatedAt: "t"
-        )
-        let keys = try jsonKeys(of: JSONEncoder().encode(album))
-        #expect(!keys.contains("validationError"))
-    }
-
-    @Test func smartAlbumDetailDataRoundTrip() throws {
-        let original = SmartAlbumDetailData(
-            id: "a1", schemaVersion: 1, name: "n", description: "",
-            filterCriteria: FilterGroup(logic: .and, conditions: []),
-            sortBy: "", sortOrder: "", icon: "",
-            createdAt: "t", updatedAt: "t",
-            photoCount: 42
-        )
-        let data = try JSONEncoder().encode(original)
-        #expect(try JSONDecoder().decode(SmartAlbumDetailData.self, from: data) == original)
-        #expect(Set(try jsonKeys(of: data)).contains("photoCount"))
-    }
-    private func jsonKeys(of data: Data) throws -> [String] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ContractTestError.invalidJSON
-        }
-        return Array(object.keys)
-    }
-
-    private enum ContractTestError: Error {
-        case invalidJSON
     }
 }

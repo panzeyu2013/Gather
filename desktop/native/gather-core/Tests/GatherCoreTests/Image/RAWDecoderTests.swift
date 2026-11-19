@@ -169,13 +169,17 @@ struct RAWDecoderTests {
 
     @Test func compositeFormatDecodeFailureReportsUnsupportedExtension() throws {
         for ext in [".psd", ".heic", ".heif"] {
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("gather-rawdecoder-corrupt-\(UUID().uuidString)\(ext)")
-            try Data("not an image at all".utf8).write(to: url)
-            defer { cleanup([url]) }
-            // 不崩溃：声明支持但解不出来时按 unsupportedExtension 上报。
-            #expect(throws: RAWDecoderError.unsupportedExtension(ext)) {
-                _ = try RAWDecoder.getThumbnail(path: url.path, size: 64)
+            // 每轮都走一次 ImageIO 嗅探/解码失败路径：局部 autoreleasepool 让
+            // ImageIO 的自动释放错误对象按轮回收，避免跨轮累积。
+            try autoreleasepool {
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("gather-rawdecoder-corrupt-\(UUID().uuidString)\(ext)")
+                try Data("not an image at all".utf8).write(to: url)
+                defer { cleanup([url]) }
+                // 不崩溃：声明支持但解不出来时按 unsupportedExtension 上报。
+                #expect(throws: RAWDecoderError.unsupportedExtension(ext)) {
+                    _ = try RAWDecoder.getThumbnail(path: url.path, size: 64)
+                }
             }
         }
     }
@@ -216,14 +220,19 @@ struct RAWDecoderTests {
     /// EXIF orientation 5-8（旋转类）交换宽高；1-4（翻转类）不交换。
     @Test func dimensionsSwapForRotatedOrientation() throws {
         for orientation in 1...8 {
-            let url = try makeJPEG(width: 640, height: 480, orientation: orientation)
-            defer { cleanup([url]) }
-            let dims = try RAWDecoder.getDimensions(path: url.path)
-            let expected = (5...8).contains(orientation) ? (480, 640) : (640, 480)
-            #expect(
-                dims.width == expected.0 && dims.height == expected.1,
-                "orientation \(orientation): got \(dims.width)x\(dims.height)"
-            )
+            // 每轮都新建 CGContext + ImageIO 编码：放进 autoreleasepool，让上一轮的
+            // ImageIO/ColorSync 自动释放对象在本轮结束即回收，而不是攒到用例收尾
+            //（8 轮 640×480 合成图的峰值内存/临时对象）。
+            try autoreleasepool {
+                let url = try makeJPEG(width: 640, height: 480, orientation: orientation)
+                defer { cleanup([url]) }
+                let dims = try RAWDecoder.getDimensions(path: url.path)
+                let expected = (5...8).contains(orientation) ? (480, 640) : (640, 480)
+                #expect(
+                    dims.width == expected.0 && dims.height == expected.1,
+                    "orientation \(orientation): got \(dims.width)x\(dims.height)"
+                )
+            }
         }
     }
 

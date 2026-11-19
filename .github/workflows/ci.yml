@@ -77,9 +77,61 @@ jobs:
       - name: Docs facts
         run: ./scripts/check-docs-facts.sh
       # 性能反模式 ratchet：per-call DateFormatter/JSONEncoder/NSRegularExpression/...
-      # 构造点不得高于 docs/perf-baseline.json（只许降，新增热点必须走共享缓存）。
+      # 构造点不得高于 docs/baselines/perf-baseline.json（只许降，新增热点必须走共享缓存）。
       - name: Perf ratchet
         run: ./scripts/check-perf-ratchet.sh
+      # G0–G5 结构门禁（2026-11-18 架构评审 Wave 4）：锁序 / target 依赖图 /
+      # 模块规模 / 并发标注白名单 / Application 符号越界 / app public 面。
+      # 纯 Linux、JSON 基线 ratchet；基线见 docs/baselines/（structure / surface / cleanup / perf / design-system / port-row）。
+      - name: Lock order
+        run: ./scripts/check-lock-order.sh --strict
+      - name: Import graph
+        run: ./scripts/check-import-graph.sh --strict
+      - name: Module size
+        run: ./scripts/check-module-size.sh --strict
+      - name: Concurrency whitelist
+        run: ./scripts/check-concurrency-whitelist.sh --strict
+      - name: Layer symbols
+        run: ./scripts/check-layer-symbols.sh --strict
+      - name: App public surface
+        run: ./scripts/check-public-surface-app.sh --strict
+      # G6（2026-11-18 Wave 5 / M8+M10）：端口准入台账 + 行类型表面 ratchet。
+      - name: Port row surface
+        run: ./scripts/check-port-row-surface.sh --strict
+      # P1-2（2026-11-18 安全审计）：结构门禁的负样本自测进 CI —— 正则/解析器
+      # 被改坏时 gate 自身会「静默全绿」，这里用 mktemp fixture 证明违规仍会红。
+      # 10 道各 <0.5s，不写仓库（cleanup/perf-ratchet 的 self-test 各约 20s，不进 per-PR）。
+      - name: Lock order self-test
+        run: ./scripts/check-lock-order.sh --self-test
+      - name: Import graph self-test
+        run: ./scripts/check-import-graph.sh --self-test
+      - name: Module size self-test
+        run: ./scripts/check-module-size.sh --self-test
+      - name: Concurrency whitelist self-test
+        run: ./scripts/check-concurrency-whitelist.sh --self-test
+      - name: Layer symbols self-test
+        run: ./scripts/check-layer-symbols.sh --self-test
+      - name: App public surface self-test
+        run: ./scripts/check-public-surface-app.sh --self-test
+      - name: Port row surface self-test
+        run: ./scripts/check-port-row-surface.sh --self-test
+      - name: Layering self-test
+        run: ./scripts/check-layering.sh --self-test
+      - name: Domain events self-test
+        run: ./scripts/check-domain-events.sh --self-test
+      - name: Coded errors self-test
+        run: ./scripts/check-coded-errors.sh --self-test
+      - name: Test catalog self-test
+        run: ./scripts/check-test-catalog.sh --self-test
+      - name: Release bundle verifier self-test
+        run: ./scripts/verify-release-bundle.sh --self-test
+      # 测试工具自测（task-44）：profile-tests.sh 的事件流解析器与 test-shard.sh
+      # 的静态单元清单都是纯 Linux Python，各 <1s；合成夹具保证工具被改坏时仍
+      # 会红，而不是「静默全绿」。不进 macOS 测试 job（那里只跑真实 swift test）。
+      - name: Profile tests self-test
+        run: ./scripts/profile-tests.sh --self-test
+      - name: Test shard self-test
+        run: ./scripts/test-shard.sh --self-test
 
   gather-core:
     name: gather-core tests
@@ -91,39 +143,41 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Toolchain version
         # 排障入口：runner 镜像换代（Xcode/SDK/Swift）先看这一行，别再靠猜。
-        run: swift --version && xcodebuild -version
+        # 同时输出工具链指纹（Swift + Xcode 版本）给下面 Cache 的 key/restore-keys：
+        # 旧工具链的 SwiftPM 缓存（manifest/模块产物）换代后不复用，避免半旧缓存。
+        id: toolchain
+        run: |
+          SWIFT_INFO="$(swift --version)"
+          XCODE_INFO="$(xcodebuild -version 2>/dev/null || true)"
+          printf '%s\n' "$SWIFT_INFO" "$XCODE_INFO"
+          echo "fingerprint=$(printf '%s\n' "$SWIFT_INFO" "$XCODE_INFO" | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
       - name: Cache SwiftPM
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             desktop/native/gather-core/.build
             ~/Library/Caches/org.swift.swiftpm
-          key: core-${{ runner.os }}-${{ hashFiles('desktop/native/gather-core/Package.swift') }}
-          restore-keys: core-${{ runner.os }}-
+          # key = OS + 架构 + 工具链指纹 + manifest 哈希；restore 只在前三者相同时匹配。
+          key: core-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('desktop/native/gather-core/Package.swift') }}
+          restore-keys: core-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-
       - name: Sources warnings
         # P3-5：只对 Sources 开 -warnings-as-errors；测试 target 告警不阻断。
         run: ./scripts/check-warnings.sh core
       - name: Core tests
-        # 串行 + 输出落盘 + 看门狗（2026-10-29 假死复盘）：
-        # swift-testing 的 --parallel 是同进程并发（worker≈核数），而本仓测试大量依赖
-        # 阻塞型锁（GatherLogger / DBConnection / 读池），日志还写 stdout。macOS runner
-        # 只有 3–4 vCPU，这些阻塞点会耗尽协作线程池 —— 实测一轮跑到 8 个用例在途后
-        # 整个进程 21 分钟零输出。所以 CI 只跑串行，并行入口留给本地 scripts/test.sh。
-        # 输出落盘避开 stdout 背压；alarm 保证挂死 20 分钟内带着日志失败，而不是静默等满 60 分钟。
-        run: |
-          set -euo pipefail
-          LOG="$RUNNER_TEMP/gather-core-tests.log"
-          if ! perl -e 'alarm shift; exec @ARGV' 1200 \
-              swift test --package-path desktop/native/gather-core --no-parallel \
-                --explicit-target-dependency-import-check error >"$LOG" 2>&1; then
-            echo "::error::gather-core tests failed or timed out"
-            echo "=== failures ==="
-            grep -nE '✘|recorded an issue|^error:' "$LOG" | head -40 || true
-            echo "=== tail ==="
-            tail -120 "$LOG"
-            exit 1
-          fi
-          tail -20 "$LOG"
+        # 串行 + 输出落盘 + 1200s 看门狗（2026-10-29 假死复盘）：swift-testing 的
+        # --parallel 是同进程并发（worker≈核数），本仓大量阻塞型锁（GatherLogger /
+        # DBConnection / 读池）在 3–4 vCPU runner 上会耗尽协作线程池（实测 21 分钟
+        # 零输出）。参数/日志/失败摘要统一收在 scripts/run-swift-tests.sh（与本地
+        # scripts/test.sh 同一套 env 口径），并行入口只留给本地。
+        run: ./scripts/run-swift-tests.sh core
+      - name: Upload test log on failure
+        # T14：失败时保留全量日志（脚本默认落 $RUNNER_TEMP），排障不必 rerun。
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gather-core-tests-log
+          path: ${{ runner.temp }}/gather-core-tests.log
+          if-no-files-found: ignore
       # WP7：schema 工具是 DDL 真相源的独立消费方；在 core job 内验证 55 表/
       # user_version=1（当前唯一 Schema）/外键 0 违规，避免只靠测试间接覆盖。
       - name: Schema verification
@@ -131,47 +185,50 @@ jobs:
 
   gather-app:
     name: gather-app tests
-    # 与 gather-core 同口径：只在 macOS 26+ 验证。
+    # 与 gather-core 同口径：只在 macOS 26+ 验证。两 job 无 artifact 依赖，去掉
+    # needs 后并行（T12：少一轮排队墙钟；release 仍是 needs [gates, gather-app]）。
     runs-on: macos-26
-    needs: gather-core
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # 测试只构建 test target；下面单独构建 GatherApp 可执行（SwiftUI Commands
-      # 装配、Window scene 与 @Environment 取值只在可执行 target 里编译）。
-      # .app 组装与 GATHER_SDK_VERSION/linker flags 仍由 release 覆盖。
+      - name: Toolchain version
+        # 与 gather-core job 同口径：排障入口 + 下面的 Cache key 工具链指纹因子。
+        id: toolchain
+        run: |
+          SWIFT_INFO="$(swift --version)"
+          XCODE_INFO="$(xcodebuild -version 2>/dev/null || true)"
+          printf '%s\n' "$SWIFT_INFO" "$XCODE_INFO"
+          echo "fingerprint=$(printf '%s\n' "$SWIFT_INFO" "$XCODE_INFO" | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
       - name: Cache SwiftPM
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             desktop/native/gather-app/.build
             ~/Library/Caches/org.swift.swiftpm
-          key: app-${{ runner.os }}-${{ hashFiles('desktop/native/gather-app/Package.swift') }}
-          restore-keys: app-${{ runner.os }}-
-      - name: App executable build
-        # swift test 不链接 GatherApp 可执行 → 菜单/场景装配的编译回归只在这里拦。
-        run: swift build --package-path desktop/native/gather-app --explicit-target-dependency-import-check error
+          # app 以 path 依赖 ../gather-core：core 的 Package.swift 变化同样会让 app 的
+          # .build 失效，所以 manifest 哈希同时包含两个包的 Package.swift。
+          key: app-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('desktop/native/gather-app/Package.swift', 'desktop/native/gather-core/Package.swift') }}
+          restore-keys: app-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-
+      # T8：原独立 "App executable build" 已删——它与 Sources warnings 重复：
+      # swift build 默认构建全部 target（含 GatherApp 可执行），而 warnings 步骤还多了
+      # -warnings-as-errors，菜单/场景装配的编译回归仍会被拦下。
+      # 测试只构建 test target；.app 组装与 SDK/linker flags 仍由 release 覆盖。
       - name: Sources warnings
         # P3-5：GatherUI/GatherHost/GatherApp 的 Sources 告警即失败。
         run: ./scripts/check-warnings.sh app
       - name: App tests
-        # 与 gather-core 同口径：CI 串行 + 输出落盘 + 看门狗。并行的 SIGSEGV 已于
-        # 2026-10-29 修掉（NSWindow.close → orderOut），但并行仍会放大阻塞型锁的线程池
-        # 耗尽风险，故 CI 不启用；本地用 scripts/test.sh app。
-        run: |
-          set -euo pipefail
-          LOG="$RUNNER_TEMP/gather-app-tests.log"
-          if ! perl -e 'alarm shift; exec @ARGV' 1200 \
-              swift test --package-path desktop/native/gather-app --no-parallel \
-                --explicit-target-dependency-import-check error >"$LOG" 2>&1; then
-            echo "::error::gather-app tests failed or timed out"
-            echo "=== failures ==="
-            grep -nE '✘|recorded an issue|^error:' "$LOG" | head -40 || true
-            echo "=== tail ==="
-            tail -120 "$LOG"
-            exit 1
-          fi
-          tail -20 "$LOG"
+        # 与 gather-core 同口径：串行 + 输出落盘 + 1200s 看门狗（细节统一在
+        # scripts/run-swift-tests.sh）。并行 SIGSEGV 已于 2026-10-29 修掉，但并行仍
+        # 会放大阻塞型锁的线程池耗尽风险，故 CI 不启用；本地用 scripts/test.sh app。
+        run: ./scripts/run-swift-tests.sh app
+      - name: Upload test log on failure
+        # T14：失败时保留全量日志（脚本默认落 $RUNNER_TEMP），排障不必 rerun。
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gather-app-tests-log
+          path: ${{ runner.temp }}/gather-app-tests.log
+          if-no-files-found: ignore
 
   # 原 toolchain-compat（macos-latest 上的 drift guard）已删除：core/app 两个
   # 测试 job 现在就跑在最新镜像（macos-26）上，单独再构建一遍纯属重复。
@@ -179,7 +236,7 @@ jobs:
 
   # WP6c：可复现发布。只在 v* tag 或手动 dispatch 时运行；版本/SDK/签名凭据全部
   # 显式注入，缺任何一项都在 build.sh 的 GATHER_RELEASE=1 下失败，不静默跳过。
-  # 需要的 secrets（签名/公证 secret 只在对应 step 注入，不放在 job env，避免
+  # 需要的 secrets（签名/公证 secret 只在 Build step 注入，不放在 job env，避免
   # 上传 artifact 等无关 step 也能读取）：
   #   CODESIGN_IDENTITY       Developer ID Application: ... (TEAMID)  必填
   #   MACOS_CERT_P12          base64 的 .p12                          必填
@@ -188,14 +245,19 @@ jobs:
   #   GATHER_NOTARY_PROFILE   仅 self-hosted runner 可用（需预先 store-credentials）；
   #                           hosted runner 请留空，改用下面三件套
   #   NOTARY_APPLE_ID / NOTARY_TEAM_ID / NOTARY_APP_PASSWORD           App Store Connect 凭据
+  # 环境要求（release-audit P1）：本 job 必须在 **self-hosted macOS 26 runner** 上运行，
+  # 该 runner 需预装：① Xcode 26+（Swift/SDK ≥26，Liquid Glass）；② 授权 Capture One
+  # Plugin SDK（Capture_One_Plugin_SDK_(Mac)_v1.0.1/，被 .gitignore 排除）；③ 签名/公证
+  # 凭据（secrets 只在 Build step 注入，不放进 job env）。Hosted macos-26 不提供 ②，
+  # Preflight step 会立即失败并给出 self-hosted 指引（此 job 在公开 runner 上从未成功
+  # 跑完，见 release-audit）；换 runner 只需把 runs-on 换成对应 self-hosted 标签。
   release:
     name: Release bundle (universal, signed, notarized)
     # Liquid Glass 需要 Mach-O 的 LC_BUILD_VERSION.sdk >= 26（见 gather-app/
-    # Package.swift）。CI 只在 macOS 26+ 上验证，发布固定在 macos-26；换
-    # self-hosted runner 时若没有 SDK 26，"Assert release SDK" 会 fail closed，
-    # 而不是静默产出无 Liquid Glass 的包。
+    # Package.swift）。发布固定在 macos-26；换 self-hosted runner 时若没有 SDK 26，
+    # "Resolve release SDK and version" 会 fail closed，而不是静默产出无 Liquid Glass 的包。
     runs-on: macos-26
-    needs: [gates, gather-app]
+    needs: [gates, gather-core, gather-app]
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 120
     env:
@@ -207,21 +269,35 @@ jobs:
         with:
           # git describe 需要 tag 与提交历史；版本回退依赖它。
           fetch-depth: 0
-      - name: Resolve SDK and version
+      - name: Preflight licensed Capture One SDK
+        # 授权 SDK 不在仓库内，hosted macos-26 镜像不提供：build.sh 的 GATHER_RELEASE=1
+        # 会在组装前 exit 1。这里在下载/构建前给出安装指引，别等整次 job 跑完才红。
+        run: |
+          if [ ! -d "Capture_One_Plugin_SDK_(Mac)_v1.0.1" ] || [ ! -f desktop/coplugin/Makefile ]; then
+            echo "::error::release requires the licensed Capture One plugin SDK (Capture_One_Plugin_SDK_(Mac)_v1.0.1/, gitignored) and desktop/coplugin/Makefile."
+            echo "::error::hosted macos-26 runners cannot provide the SDK: use a self-hosted macOS 26 runner with the SDK installed."
+            exit 1
+          fi
+      - name: Resolve release SDK and version
         id: version
+        # 一次 xcrun 同时记录 GATHER_SDK_VERSION 并断言 SDK>=26（不再分两个 step 重复探测）。
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           SDK_VERSION="$(xcrun --show-sdk-version)"
+          SDK_MAJOR="${SDK_VERSION%%.*}"
+          case "$SDK_MAJOR" in
+            ''|*[!0-9]*) echo "::error::cannot parse SDK version '$SDK_VERSION'"; exit 1 ;;
+          esac
+          if [ "$SDK_MAJOR" -lt 26 ]; then
+            echo "::error::release requires the macOS 26 SDK (Liquid Glass); this runner provides $SDK_VERSION. Use macos-26 or a self-hosted runner with Xcode 26."
+            exit 1
+          fi
           echo "GATHER_SDK_VERSION=$SDK_VERSION" >> "$GITHUB_ENV"
           echo "SDK: $SDK_VERSION"
           VERSION=""
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            VERSION="$GITHUB_REF_NAME"
-          fi
-          if [ -z "$VERSION" ]; then
-            VERSION="$INPUT_VERSION"
-          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then VERSION="$GITHUB_REF_NAME"; fi
+          if [ -z "$VERSION" ]; then VERSION="$INPUT_VERSION"; fi
           if [ -z "$VERSION" ]; then
             echo "::error::release job needs a v* tag or workflow_dispatch input 'version'" >&2
             exit 1
@@ -229,24 +305,6 @@ jobs:
           echo "GATHER_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "VERSION: $VERSION"
-      # P1-4/P2：发布包必须用 macOS 26 SDK 链接，否则 Mach-O 的
-      # LC_BUILD_VERSION.sdk 会让 AppKit 强制旧外观（无 Liquid Glass）。
-      # runner 换代/自托管镜像缺 SDK 26 时这里 fail closed，避免静默发布。
-      - name: Assert release SDK
-        run: |
-          SDK_VERSION="$(xcrun --show-sdk-version)"
-          SDK_MAJOR="${SDK_VERSION%%.*}"
-          echo "release SDK: $SDK_VERSION"
-          case "$SDK_MAJOR" in
-            ''|*[!0-9]*)
-              echo "::error::cannot parse SDK version '$SDK_VERSION'"
-              exit 1
-              ;;
-          esac
-          if [ "$SDK_MAJOR" -lt 26 ]; then
-            echo "::error::release requires the macOS 26 SDK (Liquid Glass); this runner provides $SDK_VERSION. Use macos-26 or a self-hosted runner with Xcode 26."
-            exit 1
-          fi
       - name: Import Developer ID certificate
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -276,75 +334,17 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
         run: ./desktop/native/build.sh
-      # GatherLink.coplugin 的架构/版本/minos 必须与 universal app 一致。
-      # build.sh 在 SDK 存在时按 GATHER_ARCHS 逐切片编译并 lipo，release 模式
-      # 缺 SDK 直接 exit 1；这里再做发布侧独立复核，防止 runner 缓存混入。
-      # 授权 SDK 不在仓库内，release runner 必须先安装，否则本 job 失败。
-      - name: Verify Capture One plugin architecture
+      - name: Verify release zip
+        # 发布侧独立验收（P1：此前 Gather.zip 从未解包验证）：解包最终 zip 复核
+        # 双切片/版本/插件/App Intents 元数据/签名/entitlements/公证/校验和，全部
+        # fail closed。build.sh 负责构建期断言，本 step 只认最终产物；本地可用同一
+        # 命令复跑：./scripts/verify-release-bundle.sh release/Gather.zip。
+        # Linux 上没有 ditto/lipo/codesign 等工具，不能跑这条验收（Linux 用
+        # --self-test 验证脚本自身的 fail-closed 行为）；正式验收需 macOS 26+ /
+        # Xcode 26 SDK，构建机还须是预装授权 C1 SDK 的 self-hosted runner。
         run: |
-          PLUGIN_BINARY="release/Gather.app/Contents/PlugIns/GatherLink.coplugin/Contents/MacOS/GatherLink"
-          if [ ! -f "$PLUGIN_BINARY" ]; then
-            echo "::error::universal release must embed GatherLink.coplugin; build.sh refuses GATHER_RELEASE=1 without the licensed Capture One SDK + Makefile. Install the SDK on the release runner."
-            exit 1
-          fi
-          ARCHS="$(lipo -archs "$PLUGIN_BINARY")"
-          echo "GatherLink.coplugin architectures: $ARCHS"
-          for want in arm64 x86_64; do
-            case " $ARCHS " in
-              *" $want "*) ;;
-              *)
-                echo "::error::universal release requires the $want slice in GatherLink.coplugin (lipo -archs: $ARCHS)"
-                exit 1
-                ;;
-            esac
-          done
-          PLUGIN_PLIST="release/Gather.app/Contents/PlugIns/GatherLink.coplugin/Contents/Info.plist"
-          APP_PLIST="release/Gather.app/Contents/Info.plist"
-          test "$(plutil -extract CFBundleShortVersionString raw -o - "$PLUGIN_PLIST")" = "$(plutil -extract CFBundleShortVersionString raw -o - "$APP_PLIST")"
-          test "$(plutil -extract CFBundleVersion raw -o - "$PLUGIN_PLIST")" = "$(plutil -extract CFBundleVersion raw -o - "$APP_PLIST")"
-          PLUGIN_MINOS="$(vtool -show-build "$PLUGIN_BINARY" | awk '$1=="minos"{print $2; exit}')"
-          echo "GatherLink.coplugin minos: $PLUGIN_MINOS"
-          test "$PLUGIN_MINOS" = "26.0"
-      - name: Verify bundle
-        run: |
-          APP=release/Gather.app
-          APP_BINARY="$APP/Contents/MacOS/Gather"
-          plutil -p "$APP/Contents/Info.plist"
-          test "$(plutil -extract CFBundleIconFile raw -o - "$APP/Contents/Info.plist")" = "AppIcon"
-          test -s "$APP/Contents/Resources/AppIcon.icns"
-          ARCHS="$(lipo -archs "$APP_BINARY")"
-          echo "app architectures: $ARCHS"
-          for want in arm64 x86_64; do
-            case " $ARCHS " in
-              *" $want "*) ;;
-              *)
-                echo "::error::universal release requires the $want slice in Gather (lipo -archs: $ARCHS)"
-                exit 1
-                ;;
-            esac
-          done
-          for arch in $ARCHS; do
-            MINOS="$(vtool -arch "$arch" -show-build "$APP_BINARY" | awk '$1=="minos"{print $2; exit}')"
-            SDK="$(vtool -arch "$arch" -show-build "$APP_BINARY" | awk '$1=="sdk"{print $2; exit}')"
-            echo "Mach-O $arch: minos=$MINOS sdk=$SDK"
-            test "$MINOS" = "26.0"
-            test "$SDK" = "$GATHER_SDK_VERSION"
-          done
-          BUILD_INFO="$APP/Contents/Resources/build-info.json"
-          test -s "$BUILD_INFO"
-          plutil -convert xml1 -o /dev/null "$BUILD_INFO"
-          cat "$BUILD_INFO"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          codesign -dv --verbose=4 "$APP" 2>&1 | tee /tmp/gather-codesign-dv.txt
-          grep -q 'Runtime Version' /tmp/gather-codesign-dv.txt
-          grep -q 'Timestamp' /tmp/gather-codesign-dv.txt
-          codesign -d --entitlements :- "$APP" > /tmp/gather-entitlements.plist
-          /usr/libexec/PlistBuddy -c 'Print :com.apple.security.automation.apple-events' /tmp/gather-entitlements.plist
-          xcrun stapler validate "$APP"
-          spctl -a -t exec -vvv "$APP"
-          test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "${GATHER_VERSION#v}"
           ( cd release && shasum -a 256 Gather.zip > Gather.zip.sha256 )
-          cat release/Gather.zip.sha256
+          ./scripts/verify-release-bundle.sh release/Gather.zip
       - name: Upload release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

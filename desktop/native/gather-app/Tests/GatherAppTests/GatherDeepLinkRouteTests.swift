@@ -11,16 +11,15 @@
 // 边界：只碰临时目录与真实 1 字节文件（解析只做“存在 + 扩展名”校验，不读像素）。
 import Foundation
 import Testing
+import GatherTestSupport
 @testable import GatherHost
 @testable import GatherProtocol
 
 @Suite("gather:// 深链解析")
 struct GatherDeepLinkRouteTests {
     private func makeTempDir() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-deeplink-route-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
+        // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+        URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: "gather-deeplink-route"))
     }
 
     @Test func parsesSessionAndPhotoRoutes() throws {

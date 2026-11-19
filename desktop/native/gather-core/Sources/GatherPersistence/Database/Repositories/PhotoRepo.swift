@@ -49,85 +49,56 @@ public struct PhotoRow: Equatable, Sendable {
     }
 }
 
-/// 轻投影：除 metadata/result 外的全部列（TS: PhotoProjectionRow）。
-public struct PhotoProjectionRow: Equatable, Sendable {
-    public let id: String
-    public let sessionId: String
-    public let filepath: String
-    public let filename: String
-    public let checksum: String
-    public let checksumFileSize: Int
-    public let checksumFileMtimeMs: Double
-    public let status: String
-    public let assetId: String?
-    public let assetFileId: String?
-    public let width: Int
-    public let height: Int
-    public let createdAt: String
-    public let updatedAt: String
-    /// P0 / A1：非 nil = 已移出工作区（文件在 _rejects）。读面按 PhotoVisibility 过滤。
-    public let archivedAt: String?
-
+/// `PhotoProjectionRow` 的 DB 行解码（类型定义见 GatherProtocol/Protocol/ReadProjections.swift）。
+extension PhotoProjectionRow {
     // SELECT 列序: id(0), session_id(1), filepath(2), filename(3), checksum(4),
     // checksum_file_size(5), checksum_file_mtime_ms(6), status(7), asset_id(8),
     // asset_file_id(9), width(10), height(11), created_at(12), updated_at(13),
     // archived_at(14)
     init(row: DBRow) throws {
         guard row.count >= 15 else { throw DBError.message("PhotoProjectionRow 列数不足: \(row.count)") }
-        id = row[0].textValue ?? ""
-        sessionId = row[1].textValue ?? ""
-        filepath = row[2].textValue ?? ""
-        filename = row[3].textValue ?? ""
-        checksum = row[4].textValue ?? ""
-        checksumFileSize = Int(row[5].intValue ?? 0)
-        checksumFileMtimeMs = row[6].doubleValue ?? 0
-        status = row[7].textValue ?? ""
-        assetId = row[8].textValue
-        assetFileId = row[9].textValue
-        width = Int(row[10].intValue ?? 0)
-        height = Int(row[11].intValue ?? 0)
-        createdAt = row[12].textValue ?? ""
-        updatedAt = row[13].textValue ?? ""
-        archivedAt = row[14].textValue
+        self.init(
+            id: row[0].textValue ?? "",
+            sessionId: row[1].textValue ?? "",
+            filepath: row[2].textValue ?? "",
+            filename: row[3].textValue ?? "",
+            checksum: row[4].textValue ?? "",
+            checksumFileSize: Int(row[5].intValue ?? 0),
+            checksumFileMtimeMs: row[6].doubleValue ?? 0,
+            status: row[7].textValue ?? "",
+            assetId: row[8].textValue,
+            assetFileId: row[9].textValue,
+            width: Int(row[10].intValue ?? 0),
+            height: Int(row[11].intValue ?? 0),
+            createdAt: row[12].textValue ?? "",
+            updatedAt: row[13].textValue ?? "",
+            archivedAt: row[14].textValue,
+        )
     }
 }
 
-/// 分页轻投影（TS: PhotoPageRow）。PHOTO_PAGE_COLUMNS 恒为 13 列（V1 交集列）；
-/// 旧 TS 的行形状还带 metadata/result/checksum 尾部可选列，V1 不再读它们
-/// （Cut 2 S5b / R1-01）：行映射只认这 13 列，尾部多出的列不参与解码。
-public struct PhotoPageRow: Equatable, Sendable {
-    public let rowid: Int64
-    public let id: String
-    public let sessionId: String
-    public let filepath: String
-    public let filename: String
-    public let status: String
-    public let assetId: String?
-    public let assetFileId: String?
-    public let width: Int
-    public let height: Int
-    public let checksum: String?
-    public let createdAt: String
-    public let updatedAt: String
-
+/// `PhotoPageRow` 的 DB 行解码（类型定义见 GatherProtocol/Protocol/ReadProjections.swift）。
+extension PhotoPageRow {
     // PHOTO_PAGE_COLUMNS 列序: rowid(0), id(1), session_id(2), filepath(3),
     // filename(4), status(5), asset_id(6), asset_file_id(7), width(8),
     // height(9), checksum(10), created_at(11), updated_at(12)
     public init(row: DBRow) throws {
         guard row.count >= 13 else { throw DBError.message("PhotoPageRow 列数不足: \(row.count)") }
-        rowid = row[0].intValue ?? 0
-        id = row[1].textValue ?? ""
-        sessionId = row[2].textValue ?? ""
-        filepath = row[3].textValue ?? ""
-        filename = row[4].textValue ?? ""
-        status = row[5].textValue ?? ""
-        assetId = row[6].textValue
-        assetFileId = row[7].textValue
-        width = Int(row[8].intValue ?? 0)
-        height = Int(row[9].intValue ?? 0)
-        checksum = row[10].textValue
-        createdAt = row[11].textValue ?? ""
-        updatedAt = row[12].textValue ?? ""
+        self.init(
+            rowid: row[0].intValue ?? 0,
+            id: row[1].textValue ?? "",
+            sessionId: row[2].textValue ?? "",
+            filepath: row[3].textValue ?? "",
+            filename: row[4].textValue ?? "",
+            status: row[5].textValue ?? "",
+            assetId: row[6].textValue,
+            assetFileId: row[7].textValue,
+            width: Int(row[8].intValue ?? 0),
+            height: Int(row[9].intValue ?? 0),
+            checksum: row[10].textValue,
+            createdAt: row[11].textValue ?? "",
+            updatedAt: row[12].textValue ?? "",
+        )
     }
 }
 

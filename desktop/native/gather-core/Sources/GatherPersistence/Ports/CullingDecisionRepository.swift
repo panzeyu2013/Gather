@@ -5,6 +5,7 @@
 // photo_id/decision 投影；写入侧：upsertState 在调用方事务内同时写决策行与
 // photo_metadata_cache 的 rating/label 镜像列（SQL 细节留在 CullingDecisionRepo）。
 import Foundation
+import GatherProtocol
 
 public protocol CullingDecisionRepository {
     /// TS: getDecisions —— 写回计划的决策输入（photo_id, decision）。

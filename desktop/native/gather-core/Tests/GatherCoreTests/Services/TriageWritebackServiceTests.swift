@@ -10,119 +10,31 @@ import GatherTestSupport
 @testable import GatherDelivery
 @testable import GatherApplication
 
-private final class TriageXMP: XMPProvider, @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [String: MetadataWriteAttributes] = [:]
-
-    func seed(_ path: String, _ attributes: MetadataWriteAttributes) {
-        lock.lock(); defer { lock.unlock() }
-        storage[path] = attributes
-    }
-    func attributes(_ path: String) -> MetadataWriteAttributes {
-        lock.lock(); defer { lock.unlock() }
-        return storage[path] ?? MetadataWriteAttributes()
-    }
-    func readKeywords(photoPath: String) async throws -> [String] { attributes(photoPath).keywords ?? [] }
-    /// 写后回读故障注入：只在信号已落盘（即写入之后）返回错误星级，
-    /// 用来覆盖"写盘成功但回读校验失败 → uncertain"。
-    var corruptReadBack = false
-    /// 撤销星级探测故障注入：指定路径的读盘直接抛错。
-    var unreadablePaths: Set<String> = []
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        if unreadablePaths.contains(photoPath) {
-            throw NSError(domain: "TriageXMP", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "injected read failure"])
-        }
-        var value = attributes(photoPath)
-        if corruptReadBack, value.triageSignal != nil {
-            value.rating = 99
-        }
-        return value
-    }
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {
-        write(photoPath: photoPath, attributes: attributes)
-    }
-    private func write(photoPath: String, attributes: MetadataWriteAttributes) {
-        lock.lock(); defer { lock.unlock() }
-        var current = storage[photoPath] ?? MetadataWriteAttributes()
-        if let rating = attributes.rating { current.rating = rating }
-        if let keywords = attributes.keywords { current.keywords = keywords }
-        if let signal = attributes.triageSignal {
-            current.triageSignal = signal.isEmpty ? nil : signal
-        }
-        storage[photoPath] = current
-    }
-    func removeKeywords(_ path: String, _ removed: [String]) {
-        lock.lock(); defer { lock.unlock() }
-        var current = storage[path] ?? MetadataWriteAttributes()
-        let drop = Set(removed.map(KeywordNormalizer.fold))
-        current.keywords = (current.keywords ?? []).filter {
-            !drop.contains(KeywordNormalizer.fold($0))
-        }
-        storage[path] = current
-    }
-
-    func backup(photoPath: String) async throws -> String { "" }
-    func restore(photoPath: String, backupPath: String) async throws {}
-    func fileExists(_ path: String) -> Bool { false }
-    func removeFile(_ path: String) async throws {}
-}
-
-private final class TriageMutations: MetadataMutationPort, @unchecked Sendable {
-    private let lock = NSLock()
-    var onKeywordDelta: (([String], [String]) -> Void)?
-    /// 按 photoId 注入"删关键词阶段失败"，用于覆盖 undo 的失败累积语义。
-    var failKeywordDeltaFor: Set<String> = []
-    private var queued: [(photoId: String, values: [String: JSONValue])] = []
-    func drain() -> [(photoId: String, values: [String: JSONValue])] {
-        lock.lock(); defer { lock.unlock() }
-        let result = queued; queued.removeAll(); return result
-    }
-    func queuePhotoValues(
-        sessionId: String, photoId: String, values: [String: JSONValue],
-        source: MetadataMutationSource, schedule: Bool
-    ) throws -> MetadataMutationResult {
-        lock.lock(); defer { lock.unlock() }
-        queued.append((photoId, values))
-        return MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [.rating], revision: 1, status: "pending")
-    }
-    func queueKeywordDelta(
-        sessionId: String, photoId: String, added: [String], removed: [String],
-        owned: [String: Set<MetadataMutationSource>], existingKeywords: [String]?
-    ) async throws -> MetadataMutationResult? {
-        if failKeywordDeltaFor.contains(photoId) {
-            throw GatherError.invalidParameter(field: "photoId", reason: "injected keyword delta failure")
-        }
-        onKeywordDelta?(added, removed)
-        return MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [.keywords],
-            revision: 1, status: "pending")
-    }
-}
+/// 纯路径夹具根（task-43）：本文件的文件端口全部是内存 fake
+///（RecordingXMPProvider / RecordingMetadataMutation + 测试内 flush 闭包），
+/// service 不读也不写盘；照片路径只参与 TSPath 换算与 DB 记录。
+/// 因此不再为每个用例建真实临时目录、写占位字节、再删除
+///（原实现每用例 1 次 mkdir + 1~2 次写 + 1 次 rm）。
+private let triageFixtureRoot =
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-triage-fixture", isDirectory: true).path
 
 @Suite("triage 写回")
 struct TriageWritebackServiceTests {
     @Test("apply 写 rating/关键词/私有信号；undo 全部还原并清空信号")
     func applyThenUndo() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1", photoId = "p-1"
         try insertSession(db, sessionId)
         let path = (dir as NSString).appendingPathComponent("a.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
 
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         xmp.seed(path, MetadataWriteAttributes(keywords: ["old"]))
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         mutations.onKeywordDelta = { _, removed in
             xmp.removeKeywords(path, removed)
         }
@@ -130,7 +42,7 @@ struct TriageWritebackServiceTests {
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                 }
@@ -168,29 +80,22 @@ struct TriageWritebackServiceTests {
     @Test("部分失败：批次快照只保留写成的照片，undo 不回带没写过的照片")
     func partialFailureTrimsBatchSnapshots() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1"
         let p1 = "p-1", p2 = "p-2"
         try insertSession(db, sessionId)
         let path1 = (dir as NSString).appendingPathComponent("a.CR3")
         let path2 = (dir as NSString).appendingPathComponent("b.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path1))
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path2))
         try insertPhoto(db, id: p1, sessionId: sessionId, filepath: path1)
         try insertPhoto(db, id: p2, sessionId: sessionId, filepath: path2)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: p1, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
         try cache.upsert(photoId: p2, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
 
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         xmp.seed(path1, MetadataWriteAttributes())
         xmp.seed(path2, MetadataWriteAttributes())
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         let paths = [p1: path1, p2: path2]
         let metadata = MetadataService(
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
@@ -198,7 +103,7 @@ struct TriageWritebackServiceTests {
             flushPending: { _ in
                 var written = 0
                 var failedItems: [WritebackItem] = []
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     if entry.photoId == p2 {
                         failedItems.append(WritebackItem(
                             photoId: p2, photoPath: path2, sessionId: sessionId,
@@ -240,24 +145,18 @@ struct TriageWritebackServiceTests {
     @Test("undo 只删本批新增的关键词：写回前就有的同名关键词必须保留")
     func undoKeepsPreexistingKeyword() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1", photoId = "p-1"
         try insertSession(db, sessionId)
         let path = (dir as NSString).appendingPathComponent("a.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
 
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         // 该词在写回前就存在（上一批写回或用户手工添加）——不是本批的 delta。
         xmp.seed(path, MetadataWriteAttributes(keywords: ["old", "Gather|AI|Keep"]))
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         mutations.onKeywordDelta = { _, removed in
             xmp.removeKeywords(path, removed)
         }
@@ -265,7 +164,7 @@ struct TriageWritebackServiceTests {
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                 }
@@ -295,24 +194,18 @@ struct TriageWritebackServiceTests {
     @Test("大小写变体：不重复追加，undo 也不删已有变体")
     func variantKeywordIsNotDuplicatedOrRemoved() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1", photoId = "p-1"
         try insertSession(db, sessionId)
         let path = (dir as NSString).appendingPathComponent("a.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
 
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         // 盘上已有大小写变体（外部工具写入），fold 之后与本批要写的规范词相同。
         xmp.seed(path, MetadataWriteAttributes(keywords: ["gather|ai|keep"]))
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         mutations.onKeywordDelta = { _, removed in
             xmp.removeKeywords(path, removed)
         }
@@ -320,7 +213,7 @@ struct TriageWritebackServiceTests {
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                 }
@@ -350,29 +243,22 @@ struct TriageWritebackServiceTests {
     @Test("undo：关键词删除失败不得被后续成功覆盖（批次保持未撤销）")
     func undoKeepsKeywordRemovalFailures() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1"
         let p1 = "p-1", p2 = "p-2"
         try insertSession(db, sessionId)
         let path1 = (dir as NSString).appendingPathComponent("a.CR3")
         let path2 = (dir as NSString).appendingPathComponent("b.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path1))
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path2))
         try insertPhoto(db, id: p1, sessionId: sessionId, filepath: path1)
         try insertPhoto(db, id: p2, sessionId: sessionId, filepath: path2)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: p1, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
         try cache.upsert(photoId: p2, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
 
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         xmp.seed(path1, MetadataWriteAttributes(keywords: ["old"]))
         xmp.seed(path2, MetadataWriteAttributes(keywords: ["old"]))
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         let paths = [p1: path1, p2: path2]
         mutations.onKeywordDelta = { _, removed in
             xmp.removeKeywords(path1, removed)
@@ -381,7 +267,7 @@ struct TriageWritebackServiceTests {
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(
                         photoPath: paths[entry.photoId] ?? path1, attributes: attributes)
@@ -414,28 +300,22 @@ struct TriageWritebackServiceTests {
     @Test("undo 星级守卫：写回后人工改成 5★，undo 跳过而不清回 0（P0 / A2）")
     func undoSkipsRatingChangedByUser() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1", photoId = "p-1"
         try insertSession(db, sessionId)
         let path = (dir as NSString).appendingPathComponent("a.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
 
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         xmp.seed(path, MetadataWriteAttributes())
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         let metadata = MetadataService(
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                 }
@@ -466,28 +346,22 @@ struct TriageWritebackServiceTests {
     @Test("undo 星级守卫：盘上仍是本批写入值时正常还原（P0 / A2）")
     func undoRestoresRatingWhenUnchanged() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1", photoId = "p-1"
         try insertSession(db, sessionId)
         let path = (dir as NSString).appendingPathComponent("a.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 2))
 
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         xmp.seed(path, MetadataWriteAttributes(rating: 2))
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         let metadata = MetadataService(
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                 }
@@ -514,28 +388,22 @@ struct TriageWritebackServiceTests {
     @Test("移出后 undo：按 photoId 解析新路径，星级仍能还原（P1）")
     func undoResolvesCurrentPathAfterMove() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1", photoId = "p-1"
         try insertSession(db, sessionId)
         let oldPath = (dir as NSString).appendingPathComponent("a.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: oldPath))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: oldPath)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
 
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         xmp.seed(oldPath, MetadataWriteAttributes())
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         let metadata = MetadataService(
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     let path = (try? PhotoRepo(connection: db).getLookupByIds(
                         [entry.photoId]).first?.filepath) ?? oldPath
@@ -557,10 +425,6 @@ struct TriageWritebackServiceTests {
 
         // 模拟淘汰移出：DB 路径改到 _rejects，xmp 内容随照片复制过去。
         let newPath = (dir as NSString).appendingPathComponent("_rejects/a.CR3")
-        try FileManager.default.createDirectory(
-            atPath: (newPath as NSString).deletingLastPathComponent,
-            withIntermediateDirectories: true)
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: newPath))
         _ = try db.prepare("UPDATE photos SET filepath = ? WHERE id = ?")
             .run([.text(newPath), .text(photoId)])
         xmp.seed(newPath, MetadataWriteAttributes(
@@ -581,29 +445,23 @@ struct TriageWritebackServiceTests {
     @Test("回读校验失败：批次仍保留快照可撤销（uncertain 不丢批次）")
     func readBackFailureKeepsBatchUndoable() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1", photoId = "p-1"
         try insertSession(db, sessionId)
         let path = (dir as NSString).appendingPathComponent("a.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
 
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         xmp.seed(path, MetadataWriteAttributes())
         xmp.corruptReadBack = true
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         let metadata = MetadataService(
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                 }
@@ -634,27 +492,21 @@ struct TriageWritebackServiceTests {
     @Test("undo 星级探测失败：批次保留可重试，不能标记 undone")
     func undoProbeFailureKeepsBatch() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1", photoId = "p-1"
         try insertSession(db, sessionId)
         let path = (dir as NSString).appendingPathComponent("a.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
         let cache = MetadataCacheRepo(connection: db)
         try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         xmp.seed(path, MetadataWriteAttributes())
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         let metadata = MetadataService(
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                 }
@@ -684,28 +536,22 @@ struct TriageWritebackServiceTests {
     @Test("beforeRating 取盘上值，不回落缓存 exif.rating")
     func beforeRatingUsesDisk() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-triage-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(atPath: dir) } catch {}
-        }
+        let dir = triageFixtureRoot
         let sessionId = "s-1", photoId = "p-1"
         try insertSession(db, sessionId)
         let path = (dir as NSString).appendingPathComponent("a.CR3")
-        try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: path)
         let cache = MetadataCacheRepo(connection: db)
         // 缓存故意落后：盘上 5★，缓存 0★。
         try cache.upsert(photoId: photoId, sessionId: sessionId, data: MetadataCacheInput(rating: 0))
-        let xmp = TriageXMP()
+        let xmp = RecordingXMPProvider()
         xmp.seed(path, MetadataWriteAttributes(rating: 5))
-        let mutations = TriageMutations()
+        let mutations = RecordingMetadataMutation()
         let metadata = MetadataService(
             metadataCacheRepo: cache, xmp: xmp, photoRepo: PhotoRepo(connection: db),
             transactions: db, mutations: mutations,
             flushPending: { _ in
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     let attributes = MetadataWriteAttributes(jsonValue: .object(entry.values))
                     try await xmp.writeAttributes(photoPath: path, attributes: attributes)
                 }

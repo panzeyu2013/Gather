@@ -9,30 +9,8 @@ import Testing
 struct IndexerContractTests {
 
     @Test func indexScanResultRoundTripAndKeys() throws {
-        let original = IndexScanResult(
-            sessionId: "s1",
-            discovered: 120,
-            added: 100,
-            skipped: 15,
-            missing: 5,
-            failed: ["/u/bad1.ARW", "/u/bad2.ARW"]
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(IndexScanResult.self, from: data)
-        #expect(decoded == original)
-
-        let expected = ["sessionId", "discovered", "added", "skipped", "missing", "failed"]
-        #expect(Set(try jsonKeys(of: data)) == Set(expected), "IndexScanResult JSON key 必须与 TS 字段名一致")
-    }
-
-    private func jsonKeys(of data: Data) throws -> [String] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ContractTestError.invalidJSON
-        }
-        return Array(object.keys)
-    }
-
-    private enum ContractTestError: Error {
-        case invalidJSON
+        try assertRoundTrip(IndexScanResult(sessionId: "s1", discovered: 120, added: 100, skipped: 15,
+                                            missing: 5, failed: ["/u/bad1.ARW", "/u/bad2.ARW"]),
+                            keys: ["sessionId", "discovered", "added", "skipped", "missing", "failed"])
     }
 }

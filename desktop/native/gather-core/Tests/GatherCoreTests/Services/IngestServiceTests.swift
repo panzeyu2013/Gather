@@ -3,6 +3,7 @@
 
 import Foundation
 import Testing
+import GatherTestSupport
 import GatherProtocol
 @testable import GatherApplication
 
@@ -35,10 +36,8 @@ struct IngestServiceTests {
     }
 
     private func makeDestination() throws -> String {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-dest-" + UUID().uuidString, isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        return dir
+        // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+        try GatherTestSupport.makeTempDir(prefix: "gather-dest")
     }
 
     @Test("计划：按模板分配连续序号，扩展名/原名保留")

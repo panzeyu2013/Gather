@@ -10,14 +10,154 @@
 #   R2 发布点白名单：postDomainChange 只能出现在登记的文件里，且每个文件只能
 #      发登记的域（变量形式的变参发布单独登记）。
 #
+# --self-test：负样本自测（mktemp fixture，不写仓库）。把本脚本原样复制进临时 fixture
+# 仓库：未登记的 postDomainChange 发送点 → FAIL；登记表内 → PASS（另含未登记域、
+# 未登记通道名两类负样本，防止 R1/R2 静默失效）。
 # 用法：./scripts/check-domain-events.sh            # 检查
 #       ./scripts/check-domain-events.sh --list     # 打印当前登记表
+#       ./scripts/check-domain-events.sh --self-test # 负样本自测
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 UI_DIR="desktop/native/gather-app/Sources/GatherUI"
+
+# ---------------------------------------------------------------------------
+# --self-test：负样本自测（mktemp fixture，不写仓库；fixture 不达预期即 exit 1）
+#   做法：把本脚本原样复制进临时 fixture 仓库，用同一份判定逻辑跑合成树，断言：
+#     1) 登记表内的发布点（Culling/CullingViewModel.swift 发 culling）→ PASS（exit 0）
+#     2) 未登记文件的 postDomainChange → FAIL（R2 白名单）
+#     3) 已登记文件发未登记的域 → FAIL（R2 域白名单）
+#     4) 未登记文件的通道名 Notification.Name("gather.…") → FAIL（R1 通道名闭包）
+# ---------------------------------------------------------------------------
+SELFTEST_OUT=""
+SELFTEST_TMP=""
+SELFTEST_PROG="check-domain-events"
+SELFTEST_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+selftest_die() {
+  echo "$SELFTEST_PROG: self-test FAIL — $1" >&2
+  exit 1
+}
+
+# selftest_expect <期望退出码> <说明> <fixture 脚本>
+selftest_expect() {
+  local want="$1" desc="$2" script="$3"
+  local st=0
+  SELFTEST_OUT=$(bash "$script" 2>&1) || st=$?
+  if [ "$st" -ne "$want" ]; then
+    echo "$SELFTEST_PROG: self-test FAIL — $desc（期望 exit ${want}，实得 ${st}）" >&2
+    printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
+    exit 1
+  fi
+}
+
+# selftest_contains <期望子串> <说明>
+selftest_contains() {
+  case "$SELFTEST_OUT" in
+    *"$1"*) return 0 ;;
+  esac
+  echo "$SELFTEST_PROG: self-test FAIL — $2（输出里没有「$1」）" >&2
+  printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
+  exit 1
+}
+
+# selftest_filler <目录> <个数>：生成不含通道名/发布点的占位 Swift 文件
+selftest_filler() {
+  local dir="$1" n="$2" i=0
+  mkdir -p "$dir"
+  while [ "$i" -lt "$n" ]; do
+    printf '// self-test 占位（无通道名、无发布点）\nlet filler_%s = 0\n' "$i" > "$dir/F$i.swift"
+    i=$((i + 1))
+  done
+}
+
+selftest_cleanup() {
+  if [ -n "$SELFTEST_TMP" ]; then
+    rm -rf "${SELFTEST_TMP:?}"
+  fi
+}
+
+self_test() {
+  local tmpbase="${TMPDIR:-/tmp}" fx ui gate
+  tmpbase="${tmpbase%/}"
+  SELFTEST_TMP=$(mktemp -d "${tmpbase}/check-domain-events-selftest.XXXXXX") ||
+    selftest_die "mktemp 创建临时目录失败"
+  trap selftest_cleanup EXIT
+  fx="$SELFTEST_TMP/fixture"
+  ui="$fx/desktop/native/gather-app/Sources/GatherUI"
+  gate="$fx/scripts/$SELFTEST_PROG.sh"
+
+  # fixture 仓库：UI 扫描根 + 足够多 Swift 文件（门禁有 <200 的扫描量下限）。
+  mkdir -p "$fx/scripts" "$ui/Support" "$ui/Culling"
+  cp "$SELFTEST_SELF" "$gate"
+  selftest_filler "$ui/Filler" 200
+  cat > "$ui/Support/GatherEventCenter.swift" <<'SWIFT'
+import Foundation
+
+extension Notification.Name {
+    static let gatherDomainChanged = Notification.Name("gather.domain-changed")
+}
+
+// 定义处本身不算发布点（登记表里 Support/GatherEventCenter.swift 为 None）。
+func postDomainChange(_ domain: String) {
+    NotificationCenter.default.post(name: .gatherDomainChanged, object: nil, userInfo: ["domain": domain])
+}
+SWIFT
+  cat > "$ui/Culling/CullingViewModel.swift" <<'SWIFT'
+func refreshCulling() {
+    postDomainChange(.culling)
+}
+SWIFT
+
+  # 断言 1：登记表内发布点 → PASS。
+  selftest_expect 0 "登记表内的发布点应 PASS" "$gate"
+  selftest_contains "check-domain-events: OK" "登记表内应输出 OK"
+
+  # 断言 2：未登记文件的 postDomainChange → FAIL（R2）。
+  mkdir -p "$ui/Gallery"
+  printf 'func refreshGallery() {\n    postDomainChange(.library)\n}\n' \
+    > "$ui/Gallery/UnregisteredSender.swift"
+  selftest_expect 1 "未登记发布点应 FAIL" "$gate"
+  selftest_contains "未登记" "FAIL 行应提示未登记"
+  rm -f "$ui/Gallery/UnregisteredSender.swift"
+
+  # 断言 3：已登记文件发未登记的域 → FAIL（R2 域白名单）。
+  printf 'func refreshCulling() {\n    postDomainChange(.culling)\n    postDomainChange(.persons)\n}\n' \
+    > "$ui/Culling/CullingViewModel.swift"
+  selftest_expect 1 "未登记域名应 FAIL" "$gate"
+  selftest_contains "未登记的域" "FAIL 行应提示未登记的域"
+  printf 'func refreshCulling() {\n    postDomainChange(.culling)\n}\n' \
+    > "$ui/Culling/CullingViewModel.swift"
+
+  # 断言 4：未登记文件的通道名 → FAIL（R1 通道名闭包）。
+  printf 'extension Notification.Name {\n    static let stray = Notification.Name("gather.stray")\n}\n' \
+    > "$ui/Support/StrayChannel.swift"
+  selftest_expect 1 "未登记通道名应 FAIL" "$gate"
+  selftest_contains "check-domain-events: FAILED" "未登记通道名应整体 FAILED"
+
+  echo "$SELFTEST_PROG: self-test OK（登记表内发布点 PASS；未登记发布点/域名/通道名 FAIL；4 条断言）"
+  return 0
+}
+
+# --self-test 必须在扫描根守卫与真实扫描前 short-circuit：fixture 不满足 200 文件下限，
+# 且自测不写仓库、不读真实登记表。
+SELFTEST=0
+for arg in "$@"; do
+  if [ "$arg" = "--self-test" ]; then
+    SELFTEST=1
+  fi
+done
+if [ "$SELFTEST" -eq 1 ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "check-domain-events: --self-test 只接受单独使用（不与其他参数混跑）" >&2
+    exit 2
+  fi
+  self_test
+  exit 0
+fi
+
 
 if [ ! -d "$UI_DIR" ]; then
   echo "check-domain-events: FAIL 缺少扫描根：$UI_DIR" >&2

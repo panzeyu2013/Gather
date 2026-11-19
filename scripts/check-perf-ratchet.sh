@@ -34,16 +34,21 @@
 #   - 已知口径局限：这是**源码级行匹配**。字符串字面量/跨行构造同样会计入；注释整行不计但
 #     行尾注释里的命中仍计入（与 cleanup ratchet 一致）。要更精确请单独立 AST 门禁。
 #
-# baseline: docs/perf-baseline.json
+# baseline: docs/baselines/perf-baseline.json
 #   - 超过 baseline：FAIL（exit 1）
 #   - 低于 baseline：提示收紧 baseline，不失败
 #   - baseline 缺失/缺 key：FAIL（防止门禁静默失效）
-#   - --write-baseline 只允许持平/收紧；确需扩张必须 --allow-growth 并在 docs/reviews/ 记账
+#   - --write-baseline 只允许持平/收紧；确需扩张必须 --allow-growth 并在 docs/cleanup-backlog.md 记账
+#   - --write-baseline 输出 schema=2，不写 generated_at（重复写无 diff，便于收紧基线）
 #
+# --self-test：负样本自测（mktemp fixture，不写仓库）。把本脚本原样复制进临时 fixture
+# 仓库，用同一份判定逻辑断言「新增 DateFormatter() 构造 → 超 baseline FAIL」与
+# 「--write-baseline 在上涨且无 --allow-growth 时拒写，且基线文件 sha256 不变」。
 # 用法：
 #   ./scripts/check-perf-ratchet.sh
 #   ./scripts/check-perf-ratchet.sh --write-baseline
 #   ./scripts/check-perf-ratchet.sh --write-baseline --allow-growth
+#   ./scripts/check-perf-ratchet.sh --self-test
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -51,8 +56,171 @@ cd "$ROOT"
 
 CORE_SRC="desktop/native/gather-core/Sources"
 APP_SRC="desktop/native/gather-app/Sources"
-BASELINE="docs/perf-baseline.json"
+BASELINE="docs/baselines/perf-baseline.json"
 METRICS="raw_date_formatter raw_iso_formatter raw_json_encoder raw_json_decoder raw_json_encode_chain raw_json_decode_chain raw_regex_compile raw_byte_formatter blocking_sleep"
+
+# ---------------------------------------------------------------------------
+# --self-test：负样本自测（mktemp fixture，不写仓库；fixture 不达预期即 exit 1）
+#   做法：把本脚本原样复制进临时 fixture 仓库，用同一份判定逻辑跑合成树，断言：
+#     1) 新增 DateFormatter() 构造（当前 1 > baseline 0）→ FAIL（exit 1）
+#     2) 等于 baseline → PASS（exit 0；证明整行注释不计、构造计数不虚高）
+#     3) --write-baseline 在指标上涨且无 --allow-growth 时拒写（exit 1），基线文件 sha256 不变
+# ---------------------------------------------------------------------------
+SELFTEST_OUT=""
+SELFTEST_TMP=""
+SELFTEST_PROG="check-perf-ratchet"
+SELFTEST_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+selftest_die() {
+  echo "$SELFTEST_PROG: self-test FAIL — $1" >&2
+  exit 1
+}
+
+# selftest_expect <期望退出码> <说明> <fixture 脚本> [参数...]
+selftest_expect() {
+  local want="$1" desc="$2" script="$3"
+  shift 3
+  local st=0
+  SELFTEST_OUT=$(bash "$script" "$@" 2>&1) || st=$?
+  if [ "$st" -ne "$want" ]; then
+    echo "$SELFTEST_PROG: self-test FAIL — $desc（期望 exit ${want}，实得 ${st}）" >&2
+    printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
+    exit 1
+  fi
+}
+
+# selftest_contains <期望子串> <说明>
+selftest_contains() {
+  case "$SELFTEST_OUT" in
+    *"$1"*) return 0 ;;
+  esac
+  echo "$SELFTEST_PROG: self-test FAIL — $2（输出里没有「$1」）" >&2
+  printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
+  exit 1
+}
+
+# selftest_sha <文件>：sha256（macOS 无 sha256sum 时退回 shasum / cksum）
+selftest_sha() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    cksum "$1" | cut -d' ' -f1
+  fi
+}
+
+# selftest_filler <目录> <个数>：生成不匹配任何指标的占位 Swift 文件（满足扫描量下限）
+selftest_filler() {
+  local dir="$1" n="$2" i=0
+  mkdir -p "$dir"
+  while [ "$i" -lt "$n" ]; do
+    printf '// self-test 占位（不参与任何指标）\nlet filler_%s = 0\n' "$i" > "$dir/F$i.swift"
+    i=$((i + 1))
+  done
+}
+
+# selftest_baseline <文件> [key=value ...]：按 metrics 列表生成 fixture 基线（默认 0）
+selftest_baseline() {
+  local file="$1" key val pair sep=""
+  shift
+  {
+    printf '{\n  "schema": 2,\n  "counting": "self-test fixture",\n  "metrics": {'
+    for key in $METRICS; do
+      val=0
+      for pair in "$@"; do
+        case "$pair" in
+          "$key="*) val="${pair#*=}" ;;
+        esac
+      done
+      printf '%s\n    "%s": %s' "$sep" "$key" "$val"
+      sep=","
+    done
+    printf '\n  }\n}\n'
+  } > "$file"
+}
+
+selftest_cleanup() {
+  if [ -n "$SELFTEST_TMP" ]; then
+    rm -rf "${SELFTEST_TMP:?}"
+  fi
+}
+
+self_test() {
+  local tmpbase="${TMPDIR:-/tmp}" fx gate base sha_before sha_after
+  tmpbase="${tmpbase%/}"
+  SELFTEST_TMP=$(mktemp -d "${tmpbase}/check-perf-ratchet-selftest.XXXXXX") ||
+    selftest_die "mktemp 创建临时目录失败"
+  trap selftest_cleanup EXIT
+  fx="$SELFTEST_TMP/fixture"
+  gate="$fx/scripts/$SELFTEST_PROG.sh"
+  base="$fx/docs/baselines/perf-baseline.json"
+
+  # fixture 仓库：判定所需的扫描根 + 足够多 Swift 文件（门禁有 <600 的扫描量下限）。
+  mkdir -p "$fx/scripts" \
+    "$fx/desktop/native/gather-core/Sources/Filler" \
+    "$fx/desktop/native/gather-app/Sources" \
+    "$fx/docs/baselines"
+  cp "$SELFTEST_SELF" "$gate"
+  selftest_filler "$fx/desktop/native/gather-core/Sources/Filler" 600
+  cat > "$fx/desktop/native/gather-core/Sources/SelftestFixtures.swift" <<'SWIFT'
+// self-test fixture：整行注释里的 DateFormatter() / JSONEncoder() 不计入口径
+// let commented = DateFormatter()
+struct SelftestPerf {
+    func make() -> DateFormatter {
+        return DateFormatter()
+    }
+
+    func encode(_ value: [String: Int]) -> Data? {
+        return try? JSONEncoder().encode(value)
+    }
+}
+SWIFT
+
+  # 断言 1：等于 baseline → PASS（若注释行被计入则 raw_date_formatter=2 会 FAIL，此处即失败）。
+  selftest_baseline "$base" raw_date_formatter=1 raw_json_encoder=1 raw_json_encode_chain=1
+  selftest_expect 0 "等于 baseline 应 PASS" "$gate"
+  selftest_contains "check-perf-ratchet: OK" "等于 baseline 应输出 OK"
+
+  # 断言 2：新增 DateFormatter() 构造超 baseline → FAIL（+1）。
+  selftest_baseline "$base" raw_date_formatter=0 raw_json_encoder=1 raw_json_encode_chain=1
+  selftest_expect 1 "raw_date_formatter 超 baseline 应 FAIL" "$gate"
+  selftest_contains "raw_date_formatter" "FAIL 行应点名 raw_date_formatter"
+  selftest_contains "FAIL (+1)" "FAIL 行应显示上涨量 +1"
+
+  # 断言 3：上涨时 --write-baseline 无 --allow-growth 拒写，基线文件 sha256 与内容均不变。
+  sha_before=$(selftest_sha "$base")
+  selftest_expect 1 "上涨时 --write-baseline 无 --allow-growth 应拒写" "$gate" --write-baseline
+  selftest_contains "REFUSED" "拒写的报错应含 REFUSED"
+  sha_after=$(selftest_sha "$base")
+  if [ "$sha_before" != "$sha_after" ]; then
+    selftest_die "--write-baseline 被拒后基线文件 sha256 变了（${sha_before} -> ${sha_after}）"
+  fi
+  if ! grep -q '"raw_date_formatter": 0' "$base"; then
+    selftest_die "--write-baseline 被拒后基线内容被改动（raw_date_formatter 不再是 0）"
+  fi
+
+  echo "$SELFTEST_PROG: self-test OK（DateFormatter() 超基线 FAIL(+1)；等于 PASS；上涨时 --write-baseline 拒写且 sha256 不变；3 条断言）"
+  return 0
+}
+
+# --self-test 必须在扫描根守卫与真实扫描前 short-circuit：fixture 不满足 600 文件下限，
+# 且自测不写仓库、不读真实基线。
+SELFTEST=0
+for arg in "$@"; do
+  if [ "$arg" = "--self-test" ]; then
+    SELFTEST=1
+  fi
+done
+if [ "$SELFTEST" -eq 1 ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "check-perf-ratchet: --self-test 只接受单独使用（不与其他参数混跑）" >&2
+    exit 2
+  fi
+  self_test
+  exit 0
+fi
+
 
 for d in "$CORE_SRC" "$APP_SRC"; do
   if [ ! -d "$d" ]; then
@@ -74,7 +242,7 @@ for arg in "$@"; do
     --write-baseline) WRITE=1 ;;
     --allow-growth) ALLOW_GROWTH=1 ;;
     -h|--help)
-      sed -n '2,43p' "$0"
+      sed -n '2,51p' "$0"
       exit 0
       ;;
     *)
@@ -115,13 +283,12 @@ metric() {
 }
 
 write_baseline() {
-  local ts
-  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   mkdir -p "$(dirname "$BASELINE")"
-  cat > "$BASELINE" <<JSON
+  local tmp
+  tmp="$(mktemp "$(dirname "$BASELINE")/.perf-baseline.XXXXXX")"
+  cat > "$tmp" <<JSON
 {
-  "schema": 1,
-  "generated_at": "$ts",
+  "schema": 2,
   "generated_by": "scripts/check-perf-ratchet.sh --write-baseline",
   "counting": "matching non-comment lines (lines whose first non-space chars are // or * are ignored; at most 1 per line)",
   "scope": "desktop/native/*/Sources/**/*.swift (Tests excluded; no file-level exclusions)",
@@ -154,6 +321,8 @@ write_baseline() {
   }
 }
 JSON
+  chmod 644 "$tmp"
+  mv "$tmp" "$BASELINE"
 }
 
 if [ "$WRITE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
@@ -172,7 +341,7 @@ if [ "$WRITE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
   done
   if [ "$grew" -ne 0 ]; then
     echo "check-perf-ratchet: REFUSED — 基线膨胀必须显式批准" >&2
-    echo "  确需扩张时加 --allow-growth，并在 docs/reviews/ 台账记账。" >&2
+    echo "  确需扩张时加 --allow-growth，并在 docs/cleanup-backlog.md 台账记账。" >&2
     exit 1
   fi
 fi

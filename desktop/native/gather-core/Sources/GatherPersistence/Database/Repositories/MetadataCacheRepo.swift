@@ -3,57 +3,34 @@
 import Foundation
 import GatherProtocol
 
-/// photo_metadata_cache 表行（列序 = TableColumns.photoMetadataCache，见 Schema.swift）。
-public struct MetadataCacheRow {
-    public let id: Int64
-    public let photoId: String
-    public let sessionId: String
-    public let dateTaken: String?
-    public let cameraMake: String?
-    public let cameraModel: String?
-    public let lensModel: String?
-    public let focalLength: Double?
-    public let fNumber: Double?
-    public let exposureTime: String?
-    public let iso: Int64?
-    public let rating: Int64
-    public let label: String?
-    public let gpsLatitude: Double?
-    public let gpsLongitude: Double?
-    public let width: Int64?
-    public let height: Int64?
-    public let fileSize: Int64?
-    public let fileMtime: String?
-    public let keywordsJSON: String
-    public let cachedAt: String
-    public let updatedAt: String
-    /// P1 / IPTC：描述性元数据 JSON（DescriptiveMetadata 的编码）。
-    public let iptcJSON: String
-
+/// `MetadataCacheRow` 的 DB 行解码与派生字段（类型定义见 GatherProtocol/Protocol/ReadProjections.swift）。
+extension MetadataCacheRow {
     public init(row: DBRow) {
-        id = row[0].intValue ?? 0
-        photoId = row[1].textValue ?? ""
-        sessionId = row[2].textValue ?? ""
-        dateTaken = row[3].textValue
-        cameraMake = row[4].textValue
-        cameraModel = row[5].textValue
-        lensModel = row[6].textValue
-        focalLength = row[7].doubleValue
-        fNumber = row[8].doubleValue
-        exposureTime = row[9].textValue
-        iso = row[10].intValue
-        rating = row[11].intValue ?? 0
-        label = row[12].textValue
-        gpsLatitude = row[13].doubleValue
-        gpsLongitude = row[14].doubleValue
-        width = row[15].intValue
-        height = row[16].intValue
-        fileSize = row[17].intValue
-        fileMtime = row[18].textValue
-        keywordsJSON = row[19].textValue ?? "[]"
-        cachedAt = row[20].textValue ?? ""
-        updatedAt = row[21].textValue ?? ""
-        iptcJSON = row[22].textValue ?? "{}"
+        self.init(
+            id: row[0].intValue ?? 0,
+            photoId: row[1].textValue ?? "",
+            sessionId: row[2].textValue ?? "",
+            dateTaken: row[3].textValue,
+            cameraMake: row[4].textValue,
+            cameraModel: row[5].textValue,
+            lensModel: row[6].textValue,
+            focalLength: row[7].doubleValue,
+            fNumber: row[8].doubleValue,
+            exposureTime: row[9].textValue,
+            iso: row[10].intValue,
+            rating: row[11].intValue ?? 0,
+            label: row[12].textValue,
+            gpsLatitude: row[13].doubleValue,
+            gpsLongitude: row[14].doubleValue,
+            width: row[15].intValue,
+            height: row[16].intValue,
+            fileSize: row[17].intValue,
+            fileMtime: row[18].textValue,
+            keywordsJSON: row[19].textValue ?? "[]",
+            cachedAt: row[20].textValue ?? "",
+            updatedAt: row[21].textValue ?? "",
+            iptcJSON: row[22].textValue ?? "{}",
+        )
     }
 
     public var keywords: [String] {

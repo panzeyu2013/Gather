@@ -888,7 +888,7 @@ struct WritebackServiceTests {
                 await hold.wait()
             }
         }
-        let enteredFirst = await waitUntil { firstEntered.isSet }
+        let enteredFirst = await waitUntilCondition { firstEntered.isSet }
         #expect(enteredFirst)
 
         let second = Task {
@@ -898,10 +898,10 @@ struct WritebackServiceTests {
                 await order.append("second")
             }
         }
-        let requested = await waitUntil { secondRequested.isSet }
+        let requested = await waitUntilCondition { secondRequested.isSet }
         #expect(requested)
         // 等第二个调用真正进入等待队列后，才能断言它没有越过持有者。
-        let queued = await waitUntilAsync {
+        let queued = await waitUntilConditionAsync {
             await lock.waiterCount(path: "/v/IMG_1.xmp") == 1
         }
         #expect(queued)
@@ -929,13 +929,13 @@ struct WritebackServiceTests {
                 await hold.wait()
             }
         }
-        let enteredFirst = await waitUntil { firstEntered.isSet }
+        let enteredFirst = await waitUntilCondition { firstEntered.isSet }
         #expect(enteredFirst)
 
         let second = Task {
             try await lock.run(path: "/v/IMG_2.xmp") { secondDone.set() }
         }
-        let completedWhileHeld = await waitUntil { secondDone.isSet }
+        let completedWhileHeld = await waitUntilCondition { secondDone.isSet }
         #expect(completedWhileHeld, "不同 xmpPath 必须能并行完成")
 
         hold.release()
@@ -967,7 +967,7 @@ struct WritebackServiceTests {
             try await env.coordinator.cleanup(
                 sessionId: fixture.sessionId, module: .similarity)
         }
-        let entered = await waitUntil { restoreEntered.isSet }
+        let entered = await waitUntilCondition { restoreEntered.isSet }
         #expect(entered, "cleanup 必须先进入慢 restore 并持锁")
 
         // 新输入：preview 重开交付（revision+1 / pending），execute 写新内容。
@@ -980,7 +980,7 @@ struct WritebackServiceTests {
                 sessionId: fixture.sessionId, module: "similarity", items: preview.items)
         }
         // 第一轮 execute 用 revision 0 落库；preview 的新输入把它推进到 1。
-        let bumped = await waitUntil {
+        let bumped = await waitUntilCondition {
             (try? fixture.deliveryRepo.get(sidecar)?.revision) == 1
         }
         #expect(bumped, "writeback 必须先推进 revision 再等文件锁")
@@ -1061,32 +1061,6 @@ private actor OrderLog {
     func append(_ value: String) { values.append(value) }
 
     var snapshot: [String] { values }
-}
-
-/// 轮询等待（可控超时，避免固定 sleep 的抖动）。
-private func waitUntil(
-    timeoutMs: Int = 3_000,
-    _ condition: () -> Bool
-) async -> Bool {
-    let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
-    while Date() < deadline {
-        if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return condition()
-}
-
-/// 异步条件的轮询等待（actor 探针用）。
-private func waitUntilAsync(
-    timeoutMs: Int = 3_000,
-    _ condition: () async -> Bool
-) async -> Bool {
-    let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
-    while Date() < deadline {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return await condition()
 }
 
 /// 共享锁 + 真实 XMPProvider 的 cleanup/writeback 环境。

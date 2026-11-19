@@ -5,6 +5,7 @@
 // 不依赖时间、UI 状态或预览条目顺序；preview 与 writeback 用同一函数复算。
 import Foundation
 import GatherPersistence
+import GatherProtocol
 
 enum FacePreviewToken {
     static func make(sessionId: String, clusters: [FaceClusterRow]) -> String {

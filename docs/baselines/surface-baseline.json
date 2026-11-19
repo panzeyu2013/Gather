@@ -1,0 +1,26 @@
+{
+  "schema": 2,
+  "note": "公开面 ratchet（schema 2，双 section）：gates.protocol-surface 为 WP1 Protocol 公开面（protocol_files/protocol_lines 为信息字段，不参与 compare_metric）；gates.protocol-surface-modules 为模块级 public 面（顶层 public 类型 + public 声明行）。口径见 scripts/check-protocol-surface.sh 头注释。",
+  "gates": {
+    "protocol-surface": {
+      "protocol_files": 112,
+      "protocol_lines": 17576,
+      "public_types": 522,
+      "public_declarations": 3220,
+      "zero_reference_types": 1,
+      "router_envelope_types": 0
+    },
+    "protocol-surface-modules": {
+      "public_types_gatherpersistence": 292,
+      "public_declarations_gatherpersistence": 2028,
+      "public_types_gatherdelivery": 28,
+      "public_declarations_gatherdelivery": 148,
+      "public_types_gatheranalysis": 71,
+      "public_declarations_gatheranalysis": 393,
+      "public_types_gatherapplication": 262,
+      "public_declarations_gatherapplication": 1789,
+      "public_types_gathermetadataio": 5,
+      "public_declarations_gathermetadataio": 26
+    }
+  }
+}

@@ -11,7 +11,7 @@ import GatherPersistence
 import GatherAnalysis
 import GatherApplication
 
-private struct B8FaceState {
+struct B8FaceState {
     var clustersValue: [FaceClusterData] = []
     var analyzeResultValue = FaceAnalysisResult(
         status: "done", detectionFailures: 0, encodingFailures: 0
@@ -76,164 +76,16 @@ private struct B8FaceState {
 }
 
 /// 可配置 FaceAPI：默认无簇、分析成功、模型可用；记录全部类型化入参。
+@dynamicMemberLookup
 final class B8FaceAPIStub: FaceAPI, @unchecked Sendable {
     private let box = LockedBox(B8FaceState())
 
-    var clustersValue: [FaceClusterData] {
-        get { box.lock.withLock { box.clustersValue } }
-        set { box.lock.withLock { box.clustersValue = newValue } }
+    /// 状态字段经 LockedBox 动态转发：与逐属性访问器同一把锁、同一份状态；
+    /// 测试侧原有的赋值（记录数组/错误注入）语义不变。
+    subscript<T>(dynamicMember keyPath: WritableKeyPath<B8FaceState, T>) -> T {
+        get { box.lock.withLock { box[dynamicMember: keyPath] } }
+        set { box.lock.withLock { box[dynamicMember: keyPath] = newValue } }
     }
-
-    var analyzeResultValue: FaceAnalysisResult {
-        get { box.lock.withLock { box.analyzeResultValue } }
-        set { box.lock.withLock { box.analyzeResultValue = newValue } }
-    }
-
-    var modelsValue: FaceModelsStatus {
-        get { box.lock.withLock { box.modelsValue } }
-        set { box.lock.withLock { box.modelsValue = newValue } }
-    }
-
-    var previewValue: WritebackPreview {
-        get { box.lock.withLock { box.previewValue } }
-        set { box.lock.withLock { box.previewValue = newValue } }
-    }
-
-    var writebackResultValue: WritebackResult {
-        get { box.lock.withLock { box.writebackResultValue } }
-        set { box.lock.withLock { box.writebackResultValue = newValue } }
-    }
-
-    var retryResultValue: WritebackResult {
-        get { box.lock.withLock { box.retryResultValue } }
-        set { box.lock.withLock { box.retryResultValue = newValue } }
-    }
-
-    var cleanupResultValue: CleanupResult {
-        get { box.lock.withLock { box.cleanupResultValue } }
-        set { box.lock.withLock { box.cleanupResultValue = newValue } }
-    }
-
-    var unbindResultValue: FkwUnbindResult {
-        get { box.lock.withLock { box.unbindResultValue } }
-        set { box.lock.withLock { box.unbindResultValue = newValue } }
-    }
-
-    var confirmSyncResult: Bool {
-        get { box.lock.withLock { box.confirmSyncResult } }
-        set { box.lock.withLock { box.confirmSyncResult = newValue } }
-    }
-
-    var splitResultValue: FaceSplitResult {
-        get { box.lock.withLock { box.splitResultValue } }
-        set { box.lock.withLock { box.splitResultValue = newValue } }
-    }
-
-    var reviewPageValue: FaceReviewPage {
-        get { box.lock.withLock { box.reviewPageValue } }
-        set { box.lock.withLock { box.reviewPageValue = newValue } }
-    }
-
-    var splitError: (any Error)? {
-        get { box.lock.withLock { box.splitError } }
-        set { box.lock.withLock { box.splitError = newValue } }
-    }
-
-    var reviewError: (any Error)? {
-        get { box.lock.withLock { box.reviewError } }
-        set { box.lock.withLock { box.reviewError = newValue } }
-    }
-
-    var clustersError: (any Error)? {
-        get { box.lock.withLock { box.clustersError } }
-        set { box.lock.withLock { box.clustersError = newValue } }
-    }
-
-    var bindError: (any Error)? {
-        get { box.lock.withLock { box.bindError } }
-        set { box.lock.withLock { box.bindError = newValue } }
-    }
-
-    var mergeError: (any Error)? {
-        get { box.lock.withLock { box.mergeError } }
-        set { box.lock.withLock { box.mergeError = newValue } }
-    }
-
-    var removeMemberError: (any Error)? {
-        get { box.lock.withLock { box.removeMemberError } }
-        set { box.lock.withLock { box.removeMemberError = newValue } }
-    }
-
-    var analyzeError: (any Error)? {
-        get { box.lock.withLock { box.analyzeError } }
-        set { box.lock.withLock { box.analyzeError = newValue } }
-    }
-
-    var reclusterError: (any Error)? {
-        get { box.lock.withLock { box.reclusterError } }
-        set { box.lock.withLock { box.reclusterError = newValue } }
-    }
-
-    var cancelError: (any Error)? {
-        get { box.lock.withLock { box.cancelError } }
-        set { box.lock.withLock { box.cancelError = newValue } }
-    }
-
-    var unbindError: (any Error)? {
-        get { box.lock.withLock { box.unbindError } }
-        set { box.lock.withLock { box.unbindError = newValue } }
-    }
-
-    var previewError: (any Error)? {
-        get { box.lock.withLock { box.previewError } }
-        set { box.lock.withLock { box.previewError = newValue } }
-    }
-
-    var writebackError: (any Error)? {
-        get { box.lock.withLock { box.writebackError } }
-        set { box.lock.withLock { box.writebackError = newValue } }
-    }
-
-    var confirmSyncError: (any Error)? {
-        get { box.lock.withLock { box.confirmSyncError } }
-        set { box.lock.withLock { box.confirmSyncError = newValue } }
-    }
-
-    var cleanupError: (any Error)? {
-        get { box.lock.withLock { box.cleanupError } }
-        set { box.lock.withLock { box.cleanupError = newValue } }
-    }
-
-    var modelsError: (any Error)? {
-        get { box.lock.withLock { box.modelsError } }
-        set { box.lock.withLock { box.modelsError = newValue } }
-    }
-
-    var analyzeGate: AsyncGate? {
-        get { box.lock.withLock { box.analyzeGate } }
-        set { box.lock.withLock { box.analyzeGate = newValue } }
-    }
-
-    var responseDelay: Duration {
-        get { box.lock.withLock { box.responseDelay } }
-        set { box.lock.withLock { box.responseDelay = newValue } }
-    }
-
-    var clusterCalls: [String] { box.lock.withLock { box.clusterCalls } }
-    var bindInputs: [FaceBindInput] { box.lock.withLock { box.bindInputs } }
-    var mergeInputs: [FaceMergeInput] { box.lock.withLock { box.mergeInputs } }
-    var removeMemberInputs: [FaceRemoveMemberInput] { box.lock.withLock { box.removeMemberInputs } }
-    var analyzeInputs: [FaceAnalyzeInput] { box.lock.withLock { box.analyzeInputs } }
-    var reclusterInputs: [FaceReclusterInput] { box.lock.withLock { box.reclusterInputs } }
-    var cancelCalls: [String] { box.lock.withLock { box.cancelCalls } }
-    var unbindInputs: [Confirmed<FaceUnbindInput>] { box.lock.withLock { box.unbindInputs } }
-    var previewInputs: [FacePreviewInput] { box.lock.withLock { box.previewInputs } }
-    var writebackInputs: [Confirmed<FaceWritebackInput>] { box.lock.withLock { box.writebackInputs } }
-    var confirmSyncCalls: [String] { box.lock.withLock { box.confirmSyncCalls } }
-    var cleanupInputs: [Confirmed<SessionReference>] { box.lock.withLock { box.cleanupInputs } }
-    var splitInputs: [Confirmed<FaceSplitInput>] { box.lock.withLock { box.splitInputs } }
-    var reviewInputs: [FaceReviewInput] { box.lock.withLock { box.reviewInputs } }
-    var modelsCalls: Int { box.lock.withLock { box.modelsCalls } }
 
     private func delayIfNeeded() async throws {
         let delay = box.lock.withLock { box.responseDelay }

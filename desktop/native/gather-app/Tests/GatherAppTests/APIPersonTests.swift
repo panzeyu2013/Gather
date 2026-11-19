@@ -81,18 +81,6 @@ private struct PersonFixture {
     }
 }
 
-/// 只接受 GatherError；非 GatherError 视为失败路径断言失败（返回 nil 便于 #expect）。
-private func gatherError<T>(_ body: () async throws -> T) async -> GatherError? {
-    do {
-        _ = try await body()
-        return nil
-    } catch let error as GatherError {
-        return error
-    } catch {
-        return nil
-    }
-}
-
 // MARK: - Person
 
 @Suite("B7a Live PersonAPI")

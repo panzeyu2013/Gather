@@ -45,85 +45,6 @@ private final class MirrorFingerprint: @unchecked Sendable {
     }
 }
 
-/// 内存 XMP 假件：restore 覆盖写（幂等），remove 只删内存键；可注入失败。
-private final class MirrorFilePort: DeliveryFilePort, @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [String: String]
-    private var restoredTargets: [String] = []
-    private var restoreFailure: Error?
-    private var removeFailure: Error?
-
-    init(storage: [String: String] = [:]) { self.storage = storage }
-
-    private func locked<T>(_ body: () throws -> T) rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return try body()
-    }
-
-    func setContents(_ path: String, _ value: String) { locked { storage[path] = value } }
-    func contents(_ path: String) -> String? { locked { storage[path] } }
-    func setRestoreFailure(_ error: Error?) { locked { restoreFailure = error } }
-    func setRemoveFailure(_ error: Error?) { locked { removeFailure = error } }
-
-    var restoreTargets: [String] { locked { restoredTargets } }
-
-    func fileExists(_ path: String) -> Bool { locked { storage[path] != nil } }
-
-    func restore(photoPath: String, backupPath: String) async throws {
-        let target = TSPath.xmpSidecarPath(photoPath)
-        try locked {
-            restoredTargets.append(target)
-            if let restoreFailure { throw restoreFailure }
-            guard let backup = storage[backupPath] else {
-                throw DeliveryCoordinatorError.backupMissing(xmpPath: backupPath)
-            }
-            storage[target] = backup
-        }
-    }
-
-    func removeFile(_ path: String) async throws {
-        try locked {
-            if let removeFailure { throw removeFailure }
-            storage.removeValue(forKey: path)
-        }
-    }
-}
-
-private final class MirrorFaceWriteback: FaceWritebackProvider, @unchecked Sendable {
-    var executeResult = FaceKwWritebackResult(
-        totalAffected: 0, written: 0, failed: 0, skipped: 0,
-        errors: [], failedItems: [], report: ""
-    )
-    var executeError: Error?
-    private(set) var executedItems: [FaceKwWritebackItem] = []
-
-    func removeOwnedFaceKeywords(sessionId: String, entries: [FaceKeywordEntry]) async throws -> [String] {
-        []
-    }
-
-    func preview(
-        sessionId: String,
-        options: FaceKwWritebackOptions?,
-        boundPhotoIds: Set<String>,
-        additions: [String: [String]]
-    ) async throws -> FaceKwWritebackPreview {
-        FaceKwWritebackPreview(items: [], totalCount: 0, affectedPhotos: 0)
-    }
-
-    func execute(sessionId: String, items: [FaceKwWritebackItem]) async throws -> FaceKwWritebackResult {
-        executedItems = items
-        if let executeError { throw executeError }
-        return executeResult
-    }
-
-    func confirmSync(sessionId: String) async throws {}
-
-    func cleanup(sessionId: String) async throws -> FaceKwCleanupResult {
-        FaceKwCleanupResult(deletedCount: 0, errors: [])
-    }
-}
-
 private final class MirrorSimilarityWriteback: SimilarityWritebackProvider, @unchecked Sendable {
     var executeResult = WritebackResult(
         totalAffected: 0, written: 0, failed: 0, skipped: 0,
@@ -172,9 +93,9 @@ private struct MirrorHarness {
     let coordinator: DeliveryCoordinator
     let deliveryRepo: DeliveryRepo
     let intentRepo: DeliveryIntentRepo
-    let files: MirrorFilePort
+    let files: RecordingDeliveryFilePort
     let fingerprint: MirrorFingerprint
-    let faceWriteback: MirrorFaceWriteback
+    let faceWriteback: RecordingFaceWritebackProvider
     let similarityWriteback: MirrorSimilarityWriteback
 
     init() throws {
@@ -184,7 +105,7 @@ private struct MirrorHarness {
         let sessionRepo = SessionRepo(connection: db)
         let deliveryRepo = DeliveryRepo(connection: db)
         let intentRepo = DeliveryIntentRepo(connection: db)
-        let files = MirrorFilePort()
+        let files = RecordingDeliveryFilePort()
         let fingerprint = MirrorFingerprint()
         let coordinator = DeliveryCoordinator(
             connection: db,
@@ -195,7 +116,7 @@ private struct MirrorHarness {
             fingerprint: { [fingerprint] _ in fingerprint.current },
             resolvePhotoPath: { _, delivery in delivery.photoPath }
         )
-        let faceWriteback = MirrorFaceWriteback()
+        let faceWriteback = RecordingFaceWritebackProvider()
         let similarityWriteback = MirrorSimilarityWriteback()
         let faceService = FaceKwService(
             photoRepo: PhotoRepo(connection: db),

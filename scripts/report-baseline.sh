@@ -11,17 +11,18 @@
 #   - API 契约：GatherProtocol/API/*API.swift 的顶层 protocol 数 + 花括号内 func 需求数
 #     （即文档的「16 个域协议 / 195 个方法」口径；extension 默认实现不计入方法数）
 #   - 测试声明：与 scripts/check-test-catalog.sh 相同的「先剥注释、再数 @Test/@Suite/
-#     #expect/#require」口径，同时给出 core/app 分项与 ratchet baseline 常量
+#     #expect/#require」口径，同时给出 core/app 分项与 docs/baselines/test-catalog-baseline.json 的 ratchet 值
+#     （遮罩/计数实现单一来源：scripts/lib/swift-counts.py）
 #   - 本地化：完整解析 en.lproj / zh-Hans.lproj Localizable.strings 的 key 数
 #     （含转义引号、行注释、块注释；不依赖按行 grep）
 #   - schema：SchemaCurrent.swift 的 expected* 常量（55 表/451 列/86 索引/81 外键/
 #     user_version=1）；tables/indexes/FKs 与 DDL 字面量实测交叉核对（columns 取 expected 常量）
 #   - 门禁脚本：scripts/check-*.sh 总数减 check-appintents.sh（自检，非门禁），
 #     并列出清单，便于 docs/DEVELOPMENT 的门禁清单与 docs/README 的门禁数同步
-#   - 性能 ratchet：docs/perf-baseline.json 的构造点基线 + Sources 当前实测
+#   - 性能 ratchet：docs/baselines/perf-baseline.json 的构造点基线 + Sources 当前实测
 #     （口径同 scripts/check-perf-ratchet.sh：非纯注释行计数，Tests 不计）
-#   - ratchet baseline：docs/protocol-surface-baseline.json、
-#     docs/protocol-surface-modules-baseline.json、docs/cleanup-baseline.json 的字段值
+#   - ratchet baseline：docs/baselines/surface-baseline.json（protocol-surface + modules sections）、
+#     docs/baselines/cleanup-baseline.json 的字段值
 #
 # 只读：不写任何文件；缺输入/缺少 git 或 python3 时 exit 1，数字口径不一致只提示不失败。
 # 用法：./scripts/report-baseline.sh
@@ -38,11 +39,21 @@ for tool in git python3; do
 done
 
 python3 - <<'PY_REPORT'
+import importlib.util
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+# 共享计数单一来源：遮罩/计数口径只此一份（scripts/lib/swift-counts.py，
+# check-test-catalog.sh / check-docs-facts.sh 同源；脚本已 cd 到仓库根）。
+_SPEC = importlib.util.spec_from_file_location(
+    'swift_counts', 'scripts/lib/swift-counts.py')
+_COUNTS = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_COUNTS)
+mask_comments = _COUNTS.mask_comments
+count_decls = _COUNTS.count_decls
 
 FAIL = False
 
@@ -73,76 +84,17 @@ print('source: git ' + head + dirty)
 
 
 # ---------------------------------------------------------------- helpers
-def mask_comments(text):
-    """遮罩 // 与 嵌套 /* */ 注释（保留字符串）；用于 Swift 源码计数。"""
-    out = list(text)
-    n = len(text)
-    i = 0
-    while i < n:
-        c = text[i]
-        if c == '"':
-            if text.startswith('"""', i):
-                j = text.find('"""', i + 3)
-                i = n if j < 0 else j + 3
-                continue
-            j = i + 1
-            while j < n:
-                if text[j] == '\\':
-                    j += 2
-                    continue
-                if text[j] == '"' or text[j] == '\n':
-                    j += 1
-                    break
-                j += 1
-            i = j
-            continue
-        if text.startswith('//', i):
-            j = text.find('\n', i)
-            if j < 0:
-                j = n
-            for k in range(i, j):
-                out[k] = ' '
-            i = j
-            continue
-        if text.startswith('/*', i):
-            depth = 0
-            j = i
-            while j < n:
-                if text.startswith('/*', j):
-                    depth += 1
-                    j += 2
-                    continue
-                if text.startswith('*/', j):
-                    depth -= 1
-                    j += 2
-                    if depth == 0:
-                        break
-                    continue
-                j += 1
-            for k in range(i, min(j, n)):
-                if out[k] != '\n':
-                    out[k] = ' '
-            i = j
-            continue
-        i += 1
-    return ''.join(out)
+# mask_comments / count_decls 来自 scripts/lib/swift-counts.py（单一来源，
+# check-test-catalog.sh / check-docs-facts.sh 同源）。
 
 
 def count_test_decls(dirs):
-    chunks = []
+    """core/app 分项计数；目录缺失 fail-closed（exit 1，stderr 指明缺哪个根）。"""
     for base in dirs:
-        root = Path(base)
-        if not root.is_dir():
+        if not Path(base).is_dir():
             print('report-baseline: MISSING 测试目录 ' + base, file=sys.stderr)
             sys.exit(1)
-        for path in sorted(root.rglob('*.swift')):
-            chunks.append(mask_comments(path.read_text(encoding='utf-8', errors='replace')))
-    blob = '\n'.join(chunks)
-    return (
-        len(re.findall(r'^[ \t]*@Test([ \t]|\()', blob, re.M)),
-        len(re.findall(r'^[ \t]*(?:@[A-Za-z_]+[ \t]+)*@Suite([ \t(]|$)', blob, re.M)),
-        len(re.findall(r'#(?:expect|require)\(', blob)),
-    )
+    return count_decls(dirs)
 
 
 # ---------------------------------------------------------------- 1) SwiftPM targets
@@ -260,15 +212,22 @@ row('core（GatherCoreTests + GatherTestSupport）', '@Test %d / @Suite %d / #ex
     % (core_t, core_s, core_a))
 row('app（GatherAppTests）', '@Test %d / @Suite %d / #expect+#require %d' % (app_t, app_s, app_a))
 row('合计', '@Test %d / @Suite %d / #expect+#require %d' % (core_t + app_t, core_s + app_s, core_a + app_a))
-ratchet = Path('scripts/check-test-catalog.sh')
-if ratchet.is_file():
-    text = ratchet.read_text(encoding='utf-8')
-    bt = re.search(r'^BASELINE_TEST_DECL=(\d+)', text, re.M)
-    bs = re.search(r'^BASELINE_SUITE_DECL=(\d+)', text, re.M)
-    ba = re.search(r'^BASELINE_ASSERT=(\d+)', text, re.M)
-    if bt and bs and ba:
+TC_BASELINE = Path('docs/baselines/test-catalog-baseline.json')
+if TC_BASELINE.is_file():
+    try:
+        tc_data = json.loads(TC_BASELINE.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError) as exc:
+        print('report-baseline: FAIL 无法解析 %s（%s）' % (TC_BASELINE, exc), file=sys.stderr)
+        sys.exit(1)
+    tc_metrics = tc_data.get('metrics', {}) if isinstance(tc_data, dict) else {}
+    bt = tc_metrics.get('test_decl')
+    bs = tc_metrics.get('suite_decl')
+    ba = tc_metrics.get('assert')
+    if bt is not None and bs is not None and ba is not None:
         row('ratchet baseline（check-test-catalog.sh）',
-            '@Test %s / @Suite %s / 断言 %s' % (bt.group(1), bs.group(1), ba.group(1)))
+            '@Test %s / @Suite %s / 断言 %s' % (bt, bs, ba))
+else:
+    row('ratchet baseline（check-test-catalog.sh）', 'MISSING docs/baselines/test-catalog-baseline.json')
 
 
 # ---------------------------------------------------------------- 4) 本地化 key 数
@@ -414,7 +373,7 @@ note('清单：' + ', '.join(gate_names))
 
 
 # ---------------------------------------------------------------- 6b) 性能 ratchet
-section('性能 ratchet（docs/perf-baseline.json + 当前实测；口径同 check-perf-ratchet.sh）')
+section('性能 ratchet（docs/baselines/perf-baseline.json + 当前实测；口径同 check-perf-ratchet.sh）')
 PERF_SOURCES = [
     Path('desktop/native/gather-core/Sources'),
     Path('desktop/native/gather-app/Sources'),
@@ -443,18 +402,17 @@ for path in perf_files:
             if re.search(pattern, line):
                 perf_current[key] += 1
 row('扫描面', '%d 个 Sources Swift 文件（Tests 不计）' % len(perf_files))
-PERF_BASELINE = Path('docs/perf-baseline.json')
+PERF_BASELINE = Path('docs/baselines/perf-baseline.json')
 if not PERF_BASELINE.is_file():
-    row('baseline', 'MISSING docs/perf-baseline.json（check-perf-ratchet.sh 会 FAIL）')
+    row('baseline', 'MISSING docs/baselines/perf-baseline.json（check-perf-ratchet.sh 会 FAIL）')
 else:
     try:
         perf_data = json.loads(PERF_BASELINE.read_text(encoding='utf-8'))
     except (json.JSONDecodeError, OSError) as exc:
-        row('baseline', 'UNREADABLE docs/perf-baseline.json（%s）' % exc)
+        row('baseline', 'UNREADABLE docs/baselines/perf-baseline.json（%s）' % exc)
         perf_data = {}
     base_metrics = perf_data.get('metrics', {}) if isinstance(perf_data, dict) else {}
-    row('baseline 元信息', '%s（generated_at %s）'
-        % (perf_data.get('generated_by', '?'), perf_data.get('generated_at', '?')))
+    row('baseline 元信息', '%s' % perf_data.get('generated_by', '?'))
     for key, cur in perf_current.items():
         base = base_metrics.get(key)
         if base is None:
@@ -481,11 +439,12 @@ def flatten(obj, prefix=''):
 
 
 section('ratchet baseline 字段')
-for label, path in (
-    ('协议面（protocol-surface-baseline.json）', 'docs/protocol-surface-baseline.json'),
-    ('模块级协议面（protocol-surface-modules-baseline.json）',
-     'docs/protocol-surface-modules-baseline.json'),
-    ('清理（cleanup-baseline.json）', 'docs/cleanup-baseline.json'),
+for label, path, section_key in (
+    ('协议面（surface-baseline.json › gates.protocol-surface）',
+     'docs/baselines/surface-baseline.json', 'protocol-surface'),
+    ('模块级协议面（surface-baseline.json › gates.protocol-surface-modules）',
+     'docs/baselines/surface-baseline.json', 'protocol-surface-modules'),
+    ('清理（cleanup-baseline.json）', 'docs/baselines/cleanup-baseline.json', None),
 ):
     p = Path(path)
     if not p.is_file():
@@ -496,9 +455,71 @@ for label, path in (
     except (json.JSONDecodeError, OSError) as exc:
         print('report-baseline: FAIL 无法解析 %s（%s）' % (path, exc), file=sys.stderr)
         sys.exit(1)
+    if section_key is not None:
+        gates = data.get('gates', {}) if isinstance(data, dict) else {}
+        data = gates.get(section_key)
+        if data is None:
+            print('report-baseline: FAIL %s 缺少 section gates.%s' % (path, section_key),
+                  file=sys.stderr)
+            sys.exit(1)
     note('-- ' + label)
     for key, value in sorted(flatten(data)):
         note(key + ': ' + str(value))
+
+
+# ---------------------------------------------------------------- 8) 其余 ratchet 基线摘要
+section('其余 ratchet 基线（摘要）')
+try:
+    structure = json.loads(Path('docs/baselines/structure-baseline.json').read_text(encoding='utf-8'))
+    gates = structure.get('gates', {})
+    lock = gates.get('lock-order', {})
+    imp = gates.get('import-graph', {})
+    con = gates.get('concurrency-whitelist', {})
+    layer = gates.get('layer-symbols', {})
+    pub = gates.get('public-surface-app', {})
+    mod = gates.get('module-size', {})
+    row('lock-order', 'violations %s / blocks %s / files %s / allowed fileLock sites %s'
+        % (lock.get('baseline', {}).get('xmp_in_db_transaction'),
+           lock.get('baseline', {}).get('transaction_blocks'),
+           lock.get('baseline', {}).get('swift_files'),
+           lock.get('baseline', {}).get('allowed_file_lock_run_sites')))
+    row('import-graph', 'targets %s / files %s / internal imports %s'
+        % (imp.get('scan', {}).get('targets'), imp.get('scan', {}).get('swift_files'),
+           imp.get('scan', {}).get('internal_imports')))
+    row('concurrency-whitelist', 'unchecked_sendable %s / nonisolated_unsafe %s / entries %s'
+        % (con.get('scan', {}).get('totals', {}).get('unchecked_sendable'),
+           con.get('scan', {}).get('totals', {}).get('nonisolated_unsafe'),
+           len(con.get('entries', []))))
+    row('layer-symbols', 'files %s / violations %s / hints %s / allowlist %s'
+        % (layer.get('scan', {}).get('files'), layer.get('scan', {}).get('violations'),
+           layer.get('scan', {}).get('hints'), len(layer.get('allowlist', []))))
+    row('public-surface-app', 'protocols %s / requirement lines %s'
+        % (pub.get('api', {}).get('public_protocols'), pub.get('api', {}).get('requirement_lines')))
+    for pkg, meta in sorted(mod.get('packages', {}).items()):
+        row('module-size ' + pkg, 'sources %s 行 / tests %s 行'
+            % (meta.get('sources_loc'), meta.get('tests_loc')))
+except (json.JSONDecodeError, OSError, AttributeError) as exc:
+    row('structure-baseline', 'UNREADABLE（%s）' % exc)
+
+try:
+    port_row = json.loads(Path('docs/baselines/port-row-surface-baseline.json').read_text(encoding='utf-8'))
+    row('port-row-surface', 'ports %s / methods %s / without fake %s / without effective fake %s / rows %s / app row refs %s / dbrow refs %s'
+        % (port_row.get('metrics', {}).get('ports'),
+           port_row.get('metrics', {}).get('port_methods'),
+           port_row.get('metrics', {}).get('ports_without_fake'),
+           port_row.get('metrics', {}).get('ports_without_effective_fake'),
+           port_row.get('metrics', {}).get('persistence_public_row_types'),
+           port_row.get('metrics', {}).get('persistence_row_refs_in_application'),
+           port_row.get('metrics', {}).get('dbrow_refs_outside_persistence')))
+except (json.JSONDecodeError, OSError) as exc:
+    row('port-row-surface-baseline', 'UNREADABLE（%s）' % exc)
+
+try:
+    design = json.loads(Path('docs/baselines/design-system-baseline.json').read_text(encoding='utf-8'))
+    for key, value in sorted(design.items()):
+        note('design-system.' + key + ': ' + str(value))
+except (json.JSONDecodeError, OSError) as exc:
+    note('design-system-baseline: UNREADABLE（%s）' % exc)
 
 print('')
 print('----')

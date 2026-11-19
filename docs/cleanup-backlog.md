@@ -12,7 +12,7 @@
 - public 符号：正则提取 `public (final|nonisolated|@attr)* (struct|class|enum|protocol|actor|func|var|let|typealias|init)`；"零引用" = 自身文件外 core Sources 计数为 0 且 app Sources 计数为 0。
 - 行号会随并行修改漂移；引用前重新 `read` 核对。本文件所有行号来自 2026-10-21 扫描。
 - 复现命令见 §9。
-- `docs/cleanup-baseline.json`（并行 Cut 0 产出）与本文 §5 数字口径不同处已注明；ratchet 以此 JSON 为准。
+- `docs/baselines/cleanup-baseline.json`（并行 Cut 0 产出）与本文 §5 数字口径不同处已注明；ratchet 以此 JSON 为准。
 
 ## 1. 摘要数字（Cut 0 冻结基线）
 
@@ -138,11 +138,18 @@
 
 ### CL-16 历史文档 / ADR 漂移 —— status: done（2026-10-22，6b）
 - **原位置**【已确认】：`docs/reviews/` 22 篇 + `assets/`；`docs/ADR.md` 的 schema 34/43 表等历史数字。
-- **实际处置**：18 篇 reviews → `docs/archive/reviews/`（`assets/` 随迁，图片相对链接保持可用），`docs/reviews/` 留 4 篇 + README；10 篇 Cut 文档 → `docs/archive/cuts/`；新建 `docs/archive/README.md` 索引并写明"行号为当时快照"。全仓 md 入链按新路径重写，md 链接检查 0 缺失。
+- **实际处置**：18 篇 reviews → `docs/archive/reviews/`（`assets/` 随迁，图片相对链接保持可用），`docs/reviews/` 留 4 篇 + README；10 篇 Cut 文档 → `docs/archive/cuts/`；新建 `docs/archive/README.md` 索引并写明"行号为当时快照"。全仓 md 入链按新路径重写，md 链接检查 0 缺失。**（2026-11-18 起该 archive 已随文档清理一并移除，见下方「2026-11-18 后续」。）**
 - **当前口径**：根 README / docs README / DEVELOPMENT / ROADMAP / ADR 改为 8 target、SchemaV1 43 表/373 列/69 索引/62 FK（user_version=2）、无 Router/118 命令、16 协议/110 方法、179 错误码、core 1,100/165 + app 617/68。
 - **快照**：`docs/fixtures/schema.snapshot.json` → `docs/archive/schema.snapshot-v35.json`；ADR-006 注明历史、ADR-029 标题加"（schema 34，历史）"。
 - **验收**：`./scripts/check-docs.sh --strict` PASS；自建 md 链接检查 0 缺失。
-- **残余**：历史文档正文中的旧代码路径仍是快照值（不改正文结论）；无 redirect stub，旧路径靠 archive 索引映射。
+- **残余**：历史文档正文中的旧代码路径仍是快照值（不改正文结论）。
+- **2026-11-18 后续**：按用户指示清理评审/验证类文档——`docs/reviews/`、`docs/validation/`、`docs/test-runtime-audit.md` 全部移除（无 archive、无 redirect stub）；根 README、docs/README、DEVELOPMENT 与设计计划中的入链/提及同步改为「已清理」。
+- **2026-11-19 优化 Wave 8（本平台可实现的测试优化）**：新增 report-only `scripts/audit-test-costs.py`（8 类成本代理 + 加权 Top，`--self-test` 73 项、`--json` 供前后对比，已用其对全仓 340 文件建基线：db_open 69 / temp_io 588 / sleep 16 / process 5 / vision_ml 4 / large_image 93）；CI gates 接入 `profile-tests.sh --self-test` 与 `test-shard.sh --self-test`（合计 <0.2s）；`run-swift-tests.sh` 增加 `TEST_EVENT_STREAM` 透传（默认关闭）；静态成本改造：5 文件 8 处图像循环 `autoreleasepool`、`CullingSortPaginationTests` 的 `Database.openInMemory`→`makeTestDB`（Linux 微基准 15.6→3.2ms/次，13 次≈省 161ms/套，需 macOS 实测）、10 个同构临时目录 helper 收敛到 `makeTempDir`（审计 temp_io 588→568、score 5604→5542）。测试计数 3209/420/14809/17 不变。
+- **2026-11-19 优化 Wave 7（测试性能：内存/耗时/读写/CPU）**：新增 macOS 剖析与分片工具 `scripts/profile-tests.sh` + `scripts/lib/test-profile.py`（Swift Testing 事件流 per-test 耗时 + `/usr/bin/time -l` real/user/sys/max RSS，Top N/suite 聚合）与 `scripts/test-shard.sh`（按顶层 @Suite/@Test 单元轮转生成 `--filter`；Linux dry-run/自测可验，解析器 49 项、分片器 14 项断言）；默认 PR 套件去重型化（7 处循环图像 autoreleasepool、1 处固定 2×300ms 等待改条件等待、移除无效 37MB 模型 cache 清空；其余 sleep 均有时序语义保留）；Linux 微基准（DDL 42KB/144 语句，3.1ms/库）**决定不改 makeTestDB**（全套占比 <5%），文件库→内存库仅 1 处（TriageService 8.1→3.1ms/例）；14 个测试文件收敛临时目录与占位文件 IO（净删约 190 行写盘块、自建 tempdir 38→28）。tests_loc core 62,442 / app 36,932（只降）。**37MB CoreML 模型编译**需 Sources 注入点（P1，跨轮）。
+- **2026-11-19 优化 Wave 6（续）**：`scripts/lib/swift-counts.py` 成为测试计数单一实现（catalog/report-baseline/docs-facts 复用，删除 ~215 行重复 mask/count，输出逐字节等价）；app 测试 P2 精简（API-live error helper 13→1、VM 建库夹具 4→1、l10n 3 例并入门禁覆盖、ReviewFix 1 例迁断言，净 -153 行/-4 @Test/-8 断言）；发布/流程续优化（build.sh 删除重复 core 构建，每次发布省 1–3 分钟；CI cache key 加工具链指纹与 runner.arch；`verify-release-bundle.sh` 新增 Linux 可跑 `--self-test` 并接入 CI；release runner 要求写入注释）。基线重钉：test-catalog 3209/420/14809/17；structure-baseline tests_loc core 62,495 / app 36,920。
+- **2026-11-19 优化 Wave 5（P2/P3 全量推进）**：Protocol 契约测试参数化（16 文件 roundtrip/keys 合并：测试文件 -737 行、@Test -59、断言行 -179 站点，键/样本零丢失，helper 集中断言）；core 测试替身收口（7 份 DeliveryFilePort / 8 份 XMP / 7 份 MetadataMutation / 2 份 FaceWriteback → 共享 Recording* fake，净 -502 行，用例/断言 0 变化）；app 测试支撑收口（Stub APIs 逐属性访问器收敛 + Gallery/Noop/XMP/Mutation fixture 共享，净 -965 行）；发布流程精简（build.sh -117、build-appintents -35、CI release 段 -63，新增 `scripts/verify-release-bundle.sh` 解包验收与 C1 SDK preflight，原始文件净 -214 行）。合计：测试代码 101,638→**99,568 行（-2,070）**、@Test 3,272→**3,213（-59）**、断言站点 14,996→**14,817（-179）**、@Suite 420 不变；test-catalog 基线重钉 3213/420/14817/17，structure-baseline tests_loc core 62,495 / app 37,073。所有删改需 macOS 首跑验证。
+- **2026-11-19 测试精简与流程优化**：删除 2 个被同层测试取代的 app 测试文件（APIFaceUITests/APISimilarityUITests，未对等用例已迁入对应 ViewModel 套件）+ 2 个 core 重复 history 用例；15 份 `jsonKeys`/`ContractTestError` 收口为 `Protocol/ContractTestSupport.swift`。测试代码 **102,431→101,638 行（-793）**、@Test **3,280→3,272（-8）**、@Suite **422→420（-2）**、断言 **15,041→14,996（-45）**、测试文件 336→335；catalog 基线迁 `docs/baselines/test-catalog-baseline.json`（新增 `--write-baseline` 与 skip 站点 ratchet）；CI/本地测试统一到 `scripts/run-swift-tests.sh`（CI 两个 14 行 heredoc 归一、app 测试 job 与 core 并行、去掉重复的 App executable build 步骤、失败日志上传），`test.sh` 增加 `--no-parallel`/`TEST_TIMEOUT`/`TEST_LOG`/`--clean-temp` 并删除 `clean-test-temp.sh`；process 侧 CI YAML 净 -13 行、单点维护 1 处。macOS 墙钟收益未实测。
+- **2026-11-18 门禁/基线精简**：`check-repo-hygiene.sh` [c] 的扫描量下限同步从 60 md/100 links 下调为 10/10 —— 这是 docs/reviews+validation 清理后文档语料 106→15 篇的配套调整（非静默放宽，仍 fail-closed）。其余：12 份 ratchet 基线 → `docs/baselines/` 下 6 份（structure 6 合 1、surface 2 合 1、cleanup/perf/design-system/port-row 迁入；统一 schema=2、去 generated_at、`--write-baseline` 原子只改本 section）；23 道 Linux 门禁总耗时 11,983→2,927ms（protocol-surface 13.8×、duplicate-symbols 30×、select-star 14×、test-catalog 5.6×、repo-hygiene 3.7×）；新补 5 道 `--self-test`（cleanup/perf-ratchet/layering/domain-events/coded-errors，CI 共 10 个 self-test step）。
 
 ### CL-17 重复常量 / 清单 —— status: pending，Cut 4/5
 - **证据（2026-10-24 复核）**：rawExtensions 定义已收敛到 PhotoFileTypes.rawExtensions
@@ -157,8 +164,8 @@
 - **风险**：RAW 判定被 SQL 拼接复用（AssetRepo:839），迁移时漏改导致导入漏文件。
 
 ### CL-18 吞错 / 弱类型残留 —— status: pending（评审修复后 ratchet 重定基线）
-- **位置（2026-10-24 门禁实测）**：ratchet current/baseline = unchecked_sendable 54/54、try_optional 228/228、services_prepare 0/0、todo_fixme 0/0、with_known_issue 0/0；services_prepare 从此前 127 归零是指标口径调整（见 check-cleanup-ratchet.sh 与 docs/cleanup-baseline.json 的 generated_at），不是新增豁免。重点文件：CullingService.swift、MetadataService.swift、JobService.swift、CaptureOneBridge.swift。
-- **处置**：逐个消除或登记豁免（`docs/cleanup-baseline.json` + 注释说明锁依据）；`try?` 只允许用于"失败可观测"的分支并记 warn。
+- **位置（2026-10-24 门禁实测）**：ratchet current/baseline = unchecked_sendable 54/54、try_optional 228/228、services_prepare 0/0、todo_fixme 0/0、with_known_issue 0/0；services_prepare 从此前 127 归零是指标口径调整（见 check-cleanup-ratchet.sh 与 docs/baselines/cleanup-baseline.json 的历史值），不是新增豁免。重点文件：CullingService.swift、MetadataService.swift、JobService.swift、CaptureOneBridge.swift。
+- **处置**：逐个消除或登记豁免（`docs/baselines/cleanup-baseline.json` + 注释说明锁依据）；`try?` 只允许用于"失败可观测"的分支并记 warn。
 - **验收**：ratchet 只降不升；每个剩余 `@unchecked Sendable` 有锁/不可变依据注释。
 - **风险**：把吞错改成 throw 会改变 UI 错误路径与测试断言；需分批。
 - **最终复核（2026-10-24）**：./scripts/check-cleanup-ratchet.sh 实测 current/baseline = 54/54、228/228、0/0、0/0、0/0（R5 删单例 −1、R6 新增 ReadConnectionPool +1，净值为 54；try? 已收紧到 228）。状态维持 pending（逐条消除仍属独立工作）。
@@ -368,7 +375,7 @@
 | public 声明 / 行 | 2,298 / 3,178 | 声明器解析 / `^\s*public` 行 |
 | 表 / 列 / 索引 / FK | 44 / 391 / 62 / 63 | Schema.swift DDL |
 | 命令（sync/async） | 118（82/36） | Router `case "..."` |
-| `@unchecked Sendable` | 40 行（非注释，Sources + app 功能页） | `docs/cleanup-baseline.json`；D-006 修正 scope 后重新生成 |
+| `@unchecked Sendable` | 40 行（非注释，Sources + app 功能页） | `docs/baselines/cleanup-baseline.json`；D-006 修正 scope 后重新生成 |
 | `try?` | 348 行（非注释，Sources + app 功能页） | 同上；D-006 修正 scope 后重新生成 |
 | Services `prepare(` | 128 | ratchet；core 全源 516 |
 | `@Test` | 994 core / 301 app | grep `@Test` |
@@ -376,13 +383,13 @@
 | TODO/FIXME | 0（非注释） | ratchet；含注释 21 |
 | l10n 直调 `.l(` | 1,439 | 计划 1,497，漂移 -58 |
 | `.id(languageVersion)` | 1 | RootView.swift:423 |
-| Review 文档 | 23 个条目 | docs/reviews |
+| Review 文档 | 已在 2026-11-18 文档清理中移除 | — |
 | lproj 键 | en 1,406 / zh-Hans 10 | zh 为最小表；49 键疑似未用 |
 | 死表 / 死列 / 死索引 | 4（含 2 候选）/ 13 / 4 | 本文 §3 |
 | 零外部引用 public type/func | 256（85 个连测试也不用） | 本文 §4 |
 | 构建垃圾 | 已删除 | 3 个空 swbuild.tmp 与根 .DS_Store 已物理删除（C 任务） |
 
-> 与 `docs/cleanup-baseline.json` 的差异：JSON 的 `try_optional=348`、`unchecked_sendable=40`、`services_prepare=128`、`todo_fixme=0`、`with_known_issue=0` 为 ratchet 官方基线，本表同口径复现一致；其余为本表补充的结构性基线。
+> 与 `docs/baselines/cleanup-baseline.json` 的差异：JSON 的 `try_optional=348`、`unchecked_sendable=40`、`services_prepare=128`、`todo_fixme=0`、`with_known_issue=0` 为 ratchet 官方基线，本表同口径复现一致；其余为本表补充的结构性基线。
 
 ## 7. 状态列与 owner 规则
 
@@ -398,7 +405,7 @@
 - Cut 1 owner：CL-01/11；Cut 2：CL-02/03/14；Cut 4：CL-04/07/08/09/10/17；Cut 5：CL-05/06/13/20；Cut 6：CL-12/16/18/19；CL-15 归 Cut 0。
 - `done` 判定必须附：删除行数、删除文件数、删除 public 符号数、删除表/列/索引数（§8.1 #4）。
 - 每次改状态必须同 PR 更新本文件；CI 用 `check-death-list.sh` 校验：不允许 CL-01..CL-20 长期 `in-progress`。
-- ratchet：`docs/cleanup-baseline.json` 只降不升；任何指标回升即 PR 拒绝。
+- ratchet：`docs/baselines/cleanup-baseline.json` 只降不升；任何指标回升即 PR 拒绝。
 
 ## 8. 已确认 / 疑似 / 待决（供 Cut 0 评审）
 
@@ -488,7 +495,7 @@ grep -rn 'class LockedBox\|class AsyncGate' --include=*.swift desktop/native/*/T
 - DebugLaunchOptions（58 行）/ 预览脚手架（12 文件/2,210 行）：DEBUG-only，仍服务 V6 截图验收与 14 个 #Preview；删除会跌破 preview 门禁。#13 起拆成两处：`GatherUI/PreviewSupport`（5 文件/793 行，依赖视图与 VM）+ `GatherPreviewData`（7 文件/1,417 行，只依赖 GatherProtocol）——行数没降，但 1,417 行不再属于生产 UI 模块。
 - 测试接缝：DeliveryStateMachine.isConfirmReady/shouldReopenForInput、ProofFeedbackRow.isApplied、StackFoldIndex.expandedPhotoIds、KeywordPath.ancestors/topSegment、C1RoundTripCoordinator.flushPendingReloads、DeliveryRepo.mark*ForTesting、Database.isInMemory/rawHandle；保留为行为规格或 @testable 隔离，删除收益为负。
 - Curation 的 fromLightroom/focusedFraction/synchronizedZoom：裁剪/AF/对照几何的唯一实现，虽当前仅测试调用，先保留待接线评估（不是一次性调试代码）。
-- 工具：scripts/find-unused-symbols.swift（本轮仍在用）、scripts/clean-test-temp.sh（手工残留清理）、scripts/validation/CullingPaging100kPerfTests.swift（V5 100k 证据，保留待 V5 收口）。
+- 工具：scripts/find-unused-symbols.swift（本轮仍在用）、`scripts/test.sh --clean-temp`（手工残留清理；原 scripts/clean-test-temp.sh 已并入并删除）、scripts/validation/CullingPaging100kPerfTests.swift（V5 100k 证据，保留待 V5 收口）。
 
 **实测（2026-10-31，worktree clean）**
 

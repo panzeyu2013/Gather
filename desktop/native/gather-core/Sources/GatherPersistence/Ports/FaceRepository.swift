@@ -1,6 +1,7 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Ports/FaceRepository.swift
 // WP3b-1：Face 仓储端口（只含 Application 实际调用的方法）。
 import Foundation
+import GatherProtocol
 
 public protocol FaceRepository {
     func getObservations(_ sessionId: String) throws -> [FaceObservationRow]

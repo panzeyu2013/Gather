@@ -3,6 +3,7 @@
 
 import Foundation
 import Testing
+import GatherTestSupport
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
@@ -30,10 +31,8 @@ private func routerFixtureJPEG() throws -> Data {
 }
 
 private func makeRouterDir() throws -> String {
-    let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-router-" + UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    return dir.path
+    // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+    try GatherTestSupport.makeTempDir(prefix: "gather-router")
 }
 
 @Suite("元数据写目标路由")

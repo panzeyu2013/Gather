@@ -1,11 +1,11 @@
 // desktop/native/gather-app/Tests/GatherAppTests/LocalizationParityTests.swift
 // Cut 4 / 4b-1：en 表质量与「代码在用 key ⊆ 表」parity（审计 §3.5 R6 / §7.2）。
 //
-// 四组断言：
-// 1. en 表无重复键（.strings 后写覆盖先写，译文不可预期）；
-// 2. 代码在用的每个 key 都在 en 表里（en 界面不回落中文）；
-// 3. error / job / progress / 取消等本地化关键路径在 zh、en 下与码表/键表一致（B03 收口）；
-// 4. 反方向 parity（Cut 6 / 6a-1）：en 表里不得残留无代码引用的孤儿键（仅 allowlist）。
+// 三组断言（en 表无重复键 / en 值无 CJK 已由 scripts/check-repo-hygiene.sh [d]
+// 硬校验，task-39 起测试内不再重复）：
+// 1. 代码在用的每个 key 都在 en 表里（en 界面不回落中文）；
+// 2. error / job / progress / 取消等本地化关键路径在 zh、en 下与码表/键表一致（B03 收口）；
+// 3. 反方向 parity（Cut 6 / 6a-1）：en 表里不得残留无代码引用的孤儿键（仅 allowlist）。
 //
 // key 集合来自三处：源码字面量（按 l/l10n/LocalizedText/CommandError.localized 的
 // 调用形态扫描）、动态码表（错误码模板 / 任务状态 / 任务类型 / 进度相位）、设置
@@ -51,7 +51,7 @@ struct LocalizationParityTests {
     private static let tableCache: Result<[String: String], Error> = Result {
         var table: [String: String] = [:]
         for entry in try entriesCache.get() {
-            // 重复键在 noDuplicateKeys 里单独报错；这里保持「后写覆盖」的运行时语义。
+            // 重复键由 hygiene [d] 门禁报错；这里保持「后写覆盖」的运行时语义。
             table[entry.key] = entry.value
         }
         return table
@@ -340,19 +340,6 @@ struct LocalizationParityTests {
         #expect(!keyword.contains("%@"))
     }
 
-    @Test("en 表无重复键（后写覆盖先写会让译文不可预期）")
-    func noDuplicateKeys() throws {
-        var counts: [String: Int] = [:]
-        for entry in try parseEntries() { counts[entry.key, default: 0] += 1 }
-        // 解析失效（匹配 0 条）时不能静默变绿。
-        #expect(counts.values.reduce(0, +) > 1000, "en 表解析到的条目数异常，路径/格式假设可能失效")
-        let duplicates = counts
-            .filter { $0.value > 1 }
-            .map { "\($0.key) ×\($0.value)" }
-            .sorted()
-        #expect(duplicates.isEmpty, "en 表存在重复键（运行时后者覆盖前者）：\(duplicates)")
-    }
-
     @Test("en 表覆盖全部在用 key（缺项会让 en 界面回落中文）")
     func englishTableCoversEveryUsedKey() throws {
         let table = try parseTable()
@@ -476,17 +463,8 @@ struct LocalizationParityTests {
         ] {
             let one = key + L10n.pluralOneSuffix
             let value = try #require(table[one], "缺单数条目：\(one)")
-            #expect(!Self.containsCJK(value), "\(one) 的英文单数条目含中文：\(value)")
+            #expect(!containsCJK(value), "\(one) 的英文单数条目含中文：\(value)")
         }
-    }
-
-    @Test("中文字面量 key 的 en 译文不得回落中文（含 4b-1 补的 6 个 error 文案）")
-    func englishTableDoesNotFallBackToChinese() throws {
-        let en = L10n(language: .en)
-        let offenders = usedKeys()
-            .filter { Self.containsCJK($0) && Self.containsCJK(en($0)) }
-            .sorted()
-        #expect(offenders.isEmpty, "以下 key 的 en 查询仍返回中文（缺表或漏翻）：\(offenders.prefix(20))")
     }
 
     @Test("3 个冲突 key 的裁决值固定（防译文再次漂移）")
@@ -565,14 +543,6 @@ struct LocalizationParityTests {
     /// 纯 printf 数值格式（不是 key）：与 en 表的存在性无关，直接不参与 parity。
     private static func isMachineFormat(_ literal: String) -> Bool {
         literal.range(of: machineFormatPattern, options: .regularExpression) != nil
-    }
-
-    private static func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x3400...0x9FFF).contains(scalar.value)
-                || (0x3000...0x303F).contains(scalar.value)
-                || (0xFF00...0xFFEF).contains(scalar.value)
-        }
     }
 
     private static func unescape(_ raw: String) -> String {

@@ -443,7 +443,9 @@ public actor MaintenanceService {
         }
         do {
             return try database.read { connection in
-                try LibraryPackageService(connection: connection).exportPackage(input)
+                try LibraryPackageService(
+                    store: LibraryPackageStore(connection: connection)
+                ).exportPackage(input)
             }
         } catch let maintenance as MaintenanceError {
             throw maintenance
@@ -464,7 +466,9 @@ public actor MaintenanceService {
         }
         do {
             return try database.write { connection in
-                try LibraryPackageService(connection: connection).importPackage(input)
+                try LibraryPackageService(
+                    store: LibraryPackageStore(connection: connection)
+                ).importPackage(input)
             }
         } catch let maintenance as MaintenanceError {
             throw maintenance
@@ -498,7 +502,8 @@ public actor MaintenanceService {
             candidates: candidates, overwriteExisting: input.overwriteExisting)
         return try database.write { connection in
             try ExternalMetadataMigrationService.apply(
-                updates: evaluation.updates, connection: connection)
+                updates: evaluation.updates,
+                into: MetadataCacheRepo(connection: connection))
             return evaluation.report
         }
     }

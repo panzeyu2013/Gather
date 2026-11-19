@@ -299,30 +299,6 @@ private struct FaceSimilarityFixture {
     }
 }
 
-// MARK: - 错误捕获辅助
-
-private func apiGatherError<T>(_ body: () async throws -> T) async -> GatherError? {
-    do {
-        _ = try await body()
-        return nil
-    } catch let error as GatherError {
-        return error
-    } catch {
-        return nil
-    }
-}
-
-private func syncGatherError<T>(_ body: () throws -> T) -> GatherError? {
-    do {
-        _ = try body()
-        return nil
-    } catch let error as GatherError {
-        return error
-    } catch {
-        return nil
-    }
-}
-
 // MARK: - Face 用例
 
 @Suite("B4a Live Face API")
@@ -506,11 +482,11 @@ struct APIFaceTests {
     func faceValidationErrors() async throws {
         let fixture = try FaceSimilarityFixture()
 
-        let blank = await apiGatherError { try await fixture.faceAPI.clusters("   ") }
+        let blank = await gatherError { try await fixture.faceAPI.clusters("   ") }
         #expect(blank?.code == .INVALID_PARAM)
         #expect(blank?.params["field"] == "sessionId")
 
-        let badEps = await apiGatherError {
+        let badEps = await gatherError {
             try await fixture.faceAPI.analyze(FaceAnalyzeInput(sessionId: fixture.sessionId, eps: 1.5))
         }
         #expect(badEps?.code == .FACE_EPS_INVALID)
@@ -522,7 +498,7 @@ struct APIFaceTests {
 
         // 脏设置（default_eps = 2）在 API 边界显式失败，不落到 executor。
         try fixture.settingsService.set("default_eps", value: "2")
-        let dirtySettings = await apiGatherError {
+        let dirtySettings = await gatherError {
             try await fixture.faceAPI.analyze(FaceAnalyzeInput(sessionId: fixture.sessionId))
         }
         #expect(dirtySettings?.code == .FACE_EPS_INVALID)
@@ -666,7 +642,7 @@ struct APISimilarityTests {
             )
         )
         let itemID = try #require(preview.items.first?.id)
-        let stale = await apiGatherError {
+        let stale = await gatherError {
             try await fixture.similarityAPI.writeback(
                 Confirmed(
                     SimilarityWritebackInput(
@@ -741,7 +717,7 @@ struct APISimilarityTests {
         #expect(emptyItems?.code == .SIM_PREVIEW_REQUIRED)
 
         // 阈值有结果校验先于 pending 匹配。
-        let noResults = await apiGatherError {
+        let noResults = await gatherError {
             try await fixture.similarityAPI.writeback(
                 Confirmed(
                     SimilarityWritebackInput(
@@ -756,7 +732,7 @@ struct APISimilarityTests {
         #expect(noResults?.code == .SIM_THRESHOLD_NO_RESULTS)
 
         // 预览过期：itemIds 与 pending 行不一致。
-        let stale = await apiGatherError {
+        let stale = await gatherError {
             try await fixture.similarityAPI.writeback(
                 Confirmed(
                     SimilarityWritebackInput(
@@ -770,7 +746,7 @@ struct APISimilarityTests {
         }
         #expect(stale?.code == .SIM_PREVIEW_STALE)
 
-        let blankSession = await apiGatherError {
+        let blankSession = await gatherError {
             try await fixture.similarityAPI.writebackItems("  ")
         }
         #expect(blankSession?.code == .INVALID_PARAM)
@@ -783,7 +759,7 @@ struct APISimilarityTests {
 
         // 分析参数脏设置同样在 API 边界显式失败。
         try fixture.settingsService.set("default_threshold", value: "99")
-        let dirty = await apiGatherError {
+        let dirty = await gatherError {
             try await fixture.similarityAPI.analyze(
                 SimilarityAnalyzeInput(sessionId: fixture.sessionId)
             )

@@ -84,7 +84,8 @@ public final class FaceKwService {
     /// 事务经 TransactionRunner（嵌套退化为 SAVEPOINT）。
     let feedback: any FaceFeedbackRepository
     let analysisRuns: any AnalysisRunRepository
-    let deliveryItems: any DeliveryRepository
+    /// R2：写回镜像只读交付项 + 基线，构造点收窄到 2 方法窄端口（不再持整个交付仓储）。
+    let deliveryItems: any DeliveryItemBaselineReading
     let transactions: any TransactionRunner
     /// 设置读取端口（#9）：数值与字符串设置统一走端口（原本是两个闭包）。
     let settings: any SettingsReading
@@ -145,7 +146,7 @@ public final class FaceKwService {
         personRepo: any PersonRepository,
         feedback: any FaceFeedbackRepository,
         analysisRuns: any AnalysisRunRepository,
-        deliveryItems: any DeliveryRepository,
+        deliveryItems: any DeliveryItemBaselineReading,
         transactions: any TransactionRunner,
         settings: any SettingsReading = ClosureSettingsReader { _ in nil },
         decodeProvider: DecodeProvider? = nil,

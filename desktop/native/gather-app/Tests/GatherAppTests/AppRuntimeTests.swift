@@ -26,28 +26,6 @@ import GatherTestSupport
 
 // MARK: - 夹具依赖（空实现只用于不触碰文件系统的用例）
 
-private struct RuntimeNoopXMP: XMPProvider {
-    func readKeywords(photoPath: String) async throws -> [String] { [] }
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes { MetadataWriteAttributes() }
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {}
-    func backup(photoPath: String) async throws -> String { "" }
-    func restore(photoPath: String, backupPath: String) async throws {}
-    func fileExists(_ path: String) -> Bool { false }
-    func removeFile(_ path: String) async throws {}
-}
-
-private struct RuntimeNoopMutations: MetadataMutationPort {
-    func queuePhotoValues(
-        sessionId: String, photoId: String, values: [String: JSONValue],
-        source: MetadataMutationSource, schedule: Bool
-    ) throws -> MetadataMutationResult {
-        MetadataMutationResult(
-            photoId: photoId, xmpPath: photoId + ".xmp", dirtyFields: [],
-            revision: 1, status: "pending")
-    }
-
-}
-
 // MARK: - 装配夹具
 
 private struct AppRuntimeFixture {
@@ -97,9 +75,9 @@ private struct AppRuntimeFixture {
             ),
             metadataService: MetadataService(
                 metadataCacheRepo: MetadataCacheRepo(connection: db),
-                xmp: RuntimeNoopXMP(),
+                xmp: NoopXMPProvider(),
                 connection: db,
-                mutations: RuntimeNoopMutations()
+                mutations: NoopMetadataMutationPort(xmpPathSuffix: ".xmp")
             ),
             photoRepo: photoRepo,
             assetRepo: assetRepo,
@@ -118,7 +96,7 @@ private struct AppRuntimeFixture {
             db: db,
             jobService: jobService,
             delivery: DeliveryCoordinator(
-                connection: db, xmp: RuntimeNoopXMP(), fileLock: XMPFileLock()),
+                connection: db, xmp: NoopXMPProvider(), fileLock: XMPFileLock()),
             executorDeps: deps
         )
     }

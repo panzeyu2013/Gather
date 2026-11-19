@@ -139,7 +139,8 @@ struct ContactSheetPresentationTests {
         var items: [ContactSheetItem] = []
         for index in 0..<3 {
             let path = directory.appendingPathComponent("IMG_\(index).jpg").path
-            try makeSheetJPEG(at: path)
+            // task-45：只把同步图像创建/编码放进局部 autoreleasepool，避免跨轮累积。
+            try autoreleasepool { try makeSheetJPEG(at: path) }
             var presentation = item()
             presentation.photoId = "p\(index)"
             presentation.filePath = path

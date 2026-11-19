@@ -18,14 +18,6 @@ struct DeliveryErrorPresentationTests {
     private let zh = L10n(language: .zhCN)
     private let en = L10n(language: .en)
 
-    private func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x3000...0x303F).contains(scalar.value)
-                || (0x3400...0x9FFF).contains(scalar.value)
-                || (0xFF00...0xFFEF).contains(scalar.value)
-        }
-    }
-
     @Test("11 个新码都有独立中英文文案，英文不回落中文")
     func everyCodeHasDedicatedMessageInBothLanguages() {
         let zhFallback = zh.errorText("__NOT_A_DELIVERY_CODE__")

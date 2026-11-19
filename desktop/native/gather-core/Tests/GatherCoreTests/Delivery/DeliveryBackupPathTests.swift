@@ -4,15 +4,14 @@
 import GatherProtocol
 import Foundation
 import Testing
+import GatherTestSupport
 @testable import GatherDelivery
 @testable import GatherPersistence
 
 struct DeliveryBackupPathTests {
     private func makeDirectory() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-backup-path-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
+        // task-43：统一走共享 TempHygiene 登记路径（行为等价）。
+        URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: "gather-backup-path"))
     }
 
     @Test func acceptsSiblingRegularBackupWithExpectedPrefix() throws {

@@ -89,99 +89,89 @@ PERL_PROGRAM=$(cat <<'PERL'
 use strict;
 use warnings;
 
+# 与旧实现逐字节等价的词法扫描，但用 index()/正则跳段代替逐字符 substr 循环：
+# 输出（path:line 命中）与旧实现完全一致，只是常数级提速。
 for my $path (@ARGV) {
     open my $fh, '<', $path or die "open $path: $!";
     local $/;
     my $src = <$fh>;
     close $fh;
 
+    my $n = length $src;
     my $out = '';
     my $i = 0;
-    my $n = length($src);
-    my $state = 'code';    # code | string | mlstring
-
     while ($i < $n) {
+        my $q = index($src, '"', $i);
+        my $sl = index($src, '/', $i);
+        my $start;
+        if ($q < 0) { $start = $sl; }
+        elsif ($sl < 0) { $start = $q; }
+        else { $start = $q < $sl ? $q : $sl; }
+        last if $start < 0;
+        if ($start > $i) {
+            $out .= substr($src, $i, $start - $i);
+            $i = $start;
+        }
         my $c = substr($src, $i, 1);
-
-        if ($state eq 'code') {
+        if ($c eq '/') {
             my $two = substr($src, $i, 2);
             if ($two eq '//') {
-                while ($i < $n && substr($src, $i, 1) ne "\n") {
-                    $out .= ' ';
-                    $i++;
-                }
+                my $j = index($src, "\n", $i);
+                $j = $n if $j < 0;
+                $out .= ' ' x ($j - $i);
+                $i = $j;
                 next;
             }
             if ($two eq '/*') {
+                my $j = $i + 2;
                 my $depth = 1;
-                $out .= '  ';
-                $i += 2;
-                while ($i < $n && $depth > 0) {
-                    my $t = substr($src, $i, 2);
-                    if ($t eq '/*') {
-                        $depth++;
-                        $out .= '  ';
-                        $i += 2;
-                    } elsif ($t eq '*/') {
+                my $end = $n;
+                while ($j < $n) {
+                    my $no = index($src, '/*', $j);
+                    my $nc = index($src, '*/', $j);
+                    if ($no < 0 && $nc < 0) { $end = $n; last; }
+                    if ($nc >= 0 && ($no < 0 || $nc < $no)) {
                         $depth--;
-                        $out .= '  ';
-                        $i += 2;
-                    } else {
-                        my $ch = substr($src, $i, 1);
-                        $out .= ($ch eq "\n" ? "\n" : ' ');
-                        $i++;
+                        $j = $nc + 2;
+                        if ($depth == 0) { $end = $j; last; }
+                        next;
                     }
+                    $depth++;
+                    $j = $no + 2;
                 }
+                my $seg = substr($src, $i, $end - $i);
+                $seg =~ s/[^\n]/ /g;
+                $out .= $seg;
+                $i = $end;
                 next;
             }
-            if (substr($src, $i, 3) eq '"""') {
-                $state = 'mlstring';
-                $out .= '"""';
-                $i += 3;
-                next;
-            }
-            if ($c eq '"') {
-                $state = 'string';
-                $out .= '"';
-                $i++;
-                next;
-            }
-            $out .= $c;
+            $out .= '/';
             $i++;
             next;
         }
-
-        # 字符串内：保留内容（转义跳过下一个字符），SQL 注释稍后按行剔除。
-        if ($c eq '\\') {
-            $out .= $c;
-            $i++;
-            if ($i < $n) {
-                $out .= substr($src, $i, 1);
-                $i++;
+        if (substr($src, $i, 3) eq '"""') {
+            pos($src) = $i + 3;
+            if ($src =~ /\G(?:[^"\\]|\\.|"(?!""))*"""/sg) {
+                $out .= substr($src, $i, pos($src) - $i);
+                $i = pos($src);
+            } else {
+                $out .= substr($src, $i);
+                $i = $n;
             }
             next;
         }
-        if ($state eq 'string' && $c eq '"') {
-            $state = 'code';
-            $out .= '"';
-            $i++;
-            next;
+        pos($src) = $i + 1;
+        if ($src =~ /\G(?:[^"\\]|\\.)*"/sg) {
+            $out .= substr($src, $i, pos($src) - $i);
+            $i = pos($src);
+        } else {
+            $out .= substr($src, $i);
+            $i = $n;
         }
-        if ($state eq 'mlstring' && substr($src, $i, 3) eq '"""') {
-            $state = 'code';
-            $out .= '"""';
-            $i += 3;
-            next;
-        }
-        $out .= $c;
-        $i++;
     }
 
-    my $clean = '';
-    for my $line (split /(?<=\n)/, $out, -1) {
-        $line =~ s/--.*$//;    # SQL 行注释（含 Schema.swift 的 -- SELECT * 示例）
-        $clean .= $line;
-    }
+    my $clean = $out;
+    $clean =~ s/--[^\n]*//g;
 
     while ($clean =~ /(?i)\bSELECT\s+(?:DISTINCT\s+)?(?:[A-Za-z_][A-Za-z0-9_]*\.)?\*/g) {
         my $line = 1 + (substr($clean, 0, $-[0]) =~ tr/\n//);

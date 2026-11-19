@@ -1,6 +1,7 @@
 // desktop/native/gather-core/Sources/GatherPersistence/Ports/PhotoRepository.swift
 // WP3b-1：Photo 仓储端口（只含 Application 实际调用的方法）。
 import Foundation
+import GatherProtocol
 
 /// photos 的 light lookup 投影（MetadataService.getPhotosByIds）。
 public struct PhotoLookupRow: Equatable, Sendable {

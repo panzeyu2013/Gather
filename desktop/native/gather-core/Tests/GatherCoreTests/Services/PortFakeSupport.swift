@@ -215,29 +215,14 @@ final class PortFakeMetadataRepo: MetadataRepository, @unchecked Sendable {
     }
 }
 
-final class PortFakeMetadataMutation: MetadataMutationPort, @unchecked Sendable {
-    private(set) var queuedValues: [(sessionId: String, photoId: String, values: [String: JSONValue])] = []
-
-    func queuePhotoValues(
-        sessionId: String,
-        photoId: String,
-        values: [String: JSONValue],
-        source: MetadataMutationSource,
-        schedule: Bool
-    ) throws -> MetadataMutationResult {
-        queuedValues.append((sessionId, photoId, values))
-        return MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
-        )
-    }
-
-}
 
 // MARK: - Delivery
 
 // #6 收窄后 DeliveryRowReading 带 Sendable，带可变记录器的替身只能
 // （测试串行；Tests 不进 cleanup-ratchet 的计数范围）。
-final class PortFakeDeliveryRepo: DeliveryRepository, DeliveryRowReading, @unchecked Sendable {
+// R2：同一替身额外声明 FaceKw 写回镜像的窄端口（witness 复用 DeliveryRepository
+// 的默认实现，行为与宽端口一致，不需要另写一份）。
+final class PortFakeDeliveryRepo: DeliveryRepository, DeliveryRowReading, DeliveryItemBaselineReading, @unchecked Sendable {
     var items: [DeliveryItemRow] = []
     var rowByPath: [String: DeliveryRow] = [:]
     private(set) var listCalls = 0

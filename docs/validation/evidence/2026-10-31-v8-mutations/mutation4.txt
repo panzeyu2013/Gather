@@ -1,9 +1,0 @@
-mutation4: remove captureone16 bundle id
-red:
-✘ Test "Capture One 16 的版本化 id 与标准路径都能识别" failed after 0.001 seconds with 1 issue.
-✘ Suite "C1 安装检测（版本化 bundle id / 路径兜底）" failed after 0.001 seconds with 1 issue.
-✘ Test run with 1 test in 1 suite failed after 0.001 seconds with 1 issue.
-green:
-✔ Suite "C1 安装检测（版本化 bundle id / 路径兜底）" passed after 0.001 seconds.
-✔ Test run with 1 test in 1 suite passed after 0.001 seconds.
-✘ Test "Capture One 16 的版本化 id 与标准路径都能识别" recorded an issue at C1InstallationTests.swift:11:9: Expectation failed: C1Installation.probeInstalled(bundleIDExists: { $0 == "com.captureone.captureone16" }, fileExists: { _ in false })

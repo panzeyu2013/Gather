@@ -1,7 +1,7 @@
 // desktop/native/gather-app/Tests/GatherAppTests/CullingComparisonTests.swift
 // Wave5 批次 1（B1 + B2）：对比/Survey 的决策目标 + 切布局的续页计划（纯函数）。
 //
-// 背景（docs/reviews/2026-11-11-competitive-gap-rereview/20-culling-viewer.md）：
+// 背景（历史复评 20-culling-viewer；文档已随 2026-11-18 文档清理移除）：
 // - B1：为构造 2/3/4 图对比或多图 Survey 必须先多选；旧实现让同一个选择集同时
 //   充当「写入目标」，于是 Survey 里盯着 A 按 X 会批量标掉 B…I。这里把目标解析
 //   钉成纯函数：对比类布局默认只写当前照片，批量必须显式开开关。

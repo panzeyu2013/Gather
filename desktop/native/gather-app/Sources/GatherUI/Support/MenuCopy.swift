@@ -4,7 +4,7 @@
 // WP4d 把 GatherAppMenuCopy 与 GatherAppCommands 一起放进了 GatherApp 可执行
 // target；GatherAppTests 只依赖 GatherUI/GatherHost，无法 import 可执行模块，
 // 菜单测试于是退化成“对 5 个 L10n 字面量的自证”
-// （docs/reviews/final-acceptance-tests.md P1-2）。这里把**纯数据**下沉到
+// （历史验收评审 P1-2；文档已随 2026-11-18 文档清理移除）。这里把**纯数据**下沉到
 // GatherUI：可执行 target 只保留 SwiftUI Commands 装配，测试 target 直接
 // import GatherUI 断言 5 个菜单项的键 → 文案/通知/快捷键映射，避免 key 与
 // 命令错接（例如 newWorkspace 错接 importFolder 的 key 或 ⌘O 错配通知）。

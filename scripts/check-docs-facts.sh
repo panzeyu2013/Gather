@@ -43,6 +43,7 @@ for tool in git python3; do
 done
 
 python3 - <<'PY_DOCS'
+import importlib.util
 import re
 import subprocess
 import sys
@@ -67,59 +68,12 @@ def section(title):
     print(title)
 
 
-def mask_comments(text):
-    """遮罩 // 与嵌套 /* */ 注释（保留字符串）；用于 Swift 源码计数。"""
-    out = list(text)
-    n = len(text)
-    i = 0
-    while i < n:
-        c = text[i]
-        if c == '"':
-            if text.startswith('"""', i):
-                j = text.find('"""', i + 3)
-                i = n if j < 0 else j + 3
-                continue
-            j = i + 1
-            while j < n:
-                if text[j] == '\\':
-                    j += 2
-                    continue
-                if text[j] == '"' or text[j] == '\n':
-                    j += 1
-                    break
-                j += 1
-            i = j
-            continue
-        if text.startswith('//', i):
-            j = text.find('\n', i)
-            if j < 0:
-                j = n
-            for k in range(i, j):
-                out[k] = ' '
-            i = j
-            continue
-        if text.startswith('/*', i):
-            depth = 0
-            j = i
-            while j < n:
-                if text.startswith('/*', j):
-                    depth += 1
-                    j += 2
-                    continue
-                if text.startswith('*/', j):
-                    depth -= 1
-                    j += 2
-                    if depth == 0:
-                        break
-                    continue
-                j += 1
-            for k in range(i, min(j, n)):
-                if out[k] != '\n':
-                    out[k] = ' '
-            i = j
-            continue
-        i += 1
-    return ''.join(out)
+# mask_comments 单一来源：scripts/lib/swift-counts.py（遮罩口径与 report-baseline.sh 同源）。
+_SPEC = importlib.util.spec_from_file_location(
+    'swift_counts', 'scripts/lib/swift-counts.py')
+_COUNTS = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_COUNTS)
+mask_comments = _COUNTS.mask_comments
 
 
 def line_of(text, needle):

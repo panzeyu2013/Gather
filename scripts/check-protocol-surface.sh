@@ -16,7 +16,7 @@
 #                           ResponseID / ErrorDetail / ResponseErrorBody /
 #                           ResponseOk / ResponseErr / Response<T>。目标 0。
 #
-# 基线：docs/protocol-surface-baseline.json（--write-baseline 重写；上涨需 --allow-growth）。
+# 基线：docs/baselines/surface-baseline.json（schema 2，gates.protocol-surface / gates.protocol-surface-modules 两节；--write-baseline 原子重写两节，上涨需 --allow-growth）。
 # 默认 warning 模式 exit 0；--strict 时任一指标高于 baseline 即 exit 1。
 # 指标回落不自动收紧 baseline；收紧必须显式 --write-baseline 并在台账记账。
 #
@@ -30,7 +30,10 @@ cd "$ROOT"
 PROTO="desktop/native/gather-core/Sources/GatherProtocol"
 CORE_SOURCES="desktop/native/gather-core/Sources"
 APP_SOURCES="desktop/native/gather-app/Sources"
-BASELINE="docs/protocol-surface-baseline.json"
+BASELINE="docs/baselines/surface-baseline.json"
+SURFACE_GATE="protocol-surface"
+MODULES_GATE="protocol-surface-modules"
+BASELINE_NOTE="公开面 ratchet（schema 2，双 section）：gates.protocol-surface 为 WP1 Protocol 公开面（protocol_files/protocol_lines 为信息字段，不参与 compare_metric）；gates.protocol-surface-modules 为模块级 public 面（顶层 public 类型 + public 声明行）。口径见 scripts/check-protocol-surface.sh 头注释。"
 
 STRICT=0
 WRITE_BASELINE=0
@@ -59,160 +62,328 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-find "$PROTO" -type f -name '*.swift' | LC_ALL=C sort > "$TMP/proto-files"
-# #1：GatherMetadataIO（XMP/JPEG/IPTC 写盘）也是生产代码，必须计入引用面，
-# 否则把文件搬去新 target 会让原本有引用的 DTO 变成"零引用"假阳性。
-find "$CORE_SOURCES/GatherPersistence" "$CORE_SOURCES/GatherAnalysis" \
-     "$CORE_SOURCES/GatherApplication" "$CORE_SOURCES/GatherDelivery" \
-     "$CORE_SOURCES/GatherMetadataIO" "$APP_SOURCES" \
-     -type f -name '*.swift' 2>/dev/null | LC_ALL=C sort > "$TMP/prod-files"
+# ── 扫描（2026-11-18 性能轮：单 python3 进程一次读盘完成全部计数）────────────
+# 口径与旧 perl/awk 流水线逐字节等价（迁移时用旧实现对全量语料比对：token 计数表
+# 14,379 项完全一致，五项指标与五项模块指标相同）。#1：GatherMetadataIO（XMP/JPEG/
+# IPTC 写盘）也是生产代码，必须计入引用面，否则把文件搬去新 target 会让原本有引用的
+# DTO 变成"零引用"假阳性。
+python3 - "$TMP" "$PROTO" "$CORE_SOURCES" "$APP_SOURCES" <<'PY'
+import re
+import sys
+from collections import Counter
+from pathlib import Path
 
-proto_file_n=$(wc -l < "$TMP/proto-files" | tr -d ' ')
-proto_line_n=$(while IFS= read -r f; do cat "$f"; done < "$TMP/proto-files" | wc -l | tr -d ' ')
+TMP = Path(sys.argv[1])
+PROTO = Path(sys.argv[2])
+CORE = Path(sys.argv[3])
+APP = Path(sys.argv[4])
+MODULES = ("GatherPersistence", "GatherDelivery", "GatherAnalysis", "GatherApplication", "GatherMetadataIO")
 
 # 顶层声明：行首必须是 public，排除缩进的嵌套类型。
-# 文件清单用 while read 逐行传入（评审 R4-F22：旧 xargs -I{} 对含单引号路径会直接失败；
-# 未加引号的 $(cat ...) 依赖 word splitting（SC2046），路径含空白时会拆错）。
-# 与下方 module-metrics 的逐模块统计同一写法。
-while IFS= read -r f; do cat "$f"; done < "$TMP/proto-files" \
-  | grep -hE '^public (struct|enum|indirect enum|final class|class|protocol|actor) [A-Za-z_][A-Za-z0-9_]*' \
-  > "$TMP/decls" || true
-sed -E 's/^public (struct|enum|indirect enum|final class|class|protocol|actor) ([A-Za-z_][A-Za-z0-9_]*).*/\2/' \
-  "$TMP/decls" | LC_ALL=C sort > "$TMP/type-names"
-public_types=$(wc -l < "$TMP/type-names" | tr -d ' ')
-# 评审 R4-F22：扫描量下限守卫，防止 proto-files 为空/被截断时把 0 当合规。
+DECL_RE = re.compile(r"^public (?:struct|enum|indirect enum|final class|class|protocol|actor) ([A-Za-z_][A-Za-z0-9_]*)", re.M)
+# public 声明行：行首（可缩进）public + 空白（等价旧 grep '^[[:space:]]*public[[:space:]]'）。
+DECL_LINE_RE = re.compile(r"^[ \t]*public[ \t]", re.M)
+TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# raw string 剥离（等价旧 perl：先普通 #"..."#，再三引号 #"""..."""#）。
+RAW_STRING_RE = re.compile(r'#+"(?:[^"\\]|\\.)*"#+', re.S)
+RAW_TRIPLE_RE = re.compile(r'#+"""(?s:.*?)"""#+', re.S)
+SPECIAL_RE = re.compile(r'["/]')
+ENVELOPE = {"ResponseID", "ResponseErrorBody", "ResponseErr", "ResponseOk", "Response"}
+
+
+def strip_file(text):
+    """剥离 raw string、注释与字符串（保留换行；状态机口径同旧 awk 实现）。"""
+    text = RAW_STRING_RE.sub("", text)
+    text = RAW_TRIPLE_RE.sub("", text)
+    out = []
+    pos = 0
+    n = len(text)
+    # 0 code / 1 line comment / 2 block comment / 3 string / 4 triple string
+    state = 0
+    while pos < n:
+        if state == 0:
+            m = SPECIAL_RE.search(text, pos)
+            if m is None:
+                out.append(text[pos:])
+                break
+            j = m.start()
+            if j > pos:
+                out.append(text[pos:j])
+            if text[j] == '"':
+                if text.startswith('"""', j):
+                    state, pos = 4, j + 3
+                else:
+                    state, pos = 3, j + 1
+            elif text.startswith("//", j):
+                state, pos = 1, j + 2
+            elif text.startswith("/*", j):
+                state, pos = 2, j + 2
+            else:
+                out.append("/")
+                pos = j + 1
+        elif state == 1:
+            k = text.find("\n", pos)
+            if k < 0:
+                break
+            out.append("\n")
+            pos = k + 1
+            state = 0
+        elif state == 2:
+            k = text.find("*/", pos)
+            if k < 0:
+                out.append("\n" * text.count("\n", pos))
+                break
+            out.append("\n" * text.count("\n", pos, k))
+            pos = k + 2
+            state = 0
+        elif state == 3:
+            q = pos
+            while True:
+                q = text.find('"', q)
+                if q < 0:
+                    out.append("\n" * text.count("\n", pos))
+                    pos = n
+                    break
+                b = q - 1
+                while b >= pos and text[b] == "\\":
+                    b -= 1
+                if (q - 1 - b) % 2 == 0:  # 偶数个反斜杠 = 字符串结束
+                    out.append("\n" * text.count("\n", pos, q))
+                    pos = q + 1
+                    state = 0
+                    break
+                q += 1
+        else:
+            k = text.find('"""', pos)
+            if k < 0:
+                out.append("\n" * text.count("\n", pos))
+                pos = n
+            else:
+                out.append("\n" * text.count("\n", pos, k))
+                pos = k + 3
+                state = 0
+    return "".join(out)
+
+
+def read(path):
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def swift_files(root):
+    return sorted(root.rglob("*.swift"))
+
+
+proto_files = swift_files(PROTO)
+prod_files = []
+for module in MODULES:
+    prod_files.extend(swift_files(CORE / module))
+prod_files.extend(swift_files(APP))
+proto_texts = [read(p) for p in proto_files]
+decl_names = []
+public_declarations = 0
+for text in proto_texts:
+    decl_names.extend(DECL_RE.findall(text))
+    public_declarations += len(DECL_LINE_RE.findall(text))
+decl_counts = Counter(decl_names)
+token_counts = Counter()
+for path in proto_files:
+    token_counts.update(TOKEN_RE.findall(strip_file(read(path))))
+for path in prod_files:
+    token_counts.update(TOKEN_RE.findall(strip_file(read(path))))
+zero = [name for name in sorted(decl_counts)
+        if token_counts.get(name, 0) - decl_counts[name] <= 0]
+metrics = {
+    "proto_file_n": len(proto_files),
+    "proto_line_n": sum(text.count("\n") for text in proto_texts),
+    "public_types": len(decl_names),
+    "public_declarations": public_declarations,
+    "zero_reference_types": len(zero),
+    "router_envelope_types": sum(decl_counts[name] for name in ENVELOPE if name in decl_counts),
+}
+(TMP / "metrics.env").write_text(
+    "".join("%s=%d\n" % item for item in metrics.items()), encoding="utf-8")
+(TMP / "zero").write_text("".join(name + "\n" for name in zero), encoding="utf-8")
+module_metrics = []
+for module in MODULES:
+    directory = CORE / module
+    if not directory.exists():
+        continue
+    types = 0
+    decls = 0
+    for path in swift_files(directory):
+        text = read(path)
+        types += len(DECL_RE.findall(text))
+        decls += len(DECL_LINE_RE.findall(text))
+    lower = module.lower()
+    module_metrics.append("public_types_%s %d" % (lower, types))
+    module_metrics.append("public_declarations_%s %d" % (lower, decls))
+(TMP / "module-metrics").write_text(
+    "\n".join(module_metrics) + ("\n" if module_metrics else ""), encoding="utf-8")
+PY
+# 指标由指标文件提供；先显式置默认值，既防 set -u 又便于 shellcheck 识别赋值。
+proto_file_n=0
+proto_line_n=0
+public_types=0
+public_declarations=0
+zero_reference_types=0
+router_envelope_types=0
+. "$TMP/metrics.env"
+
+# 评审 R4-F22：扫描量下限守卫，防止文件清单为空/被截断时把 0 当合规。
 if [ "$proto_file_n" -lt 110 ] || [ "$public_types" -lt 513 ]; then
   echo "FAIL 扫描量异常：proto_file_n=$proto_file_n public_types=$public_types" >&2
   exit 2
 fi
 
-public_declarations=$(while IFS= read -r f; do cat "$f"; done < "$TMP/proto-files" \
-  | grep -hE '^[[:space:]]*public[[:space:]]' | wc -l | tr -d ' ')
+# ── 基线读写（2026-11-18 迁移：schema 2 单文件 docs/baselines/surface-baseline.json）──
+# 旧布局是两份独立 JSON（Protocol 总量 + 模块级各一份）；现合并为一份基线的两个 gate section，
+# --write-baseline 一次性原子读-改-写。
+# 读取用一次 python3 内联解析（旧实现按 key 逐个 sed），key 名与比较语义保持不变。
+load_baseline_kv() {
+  : > "$TMP/baseline-kv"
+  [ -f "$BASELINE" ] || return 0
+  python3 - "$BASELINE" > "$TMP/baseline-kv" <<'PY'
+import json
+import sys
 
-# 每个类型名的声明次数（顶层同名不应出现；防御性保留）。
-awk '{ print $1 }' "$TMP/type-names" | LC_ALL=C sort | uniq -c > "$TMP/decl-counts"
-
-# 代码语料：Protocol + 生产 Sources。剥离 //、/* */、普通字符串和三引号字符串。
-: > "$TMP/code.txt"
-# 逐文件处理：状态机必须在文件边界重置，否则一个未闭合的字符串/注释会吞掉
-# 其后所有文件（曾把生产在用的 MetadataTags 误报成零引用）。
-while IFS= read -r file; do
-  [ -n "$file" ] || continue
-  perl -0777 -pe 's/#+"(?:[^"\\]|\\.)*"#+//gs; s/#+"""(?s:.*?)"""#+//gs' "$file" | awk '
-  BEGIN { inblock = 0; instr = 0; intriple = 0 }
-  {
-    line = $0; out = ""; i = 1; n = length(line)
-    while (i <= n) {
-      c = substr(line, i, 1); two = substr(line, i, 2); three = substr(line, i, 3)
-      if (inblock) {
-        if (two == "*/") { inblock = 0; i += 2 } else { i++ }
-      } else if (intriple) {
-        if (three == "\"\"\"") { intriple = 0; i += 3 } else { i++ }
-      } else if (instr) {
-        if (c == "\\") { i += 2 }
-        else if (c == "\"") { instr = 0; i++ }
-        else { i++ }
-      } else if (three == "\"\"\"") {
-        intriple = 1; i += 3
-      } else if (two == "//") {
-        break
-      } else if (two == "/*") {
-        inblock = 1; i += 2
-      } else if (c == "\"") {
-        instr = 1; i++
-      } else {
-        out = out c; i++
-      }
-    }
-    print out
-  }
-  ' >> "$TMP/code.txt"
-done < <(cat "$TMP/proto-files" "$TMP/prod-files")
-
-grep -oE '[A-Za-z_][A-Za-z0-9_]*' "$TMP/code.txt" | LC_ALL=C sort | uniq -c > "$TMP/freq" || true
-
-: > "$TMP/zero"
-zero_reference_types=0
-while IFS= read -r name; do
-  decl_n=$(awk -v n="$name" '$2 == n { print $1; exit }' "$TMP/decl-counts")
-  total_n=$(awk -v n="$name" '$2 == n { print $1; exit }' "$TMP/freq")
-  [ -n "$decl_n" ] || decl_n=1
-  [ -n "$total_n" ] || total_n=0
-  if [ $((total_n - decl_n)) -le 0 ]; then
-    printf '%s\n' "$name" >> "$TMP/zero"
-    zero_reference_types=$((zero_reference_types + 1))
-  fi
-done < "$TMP/type-names"
-
-envelope_re='ResponseID|ResponseErrorBody|ResponseErr|ResponseOk|Response'
-router_envelope_types=$(grep -cE "^public (struct|enum|indirect enum|final class|class|protocol|actor) ($envelope_re)([^A-Za-z0-9_]|$)" "$TMP/decls" 2>/dev/null || true)
-
-# 评审补：本门禁原只统计 GatherProtocol，协议面之外的 public 增长（本批新增 32 个类型）
-# 完全在扫描面外，基线同期只 +7 全在 Protocol，掩盖了它们。现在按模块各记一行
-# （顶层 public 类型数 + public 声明行数），ratchet 逐模块只准降。
-: > "$TMP/module-metrics"
-for mod in GatherPersistence GatherDelivery GatherAnalysis GatherApplication GatherMetadataIO; do
-  dir="$CORE_SOURCES/$mod"
-  [ -d "$dir" ] || continue
-  find "$dir" -type f -name '*.swift' | LC_ALL=C sort > "$TMP/one-mod"
-  m_types=$(while IFS= read -r f; do cat "$f"; done < "$TMP/one-mod" | grep -cE '^public (struct|enum|indirect enum|final class|class|protocol|actor) [A-Za-z_][A-Za-z0-9_]*' || true)
-  m_decls=$(while IFS= read -r f; do cat "$f"; done < "$TMP/one-mod" | grep -cE '^[[:space:]]*public[[:space:]]' || true)
-  lower=$(printf '%s' "$mod" | tr '[:upper:]' '[:lower:]')
-  printf 'public_types_%s %s\n' "$lower" "$m_types" >> "$TMP/module-metrics"
-  printf 'public_declarations_%s %s\n' "$lower" "$m_decls" >> "$TMP/module-metrics"
-done
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, ValueError) as exc:
+    sys.stderr.write("check-protocol-surface: FAIL — 基线 JSON 解析失败：%s\n" % exc)
+    sys.exit(2)
+gates = data.get("gates") if isinstance(data, dict) else None
+if not isinstance(gates, dict):
+    sys.exit(0)
+for gate in ("protocol-surface", "protocol-surface-modules"):
+    section = gates.get(gate)
+    if not isinstance(section, dict):
+        print("%s\t__section_missing__" % gate)
+        continue
+    for key, value in section.items():
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        print("%s\t%s\t%d" % (gate, key, value))
+PY
+}
 
 baseline_value() {
-  local key="$1"
-  if [ ! -f "$BASELINE" ]; then
-    return 1
-  fi
-  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$BASELINE" | head -n 1
+  local gate="$1" key="$2"
+  awk -F '\t' -v gate="$gate" -v key="$key" '$1 == gate && $2 == key { print $3; exit }' \
+    "$TMP/baseline-kv"
+}
+
+baseline_section_missing() {
+  awk -F '\t' -v gate="$1" '$1 == gate && $2 == "__section_missing__" { found = 1 } END { exit found ? 0 : 1 }' \
+    "$TMP/baseline-kv"
 }
 
 write_baseline() {
   mkdir -p "$(dirname "$BASELINE")"
-  cat > "$BASELINE" <<JSON
-{
-  "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "note": "WP1 Protocol 公开面 ratchet；口径见 scripts/check-protocol-surface.sh 头注释。protocol_files/protocol_lines 为信息字段，不参与 compare_metric。",
-  "protocol_files": $proto_file_n,
-  "protocol_lines": $proto_line_n,
-  "public_types": $public_types,
-  "public_declarations": $public_declarations,
-  "zero_reference_types": $zero_reference_types,
-  "router_envelope_types": $router_envelope_types
+  # 新值交给 python3 合并：保留 schema/note 等语义字段与其它 gate section，只替换本门禁两节；
+  # 同目录临时文件 + os.replace 保证原子写（失败不会留下半截 JSON）。
+  CHECK_PROTO_FILE_N="$proto_file_n" \
+    CHECK_PROTOCOL_LINE_N="$proto_line_n" \
+    CHECK_PUBLIC_TYPES="$public_types" \
+    CHECK_PUBLIC_DECLARATIONS="$public_declarations" \
+    CHECK_ZERO_REFERENCE_TYPES="$zero_reference_types" \
+    CHECK_ROUTER_ENVELOPE_TYPES="$router_envelope_types" \
+    python3 - "$BASELINE" "$TMP/module-metrics" "$BASELINE_NOTE" <<'PY'
+import json
+import os
+import sys
+import tempfile
+
+baseline, module_metrics, note = sys.argv[1], sys.argv[2], sys.argv[3]
+new = {
+    "protocol-surface": {
+        "protocol_files": int(os.environ["CHECK_PROTO_FILE_N"]),
+        "protocol_lines": int(os.environ["CHECK_PROTOCOL_LINE_N"]),
+        "public_types": int(os.environ["CHECK_PUBLIC_TYPES"]),
+        "public_declarations": int(os.environ["CHECK_PUBLIC_DECLARATIONS"]),
+        "zero_reference_types": int(os.environ["CHECK_ZERO_REFERENCE_TYPES"]),
+        "router_envelope_types": int(os.environ["CHECK_ROUTER_ENVELOPE_TYPES"]),
+    },
+    "protocol-surface-modules": {},
 }
-JSON
+with open(module_metrics, encoding="utf-8") as fh:
+    for line in fh:
+        if line.strip():
+            key, value = line.split()
+            new["protocol-surface-modules"][key] = int(value)
+data = {}
+if os.path.exists(baseline):
+    with open(baseline, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        sys.stderr.write("check-protocol-surface: FAIL — 基线不是 JSON 对象：%s\n" % baseline)
+        sys.exit(2)
+data["schema"] = 2
+data.setdefault("note", note)
+gates = data.get("gates")
+if not isinstance(gates, dict):
+    gates = {}
+    data["gates"] = gates
+for name in ("protocol-surface", "protocol-surface-modules"):
+    gates[name] = new[name]
+fd, tmp_path = tempfile.mkstemp(prefix=".surface-baseline.", dir=os.path.dirname(baseline) or ".")
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+os.chmod(tmp_path, 0o644)  # mkstemp 默认 0600；与旧实现 cat > 的 0644 保持一致
+os.replace(tmp_path, baseline)
+PY
 }
 
 # 门禁自证（评审 P2）：--write-baseline 曾可把任意膨胀一条命令洗白。现在要求"涨"必须
 # 显式批准：先比一遍旧基线，任何指标上涨都拒绝重写，除非同时给 --allow-growth。
+load_baseline_kv
 if [ "$WRITE_BASELINE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
-  grew=0
-  for kv in "public_types:$public_types" "public_declarations:$public_declarations"             "zero_reference_types:$zero_reference_types"             "router_envelope_types:$router_envelope_types"; do
-    key=$(printf '%s' "$kv" | cut -d: -f1)
-    cur=$(printf '%s' "$kv" | cut -d: -f2-)
-    base=$(baseline_value "$key" || true)
-    if [ -z "$base" ]; then
-      echo "  旧基线缺 key：$key（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+  if ! baseline_section_missing "$SURFACE_GATE"; then
+    grew=0
+    for kv in "public_types:$public_types" \
+              "public_declarations:$public_declarations" \
+              "zero_reference_types:$zero_reference_types" \
+              "router_envelope_types:$router_envelope_types"; do
+      key=$(printf '%s' "$kv" | cut -d: -f1)
+      cur=$(printf '%s' "$kv" | cut -d: -f2-)
+      base=$(baseline_value "$SURFACE_GATE" "$key")
+      if [ -z "$base" ]; then
+        echo "  旧基线缺 key：$key（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+        exit 1
+      fi
+      if [ "$cur" -gt "$base" ]; then
+        echo "  涨：$key $base -> $cur" >&2
+        grew=1
+      fi
+    done
+    if [ "$grew" -ne 0 ]; then
+      echo "check-protocol-surface: REFUSED — 基线膨胀必须显式批准" >&2
+      echo "  公开面只能收紧；确需扩张时加 --allow-growth，并在 docs/cleanup-backlog.md 台账记账。" >&2
       exit 1
     fi
-    if [ "$cur" -gt "$base" ]; then
-      echo "  涨：$key $base -> $cur" >&2
-      grew=1
+  fi
+  if ! baseline_section_missing "$MODULES_GATE"; then
+    grew=0
+    while read -r k v; do
+      base=$(baseline_value "$MODULES_GATE" "$k")
+      if [ -z "$base" ]; then
+        echo "  模块基线缺 key：$k（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+        exit 1
+      fi
+      if [ "$v" -gt "$base" ]; then echo "  涨：$k $base -> $v" >&2; grew=1; fi
+    done < "$TMP/module-metrics"
+    if [ "$grew" -ne 0 ]; then
+      echo "check-protocol-surface: REFUSED — 模块公开面膨胀必须显式批准（--allow-growth + 台账）" >&2
+      exit 1
     fi
-  done
-  if [ "$grew" -ne 0 ]; then
-    echo "check-protocol-surface: REFUSED — 基线膨胀必须显式批准" >&2
-    echo "  公开面只能收紧；确需扩张时加 --allow-growth，并在 docs/reviews/ 台账记账。" >&2
-    exit 1
   fi
 fi
 
 if [ "$WRITE_BASELINE" -eq 1 ]; then
   write_baseline
-  echo "check-protocol-surface: baseline 已写入 $BASELINE"
+  echo "check-protocol-surface: baseline 已写入 $BASELINE（$SURFACE_GATE + $MODULES_GATE）"
+  load_baseline_kv  # 重读刚写入的基线，后续比较按新值（--write-baseline 语义与旧版一致）
 fi
 
 echo "check-protocol-surface:"
@@ -222,15 +393,15 @@ echo "  public 声明行            $public_declarations"
 echo "  zero-reference 类型      $zero_reference_types"
 echo "  Router 信封类型          $router_envelope_types"
 
-if [ ! -f "$BASELINE" ]; then
+if [ ! -f "$BASELINE" ] || baseline_section_missing "$SURFACE_GATE"; then
   echo "check-protocol-surface: FAIL — 缺少基线 $BASELINE（先运行 --write-baseline）" >&2
   exit 2
 fi
 
 fail=0
 compare_metric() {
-  local key="$1" current="$2" base
-  base=$(baseline_value "$key" || true)
+  local gate="$1" key="$2" current="$3" base
+  base=$(baseline_value "$gate" "$key")
   if [ -z "$base" ]; then
     echo "FAIL 基线缺少指标 $key" >&2
     fail=1
@@ -246,68 +417,31 @@ compare_metric() {
   fi
 }
 
-compare_metric public_types "$public_types"
-compare_metric public_declarations "$public_declarations"
-compare_metric zero_reference_types "$zero_reference_types"
-compare_metric router_envelope_types "$router_envelope_types"
+compare_metric "$SURFACE_GATE" public_types "$public_types"
+compare_metric "$SURFACE_GATE" public_declarations "$public_declarations"
+compare_metric "$SURFACE_GATE" zero_reference_types "$zero_reference_types"
+compare_metric "$SURFACE_GATE" router_envelope_types "$router_envelope_types"
 
 # ── 模块级 ratchet（评审补）──────────────────────────────────────────────
-# 单独一份基线：JSON 里保持原有 4 个键不变，模块指标另存，避免改写既有基线结构。
-MODULE_BASELINE="docs/protocol-surface-modules-baseline.json"
-module_baseline_value() {
-  [ -f "$MODULE_BASELINE" ] || return 1
-  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$MODULE_BASELINE" | head -n 1
-}
-
-if [ "$WRITE_BASELINE" -eq 1 ]; then
-  if [ "$ALLOW_GROWTH" -eq 0 ] && [ -f "$MODULE_BASELINE" ]; then
-    grew=0
-    while read -r k v; do
-      base=$(module_baseline_value "$k" || true)
-      if [ -z "$base" ]; then
-        echo "  模块基线缺 key：$k（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
-        exit 1
-      fi
-      if [ "$v" -gt "$base" ]; then echo "  涨：$k $base -> $v" >&2; grew=1; fi
-    done < "$TMP/module-metrics"
-    if [ "$grew" -ne 0 ]; then
-      echo "check-protocol-surface: REFUSED — 模块公开面膨胀必须显式批准（--allow-growth + 台账）" >&2
-      exit 1
-    fi
-  fi
-  {
-    echo "{"
-    echo "  \"generated_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
-    echo "  \"note\": \"模块级 public 面 ratchet；口径同 check-protocol-surface.sh（顶层 public 类型 + public 声明行）\","
-    first=1
-    while read -r k v; do
-      if [ "$first" -eq 1 ]; then first=0; else echo ","; fi
-      printf '  "%s": %s' "$k" "$v"
-    done < "$TMP/module-metrics"
-    echo ""
-    echo "}"
-  } > "$MODULE_BASELINE"
-  echo "check-protocol-surface: 模块基线已写入 $MODULE_BASELINE"
-fi
-
-if [ -f "$MODULE_BASELINE" ]; then
-  echo "  模块 public 面（类型 / 声明）："
-  while read -r k v; do
-    base=$(module_baseline_value "$k" || true)
-    if [ -z "$base" ]; then
-      echo "FAIL 模块基线缺少指标 $k" >&2; fail=1
-    elif [ "$v" -gt "$base" ]; then
-      echo "FAIL $k = $v > baseline $base" >&2; fail=1
-    elif [ "$v" -lt "$base" ]; then
-      echo "warn $k = $v < baseline ${base}（可 --write-baseline 收紧）"
-    else
-      echo "ok   $k = $v"
-    fi
-  done < "$TMP/module-metrics"
-else
-  echo "check-protocol-surface: FAIL — 缺少模块基线 $MODULE_BASELINE（先运行 --write-baseline）" >&2
+# 模块指标与协议面同住 surface-baseline.json 的 gates.protocol-surface-modules（schema 2），
+# key 名保持旧口径（public_types_<模块小写> / public_declarations_<模块小写>）。
+if baseline_section_missing "$MODULES_GATE"; then
+  echo "check-protocol-surface: FAIL — 缺少模块基线 $BASELINE（先运行 --write-baseline）" >&2
   exit 2
 fi
+echo "  模块 public 面（类型 / 声明）："
+while read -r k v; do
+  base=$(baseline_value "$MODULES_GATE" "$k")
+  if [ -z "$base" ]; then
+    echo "FAIL 模块基线缺少指标 $k" >&2; fail=1
+  elif [ "$v" -gt "$base" ]; then
+    echo "FAIL $k = $v > baseline $base" >&2; fail=1
+  elif [ "$v" -lt "$base" ]; then
+    echo "warn $k = $v < baseline ${base}（可 --write-baseline 收紧）"
+  else
+    echo "ok   $k = $v"
+  fi
+done < "$TMP/module-metrics"
 
 if [ -s "$TMP/zero" ]; then
   echo "零引用候选（file:line 见 WP1 盘点；此处仅列名）："

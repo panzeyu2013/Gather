@@ -16,10 +16,8 @@ struct ReadPoolTests {
     private struct LogState { var messages: [String] = [] }
 
     private func makeTempPath() throws -> String {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-readpool-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("gather.sqlite").path
+        // task-43：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记）。
+        try GatherTestSupport.makeTempDir(prefix: "gather-readpool") + "/gather.sqlite"
     }
 
     private func cleanup(_ path: String) {

@@ -196,27 +196,6 @@ private func makeLiveProvider() throws -> (LiveDashboardDataProvider, DBConnecti
     return (provider, db)
 }
 
-private func insertSession(
-    _ db: DBConnection,
-    _ id: String,
-    name: String = "工作区",
-    updatedAt: String = "2026-01-01T00:00:00.000Z"
-) throws {
-    // store-index v-next：sessions 不再有 analysis_status（分析态由 analysis_jobs 派生）。
-    // updated_at 可显式指定：会话列表按「最近活动」排序，夹具需确定性表达意图。
-    _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, created_at, updated_at)
-        VALUES (?, ?, 'photos_loaded', ?, ?)
-    """).run([.text(id), .text(name), .text(updatedAt), .text(updatedAt)])
-}
-
-private func insertPhoto(_ db: DBConnection, id: String, sessionId: String) throws {
-    _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', 'pending', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(sessionId), .text("/tmp/\(id).jpg"), .text("\(id).jpg")])
-}
-
 /// 种子一条交付行（待同步写回计数，对齐 WorkspaceStatusServiceTests）。
 /// 工作区计数只读 deliveries / delivery_items，item 挂到本会话已有照片 p1。
 private func insertDeliveryRow(_ db: DBConnection, sessionId: String, xmpPath: String, status: String) throws {
@@ -254,11 +233,11 @@ struct DashboardViewModelTests {
     @Test func loadAllAggregatesWorkspaceStatus() async throws {
         let (provider, db) = try makeLiveProvider()
         // 活动时间显式区分：s2 更近 → 排序语义要求它在前（不去赌平手兜底）。
-        try insertSession(db, "s1", name: "甲", updatedAt: "2026-01-01T00:00:00.000Z")
-        try insertSession(db, "s2", name: "乙", updatedAt: "2026-01-02T00:00:00.000Z")
-        try insertPhoto(db, id: "p1", sessionId: "s1")
-        try insertPhoto(db, id: "p2", sessionId: "s1")
-        try insertPhoto(db, id: "p3", sessionId: "s2")
+        try insertSessionRow(db, "s1", name: "甲", updatedAt: "2026-01-01T00:00:00.000Z")
+        try insertSessionRow(db, "s2", name: "乙", updatedAt: "2026-01-02T00:00:00.000Z")
+        try insertPhotoRow(db, id: "p1", sessionId: "s1", status: "pending")
+        try insertPhotoRow(db, id: "p2", sessionId: "s1", status: "pending")
+        try insertPhotoRow(db, id: "p3", sessionId: "s2", status: "pending")
         // photoCount 为 sessions 表存储列（真实流程由 addPhotos → updatePhotoCount 维护）。
         _ = try db.prepare("UPDATE sessions SET photo_count = 2 WHERE id = 's1'").run([])
         _ = try db.prepare("UPDATE sessions SET photo_count = 1 WHERE id = 's2'").run([])
@@ -310,8 +289,8 @@ struct DashboardViewModelTests {
     // 分析更近的会话必须排到最前（analysis_status 删列后不能再靠写 updated_at 副作用）。
     @Test func newerAnalysisActivityOrdersSessionFirst() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1", name: "甲", updatedAt: "2026-01-01T00:00:00.000Z")
-        try insertSession(db, "s2", name: "乙", updatedAt: "2026-01-02T00:00:00.000Z")
+        try insertSessionRow(db, "s1", name: "甲", updatedAt: "2026-01-01T00:00:00.000Z")
+        try insertSessionRow(db, "s2", name: "乙", updatedAt: "2026-01-02T00:00:00.000Z")
         try insertJob(db, id: "j1", type: "metadata.scan", scopeId: "s1", status: "running",
                       updatedAt: "2026-01-03T00:00:00.000Z")
         let viewModel = DashboardViewModel(provider: provider)
@@ -322,8 +301,8 @@ struct DashboardViewModelTests {
     // 平手契约：活动时间完全相同 → rowid DESC 兜底，次序仍确定（不留未定义顺序）。
     @Test func equalActivityFallsBackToRowidDesc() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1", name: "甲")
-        try insertSession(db, "s2", name: "乙")
+        try insertSessionRow(db, "s1", name: "甲")
+        try insertSessionRow(db, "s2", name: "乙")
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()
         #expect(viewModel.sessions.map(\.name) == ["乙", "甲"], "同刻按 rowid DESC 定序")
@@ -332,7 +311,7 @@ struct DashboardViewModelTests {
     // 真实库：jobs.list 加载 → attention/history 分组 + scanJobs 种子。
     @Test func loadJobsGroupsAttentionAndHistory() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         try insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
         try insertJob(db, id: "j2", type: "metadata.scan", scopeId: "s1", status: "running", updatedAt: "2026-01-01T00:00:01.000Z")
         try insertJob(db, id: "j3", type: "output.run", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:02.000Z")
@@ -376,7 +355,7 @@ struct DashboardViewModelTests {
     // 真实库：jobs cancel → DB 状态翻转；retry → 回 queued。
     @Test func cancelAndRetryMutateRealDB() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         try insertJob(db, id: "j1", type: "thumbnail.build", scopeId: "s1", status: "queued", updatedAt: "2026-01-01T00:00:00.000Z")
 
         let viewModel = DashboardViewModel(provider: provider)
@@ -525,7 +504,7 @@ struct DashboardViewModelTests {
     // 真实库：clear_completed 只清非阶段证据行（metadata.scan 保留）。
     @Test func clearCompletedKeepsStageEvidenceRows() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         try insertJob(db, id: "scan1", type: "metadata.scan", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
         try insertJob(db, id: "t1", type: "thumbnail.build", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
 
@@ -541,7 +520,7 @@ struct DashboardViewModelTests {
 
     @Test func clearFailedRowsRemovesFailedTerminalJobs() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         try insertJob(db, id: "scan1", type: "metadata.scan", scopeId: "s1", status: "succeeded", updatedAt: "2026-01-01T00:00:00.000Z")
         try insertJob(db, id: "t1", type: "thumbnail.build", scopeId: "s1", status: "failed", updatedAt: "2026-01-01T00:00:00.000Z")
 
@@ -785,9 +764,9 @@ struct DashboardViewModelTests {
     // 类型化 API 路径（单事务）：成功 → 每个 id 交接；查询层确认真的删掉了。
     @Test func apiDeleteNotifiesEveryDeletedId() async throws {
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
-        try insertSession(db, "s2")
-        try insertSession(db, "s3")
+        try insertSessionRow(db, "s1")
+        try insertSessionRow(db, "s2")
+        try insertSessionRow(db, "s3")
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()
 
@@ -895,7 +874,7 @@ struct DashboardViewModelTests {
     @Test func workspaceStatusMissingSessionIsSkipped() async throws {
         // 真实库：无该 session → getStatus 返回 nil，不抛错、不进 statuses。
         let (provider, db) = try makeLiveProvider()
-        try insertSession(db, "s1")
+        try insertSessionRow(db, "s1")
         let viewModel = DashboardViewModel(provider: provider)
         await viewModel.loadAll()
         #expect(viewModel.phase == .loaded)

@@ -11,87 +11,39 @@ struct NavigationContractTests {
     // MARK: - Enums
 
     @Test func navigationEnumsRawValuesMatchTS() {
-        let types: [(NavigationGroupType, String)] = [
-            (.burst, "burst"), (.scene, "scene"),
-        ]
+        let types: [(NavigationGroupType, String)] = [(.burst, "burst"), (.scene, "scene")]
         for (type, raw) in types {
             #expect(type.rawValue == raw)
         }
-
-        let sources: [(NavigationGroupSource, String)] = [
-            (.automatic, "automatic"), (.manual, "manual"),
-        ]
+        let sources: [(NavigationGroupSource, String)] = [(.automatic, "automatic"), (.manual, "manual")]
         for (source, raw) in sources {
             #expect(source.rawValue == raw)
         }
     }
 
-    // MARK: - Params
+    // MARK: - DTO 往返 + key 冻结（P2：逐样本合并，含可选字段省略）
 
-    @Test func navigationAnalyzeParamsKeysAndOptionality() throws {
-        let full = NavigationAnalyzeParams(sessionId: "s1", burstGapSeconds: 0.5, sceneGapSeconds: 2.5, dryRun: true)
-        let fullKeys = try jsonKeys(of: JSONEncoder().encode(full))
-        #expect(Set(fullKeys) == ["sessionId", "burstGapSeconds", "sceneGapSeconds", "dryRun"])
-
-        let minimal = NavigationAnalyzeParams(sessionId: "s1")
-        let minimalKeys = try jsonKeys(of: JSONEncoder().encode(minimal))
-        #expect(Set(minimalKeys) == ["sessionId"], "未设置的 TS 可选字段必须省略")
-    }
-
-    @Test func navigationSplitParamsRoundTrip() throws {
-        let params = NavigationSplitParams(sessionId: "s1", groupId: "g1", beforePhotoId: "p1")
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(NavigationSplitParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId", "groupId", "beforePhotoId"])
-    }
-
-    @Test func navigationMergeParamsRoundTrip() throws {
-        let params = NavigationMergeParams(sessionId: "s1", groupIds: ["g1", "g2"])
-        let data = try JSONEncoder().encode(params)
-        #expect(try JSONDecoder().decode(NavigationMergeParams.self, from: data) == params)
-        #expect(Set(try jsonKeys(of: data)) == ["sessionId", "groupIds"])
-    }
-
-    // MARK: - NavigationGroup
-
-    @Test func navigationGroupRoundTripAndKeys() throws {
-        let original = NavigationGroup(
-            id: "g1",
-            type: .burst,
-            photoIds: ["p1", "p2", "p3"],
-            startAt: "2025-01-01T10:00:00Z",
-            endAt: "2025-01-01T10:00:02Z",
-            leadPhotoId: "p2",
-            explanation: "间隔 0.4s 连拍",
-            source: .automatic
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(NavigationGroup.self, from: data)
-        #expect(decoded == original)
-
-        let expected = [
-            "id", "type", "photoIds", "startAt", "endAt", "leadPhotoId", "explanation", "source",
-        ]
-        #expect(Set(try jsonKeys(of: data)) == Set(expected), "NavigationGroup JSON key 必须与 TS 字段名一致")
-        #expect(!Set(try jsonKeys(of: data)).contains("photo_ids"))
-    }
-
-    @Test func navigationGroupLeadPhotoIdOmittedWhenNil() throws {
-        let group = NavigationGroup(
-            id: "g1", type: .scene, photoIds: ["p1"],
-            startAt: "t", endAt: "t", explanation: "e", source: .manual
-        )
-        let keys = try jsonKeys(of: JSONEncoder().encode(group))
-        #expect(!keys.contains("leadPhotoId"))
-    }
-    private func jsonKeys(of data: Data) throws -> [String] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ContractTestError.invalidJSON
-        }
-        return Array(object.keys)
-    }
-
-    private enum ContractTestError: Error {
-        case invalidJSON
+    @Test("Navigation 契约 DTO：JSON 往返稳定 + camelCase key 冻结")
+    func navigationDTOsRoundTripAndKeys() throws {
+        try assertRoundTrip(NavigationSplitParams(sessionId: "s1", groupId: "g1", beforePhotoId: "p1"),
+                            keys: ["sessionId", "groupId", "beforePhotoId"])
+        try assertRoundTrip(NavigationMergeParams(sessionId: "s1", groupIds: ["g1", "g2"]),
+                            keys: ["sessionId", "groupIds"])
+        try assertRoundTrip(NavigationGroup(
+            id: "g1", type: .burst, photoIds: ["p1", "p2", "p3"],
+            startAt: "2025-01-01T10:00:00Z", endAt: "2025-01-01T10:00:02Z",
+            leadPhotoId: "p2", explanation: "间隔 0.4s 连拍", source: .automatic),
+            keys: ["id", "type", "photoIds", "startAt", "endAt", "leadPhotoId", "explanation", "source"],
+            forbiddenKeys: ["photo_ids"])
+        // 可选参数/字段省略：analyzeParams 的 TS 可选字段、group 的 leadPhotoId?。
+        try assertJSONKeys(NavigationAnalyzeParams(sessionId: "s1", burstGapSeconds: 0.5,
+                                                   sceneGapSeconds: 2.5, dryRun: true),
+                           keys: ["sessionId", "burstGapSeconds", "sceneGapSeconds", "dryRun"],
+                           name: "NavigationAnalyzeParams(全量)")
+        try assertJSONKeys(NavigationAnalyzeParams(sessionId: "s1"), keys: ["sessionId"],
+                           name: "NavigationAnalyzeParams(缺省)")
+        try assertJSONKeys(NavigationGroup(id: "g1", type: .scene, photoIds: ["p1"],
+                                           startAt: "t", endAt: "t", explanation: "e", source: .manual),
+                           name: "NavigationGroup(nil leadPhotoId)", forbiddenKeys: ["leadPhotoId"])
     }
 }

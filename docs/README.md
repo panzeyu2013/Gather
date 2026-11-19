@@ -44,14 +44,19 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 
 - 9 个功能 target（含测试/工具共 18 个）；16 个域 API / 195 个类型化方法。
 - **声明口径**（`check-test-catalog.sh` 的 ratchet，按剥注释后的 `@Test`/`@Suite` 声明计）：
-  core 2,001 `@Test` / 235 `@Suite`；app 1,266 / 184（合计 3,267 / 419，均不低于基线 3,267 / 419；断言 14,959）。
+  core 1,952 `@Test` / 237 `@Suite`；app 1,257 / 183（合计 3,209 / 420，均不低于基线 3,209 / 420；断言 14,809 站点）。
 - **最近一次 macOS 运行**（2026-11-16，当前 Linux 环境无法复跑）：core 1,970 tests / 290 suites +
-  串行 25 tests / 4 suites（合计 1,995 / 294）；app 1,260 tests / 184 suites。core 声明 235 个
+  串行 25 tests / 4 suites（合计 1,995 / 294）；app 1,260 tests / 184 suites。core 声明 237 个
   `@Suite` 与运行时 294 的差额来自只有 `@Test`、没有 `@Suite` 的测试文件（运行时每个文件算一个隐式套件）。
-- 17 个 `check-*.sh` 门禁（其中 16 项在 2026-11-18 本地全绿，`check-warnings` 需 macOS SDK、按 CI 口径待
-  macOS runner 复验；新增三个 Linux 只读门禁：`check-repo-hygiene.sh`（7 节，含 shellcheck 与本地化用法守卫）、
+- 24 个 `check-*.sh` 门禁（23 道 Linux 只读门禁 + `check-warnings` 需 macOS SDK、按 CI 口径待
+  macOS runner 复验；此前三个 Linux 只读门禁：`check-repo-hygiene.sh`（7 节，含 shellcheck 与本地化用法守卫）、
   `check-docs-facts.sh`（文档基线数字须与源码事实一致）与 `check-perf-ratchet.sh`（性能反模式构造点只降不升，
-  基线 docs/perf-baseline.json）；清单见 [DEVELOPMENT.md](DEVELOPMENT.md)）；
+  基线 docs/baselines/perf-baseline.json）；Wave 4 新增六道 Linux 结构门禁 G0–G5：`check-lock-order.sh`（XMP→DB 单向锁序）、
+  `check-import-graph.sh`（Package.swift 依赖边 + import 图 SCC）、`check-module-size.sh`（每 target 文件/LOC ratchet）、
+  `check-concurrency-whitelist.sh`（并发标注 file:type 白名单）、`check-layer-symbols.sh`（Application 符号级层级越界）、
+  `check-public-surface-app.sh`（app public 面 + API protocol requirement 行 ratchet）；Wave 5 新增 G6
+  `check-port-row-surface.sh`（端口准入台账 + 行类型表面 ratchet；无**有效** fake 端口数、行类型数、Application 行引用数只降不升），基线统一在 docs/baselines/（见 [DEVELOPMENT.md](DEVELOPMENT.md)「门禁基线布局」）；清单见
+  [DEVELOPMENT.md](DEVELOPMENT.md)）；
   en 2,682 键 / zh-Hans 9 占位键。
 
 ## 文档
@@ -62,16 +67,9 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 | [ADR.md](ADR.md) | 架构决策记录 |
 | [ROADMAP.md](ROADMAP.md) | 路线图与当前状态 |
 | [delivery-lock-order.md](delivery-lock-order.md) | 锁顺序 |
-| [test-runtime-audit.md](test-runtime-audit.md) | 测试体系审计 |
-| [validation/2026-10-31-plan.md](validation/2026-10-31-plan.md) | 发布前验证执行方案（V0–V8）与台账 |
 | [cleanup-backlog.md](cleanup-backlog.md) | 清理台账（门禁输入） |
 | [design/appearance-interaction.md](design/appearance-interaction.md) | 设计系统与页面配方 |
 | [design/functional-usability-remediation-2026-10-29.md](design/functional-usability-remediation-2026-10-29.md) | 功能与易用性整改 |
-| [reviews/2026-11-17-quality-hardening/00-overview.md](reviews/2026-11-17-quality-hardening/00-overview.md) | 2026-11-17 质量加固审计（round-1）：整洁度 / 规范 / 测试 / 设计 / 性能 |
-| [reviews/2026-11-17-round2-hardening/00-overview.md](reviews/2026-11-17-round2-hardening/00-overview.md) | 2026-11-17 第二轮全量加固审计：性能 / 测试 / 门禁 / 国际化 / 设计 |
-| [reviews/2026-11-17-round3-perf/00-overview.md](reviews/2026-11-17-round3-perf/00-overview.md) | 2026-11-17 第三轮性能专项加固审计：DB / 查询 · 渲染 · 启动 / 缓存 · 性能门禁 |
-| [reviews/2026-11-18-round4-perf/00-overview.md](reviews/2026-11-18-round4-perf/00-overview.md) | 2026-11-18 第四轮性能专项：SQLite / 查询 · 渲染缓存 · 任务 / 内存 · 性能门禁 |
-| [reviews/README.md](reviews/README.md) | 评审与审计索引（分轮报告入口与门禁基线记账约定） |
 
 ## 许可证
 

@@ -24,28 +24,6 @@ import GatherTestSupport
 
 // MARK: - 装配夹具
 
-/// 不触碰文件系统的 XMPProvider（metadata.scan 的依赖构造需要，但空会话不读写）。
-private struct RegistryNoopXMP: XMPProvider {
-    func readKeywords(photoPath: String) async throws -> [String] { [] }
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes { MetadataWriteAttributes() }
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {}
-    func backup(photoPath: String) async throws -> String { "" }
-    func restore(photoPath: String, backupPath: String) async throws {}
-    func fileExists(_ path: String) -> Bool { false }
-    func removeFile(_ path: String) async throws {}
-}
-
-/// MetadataMutationPort 的空实现（metadata.scan 空会话不会排队任何写入）。
-private struct RegistryNoopMutations: MetadataMutationPort {
-    func queuePhotoValues(
-        sessionId: String, photoId: String, values: [String: JSONValue],
-        source: MetadataMutationSource, schedule: Bool
-    ) throws -> MetadataMutationResult {
-        MetadataMutationResult(photoId: photoId, xmpPath: photoId + ".xmp", dirtyFields: [], revision: 1, status: "pending")
-    }
-
-}
-
 private struct WorkflowFixture {
     let root: URL
     let exportRoot: URL
@@ -104,9 +82,9 @@ private struct WorkflowFixture {
             ),
             metadataService: MetadataService(
                 metadataCacheRepo: MetadataCacheRepo(connection: db),
-                xmp: RegistryNoopXMP(),
+                xmp: NoopXMPProvider(),
                 connection: db,
-                mutations: RegistryNoopMutations()
+                mutations: NoopMetadataMutationPort(xmpPathSuffix: ".xmp")
             ),
             photoRepo: photoRepo,
             assetRepo: assetRepo,

@@ -118,7 +118,7 @@ func b8CullingGroup(
 
 // MARK: - CullingAPI
 
-private struct B8CullingState {
+struct B8CullingState {
     var pageResult = CullingPage(assets: [], total: 0)
     var historyResult: [CullingHistoryOperation] = []
     var applyHistoryResults: [CullingUpdateResult] = []
@@ -175,6 +175,7 @@ private struct B8CullingState {
     var finalizeError: (any Error)?
     var confirmSyncError: (any Error)?
     /// Wave1 / G2：手动 reload ack 的调用记录与可注入错误。
+    /// Wave1 / G2：手动 reload ack 的调用记录。
     var acknowledgeManualReloadCalls: [String] = []
     var acknowledgeManualReloadError: (any Error)?
     var responseDelay = Duration.zero
@@ -191,7 +192,9 @@ private struct B8CullingState {
     var moveRejectedInputs: [Confirmed<CullingMoveRejectedInput>] = []
     var syncStatusCalls: [String] = []
     /// B8.2e：按调用顺序覆盖 syncStatus 的结果/延迟（用于验证 async 刷新乱序）。
+    /// 队列非空时按调用顺序消费；空时回退到 `syncStatusResult`。
     var syncStatusResults: [CullingSyncStatus] = []
+    /// 与 `syncStatusResults` 对齐的每次调用延迟；空时按 `responseDelay`。
     var syncStatusDelays: [Duration] = []
     var resetInputs: [Confirmed<CullingResetInput>] = []
     var writebackInputs: [Confirmed<CullingWritebackInput>] = []
@@ -204,279 +207,16 @@ private struct B8CullingState {
 }
 
 /// 可配置 CullingAPI：默认空页/零摘要/空历史；记录全部类型化入参。
+@dynamicMemberLookup
 final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
     private let box = LockedBox(B8CullingState())
 
-    var pageResult: CullingPage {
-        get { box.lock.withLock { box.pageResult } }
-        set { box.lock.withLock { box.pageResult = newValue } }
+    /// 状态字段经 LockedBox 动态转发：与逐属性访问器同一把锁、同一份状态；
+    /// 测试侧原有的赋值（记录数组/错误注入）语义不变。
+    subscript<T>(dynamicMember keyPath: WritableKeyPath<B8CullingState, T>) -> T {
+        get { box.lock.withLock { box[dynamicMember: keyPath] } }
+        set { box.lock.withLock { box[dynamicMember: keyPath] = newValue } }
     }
-
-    var historyResult: [CullingHistoryOperation] {
-        get { box.lock.withLock { box.historyResult } }
-        set { box.lock.withLock { box.historyResult = newValue } }
-    }
-
-    var applyHistoryResults: [CullingUpdateResult] {
-        get { box.lock.withLock { box.applyHistoryResults } }
-        set { box.lock.withLock { box.applyHistoryResults = newValue } }
-    }
-
-    var updateResult: CullingUpdateResult {
-        get { box.lock.withLock { box.updateResult } }
-        set { box.lock.withLock { box.updateResult = newValue } }
-    }
-
-    var batchUpdateResults: [CullingUpdateResult] {
-        get { box.lock.withLock { box.batchUpdateResults } }
-        set { box.lock.withLock { box.batchUpdateResults = newValue } }
-    }
-
-    var decideGroupResults: [CullingUpdateResult] {
-        get { box.lock.withLock { box.decideGroupResults } }
-        set { box.lock.withLock { box.decideGroupResults = newValue } }
-    }
-
-    var groupsResult: [CullingGroup] {
-        get { box.lock.withLock { box.groupsResult } }
-        set { box.lock.withLock { box.groupsResult = newValue } }
-    }
-
-    var summaryResult: CullingSummary {
-        get { box.lock.withLock { box.summaryResult } }
-        set { box.lock.withLock { box.summaryResult = newValue } }
-    }
-
-    var selectionResult: CullingSelectionIds {
-        get { box.lock.withLock { box.selectionResult } }
-        set { box.lock.withLock { box.selectionResult = newValue } }
-    }
-
-    var moveRejectedResult: CullingMoveRejectedResult? {
-        get { box.lock.withLock { box.moveRejectedResult } }
-        set { box.lock.withLock { box.moveRejectedResult = newValue } }
-    }
-
-    var selectionQueries: [CullingSelectionQuery] {
-        box.lock.withLock { box.selectionQueries }
-    }
-
-    var moveRejectedInputs: [Confirmed<CullingMoveRejectedInput>] {
-        box.lock.withLock { box.moveRejectedInputs }
-    }
-
-    var syncStatusResult: CullingSyncStatus {
-        get { box.lock.withLock { box.syncStatusResult } }
-        set { box.lock.withLock { box.syncStatusResult = newValue } }
-    }
-
-    /// 队列非空时按调用顺序消费；空时回退到 `syncStatusResult`。
-    var syncStatusResults: [CullingSyncStatus] {
-        get { box.lock.withLock { box.syncStatusResults } }
-        set { box.lock.withLock { box.syncStatusResults = newValue } }
-    }
-
-    /// 与 `syncStatusResults` 对齐的每次调用延迟；空时按 `responseDelay`。
-    var syncStatusDelays: [Duration] {
-        get { box.lock.withLock { box.syncStatusDelays } }
-        set { box.lock.withLock { box.syncStatusDelays = newValue } }
-    }
-
-    var resetResult: Bool {
-        get { box.lock.withLock { box.resetResult } }
-        set { box.lock.withLock { box.resetResult = newValue } }
-    }
-
-    var writebackResult: WritebackResult {
-        get { box.lock.withLock { box.writebackResult } }
-        set { box.lock.withLock { box.writebackResult = newValue } }
-    }
-
-    var flushSummary: MetadataSyncSummary {
-        get { box.lock.withLock { box.flushSummary } }
-        set { box.lock.withLock { box.flushSummary = newValue } }
-    }
-
-    var retrySyncSummary: MetadataSyncSummary {
-        get { box.lock.withLock { box.retrySyncSummary } }
-        set { box.lock.withLock { box.retrySyncSummary = newValue } }
-    }
-
-    var retryFailedResult: WritebackResult {
-        get { box.lock.withLock { box.retryFailedResult } }
-        set { box.lock.withLock { box.retryFailedResult = newValue } }
-    }
-
-    var cleanupResult: CleanupResult {
-        get { box.lock.withLock { box.cleanupResult } }
-        set { box.lock.withLock { box.cleanupResult = newValue } }
-    }
-
-    var finalizeSummary: MetadataSyncSummary {
-        get { box.lock.withLock { box.finalizeSummary } }
-        set { box.lock.withLock { box.finalizeSummary = newValue } }
-    }
-
-    var confirmSyncResult: Bool {
-        get { box.lock.withLock { box.confirmSyncResult } }
-        set { box.lock.withLock { box.confirmSyncResult = newValue } }
-    }
-
-    /// Wave1 / G2：手动 reload ack 的调用记录。
-    var acknowledgeManualReloadCalls: [String] {
-        box.lock.withLock { box.acknowledgeManualReloadCalls }
-    }
-
-    var acknowledgeManualReloadError: (any Error)? {
-        get { box.lock.withLock { box.acknowledgeManualReloadError } }
-        set { box.lock.withLock { box.acknowledgeManualReloadError = newValue } }
-    }
-
-    var pageError: (any Error)? {
-        get { box.lock.withLock { box.pageError } }
-        set { box.lock.withLock { box.pageError = newValue } }
-    }
-
-    var historyError: (any Error)? {
-        get { box.lock.withLock { box.historyError } }
-        set { box.lock.withLock { box.historyError = newValue } }
-    }
-
-    var applyHistoryError: (any Error)? {
-        get { box.lock.withLock { box.applyHistoryError } }
-        set { box.lock.withLock { box.applyHistoryError = newValue } }
-    }
-
-    var updateError: (any Error)? {
-        get { box.lock.withLock { box.updateError } }
-        set { box.lock.withLock { box.updateError = newValue } }
-    }
-
-    var batchUpdateError: (any Error)? {
-        get { box.lock.withLock { box.batchUpdateError } }
-        set { box.lock.withLock { box.batchUpdateError = newValue } }
-    }
-
-    var decideGroupError: (any Error)? {
-        get { box.lock.withLock { box.decideGroupError } }
-        set { box.lock.withLock { box.decideGroupError = newValue } }
-    }
-
-    var groupsError: (any Error)? {
-        get { box.lock.withLock { box.groupsError } }
-        set { box.lock.withLock { box.groupsError = newValue } }
-    }
-
-    var summaryError: (any Error)? {
-        get { box.lock.withLock { box.summaryError } }
-        set { box.lock.withLock { box.summaryError = newValue } }
-    }
-
-    var triageSummaryResult: TriageSummary? {
-        get { box.lock.withLock { box.triageSummaryResult } }
-        set { box.lock.withLock { box.triageSummaryResult = newValue } }
-    }
-
-    var triageGenerateError: (any Error)? {
-        get { box.lock.withLock { box.triageGenerateError } }
-        set { box.lock.withLock { box.triageGenerateError = newValue } }
-    }
-
-    var triageGenerateInputs: [TriageGenerateInput] {
-        box.lock.withLock { box.triageGenerateInputs }
-    }
-
-    var modelReviewResult: ModelReviewResult? {
-        get { box.lock.withLock { box.modelReviewResult } }
-        set { box.lock.withLock { box.modelReviewResult = newValue } }
-    }
-
-    var clientSelectionResult: ClientSelectionImportResult {
-        get { box.lock.withLock { box.clientSelectionResult } }
-        set { box.lock.withLock { box.clientSelectionResult = newValue } }
-    }
-
-    var applyTriageResult: TriageApplyResult {
-        get { box.lock.withLock { box.applyTriageResult } }
-        set { box.lock.withLock { box.applyTriageResult = newValue } }
-    }
-
-    var applyTriageError: (any Error)? {
-        get { box.lock.withLock { box.applyTriageError } }
-        set { box.lock.withLock { box.applyTriageError = newValue } }
-    }
-
-    var applyTriageInputs: [Confirmed<TriageApplyInput>] {
-        box.lock.withLock { box.applyTriageInputs }
-    }
-
-    var syncStatusError: (any Error)? {
-        get { box.lock.withLock { box.syncStatusError } }
-        set { box.lock.withLock { box.syncStatusError = newValue } }
-    }
-
-    var resetError: (any Error)? {
-        get { box.lock.withLock { box.resetError } }
-        set { box.lock.withLock { box.resetError = newValue } }
-    }
-
-    var writebackError: (any Error)? {
-        get { box.lock.withLock { box.writebackError } }
-        set { box.lock.withLock { box.writebackError = newValue } }
-    }
-
-    var flushError: (any Error)? {
-        get { box.lock.withLock { box.flushError } }
-        set { box.lock.withLock { box.flushError = newValue } }
-    }
-
-    var retrySyncError: (any Error)? {
-        get { box.lock.withLock { box.retrySyncError } }
-        set { box.lock.withLock { box.retrySyncError = newValue } }
-    }
-
-    var retryFailedError: (any Error)? {
-        get { box.lock.withLock { box.retryFailedError } }
-        set { box.lock.withLock { box.retryFailedError = newValue } }
-    }
-
-    var cleanupError: (any Error)? {
-        get { box.lock.withLock { box.cleanupError } }
-        set { box.lock.withLock { box.cleanupError = newValue } }
-    }
-
-    var finalizeError: (any Error)? {
-        get { box.lock.withLock { box.finalizeError } }
-        set { box.lock.withLock { box.finalizeError = newValue } }
-    }
-
-    var confirmSyncError: (any Error)? {
-        get { box.lock.withLock { box.confirmSyncError } }
-        set { box.lock.withLock { box.confirmSyncError = newValue } }
-    }
-
-    var responseDelay: Duration {
-        get { box.lock.withLock { box.responseDelay } }
-        set { box.lock.withLock { box.responseDelay = newValue } }
-    }
-
-    var pageQueries: [CullingPageQuery] { box.lock.withLock { box.pageQueries } }
-    var historyQueries: [CullingHistoryQuery] { box.lock.withLock { box.historyQueries } }
-    var applyHistoryInputs: [CullingApplyHistoryInput] { box.lock.withLock { box.applyHistoryInputs } }
-    var updateInputs: [CullingUpdateInput] { box.lock.withLock { box.updateInputs } }
-    var batchUpdateInputs: [CullingBatchUpdateInput] { box.lock.withLock { box.batchUpdateInputs } }
-    var decideGroupInputs: [CullingDecideGroupInput] { box.lock.withLock { box.decideGroupInputs } }
-    var groupCalls: [String] { box.lock.withLock { box.groupCalls } }
-    var summaryCalls: [String] { box.lock.withLock { box.summaryCalls } }
-    var syncStatusCalls: [String] { box.lock.withLock { box.syncStatusCalls } }
-    var resetInputs: [Confirmed<CullingResetInput>] { box.lock.withLock { box.resetInputs } }
-    var writebackInputs: [Confirmed<CullingWritebackInput>] { box.lock.withLock { box.writebackInputs } }
-    var flushCalls: [String] { box.lock.withLock { box.flushCalls } }
-    var retrySyncCalls: [String] { box.lock.withLock { box.retrySyncCalls } }
-    var retryFailedInputs: [Confirmed<SessionReference>] { box.lock.withLock { box.retryFailedInputs } }
-    var cleanupInputs: [Confirmed<SessionReference>] { box.lock.withLock { box.cleanupInputs } }
-    var finalizeInputs: [Confirmed<SessionReference>] { box.lock.withLock { box.finalizeInputs } }
-    var confirmSyncCalls: [String] { box.lock.withLock { box.confirmSyncCalls } }
 
     private func delayIfNeeded() async throws {
         let delay = box.lock.withLock { box.responseDelay }
@@ -743,7 +483,7 @@ final class B8CullingAPIStub: CullingAPI, @unchecked Sendable {
 
 // MARK: - NavigationAPI
 
-private struct B8NavigationState {
+struct B8NavigationState {
     var listResult: [NavigationGroup] = []
     var splitResult: [NavigationGroup] = []
     var mergeResult: [NavigationGroup] = []
@@ -759,58 +499,16 @@ private struct B8NavigationState {
     var analyzeInputs: [NavigationAnalyzeParams] = []
 }
 
+@dynamicMemberLookup
 final class B8NavigationAPIStub: NavigationAPI, @unchecked Sendable {
     private let box = LockedBox(B8NavigationState())
 
-    var listResult: [NavigationGroup] {
-        get { box.lock.withLock { box.listResult } }
-        set { box.lock.withLock { box.listResult = newValue } }
+    /// 状态字段经 LockedBox 动态转发：与逐属性访问器同一把锁、同一份状态；
+    /// 测试侧原有的赋值（记录数组/错误注入）语义不变。
+    subscript<T>(dynamicMember keyPath: WritableKeyPath<B8NavigationState, T>) -> T {
+        get { box.lock.withLock { box[dynamicMember: keyPath] } }
+        set { box.lock.withLock { box[dynamicMember: keyPath] = newValue } }
     }
-
-    var splitResult: [NavigationGroup] {
-        get { box.lock.withLock { box.splitResult } }
-        set { box.lock.withLock { box.splitResult = newValue } }
-    }
-
-    var mergeResult: [NavigationGroup] {
-        get { box.lock.withLock { box.mergeResult } }
-        set { box.lock.withLock { box.mergeResult = newValue } }
-    }
-
-    var analyzeResult: [NavigationGroup] {
-        get { box.lock.withLock { box.analyzeResult } }
-        set { box.lock.withLock { box.analyzeResult = newValue } }
-    }
-
-    var listError: (any Error)? {
-        get { box.lock.withLock { box.listError } }
-        set { box.lock.withLock { box.listError = newValue } }
-    }
-
-    var splitError: (any Error)? {
-        get { box.lock.withLock { box.splitError } }
-        set { box.lock.withLock { box.splitError = newValue } }
-    }
-
-    var mergeError: (any Error)? {
-        get { box.lock.withLock { box.mergeError } }
-        set { box.lock.withLock { box.mergeError = newValue } }
-    }
-
-    var analyzeError: (any Error)? {
-        get { box.lock.withLock { box.analyzeError } }
-        set { box.lock.withLock { box.analyzeError = newValue } }
-    }
-
-    var responseDelay: Duration {
-        get { box.lock.withLock { box.responseDelay } }
-        set { box.lock.withLock { box.responseDelay = newValue } }
-    }
-
-    var listCalls: [String] { box.lock.withLock { box.listCalls } }
-    var splitInputs: [NavigationSplitParams] { box.lock.withLock { box.splitInputs } }
-    var mergeInputs: [NavigationMergeParams] { box.lock.withLock { box.mergeInputs } }
-    var analyzeInputs: [NavigationAnalyzeParams] { box.lock.withLock { box.analyzeInputs } }
 
     private func delayIfNeeded() async throws {
         let delay = box.lock.withLock { box.responseDelay }

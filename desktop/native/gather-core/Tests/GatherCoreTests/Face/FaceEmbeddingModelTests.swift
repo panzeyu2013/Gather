@@ -193,7 +193,10 @@ struct FaceEmbeddingModelTests {
     }
 
     @Test func factoryThrowsForMissingOrWrongFormatModel() throws {
-        FaceEmbeddingModelFactory.cache.removeAll()
+        // 不在这里清空全局 provider 缓存：本用例只断言两条错误路径（文件缺失 /
+        // 扩展名不支持），与缓存里有什么无关；清空会让同进程内后续的
+        // `make(modelPath: "")` 重新编译 37MB 内置 CoreML 包（默认 PR 套件的
+        // 大块 CPU/内存成本，且随并行调度顺序变成不可预测的二次编译）。
         let missing = "/tmp/gather-not-a-model-\(UUID().uuidString).mlmodel"
         #expect(throws: FaceEmbeddingError.modelNotFound(missing)) {
             _ = try FaceEmbeddingModelFactory.make(modelPath: missing, modelVersion: "v1")

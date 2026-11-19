@@ -116,27 +116,13 @@ struct GalleryFilterSearchStringTests {
 
 // MARK: - Wave5 batch4：Gallery person facet（50-ai-similarity §2 P1-6）
 
-/// 最小 Gallery 数据源替身：person facet 测试不触网/不建库。
-private struct PersonFacetGalleryProviderStub: GalleryDataProvider {
-    func getSession(_ sessionId: String) async throws -> SessionData? { nil }
-
-    func photoPage(
-        sessionId: String,
-        afterFirstRowid: Int64?,
-        limit: Int,
-        expandVariants: Bool
-    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
-        ([], nil)
-    }
-}
-
 @Suite("Gallery person facet（Wave5 batch4）")
 @MainActor
 struct GalleryPersonFacetTests {
     private func makeViewModel() -> GalleryViewModel {
         GalleryViewModel(
             sessionId: "s1",
-            provider: PersonFacetGalleryProviderStub(),
+            provider: EmptyGalleryProvider(),
             job: B5bJobAPIStub(),
             debounceDelay: .milliseconds(1))
     }

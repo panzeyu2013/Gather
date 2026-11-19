@@ -23,10 +23,8 @@ import GatherAnalysis
 @testable import GatherMetadataIO
 
 private func makeTempDir() throws -> String {
-    let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-jpeg-metadata-" + UUID().uuidString, isDirectory: true).path
-    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-    return dir
+    // task-43：统一走共享 TempHygiene 登记路径。
+    try GatherTestSupport.makeTempDir(prefix: "gather-jpeg-metadata")
 }
 
 /// 真实 JPEG：IPTC title/caption/copyright + XMP contact/webStatement 写进 APP1

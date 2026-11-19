@@ -626,7 +626,7 @@ struct CullingDeliveryCut2Tests {
             sessionId: "session", confirmed: true
         )
         #expect(repeated.items.isEmpty)
-        #expect(harness.deliveryFiles.removedPaths == ["/shoot/p1.xmp.gather-backup-test"])
+        #expect(harness.deliveryFiles.removedPathsSnapshot == ["/shoot/p1.xmp.gather-backup-test"])
     }
 
     @Test("finalize：只删 synced，conflict / written 原样保留")
@@ -678,7 +678,7 @@ struct CullingDeliveryCut2Tests {
         // P1-1：DB 失败时备份绝不能先被删掉（否则 backup_path 悬空）。
         #expect(try harness.deliveryRepo.get("/shoot/p1.xmp")?.status == DeliveryStatus.synced.rawValue)
         #expect(harness.deliveryFiles.contents("/shoot/p1.xmp.gather-backup-test") == "original")
-        #expect(harness.deliveryFiles.removedPaths.isEmpty)
+        #expect(harness.deliveryFiles.removedPathsSnapshot.isEmpty)
         #expect(try harness.deliveryIntents.pending().fileDone.count == 1)
 
         _ = try harness.db.exec("DROP TRIGGER fail_finalize_delivery_delete")

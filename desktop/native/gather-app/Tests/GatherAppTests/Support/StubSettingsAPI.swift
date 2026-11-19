@@ -11,9 +11,10 @@ import GatherPersistence
 import GatherAnalysis
 import GatherApplication
 
-private struct B8SettingsState {
+struct B8SettingsState {
     var values: [String: String] = [:]
     var allError: (any Error)?
+    /// Review P0-1 回归：让 get 抛错，模拟 settings 瞬时读取失败。
     var getError: (any Error)?
     var setError: (any Error)?
     var resetError: (any Error)?
@@ -47,55 +48,20 @@ private struct B8SettingsState {
 }
 
 /// 可配置 SettingsAPI：默认空设置表、set 成功；记录类型化入参。
+@dynamicMemberLookup
 final class B8SettingsAPIStub: SettingsAPI, @unchecked Sendable {
     private let box = LockedBox(B8SettingsState())
+
+    /// 状态字段经 LockedBox 动态转发：与逐属性访问器同一把锁、同一份状态；
+    /// 测试侧原有的赋值（记录数组/错误注入）语义不变。
+    subscript<T>(dynamicMember keyPath: WritableKeyPath<B8SettingsState, T>) -> T {
+        get { box.lock.withLock { box[dynamicMember: keyPath] } }
+        set { box.lock.withLock { box[dynamicMember: keyPath] = newValue } }
+    }
 
     init(values: [String: String] = [:]) {
         box.lock.withLock { box.values = values }
     }
-
-    var values: [String: String] {
-        get { box.lock.withLock { box.values } }
-        set { box.lock.withLock { box.values = newValue } }
-    }
-
-    var allError: (any Error)? {
-        get { box.lock.withLock { box.allError } }
-        set { box.lock.withLock { box.allError = newValue } }
-    }
-
-    var setError: (any Error)? {
-        get { box.lock.withLock { box.setError } }
-        set { box.lock.withLock { box.setError = newValue } }
-    }
-
-    /// Review P0-1 回归：让 get 抛错，模拟 settings 瞬时读取失败。
-    var getError: (any Error)? {
-        get { box.lock.withLock { box.getError } }
-        set { box.lock.withLock { box.getError = newValue } }
-    }
-
-    var mlStatusError: (any Error)? {
-        get { box.lock.withLock { box.mlStatusError } }
-        set { box.lock.withLock { box.mlStatusError = newValue } }
-    }
-
-    var mlStatusResult: MLStatusData {
-        get { box.lock.withLock { box.mlStatusResult } }
-        set { box.lock.withLock { box.mlStatusResult = newValue } }
-    }
-
-    var setInputs: [SettingsSetInput] { box.lock.withLock { box.setInputs } }
-    var getKeys: [SettingsKeyInput] { box.lock.withLock { box.getKeys } }
-    var resetCalls: Int { box.lock.withLock { box.resetCalls } }
-    var resetInputs: [SettingsResetInput] { box.lock.withLock { box.resetInputs } }
-    var previewResetCalls: Int { box.lock.withLock { box.previewResetCalls } }
-    var previewResetResult: SettingsResetImpact {
-        get { box.lock.withLock { box.previewResetResult } }
-        set { box.lock.withLock { box.previewResetResult = newValue } }
-    }
-    var languageInputs: [InterfaceLanguage] { box.lock.withLock { box.languageInputs } }
-    var mlStatusCalls: Int { box.lock.withLock { box.mlStatusCalls } }
 
     func all() async throws -> [String: String] {
         let (error, values): ((any Error)?, [String: String]) = box.lock.withLock {

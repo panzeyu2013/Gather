@@ -117,9 +117,13 @@ struct PrintDocumentRendererTests {
         defer { temp.cleanup() }
         var items: [ContactSheetItem] = []
         for index in 0..<4 {
-            let image = temp.file("p\(index).jpg")
-            try writeJPEG(to: image, gray: 0.2 + Double(index) * 0.2)
-            items.append(ContactSheetItem(path: image.path, caption: "p\(index).jpg"))
+            // 每轮写一张真实 JPEG：ImageIO 编码产生的自动释放对象放进局部池，
+            // 4 轮生成不会把上一轮的 CGImage/ImageIO 临时对象攒到用例收尾。
+            try autoreleasepool {
+                let image = temp.file("p\(index).jpg")
+                try writeJPEG(to: image, gray: 0.2 + Double(index) * 0.2)
+                items.append(ContactSheetItem(path: image.path, caption: "p\(index).jpg"))
+            }
         }
         let missing = temp.file("gone.jpg")
         items.append(ContactSheetItem(path: missing.path, caption: "gone.jpg"))
@@ -161,9 +165,12 @@ struct PrintDocumentRendererTests {
         defer { temp.cleanup() }
         var items: [ContactSheetItem] = []
         for index in 0..<4 {
-            let image = temp.file("c\(index).jpg")
-            try writeJPEG(to: image, gray: 0.5)
-            items.append(ContactSheetItem(path: image.path, caption: "c\(index).jpg"))
+            // 同上：每轮生成一张真实 JPEG，用局部 autoreleasepool 控制 ImageIO 峰值。
+            try autoreleasepool {
+                let image = temp.file("c\(index).jpg")
+                try writeJPEG(to: image, gray: 0.5)
+                items.append(ContactSheetItem(path: image.path, caption: "c\(index).jpg"))
+            }
         }
         let output = temp.file("cancelled.pdf")
         var checks = 0

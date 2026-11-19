@@ -15,8 +15,9 @@ import GatherPersistence
 import GatherAnalysis
 import GatherApplication
 
-private struct StubSessionState {
+struct StubSessionState {
     var sessions: [SessionData] = []
+    /// session.get 的夹具（nil = 按 sessions 里的同 id 项查找）。
     var session: SessionData?
     var status: WorkspaceStatus?
     var listError: (any Error)?
@@ -28,8 +29,16 @@ private struct StubSessionState {
 }
 
 /// 可配置 SessionAPI：默认 get/status 按会话夹具返回、list 返回夹具数组。
+@dynamicMemberLookup
 final class B8SessionAPIStub: SessionAPI, @unchecked Sendable {
     private let box = LockedBox(StubSessionState())
+
+    /// 状态字段经 LockedBox 动态转发：与逐属性访问器同一把锁、同一份状态；
+    /// 测试侧原有的赋值（记录数组/错误注入）语义不变。
+    subscript<T>(dynamicMember keyPath: WritableKeyPath<StubSessionState, T>) -> T {
+        get { box.lock.withLock { box[dynamicMember: keyPath] } }
+        set { box.lock.withLock { box[dynamicMember: keyPath] = newValue } }
+    }
 
     init(sessions: [SessionData] = [], session: SessionData? = nil, status: WorkspaceStatus? = nil) {
         box.lock.withLock {
@@ -39,40 +48,10 @@ final class B8SessionAPIStub: SessionAPI, @unchecked Sendable {
         }
     }
 
-    /// session.get 的夹具（nil = 按 sessions 里的同 id 项查找）。
-    var session: SessionData? {
-        get { box.lock.withLock { box.session } }
-        set { box.lock.withLock { box.session = newValue } }
-    }
-
-    var sessions: [SessionData] {
-        get { box.lock.withLock { box.sessions } }
-        set { box.lock.withLock { box.sessions = newValue } }
-    }
-
     var status: WorkspaceStatus? {
         get { box.lock.withLock { box.status } }
         set { box.lock.withLock { box.status = newValue } }
     }
-
-    var listError: (any Error)? {
-        get { box.lock.withLock { box.listError } }
-        set { box.lock.withLock { box.listError = newValue } }
-    }
-
-    var getError: (any Error)? {
-        get { box.lock.withLock { box.getError } }
-        set { box.lock.withLock { box.getError = newValue } }
-    }
-
-    var statusError: (any Error)? {
-        get { box.lock.withLock { box.statusError } }
-        set { box.lock.withLock { box.statusError = newValue } }
-    }
-
-    var listCalls: Int { box.lock.withLock { box.listCalls } }
-    var getCalls: [String] { box.lock.withLock { box.getCalls } }
-    var statusCalls: [String] { box.lock.withLock { box.statusCalls } }
 
     func list() async throws -> [SessionData] {
         let (error, sessions): ((any Error)?, [SessionData]) = box.lock.withLock {

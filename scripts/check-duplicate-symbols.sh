@@ -34,16 +34,27 @@ done
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-find "$ROOT/desktop/native" -path '*/.build' -prune -o -type f -name '*.swift' -print | sort > "$TMP/files"
+# 扫描方式：一次 find 得到文件清单，再一次 grep 把两条规则合并扫描（旧实现是每个文件
+# 起 2 次 grep，约 2,000 次进程启动）。grep -H 强制输出文件名，保证单文件场景下
+# 输出仍是 "path:line:content"；文件顺序沿用 find|sort，与旧实现的逐文件顺序一致。
+find desktop/native -path '*/.build' -prune -o -type f -name '*.swift' -print | sort > "$TMP/files"
+FILES=()
+while IFS= read -r f; do
+  FILES+=("$f")
+done < "$TMP/files"
+file_count="${#FILES[@]}"
 
-scan() {
-  local re="$1" f rel
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    rel="${f#"$ROOT"/}"
-    grep -nE "$re" "$f" 2>/dev/null | sed "s|^|$rel:|" || true
-  done < "$TMP/files"
-}
+BATCH_RE='func[[:space:]]+batchAsync([^A-Za-z0-9_]|$)'
+HELPER_RE='(class|struct|actor|enum)[[:space:]]+(LockedBox|ResponseBox)([^A-Za-z0-9_]|$)'
+
+all_hits=""
+if [ "$file_count" -gt 0 ]; then
+  all_hits=$(grep -HnE -e "$BATCH_RE" -e "$HELPER_RE" -- "${FILES[@]}" 2>/dev/null || true)
+fi
+
+# 按规则分类：同一行恰好同时命中两条规则时两边都会保留（与旧实现双 pass 一致）。
+batch_hits=$(printf '%s\n' "$all_hits" | grep -E -e "$BATCH_RE" || true)
+helper_hits=$(printf '%s\n' "$all_hits" | grep -E -e "$HELPER_RE" || true)
 
 count_nonempty() {
   local s="$1"
@@ -52,12 +63,9 @@ count_nonempty() {
 }
 
 fail=0
-file_count=$(wc -l < "$TMP/files" | tr -d ' ')
 
-batch_hits=$(scan 'func[[:space:]]+batchAsync([^A-Za-z0-9_]|$)')
 batch_n=$(count_nonempty "$batch_hits")
 
-helper_hits=$(scan '(class|struct|actor|enum)[[:space:]]+(LockedBox|ResponseBox)([^A-Za-z0-9_]|$)')
 outside_hits=$(printf '%s\n' "$helper_hits" | grep -vE '/Tests/([^/]+/)?Support/' | grep -v '^$' || true)
 outside_n=$(count_nonempty "$outside_hits")
 

@@ -195,22 +195,14 @@ public protocol PrintRenderingPort: Sendable {
 
 /// 进程级注册表：GatherHost 启动时注册一次，视图层只读。
 ///
-/// 静态可变状态用 NSLock 串行化并标 nonisolated(unsafe)（与 ImageDecodingRegistry
-/// / PreviewAnalysisRegistry 同纪律，未注册返回 nil 而不是 crash）。
+/// M12（Wave5）：存储与互斥收口到 PortRegistry（单一进程级注册表），本类型只保留
+/// public API 以维持调用点不变；未注册返回 nil 而不是 crash。
 public enum PrintRenderingRegistry {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var port: (any PrintRenderingPort)?
-
     public static func install(_ port: any PrintRenderingPort) {
-        lock.lock()
-        self.port = port
-        lock.unlock()
+        PortRegistry.install(printRendering: port)
     }
 
     public static func current() -> (any PrintRenderingPort)? {
-        lock.lock()
-        let port = self.port
-        lock.unlock()
-        return port
+        PortRegistry.printRendering()
     }
 }

@@ -3,15 +3,15 @@
 // 覆盖：往返保真、会话隔离、清除、损坏回退、非法会话 id 不逃出目录。
 import Foundation
 import Testing
+import GatherTestSupport
 @testable import GatherUI
 
 @MainActor
 @Suite("场景标签写回批次持久化")
 struct SemanticKeywordBatchStoreTests {
     private func makeStore() throws -> (store: FileSemanticKeywordBatchStore, dir: URL) {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-batch-store-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+        let dir = URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: "gather-batch-store"))
         return (FileSemanticKeywordBatchStore(directory: dir), dir)
     }
 

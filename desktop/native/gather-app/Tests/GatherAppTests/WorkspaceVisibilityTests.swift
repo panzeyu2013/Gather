@@ -18,6 +18,7 @@ import Foundation
 import SwiftUI
 import Testing
 import GatherProtocol
+import GatherTestSupport
 @testable import GatherUI
 @testable import GatherHost
 
@@ -389,13 +390,16 @@ struct WorkspaceVisibilityTests {
         // 回调在 macOS 14~26 上口径一致；alpha=0 保证用户不可见。
         window.orderFront(nil)
         #expect(window.alphaValue == 0, "真实挂载用例的窗口必须不可见（防测试运行时弹窗）")
-        await settleMainQueue()
-        #expect(probe.workspace.gallery.isVisible, "挂载后图库页未变为可见")
+        // 等 SwiftUI 挂载事务落定：条件等待（满足即返回、超时有界）替代旧的
+        // 固定 300ms「排空主队列」窗口。旧 helper 每调用一次都睡满 300ms，
+        // 本用例两次共 600ms；正常路径 1~2 轮主队列就会把可见性置真。
+        #expect(await waitUntilAsync { probe.workspace.gallery.isVisible },
+                "挂载后图库页未变为可见")
         // 卸载页面（onDisappear）：从窗口移除 contentView，而不是 close——
         // NSWindow.close 不保证 SwiftUI 的 onDisappear（实测可见性仍为 true）。
         window.contentView = nil
-        await settleMainQueue()
-        #expect(!probe.workspace.gallery.isVisible, "卸载页面后图库页仍可见")
+        #expect(await waitUntilAsync { !probe.workspace.gallery.isVisible },
+                "卸载页面后图库页仍可见")
         // 只 orderOut，不用 close()：close 会触发窗口关闭通知/KVO，SwiftUI 的
         // NSHostingView 仍持有窗口观察，并行时在自动释放池 drain 阶段可能
         // 二次 release（NSZombie: -[NSKVONotifying_NSWindow release]）。
@@ -403,21 +407,9 @@ struct WorkspaceVisibilityTests {
         probe.workspace.close()
     }
 
-    /// 让主队列排空若干轮（替代嵌套 RunLoop.run）。
-    ///
-    /// 旧实现用 RunLoop.current.run(until:) 在 MainActor 任务内部**同步重入**
-    /// 主队列：并行时会把其它套件的 @MainActor 测试/任务插进来执行，破坏 actor
-    /// 隔离并触发 NSHostingView 的 SIGSEGV（objc_release 过量释放，见
-    /// swiftpm-testing-helper .ips）。改为 await 让出，主队列照常排空，但
-    /// 隔离边界不被跨越；总时长只用于覆盖 SwiftUI 的挂载/卸载事务。
-    @MainActor
-    private func settleMainQueue(_ duration: Duration = .milliseconds(300)) async {
-        let deadline = ContinuousClock.now + duration
-        while ContinuousClock.now < deadline {
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
+    // 已删除 settleMainQueue（固定 300ms 排空窗口）：挂载/卸载断言改为
+    // waitUntilAsync 条件等待（满足即返回），既不再固定睡满窗口，也没有重新
+    // 引入 RunLoop 同步重入主队列（旧的 SIGSEGV 根因）。
 
     /// VM 的可见性真相读取：走注册表的统一只读桥（Culling 映射 isActive 的差异
     /// 已收在 CullingViewModel.isPageVisible 里，测试不再复制一份 switch）。

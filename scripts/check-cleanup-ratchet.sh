@@ -12,13 +12,18 @@
 #   todo_fixme          Sources + Tests 中 TODO / FIXME
 #   with_known_issue    Tests 中 withKnownIssue(
 #
-# baseline: docs/cleanup-baseline.json
+# baseline: docs/baselines/cleanup-baseline.json
 #   - 超过 baseline：FAIL（exit 1）
 #   - 低于 baseline：提示收紧 baseline，不失败
 #   - baseline 缺失/缺 key：FAIL（防止门禁静默失效）
+#   - --write-baseline 输出 schema=2，不写 generated_at（重复写无 diff，便于收紧基线）
+#
+# --self-test：负样本自测（mktemp fixture，不写仓库）。把本脚本原样复制进临时 fixture
+# 仓库，用同一份判定逻辑断言「超 baseline → FAIL；等于/低于 → PASS；缺 baseline/缺 key → FAIL」。
 # 用法：
 #   ./scripts/check-cleanup-ratchet.sh
 #   ./scripts/check-cleanup-ratchet.sh --write-baseline
+#   ./scripts/check-cleanup-ratchet.sh --self-test
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,8 +36,191 @@ APP_SRC="desktop/native/gather-app/Sources"
 SERVICES="$CORE_SRC/GatherApplication/Services"
 CORE_TESTS="desktop/native/gather-core/Tests"
 APP_TESTS="desktop/native/gather-app/Tests"
-BASELINE="docs/cleanup-baseline.json"
+BASELINE="docs/baselines/cleanup-baseline.json"
 METRICS="unchecked_sendable try_optional try_bang as_bang fatal_error nonisolated_unsafe services_prepare todo_fixme with_known_issue"
+
+# ---------------------------------------------------------------------------
+# --self-test：负样本自测（mktemp fixture，不写仓库；fixture 不达预期即 exit 1）
+#   做法：把本脚本原样复制进临时 fixture 仓库，用同一份判定逻辑跑合成树，断言：
+#     1) try_optional / unchecked_sendable 超 baseline → FAIL（exit 1）
+#     2) 等于 / 低于 baseline → PASS（exit 0；低于只提示收紧）
+#     3) 缺 baseline 文件 / baseline 缺 key → FAIL（exit 1，防止门禁静默失效）
+# ---------------------------------------------------------------------------
+SELFTEST_OUT=""
+SELFTEST_TMP=""
+SELFTEST_PROG="check-cleanup-ratchet"
+SELFTEST_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+selftest_die() {
+  echo "$SELFTEST_PROG: self-test FAIL — $1" >&2
+  exit 1
+}
+
+# selftest_expect <期望退出码> <说明> <fixture 脚本> [参数...]
+selftest_expect() {
+  local want="$1" desc="$2" script="$3"
+  shift 3
+  local st=0
+  SELFTEST_OUT=$(bash "$script" "$@" 2>&1) || st=$?
+  if [ "$st" -ne "$want" ]; then
+    echo "$SELFTEST_PROG: self-test FAIL — $desc（期望 exit ${want}，实得 ${st}）" >&2
+    printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
+    exit 1
+  fi
+}
+
+# selftest_contains <期望子串> <说明>
+selftest_contains() {
+  case "$SELFTEST_OUT" in
+    *"$1"*) return 0 ;;
+  esac
+  echo "$SELFTEST_PROG: self-test FAIL — $2（输出里没有「$1」）" >&2
+  printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
+  exit 1
+}
+
+# selftest_filler <目录> <个数>：生成不匹配任何指标的占位 Swift 文件（满足扫描量下限）
+selftest_filler() {
+  local dir="$1" n="$2" i=0
+  mkdir -p "$dir"
+  while [ "$i" -lt "$n" ]; do
+    printf '// self-test 占位（不参与任何指标）\nlet filler_%s = 0\n' "$i" > "$dir/F$i.swift"
+    i=$((i + 1))
+  done
+}
+
+# selftest_baseline <文件> [key=value ...]：按 metrics 列表生成 fixture 基线（默认 0）
+selftest_baseline() {
+  local file="$1" key val pair sep=""
+  shift
+  {
+    printf '{\n  "schema": 2,\n  "counting": "self-test fixture",\n  "metrics": {'
+    for key in $METRICS; do
+      val=0
+      for pair in "$@"; do
+        case "$pair" in
+          "$key="*) val="${pair#*=}" ;;
+        esac
+      done
+      printf '%s\n    "%s": %s' "$sep" "$key" "$val"
+      sep=","
+    done
+    printf '\n  }\n}\n'
+  } > "$file"
+}
+
+selftest_cleanup() {
+  if [ -n "$SELFTEST_TMP" ]; then
+    rm -rf "${SELFTEST_TMP:?}"
+  fi
+}
+
+self_test() {
+  local tmpbase="${TMPDIR:-/tmp}" fx gate base
+  tmpbase="${tmpbase%/}"
+  SELFTEST_TMP=$(mktemp -d "${tmpbase}/check-cleanup-ratchet-selftest.XXXXXX") ||
+    selftest_die "mktemp 创建临时目录失败"
+  trap selftest_cleanup EXIT
+  fx="$SELFTEST_TMP/fixture"
+  gate="$fx/scripts/$SELFTEST_PROG.sh"
+  base="$fx/docs/baselines/cleanup-baseline.json"
+
+  # fixture 仓库：判定所需的扫描根 + 足够多 Swift 文件（门禁有 <300 的扫描量下限）。
+  mkdir -p "$fx/scripts" \
+    "$fx/desktop/native/gather-core/Sources/GatherApplication/Services" \
+    "$fx/desktop/native/gather-core/Tests" \
+    "$fx/desktop/native/gather-app/Sources" \
+    "$fx/desktop/native/gather-app/Tests" \
+    "$fx/docs/baselines"
+  cp "$SELFTEST_SELF" "$gate"
+  selftest_filler "$fx/desktop/native/gather-core/Sources/Filler" 300
+  cat > "$fx/desktop/native/gather-app/Sources/SelftestFixtures.swift" <<'SWIFT'
+// self-test fixture：整行注释里的 try? / @unchecked Sendable 不计入口径
+// let commented = try? nothing()
+struct SelftestBad {
+    func read() -> Int? {
+        let a = try? readInt()
+        let b = try? readInt()
+        return a ?? b
+    }
+}
+
+struct SelftestSendable: @unchecked Sendable {
+    let value = 0
+}
+
+struct SelftestSendableGap: @unchecked /* 块注释间隔 */ Sendable {
+    let value = 1
+}
+SWIFT
+
+  # 断言 1：等于 baseline → PASS（同时证明整行注释不计、块注释间隔仍计数）。
+  selftest_baseline "$base" try_optional=2 unchecked_sendable=2
+  selftest_expect 0 "等于 baseline 应 PASS" "$gate"
+  selftest_contains "check-cleanup-ratchet: OK" "等于 baseline 应输出 OK"
+
+  # 断言 2：try_optional 超 baseline → FAIL（等于 2 已由断言 1 钉住，此处可精确到 2）。
+  selftest_baseline "$base" try_optional=1 unchecked_sendable=2
+  selftest_expect 1 "try_optional 超 baseline 应 FAIL" "$gate"
+  selftest_contains "try_optional" "FAIL 行应点名 try_optional"
+
+  # 断言 3：unchecked_sendable 超 baseline → FAIL。
+  selftest_baseline "$base" try_optional=2 unchecked_sendable=1
+  selftest_expect 1 "unchecked_sendable 超 baseline 应 FAIL" "$gate"
+  selftest_contains "unchecked_sendable" "FAIL 行应点名 unchecked_sendable"
+
+  # 断言 4：低于 baseline → PASS（只提示可收紧，不失败）。
+  selftest_baseline "$base" try_optional=5 unchecked_sendable=2
+  selftest_expect 0 "低于 baseline 应 PASS" "$gate"
+  selftest_contains "improved" "低于 baseline 应提示 improved"
+
+  # 断言 5：缺 baseline 文件 → FAIL。
+  rm -f "$base"
+  selftest_expect 1 "缺 baseline 应 FAIL" "$gate"
+  selftest_contains "缺少" "缺 baseline 的报错应点名缺少"
+
+  # 断言 6：baseline 缺 key → FAIL（防止门禁静默跳过该指标）。
+  selftest_baseline "$base" try_optional=2 unchecked_sendable=2
+  grep -v '"try_optional"' "$base" > "$SELFTEST_TMP/broken.json"
+  mv "$SELFTEST_TMP/broken.json" "$base"
+  selftest_expect 1 "baseline 缺 key 应 FAIL" "$gate"
+  selftest_contains "缺 key" "缺 key 的报错应点名缺 key"
+
+  # 断言 7：--write-baseline（持平/收紧）可写，输出 schema=2 且不写 generated_at（重复写无 diff）。
+  selftest_baseline "$base" try_optional=2 unchecked_sendable=2
+  selftest_expect 0 "持平/收紧时 --write-baseline 应可写" "$gate" --write-baseline
+  selftest_contains "baseline 已写入" "写盘应提示 baseline 已写入"
+  if ! grep -q '"schema": 2' "$base"; then
+    selftest_die "--write-baseline 输出缺少 schema=2"
+  fi
+  if grep -q 'generated_at' "$base"; then
+    selftest_die "--write-baseline 输出仍写 generated_at（会造成每次重钉 diff）"
+  fi
+  if ! grep -q '"try_optional": 2' "$base"; then
+    selftest_die "--write-baseline 输出未写入实测值（try_optional=2）"
+  fi
+
+  echo "$SELFTEST_PROG: self-test OK（超基线 2 项 FAIL / 等于与低于 PASS / 缺 baseline 与缺 key FAIL / 写盘 schema=2 且无 generated_at；7 条断言）"
+  return 0
+}
+
+# --self-test 必须在扫描根守卫与真实扫描前 short-circuit：fixture 不满足 300 文件下限，
+# 且自测不写仓库、不读真实基线。
+SELFTEST=0
+for arg in "$@"; do
+  if [ "$arg" = "--self-test" ]; then
+    SELFTEST=1
+  fi
+done
+if [ "$SELFTEST" -eq 1 ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "check-cleanup-ratchet: --self-test 只接受单独使用（不与其他参数混跑）" >&2
+    exit 2
+  fi
+  self_test
+  exit 0
+fi
+
 
 for d in "$CORE_SRC" "$APP_SRC" "$SERVICES" "$CORE_TESTS" "$APP_TESTS"; do
   if [ ! -d "$d" ]; then
@@ -53,7 +241,7 @@ for arg in "$@"; do
     --write-baseline) WRITE=1 ;;
     --allow-growth) ALLOW_GROWTH=1 ;;
     -h|--help)
-      sed -n '2,21p' "$0"
+      sed -n '2,26p' "$0"
       exit 0
       ;;
     *)
@@ -118,13 +306,12 @@ metric() {
 }
 
 write_baseline() {
-  local ts
-  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   mkdir -p "$(dirname "$BASELINE")"
-  cat > "$BASELINE" <<JSON
+  local tmp
+  tmp="$(mktemp "$(dirname "$BASELINE")/.cleanup-baseline.XXXXXX")"
+  cat > "$tmp" <<JSON
 {
-  "schema": 1,
-  "generated_at": "$ts",
+  "schema": 2,
   "generated_by": "scripts/check-cleanup-ratchet.sh --write-baseline",
   "counting": "matching non-comment lines (lines whose first non-space chars are // or * are ignored)",
   "metrics": {
@@ -151,6 +338,8 @@ write_baseline() {
   }
 }
 JSON
+  chmod 644 "$tmp"
+  mv "$tmp" "$BASELINE"
 }
 
 if [ "$WRITE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
@@ -169,7 +358,7 @@ if [ "$WRITE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
   done
   if [ "$grew" -ne 0 ]; then
     echo "check-cleanup-ratchet: REFUSED — 基线膨胀必须显式批准" >&2
-    echo "  确需扩张时加 --allow-growth，并在 docs/reviews/ 台账记账。" >&2
+    echo "  确需扩张时加 --allow-growth，并在 docs/cleanup-backlog.md 台账记账。" >&2
     exit 1
   fi
 fi

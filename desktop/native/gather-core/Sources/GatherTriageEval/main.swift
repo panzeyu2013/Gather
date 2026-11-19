@@ -9,8 +9,8 @@
 //
 // similarity-eval 是 Wave3 / task-19 的评估物（ROADMAP 决策 A）：只读图片算临时向量
 // （Vision feature print 或 dHash 基线），输出阈值曲线/过度合并率/失败样例；不写库、
-// 不改产品行为。数据集格式与结论见 docs/reviews/2026-11-10-competitive-gap/
-// 95-similarity-eval-design.md。
+// 不改产品行为。数据集格式与结论见历史 C1 桥/相似度评估评审
+// （文档已随 2026-11-18 文档清理移除）。
 //
 // labels 每行：photo_path,keep|reject|unsure[,category]
 // - 路径可写绝对路径或唯一 basename；同 basename 多文件时必须用绝对路径。

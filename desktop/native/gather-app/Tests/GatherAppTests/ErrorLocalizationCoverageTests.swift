@@ -4,7 +4,9 @@
 // 职责：
 // 1. 每个 GatherErrorCode 都必须有文案，禁止落通用兜底；
 // 2. 文案表不得含枚举之外的码（防生产者自造裸字符串）；
-// 3. en.lproj 覆盖全部中文 key，且英文占位符序列与中文 key 一致。
+// 3. 英文占位符序列（printf 与 {{name}}）与中文 key 一致。
+//    en 表对「代码在用 key」的覆盖性由 LocalizationParityTests:356 的 used-key
+//    扫描（dynamicKeys 含 errorMessages.values）承担，task-39 去重后不再重复。
 //
 // 边界：只读检查 GatherLocalization 与 en.lproj/Localizable.strings，不改产品
 // 文案；文案/切语言用例经 AppLanguageLock 串行，避免进程级 appLanguage 竞争。
@@ -75,18 +77,6 @@ struct ErrorLocalizationCoverageTests {
             table[key] = value
         }
         return table
-    }
-
-    @Test("英文文案表必须覆盖错误码文案的每个中文 key（否则英文界面显示中文）")
-    func englishTableCoversEveryErrorMessage() {
-        AppLanguageLock.withStableCopy {
-            let table = parseStrings(stringsFileURL)
-            #expect(!table.isEmpty, "读不到 en.lproj/Localizable.strings（路径假设失效，请更新本用例）")
-            let missing = GatherLocalization.errorMessages.values
-                .filter { table[$0] == nil }
-                .sorted()
-            #expect(missing.isEmpty, "以下错误文案缺英文条目（英文界面会显示中文）：\(missing.prefix(10))")
-        }
     }
 
     @Test("JPEG 内嵌清空错误码：中英文模板都必须把字段列表插值进去")

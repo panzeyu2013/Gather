@@ -23,50 +23,6 @@ import Testing
 
 // MARK: - 假件
 
-/// 可编程 XMP 假件：属性可注入，写盘/备份/恢复只记录（不触盘）。
-private final class MutationTestXMP: XMPProvider, @unchecked Sendable {
-    private let lock = NSLock()
-    private var storedAttributes = MetadataWriteAttributes()
-    private var storedWrites: [MetadataWriteAttributes] = []
-    private var storedRestores: [(photoPath: String, backupPath: String)] = []
-    private var existingPaths: Set<String> = []
-
-    var attributes: MetadataWriteAttributes {
-        get { lock.withLock { storedAttributes } }
-        set { lock.withLock { storedAttributes = newValue } }
-    }
-
-    var writeCalls: [MetadataWriteAttributes] { lock.withLock { storedWrites } }
-    var restoreCalls: [(photoPath: String, backupPath: String)] { lock.withLock { storedRestores } }
-
-    var existingFiles: Set<String> {
-        get { lock.withLock { existingPaths } }
-        set { lock.withLock { existingPaths = newValue } }
-    }
-
-    func readKeywords(photoPath: String) async throws -> [String] {
-        lock.withLock { storedAttributes }.keywords ?? []
-    }
-
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        lock.withLock { storedAttributes }
-    }
-
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {
-        lock.withLock { storedWrites.append(attributes) }
-    }
-
-    func backup(photoPath: String) async throws -> String { "" }
-
-    func restore(photoPath: String, backupPath: String) async throws {
-        lock.withLock { storedRestores.append((photoPath, backupPath)) }
-    }
-
-    func fileExists(_ path: String) -> Bool { lock.withLock { existingPaths.contains(path) } }
-
-    func removeFile(_ path: String) async throws {}
-}
-
 // MARK: - 夹具
 
 private struct MutationFixture {
@@ -76,7 +32,7 @@ private struct MutationFixture {
     let photoPath: String
     let xmpPath: String
     let tempRoot: URL
-    let xmp: MutationTestXMP
+    let xmp: RecordingXMPProvider
     let deliveryRepo: DeliveryRepo
     let mutations: MetadataMutationService
     let writeback: WritebackService
@@ -101,7 +57,7 @@ private struct MutationFixture {
             VALUES (?, ?, ?, 'IMG_1.jpg', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
             """).run([.text(photoId), .text(sessionId), .text(photoPath)])
 
-        let xmp = MutationTestXMP()
+        let xmp = RecordingXMPProvider(writeMode: .ignore)
         let deliveryRepo = DeliveryRepo(connection: db)
         let assetResolver = PhotoAssetResolver(connection: db)
         self.db = db

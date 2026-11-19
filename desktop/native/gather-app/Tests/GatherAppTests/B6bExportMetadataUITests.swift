@@ -50,8 +50,10 @@ struct B6bExportViewModelTests {
         )
         viewModel.scope = .filtered
         viewModel.includeXmp = false
-
+        // task-39：B3 手动预览契约并入本用例（同走 previewExport）。
+        #expect(viewModel.plannedSignature == nil, "预览前不得有已发布计划")
         await viewModel.previewExport()
+        #expect(export.previewInputs.count == 1, "一次手动预览只发一次请求")
 
         let input = try #require(export.previewInputs.first)
         #expect(input.sessionId == "s1")

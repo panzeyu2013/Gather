@@ -17,14 +17,13 @@
 //    （复制/登记、默认模板、校验开、skip、无第二目的地）、回调收到绝对路径。
 import Foundation
 import Testing
+import GatherTestSupport
 @testable import GatherUI
 import GatherProtocol
 
 private func makeFolderTreeRoot(_ label: String = "gather-foldertree") throws -> URL {
-    let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("\(label)-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    return url
+    // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+    URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: label))
 }
 
 @MainActor

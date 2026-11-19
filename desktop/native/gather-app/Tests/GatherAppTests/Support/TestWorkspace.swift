@@ -9,19 +9,6 @@ import GatherProtocol
 import GatherUI
 import GatherHost
 
-private struct TestWorkspaceGalleryProviderStub: GalleryDataProvider {
-    func getSession(_ sessionId: String) async throws -> SessionData? { nil }
-
-    func photoPage(
-        sessionId: String,
-        afterFirstRowid: Int64?,
-        limit: Int,
-        expandVariants: Bool
-    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
-        ([], nil)
-    }
-}
-
 /// 组装一个完整的 SessionWorkspace；调用方可替换任意一个 VM。
 @MainActor
 func makeTestSessionWorkspace(
@@ -70,7 +57,7 @@ func makeTestSessionWorkspace(
         ),
         gallery: gallery ?? GalleryViewModel(
             sessionId: sessionId,
-            provider: TestWorkspaceGalleryProviderStub(),
+            provider: EmptyGalleryProvider(),
             job: B5bJobAPIStub()
         ),
         similarity: similarity ?? SimilarityViewModel(

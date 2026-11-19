@@ -208,19 +208,6 @@ struct C1BridgeWave1SelectionReadTests {
 
 // MARK: - Live API：手动 ack 落库（G2）
 
-private final class Wave1MutationPort: MetadataMutationPort, @unchecked Sendable {
-    func queuePhotoValues(
-        sessionId: String,
-        photoId: String,
-        values: [String: JSONValue],
-        source: MetadataMutationSource,
-        schedule: Bool
-    ) throws -> MetadataMutationResult {
-        MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending")
-    }
-}
-
 private final class Wave1WritebackPort: CullingWritebackPort {
     func preview(
         sessionId: String,
@@ -267,7 +254,7 @@ private struct Wave1CullingFixture {
             similarityResultRepo: SimilarityResultRepo(connection: db),
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             connection: db,
-            metadataMutations: Wave1MutationPort(),
+            metadataMutations: NoopMetadataMutationPort(),
             writeback: Wave1WritebackPort(),
             cullingHistoryRepo: CullingHistoryRepo(connection: db))
         let triage = TriageService(

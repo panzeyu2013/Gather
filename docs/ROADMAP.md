@@ -38,7 +38,7 @@
   app 1,266 / 184；最近一次 macOS 运行（2026-11-16）core 1,970 / 290 + 串行 25 / 4、app 1,260 / 184。
 - 2026-11-17 第三轮性能专项加固（DB/查询、渲染、启动/缓存、perf ratchet）：gallery 去冗余
   `DISTINCT`、热点查询 `prepare` 复用（`DBStatementCache`）、UI 渲染 O(1) 化、启动 7 阶段计时与
-  缩略图缓存计量修正、gate #17 `check-perf-ratchet` 性能反模式 ratchet；Linux 源码级 + 探针/基准
+  缩略图缓存计量修正、`check-perf-ratchet` 性能反模式 ratchet（当前门禁 24 道）；Linux 源码级 + 探针/基准
   验证，macOS 实测（Instruments / 真机启动）待 CI 与真机。
 - 2026-11-18 第四轮性能专项加固（SQLite/查询、渲染缓存、任务/内存、perf ratchet）：文件库默认
   `PRAGMA mmap_size=256MB`（close 时 `PRAGMA optimize` 经独立评审后移除：写 ANALYZE 破坏只读 CLI 语义、耗时不界、收益≈0）、再扩 6 处 `prepare` 复用；

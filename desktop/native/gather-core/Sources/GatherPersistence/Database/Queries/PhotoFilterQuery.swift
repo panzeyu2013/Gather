@@ -505,10 +505,24 @@ public final class PhotoFilterQuery {
     }
 
     private func buildConditionSql(_ rule: FilterRule) throws -> (sql: String, params: [DBValue]) {
+        // R10：条件 SQL 分派（原 191 行单函数拆分，SQL 文本/参数顺序逐字不变）。
+        // 特殊字段族（子查询/结构判定）优先；未命中再走元数据列族。
+        if let special = try buildSpecialFieldCondition(rule) {
+            return special
+        }
+        return try buildMetadataColumnCondition(rule)
+    }
+
+    /// 特殊字段族：has_face / person / keywords / keyword_path / directory / volume /
+    /// collection / stack / relative_date / has_duplicates。
+    ///
+    /// 返回 nil = 该 field 不属于本族（等价原 switch 的 default: break），交由元数据列族。
+    private func buildSpecialFieldCondition(
+        _ rule: FilterRule
+    ) throws -> (sql: String, params: [DBValue])? {
         let field = rule.field
         let op = rule.`operator`
         let value = rule.value
-
         switch field {
         case "has_face":
             return try buildHasFaceCondition(operator: op, value: value)
@@ -567,8 +581,17 @@ public final class PhotoFilterQuery {
             }
             return (sql: pendingSql, params: [])
         default:
-            break
+            return nil
         }
+    }
+
+    /// 元数据列族：普通列 / iptc_json 投影列 / 日期归一列 + 13 操作符语义。
+    private func buildMetadataColumnCondition(
+        _ rule: FilterRule
+    ) throws -> (sql: String, params: [DBValue]) {
+        let field = rule.field
+        let op = rule.`operator`
+        let value = rule.value
 
         // P1 / C：描述性元数据存在 photo_metadata_cache.iptc_json（单列 JSON），
         // 用 json_extract 投影成列，使搜索/筛选与普通列同构（操作符语义完全一致）。
@@ -599,37 +622,50 @@ public final class PhotoFilterQuery {
 
         // 数组字段：对 json_each 的每个元素判定（creator=["张三","李四"]）。
         if Self.jsonArrayFields.contains(field) {
-            let each = "SELECT 1 FROM json_each(\(fullCol))"
-            switch op {
-            case .eq:
-                return ("EXISTS (\(each) WHERE value = ?)", [value.toDBValue])
-            case .neq:
-                return ("NOT EXISTS (\(each) WHERE value = ?)", [value.toDBValue])
-            case .contains:
-                return ("EXISTS (\(each) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')",
-                        [.text(escapeLike(stringValue(value)))])
-            case .containsAny:
-                let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
-                if arr.isEmpty { return (sql: "1=0", params: []) }
-                let ors = arr.map { _ in "EXISTS (\(each) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')" }
-                return ("(\(ors.joined(separator: " OR ")))", arr.map { DBValue.text(escapeLike($0)) })
-            case .containsAll:
-                let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
-                if arr.isEmpty { return (sql: "1=0", params: []) }
-                let ands = arr.map { _ in "EXISTS (\(each) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')" }
-                return ("(\(ands.joined(separator: " AND ")))", arr.map { DBValue.text(escapeLike($0)) })
-            case .in:
-                let arr = value.arrayElements ?? []
-                if arr.isEmpty { return (sql: "1=0", params: []) }
-                let placeholders = arr.map { _ in "?" }.joined(separator: ", ")
-                return ("EXISTS (\(each) WHERE value IN (\(placeholders)))", arr.map { $0.toDBValue })
-            case .exists:
-                return ("json_array_length(\(fullCol)) > 0", [])
-            case .gt, .lt, .gte, .lte, .between, .startsWith:
-                return ("1=0", [])
-            }
+            return buildJSONArrayCondition(field: field, fullCol: fullCol, op: op, value: value)
         }
+        return buildScalarCondition(field: field, fullCol: fullCol, op: op, value: value)
+    }
 
+    /// 数组字段（jsonArrayFields）：对 json_each 的每个元素判定。
+    private func buildJSONArrayCondition(
+        field: String, fullCol: String, op: FilterOperator, value: JSONValue
+    ) -> (sql: String, params: [DBValue]) {
+        let each = "SELECT 1 FROM json_each(\(fullCol))"
+        switch op {
+        case .eq:
+            return ("EXISTS (\(each) WHERE value = ?)", [value.toDBValue])
+        case .neq:
+            return ("NOT EXISTS (\(each) WHERE value = ?)", [value.toDBValue])
+        case .contains:
+            return ("EXISTS (\(each) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')",
+                    [.text(escapeLike(stringValue(value)))])
+        case .containsAny:
+            let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
+            if arr.isEmpty { return (sql: "1=0", params: []) }
+            let ors = arr.map { _ in "EXISTS (\(each) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')" }
+            return ("(\(ors.joined(separator: " OR ")))", arr.map { DBValue.text(escapeLike($0)) })
+        case .containsAll:
+            let arr = (value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)])
+            if arr.isEmpty { return (sql: "1=0", params: []) }
+            let ands = arr.map { _ in "EXISTS (\(each) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')" }
+            return ("(\(ands.joined(separator: " AND ")))", arr.map { DBValue.text(escapeLike($0)) })
+        case .in:
+            let arr = value.arrayElements ?? []
+            if arr.isEmpty { return (sql: "1=0", params: []) }
+            let placeholders = arr.map { _ in "?" }.joined(separator: ", ")
+            return ("EXISTS (\(each) WHERE value IN (\(placeholders)))", arr.map { $0.toDBValue })
+        case .exists:
+            return ("json_array_length(\(fullCol)) > 0", [])
+        case .gt, .lt, .gte, .lte, .between, .startsWith:
+            return ("1=0", [])
+        }
+    }
+
+    /// 标量操作符语义（普通列 / iptc_json 投影列）。
+    private func buildScalarCondition(
+        field: String, fullCol: String, op: FilterOperator, value: JSONValue
+    ) -> (sql: String, params: [DBValue]) {
         switch op {
         case .eq: return ("\(fullCol) = ?", [value.toDBValue])
         case .neq:
@@ -838,99 +874,126 @@ public final class PhotoFilterQuery {
     }
 
     private func buildKeywordsCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [DBValue]) {
+        // R10：只做分派；操作符族各一个私有纯函数，SQL 文本逐字不变。
         let op = `operator`
         let arr = value.arrayElements?.compactMap { $0.stringValue } ?? [stringValue(value)]
         switch op {
         case .contains:
-            let term = stringValue(value)
-            let alternatives = keywordTermAlternatives(term, includeLeaves: true)
-            guard alternatives.count > 1 else {
-                return (
-                    sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')",
-                    params: [.text(escapeLike(term))]
-                )
-            }
-            // 同义词是等价词：对每个等价词各做一次子串匹配（叶子/完整路径都能命中）。
-            let likes = alternatives
-                .map { _ in "value LIKE '%' || ? || '%' ESCAPE '\\'" }
-                .joined(separator: " OR ")
-            return (
-                sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE \(likes))",
-                params: alternatives.map { .text(escapeLike($0)) }
-            )
+            return buildKeywordsContainsCondition(stringValue(value))
         case .containsAny:
-            if arr.isEmpty { return (sql: "1=0", params: []) }
-            let expanded = arr.map { keywordTermAlternatives($0, includeLeaves: true) }
-            guard expanded.contains(where: { $0.count > 1 }) else {
-                let placeholders = Self.inPlaceholders(arr.count)
-                return (
-                    sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(placeholders)))",
-                    params: arr.map(DBValue.text)
-                )
-            }
-            var clauses: [String] = []
-            var params: [DBValue] = []
-            for alternatives in expanded {
-                clauses.append(
-                    "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(Self.inPlaceholders(alternatives.count))))")
-                params.append(contentsOf: alternatives.map(DBValue.text))
-            }
-            return (sql: "(\(clauses.joined(separator: " OR ")))", params: params)
+            return buildKeywordsContainsAnyCondition(arr)
         case .containsAll:
-            if arr.isEmpty { return (sql: "1=0", params: []) }
-            let unique = Array(Set(arr)).sorted()
-            let expanded = unique.map { keywordTermAlternatives($0, includeLeaves: true) }
-            guard expanded.contains(where: { $0.count > 1 }) else {
-                let placeholders = Self.inPlaceholders(unique.count)
-                return (
-                    sql: "(SELECT COUNT(DISTINCT value) FROM json_each(pmc.keywords) WHERE value IN (\(placeholders))) = ?",
-                    params: unique.map(DBValue.text) + [.int(Int64(unique.count))]
-                )
-            }
-            // 有同义词时改「每个词各有一个等价命中」的 AND：等价词会让 distinct 计数
-            // 重复（两个词映射到同一路径时 count 不等），AND-of-EXISTS 语义更准。
-            var clauses: [String] = []
-            var params: [DBValue] = []
-            for alternatives in expanded {
-                clauses.append(
-                    "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(Self.inPlaceholders(alternatives.count))))")
-                params.append(contentsOf: alternatives.map(DBValue.text))
-            }
-            return (sql: "(\(clauses.joined(separator: " AND ")))", params: params)
+            return buildKeywordsContainsAllCondition(arr)
         case .exists:
             return (sql: "pmc.keywords IS NOT NULL AND pmc.keywords != '[]'", params: [])
         case .eq:
-            let terms = arr
-            let expanded = terms.map { keywordTermAlternatives($0, includeLeaves: true) }
-            guard expanded.contains(where: { $0.count > 1 }) else {
-                let sorted = terms.sorted()
-                let sortedJSON = try JSONSerialization.data(withJSONObject: sorted)
-                let jsonString = String(data: sortedJSON, encoding: .utf8) ?? "[]"
-                return (
-                    sql: """
-                        (
-                          SELECT json_group_array(value ORDER BY value) FROM json_each(pmc.keywords)
-                        ) = (
-                          SELECT json_group_array(value ORDER BY value) FROM json_each(?)
-                        )
-                    """,
-                    params: [.text(jsonString)]
-                )
-            }
-            // eq = 整组关键词相等；同义词是"等价替换"，整表比较无法表达，
-            // 命中同义词时退化为「每个查询词都有一个等价命中」（与 containsAll 同口径；
-            // 取舍已写入 40 册同义词章节与测试）。
-            var clauses: [String] = []
-            var params: [DBValue] = []
-            for alternatives in expanded {
-                clauses.append(
-                    "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(Self.inPlaceholders(alternatives.count))))")
-                params.append(contentsOf: alternatives.map(DBValue.text))
-            }
-            return (sql: "(\(clauses.joined(separator: " AND ")))", params: params)
+            return try buildKeywordsEqualsCondition(arr)
         default:
             return (sql: "1=1", params: [])
         }
+    }
+
+    /// keywords contains：无同义词即一次子串匹配，有同义词则等价词各自匹配取并集。
+    private func buildKeywordsContainsCondition(
+        _ term: String
+    ) -> (sql: String, params: [DBValue]) {
+        let alternatives = keywordTermAlternatives(term, includeLeaves: true)
+        guard alternatives.count > 1 else {
+            return (
+                sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value LIKE '%' || ? || '%' ESCAPE '\\')",
+                params: [.text(escapeLike(term))]
+            )
+        }
+        // 同义词是等价词：对每个等价词各做一次子串匹配（叶子/完整路径都能命中）。
+        let likes = alternatives
+            .map { _ in "value LIKE '%' || ? || '%' ESCAPE '\\'" }
+            .joined(separator: " OR ")
+        return (
+            sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE \(likes))",
+            params: alternatives.map { .text(escapeLike($0)) }
+        )
+    }
+
+    /// keywords contains_any：无同义词即一次 IN，有同义词则逐词 EXISTS 取并集。
+    private func buildKeywordsContainsAnyCondition(
+        _ arr: [String]
+    ) -> (sql: String, params: [DBValue]) {
+        if arr.isEmpty { return (sql: "1=0", params: []) }
+        let expanded = arr.map { keywordTermAlternatives($0, includeLeaves: true) }
+        guard expanded.contains(where: { $0.count > 1 }) else {
+            let placeholders = Self.inPlaceholders(arr.count)
+            return (
+                sql: "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(placeholders)))",
+                params: arr.map(DBValue.text)
+            )
+        }
+        var clauses: [String] = []
+        var params: [DBValue] = []
+        for alternatives in expanded {
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(Self.inPlaceholders(alternatives.count))))")
+            params.append(contentsOf: alternatives.map(DBValue.text))
+        }
+        return (sql: "(\(clauses.joined(separator: " OR ")))", params: params)
+    }
+
+    /// keywords contains_all：无同义词即 DISTINCT 计数，有同义词则逐词 EXISTS 取交集。
+    private func buildKeywordsContainsAllCondition(
+        _ arr: [String]
+    ) -> (sql: String, params: [DBValue]) {
+        if arr.isEmpty { return (sql: "1=0", params: []) }
+        let unique = Array(Set(arr)).sorted()
+        let expanded = unique.map { keywordTermAlternatives($0, includeLeaves: true) }
+        guard expanded.contains(where: { $0.count > 1 }) else {
+            let placeholders = Self.inPlaceholders(unique.count)
+            return (
+                sql: "(SELECT COUNT(DISTINCT value) FROM json_each(pmc.keywords) WHERE value IN (\(placeholders))) = ?",
+                params: unique.map(DBValue.text) + [.int(Int64(unique.count))]
+            )
+        }
+        // 有同义词时改「每个词各有一个等价命中」的 AND：等价词会让 distinct 计数
+        // 重复（两个词映射到同一路径时 count 不等），AND-of-EXISTS 语义更准。
+        var clauses: [String] = []
+        var params: [DBValue] = []
+        for alternatives in expanded {
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(Self.inPlaceholders(alternatives.count))))")
+            params.append(contentsOf: alternatives.map(DBValue.text))
+        }
+        return (sql: "(\(clauses.joined(separator: " AND ")))", params: params)
+    }
+
+    /// keywords eq：整组关键词相等（json_group_array 比较）；命中同义词时退化为逐词 AND。
+    private func buildKeywordsEqualsCondition(
+        _ terms: [String]
+    ) throws -> (sql: String, params: [DBValue]) {
+        let expanded = terms.map { keywordTermAlternatives($0, includeLeaves: true) }
+        guard expanded.contains(where: { $0.count > 1 }) else {
+            let sorted = terms.sorted()
+            let sortedJSON = try JSONSerialization.data(withJSONObject: sorted)
+            let jsonString = String(data: sortedJSON, encoding: .utf8) ?? "[]"
+            return (
+                sql: """
+                    (
+                      SELECT json_group_array(value ORDER BY value) FROM json_each(pmc.keywords)
+                    ) = (
+                      SELECT json_group_array(value ORDER BY value) FROM json_each(?)
+                    )
+                """,
+                params: [.text(jsonString)]
+            )
+        }
+        // eq = 整组关键词相等；同义词是"等价替换"，整表比较无法表达，
+        // 命中同义词时退化为「每个查询词都有一个等价命中」（与 containsAll 同口径；
+        // 取舍已写入 40 册同义词章节与测试）。
+        var clauses: [String] = []
+        var params: [DBValue] = []
+        for alternatives in expanded {
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(pmc.keywords) WHERE value IN (\(Self.inPlaceholders(alternatives.count))))")
+            params.append(contentsOf: alternatives.map(DBValue.text))
+        }
+        return (sql: "(\(clauses.joined(separator: " AND ")))", params: params)
     }
 
     /// P1 下一波 §3.6.4：层级关键词（photo_keywords.keyword_path）。
@@ -962,9 +1025,7 @@ public final class PhotoFilterQuery {
             }
             return values
         }
-        func inCondition(_ values: [String]) -> (condition: String, params: [DBValue]) {
-            ("pk.keyword_path IN (\(Self.inPlaceholders(values.count)))", values.map(DBValue.text))
-        }
+
         let values = value.arrayElements?.compactMap { $0.stringValue } ?? [raw]
         let normalizedValues = values.map { KeywordPath.parse($0)?.serialized ?? $0 }
         switch `operator` {
@@ -973,7 +1034,7 @@ public final class PhotoFilterQuery {
             guard expanded.count > 1 else {
                 return exists("pk.keyword_path = ?", [.text(path)])
             }
-            let (condition, params) = inCondition(expanded)
+            let (condition, params) = keywordPathInCondition(expanded)
             return exists(condition, params)
         case .neq:
             let expanded = alternatives(path)
@@ -982,7 +1043,7 @@ public final class PhotoFilterQuery {
                     "NOT EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND pk.keyword_path = ?)",
                     [.text(path)])
             }
-            let (condition, params) = inCondition(expanded)
+            let (condition, params) = keywordPathInCondition(expanded)
             return (
                 "NOT EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND \(condition))",
                 params)
@@ -1033,7 +1094,7 @@ public final class PhotoFilterQuery {
                     expanded.append(candidate)
                 }
             }
-            let (condition, params) = inCondition(expanded.sorted())
+            let (condition, params) = keywordPathInCondition(expanded.sorted())
             return exists(condition, params)
         case .containsAll:
             if normalizedValues.isEmpty { return (sql: "1=0", params: []) }
@@ -1050,7 +1111,7 @@ public final class PhotoFilterQuery {
             var clauses: [String] = []
             var params: [DBValue] = []
             for term in unique {
-                let (condition, itemParams) = inCondition(alternatives(term).sorted())
+                let (condition, itemParams) = keywordPathInCondition(alternatives(term).sorted())
                 clauses.append(
                     "EXISTS (SELECT 1 FROM photo_keywords pk WHERE pk.photo_id = p.id AND \(condition))")
                 params.append(contentsOf: itemParams)
@@ -1062,6 +1123,14 @@ public final class PhotoFilterQuery {
             // 路径没有大小语义：显式返回空集，而不是把字符串比较当"范围"用。
             return (sql: "1=0", params: [])
         }
+    }
+
+    /// 路径 IN 子句 + 参数（原 buildKeywordPathCondition 的嵌套纯函数外提；
+    /// `pk.keyword_path IN (...)` 的列名/占位符拼法与参数顺序逐字不变）。
+    private func keywordPathInCondition(
+        _ values: [String]
+    ) -> (condition: String, params: [DBValue]) {
+        ("pk.keyword_path IN (\(Self.inPlaceholders(values.count)))", values.map(DBValue.text))
     }
 
     private func buildHasFaceCondition(`operator`: FilterOperator, value: JSONValue) throws -> (sql: String, params: [DBValue]) {

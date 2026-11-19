@@ -12,6 +12,7 @@ import GatherProtocol
 import GatherPersistence
 import GatherAnalysis
 import GatherApplication
+import GatherTestSupport
 @testable import GatherUI
 @testable import GatherHost
 
@@ -21,21 +22,6 @@ private final class ReviewFixFlag: @unchecked Sendable {
     private var value = false
     var isSet: Bool { lock.withLock { value } }
     func set() { lock.withLock { value = true } }
-}
-
-/// Cut 4 / 4a-2a-2：`SessionControlView(workspace:)` 的生产装配需要完整
-/// SessionWorkspace；本文件只关心 control VM，其余 6 个 VM 用空桩。
-private struct ReviewGalleryProviderStub: GalleryDataProvider {
-    func getSession(_ sessionId: String) async throws -> SessionData? { nil }
-
-    func photoPage(
-        sessionId: String,
-        afterFirstRowid: Int64?,
-        limit: Int,
-        expandVariants: Bool
-    ) async throws -> (rows: [GalleryPhotoData], cursor: Int64?) {
-        ([], nil)
-    }
 }
 
 @MainActor
@@ -103,7 +89,7 @@ struct ReviewFixTests {
             ),
             gallery: GalleryViewModel(
                 sessionId: "s1",
-                provider: ReviewGalleryProviderStub(),
+                provider: EmptyGalleryProvider(),
                 job: B5bJobAPIStub()
             ),
             similarity: SimilarityViewModel(
@@ -516,36 +502,6 @@ struct ReviewFixTests {
                 "settings 变化只作废缓存，不得清空用户配方")
         #expect(settings.setInputs.filter { $0.key.value == "output.recipes" }.count == writesBefore,
                 "内容没变时不得把 output.recipes 写回 settings")
-    }
-
-    @Test("B3（9-30 审查）：手动预览也进入同一套计划发布契约（记录 plannedSignature）")
-    func manualPreviewPublishesSignature() async {
-        let export = B6bExportAPIStub()
-        export.previewResult = ExportPreview(
-            totalFiles: 2,
-            totalSizeBytes: 2_048,
-            freeSpaceBytes: 10_000,
-            files: [
-                ExportPreviewFile(photoId: "p1", filename: "a.jpg", fileSize: 1_024),
-                ExportPreviewFile(photoId: "p2", filename: "b.jpg", fileSize: 1_024),
-            ]
-        )
-        let viewModel = ExportViewModel(
-            sessionId: "s1",
-            export: export,
-            session: B8SessionAPIStub()
-        )
-        viewModel.destination = "/tmp/gather-b3-dest"
-        viewModel.includeXmp = false
-        let signature = viewModel.planSignature
-        #expect(viewModel.plannedSignature == nil)
-        await viewModel.previewExport()
-        // 旧实现只写 preview/notice，不写 plannedSignature，也不做请求序号校验——
-        // 慢的手动预览可以覆盖更新的自动预览而 isPlanStale 仍认为计划有效。
-        #expect(export.previewInputs.count == 1)
-        #expect(viewModel.preview?.totalFiles == 2)
-        #expect(viewModel.plannedSignature == signature, "手动预览必须登记它对应的参数指纹")
-        #expect(viewModel.plannedSignature != "stale-from-other-request")
     }
 
     // MARK: N07 导航记忆与照片跳转

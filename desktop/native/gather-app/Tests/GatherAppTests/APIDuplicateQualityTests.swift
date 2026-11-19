@@ -27,18 +27,6 @@ import GatherTestSupport
 
 // MARK: - 夹具
 
-private enum DuplicateQualityFixtureError: Error {
-    case jobNotCreated
-}
-
-/// 线程安全布尔旗标（@Sendable Task 闭包内标记完成用；负向窗口断言）。
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    var isSet: Bool { lock.withLock { value } }
-    func set() { lock.withLock { value = true } }
-}
-
 private struct DuplicateQualityFixture {
     let db: DBConnection
     let sessionId: String
@@ -166,51 +154,6 @@ private struct DuplicateQualityFixture {
     }
 }
 
-// MARK: - 等待与错误辅助
-
-/// 等 JobService 出现指定类型的 job（共享异步条件等待，替代固定 sleep）。
-private func waitForJob(
-    _ jobService: JobService,
-    type: AnalysisJobType,
-    timeout: TimeInterval = 2
-) async throws {
-    let seen = try await waitUntilCondition(timeout: timeout) {
-        try jobService.list(includeCheckpoint: false).contains(where: { $0.type == type })
-    }
-    guard seen else { throw DuplicateQualityFixtureError.jobNotCreated }
-}
-
-private func gatherError<T>(_ body: () throws -> T) -> GatherError? {
-    do {
-        _ = try body()
-        return nil
-    } catch let error as GatherError {
-        return error
-    } catch {
-        return nil
-    }
-}
-
-private func asyncGatherError<T>(_ body: () async throws -> T) async -> GatherError? {
-    do {
-        _ = try await body()
-        return nil
-    } catch let error as GatherError {
-        return error
-    } catch {
-        return nil
-    }
-}
-
-private func asyncError<T>(_ body: () async throws -> T) async -> Error? {
-    do {
-        _ = try await body()
-        return nil
-    } catch {
-        return error
-    }
-}
-
 // MARK: - Duplicate
 
 @Suite("B5a Live Duplicate API")
@@ -306,7 +249,7 @@ struct APIDuplicateTests {
     @Test("scan：executor 抛 DUPLICATE_SCAN_BUSY 时收敛为同名 GatherError")
     func scanBusyMapsToGatherError() async throws {
         let fixture = try DuplicateQualityFixture(duplicateScanBusy: true)
-        let error = await asyncGatherError {
+        let error = await gatherError {
             try await fixture.duplicateAPI.scan(
                 DuplicateScanInput(sessionId: fixture.sessionId)
             )
@@ -488,25 +431,25 @@ struct APIQualityTests {
 struct APIDuplicateQualityValidationTests {
     @Test("Duplicate 输入类型：sessionId/threshold/groupId/memberId 显式失败")
     func duplicateInputsRejectInvalidShapes() {
-        let blankSession = gatherError {
+        let blankSession = syncGatherError {
             try DuplicateScanInput(sessionId: "  ", visualThreshold: 8)
         }
         #expect(blankSession?.code == .INVALID_PARAM)
         #expect(blankSession?.params["field"] == "sessionId")
 
-        let badThreshold = gatherError {
+        let badThreshold = syncGatherError {
             try DuplicateScanInput(sessionId: "s", visualThreshold: 65)
         }
         #expect(badThreshold?.code == .DUP_THRESHOLD_INVALID)
         #expect(badThreshold?.params["field"] == "visualThreshold")
 
-        let negativeGroup = gatherError {
+        let negativeGroup = syncGatherError {
             try DuplicateResolveInput(groupId: -1, resolution: .keepOne)
         }
         #expect(negativeGroup?.code == .INVALID_PARAM)
         #expect(negativeGroup?.params["field"] == "groupId")
 
-        let negativeMember = gatherError {
+        let negativeMember = syncGatherError {
             try DuplicateResolveMemberInput(memberId: -1, isKept: false)
         }
         #expect(negativeMember?.code == .INVALID_PARAM)
@@ -516,7 +459,7 @@ struct APIDuplicateQualityValidationTests {
     @Test("groups：空白 sessionId 走 invalidParameter")
     func groupsRejectsBlankSession() async throws {
         let fixture = try DuplicateQualityFixture()
-        let error = await asyncGatherError {
+        let error = await gatherError {
             try await fixture.duplicateAPI.groups("   ")
         }
         #expect(error?.code == .INVALID_PARAM)
@@ -525,19 +468,19 @@ struct APIDuplicateQualityValidationTests {
 
     @Test("Quality 输入类型：空 photoIds、空白 sessionId 显式失败")
     func qualityInputsRejectInvalidShapes() {
-        let blankSession = gatherError {
+        let blankSession = syncGatherError {
             try QualityAnalyzeInput(sessionId: " ")
         }
         #expect(blankSession?.code == .INVALID_PARAM)
         #expect(blankSession?.params["field"] == "sessionId")
 
-        let emptyPhotoIds = gatherError {
+        let emptyPhotoIds = syncGatherError {
             try QualityAnalyzeInput(sessionId: "s", photoIds: [])
         }
         #expect(emptyPhotoIds?.code == .INVALID_PARAM)
         #expect(emptyPhotoIds?.params["field"] == "photoIds")
 
-        let blankPhotoId = gatherError {
+        let blankPhotoId = syncGatherError {
             try QualityAnalyzeInput(sessionId: "s", photoIds: ["p1", " "])
         }
         #expect(blankPhotoId?.code == .INVALID_PARAM)
@@ -548,7 +491,7 @@ struct APIDuplicateQualityValidationTests {
     func resultsRejectsBlankParameters() async throws {
         let fixture = try DuplicateQualityFixture()
 
-        let blankSession = await asyncGatherError {
+        let blankSession = await gatherError {
             try await fixture.qualityAPI.results(
                 QualityGetParams(sessionId: " ")
             )
@@ -556,7 +499,7 @@ struct APIDuplicateQualityValidationTests {
         #expect(blankSession?.code == .INVALID_PARAM)
         #expect(blankSession?.params["field"] == "sessionId")
 
-        let blankPhotoId = await asyncGatherError {
+        let blankPhotoId = await gatherError {
             try await fixture.qualityAPI.results(
                 QualityGetParams(sessionId: fixture.sessionId, photoIds: [""])
             )

@@ -22,13 +22,6 @@ public struct RoleBindingRow {
     }
 }
 
-/// 绑定信息（TS FaceClusterRow.binding）。
-public struct FaceBindingData: Equatable, Sendable {
-    public let clusterId: String
-    public let roleName: String
-    public let keywords: [String]
-}
-
 /// getBindingsBySession 的绑定详情。
 public struct FaceBindingDetail {
     public let clusterId: Int64

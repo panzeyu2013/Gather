@@ -18,14 +18,12 @@ struct WorkspaceContractTests {
         for (stage, raw) in stages {
             #expect(stage.rawValue == raw)
         }
-
         let indexingStatuses: [(WorkspaceIndexingStatus, String)] = [
             (.idle, "idle"), (.active, "active"), (.failed, "failed"),
         ]
         for (status, raw) in indexingStatuses {
             #expect(status.rawValue == raw)
         }
-
         let kinds: [(WorkspaceStaleAnalysisKind, String)] = [
             (.similarity, "similarity"), (.face, "face"),
         ]
@@ -34,84 +32,48 @@ struct WorkspaceContractTests {
         }
     }
 
-    // MARK: - 子结构
+    // MARK: - 子结构（P2：合并为逐样本断言）
 
-    @Test func workspaceIndexingProgressRoundTrip() throws {
-        let progress = WorkspaceIndexingProgress(total: 100, done: 42, percent: 42.0, status: .active)
-        let data = try JSONEncoder().encode(progress)
-        #expect(try JSONDecoder().decode(WorkspaceIndexingProgress.self, from: data) == progress)
-        #expect(Set(try jsonKeys(of: data)) == ["total", "done", "percent", "status"])
-    }
-
-    @Test func workspaceStaleAnalysisRoundTrip() throws {
-        let stale = WorkspaceStaleAnalysis(kind: .similarity, lastRunAt: "2025-01-01T00:00:00Z")
-        let data = try JSONEncoder().encode(stale)
-        #expect(try JSONDecoder().decode(WorkspaceStaleAnalysis.self, from: data) == stale)
-        #expect(Set(try jsonKeys(of: data)) == ["kind", "lastRunAt"])
-    }
-
-    @Test func workspaceXmpCountsRoundTrip() throws {
-        let xmp = WorkspaceXmpCounts(pending: 3, conflict: 1)
-        let data = try JSONEncoder().encode(xmp)
-        #expect(try JSONDecoder().decode(WorkspaceXmpCounts.self, from: data) == xmp)
-        #expect(Set(try jsonKeys(of: data)) == ["pending", "conflict"])
-    }
-
-    @Test func workspaceFailedJobRoundTrip() throws {
-        let job = WorkspaceFailedJob(id: "job_1", type: "metadata.scan", code: "SCAN_READ_FAILED", message: "E")
-        let data = try JSONEncoder().encode(job)
-        #expect(try JSONDecoder().decode(WorkspaceFailedJob.self, from: data) == job)
-        #expect(Set(try jsonKeys(of: data)) == ["id", "type", "code", "message"])
-    }
-
-    @Test func workspaceRecommendedNextRoundTrip() throws {
-        let next = WorkspaceRecommendedNext(action: "index", target: "s1")
-        let data = try JSONEncoder().encode(next)
-        #expect(try JSONDecoder().decode(WorkspaceRecommendedNext.self, from: data) == next)
-        #expect(Set(try jsonKeys(of: data)) == ["action", "target"])
+    @Test("Workspace 子结构：JSON 往返稳定 + camelCase key 冻结")
+    func workspaceSubDTOsRoundTripAndKeys() throws {
+        try assertRoundTrip(WorkspaceIndexingProgress(total: 100, done: 42, percent: 42.0, status: .active),
+                            keys: ["total", "done", "percent", "status"])
+        try assertRoundTrip(WorkspaceStaleAnalysis(kind: .similarity, lastRunAt: "2025-01-01T00:00:00Z"),
+                            keys: ["kind", "lastRunAt"])
+        try assertRoundTrip(WorkspaceXmpCounts(pending: 3, conflict: 1), keys: ["pending", "conflict"])
+        try assertRoundTrip(WorkspaceFailedJob(id: "job_1", type: "metadata.scan",
+                                               code: "SCAN_READ_FAILED", message: "E"),
+                            keys: ["id", "type", "code", "message"])
+        try assertRoundTrip(WorkspaceRecommendedNext(action: "index", target: "s1"),
+                            keys: ["action", "target"])
     }
 
     // MARK: - WorkspaceStatus
 
     @Test func workspaceStatusRoundTripAndKeys() throws {
-        let original = WorkspaceStatus(
-            sessionId: "s1",
-            stage: .indexed,
+        try assertRoundTrip(WorkspaceStatus(
+            sessionId: "s1", stage: .indexed,
             softFlags: WorkspaceSoftFlags(culled: true, exported: false),
             indexing: WorkspaceIndexingProgress(total: 100, done: 100, percent: 100.0, status: .idle),
             staleAnalyses: [WorkspaceStaleAnalysis(kind: .face, lastRunAt: "t")],
             xmp: WorkspaceXmpCounts(pending: 0, conflict: 0),
-            offlinePhotos: 2,
-            failedJobs: [],
+            offlinePhotos: 2, failedJobs: [],
             recommendedNext: WorkspaceRecommendedNext(action: "culling", target: "s1"),
-            generatedAt: "2025-01-01T00:00:00Z"
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(WorkspaceStatus.self, from: data)
-        #expect(decoded == original)
-
-        let expected = [
-            "sessionId", "stage", "softFlags", "indexing", "staleAnalyses", "xmp",
-            "offlinePhotos", "failedJobs", "recommendedNext", "generatedAt",
-        ]
-        #expect(Set(try jsonKeys(of: data)) == Set(expected), "WorkspaceStatus JSON key 必须与 TS 字段名一致")
-        #expect(!Set(try jsonKeys(of: data)).contains("offline_photos"))
-        #expect(!Set(try jsonKeys(of: data)).contains("stale_analyses"))
+            generatedAt: "2025-01-01T00:00:00Z"),
+            keys: [
+                "sessionId", "stage", "softFlags", "indexing", "staleAnalyses", "xmp",
+                "offlinePhotos", "failedJobs", "recommendedNext", "generatedAt",
+            ],
+            forbiddenKeys: ["offline_photos", "stale_analyses"])
     }
 
     @Test func workspaceStatusRecommendedNextNullAlwaysEncoded() throws {
         let status = WorkspaceStatus(
-            sessionId: "s1",
-            stage: .analyzed,
+            sessionId: "s1", stage: .analyzed,
             softFlags: WorkspaceSoftFlags(culled: true, exported: true),
             indexing: WorkspaceIndexingProgress(total: 0, done: 0, percent: 0, status: .idle),
-            staleAnalyses: [],
-            xmp: WorkspaceXmpCounts(pending: 0, conflict: 0),
-            offlinePhotos: 0,
-            failedJobs: [],
-            recommendedNext: nil,
-            generatedAt: "t"
-        )
+            staleAnalyses: [], xmp: WorkspaceXmpCounts(pending: 0, conflict: 0),
+            offlinePhotos: 0, failedJobs: [], recommendedNext: nil, generatedAt: "t")
         let object = try jsonObject(of: JSONEncoder().encode(status))
         #expect(object["recommendedNext"] is NSNull, "TS recommendedNext: X | null —— nil 必须编码为 null 且 key 恒存在")
     }
@@ -121,19 +83,5 @@ struct WorkspaceContractTests {
         let decoded = try JSONDecoder().decode(WorkspaceStatus.self, from: Data(json.utf8))
         #expect(decoded.recommendedNext == nil)
         #expect(decoded.stage == .imported)
-    }
-    private func jsonKeys(of data: Data) throws -> [String] {
-        Array(try jsonObject(of: data).keys)
-    }
-
-    private func jsonObject(of data: Data) throws -> [String: Any] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ContractTestError.invalidJSON
-        }
-        return object
-    }
-
-    private enum ContractTestError: Error {
-        case invalidJSON
     }
 }

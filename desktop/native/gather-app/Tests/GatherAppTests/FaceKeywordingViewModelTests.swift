@@ -13,6 +13,25 @@ import GatherApplication
 @testable import GatherUI
 @testable import GatherHost
 
+/// 写回项夹具（原 APIFaceUITests 的同名私有 helper，随迁入用例一并搬移）。
+private func faceWritebackItem() -> WritebackItem {
+    WritebackItem(
+        id: 1,
+        photoId: "photo-1",
+        photoPath: "/vault/photo-1.NEF",
+        sessionId: "s1",
+        module: "face",
+        keywords: ["张三"],
+        xmpPath: "/vault/photo-1.xmp",
+        backupPath: "",
+        xmpStatus: "pending",
+        errorMessage: "",
+        attemptCount: 0,
+        lastAttemptAt: "",
+        preview: nil
+    )
+}
+
 @Suite("FaceKeywordingViewModel 步骤状态机", .serialized)
 @MainActor
 struct FaceKeywordingViewModelTests {
@@ -436,5 +455,64 @@ struct FaceKeywordingViewModelTests {
         #expect(vm.progressCurrent == 4)
         #expect(vm.progressTotal == 12)
         #expect(vm.progressPhase == "face.detecting")
+    }
+
+    // ── 类型化输入：analyze / 写回确认 / 取消（原 APIFaceUITests 逐断言迁入） ──
+    //
+    // B8.4 起唯一构造器就是 makeStack 的注入路径；本组用例保留旧文件里
+    // 「参数落到 FaceAPI / Confirmed(.userDialog) / cancel 走 FaceAPI」三条
+    // 行为断言，其余两条已由上方同名用例覆盖（clusters/bind、reload 恢复）。
+
+    @Test("analyze：eps/minSamples 进 FaceAPI，成功态进入审核")
+    func analyzeUsesFaceAPI() async {
+        let (vm, face, _) = makeStack(sessionId: "session-a")
+        face.analyzeResultValue = FaceAnalysisResult(
+            status: "done", detectionFailures: 1, encodingFailures: 0
+        )
+        vm.eps = 0.5
+        vm.minSamples = 2
+
+        await vm.analyze()
+
+        #expect(face.analyzeInputs.count == 1)
+        #expect(face.analyzeInputs[0].sessionId == "session-a")
+        #expect(face.analyzeInputs[0].eps == 0.5)
+        #expect(face.analyzeInputs[0].minSamples == 2)
+        #expect(vm.analysisResult?.detectionFailures == 1)
+        #expect(vm.analysisPhase == .done)
+        #expect(vm.step == .review)
+        // analyze 成功后 reload：簇/模型状态/job 恢复都走注入的端口。
+        #expect(face.clusterCalls == ["session-a"])
+        #expect(face.modelsCalls == 1)
+    }
+
+    @Test("writeback：未确认不发命令；确认后 Confirmed(.userDialog) + 预览 items")
+    func writebackRequiresUserDialogConfirmation() async {
+        let (vm, face, _) = makeStack(sessionId: "s1")
+        face.previewValue = WritebackPreview(
+            items: [faceWritebackItem()], totalCount: 1, affectedPhotos: 1
+        )
+        await vm.analyze()
+
+        await vm.previewWriteback()
+        #expect(vm.preview?.items.count == 1)
+        #expect(face.previewInputs.count == 1)
+
+        await vm.writeback(confirmed: false)
+        #expect(face.writebackInputs.isEmpty, "用户取消后不得发出写回")
+
+        await vm.writeback(confirmed: true)
+        #expect(face.writebackInputs.count == 1)
+        #expect(face.writebackInputs[0].source == .userDialog)
+        #expect(face.writebackInputs[0].value.items.count == 1)
+        #expect(face.writebackInputs[0].value.items[0].id == 1)
+    }
+
+    @Test("cancelAnalysis：走 FaceAPI，不再发路由命令")
+    func cancelUsesFaceAPI() async {
+        let (vm, face, _) = makeStack(sessionId: "session-a")
+        await vm.cancel()
+        #expect(face.cancelCalls == ["session-a"])
+        #expect(vm.notice != nil)
     }
 }

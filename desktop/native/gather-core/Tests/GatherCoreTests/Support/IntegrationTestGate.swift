@@ -7,4 +7,11 @@ import Foundation
 enum IntegrationTestGate {
     static let modelTestsEnabled =
         ProcessInfo.processInfo.environment["GATHER_MODEL_TESTS"] == "1"
+
+    // 已知边界（task-42 静态审计）：未 gated 的 FaceKwService.analyze 用例仍会经
+    // 生产路径 FaceEmbeddingModelFactory.make(modelPath: "") 编译 37MB 内置
+    // SFace.mlpackage——测试注入的 decodeProvider/inferenceProvider 绕不过这一层
+    //（analyze 开头无条件创建嵌入实例）。同进程只编译一次、后续命中 provider 缓存；
+    // 若要默认 PR 套件彻底不编译模型，需在 Sources 给 FaceKwService 增加嵌入模型
+    // 注入点（跨轮事项，非本文件可解决）。
 }

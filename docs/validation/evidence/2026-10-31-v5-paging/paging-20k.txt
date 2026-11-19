@@ -1,4 +1,0 @@
-PERF constraint=20k-sorted-pages captureP95=48.0ms ratingP95=36.7ms triageP95=36.3ms
-✔ Test twentyThousandAssetsSortedPages() passed after 1.589 seconds.
-✔ Suite "Culling 20k 排序分页性能" passed after 1.589 seconds.
-✔ Test run with 1 test in 1 suite passed after 1.589 seconds.

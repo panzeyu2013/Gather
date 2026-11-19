@@ -95,10 +95,8 @@ private struct PhotoAPIFixture {
 }
 
 private func makeTempDirectory() throws -> URL {
-    let url = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("gather-b2-api-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    return url
+    // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+    URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: "gather-b2-api"))
 }
 
 /// 1x1 PNG：用于让 RAWDecoder.getDimensions 走真实 ImageIO 路径。
@@ -110,17 +108,6 @@ private func makePNG(in directory: URL, name: String = "pixel.png") throws -> St
     let url = directory.appendingPathComponent(name)
     try onePixelPNG.write(to: url)
     return url.path
-}
-
-private func gatherError<T>(_ body: () async throws -> T) async -> GatherError? {
-    do {
-        _ = try await body()
-        return nil
-    } catch let error as GatherError {
-        return error
-    } catch {
-        return nil
-    }
 }
 
 @Suite("B2 Live API")

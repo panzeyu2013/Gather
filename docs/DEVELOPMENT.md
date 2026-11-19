@@ -59,15 +59,24 @@ docs/                                # 当前文档（历史快照已清理，�
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh core
 CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh app
 ./scripts/test.sh all
+
+# 排障/串行：--no-parallel；超时与日志：TEST_TIMEOUT / TEST_LOG
+./scripts/test.sh core --no-parallel
+TEST_TIMEOUT=1800 TEST_LOG=/tmp/gather-tests.log ./scripts/test.sh app
+# 清理 >1 天的测试临时残留（只统计加 --apply 才删）
+./scripts/test.sh --clean-temp [--apply]
 ```
 
 - `scripts/test.sh` 只做编排：core 中 `LoggerTests` / `TraceLoggingTests` /
   `LogFileSinkTests` / `ReadPoolTests` 改动进程级日志或慢事务阈值，脚本自动扫描后放进
-  第二遍串行跑（`--skip-build`）；其余并行，app 也并行。
-- 单例或共享状态排障直接 `swift test --no-parallel`。
-- CI 只跑串行（`swift test --no-parallel` + 日志落盘 + 20 分钟看门狗）：macOS runner
-  只有 3–4 vCPU，进程内并行 + 阻塞型锁会耗尽协作线程池，2026-10-29 复盘见
-  [test-runtime-audit.md](test-runtime-audit.md) §9。
+  第二遍串行跑（`--skip-build`）；其余并行，app 也并行。`scripts/test.sh` 与 CI 共用
+  `scripts/run-swift-tests.sh` 的参数/日志/看门狗口径（拒绝本地绿、CI 红）。
+- 单例或共享状态排障用 `./scripts/test.sh <core|app> --no-parallel`（或 `TEST_SERIAL=1`），不必记两套命令。
+- **CI 与本地共用同一个测试执行器**：CI 两步只调 `scripts/run-swift-tests.sh core|app`（固定串行 +
+  `--explicit-target-dependency-import-check error` + 日志落盘 + 20 分钟看门狗 + 失败摘要）；
+  `scripts/test.sh` 复用同一套 env 口径。CI 串行的原因：macOS runner 只有 3–4 vCPU，进程内
+  并行 + 阻塞型锁会耗尽协作线程池（2026-10-29 复盘见 ci.yml Core tests 步骤注释）。gather-core /
+  gather-app 两个测试 job 并行执行（无依赖），release 依赖 gates + 两个测试 job。
 - 默认套件只验证正确性；CoreML/Vision/真实照片与质量基线是手动 opt-in：
   `GATHER_MODEL_TESTS=1`、`GATHER_FACE_FIXTURE`、`GATHER_TEST_MATRIX_STEPS=200`；
   benchmark 用 `gather-core-benchmarks --quality/--margin/--smoke/--incremental`
@@ -77,6 +86,16 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh
 - 测试期间不出现可见窗口或系统面板：真实挂载用例的宿主 NSWindow 置 `alphaValue = 0`
   （`WorkspaceVisibilityTests` 守卫）；`NSOpenPanel`/`NSSavePanel`/`NSAlert` 只由手工
   验收触发。
+- **性能剖析（macOS）**：`scripts/profile-tests.sh core|app [--parallel] [--top N]` 跑一次
+  `swift test`，同时采集 `/usr/bin/time -l`（real/user/sys/max RSS）与 Swift Testing 事件流，
+  输出每测试耗时 Top N、按 suite 聚合耗时与总耗时/RSS；`PROFILE_KEEP=1` 保留现场。
+  分片：`scripts/test-shard.sh core|app <N>` 按顶层 @Suite/@Test 单元轮转生成 `--filter`，
+  每片串行执行并汇总耗时（用于大套件拆分与 CI 并行评估）。两个工具在 Linux 只支持
+  `--dry-run/--self-test`（参数装配与解析器/分片器负样本自测），真实剖析需 macOS。
+  CI 通过 `TEST_EVENT_STREAM=<path>` 可让 `scripts/run-swift-tests.sh` 产出事件流（默认关闭）；
+  `scripts/audit-test-costs.py`（report-only，非门禁）静态扫描测试成本代理（真实库打开/临时
+  IO/固定 sleep/Process/Vision/大图像），`--json` 可做优化前后对比；其 score 仅用于排序，
+  不代表真实耗时。
 - 测试/编译成功只证明链路可构建可执行；真实照片、人脸推理质量、签名公证、商业性能
   与 GUI 行为（窗口生命周期、面板焦点、C1 联动）是明确排除的外部证据，不能用自动化
   绿灯替代。
@@ -89,7 +108,8 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh
 ./desktop/native/build.sh        # 产物 release/Gather.app（OUTPUT_DIR 可覆盖）
 ```
 
-- 脚本构建 gather-core + GatherApp，并在存在 Capture One SDK 时按 `GATHER_ARCHS`
+- 脚本只构建 GatherApp（gather-core 经 path 依赖在 app 的 `.build` 内联构建；旧的独立 core 包构建已删除，
+  每次发布省 1–3 分钟），并在存在 Capture One SDK 时按 `GATHER_ARCHS`
   逐切片构建 `GatherLink.coplugin`；组装前断言内置 `FaceModels/SFace.mlpackage` +
   `manifest.json` 与两套非空 `Localizable.strings`。
 - 默认不签名；`CODESIGN_IDENTITY` 存在时才签（hardened runtime +
@@ -109,9 +129,18 @@ CLANG_MODULE_CACHE_PATH=/private/tmp/gather-clang-module-cache ./scripts/test.sh
 - `release/Gather.app/Contents/Resources/build-info.json` 记录 version / build /
   commit / dirty / archs / plugin / minos / sdk 等固定键序字段，不含时间戳。
 - 发布产物是 universal + 签名 + 公证。CI release job 只在 `v*` tag 或
-  `workflow_dispatch` 时运行（`needs: [gates, gather-app]`，要求 macOS 26 SDK）。
-  授权 SDK 不在仓库内；真实签名、公证与 Gatekeeper 验收只能在具备条件的机器或
-  release runner 上完成。
+  `workflow_dispatch` 时运行（`needs: [gates, gather-core, gather-app]`，要求 macOS 26 SDK）。
+  授权 SDK 不在仓库内；release job 先跑 `Preflight licensed Capture One SDK`（缺 SDK/Makefile
+  直接 fail-fast 并指向 self-hosted runner），真实签名、公证与 Gatekeeper 验收只能在具备
+  条件的机器或 release runner 上完成。release job 的实际运行环境需 self-hosted macOS 26 +
+  Xcode 26+ + 授权 C1 Plugin SDK（hosted `macos-26` 会在 preflight fail-fast），签名/公证凭据
+  通过 secrets 注入。
+- 最终产物由 CI 的 `Verify release zip` 步骤解包验收（`scripts/verify-release-bundle.sh`）：
+  sha256、包布局、版本/部署目标/图标、app 与插件的双切片/minos/SDK、`Metadata.appintents`
+  （唯一实现，复用 `check-appintents.sh`）、build-info 语义、`codesign --verify --deep --strict`
+  + Developer ID/hardened runtime/timestamp/entitlements、`stapler`/`spctl`；任一步失败即拒绝发布。
+  `scripts/verify-release-bundle.sh --self-test` 可在 Linux 上跑（伪造 bundle 的 fail-closed 负样本，
+  已接入 CI gates job）。
 - `desktop/native/Gather.entitlements` 只声明
   `com.apple.security.automation.apple-events`（Capture One 桥接）。**不开启 App
   Sandbox**：当前签名/运行模型没有沙盒容器，沙盒化需要单独的容器迁移与
@@ -141,15 +170,16 @@ SwiftPM 不会执行 Xcode 的 `ExtractAppIntentsMetadata` 构建步骤，裸 `s
   ```
 
   输出会列出 `Metadata.appintents` 的 version、actions 标识与 autoShortcuts 数；
-  默认强制校验 4 个 Wave3 intent（`CreateWorkspaceAndImportIntent`/`ExportWorkspaceIntent`/
-  `WritebackWorkspaceMetadataIntent`/`WorkspaceStatusIntent`）齐全（缺一即 exit 1）；
-  Wave5 另有 `QueryPhotosIntent`/`RatePhotosIntent`，当前共 6 个动作。
+  默认强制校验全部 6 个 intent（`CreateWorkspaceAndImportIntent`/`ExportWorkspaceIntent`/
+  `WritebackWorkspaceMetadataIntent`/`WorkspaceStatusIntent`/`QueryPhotosIntent`/
+  `RatePhotosIntent`）齐全（缺一即 exit 1）；`build-appintents-metadata.sh` 的自检已改为直接调用
+  该脚本，不再维护第二份 intent 清单。
 
 Shortcuts.app 端到端验收步骤：
 
 1. 构建并确认 `release/Gather.app/Contents/Resources/Metadata.appintents/extract.actionsdata`
    与 `version.json` 存在；
-2. `./scripts/check-appintents.sh` 通过（列出 intent 标识，默认强制校验其中 4 个）；
+2. `./scripts/check-appintents.sh` 通过（列出 intent 标识，默认强制校验全部 6 个）；
 3. `open -n release/Gather.app`，等待应用完成启动（首次可配合
    `--data-dir`/`GATHER_APPLICATION_SUPPORT_DIR` 使用隔离库）；
 4. 打开 Shortcuts.app → 新建快捷指令 → 搜索 "Gather"：应能看到「新建工作区并导入」
@@ -261,14 +291,14 @@ GatherApplication（服务编排；交付在 GatherDelivery）
 
 ## 性能
 
-- **性能反模式 ratchet（gate #17）**：`scripts/check-perf-ratchet.sh` 统计
+- **性能反模式 ratchet（门禁清单中的 `check-perf-ratchet.sh`；当前门禁 24 道）**：`scripts/check-perf-ratchet.sh` 统计
   `desktop/native/*/Sources/**/*.swift`（Tests 不计）的 9 类「一次性昂贵构造/内联链」行数：
   `raw_date_formatter` / `raw_iso_formatter` / `raw_json_encoder` / `raw_json_decoder` /
   `raw_json_encode_chain` / `raw_json_decode_chain` / `raw_regex_compile` /
   `raw_byte_formatter` / `blocking_sleep`（两条 chain 统计 `JSONEncoder()`/`JSONDecoder()`
   后立即 `.encode/.decode` 的内联回潮形态；`blocking_sleep` 已归零 = 零容忍）。基线在
-  `docs/perf-baseline.json`，只降不升；指标回落时用 `--write-baseline` 收紧（确需扩张必须
-  `--allow-growth` 并在 `docs/reviews/` 记账）；`./scripts/report-baseline.sh` 的性能段同步输出
+  `docs/baselines/perf-baseline.json`，只降不升；指标回落时用 `--write-baseline` 收紧（确需扩张必须
+  `--allow-growth` 并在 `docs/cleanup-backlog.md` 记账）；`./scripts/report-baseline.sh` 的性能段同步输出
   这 9 项 current/baseline/status。**新增热点代码必须复用既有共享缓存**：
   `DisplayDateFormatters`（GatherUI/Support/DateFormatting.swift）、`JSONValueCoding`、
   `RepoJSONCoding`、`RepositoryDateFormatters`，以及 `Synchronization.Mutex` 锁盒子内的
@@ -300,7 +330,7 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 
 ```bash
 ./scripts/check-no-legacy.sh             # 无 Legacy/兼容层、WebKit/JS、Electron；app 无 JSONSerialization
-./scripts/check-cleanup-ratchet.sh       # 9 个清理指标不超 docs/cleanup-baseline.json（新增 try_bang/as_bang/fatal_error 零基线、nonisolated_unsafe ≤7）
+./scripts/check-cleanup-ratchet.sh       # 9 个清理指标不超 docs/baselines/cleanup-baseline.json（新增 try_bang/as_bang/fatal_error 零基线、nonisolated_unsafe ≤4）
 ./scripts/check-layering.sh              # 依赖方向（UI 不 import Persistence/Domain/Analysis/Delivery/Host）
 ./scripts/check-domain-events.sh         # 域事件：通道名只在 2 个文件、发布点与域字面量在登记表内（#11）
 ./scripts/check-domain-writes.sh         # 写路径必发域：叶子写函数必须发域 / 显式 none + 理由（#11 R3）
@@ -314,7 +344,14 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 ./scripts/check-design-system.sh
 ./scripts/check-repo-hygiene.sh          # 仓库层卫生 7 节：bash -n/执行位/CRLF、.editorconfig、Markdown 链接、本地化表、无缓存产物、shellcheck（-S warning，缺失即 FAIL，需预装）、本地化用法守卫
 ./scripts/check-docs-facts.sh            # 文档事实：README/docs 的基线数字须与源码计算一致（targets/域 API/schema/en key/门禁数）
-./scripts/check-perf-ratchet.sh          # 性能反模式构造点只降不升（9 指标；基线 docs/perf-baseline.json，--write-baseline 收紧）
+./scripts/check-perf-ratchet.sh          # 性能反模式构造点只降不升（9 指标；基线 docs/baselines/perf-baseline.json，--write-baseline 收紧）
+./scripts/check-lock-order.sh --strict    # G0 锁序：GatherDelivery 的 transaction 块内禁止 XMPFileLock/文件端口（DB→XMP 反向锁序零容忍，基线 0 违规）
+./scripts/check-import-graph.sh --strict  # G1 target 依赖边/import 图：未声明 import + target 级 SCC 环 + 基线外新增 target/依赖边
+./scripts/check-module-size.sh --strict   # G2 模块规模：Sources LOC/最大文件 LOC 只降不升（--allow-growth 需记账）；Tests 规模与文件数上涨只告警
+./scripts/check-concurrency-whitelist.sh --strict # G3 并发标注白名单：@unchecked Sendable/nonisolated(unsafe) 的 file:type 位置只减不增（当前 60/4）
+./scripts/check-layer-symbols.sh --strict # G4 Application 符号级越界：DBConnection/Database(/SQLite3/CSQLite 白名单（MaintenanceService 的 VACUUM 按 ADR-035 登记例外，其余新增即红）
+./scripts/check-public-surface-app.sh --strict # G5 app public 面：四 target 的 public 类型/声明行 + API protocol requirement 行只降不升
+./scripts/check-port-row-surface.sh --strict # G6 端口/行类型表面：Persistence 端口与 requirement 方法数（增长需 --allow-growth）、无**有效** fake 端口数（fake 需被测试引用）/ public 行类型数 / Application 对 Persistence 行类型引用数只降不升、DBRow 外溢必须 0；台账 docs/baselines/port-row-surface-baseline.json
 ./scripts/check-warnings.sh core        # core Sources -warnings-as-errors（CI 的 gather-core job）
 ./scripts/check-warnings.sh app         # app Sources -warnings-as-errors（CI 的 gather-app job）
 ```
@@ -328,6 +365,19 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 ./scripts/report-baseline.sh  # 只读事实报告（非门禁）：targets / API / 测试声明 / 本地化 / schema / protocol / cleanup / 性能 ratchet（9 指标）基线
 ```
 
+### 门禁基线布局（2026-11-18 精简：12 → 6 文件）
+
+所有 ratchet 门禁的冻结快照集中在 `docs/baselines/`（不再散落在 `docs/` 根目录）；它们是**机器输入而非文档**，不要手工编辑，统一用对应门禁的 `--write-baseline`（默认拒涨；确需扩张加 `--allow-growth` 并在 `docs/cleanup-backlog.md` 记账）。统一 schema=2，不再写 `generated_at`（减少重钉 diff 噪声）。
+
+| 文件 | 读取者 | 内容 |
+| --- | --- | --- |
+| `structure-baseline.json` | G0–G5（`check-structural-gates.py` 共享实现） | `gates.lock-order` / `gates.import-graph` / `gates.module-size` / `gates.concurrency-whitelist` / `gates.layer-symbols` / `gates.public-surface-app` 六个 section，语义与旧独立文件一致 |
+| `surface-baseline.json` | `check-protocol-surface.sh` | `gates.protocol-surface`（Protocol 公开面总量）+ `gates.protocol-surface-modules`（5 模块公开面） |
+| `cleanup-baseline.json` | `check-cleanup-ratchet.sh` | 9 个清理指标（try?/try!/as!/fatalError/unchecked Sendable/nonisolated unsafe 等） |
+| `perf-baseline.json` | `check-perf-ratchet.sh` | 9 个性能反模式构造点 |
+| `design-system-baseline.json` | `check-design-system.sh` | 8 个 design token 指标 |
+| `port-row-surface-baseline.json` | `check-port-row-surface.sh` | G6 指标 + 44 条端口准入台账 |
+| `test-catalog-baseline.json` | `check-test-catalog.sh` | 测试目录 ratchet：@Test/@Suite/断言声明数 + skip 站点数（4 指标，删除用例走 `--write-baseline`） |
 ## 类型化 API 契约
 
 - 16 个域协议 / 195 个方法（`GatherProtocol/API/*API.swift`）。旧 118 条字符串命令已
@@ -376,5 +426,4 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 - [项目总览](README.md)
 - [路线图](ROADMAP.md)
 - [架构决策记录](ADR.md)
-- [测试体系审计与优化](test-runtime-audit.md)
 - [设计系统与页面配方](design/appearance-interaction.md)

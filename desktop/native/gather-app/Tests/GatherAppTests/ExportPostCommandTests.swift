@@ -12,6 +12,7 @@
 // 边界：只用系统 /bin/echo、/bin/sleep；不写仓库外持久文件（manifest 在临时目录）。
 import Foundation
 import Testing
+import GatherTestSupport
 @testable import GatherApplication
 @testable import GatherProtocol
 @testable import GatherHost

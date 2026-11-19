@@ -64,22 +64,68 @@ trap 'rm -rf "$SCRATCH"' EXIT
 
 echo "check-repo-hygiene: 仓库卫生门禁"
 
-# ===== [a] 脚本语法 / shebang 执行位 / CRLF =====
-echo "[a] 脚本语法 / shebang 执行位 / CRLF"
-if python3 - "$SCRATCH" <<'PY_A'
+if ! python3 - "$SCRATCH" <<'PY_HYGIENE'
+# check-repo-hygiene 的检查内核：七节合并为单进程，git ls-files 与文件读取各一次。
+# 由 scripts/check-repo-hygiene.sh 通过 heredoc 调用，输出行格式与逐节旧实现逐字节一致。
+# 参数：argv[1] = 临时目录（SCRATCH），用于 py_compile 字节码与 shellcheck 输出。
+import contextlib
+import io
 import os
+import py_compile
+import re
+import shutil
 import subprocess
 import sys
+import traceback
 
-scratch = sys.argv[1]
+SCRATCH = sys.argv[1]
+FAIL = False
 
+# ---- 共用：一次 git ls-files；文件内容按需缓存，一次读盘复用给多节 ----
 tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
 tracked = sorted(p.decode('utf-8', 'surrogateescape') for p in tracked if p)
-if not tracked:
-    print('    FAIL git ls-files 返回 0 个 tracked 文件，疑似不在 git 检出内')
-    sys.exit(1)
+# 空 tracked：与旧实现一致——[a] 打印 FAIL 并结束本节，其余节仍按空清单继续检查。
+TRACKED_EMPTY = not tracked
 
-fail = False
+BYTES = {}
+HEAD2 = {}
+READ_ERRORS = {}
+
+
+def read_bytes(path):
+    if path in BYTES:
+        return BYTES[path]
+    if path in READ_ERRORS:
+        return None
+    try:
+        with open(path, 'rb') as fh:
+            data = fh.read()
+    except OSError as exc:
+        READ_ERRORS[path] = exc
+        return None
+    BYTES[path] = data
+    return data
+
+
+def read_head2(path):
+    """只读前 2 字节（shebang 判定），避免为 1,200 个文件整读。"""
+    if path in HEAD2:
+        return HEAD2[path]
+    try:
+        with open(path, 'rb') as fh:
+            head = fh.read(2)
+    except OSError as exc:
+        READ_ERRORS[path] = exc
+        return None
+    HEAD2[path] = head
+    return head
+
+
+def read_text(path):
+    data = read_bytes(path)
+    if data is None:
+        return None
+    return data.decode('utf-8')
 
 
 def dump(text):
@@ -87,782 +133,811 @@ def dump(text):
         print('        ' + line)
 
 
-# 1) bash -n：stderr 必须为空（warning 也是错）。
-sh_files = [p for p in tracked if p.endswith('.sh')]
-sh_bad = []
-if len(sh_files) < 15:
-    print('    FAIL 只扫到 %d 个 .sh（<15），疑似 git 路径/检出异常' % len(sh_files))
-    fail = True
-for path in sh_files:
-    proc = subprocess.run(['bash', '-n', path], capture_output=True, text=True)
-    if proc.returncode != 0:
-        print('    FAIL bash -n 失败：%s' % path)
-        dump(proc.stderr.strip())
-        sh_bad.append(path)
-    elif proc.stderr.strip():
-        print('    FAIL bash -n stderr 非空（如 heredoc 未闭合）：%s' % path)
-        dump(proc.stderr.strip())
-        sh_bad.append(path)
-if sh_bad:
-    fail = True
-else:
-    print('    ok    bash -n：%d 个 .sh，stderr 全空' % len(sh_files))
-
-# 2) python3 -m py_compile（PYTHONPYCACHEPREFIX 指向临时目录，避免写仓库 __pycache__）。
-py_files = [p for p in tracked if p.startswith('scripts/') and p.endswith('.py')]
-py_bad = []
-if len(py_files) < 2:
-    print('    FAIL 只扫到 %d 个 scripts/**/*.py（<2），疑似 git 路径/检出异常' % len(py_files))
-    fail = True
-env = dict(os.environ)
-env['PYTHONPYCACHEPREFIX'] = os.path.join(scratch, 'pycache')
-for path in py_files:
-    proc = subprocess.run(
-        [sys.executable or 'python3', '-m', 'py_compile', path],
-        capture_output=True, text=True, env=env)
-    if proc.returncode != 0:
-        print('    FAIL py_compile 失败：%s' % path)
-        dump(proc.stderr.strip())
-        py_bad.append(path)
-if py_bad:
-    fail = True
-else:
-    print('    ok    py_compile：%d 个 scripts/**/*.py' % len(py_files))
-
-# 3) shebang 文件必须有执行位（git 检出的 100755；stat 位判定不受 root 影响）。
-shebang_files = []
-for path in tracked:
+def run_section(header, func):
+    """打印节标题；节内异常与旧实现一致：traceback 到 stderr、本节 FAIL、后续节继续。"""
+    print(header)
     try:
-        with open(path, 'rb') as fh:
-            if fh.read(2) == b'#!':
-                shebang_files.append(path)
-    except OSError as exc:
-        print('    FAIL 无法读取：%s（%s）' % (path, exc))
-        fail = True
-shebang_bad = []
-if len(shebang_files) < 20:
-    print('    FAIL 只扫到 %d 个 shebang 文件（<20），疑似扫描面失效' % len(shebang_files))
-    fail = True
-for path in shebang_files:
-    mode = os.stat(path).st_mode
-    if not (mode & 0o111):
-        print('    FAIL shebang 文件缺执行位：%s（chmod +x）' % path)
-        shebang_bad.append(path)
-if shebang_bad:
-    fail = True
-else:
-    print('    ok    shebang 执行位：%d 个文件全部可执行' % len(shebang_files))
+        ok = func()
+    except Exception:
+        traceback.print_exc()
+        ok = False
+    print('    PASS' if ok else '    FAIL')
+    return ok
 
-# 4) *.sh 不得含 CR（CRLF 或孤 CR）。
-crlf_bad = []
-for path in sh_files:
-    with open(path, 'rb') as fh:
-        if b'\r' in fh.read():
+
+# ===== [a] 脚本语法 / shebang 执行位 / CRLF =====
+def section_a():
+    fail = False
+    if TRACKED_EMPTY:
+        print('    FAIL git ls-files 返回 0 个 tracked 文件，疑似不在 git 检出内')
+        return False
+    sh_files = [p for p in tracked if p.endswith('.sh')]
+    sh_bad = []
+    if len(sh_files) < 15:
+        print('    FAIL 只扫到 %d 个 .sh（<15），疑似 git 路径/检出异常' % len(sh_files))
+        fail = True
+    for path in sh_files:
+        proc = subprocess.run(['bash', '-n', path], capture_output=True, text=True)
+        if proc.returncode != 0:
+            print('    FAIL bash -n 失败：%s' % path)
+            dump(proc.stderr.strip())
+            sh_bad.append(path)
+        elif proc.stderr.strip():
+            print('    FAIL bash -n stderr 非空（如 heredoc 未闭合）：%s' % path)
+            dump(proc.stderr.strip())
+            sh_bad.append(path)
+    if sh_bad:
+        fail = True
+    else:
+        print('    ok    bash -n：%d 个 .sh，stderr 全空' % len(sh_files))
+
+    py_files = [p for p in tracked if p.startswith('scripts/') and p.endswith('.py')]
+    py_bad = []
+    if len(py_files) < 2:
+        print('    FAIL 只扫到 %d 个 scripts/**/*.py（<2），疑似 git 路径/检出异常' % len(py_files))
+        fail = True
+    env = dict(os.environ)
+    env['PYTHONPYCACHEPREFIX'] = os.path.join(SCRATCH, 'pycache')
+    pycache_dir = os.path.join(SCRATCH, 'pycache')
+    os.makedirs(pycache_dir, exist_ok=True)
+    pycfile = os.path.join(pycache_dir, 'verify.pyc')
+    for path in py_files:
+        ok = True
+        stderr = ''
+        try:
+            py_compile.compile(path, cfile=pycfile, doraise=True)
+        except Exception:
+            # 失败时回退到子进程，保证与旧实现（python3 -m py_compile）的 stderr 逐字节一致。
+            proc = subprocess.run(
+                [sys.executable or 'python3', '-m', 'py_compile', path],
+                capture_output=True, text=True, env=env)
+            ok = proc.returncode == 0
+            stderr = proc.stderr
+        if not ok:
+            print('    FAIL py_compile 失败：%s' % path)
+            dump(stderr.strip())
+            py_bad.append(path)
+    if py_bad:
+        fail = True
+    else:
+        print('    ok    py_compile：%d 个 scripts/**/*.py' % len(py_files))
+
+    shebang_files = []
+    for path in tracked:
+        head = read_head2(path)
+        if head is None:
+            exc = READ_ERRORS[path]
+            print('    FAIL 无法读取：%s（%s）' % (path, exc))
+            fail = True
+            continue
+        if head == b'#!':
+            shebang_files.append(path)
+    shebang_bad = []
+    if len(shebang_files) < 20:
+        print('    FAIL 只扫到 %d 个 shebang 文件（<20），疑似扫描面失效' % len(shebang_files))
+        fail = True
+    for path in shebang_files:
+        try:
+            mode = os.stat(path).st_mode
+        except OSError:
+            mode = 0
+        if not (mode & 0o111):
+            print('    FAIL shebang 文件缺执行位：%s（chmod +x）' % path)
+            shebang_bad.append(path)
+    if shebang_bad:
+        fail = True
+    else:
+        print('    ok    shebang 执行位：%d 个文件全部可执行' % len(shebang_files))
+
+    crlf_bad = []
+    for path in sh_files:
+        data = read_bytes(path)
+        if data is None:
+            raise READ_ERRORS[path]
+        if b'\r' in data:
             print('    FAIL .sh 含 CR（应仅 LF）：%s' % path)
             crlf_bad.append(path)
-if crlf_bad:
-    fail = True
-else:
-    print('    ok    .sh 无 CR：%d 个' % len(sh_files))
+    if crlf_bad:
+        fail = True
+    else:
+        print('    ok    .sh 无 CR：%d 个' % len(sh_files))
+    return not fail
 
-sys.exit(1 if fail else 0)
-PY_A
-then
-  echo "    PASS"
-else
-  echo "    FAIL"
-  FAIL=1
-fi
 
-# ===== [b] .editorconfig 一致性 =====
-echo "[b] .editorconfig 一致性（LF / 无行尾空白 / 末行换行 / UTF-8）"
-if python3 - <<'PY_B'
-import subprocess
-import sys
-
-TEXT_EXT = (
-    '.swift', '.md', '.sh', '.py', '.json', '.yml', '.yaml', '.strings', '.txt',
-    # 评审 R4-F3：.editorconfig [*] 对所有文件生效，检查面不应只覆盖硬编码子集。
-    '.plist', '.entitlements', '.modulemap', '.h', '.c', '.tsv', '.pbxproj',
-    '.xcconfig', '.m', '.mm',
-)
-TEXT_FILENAMES = ('Makefile', 'LICENSE', 'SHA256SUMS', '.gitignore')
-EDITORCONFIG = '.editorconfig'
-
-tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
-tracked = sorted(p.decode('utf-8', 'surrogateescape') for p in tracked if p)
-files = [p for p in tracked
-         if p.endswith(TEXT_EXT)
-         or p in (EDITORCONFIG, '.gitattributes')
-         or p.rsplit('/', 1)[-1] in TEXT_FILENAMES]
-
-fail = False
-if len(files) < 1000:
-    print('    FAIL 只扫到 %d 个文本文件（<1000），疑似扫描面失效' % len(files))
-    fail = True
-if EDITORCONFIG not in files:
-    print('    FAIL 缺少 %s' % EDITORCONFIG)
-    fail = True
-
-problems = []
-for path in files:
-    try:
-        data = open(path, 'rb').read()
-    except OSError as exc:
-        problems.append((path, 'read error: %s' % exc))
-        continue
-    if data.startswith(b'\xef\xbb\xbf'):
-        problems.append((path, 'has UTF-8 BOM (charset=utf-8)'));
-        continue
-    if b'\r' in data:
-        problems.append((path, 'has CR (end_of_line=lf)'))
-        continue
-    try:
-        text = data.decode('utf-8')
-    except UnicodeDecodeError as exc:
-        problems.append((path, 'not UTF-8: %s' % exc))
-        continue
-    if not text:
-        continue
-    for no, line in enumerate(text.split('\n'), 1):
-        if line != line.rstrip(' \t'):
+# ===== [b] .editorconfig 一致性（LF / 无行尾空白 / 末行换行 / UTF-8） =====
+def section_b():
+    TEXT_EXT = (
+        '.swift', '.md', '.sh', '.py', '.json', '.yml', '.yaml', '.strings', '.txt',
+        '.plist', '.entitlements', '.modulemap', '.h', '.c', '.tsv', '.pbxproj',
+        '.xcconfig', '.m', '.mm',
+    )
+    TEXT_FILENAMES = ('Makefile', 'LICENSE', 'SHA256SUMS', '.gitignore')
+    EDITORCONFIG = '.editorconfig'
+    files = [p for p in tracked
+             if p.endswith(TEXT_EXT)
+             or p in (EDITORCONFIG, '.gitattributes')
+             or p.rsplit('/', 1)[-1] in TEXT_FILENAMES]
+    fail = False
+    if len(files) < 1000:
+        print('    FAIL 只扫到 %d 个文本文件（<1000），疑似扫描面失效' % len(files))
+        fail = True
+    if EDITORCONFIG not in files:
+        print('    FAIL 缺少 %s' % EDITORCONFIG)
+        fail = True
+    problems = []
+    for path in files:
+        data = read_bytes(path)
+        if data is None:
+            problems.append((path, 'read error: %s' % READ_ERRORS[path]))
+            continue
+        if data.startswith(b'\xef\xbb\xbf'):
+            problems.append((path, 'has UTF-8 BOM (charset=utf-8)'))
+            continue
+        if b'\r' in data:
+            problems.append((path, 'has CR (end_of_line=lf)'))
+            continue
+        try:
+            text = data.decode('utf-8')
+        except UnicodeDecodeError as exc:
+            problems.append((path, 'not UTF-8: %s' % exc))
+            continue
+        if not text:
+            continue
+        m = re.search(r'[ \t](?=\n|$)', text)
+        if m:
+            no = text.count('\n', 0, m.start()) + 1
             problems.append((path, 'L%d trailing whitespace (trim_trailing_whitespace)' % no))
-            break
-    if not text.endswith('\n'):
-        problems.append((path, 'missing final newline (insert_final_newline)'))
+        if not text.endswith('\n'):
+            problems.append((path, 'missing final newline (insert_final_newline)'))
+    if problems:
+        fail = True
+        shown = problems[:40]
+        for path, why in shown:
+            print('    FAIL %s：%s' % (path, why))
+        if len(problems) > len(shown):
+            print('    FAIL ... 另有 %d 个文件不合规（合计 %d）'
+                  % (len(problems) - len(shown), len(problems)))
+    if fail:
+        return False
+    print('    ok    %d 个文本文件全部符合' % len(files))
+    return True
 
-if problems:
-    fail = True
-    shown = problems[:40]
-    for path, why in shown:
-        print('    FAIL %s：%s' % (path, why))
-    if len(problems) > len(shown):
-        print('    FAIL ... 另有 %d 个文件不合规（合计 %d）' % (len(problems) - len(shown), len(problems)))
-
-if fail:
-    sys.exit(1)
-print('    ok    %d 个文本文件全部符合' % len(files))
-PY_B
-then
-  echo "    PASS"
-else
-  echo "    FAIL"
-  FAIL=1
-fi
 
 # ===== [c] Markdown 相对链接 =====
-echo "[c] Markdown 相对链接"
-if python3 - <<'PY_C'
-import os
-import re
-import subprocess
-import sys
-from urllib.parse import unquote
+def section_c():
+    BT = chr(96)
+    LINK = re.compile(r'(!?)\[([^\]]*)\]\(\s*(<[^>]*>|[^()\s]*(?:\([^()]*\))?[^()\s]*)(?:\s+"[^"]*")?\s*\)')
+    REF_USE = re.compile(r'!?\[([^\]]+)\]\[([^\]]*)\]')
+    REF_DEF = re.compile(r'^\s{0,3}\[([^\]]+)\]:\s*(\S+)')
+    SCHEME = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
+    from urllib.parse import unquote
 
-BT = chr(96)
-LINK = re.compile(r'(!?)\[([^\]]*)\]\(\s*(<[^>]*>|[^()\s]*(?:\([^()]*\))?[^()\s]*)(?:\s+"[^"]*")?\s*\)')
-REF_USE = re.compile(r'!?\[([^\]]+)\]\[([^\]]*)\]')
-REF_DEF = re.compile(r'^\s{0,3}\[([^\]]+)\]:\s*(\S+)')
-SCHEME = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
+    tracked_set = set(tracked)
+    md_files = [p for p in tracked if p.endswith('.md')]
 
-tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
-tracked = sorted(p.decode('utf-8', 'surrogateescape') for p in tracked if p)
-tracked_set = set(tracked)
-md_files = [p for p in tracked if p.endswith('.md')]
+    def strip_code(text):
+        out = []
+        fence = None
+        for line in text.split('\n'):
+            m = re.match(r'^\s*(' + BT + r'{3,}|~{3,})', line)
+            if fence is not None:
+                if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                    fence = None
+                out.append('')
+                continue
+            if m:
+                fence = m.group(1)
+                out.append('')
+                continue
+            out.append(line)
+        body = '\n'.join(out)
+        return re.sub(BT + r'[^' + BT + r']*' + BT, '', body)
 
-
-def strip_code(text):
-    """去掉围栏代码块与行内代码；示例代码里的 [x](y) 不是链接。"""
-    out = []
-    fence = None
-    for line in text.split('\n'):
-        m = re.match(r'^\s*(' + BT + r'{3,}|~{3,})', line)
-        if fence is not None:
-            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
-                fence = None
-            out.append('')
+    fail = False
+    if len(md_files) < 10:
+        print('    FAIL 只扫到 %d 个 .md（<10），疑似扫描面失效' % len(md_files))
+        fail = True
+    problems = []
+    link_n = 0
+    for path in md_files:
+        text = read_text(path)
+        if text is None:
+            problems.append((path, 'read error: %s' % READ_ERRORS[path]))
             continue
-        if m:
-            fence = m.group(1)
-            out.append('')
-            continue
-        out.append(line)
-    body = '\n'.join(out)
-    return re.sub(BT + r'[^' + BT + r']*' + BT, '', body)
+        clean = strip_code(text)
+        defs = {}
+        for line in clean.split('\n'):
+            dm = REF_DEF.match(line)
+            if dm:
+                defs[dm.group(1).lower()] = dm.group(2)
 
-
-fail = False
-if len(md_files) < 60:
-    print('    FAIL 只扫到 %d 个 .md（<60），疑似扫描面失效' % len(md_files))
-    fail = True
-
-problems = []
-link_n = 0
-for path in md_files:
-    try:
-        text = open(path, encoding='utf-8').read()
-    except (OSError, UnicodeDecodeError) as exc:
-        problems.append((path, 'read error: %s' % exc))
-        continue
-    clean = strip_code(text)
-    defs = {}
-    for line in clean.split('\n'):
-        dm = REF_DEF.match(line)
-        if dm:
-            defs[dm.group(1).lower()] = dm.group(2)
-
-    def check_url(url):
-        global link_n
-        link_n += 1
-        if url.startswith('<') and url.endswith('>'):
-            url = url[1:-1]
-        if SCHEME.match(url) or url.startswith('//') or url.startswith('#'):
-            return
-        target = url.split('#', 1)[0]
-        if not target:
-            return
-        target = unquote(target)
-        resolved = os.path.normpath(os.path.join(os.path.dirname(path), target))
-        if resolved not in tracked_set:
-            problems.append((path, '链接目标不是 tracked 文件：%s' % url))
-        elif not os.path.isfile(resolved):
-            problems.append((path, '链接目标不在工作树：%s' % url))
-
-    for m in LINK.finditer(clean):
-        check_url(m.group(3).strip())
-    for m in REF_USE.finditer(clean):
-        label = (m.group(2) or m.group(1)).lower()
-        url = defs.get(label)
-        if url is not None:
-            check_url(url)
-
-if len(md_files) >= 60 and link_n < 100:
-    print('    FAIL 只解析到 %d 个相对链接（<100），疑似扫描面失效' % link_n)
-    fail = True
-if problems:
-    fail = True
-    for path, why in problems:
-        print('    FAIL %s：%s' % (path, why))
-
-if fail:
-    sys.exit(1)
-print('    ok    %d 个 .md / %d 个相对链接全部解析到 tracked 文件' % (len(md_files), link_n))
-PY_C
-then
-  echo "    PASS"
-else
-  echo "    FAIL"
-  FAIL=1
-fi
-
-# ===== [d] 本地化表安全 =====
-echo "[d] 本地化表安全（en / zh-Hans Localizable.strings）"
-if python3 - <<'PY_D'
-import re
-import sys
-from collections import Counter
-
-FILES = {
-    'en': 'desktop/native/gather-app/Sources/GatherUI/Resources/en.lproj/Localizable.strings',
-    'zh-Hans': 'desktop/native/gather-app/Sources/GatherUI/Resources/zh-Hans.lproj/Localizable.strings',
-}
-# printf 占位符：不看 %%；孤立的 %（非合法转换）按字面文本处理，不做占位符。
-# 空格 flag（% a）故意不收：英文文案里的 100% at / 2% and 是字面百分号，不是格式串。
-PLACEHOLDER = re.compile(
-    r"%(?:\d+\$)?[-+#0']*(?:\*|\d+)?(?:\.(?:\*|\d+))?"
-    r"(?:hh|h|ll|l|q|L|z|t|j)?[diouxXeEfFgGaAcCsSpn@]"
-)
-CJK = re.compile(
-    '[\u2e80-\u2fff\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf'
-    '\u4e00-\u9fff\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]'
-)
-
-
-def tokens(text):
-    out = []
-    i = 0
-    while i < len(text):
-        if text[i] != '%':
-            i += 1
-            continue
-        if i + 1 < len(text) and text[i + 1] == '%':
-            i += 2
-            continue
-        m = PLACEHOLDER.match(text, i)
-        if m:
-            out.append(m.group(0))
-            i = m.end()
-        else:
-            i += 1
-    return out
-
-
-def parse_strings(path):
-    """完整解析 .strings（行注释 / 块注释 / 转义引号），返回 (entries, errors)。"""
-    text = open(path, encoding='utf-8').read()
-    n = len(text)
-    entries = []
-    errors = []
-    state = {'i': 0, 'line': 1}
-
-    def skip_ws_comments():
-        while state['i'] < n:
-            c = text[state['i']]
-            if c == '\n':
-                state['line'] += 1
-                state['i'] += 1
-            elif c in ' \t\r':
-                state['i'] += 1
-            elif text.startswith('//', state['i']):
-                j = text.find('\n', state['i'])
-                if j < 0:
-                    state['i'] = n
-                    return
-                state['i'] = j + 1
-                state['line'] += 1
-            elif text.startswith('/*', state['i']):
-                j = text.find('*/', state['i'] + 2)
-                if j < 0:
-                    state['i'] = n
-                    return
-                state['line'] += text.count('\n', state['i'], j + 2)
-                state['i'] = j + 2
-            else:
+        def check_url(url):
+            nonlocal link_n
+            link_n += 1
+            if url.startswith('<') and url.endswith('>'):
+                url = url[1:-1]
+            if SCHEME.match(url) or url.startswith('//') or url.startswith('#'):
                 return
+            target = url.split('#', 1)[0]
+            if not target:
+                return
+            target = unquote(target)
+            resolved = os.path.normpath(os.path.join(os.path.dirname(path), target))
+            if resolved not in tracked_set:
+                problems.append((path, '链接目标不是 tracked 文件：%s' % url))
+            elif not os.path.isfile(resolved):
+                problems.append((path, '链接目标不在工作树：%s' % url))
 
-    def read_quoted():
-        assert text[state['i']] == '"'
-        state['i'] += 1
-        buf = []
-        while state['i'] < n:
-            c = text[state['i']]
-            if c == '\\':
-                if state['i'] + 1 >= n:
-                    break
-                esc = text[state['i'] + 1]
-                buf.append({'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\', "'": "'"}.get(esc, '\\' + esc))
-                state['i'] += 2
-            elif c == '"':
-                state['i'] += 1
-                return ''.join(buf)
+        for m in LINK.finditer(clean):
+            check_url(m.group(3).strip())
+        for m in REF_USE.finditer(clean):
+            label = (m.group(2) or m.group(1)).lower()
+            url = defs.get(label)
+            if url is not None:
+                check_url(url)
+
+    if len(md_files) >= 10 and link_n < 10:
+        print('    FAIL 只解析到 %d 个相对链接（<10），疑似扫描面失效' % link_n)
+        fail = True
+    if problems:
+        fail = True
+        for path, why in problems:
+            print('    FAIL %s：%s' % (path, why))
+    if fail:
+        return False
+    print('    ok    %d 个 .md / %d 个相对链接全部解析到 tracked 文件' % (len(md_files), link_n))
+    return True
+
+
+# ===== [d] 本地化表安全（en / zh-Hans Localizable.strings） =====
+def section_d():
+    from collections import Counter
+    FILES = {
+        'en': 'desktop/native/gather-app/Sources/GatherUI/Resources/en.lproj/Localizable.strings',
+        'zh-Hans': 'desktop/native/gather-app/Sources/GatherUI/Resources/zh-Hans.lproj/Localizable.strings',
+    }
+    PLACEHOLDER = re.compile(
+        r"%(?:\d+\$)?[-+#0']*(?:\*|\d+)?(?:\.(?:\*|\d+))?"
+        r"(?:hh|h|ll|l|q|L|z|t|j)?[diouxXeEfFgGaAcCsSpn@]"
+    )
+    CJK = re.compile(
+        '[\u2e80-\u2fff\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf'
+        '\u4e00-\u9fff\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]'
+    )
+
+    def tokens(text):
+        out = []
+        i = 0
+        while i < len(text):
+            if text[i] != '%':
+                i += 1
+                continue
+            if i + 1 < len(text) and text[i + 1] == '%':
+                i += 2
+                continue
+            m = PLACEHOLDER.match(text, i)
+            if m:
+                out.append(m.group(0))
+                i = m.end()
             else:
+                i += 1
+        return out
+
+    def parse_strings(path):
+        text = read_text(path)
+        if text is None:
+            raise READ_ERRORS[path]
+        n = len(text)
+        entries = []
+        errors = []
+        state = {'i': 0, 'line': 1}
+
+        def skip_ws_comments():
+            while state['i'] < n:
+                c = text[state['i']]
                 if c == '\n':
                     state['line'] += 1
-                buf.append(c)
+                    state['i'] += 1
+                elif c in ' \t\r':
+                    state['i'] += 1
+                elif text.startswith('//', state['i']):
+                    j = text.find('\n', state['i'])
+                    if j < 0:
+                        state['i'] = n
+                        return
+                    state['i'] = j + 1
+                    state['line'] += 1
+                elif text.startswith('/*', state['i']):
+                    j = text.find('*/', state['i'] + 2)
+                    if j < 0:
+                        state['i'] = n
+                        return
+                    state['line'] += text.count('\n', state['i'], j + 2)
+                    state['i'] = j + 2
+                else:
+                    return
+
+        def read_quoted():
+            assert text[state['i']] == '"'
+            state['i'] += 1
+            buf = []
+            while state['i'] < n:
+                c = text[state['i']]
+                if c == '\\':
+                    if state['i'] + 1 >= n:
+                        break
+                    esc = text[state['i'] + 1]
+                    buf.append({'n': '\n', 't': '\t', 'r': '\r', '"': '"',
+                                '\\': '\\', "'": "'"}.get(esc, '\\' + esc))
+                    state['i'] += 2
+                elif c == '"':
+                    state['i'] += 1
+                    return ''.join(buf)
+                else:
+                    if c == '\n':
+                        state['line'] += 1
+                    buf.append(c)
+                    state['i'] += 1
+            raise ValueError('字符串未闭合')
+
+        while True:
+            skip_ws_comments()
+            if state['i'] >= n:
+                break
+            entry_line = state['line']
+            try:
+                key = read_quoted()
+                skip_ws_comments()
+                if state['i'] >= n or text[state['i']] != '=':
+                    raise ValueError('缺 =')
                 state['i'] += 1
-        raise ValueError('字符串未闭合')
+                skip_ws_comments()
+                value = read_quoted()
+                skip_ws_comments()
+                if state['i'] >= n or text[state['i']] != ';':
+                    raise ValueError('缺 ;')
+                state['i'] += 1
+                entries.append((entry_line, key, value))
+            except ValueError as exc:
+                errors.append((entry_line, str(exc)))
+                break
+        return entries, errors
 
-    while True:
-        skip_ws_comments()
-        if state['i'] >= n:
-            break
-        entry_line = state['line']
+    fail = False
+    for lang, path in FILES.items():
+        data = read_bytes(path)
+        if data is None:
+            print('    FAIL %s：无法读取 %s（%s）' % (lang, path, READ_ERRORS[path]))
+            fail = True
+            continue
         try:
-            key = read_quoted()
-            skip_ws_comments()
-            if state['i'] >= n or text[state['i']] != '=':
-                raise ValueError('缺 =')
-            state['i'] += 1
-            skip_ws_comments()
-            value = read_quoted()
-            skip_ws_comments()
-            if state['i'] >= n or text[state['i']] != ';':
-                raise ValueError('缺 ;')
-            state['i'] += 1
-            entries.append((entry_line, key, value))
-        except ValueError as exc:
-            errors.append((entry_line, str(exc)))
-            break
-    return entries, errors
+            entries, errors = parse_strings(path)
+        except UnicodeDecodeError as exc:
+            print('    FAIL %s：无法读取 %s（%s）' % (lang, path, exc))
+            fail = True
+            continue
 
+        min_entries = 2000 if lang == 'en' else 5
+        if len(entries) < min_entries:
+            print('    FAIL %s：只解析到 %d 条（<%d），疑似解析器/文件异常'
+                  % (lang, len(entries), min_entries))
+            fail = True
 
-fail = False
-for lang, path in FILES.items():
-    try:
-        entries, errors = parse_strings(path)
-    except (OSError, UnicodeDecodeError) as exc:
-        print('    FAIL %s：无法读取 %s（%s）' % (lang, path, exc))
-        fail = True
-        continue
-
-    min_entries = 2000 if lang == 'en' else 5
-    if len(entries) < min_entries:
-        print('    FAIL %s：只解析到 %d 条（<%d），疑似解析器/文件异常' % (lang, len(entries), min_entries))
-        fail = True
-
-    lang_bad = False
-    for line, why in errors:
-        print('    FAIL %s L%d：条目结构非法（%s）' % (lang, line, why))
-        lang_bad = True
-    seen = {}
-    for line, key, value in entries:
-        if key in seen:
-            print('    FAIL %s L%d：重复 key %r（首次出现 L%d）' % (lang, line, key, seen[key]))
+        lang_bad = False
+        for line, why in errors:
+            print('    FAIL %s L%d：条目结构非法（%s）' % (lang, line, why))
             lang_bad = True
-        else:
-            seen[key] = line
-    for line, key, value in entries:
-        if not value.strip():
-            print('    FAIL %s L%d：空 value %r' % (lang, line, key))
-            lang_bad = True
-        if lang == 'en' and CJK.search(value):
-            print('    FAIL %s L%d：en value 含 CJK %r' % (lang, line, value))
-            lang_bad = True
-        tk = tokens(key)
-        tv = tokens(value)
-        if Counter(tk) != Counter(tv):
-            print('    FAIL %s L%d：printf 占位符不一致 key=%r value=%r（key %s / value %s）'
-                  % (lang, line, key, value, tk, tv))
-            lang_bad = True
+        seen = {}
+        for line, key, value in entries:
+            if key in seen:
+                print('    FAIL %s L%d：重复 key %r（首次出现 L%d）' % (lang, line, key, seen[key]))
+                lang_bad = True
+            else:
+                seen[key] = line
+        for line, key, value in entries:
+            if not value.strip():
+                print('    FAIL %s L%d：空 value %r' % (lang, line, key))
+                lang_bad = True
+            if lang == 'en' and CJK.search(value):
+                print('    FAIL %s L%d：en value 含 CJK %r' % (lang, line, value))
+                lang_bad = True
+            tk = tokens(key)
+            tv = tokens(value)
+            if Counter(tk) != Counter(tv):
+                print('    FAIL %s L%d：printf 占位符不一致 key=%r value=%r（key %s / value %s）'
+                      % (lang, line, key, value, tk, tv))
+                lang_bad = True
 
-    token_n = sum(len(tokens(key)) for _, key, _ in entries)
-    if lang == 'en' and token_n < 300:
-        print('    FAIL %s：只比对到 %d 个占位符 token（<300），疑似解析器失效' % (lang, token_n))
-        lang_bad = True
-    if lang_bad:
-        fail = True
-        continue
-    print('    ok    %s：%d 条 key；0 重复 / 0 空值%s / 0 占位符不一致（比对 %d 个 token）'
-          % (lang, len(entries), ' / 0 CJK 值' if lang == 'en' else '', token_n))
+        token_n = sum(len(tokens(key)) for _, key, _ in entries)
+        if lang == 'en' and token_n < 300:
+            print('    FAIL %s：只比对到 %d 个占位符 token（<300），疑似解析器失效'
+                  % (lang, token_n))
+            lang_bad = True
+        if lang_bad:
+            fail = True
+            continue
+        print('    ok    %s：%d 条 key；0 重复 / 0 空值%s / 0 占位符不一致（比对 %d 个 token）'
+              % (lang, len(entries), ' / 0 CJK 值' if lang == 'en' else '', token_n))
 
-sys.exit(1 if fail else 0)
-PY_D
-then
-  echo "    PASS"
-else
-  echo "    FAIL"
-  FAIL=1
-fi
+    return not fail
+
 
 # ===== [e] scripts/ 无提交的缓存/构建产物 =====
-echo "[e] scripts/ 无提交的缓存/构建产物"
-E_BAD=0
-E_N=0
-while IFS= read -r -d '' f; do
-  case "$f" in
-    scripts/*) ;;
-    *) continue ;;
-  esac
-  E_N=$((E_N + 1))
-  case "$f" in
-    */__pycache__/*|*/__pycache__|*.pyc|*.pyo|*/.build/*|*/build/*|*.o|*.a|*.dylib|*.dSYM/*)
-      echo "    FAIL scripts/ 下有提交的缓存/构建产物：$f"
-      E_BAD=1
-      ;;
-  esac
-done < <(git ls-files -z)
-if [ "$E_N" -lt 10 ]; then
-  echo "    FAIL scripts/ 只扫到 $E_N 个 tracked 文件（<10），疑似路径/检出异常"
-  E_BAD=1
-fi
-if [ "$E_BAD" -eq 0 ]; then
-  echo "    ok    scripts/ tracked 文件 $E_N 个，0 个缓存/构建产物"
-  echo "    PASS"
-else
-  echo "    FAIL"
-  FAIL=1
-fi
+def section_e():
+    bad = 0
+    n = 0
+    for path in tracked:
+        if not path.startswith('scripts/'):
+            continue
+        n += 1
+        if (re.search(r'(^|/)__pycache__(/|$)', path) or path.endswith('.pyc')
+                or path.endswith('.pyo') or path.endswith('.o') or path.endswith('.a')
+                or path.endswith('.dylib') or '/.build/' in path or '/build/' in path
+                or '.dSYM/' in path):
+            print('    FAIL scripts/ 下有提交的缓存/构建产物：%s' % path)
+            bad = 1
+    if n < 10:
+        print('    FAIL scripts/ 只扫到 %d 个 tracked 文件（<10），疑似路径/检出异常' % n)
+        bad = 1
+    if bad == 0:
+        print('    ok    scripts/ tracked 文件 %d 个，0 个缓存/构建产物' % n)
+        return True
+    return False
+
 
 # ===== [f] shellcheck（tracked *.sh，severity warning） =====
-echo "[f] shellcheck（tracked *.sh，severity warning）"
-F_BAD=0
-F_N=0
-if ! command -v shellcheck >/dev/null 2>&1; then
-  echo "    FAIL 缺少 shellcheck（CI ubuntu-latest 预装；本地：apt-get install shellcheck 或 brew install shellcheck）"
-  echo '          本机也可用 gitignored 的 .gather/shellcheck：PATH="$PWD/.gather:$PATH" ./scripts/check-repo-hygiene.sh'
-  F_BAD=1
-else
-  SC_VERSION="$(shellcheck --version | awk '/^version: / { print $2; exit }')"
-  SH_FILES=()
-  # tracked *.sh（含 desktop/native/build.sh）；git ls-files 已按路径排序，输出确定。
-  while IFS= read -r -d '' f; do
-    SH_FILES+=("$f")
-  done < <(git ls-files -z -- '*.sh')
-  F_N="${#SH_FILES[@]}"
-  if [ "$F_N" -lt 15 ]; then
-    echo "    FAIL 只扫到 $F_N 个 tracked *.sh（<15），疑似路径/检出异常"
-    F_BAD=1
-  else
-    F_OUT="$SCRATCH/shellcheck.out"
-    F_RC=0
+SHELLCHECK_STATE = None
+
+
+def shellcheck_launch():
+    """提前启动 shellcheck 分片：[a]–[e]/[g] 计算期间 shellcheck 已在其它核上跑。"""
+    global SHELLCHECK_STATE
+    if shutil.which('shellcheck') is None:
+        SHELLCHECK_STATE = None
+        return None
+    version_out = subprocess.run(['shellcheck', '--version'], capture_output=True, text=True).stdout
+    sc_version = ''
+    for line in version_out.splitlines():
+        if line.startswith('version: '):
+            sc_version = line[len('version: '):].split()[0]
+            break
+    sh_files = [p for p in tracked if p.endswith('.sh')]
+    state = {'version': sc_version, 'files': sh_files, 'procs': [], 'out_paths': [],
+             'rcs': {}, 'fallback': False, 'out_lines': None, 'rc': 0}
+    SHELLCHECK_STATE = state
+    if len(sh_files) < 15:
+        return state
+    env = dict(os.environ)
     # 清掉 SHELLCHECK_OPTS：[f] 的规则集必须固定，不能被本机环境变量（如 -e SCxxxx）放宽。
-    unset SHELLCHECK_OPTS
-    shellcheck -S warning -f gcc "${SH_FILES[@]}" > "$F_OUT" 2>&1 || F_RC=$?
-    if [ "$F_RC" -eq 0 ]; then
-      echo "    ok    shellcheck $SC_VERSION：$F_N 个 tracked *.sh，0 finding"
-    else
-      F_FINDINGS="$(grep -cE '^[^:]+:[0-9]+:[0-9]+:' "$F_OUT" 2>/dev/null || true)"
-      echo "    FAIL shellcheck $SC_VERSION：$F_FINDINGS 条 finding（退出码 $F_RC）"
-      if [ -s "$F_OUT" ]; then
-        sed 's/^/    FAIL /' "$F_OUT"
-      else
-        echo "    FAIL shellcheck 无诊断输出但退出码非 0（疑似工具异常）"
-      fi
-      F_BAD=1
-    fi
-  fi
-fi
-if [ "$F_BAD" -eq 0 ]; then
-  echo "    PASS"
-else
-  echo "    FAIL"
-  FAIL=1
-fi
-
-# ===== [g] 本地化用法（GatherUI 的 UI 文案必须走本地化包装） =====
-echo "[g] 本地化用法（UI 文案 CJK 字面量必须走 l10n/LocalizedText/…）"
-if python3 - <<'PY_G'
-import re
-import sys
-from pathlib import Path
-
-ROOT = Path.cwd()
-UI = ROOT / 'desktop' / 'native' / 'gather-app' / 'Sources' / 'GatherUI'
-
-CJK = re.compile('[\u2e80-\u2fff\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf'
-                 '\u4e00-\u9fff\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]')
-# UI API：SwiftUI 里承接“可见文案/无障碍文案”的调用名（最后一段匹配）。
-UI_APIS = {
-    'Text', 'Label', 'Button', 'Toggle', 'Picker', 'Section', 'NavigationLink', 'Menu',
-    'Stepper', 'TextField', 'SecureField', 'TextEditor', 'ProgressView', 'GroupBox',
-    'DisclosureGroup', 'Link', 'TabView', 'LabeledContent', 'ContentUnavailableView',
-    'Gauge', 'ColorPicker', 'Slider', 'DatePicker', 'Table', 'ControlGroup',
-    'help', 'accessibilityLabel', 'accessibilityHint', 'accessibilityValue',
-    'navigationTitle', 'navigationSubtitle', 'alert', 'confirmationDialog',
-    'badge', 'sheet', 'popover',
-}
-# 本地化包装：l10n(...) / l(...) / LocalizedText(...) / *Notice(...) / 错误展示漏斗。
-WRAPPER_LAST = {'l', 'l10n', 'LocalizedText', 'CullingNotice', 'FaceNotice',
-                'SimilarityNotice', 'ErrorPresentation', 'DeliveryErrorPresentation',
-                'APIErrorPresentation'}
-WRAPPER_CHAIN = {'CommandError.localized'}
-WRAPPER_PREFIX = {'l10n'}  # l10n.format / l10n.text / l10n.plural / ...
-IDENT_START = re.compile(r'[A-Za-z_$\u00a1-\uffff]')
-IDENT_RE = re.compile(r'[A-Za-z0-9_$\u00a1-\uffff]+')
-TOK_IDENT, TOK_STRING, TOK_PUNCT = 'ident', 'string', 'punct'
+    env.pop('SHELLCHECK_OPTS', None)
+    state['env'] = env
+    # 并行分片：shellcheck 单进程要 1.1s+（build.sh 单文件 ~0.36s），按文件大小贪心分片
+    # 到多进程可压到 ~0.4s；输出按 (文件顺序, 行, 列) 归一化，与单进程输出逐字节一致。
+    jobs = min(8, max(2, os.cpu_count() or 4), len(sh_files))
+    buckets = [[] for _ in range(jobs)]
+    loads = [0] * jobs
+    sized = [(os.path.getsize(path), index, path) for index, path in enumerate(sh_files)]
+    for size, index, path in sorted(sized, reverse=True):
+        b = loads.index(min(loads))
+        buckets[b].append((index, path))
+        loads[b] += size
+    for b, bucket in enumerate(buckets):
+        bucket.sort()
+        out_path = os.path.join(SCRATCH, 'shellcheck.%d.out' % b)
+        state['out_paths'].append(out_path)
+        with open(out_path, 'wb') as fh:
+            proc = subprocess.Popen(
+                ['shellcheck', '-S', 'warning', '-f', 'gcc'] + [item[1] for item in bucket],
+                stdout=fh, stderr=fh, env=env)
+        state['procs'].append((proc, b))
+    return state
 
 
-def tokenize(text):
-    """词法扫描：产出 ident / string / punct token；跳过注释，字符串只保留字面文本段。"""
-    toks = []
-    n = len(text)
-    i = 0
-    line = 1
-
-    def skip_block_comment(i):
-        depth = 0
-        while i < n:
-            if text.startswith('/*', i):
-                depth += 1
-                i += 2
+def section_f():
+    state = SHELLCHECK_STATE
+    if state is None and shutil.which('shellcheck') is None:
+        print('    FAIL 缺少 shellcheck（CI ubuntu-latest 预装；本地：apt-get install shellcheck 或 brew install shellcheck）')
+        print('          本机也可用 gitignored 的 .gather/shellcheck：PATH="$PWD/.gather:$PATH" ./scripts/check-repo-hygiene.sh')
+        return False
+    if state is None:
+        state = shellcheck_launch()
+    sc_version = state['version']
+    sh_files = state['files']
+    f_n = len(sh_files)
+    if f_n < 15:
+        print('    FAIL 只扫到 %d 个 tracked *.sh（<15），疑似路径/检出异常' % f_n)
+        return False
+    for proc, b in state['procs']:
+        state['rcs'][b] = proc.wait()
+    env = state['env']
+    order = {path: index for index, path in enumerate(sh_files)}
+    merged = []
+    fallback = False
+    for out_path in state['out_paths']:
+        with open(out_path, 'rb') as fh:
+            raw = fh.read()
+        for line in raw.decode('utf-8', 'surrogateescape').split('\n'):
+            if not line:
                 continue
-            if text.startswith('*/', i):
-                depth -= 1
-                i += 2
-                if depth == 0:
-                    return i
-                continue
-            i += 1
-        return n
+            parts = line.split(':', 3)
+            if (len(parts) < 3 or parts[0] not in order
+                    or not parts[1].isdigit() or not parts[2].isdigit()):
+                fallback = True
+                break
+            merged.append((order[parts[0]], int(parts[1]), int(parts[2]), line))
+        if fallback:
+            break
+    rc_values = [value for value in state['rcs'].values() if value != 0]
+    rc = rc_values[0] if rc_values else 0
+    if fallback or any(value not in (0, 1) for value in state['rcs'].values()):
+        # 极端情况（无法解析/异常退出码）：回退单进程调用，保证与旧实现逐字节一致。
+        out_path = os.path.join(SCRATCH, 'shellcheck.out')
+        with open(out_path, 'wb') as fh:
+            rc = subprocess.run(['shellcheck', '-S', 'warning', '-f', 'gcc'] + sh_files,
+                                stdout=fh, stderr=fh, env=env).returncode
+        with open(out_path, 'rb') as fh:
+            out_lines = [line for line in fh.read().decode('utf-8', 'surrogateescape').split('\n')
+                         if line]
+    else:
+        merged.sort()
+        out_lines = [line for _, _, _, line in merged]
+    if rc == 0:
+        print('    ok    shellcheck %s：%d 个 tracked *.sh，0 finding' % (sc_version, f_n))
+        return True
+    findings = len(re.findall(r'^[^:]+:[0-9]+:[0-9]+:', '\n'.join(out_lines), re.M))
+    print('    FAIL shellcheck %s：%d 条 finding（退出码 %d）' % (sc_version, findings, rc))
+    if out_lines:
+        for line in out_lines:
+            print('    FAIL ' + line)
+    else:
+        print('    FAIL shellcheck 无诊断输出但退出码非 0（疑似工具异常）')
+    return False
 
-    def skip_interpolation(i):
-        depth = 1
-        while i < n:
-            if text.startswith('//', i):
-                j = text.find('\n', i)
-                i = n if j < 0 else j
-                continue
-            if text.startswith('/*', i):
-                i = skip_block_comment(i)
-                continue
-            if text[i] == '"':
-                i, _ = skip_string(i)
-                continue
-            if text[i] == '(':
-                depth += 1
-            elif text[i] == ')':
-                depth -= 1
-                if depth == 0:
-                    return i + 1
-            i += 1
-        return n
 
-    def skip_string(i):
-        nonlocal line
-        multi = text.startswith('"""', i)
-        i += 3 if multi else 1
-        parts = []
+# ===== [g] 本地化用法（UI 文案 CJK 字面量必须走 l10n/LocalizedText/…） =====
+def section_g():
+    from pathlib import Path
+    ROOT = Path.cwd()
+    UI = ROOT / 'desktop' / 'native' / 'gather-app' / 'Sources' / 'GatherUI'
+    CJK = re.compile('[\u2e80-\u2fff\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf'
+                     '\u4e00-\u9fff\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]')
+    UI_APIS = {
+        'Text', 'Label', 'Button', 'Toggle', 'Picker', 'Section', 'NavigationLink', 'Menu',
+        'Stepper', 'TextField', 'SecureField', 'TextEditor', 'ProgressView', 'GroupBox',
+        'DisclosureGroup', 'Link', 'TabView', 'LabeledContent', 'ContentUnavailableView',
+        'Gauge', 'ColorPicker', 'Slider', 'DatePicker', 'Table', 'ControlGroup',
+        'help', 'accessibilityLabel', 'accessibilityHint', 'accessibilityValue',
+        'navigationTitle', 'navigationSubtitle', 'alert', 'confirmationDialog',
+        'badge', 'sheet', 'popover',
+    }
+    WRAPPER_LAST = {'l', 'l10n', 'LocalizedText', 'CullingNotice', 'FaceNotice',
+                    'SimilarityNotice', 'ErrorPresentation', 'DeliveryErrorPresentation',
+                    'APIErrorPresentation'}
+    WRAPPER_CHAIN = {'CommandError.localized'}
+    WRAPPER_PREFIX = {'l10n'}
+    IDENT_START = re.compile(r'[A-Za-z_$\u00a1-\uffff]')
+    IDENT_RE = re.compile(r'[A-Za-z0-9_$\u00a1-\uffff]+')
+    TOK_IDENT, TOK_STRING, TOK_PUNCT = 'ident', 'string', 'punct'
+
+    def tokenize(text):
+        toks = []
+        n = len(text)
+        i = 0
+        line = 1
+
+        def skip_block_comment(i):
+            depth = 0
+            while i < n:
+                if text.startswith('/*', i):
+                    depth += 1
+                    i += 2
+                    continue
+                if text.startswith('*/', i):
+                    depth -= 1
+                    i += 2
+                    if depth == 0:
+                        return i
+                    continue
+                i += 1
+            return n
+
+        def skip_interpolation(i):
+            depth = 1
+            while i < n:
+                if text.startswith('//', i):
+                    j = text.find('\n', i)
+                    i = n if j < 0 else j
+                    continue
+                if text.startswith('/*', i):
+                    i = skip_block_comment(i)
+                    continue
+                if text[i] == '"':
+                    i, _ = skip_string(i)
+                    continue
+                if text[i] == '(':
+                    depth += 1
+                elif text[i] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        return i + 1
+                i += 1
+            return n
+
+        def skip_string(i):
+            nonlocal line
+            multi = text.startswith('"""', i)
+            i += 3 if multi else 1
+            parts = []
+            while i < n:
+                c = text[i]
+                if c == '\n':
+                    line += 1
+                    if not multi:
+                        break
+                    parts.append('\n')
+                    i += 1
+                    continue
+                if c == '\\':
+                    if i + 1 < n and text[i + 1] == '(':
+                        i = skip_interpolation(i + 2)
+                        continue
+                    if i + 1 < n:
+                        parts.append({'n': '\n', 't': '\t', 'r': '\r', '\\': '\\',
+                                      '"': '"', "'": "'"}.get(text[i + 1], text[i + 1]))
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                if multi:
+                    if text.startswith('"""', i):
+                        return i + 3, ''.join(parts)
+                elif c == '"':
+                    return i + 1, ''.join(parts)
+                parts.append(c)
+                i += 1
+            return i, ''.join(parts)
+
         while i < n:
             c = text[i]
             if c == '\n':
                 line += 1
-                if not multi:
-                    break
-                parts.append('\n')
                 i += 1
-                continue
-            if c == '\\':
-                if i + 1 < n and text[i + 1] == '(':
-                    i = skip_interpolation(i + 2)
-                    continue
-                if i + 1 < n:
-                    parts.append({'n': '\n', 't': '\t', 'r': '\r', '\\': '\\',
-                                  '"': '"', "'": "'"}.get(text[i + 1], text[i + 1]))
-                    i += 2
-                    continue
+            elif c in ' \t\r':
                 i += 1
-                continue
-            if multi:
-                if text.startswith('"""', i):
-                    return i + 3, ''.join(parts)
+            elif text.startswith('//', i):
+                j = text.find('\n', i)
+                i = n if j < 0 else j
+            elif text.startswith('/*', i):
+                i = skip_block_comment(i)
             elif c == '"':
-                return i + 1, ''.join(parts)
-            parts.append(c)
-            i += 1
-        return i, ''.join(parts)
+                start_line = line
+                j, parts = skip_string(i)
+                toks.append((TOK_STRING, parts, start_line, i))
+                i = j
+            elif c == '#':
+                toks.append((TOK_PUNCT, '#', line, i))
+                i += 1
+            elif IDENT_START.match(c):
+                m = IDENT_RE.match(text, i)
+                toks.append((TOK_IDENT, m.group(0), line, i))
+                i = m.end()
+            else:
+                toks.append((TOK_PUNCT, c, line, i))
+                i += 1
+        return toks
 
-    while i < n:
-        c = text[i]
-        if c == '\n':
-            line += 1
-            i += 1
-        elif c in ' \t\r':
-            i += 1
-        elif text.startswith('//', i):
-            j = text.find('\n', i)
-            i = n if j < 0 else j
-        elif text.startswith('/*', i):
-            i = skip_block_comment(i)
-        elif c == '"':
-            start_line = line
-            j, parts = skip_string(i)
-            toks.append((TOK_STRING, parts, start_line, i))
-            i = j
-        elif c == '#':
-            toks.append((TOK_PUNCT, '#', line, i))
-            i += 1
-        elif IDENT_START.match(c):
-            m = IDENT_RE.match(text, i)
-            toks.append((TOK_IDENT, m.group(0), line, i))
-            i = m.end()
-        else:
-            toks.append((TOK_PUNCT, c, line, i))
-            i += 1
-    return toks
+    OPEN = {'(': ')', '[': ']', '{': '}'}
+    CLOSE = {v: k for k, v in OPEN.items()}
 
+    def chain_before(toks, idx):
+        parts = []
+        j = idx - 1
+        if j < 0 or toks[j][0] != TOK_IDENT:
+            return ''
+        parts.append(toks[j][1])
+        j -= 1
+        while j >= 1 and toks[j][1] == '.' and toks[j - 1][0] == TOK_IDENT:
+            parts.append(toks[j - 1][1])
+            j -= 2
+        return '.'.join(reversed(parts))
 
-OPEN = {'(': ')', '[': ']', '{': '}'}
-CLOSE = {v: k for k, v in OPEN.items()}
+    def is_wrapper(chain):
+        if not chain:
+            return False
+        if chain in WRAPPER_CHAIN:
+            return True
+        first = chain.split('.')[0]
+        last = chain.split('.')[-1]
+        return first in WRAPPER_PREFIX or last in WRAPPER_LAST
 
+    def ui_match(chain):
+        if not chain:
+            return None
+        last = chain.split('.')[-1]
+        return last if last in UI_APIS else None
 
-def chain_before(toks, idx):
-    """取 '(' 前的点号调用链（如 l10n.format / CommandError.localized）。"""
-    parts = []
-    j = idx - 1
-    if j < 0 or toks[j][0] != TOK_IDENT:
-        return ''
-    parts.append(toks[j][1])
-    j -= 1
-    while j >= 1 and toks[j][1] == '.' and toks[j - 1][0] == TOK_IDENT:
-        parts.append(toks[j - 1][1])
-        j -= 2
-    return '.'.join(reversed(parts))
+    def file_text(path):
+        spath = str(path)
+        text = BYTES.get(spath)
+        if text is not None:
+            return text.decode('utf-8')
+        with open(path, 'rb') as fh:
+            return fh.read().decode('utf-8')
 
+    def analyze(path):
+        text = file_text(path)
+        toks = tokenize(text)
+        n = len(toks)
+        stack, frames, frame_at = [], {}, [None] * n
+        serial = 0
+        for i, (kind, val, ln, pos) in enumerate(toks):
+            if kind == TOK_PUNCT and val in OPEN:
+                serial += 1
+                frames[serial] = {'serial': serial, 'open': i, 'close': None,
+                                  'callee': chain_before(toks, i) if val == '(' else '',
+                                  'parent': stack[-1]['serial'] if stack else None}
+                frame_at[i] = serial
+                stack.append(frames[serial])
+            elif kind == TOK_PUNCT and val in CLOSE and stack:
+                frame = stack.pop()
+                frame['close'] = i
+                frame_at[i] = frame['serial']
+            else:
+                frame_at[i] = stack[-1]['serial'] if stack else None
 
-def is_wrapper(chain):
-    if not chain:
-        return False
-    if chain in WRAPPER_CHAIN:
-        return True
-    first = chain.split('.')[0]
-    last = chain.split('.')[-1]
-    return first in WRAPPER_PREFIX or last in WRAPPER_LAST
+        preview = [False] * n
+        k = 0
+        while k < n - 1:
+            if toks[k][1] == '#' and toks[k + 1][0] == TOK_IDENT and toks[k + 1][1] == 'Preview':
+                j = k + 2
+                while j < n and not (toks[j][0] == TOK_PUNCT and toks[j][1] == '{'):
+                    j += 1
+                if j < n and frame_at[j] is not None:
+                    end = frames[frame_at[j]]['close']
+                    if end is None:
+                        end = n - 1
+                    for x in range(k, end + 1):
+                        preview[x] = True
+                    k = end + 1
+                    continue
+            k += 1
 
-
-def ui_match(chain):
-    if not chain:
-        return None
-    last = chain.split('.')[-1]
-    return last if last in UI_APIS else None
-
-
-def analyze(path):
-    text = path.read_text(encoding='utf-8')
-    toks = tokenize(text)
-    n = len(toks)
-    stack, frames, frame_at = [], {}, [None] * n
-    serial = 0
-    for i, (kind, val, ln, pos) in enumerate(toks):
-        if kind == TOK_PUNCT and val in OPEN:
-            serial += 1
-            frames[serial] = {'serial': serial, 'open': i, 'close': None,
-                              'callee': chain_before(toks, i) if val == '(' else '',
-                              'parent': stack[-1]['serial'] if stack else None}
-            frame_at[i] = serial
-            stack.append(frames[serial])
-        elif kind == TOK_PUNCT and val in CLOSE and stack:
-            frame = stack.pop()
-            frame['close'] = i
-            frame_at[i] = frame['serial']
-        else:
-            frame_at[i] = stack[-1]['serial'] if stack else None
-
-    # #Preview { ... } 块里的中文是示例数据，跳过。
-    preview = [False] * n
-    k = 0
-    while k < n - 1:
-        if toks[k][1] == '#' and toks[k + 1][0] == TOK_IDENT and toks[k + 1][1] == 'Preview':
-            j = k + 2
-            while j < n and not (toks[j][0] == TOK_PUNCT and toks[j][1] == '{'):
-                j += 1
-            if j < n and frame_at[j] is not None:
-                end = frames[frame_at[j]]['close']
-                if end is None:
-                    end = n - 1
-                for x in range(k, end + 1):
-                    preview[x] = True
-                k = end + 1
+        violations = []
+        ui_calls = 0
+        cjk_total = 0
+        for serial, frame in frames.items():
+            if frame['close'] is None:
                 continue
-        k += 1
-
-    violations = []
-    ui_calls = 0
-    cjk_total = 0
-    for serial, frame in frames.items():
-        if frame['close'] is None:
-            continue
-        ui = ui_match(frame['callee'])
-        if not ui:
-            continue
-        ui_calls += 1
-        for i in range(frame['open'] + 1, frame['close']):
-            if preview[i]:
+            ui = ui_match(frame['callee'])
+            if not ui:
                 continue
-            kind, parts, ln, pos = toks[i]
-            if kind != TOK_STRING or not CJK.search(parts):
-                continue
-            cjk_total += 1
-            chain = []
-            s = frame_at[i]
-            while s is not None:
-                chain.append(s)
-                s = frames[s]['parent']
-            wrapped = False
-            for sid in chain:
-                if sid == serial:
-                    break
-                if is_wrapper(frames[sid]['callee']):
-                    wrapped = True
-                    break
-            if not wrapped:
-                violations.append((str(path.relative_to(ROOT)), ln, ui, parts))
-    return violations, ui_calls, cjk_total
+            ui_calls += 1
+            for i in range(frame['open'] + 1, frame['close']):
+                if preview[i]:
+                    continue
+                kind, parts, ln, pos = toks[i]
+                if kind != TOK_STRING or not CJK.search(parts):
+                    continue
+                cjk_total += 1
+                chain = []
+                s = frame_at[i]
+                while s is not None:
+                    chain.append(s)
+                    s = frames[s]['parent']
+                wrapped = False
+                for sid in chain:
+                    if sid == serial:
+                        break
+                    if is_wrapper(frames[sid]['callee']):
+                        wrapped = True
+                        break
+                if not wrapped:
+                    violations.append((str(path.relative_to(ROOT)), ln, ui, parts))
+        return violations, ui_calls, cjk_total
 
-
-def main():
     if not UI.is_dir():
         print('    FAIL 缺少 GatherUI 目录：%s' % UI)
-        sys.exit(1)
+        return False
     files = sorted(p for p in UI.rglob('*.swift') if 'PreviewSupport' not in p.parts)
     fail = False
     violations = []
@@ -896,17 +971,43 @@ def main():
         print('    FAIL 未包裹 CJK 字面量 %d 处（共 %d 个 UI 调用内 CJK 字面量，已包裹 %d）'
               % (len(violations), cjk_total, cjk_total - len(violations)))
     if fail:
-        sys.exit(1)
+        return False
     print('    ok    %d 文件 / %d 处 UI 文案调用 / CJK 字面量 %d（全部已包裹）'
           % (len(files), ui_calls, cjk_total))
+    return True
+
+
+def main():
+    global FAIL
+    sections_ae = (
+        ('[a] 脚本语法 / shebang 执行位 / CRLF', section_a),
+        ('[b] .editorconfig 一致性（LF / 无行尾空白 / 末行换行 / UTF-8）', section_b),
+        ('[c] Markdown 相对链接', section_c),
+        ('[d] 本地化表安全（en / zh-Hans Localizable.strings）', section_d),
+        ('[e] scripts/ 无提交的缓存/构建产物', section_e),
+    )
+    # shellcheck 先启动，[a]–[e]/[g] 计算期间已在并行跑。
+    shellcheck_launch()
+    for header, func in sections_ae:
+        if not run_section(header, func):
+            FAIL = True
+    # [g] 的计算与 shellcheck 收尾重叠；输出先缓冲，等 [f] 打印完再按原顺序输出。
+    g_buf = io.StringIO()
+    with contextlib.redirect_stdout(g_buf):
+        ok_g = run_section('[g] 本地化用法（UI 文案 CJK 字面量必须走 l10n/LocalizedText/…）',
+                           section_g)
+    if not run_section('[f] shellcheck（tracked *.sh，severity warning）', section_f):
+        FAIL = True
+    sys.stdout.write(g_buf.getvalue())
+    if not ok_g:
+        FAIL = True
+    sys.exit(1 if FAIL else 0)
 
 
 main()
-PY_G
+
+PY_HYGIENE
 then
-  echo "    PASS"
-else
-  echo "    FAIL"
   FAIL=1
 fi
 

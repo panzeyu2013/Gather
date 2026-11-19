@@ -19,30 +19,6 @@ import GatherTestSupport
 @testable import GatherPersistence
 @testable import GatherApplication
 
-// MARK: - XMP 端口替身
-
-private struct StubXMPProvider: XMPProvider {
-    var attributes: MetadataWriteAttributes
-
-    func readKeywords(photoPath: String) async throws -> [String] {
-        attributes.keywords ?? []
-    }
-
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        attributes
-    }
-
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {}
-
-    func backup(photoPath: String) async throws -> String { "" }
-
-    func restore(photoPath: String, backupPath: String) async throws {}
-
-    func fileExists(_ path: String) -> Bool { true }
-
-    func removeFile(_ path: String) async throws {}
-}
-
 // MARK: - 套件
 
 @Suite("Wave3 目录包与外部迁移（task-24）")
@@ -54,7 +30,7 @@ struct LibraryPackageServiceTests {
             .rule(FilterRule(
                 field: FilterFields.collection, operator: .eq, value: .string("c1"))),
         ])
-        let criteriaJSON = LibraryPackageService.encodeFilterGroup(criteria)
+        let criteriaJSON = LibraryPackageStore.encodeFilterGroup(criteria)
         let package = LibraryPackage(
             exportedAt: "2026-11-11T00:00:00.000Z",
             session: LibraryPackageSession(
@@ -129,7 +105,7 @@ struct LibraryPackageServiceTests {
         let collection = try collections.create(sessionId: "s1", name: "精选", sortOrder: nil)
         _ = try collections.appendItems(collectionId: collection.id, photoIds: ["p1", "p2"])
 
-        let service = LibraryPackageService(connection: db)
+        let service = LibraryPackageService(store: LibraryPackageStore(connection: db))
         let exported = try service.exportPackage(
             LibraryExportInput(sessionId: "s1", destinationPath: dir))
         #expect(exported.photoCount == 2)
@@ -188,7 +164,7 @@ struct LibraryPackageServiceTests {
         try insertPhoto(db, id: "p1", sessionId: "s1", filepath: file, checksum: "c1")
         _ = try db.prepare("UPDATE sessions SET source_path = ? WHERE id = ?")
             .run([.text(dir), .text("s1")])
-        let service = LibraryPackageService(connection: db)
+        let service = LibraryPackageService(store: LibraryPackageStore(connection: db))
         let exported = try service.exportPackage(
             LibraryExportInput(sessionId: "s1", destinationPath: dir))
         // P0 修复后 keepImported 走窄 UPDATE（不再整行 upsert）：先给既有照片建 cache
@@ -260,8 +236,9 @@ struct LibraryPackageServiceTests {
         let candidates = try LibraryPackageStore(connection: db)
             .migrationCandidates(sessionId: "s1")
         #expect(candidates.count == 2)
-        let service = ExternalMetadataMigrationService(xmp: StubXMPProvider(
-            attributes: MetadataWriteAttributes(keywords: ["人物"], rating: 4, label: "Red")))
+        let service = ExternalMetadataMigrationService(xmp: RecordingXMPProvider(
+            attributes: MetadataWriteAttributes(keywords: ["人物"], rating: 4, label: "Red"),
+            writeMode: .ignore, fileExists: true))
         let evaluation = await service.evaluate(candidates: candidates, overwriteExisting: false)
         #expect(evaluation.report.scanned == 2)
         #expect(evaluation.report.sidecarsFound == 2)
@@ -271,7 +248,7 @@ struct LibraryPackageServiceTests {
         #expect(evaluation.updates.count == 2)
         try db.transaction {
             try ExternalMetadataMigrationService.apply(
-                updates: evaluation.updates, connection: db)
+                updates: evaluation.updates, into: MetadataCacheRepo(connection: db))
         }
         let ratingA = try db.prepare(
             "SELECT rating FROM photo_metadata_cache WHERE photo_id = 'p1'").get([])
@@ -285,7 +262,7 @@ struct LibraryPackageServiceTests {
         #expect(overwrite.report.conflicts == 0)
         try db.transaction {
             try ExternalMetadataMigrationService.apply(
-                updates: overwrite.updates, connection: db)
+                updates: overwrite.updates, into: MetadataCacheRepo(connection: db))
         }
         let ratingA2 = try db.prepare(
             "SELECT rating FROM photo_metadata_cache WHERE photo_id = 'p1'").get([])
@@ -332,7 +309,7 @@ struct LibraryPackageServiceTests {
                 fileMtime: "2024-05-01T00:00:00Z",
                 keywords: ["旧词"],
                 descriptive: DescriptiveMetadata(title: "旧标题")))
-        let service = LibraryPackageService(connection: db)
+        let service = LibraryPackageService(store: LibraryPackageStore(connection: db))
         let exported = try service.exportPackage(
             LibraryExportInput(sessionId: "s1", destinationPath: dir))
         let targetRoot = try makeTempDir(prefix: "gather-pkg-dst")
@@ -360,7 +337,7 @@ struct LibraryPackageServiceTests {
     @Test("keepImported 回绑既有照片：只更新迁移字段，EXIF/指纹列保持不变")
     func keepImportedPreservesExistingCacheEXIF() throws {
         let fx = try makeKeepImportedFixture()
-        let report = try LibraryPackageService(connection: fx.db).importPackage(
+        let report = try LibraryPackageService(store: LibraryPackageStore(connection: fx.db)).importPackage(
             LibraryImportInput(
                 packagePath: fx.packagePath,
                 newRoot: fx.targetRoot,
@@ -390,7 +367,7 @@ struct LibraryPackageServiceTests {
     @Test("keepImported：importRatings/importKeywords=false 不覆盖既有评级与关键词")
     func keepImportedHonorsImportFlags() throws {
         let fx = try makeKeepImportedFixture()
-        let report = try LibraryPackageService(connection: fx.db).importPackage(
+        let report = try LibraryPackageService(store: LibraryPackageStore(connection: fx.db)).importPackage(
             LibraryImportInput(
                 packagePath: fx.packagePath,
                 newRoot: fx.targetRoot,
@@ -412,7 +389,7 @@ struct LibraryPackageServiceTests {
     @Test("keepImported：包里 rating=0 不覆盖既有评级（>0 才写）")
     func keepImportedDoesNotWriteZeroRating() throws {
         let fx = try makeKeepImportedFixture(packageRating: 0)
-        _ = try LibraryPackageService(connection: fx.db).importPackage(
+        _ = try LibraryPackageService(store: LibraryPackageStore(connection: fx.db)).importPackage(
             LibraryImportInput(
                 packagePath: fx.packagePath,
                 newRoot: fx.targetRoot,
@@ -429,18 +406,18 @@ struct LibraryPackageServiceTests {
     func rejectsUnsafeRelativePaths() throws {
         let root = try makeTempDir(prefix: "gather-pkg-root")
         #expect(throws: GatherError.self) {
-            _ = try LibraryPackageService.absolutePath(
+            _ = try LibraryPackageStore.absolutePath(
                 relativePath: "../evil.jpg", newRoot: root)
         }
         #expect(throws: GatherError.self) {
-            _ = try LibraryPackageService.absolutePath(
+            _ = try LibraryPackageStore.absolutePath(
                 relativePath: "/etc/passwd", newRoot: root)
         }
         #expect(throws: GatherError.self) {
-            _ = try LibraryPackageService.absolutePath(
+            _ = try LibraryPackageStore.absolutePath(
                 relativePath: "a/../../evil.jpg", newRoot: root)
         }
-        let resolved = try LibraryPackageService.absolutePath(
+        let resolved = try LibraryPackageStore.absolutePath(
             relativePath: "sub/a.jpg", newRoot: root)
         let standardizedRoot = (root as NSString).standardizingPath
         #expect(resolved.hasPrefix(standardizedRoot + "/"))
@@ -456,11 +433,11 @@ struct LibraryPackageServiceTests {
         try insertPhoto(sourceDB, id: "p1", sessionId: "s1", filepath: file, checksum: "c1")
         _ = try sourceDB.prepare("UPDATE sessions SET source_path = ? WHERE id = ?")
             .run([.text(dir), .text("s1")])
-        let exported = try LibraryPackageService(connection: sourceDB).exportPackage(
+        let exported = try LibraryPackageService(store: LibraryPackageStore(connection: sourceDB)).exportPackage(
             LibraryExportInput(sessionId: "s1", destinationPath: dir))
 
         let targetDB = try makeTestDB()
-        let report = try LibraryPackageService(connection: targetDB).importPackage(
+        let report = try LibraryPackageService(store: LibraryPackageStore(connection: targetDB)).importPackage(
             LibraryImportInput(packagePath: exported.packagePath, newRoot: ""))
         #expect(report.importedPhotos == 1)
         let row = try targetDB.prepare("""
@@ -485,8 +462,8 @@ struct LibraryPackageServiceTests {
         let candidates = try LibraryPackageStore(connection: db)
             .migrationCandidates(sessionId: "s1")
 
-        let negative = ExternalMetadataMigrationService(xmp: StubXMPProvider(
-            attributes: MetadataWriteAttributes(rating: -1)))
+        let negative = ExternalMetadataMigrationService(xmp: RecordingXMPProvider(
+            attributes: MetadataWriteAttributes(rating: -1), writeMode: .ignore, fileExists: true))
         let negativeEval = await negative.evaluate(
             candidates: candidates, overwriteExisting: false)
         #expect(negativeEval.report.skippedInvalidRating == 1)
@@ -494,11 +471,11 @@ struct LibraryPackageServiceTests {
         // apply 空更新也不抛错（旧实现在此会 CHECK 失败并回滚整批）。
         try db.transaction {
             try ExternalMetadataMigrationService.apply(
-                updates: negativeEval.updates, connection: db)
+                updates: negativeEval.updates, into: MetadataCacheRepo(connection: db))
         }
 
-        let tooHigh = ExternalMetadataMigrationService(xmp: StubXMPProvider(
-            attributes: MetadataWriteAttributes(rating: 6)))
+        let tooHigh = ExternalMetadataMigrationService(xmp: RecordingXMPProvider(
+            attributes: MetadataWriteAttributes(rating: 6), writeMode: .ignore, fileExists: true))
         let highEval = await tooHigh.evaluate(
             candidates: candidates, overwriteExisting: false)
         #expect(highEval.report.skippedInvalidRating == 1)
@@ -597,7 +574,7 @@ private func makeOrgAssetSource() throws -> OrgAssetSourceFixture {
             groupId: groupIds[0], photoId: "p2", sessionId: "s1",
             isKept: false, fileSize: nil, fileMtime: nil, resolution: "keep_one"),
     ])
-    let exported = try LibraryPackageService(connection: db).exportPackage(
+    let exported = try LibraryPackageService(store: LibraryPackageStore(connection: db)).exportPackage(
         LibraryExportInput(sessionId: "s1", destinationPath: dir))
     return OrgAssetSourceFixture(
         packagePath: exported.packagePath, sourceRoot: dir,
@@ -662,7 +639,7 @@ struct LibraryPackageOrganizationAssetTests {
         _ = try writeTempFile(in: targetRoot, name: "a.jpg")
         _ = try writeTempFile(in: targetRoot, name: "b.jpg")
         let scanCalls = LockedBox(Wave5ScanState())
-        let service = LibraryPackageService(connection: target, enqueueScan: { sessionId, paths in
+        let service = LibraryPackageService(store: LibraryPackageStore(connection: target), enqueueScan: { sessionId, paths in
             scanCalls.lock.withLock { scanCalls.calls.append((sessionId: sessionId, paths: paths)) }
             return "job-org"
         })
@@ -745,7 +722,7 @@ struct LibraryPackageOrganizationAssetTests {
 
         let target = try makeTestDB()
         let targetRoot = try makeTempDir(prefix: "gather-org-legacy")
-        let report = try LibraryPackageService(connection: target).importPackage(
+        let report = try LibraryPackageService(store: LibraryPackageStore(connection: target)).importPackage(
             LibraryImportInput(packagePath: legacyPath, newRoot: targetRoot, sessionName: "旧包"))
         #expect(report.importedPhotos == 3)
         #expect(report.importedStacks == 0)
@@ -778,7 +755,7 @@ struct LibraryPackageOrganizationAssetTests {
 
         let target = try makeTestDB()
         let targetRoot = try makeTempDir(prefix: "gather-org-unmapped")
-        let report = try LibraryPackageService(connection: target, enqueueScan: { _, _ in "job-u" })
+        let report = try LibraryPackageService(store: LibraryPackageStore(connection: target), enqueueScan: { _, _ in "job-u" })
             .importPackage(LibraryImportInput(
                 packagePath: mutatedPath, newRoot: targetRoot, sessionName: "未映射"))
         #expect(report.skippedUnmappedItems == 2)
@@ -802,7 +779,7 @@ struct LibraryPackageOrganizationAssetTests {
         _ = try SavedSearchRepo(connection: target).upsert(
             name: "全局精选", sessionId: nil, criteria: empty)
         let root = try makeTempDir(prefix: "gather-org-conflict")
-        let service = LibraryPackageService(connection: target, enqueueScan: { _, _ in "job-c" })
+        let service = LibraryPackageService(store: LibraryPackageStore(connection: target), enqueueScan: { _, _ in "job-c" })
 
         // keepLocal：同名资产保留本地，不覆盖。
         let keepLocal = try service.importPackage(LibraryImportInput(
@@ -844,7 +821,7 @@ struct LibraryPackageOrganizationAssetTests {
         let moved = try makeTestDB()
         let movedRoot = try makeTempDir(prefix: "gather-org-moved")
         let box = LockedBox(Wave5ScanState())
-        let enqueued = try LibraryPackageService(connection: moved, enqueueScan: { sessionId, paths in
+        let enqueued = try LibraryPackageService(store: LibraryPackageStore(connection: moved), enqueueScan: { sessionId, paths in
             box.lock.withLock { box.calls.append((sessionId: sessionId, paths: paths)) }
             return "job-moved"
         }).importPackage(LibraryImportInput(
@@ -859,7 +836,7 @@ struct LibraryPackageOrganizationAssetTests {
         // ② 原地导入（newRoot = 包内 sourcePath）且文件都在 → 不入队。
         let same = try makeTestDB()
         let sameBox = LockedBox(Wave5ScanState())
-        let unchanged = try LibraryPackageService(connection: same, enqueueScan: { sessionId, paths in
+        let unchanged = try LibraryPackageService(store: LibraryPackageStore(connection: same), enqueueScan: { sessionId, paths in
             sameBox.lock.withLock { sameBox.calls.append((sessionId: sessionId, paths: paths)) }
             return "should-not-enqueue"
         }).importPackage(LibraryImportInput(

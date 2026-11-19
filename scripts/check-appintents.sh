@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Wave3 收尾 / task-25：验收已组装 .app 的 App Intents 元数据。
 #
-# 背景：Shortcuts.app 能列出 Gather 的 4 个动作，前提是
+# 背景：Shortcuts.app 能列出 Gather 的 6 个动作，前提是
 # <app>/Contents/Resources/Metadata.appintents/{version.json,extract.actionsdata}
 # 存在且包含对应 intent 标识。SwiftPM 本身不生成该产物，由
-# desktop/native/build.sh 调用 scripts/build-appintents-metadata.sh 补上。
+# build-appintents-metadata.sh 生成（build.sh 调用）；build.sh 的产物自检与
+# verify-release-bundle.sh 的发布包验收都复用本脚本，保证只有一份校验实现。
 #
 # 用法：
 #   ./scripts/check-appintents.sh                         # 默认检查 release/Gather.app
@@ -12,10 +13,10 @@
 #   ./scripts/check-appintents.sh --meta /path/Metadata.appintents
 #   ./scripts/check-appintents.sh --expect A,B --meta <path>
 #
-# 退出码：0 = 元数据存在且 4 个 intent 标识齐全；1 = 缺失/损坏/标识不全；
+# 退出码：0 = 元数据存在且 6 个 intent 标识齐全；1 = 缺失/损坏/标识不全；
 # 2 = 参数错误或路径不存在。
 #
-# 环境变量 GATHER_APPINTENTS_EXPECTED 可覆盖期望列表（默认 4 个，与
+# 环境变量 GATHER_APPINTENTS_EXPECTED 可覆盖期望列表（默认 6 个，与
 # GatherApp/GatherAutomationIntents.swift 同步），供预发布/实验构建复用。
 set -euo pipefail
 
@@ -24,10 +25,10 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 APP_BUNDLE=""
 META_DIR=""
-EXPECTED="${GATHER_APPINTENTS_EXPECTED:-CreateWorkspaceAndImportIntent,ExportWorkspaceIntent,WritebackWorkspaceMetadataIntent,WorkspaceStatusIntent}"
+EXPECTED="${GATHER_APPINTENTS_EXPECTED:-CreateWorkspaceAndImportIntent,ExportWorkspaceIntent,WritebackWorkspaceMetadataIntent,WorkspaceStatusIntent,QueryPhotosIntent,RatePhotosIntent}"
 
 usage() {
-  sed -n '2,25p' "$0"
+  sed -n '2,20p' "$0"
   exit 2
 }
 

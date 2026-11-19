@@ -80,190 +80,11 @@ struct CullingInspector: View {
         let groupKnownCount = knownGroupCount(for: groupAssets)
         ScrollView {
             VStack(alignment: .leading, spacing: GatherMetrics.Space.m) {
-                // 当前照片：决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）
-                // + 星级 + 颜色。系统 bordered 按钮 + 裸键 .keyboardShortcut（取代手绘卡片描边）。
-                GatherInspectorSection(l10n("当前照片")) {
-                    VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
-                        // 默认不再重复分区标题「当前照片」：只在真多选时补一行
-                        // 「批量 N 张」，单选由标题本身表达（B-P2 / 单选也不该写"批量 1 张"）。
-                        if viewModel.selectedPhotoIds.count > 1 {
-                            Text(l10n.format("批量 %lld 张", viewModel.selectedPhotoIds.count))
-                                .controlLabelStyle()
-                        }
-                        VStack(spacing: GatherMetrics.Space.controlGap) {
-                            decisionButton(icon: "checkmark", iconColor: GatherTheme.success, title: l10n("保留"), shortcut: "P", key: "p") {
-                                Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }
-                            }
-                            decisionButton(icon: "xmark", iconColor: GatherTheme.error, title: l10n("淘汰"), shortcut: "X", key: "x") {
-                                Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected)) }
-                            }
-                            decisionButton(icon: "circle", iconColor: .secondary, title: l10n("未处理"), shortcut: "U", key: "u") {
-                                Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false) }
-                            }
-                        }
-                    }
+                currentPhotoSection(summary: summary)
 
-                    // 星级：0–5 的**图标**按钮 + 累计填充的标准评分外观。
-                    //
-                    // 旧实现是 "1★"/"2★" 文字按钮：窄列宽下六个按钮会被压缩成「…」，
-                    // 整行不可读。图标按钮只占约 22pt/个，检查器任意列宽下都完整可见。
-                    VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
-                        Text(l10n("星级")).controlLabelStyle()
-                        if summary?.hasMixedRating == true {
-                            Text(l10n("混合"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        HStack(spacing: GatherMetrics.Space.xxs) {
-                            let current = summary?.rating ?? Int(viewModel.currentAsset?.state.rating ?? 0)
-                            Button {
-                                Task { await viewModel.commit(patch: CullingUpdatePatch(rating: 0)) }
-                            } label: {
-                                Image(systemName: "star.slash")
-                            }
-                            .buttonStyle(.borderless)
-                            .controlSize(.large)
-                            .foregroundStyle(current == 0 ? GatherTheme.accent : Color.secondary)
-                            .disabled(isBusy)
-                            .help(l10n("清除评分"))
-                            .accessibilityLabel(l10n("清除评分"))
+                c1AdjustmentSection
 
-                            ForEach(1...5, id: \.self) { rating in
-                                Button {
-                                    Task { await viewModel.commit(patch: CullingUpdatePatch(rating: Double(rating))) }
-                                } label: {
-                                    Image(systemName: rating <= current ? "star.fill" : "star")
-                                }
-                                .buttonStyle(.borderless)
-                                .controlSize(.large)
-                                .foregroundStyle(rating <= current ? GatherTheme.accent : Color.secondary)
-                                .disabled(isBusy)
-                                .help(l10n.format("评分 %lld", rating))
-                                .accessibilityLabel(l10n.format("评分 %lld", rating))
-                                .accessibilityAddTraits(rating == current ? .isSelected : [])
-                            }
-                        }
-                    }
-
-                    // 颜色标签：系统菜单选择器（取代手绘圆形色钮 + 选中外环）；
-                    // C1 色标是数据本身（非状态色），沿用固定色值。
-                    VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
-                        Text(l10n("颜色")).controlLabelStyle()
-                        if summary?.hasMixedColorLabel == true {
-                            Text(l10n("混合"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Picker(l10n("颜色"), selection: colorSelectionBinding) {
-                            if summary?.hasMixedColorLabel == true {
-                                Text(l10n("混合")).tag(CaptureOneColorLabel?.none)
-                            }
-                            ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
-                                Label {
-                                    Text(CullingDisplayFormat.title(label, with: l10n))
-                                } icon: {
-                                    Image(systemName: "circle.fill")
-                                        .foregroundStyle(CullingDisplayFormat.dot(label))
-                                }
-                                .tag(CaptureOneColorLabel?.some(label))
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .disabled(isBusy)
-                        .help(viewModel.selectedPhotoIds.count > 1
-                              ? l10n.format("设置所选 %lld 张照片的颜色标签", viewModel.selectedPhotoIds.count)
-                              : l10n("设置当前照片的颜色标签"))
-                        .accessibilityLabel(l10n("颜色标签"))
-                    }
-                }
-
-                // Wave5 batch6 / G11：C1 有调整时给显式说明（预览不含 C1 色彩/曲线/局部）。
-                // 只读提示、失败静默隐藏：读不到 crs: 字段时整段不渲染，不影响其它面板。
-                if let hint = c1AdjustmentHint, let badge = C1AdjustmentBadge(hint: hint) {
-                    GatherInspectorSection(l10n(C1RejectedColorTagCopy.inspectorSectionTitle)) {
-                        HStack(spacing: GatherMetrics.Space.xs) {
-                            Image(systemName: "camera.filters")
-                                .foregroundStyle(GatherTheme.warningText)
-                                .accessibilityHidden(true)
-                            Text(l10n(C1RejectedColorTagCopy.badgeLabel))
-                                .font(GatherFont.secondaryStrong)
-                        }
-                        Text(l10n.format(
-                            C1RejectedColorTagCopy.inspectorDetailTemplate,
-                            hint.attributeNames.prefix(3).joined(separator: "、")))
-                            .font(GatherFont.secondary)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .help(l10n.format(
-                                C1RejectedColorTagCopy.badgeHelpTemplate, badge.attributeCount))
-                    }
-                }
-
-                // P0/K0：关键词 delta 编辑（当前选择集；未多选时作用于当前照片）。
-                // P1 / A3：只读元数据（拍摄参数 / IPTC / 文件）。数据来自缓存投影，
-                // 由 .task(id:) 在当前照片变化时按需加载，面板本身不触发磁盘解析。
-                MetadataSections(
-                    detail: viewModel.metadataDetail,
-                    selectionCount: max(1, viewModel.selectedPhotoIds.count)
-                )
-                .task(id: viewModel.currentAsset?.photo.id) {
-                    viewModel.loadMetadataDetail()
-                }
-                .confirmationDialog(
-                    l10n("把选中的淘汰照片移出到 _rejects？"),
-                    isPresented: $confirmMoveRejected,
-                    titleVisibility: .visible
-                ) {
-                    Button(l10n("移出"), role: .destructive) {
-                        Task { await viewModel.moveRejectedOut() }
-                    }
-                    Button(l10n("取消"), role: .cancel) {}
-                } message: {
-                    Text(l10n("只移动、不删除；文件可在会话目录的 _rejects 中找回。"))
-                }
-                .sheet(item: $activeSheet) { sheet in
-                    switch sheet {
-                    case .ingest:
-                        IngestSheet(viewModel: viewModel)
-                    case .templates:
-                        MetadataTemplateSheet(viewModel: viewModel)
-                    case .batches:
-                        MetadataBatchSheet(viewModel: viewModel)
-                    case .sceneTags:
-                        if let photoAPI = viewModel.photoAPI {
-                            SemanticSearchSheet(
-                                api: photoAPI,
-                                sessionId: viewModel.sessionId,
-                                seedPhotoIds: cullingSceneTagSeedIds,
-                                nameFor: { id in
-                                    // O(1)：命中行的文件名从 pageVersion 索引取。
-                                    viewModel.pageAsset(forPhotoId: id)?
-                                        .photo.filename ?? String(id.prefix(8))
-                                },
-                                onSelect: { id in
-                                    viewModel.gridClick(id, modifiers: [])
-                                    layoutMode = .grid
-                                })
-                        }
-                    case .editor:
-                        if let photoId = viewModel.currentAsset?.photo.id {
-                            MetadataEditorSheet(
-                                photoId: photoId,
-                                api: viewModel.metadataAPI,
-                                onApplied: { outcome in
-                                    // 失败/冲突时也可能已写 sidecar：只刷新、不报"已写入 0 张"。
-                                    if !outcome.written.isEmpty {
-                                        viewModel.notice = CullingNotice(
-                                            "已写入 %lld 张",
-                                            params: ["\(outcome.written.count)"])
-                                    }
-                                    // 面板要立刻显示新值，否则要切图才刷新（P2）。
-                                    viewModel.loadMetadataDetail()
-                                })
-                        }
-                    }
-                }
+                metadataPanelSection
 
                 // P0 / B2：单张元数据直接编辑（写说明/版权不必再建模板）。
                 GatherCollapsibleSection(l10n("元数据"), initiallyExpanded: false) {
@@ -295,133 +116,13 @@ struct CullingInspector: View {
                         .help(l10n("从存储卡或文件夹复制照片到工作目录并登记"))
                 }
 
-                // P1 / E：把技术建议写成 rating（只写空值）+ 私有命名空间，可回溯。
-                GatherCollapsibleSection(l10n("技术建议写回"), initiallyExpanded: false) {
-                    VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
-                        // P0 / A2：星级策略显式可选（默认保持 3/1，不偷偷改用户现状）。
-                        Picker(l10n("建议星级"), selection: Binding(
-                            get: { viewModel.triageRatingMode },
-                            set: { viewModel.triageRatingMode = $0 }
-                        )) {
-                            Text(l10n("保留 3★ / 淘汰 1★")).tag(TriageRatingMode.keep3Reject1)
-                            Text(l10n("只给保留 3★")).tag(TriageRatingMode.keep3Only)
-                            Text(l10n("不写星级")).tag(TriageRatingMode.none)
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .disabled(isBusy)
-                        Button(l10n("把建议写成评级")) {
-                            Task {
-                                pendingTriageInput = await viewModel.prepareTriageWriteback()
-                                showTriageWritebackConfirm = pendingTriageInput != nil
-                            }
-                        }
-                        .gatherButton(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .disabled(isBusy)
-                        Text(l10n("只写空评级；已有星级与人工决策一律不动。"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if viewModel.lastTriageWritebackBatchId != nil {
-                            Button(l10n("撤销上次建议写回")) {
-                                showTriageUndoConfirm = true
-                            }
-                            .gatherButton(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .disabled(isBusy)
-                            // 挂在按钮自身上：同一视图叠两个 confirmationDialog 时
-                            // SwiftUI 只保证其中一个能弹出（见本文件顶部注释）。
-                            .confirmationDialog(
-                                l10n("撤销上次建议写回？"),
-                                isPresented: $showTriageUndoConfirm,
-                                titleVisibility: .visible
-                            ) {
-                                Button(l10n("撤销"), role: .destructive) {
-                                    guard let batchId = viewModel.lastTriageWritebackBatchId else {
-                                        return
-                                    }
-                                    let input: MetadataTemplateUndoInput
-                                    do {
-                                        input = try MetadataTemplateUndoInput(batchId: batchId)
-                                    } catch {
-                                        // 校验失败不能静默（否则撤销按钮像"没反应"）。
-                                        viewModel.triageError = CommandError(error)
-                                        return
-                                    }
-                                    Task {
-                                        await viewModel.undoTriageWriteback(
-                                            Confirmed(input, source: .userDialog))
-                                    }
-                                }
-                                Button(l10n("取消"), role: .cancel) {}
-                            } message: {
-                                Text(l10n("还原 rating/关键词，并清除私有命名空间信号。"))
-                            }
-                        }
-                    }
-                    .confirmationDialog(
-                        l10n("把全会话的建议写成评级？"),
-                        isPresented: $showTriageWritebackConfirm,
-                        titleVisibility: .visible
-                    ) {
-                        Button(l10n("写回")) {
-                            guard let input = pendingTriageInput else { return }
-                            pendingTriageInput = nil
-                            Task {
-                                await viewModel.applyTriageWriteback(
-                                    Confirmed(input, source: .userDialog))
-                            }
-                        }
-                        Button(l10n("取消"), role: .cancel) { pendingTriageInput = nil }
-                    } message: {
-                        Text(l10n("会写入全会话所有 keep/reject 建议的私有信号；rating 只写空值。"))
-                    }
-                }
+                triageWritebackSection
 
                 GatherInspectorSection(l10n("关键词")) {
                     CullingKeywordPanel(viewModel: viewModel, isBusy: isBusy)
                 }
 
-                // G0：排序 / 网格密度 / 建议筛选（可见，不折叠）。
-                GatherInspectorSection(l10n("排序与网格")) {
-                    VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
-                        labeledControl(l10n("排序")) {
-                            Picker(l10n("排序"), selection: sortBinding) {
-                                Text(l10n("导入顺序")).tag(CullingSort.importOrder)
-                                Text(l10n("拍摄时间（新→旧）")).tag(CullingSort.captureDesc)
-                                Text(l10n("拍摄时间（旧→新）")).tag(CullingSort.captureAsc)
-                                Text(l10n("评分（高→低）")).tag(CullingSort.ratingDesc)
-                                if viewModel.triageEnabled {
-                                    Text(l10n("建议置信度（低→高）"))
-                                        .tag(CullingSort.triageConfidenceAsc)
-                                }
-                            }
-                            .labelsHidden()
-                        }
-
-                        labeledControl(l10n("网格密度")) {
-                            Picker(l10n("网格密度"), selection: $gridDensity) {
-                                ForEach(CullingGridDensity.allCases, id: \.self) { density in
-                                    Text(l10n(density.titleKey)).tag(density)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                        }
-
-                        if viewModel.triageEnabled {
-                            labeledControl(l10n("建议筛选")) {
-                                Picker(l10n("建议筛选"), selection: triageBinding) {
-                                    Text(l10n("全部")).tag(TriageVerdict?.none)
-                                    Text(l10n("建议保留")).tag(TriageVerdict?.some(.keep))
-                                    Text(l10n("建议淘汰")).tag(TriageVerdict?.some(.reject))
-                                    Text(l10n("待复核")).tag(TriageVerdict?.some(.review))
-                                }
-                                .labelsHidden()
-                            }
-                        }
-                    }
-                }
+                sortAndGridSection
 
                 // P0/T0：技术质量建议（Beta）。生成/应用/复核队列都在这里。
                 if viewModel.triageEnabled {
@@ -462,108 +163,9 @@ struct CullingInspector: View {
                     }
                 }
 
-                // 相似组决策（对齐旧版 groupDecision：仅当前照片所在组 >1 张时显示）。
-                if groupKnownCount > 1, let current = viewModel.currentAsset {
-                    let groupIds = Set(groupAssets.map(\.photo.id))
-                    let selectedInGroup = viewModel.selectedPhotoIds.intersection(groupIds)
-                    let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < groupKnownCount
-                    GatherInspectorSection(
-                        l10n.format("相似组 · %lld 张", groupKnownCount),
-                        subtitle: l10n.format("当前视图 %lld 张；其余将自动淘汰", groupAssets.count)
-                    ) {
-                        Button(l10n("保留当前 1 张")) {
-                            Task {
-                                await prepareGroupDecision(
-                                    groupId: current.similarityGroupId ?? "",
-                                    keepPhotoIds: [current.photo.id]
-                                )
-                            }
-                        }
-                        .gatherButton(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .disabled(isBusy)
+                similarGroupSection(groupAssets: groupAssets, groupKnownCount: groupKnownCount)
 
-                        if !selectedInGroup.isEmpty {
-                            Button(l10n.format("保留已选 %lld 张", selectedInGroup.count)) {
-                                Task {
-                                    await prepareGroupDecision(
-                                        groupId: current.similarityGroupId ?? "",
-                                        keepPhotoIds: selectedInGroup.sorted()
-                                    )
-                                }
-                            }
-                            .gatherButton(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .disabled(!keepValid || isBusy)
-                            .help(keepValid ? "" : l10n("按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"))
-                        }
-                    }
-                }
-
-                // Wave5 batch4（50-ai-similarity §2 P1-7）：场景/连拍组视图 + 最佳帧决策。
-                if let current = viewModel.currentAsset,
-                   let group = viewModel.navigationGroup(forPhotoId: current.photo.id) {
-                    let plan = viewModel.prepareNavigationGroupDecision(groupId: group.id)
-                    GatherInspectorSection(
-                        l10n.format(
-                            "%@ · %lld 张",
-                            group.type == .burst ? l10n("连拍组") : l10n("场景组"),
-                            Int64(group.photoIds.count)),
-                        subtitle: l10n("组内最佳帧优先；可一键保留最佳、淘汰其余")
-                    ) {
-                        Button(viewModel.navigationGroupViewGroup?.id == group.id
-                               ? l10n("退出组视图")
-                               : l10n("查看组视图")) {
-                            Task { await viewModel.enterNavigationGroupViewForGroup(group.id) }
-                        }
-                        .gatherButton(.secondary)
-                        .frame(maxWidth: .infinity)
-
-                        if let plan {
-                            Text(l10n.format("最佳：%@", plan.keepFilename))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            Button(l10n("保留最佳、淘汰其余")) {
-                                pendingNavigationGroupDecision = plan
-                                showNavigationGroupDecisionConfirm = true
-                            }
-                            .gatherButton(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .disabled(isBusy)
-                            // 挂在按钮自身上（同视图多个按钮级 confirmationDialog 的既有约定）。
-                            .confirmationDialog(
-                                l10n("保留最佳帧、淘汰其余？"),
-                                isPresented: $showNavigationGroupDecisionConfirm,
-                                titleVisibility: .visible
-                            ) {
-                                Button(
-                                    l10n.format(
-                                        "保留「%@」并淘汰 %lld 张",
-                                        plan.keepFilename,
-                                        Int64(plan.rejectPhotoIds.count)),
-                                    role: .destructive
-                                ) {
-                                    let decision = pendingNavigationGroupDecision
-                                    pendingNavigationGroupDecision = nil
-                                    guard let decision else { return }
-                                    Task {
-                                        await viewModel.performNavigationGroupDecision(
-                                            Confirmed(decision, source: .userDialog))
-                                    }
-                                }
-                                Button(l10n("取消"), role: .cancel) {
-                                    pendingNavigationGroupDecision = nil
-                                }
-                            } message: {
-                                Text(l10n.format(
-                                    "组内 %lld 张，其中 %lld 张不在当前页；会被一起淘汰（只写决策、不删文件，可撤销）。",
-                                    Int64(plan.totalCount),
-                                    Int64(plan.totalCount - plan.visibleCount)))
-                            }
-                        }
-                    }
-                }
+                navigationGroupSection
 
                 // 选择管理：批量决策对象（在胶片条中 ⌘/Ctrl 点选）。
                 GatherInspectorSection(l10n("选择管理")) {
@@ -652,6 +254,447 @@ struct CullingInspector: View {
             c1AdjustmentHint = hint
         }
     }
+
+    /// 当前照片：决策条（保留/淘汰/未处理）+ 星级 + 颜色（原 body 内联区域，M6 纯拆分）。
+    /// body 已算好的 summary 显式传入，避免区域内再读一次派生。
+    private func currentPhotoSection(summary: CullingViewModel.SelectionSummary?) -> some View {
+            // 当前照片：决策条（对齐旧版 decisionBar：✓ 保留 P / × 淘汰 X / ○ 未处理 U）
+            // + 星级 + 颜色。系统 bordered 按钮 + 裸键 .keyboardShortcut（取代手绘卡片描边）。
+            GatherInspectorSection(l10n("当前照片")) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
+                    // 默认不再重复分区标题「当前照片」：只在真多选时补一行
+                    // 「批量 N 张」，单选由标题本身表达（B-P2 / 单选也不该写"批量 1 张"）。
+                    if viewModel.selectedPhotoIds.count > 1 {
+                        Text(l10n.format("批量 %lld 张", viewModel.selectedPhotoIds.count))
+                            .controlLabelStyle()
+                    }
+                    VStack(spacing: GatherMetrics.Space.controlGap) {
+                        decisionButton(icon: "checkmark", iconColor: GatherTheme.success, title: l10n("保留"), shortcut: "P", key: "p") {
+                            Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .picked)) }
+                        }
+                        decisionButton(icon: "xmark", iconColor: GatherTheme.error, title: l10n("淘汰"), shortcut: "X", key: "x") {
+                            Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .rejected)) }
+                        }
+                        decisionButton(icon: "circle", iconColor: .secondary, title: l10n("未处理"), shortcut: "U", key: "u") {
+                            Task { await viewModel.commit(patch: CullingUpdatePatch(pickState: .unreviewed), shouldAdvance: false) }
+                        }
+                    }
+                }
+
+                // 星级：0–5 的**图标**按钮 + 累计填充的标准评分外观。
+                //
+                // 旧实现是 "1★"/"2★" 文字按钮：窄列宽下六个按钮会被压缩成「…」，
+                // 整行不可读。图标按钮只占约 22pt/个，检查器任意列宽下都完整可见。
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.xs) {
+                    Text(l10n("星级")).controlLabelStyle()
+                    if summary?.hasMixedRating == true {
+                        Text(l10n("混合"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: GatherMetrics.Space.xxs) {
+                        let current = summary?.rating ?? Int(viewModel.currentAsset?.state.rating ?? 0)
+                        Button {
+                            Task { await viewModel.commit(patch: CullingUpdatePatch(rating: 0)) }
+                        } label: {
+                            Image(systemName: "star.slash")
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.large)
+                        .foregroundStyle(current == 0 ? GatherTheme.accent : Color.secondary)
+                        .disabled(isBusy)
+                        .help(l10n("清除评分"))
+                        .accessibilityLabel(l10n("清除评分"))
+
+                        ForEach(1...5, id: \.self) { rating in
+                            Button {
+                                Task { await viewModel.commit(patch: CullingUpdatePatch(rating: Double(rating))) }
+                            } label: {
+                                Image(systemName: rating <= current ? "star.fill" : "star")
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.large)
+                            .foregroundStyle(rating <= current ? GatherTheme.accent : Color.secondary)
+                            .disabled(isBusy)
+                            .help(l10n.format("评分 %lld", rating))
+                            .accessibilityLabel(l10n.format("评分 %lld", rating))
+                            .accessibilityAddTraits(rating == current ? .isSelected : [])
+                        }
+                    }
+                }
+
+                // 颜色标签：系统菜单选择器（取代手绘圆形色钮 + 选中外环）；
+                // C1 色标是数据本身（非状态色），沿用固定色值。
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.controlGap) {
+                    Text(l10n("颜色")).controlLabelStyle()
+                    if summary?.hasMixedColorLabel == true {
+                        Text(l10n("混合"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Picker(l10n("颜色"), selection: colorSelectionBinding) {
+                        if summary?.hasMixedColorLabel == true {
+                            Text(l10n("混合")).tag(CaptureOneColorLabel?.none)
+                        }
+                        ForEach(CaptureOneColorLabel.allCases, id: \.self) { label in
+                            Label {
+                                Text(CullingDisplayFormat.title(label, with: l10n))
+                            } icon: {
+                                Image(systemName: "circle.fill")
+                                    .foregroundStyle(CullingDisplayFormat.dot(label))
+                            }
+                            .tag(CaptureOneColorLabel?.some(label))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .disabled(isBusy)
+                    .help(viewModel.selectedPhotoIds.count > 1
+                          ? l10n.format("设置所选 %lld 张照片的颜色标签", viewModel.selectedPhotoIds.count)
+                          : l10n("设置当前照片的颜色标签"))
+                    .accessibilityLabel(l10n("颜色标签"))
+                }
+            }
+    }
+
+    /// Wave5 batch6 / G11：C1 有调整时的只读说明（原 body 内联区域，M6 纯拆分）。
+    @ViewBuilder
+    private var c1AdjustmentSection: some View {
+            // Wave5 batch6 / G11：C1 有调整时给显式说明（预览不含 C1 色彩/曲线/局部）。
+            // 只读提示、失败静默隐藏：读不到 crs: 字段时整段不渲染，不影响其它面板。
+            if let hint = c1AdjustmentHint, let badge = C1AdjustmentBadge(hint: hint) {
+                GatherInspectorSection(l10n(C1RejectedColorTagCopy.inspectorSectionTitle)) {
+                    HStack(spacing: GatherMetrics.Space.xs) {
+                        Image(systemName: "camera.filters")
+                            .foregroundStyle(GatherTheme.warningText)
+                            .accessibilityHidden(true)
+                        Text(l10n(C1RejectedColorTagCopy.badgeLabel))
+                            .font(GatherFont.secondaryStrong)
+                    }
+                    Text(l10n.format(
+                        C1RejectedColorTagCopy.inspectorDetailTemplate,
+                        hint.attributeNames.prefix(3).joined(separator: "、")))
+                        .font(GatherFont.secondary)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(l10n.format(
+                            C1RejectedColorTagCopy.badgeHelpTemplate, badge.attributeCount))
+                }
+            }
+    }
+
+    /// 元数据只读面板 + 其 .task/.confirmationDialog/.sheet（原 body 内联区域，M6 纯拆分）。
+    private var metadataPanelSection: some View {
+            // P0/K0：关键词 delta 编辑（当前选择集；未多选时作用于当前照片）。
+            // P1 / A3：只读元数据（拍摄参数 / IPTC / 文件）。数据来自缓存投影，
+            // 由 .task(id:) 在当前照片变化时按需加载，面板本身不触发磁盘解析。
+            MetadataSections(
+                detail: viewModel.metadataDetail,
+                selectionCount: max(1, viewModel.selectedPhotoIds.count)
+            )
+            .task(id: viewModel.currentAsset?.photo.id) {
+                viewModel.loadMetadataDetail()
+            }
+            .confirmationDialog(
+                l10n("把选中的淘汰照片移出到 _rejects？"),
+                isPresented: $confirmMoveRejected,
+                titleVisibility: .visible
+            ) {
+                Button(l10n("移出"), role: .destructive) {
+                    Task { await viewModel.moveRejectedOut() }
+                }
+                Button(l10n("取消"), role: .cancel) {}
+            } message: {
+                Text(l10n("只移动、不删除；文件可在会话目录的 _rejects 中找回。"))
+            }
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .ingest:
+                    IngestSheet(viewModel: viewModel)
+                case .templates:
+                    MetadataTemplateSheet(viewModel: viewModel)
+                case .batches:
+                    MetadataBatchSheet(viewModel: viewModel)
+                case .sceneTags:
+                    if let photoAPI = viewModel.photoAPI {
+                        SemanticSearchSheet(
+                            api: photoAPI,
+                            sessionId: viewModel.sessionId,
+                            seedPhotoIds: cullingSceneTagSeedIds,
+                            nameFor: { id in
+                                // O(1)：命中行的文件名从 pageVersion 索引取。
+                                viewModel.pageAsset(forPhotoId: id)?
+                                    .photo.filename ?? String(id.prefix(8))
+                            },
+                            onSelect: { id in
+                                viewModel.gridClick(id, modifiers: [])
+                                layoutMode = .grid
+                            })
+                    }
+                case .editor:
+                    if let photoId = viewModel.currentAsset?.photo.id {
+                        MetadataEditorSheet(
+                            photoId: photoId,
+                            api: viewModel.metadataAPI,
+                            onApplied: { outcome in
+                                // 失败/冲突时也可能已写 sidecar：只刷新、不报"已写入 0 张"。
+                                if !outcome.written.isEmpty {
+                                    viewModel.notice = CullingNotice(
+                                        "已写入 %lld 张",
+                                        params: ["\(outcome.written.count)"])
+                                }
+                                // 面板要立刻显示新值，否则要切图才刷新（P2）。
+                                viewModel.loadMetadataDetail()
+                            })
+                    }
+                }
+            }
+    }
+
+    /// P1 / E：技术建议写回（星级策略 + 写回/撤销确认；原 body 内联区域，M6 纯拆分）。
+    private var triageWritebackSection: some View {
+            // P1 / E：把技术建议写成 rating（只写空值）+ 私有命名空间，可回溯。
+            GatherCollapsibleSection(l10n("技术建议写回"), initiallyExpanded: false) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+                    // P0 / A2：星级策略显式可选（默认保持 3/1，不偷偷改用户现状）。
+                    Picker(l10n("建议星级"), selection: Binding(
+                        get: { viewModel.triageRatingMode },
+                        set: { viewModel.triageRatingMode = $0 }
+                    )) {
+                        Text(l10n("保留 3★ / 淘汰 1★")).tag(TriageRatingMode.keep3Reject1)
+                        Text(l10n("只给保留 3★")).tag(TriageRatingMode.keep3Only)
+                        Text(l10n("不写星级")).tag(TriageRatingMode.none)
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .disabled(isBusy)
+                    Button(l10n("把建议写成评级")) {
+                        Task {
+                            pendingTriageInput = await viewModel.prepareTriageWriteback()
+                            showTriageWritebackConfirm = pendingTriageInput != nil
+                        }
+                    }
+                    .gatherButton(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .disabled(isBusy)
+                    Text(l10n("只写空评级；已有星级与人工决策一律不动。"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if viewModel.lastTriageWritebackBatchId != nil {
+                        Button(l10n("撤销上次建议写回")) {
+                            showTriageUndoConfirm = true
+                        }
+                        .gatherButton(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .disabled(isBusy)
+                        // 挂在按钮自身上：同一视图叠两个 confirmationDialog 时
+                        // SwiftUI 只保证其中一个能弹出（见本文件顶部注释）。
+                        .confirmationDialog(
+                            l10n("撤销上次建议写回？"),
+                            isPresented: $showTriageUndoConfirm,
+                            titleVisibility: .visible
+                        ) {
+                            Button(l10n("撤销"), role: .destructive) {
+                                guard let batchId = viewModel.lastTriageWritebackBatchId else {
+                                    return
+                                }
+                                let input: MetadataTemplateUndoInput
+                                do {
+                                    input = try MetadataTemplateUndoInput(batchId: batchId)
+                                } catch {
+                                    // 校验失败不能静默（否则撤销按钮像"没反应"）。
+                                    viewModel.triageError = CommandError(error)
+                                    return
+                                }
+                                Task {
+                                    await viewModel.undoTriageWriteback(
+                                        Confirmed(input, source: .userDialog))
+                                }
+                            }
+                            Button(l10n("取消"), role: .cancel) {}
+                        } message: {
+                            Text(l10n("还原 rating/关键词，并清除私有命名空间信号。"))
+                        }
+                    }
+                }
+                .confirmationDialog(
+                    l10n("把全会话的建议写成评级？"),
+                    isPresented: $showTriageWritebackConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button(l10n("写回")) {
+                        guard let input = pendingTriageInput else { return }
+                        pendingTriageInput = nil
+                        Task {
+                            await viewModel.applyTriageWriteback(
+                                Confirmed(input, source: .userDialog))
+                        }
+                    }
+                    Button(l10n("取消"), role: .cancel) { pendingTriageInput = nil }
+                } message: {
+                    Text(l10n("会写入全会话所有 keep/reject 建议的私有信号；rating 只写空值。"))
+                }
+            }
+    }
+
+    /// G0：排序 / 网格密度 / 建议筛选（原 body 内联区域，M6 纯拆分）。
+    private var sortAndGridSection: some View {
+            // G0：排序 / 网格密度 / 建议筛选（可见，不折叠）。
+            GatherInspectorSection(l10n("排序与网格")) {
+                VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
+                    labeledControl(l10n("排序")) {
+                        Picker(l10n("排序"), selection: sortBinding) {
+                            Text(l10n("导入顺序")).tag(CullingSort.importOrder)
+                            Text(l10n("拍摄时间（新→旧）")).tag(CullingSort.captureDesc)
+                            Text(l10n("拍摄时间（旧→新）")).tag(CullingSort.captureAsc)
+                            Text(l10n("评分（高→低）")).tag(CullingSort.ratingDesc)
+                            if viewModel.triageEnabled {
+                                Text(l10n("建议置信度（低→高）"))
+                                    .tag(CullingSort.triageConfidenceAsc)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+
+                    labeledControl(l10n("网格密度")) {
+                        Picker(l10n("网格密度"), selection: $gridDensity) {
+                            ForEach(CullingGridDensity.allCases, id: \.self) { density in
+                                Text(l10n(density.titleKey)).tag(density)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+
+                    if viewModel.triageEnabled {
+                        labeledControl(l10n("建议筛选")) {
+                            Picker(l10n("建议筛选"), selection: triageBinding) {
+                                Text(l10n("全部")).tag(TriageVerdict?.none)
+                                Text(l10n("建议保留")).tag(TriageVerdict?.some(.keep))
+                                Text(l10n("建议淘汰")).tag(TriageVerdict?.some(.reject))
+                                Text(l10n("待复核")).tag(TriageVerdict?.some(.review))
+                            }
+                            .labelsHidden()
+                        }
+                    }
+                }
+            }
+    }
+
+    /// 相似组决策：仅当前照片所在组 >1 张时显示（原 body 内联区域，M6 纯拆分）。
+    @ViewBuilder
+    private func similarGroupSection(
+        groupAssets: [CullingAsset],
+        groupKnownCount: Int
+    ) -> some View {
+            // 相似组决策（对齐旧版 groupDecision：仅当前照片所在组 >1 张时显示）。
+            if groupKnownCount > 1, let current = viewModel.currentAsset {
+                let groupIds = Set(groupAssets.map(\.photo.id))
+                let selectedInGroup = viewModel.selectedPhotoIds.intersection(groupIds)
+                let keepValid = !selectedInGroup.isEmpty && selectedInGroup.count < groupKnownCount
+                GatherInspectorSection(
+                    l10n.format("相似组 · %lld 张", groupKnownCount),
+                    subtitle: l10n.format("当前视图 %lld 张；其余将自动淘汰", groupAssets.count)
+                ) {
+                    Button(l10n("保留当前 1 张")) {
+                        Task {
+                            await prepareGroupDecision(
+                                groupId: current.similarityGroupId ?? "",
+                                keepPhotoIds: [current.photo.id]
+                            )
+                        }
+                    }
+                    .gatherButton(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .disabled(isBusy)
+
+                    if !selectedInGroup.isEmpty {
+                        Button(l10n.format("保留已选 %lld 张", selectedInGroup.count)) {
+                            Task {
+                                await prepareGroupDecision(
+                                    groupId: current.similarityGroupId ?? "",
+                                    keepPhotoIds: selectedInGroup.sorted()
+                                )
+                            }
+                        }
+                        .gatherButton(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .disabled(!keepValid || isBusy)
+                        .help(keepValid ? "" : l10n("按住 ⌘ 或 Ctrl 在胶片中选择要保留的照片"))
+                    }
+                }
+            }
+    }
+
+    /// Wave5 batch4：场景/连拍组视图 + 最佳帧决策（原 body 内联区域，M6 纯拆分）。
+    @ViewBuilder
+    private var navigationGroupSection: some View {
+            // Wave5 batch4（50-ai-similarity §2 P1-7）：场景/连拍组视图 + 最佳帧决策。
+            if let current = viewModel.currentAsset,
+               let group = viewModel.navigationGroup(forPhotoId: current.photo.id) {
+                let plan = viewModel.prepareNavigationGroupDecision(groupId: group.id)
+                GatherInspectorSection(
+                    l10n.format(
+                        "%@ · %lld 张",
+                        group.type == .burst ? l10n("连拍组") : l10n("场景组"),
+                        Int64(group.photoIds.count)),
+                    subtitle: l10n("组内最佳帧优先；可一键保留最佳、淘汰其余")
+                ) {
+                    Button(viewModel.navigationGroupViewGroup?.id == group.id
+                           ? l10n("退出组视图")
+                           : l10n("查看组视图")) {
+                        Task { await viewModel.enterNavigationGroupViewForGroup(group.id) }
+                    }
+                    .gatherButton(.secondary)
+                    .frame(maxWidth: .infinity)
+
+                    if let plan {
+                        Text(l10n.format("最佳：%@", plan.keepFilename))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Button(l10n("保留最佳、淘汰其余")) {
+                            pendingNavigationGroupDecision = plan
+                            showNavigationGroupDecisionConfirm = true
+                        }
+                        .gatherButton(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .disabled(isBusy)
+                        // 挂在按钮自身上（同视图多个按钮级 confirmationDialog 的既有约定）。
+                        .confirmationDialog(
+                            l10n("保留最佳帧、淘汰其余？"),
+                            isPresented: $showNavigationGroupDecisionConfirm,
+                            titleVisibility: .visible
+                        ) {
+                            Button(
+                                l10n.format(
+                                    "保留「%@」并淘汰 %lld 张",
+                                    plan.keepFilename,
+                                    Int64(plan.rejectPhotoIds.count)),
+                                role: .destructive
+                            ) {
+                                let decision = pendingNavigationGroupDecision
+                                pendingNavigationGroupDecision = nil
+                                guard let decision else { return }
+                                Task {
+                                    await viewModel.performNavigationGroupDecision(
+                                        Confirmed(decision, source: .userDialog))
+                                }
+                            }
+                            Button(l10n("取消"), role: .cancel) {
+                                pendingNavigationGroupDecision = nil
+                            }
+                        } message: {
+                            Text(l10n.format(
+                                "组内 %lld 张，其中 %lld 张不在当前页；会被一起淘汰（只写决策、不删文件，可撤销）。",
+                                Int64(plan.totalCount),
+                                Int64(plan.totalCount - plan.visibleCount)))
+                        }
+                    }
+                }
+            }
+    }
+
 
     private func decisionButton(
         icon: String,

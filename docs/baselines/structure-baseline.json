@@ -1,0 +1,705 @@
+{
+  "schema": 2,
+  "note": "G0–G5 结构门禁共享基线（schema 2）：gates.<gate> 每个 section 对应一道门禁，语义与旧的 docs/<gate>-baseline.json 独立文件一致（schema 版本上提到顶层，不写时间戳，减少重钉 diff 噪声）。--write-baseline 只原子更新对应 section 并保留其他 gate 数据；默认拒绝上涨/新增条目，显式 --allow-growth 并在 docs/cleanup-backlog.md 记账。",
+  "gates": {
+    "lock-order": {
+      "generated_by": "scripts/check-lock-order.sh --write-baseline",
+      "note": "docs/delivery-lock-order.md：XMP -> DB 允许、DB -> XMP 禁止。统计 GatherDelivery 里 connection.transaction 花括号平衡块内出现的 XMPFileLock / fileLock / 文件端口 / FileManager / Task 绕过；基线硬编码 0 违规。",
+      "scope": "desktop/native/gather-core/Sources/GatherDelivery",
+      "baseline": {
+        "xmp_in_db_transaction": 0,
+        "transaction_blocks": 2,
+        "swift_files": 22,
+        "allowed_file_lock_run_sites": 4
+      },
+      "transaction_receivers": [
+        "connection"
+      ]
+    },
+    "import-graph": {
+      "generated_by": "scripts/check-import-graph.sh --write-baseline",
+      "note": "Package.swift 声明的 target 内部依赖边（a+b）与实际 import 图。allowlist 只登记「实际 import 的模块不在该 target dependencies 里」的存量例外；新增 target / 新增依赖边需 --write-baseline --allow-growth 并记账。",
+      "scan": {
+        "targets": 18,
+        "swift_files": 1108,
+        "internal_imports": 1941
+      },
+      "targets": {
+        "CSQLite": [],
+        "GatherAnalysis": [
+          "GatherProtocol"
+        ],
+        "GatherApp": [
+          "GatherHost",
+          "GatherUI"
+        ],
+        "GatherAppTests": [
+          "GatherAnalysis",
+          "GatherApplication",
+          "GatherDelivery",
+          "GatherHost",
+          "GatherPersistence",
+          "GatherProtocol",
+          "GatherTestSupport",
+          "GatherUI"
+        ],
+        "GatherApplication": [
+          "GatherAnalysis",
+          "GatherDelivery",
+          "GatherPersistence",
+          "GatherProtocol"
+        ],
+        "GatherCoreBenchmarks": [
+          "GatherAnalysis",
+          "GatherProtocol"
+        ],
+        "GatherCoreTests": [
+          "CSQLite",
+          "GatherAnalysis",
+          "GatherApplication",
+          "GatherDelivery",
+          "GatherMetadataIO",
+          "GatherPersistence",
+          "GatherProtocol",
+          "GatherTestSupport"
+        ],
+        "GatherDelivery": [
+          "GatherPersistence",
+          "GatherProtocol"
+        ],
+        "GatherFaceBenchmarks": [
+          "GatherAnalysis",
+          "GatherProtocol"
+        ],
+        "GatherHost": [
+          "GatherAnalysis",
+          "GatherApplication",
+          "GatherDelivery",
+          "GatherMetadataIO",
+          "GatherPersistence",
+          "GatherProtocol",
+          "GatherUI"
+        ],
+        "GatherMetadataIO": [
+          "GatherAnalysis",
+          "GatherPersistence",
+          "GatherProtocol"
+        ],
+        "GatherPersistence": [
+          "CSQLite",
+          "GatherProtocol"
+        ],
+        "GatherPreviewData": [
+          "GatherProtocol"
+        ],
+        "GatherProtocol": [],
+        "GatherSchema": [
+          "GatherPersistence"
+        ],
+        "GatherTestSupport": [
+          "GatherAnalysis",
+          "GatherApplication",
+          "GatherDelivery",
+          "GatherPersistence",
+          "GatherProtocol"
+        ],
+        "GatherTriageEval": [
+          "GatherAnalysis",
+          "GatherApplication",
+          "GatherPersistence",
+          "GatherProtocol"
+        ],
+        "GatherUI": [
+          "GatherPreviewData",
+          "GatherProtocol"
+        ]
+      },
+      "cycles": [],
+      "allowlist": []
+    },
+    "module-size": {
+      "generated_by": "scripts/check-module-size.sh --write-baseline",
+      "note": "每 target 文件数/LOC/最大文件 LOC + 包级 Sources/Tests LOC。Sources LOC 合计与最大文件 LOC 只降不升（上涨需 --allow-growth 并记账）；Tests 规模只告警；文件数上涨只告警不失败（拆文件是合法重构）；Tests/Sources 行比只记录、不参与 ratchet。",
+      "scan": {
+        "target_dirs": 18,
+        "swift_files": 1112
+      },
+      "packages": {
+        "desktop/native/gather-core": {
+          "sources_loc": 102100,
+          "tests_loc": 62452,
+          "sources_files": 427,
+          "tests_files": 207,
+          "tests_to_sources_ratio": 0.6117
+        },
+        "desktop/native/gather-app": {
+          "sources_loc": 75128,
+          "tests_loc": 36924,
+          "sources_files": 345,
+          "tests_files": 133,
+          "tests_to_sources_ratio": 0.4915
+        }
+      },
+      "targets": {
+        "CSQLite": {
+          "files": 0,
+          "loc": 0,
+          "max_file_loc": 0,
+          "max_file": ""
+        },
+        "GatherAnalysis": {
+          "files": 20,
+          "loc": 5711,
+          "max_file_loc": 781,
+          "max_file": "desktop/native/gather-core/Sources/GatherAnalysis/Face/EmbeddingModel.swift"
+        },
+        "GatherApp": {
+          "files": 3,
+          "loc": 599,
+          "max_file_loc": 252,
+          "max_file": "desktop/native/gather-app/Sources/GatherApp/GatherAutomationIntents.swift"
+        },
+        "GatherAppTests": {
+          "files": 133,
+          "loc": 36924,
+          "max_file_loc": 1711,
+          "max_file": "desktop/native/gather-app/Tests/GatherAppTests/CullingViewModelAPITests.swift"
+        },
+        "GatherApplication": {
+          "files": 119,
+          "loc": 37677,
+          "max_file_loc": 917,
+          "max_file": "desktop/native/gather-core/Sources/GatherApplication/Services/Output/S3ShareTransport.swift"
+        },
+        "GatherCoreBenchmarks": {
+          "files": 1,
+          "loc": 890,
+          "max_file_loc": 890,
+          "max_file": "desktop/native/gather-core/Sources/GatherCoreBenchmarks/main.swift"
+        },
+        "GatherCoreTests": {
+          "files": 200,
+          "loc": 61585,
+          "max_file_loc": 2113,
+          "max_file": "desktop/native/gather-core/Tests/GatherCoreTests/Services/CullingServiceTests.swift"
+        },
+        "GatherDelivery": {
+          "files": 22,
+          "loc": 7124,
+          "max_file_loc": 649,
+          "max_file": "desktop/native/gather-core/Sources/GatherDelivery/Coordinator/DeliveryCoordinator.swift"
+        },
+        "GatherFaceBenchmarks": {
+          "files": 1,
+          "loc": 129,
+          "max_file_loc": 129,
+          "max_file": "desktop/native/gather-core/Sources/GatherFaceBenchmarks/main.swift"
+        },
+        "GatherHost": {
+          "files": 53,
+          "loc": 13789,
+          "max_file_loc": 862,
+          "max_file": "desktop/native/gather-app/Sources/GatherHost/Startup/SceneAssembly.swift"
+        },
+        "GatherMetadataIO": {
+          "files": 12,
+          "loc": 4364,
+          "max_file_loc": 987,
+          "max_file": "desktop/native/gather-core/Sources/GatherMetadataIO/SidecarXMPProvider+Patching.swift"
+        },
+        "GatherPersistence": {
+          "files": 134,
+          "loc": 26164,
+          "max_file_loc": 1330,
+          "max_file": "desktop/native/gather-core/Sources/GatherPersistence/Database/Queries/PhotoFilterQuery.swift"
+        },
+        "GatherPreviewData": {
+          "files": 7,
+          "loc": 1427,
+          "max_file_loc": 567,
+          "max_file": "desktop/native/gather-app/Sources/GatherPreviewData/PreviewAPIs.swift"
+        },
+        "GatherProtocol": {
+          "files": 112,
+          "loc": 17576,
+          "max_file_loc": 784,
+          "max_file": "desktop/native/gather-core/Sources/GatherProtocol/Protocol/DescriptiveMetadata.swift"
+        },
+        "GatherSchema": {
+          "files": 1,
+          "loc": 198,
+          "max_file_loc": 198,
+          "max_file": "desktop/native/gather-core/Sources/GatherSchema/main.swift"
+        },
+        "GatherTestSupport": {
+          "files": 7,
+          "loc": 867,
+          "max_file_loc": 386,
+          "max_file": "desktop/native/gather-core/Tests/GatherTestSupport/ServiceConstructionTestSupport.swift"
+        },
+        "GatherTriageEval": {
+          "files": 5,
+          "loc": 2267,
+          "max_file_loc": 1018,
+          "max_file": "desktop/native/gather-core/Sources/GatherTriageEval/SimilarityEvalCommand.swift"
+        },
+        "GatherUI": {
+          "files": 282,
+          "loc": 59313,
+          "max_file_loc": 1152,
+          "max_file": "desktop/native/gather-app/Sources/GatherUI/Export/ExportView+Delivery.swift"
+        }
+      }
+    },
+    "concurrency-whitelist": {
+      "generated_by": "scripts/check-concurrency-whitelist.sh --write-baseline",
+      "note": "并发标注白名单（file + 最近外层类型名 + kind）。出现基线外的 (file,type) 即 FAIL，即使总数不变；同一位置 count 上涨也 FAIL；减少只告警并提示收紧。",
+      "scan": {
+        "swift_files": 772,
+        "totals": {
+          "unchecked_sendable": 60,
+          "nonisolated_unsafe": 4
+        }
+      },
+      "entries": [
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LiveAlbumAPI.swift",
+          "type": "LiveAlbumAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LiveAssetAPI.swift",
+          "type": "LiveAssetAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LiveCullingAPI.swift",
+          "type": "LiveCullingAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LiveExportAPI.swift",
+          "type": "LiveExportAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LiveFaceAPI.swift",
+          "type": "LiveFaceAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LiveJobAPI.swift",
+          "type": "JobObserverBag",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LiveNavigationAPI.swift",
+          "type": "LiveNavigationAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LivePersonAPI.swift",
+          "type": "LivePersonAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LivePhotoAPI.swift",
+          "type": "LivePhotoAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LivePhotoPathPolicy.swift",
+          "type": "LivePhotoPathPolicy",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LiveSessionAPI.swift",
+          "type": "LiveSessionAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/APIs/LiveSimilarityAPI.swift",
+          "type": "LiveSimilarityAPI",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/AppRuntime.swift",
+          "type": "AppRuntime",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/CaptureOneBridge.swift",
+          "type": "CaptureOneBridge",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/CaptureOneBridge.swift",
+          "type": "CaptureOneBridgeStorage",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/CaptureOneBridge.swift",
+          "type": "CaptureOneCompletionGate",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/CaptureOneBridge.swift",
+          "type": "PipeDrainBuffer",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherHost/FaceKwWritebackBridge.swift",
+          "type": "FaceKwWritebackBridge",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherUI/Export/PrintSupport.swift",
+          "type": "PrintSupport",
+          "kind": "nonisolated_unsafe",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherUI/Settings/C1Probe.swift",
+          "type": "C1ProbeGate",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherUI/Support/DateFormatting.swift",
+          "type": "DisplayDateFormatters",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherUI/Support/GatherLocalization.swift",
+          "type": "AppLanguageStorage",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherUI/Support/GatherLocalization.swift",
+          "type": "LocalizationBundleCache",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherUI/Support/PhotoThumbnailView.swift",
+          "type": "PhotoDecodeTaskBox",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherUI/Support/PhotoThumbnailView.swift",
+          "type": "PhotoThumbnailCacheBox",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-app/Sources/GatherUI/Support/ThumbnailDiskCache.swift",
+          "type": "ThumbnailDiskCacheState",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherAnalysis/Face/EmbeddingModel.swift",
+          "type": "Cache",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherAnalysis/Face/EmbeddingModel.swift",
+          "type": "CoreMLFaceEmbedder",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherAnalysis/Preview/PreviewAnalysis.swift",
+          "type": "AFPointProfiles",
+          "kind": "nonisolated_unsafe",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Culling/CullingService+Types.swift",
+          "type": "CullingHistorySink",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/DuplicateService.swift",
+          "type": "DuplicateService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/DuplicateService.swift",
+          "type": "ScanHandle",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Export/ExportService+Run.swift",
+          "type": "WatermarkLogoCache",
+          "kind": "nonisolated_unsafe",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/FileOps/RejectedMover.swift",
+          "type": "RejectedMover",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Indexer/IndexerService+Scan.swift",
+          "type": "WalkChannel",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/IndexerService.swift",
+          "type": "IndexerService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Ingest/DirectoryWatcher.swift",
+          "type": "DirectoryWatcher",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Ingest/IngestService.swift",
+          "type": "IngestService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/JobService.swift",
+          "type": "JobAbortSignal",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/JobService.swift",
+          "type": "JobResultValue",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/JobService.swift",
+          "type": "JobRunContext",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/JobService.swift",
+          "type": "JobService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/JobService.swift",
+          "type": "Registration",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/JobService.swift",
+          "type": "Waiter",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Metadata/MetadataApplyBatchStore.swift",
+          "type": "MetadataApplyBatchStore",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Metadata/MetadataExtractionService.swift",
+          "type": "MetadataCollector",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Metadata/MetadataTemplateStore.swift",
+          "type": "MetadataTemplateStore",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/MetadataService.swift",
+          "type": "MetadataService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/ModelReview/ModelReviewService.swift",
+          "type": "ModelReviewService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Output/OutputService.swift",
+          "type": "OutputService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/QualityService.swift",
+          "type": "AnalyzeProgressCounter",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/QualityService.swift",
+          "type": "QualityService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/SettingsService.swift",
+          "type": "SettingsService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherDelivery/Coordinator/DeliveryReplayFlow.swift",
+          "type": "DeliveryReplayClaims",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherDelivery/Writeback/WritebackService+Helpers.swift",
+          "type": "PhaseOneCollector",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherDelivery/Writeback/WritebackService.swift",
+          "type": "WritebackService",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherPersistence/Database/DB.swift",
+          "type": "DBConnection",
+          "kind": "nonisolated_unsafe",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherPersistence/Database/DB.swift",
+          "type": "DBConnection",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherPersistence/Database/Database.swift",
+          "type": "Database",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherPersistence/Database/ReadConnectionPool.swift",
+          "type": "ReadConnectionPool",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherPersistence/Database/Repositories/PhotoAssetResolver.swift",
+          "type": "PhotoAssetResolver",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherPersistence/Database/Repositories/RepositorySupport.swift",
+          "type": "RepositoryDateFormatters",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherPersistence/Support/BatchCursor.swift",
+          "type": "BatchCursor",
+          "kind": "unchecked_sendable",
+          "count": 1
+        },
+        {
+          "file": "desktop/native/gather-core/Sources/GatherProtocol/Logging/Logger.swift",
+          "type": "State",
+          "kind": "unchecked_sendable",
+          "count": 1
+        }
+      ]
+    },
+    "layer-symbols": {
+      "generated_by": "scripts/check-layer-symbols.sh --write-baseline",
+      "note": "GatherApplication 符号级越界白名单：DBConnection / Database( / SQLite3 / CSQLite 计入违规（.connection 只作提示不计违规）。基线外的出现即 FAIL；同一 file+pattern 计数上涨也 FAIL。MaintenanceService 的 VACUUM 属 ADR-035 允许例外。",
+      "scope": "desktop/native/gather-core/Sources/GatherApplication",
+      "scan": {
+        "files": 119,
+        "violations": 2,
+        "hints": 1
+      },
+      "allowlist": [
+        {
+          "file": "desktop/native/gather-core/Sources/GatherApplication/Services/Maintenance/MaintenanceService.swift",
+          "pattern": "DBConnection",
+          "count": 2,
+          "reason": "VACUUM 需要独占连接，ADR-035 明确允许（架构评审 C1 例外）；登记为长期例外。",
+          "line_hint": 153
+        }
+      ]
+    },
+    "public-surface-app": {
+      "generated_by": "scripts/check-public-surface-app.sh --write-baseline",
+      "note": "app 四个 target（GatherUI/GatherHost/GatherApp/GatherPreviewData）顶层 public 类型数 + public 声明行数；GatherProtocol/API/**/*.swift 每个 public protocol 体内的 requirement 行数（func/var/init/associatedtype，剥注释）。只降不升；GatherPreviewData 用 package 可见性，public 面 0 是预期（不误报）。",
+      "scan": {
+        "app_swift_files": 345,
+        "api_files": 55
+      },
+      "targets": {
+        "GatherUI": {
+          "files": 282,
+          "public_types": 154,
+          "public_declarations": 1499
+        },
+        "GatherHost": {
+          "files": 53,
+          "public_types": 53,
+          "public_declarations": 482
+        },
+        "GatherApp": {
+          "files": 3,
+          "public_types": 0,
+          "public_declarations": 0
+        },
+        "GatherPreviewData": {
+          "files": 7,
+          "public_types": 0,
+          "public_declarations": 0
+        }
+      },
+      "api": {
+        "public_protocols": 18,
+        "requirement_lines": 198
+      }
+    }
+  }
+}

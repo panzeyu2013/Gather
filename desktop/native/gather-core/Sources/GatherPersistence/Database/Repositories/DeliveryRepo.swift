@@ -190,22 +190,8 @@ public struct DeliveryRow: Sendable, Equatable {
     }
 }
 
-/// delivery_items 表行（11 列 + JOIN 得到的 delivery.xmp_path）。
-public struct DeliveryItemRow: Sendable, Equatable {
-    public let id: Int64
-    public let deliveryId: Int64
-    public let photoId: String
-    public let module: String
-    public let attributesJSON: String
-    public let keywords: String
-    public let status: String
-    public let errorMessage: String
-    public let attemptCount: Int64
-    public let createdAt: String
-    public let updatedAt: String
-    /// 派生于 deliveries.xmp_path（显式 JOIN 列，不是 delivery_items 的物理列）。
-    public let xmpPath: String
-
+/// `DeliveryItemRow` 的 DB 行解码与派生字段（类型定义见 GatherProtocol/Protocol/ReadProjections.swift）。
+extension DeliveryItemRow {
     /// delivery_items 的物理列（SELECT 中带 di. 前缀）。
     public static let tableColumnNames: [String] = [
         "id", "delivery_id", "photo_id", "module", "attributes_json", "keywords",
@@ -221,18 +207,20 @@ public struct DeliveryItemRow: Sendable, Equatable {
 
     public init(columns: [String], row: DBRow) throws {
         let map = try DeliveryColumnMap.index(columns: columns, row: row, required: Self.columnNames)
-        id = DeliveryColumnMap.int(map, "id")
-        deliveryId = DeliveryColumnMap.int(map, "delivery_id")
-        photoId = DeliveryColumnMap.text(map, "photo_id")
-        module = DeliveryColumnMap.text(map, "module")
-        attributesJSON = DeliveryColumnMap.text(map, "attributes_json")
-        keywords = DeliveryColumnMap.text(map, "keywords")
-        status = DeliveryColumnMap.text(map, "status")
-        errorMessage = DeliveryColumnMap.text(map, "error_message")
-        attemptCount = DeliveryColumnMap.int(map, "attempt_count")
-        createdAt = DeliveryColumnMap.text(map, "created_at")
-        updatedAt = DeliveryColumnMap.text(map, "updated_at")
-        xmpPath = DeliveryColumnMap.text(map, "xmp_path")
+        self.init(
+            id: DeliveryColumnMap.int(map, "id"),
+            deliveryId: DeliveryColumnMap.int(map, "delivery_id"),
+            photoId: DeliveryColumnMap.text(map, "photo_id"),
+            module: DeliveryColumnMap.text(map, "module"),
+            attributesJSON: DeliveryColumnMap.text(map, "attributes_json"),
+            keywords: DeliveryColumnMap.text(map, "keywords"),
+            status: DeliveryColumnMap.text(map, "status"),
+            errorMessage: DeliveryColumnMap.text(map, "error_message"),
+            attemptCount: DeliveryColumnMap.int(map, "attempt_count"),
+            createdAt: DeliveryColumnMap.text(map, "created_at"),
+            updatedAt: DeliveryColumnMap.text(map, "updated_at"),
+            xmpPath: DeliveryColumnMap.text(map, "xmp_path"),
+        )
     }
 
     public var typedStatus: DeliveryItemStatus? { DeliveryItemStatus(rawValue: status) }

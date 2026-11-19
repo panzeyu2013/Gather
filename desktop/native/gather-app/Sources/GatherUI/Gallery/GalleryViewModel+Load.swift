@@ -42,7 +42,7 @@ extension GalleryViewModel {
             let folds = try await albumAPI.stackFolds(sessionId)
             stackFolds = StackFoldIndex(folds: folds)
             stackFoldVersion &+= 1
-            filteredCache = nil
+            invalidateDerivedCaches()
         } catch {
             GatherLogger.log("stack folds load failed: \(error)", level: .debug)
         }
@@ -257,8 +257,7 @@ extension GalleryViewModel {
         fetchGeneration += 1
         pages = []
         pagesGeneration += 1
-        flatCache = nil
-        filteredCache = nil
+        invalidateDerivedCaches()
         pageCursors = []
         committedSearch = search.trimmingCharacters(in: .whitespaces)
         committedFilter = filter

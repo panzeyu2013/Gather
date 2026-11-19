@@ -1,5 +1,5 @@
 // desktop/native/gather-core/Sources/GatherApplication/Services/C1/C1ImportJudgementService.swift
-// Wave2 / task-11（对照 docs/reviews/2026-11-10-competitive-gap/30-c1-bridge.md G3）：
+// Wave2 / task-11（对照历史 C1 桥评审 G3；文档已随 2026-11-18 文档清理移除）：
 // 把「从 C1 读到的变体级判断」映射成 Gather 的初始挑片决策与关键词索引。
 //
 // 边界（与 30 册 §4.4 的"不做/不承诺"一致）：

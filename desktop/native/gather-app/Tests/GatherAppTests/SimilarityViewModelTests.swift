@@ -20,7 +20,7 @@ import GatherTestSupport
 
 // MARK: - 支撑
 
-// AsyncGate / LockedBox / waitUntilAsync / awaitNegativeWindow 已在 Support 共享。
+// AsyncGate / LockedBox / waitUntilAsync / awaitNegativeWindow 已在 GatherTestSupport 共享。
 
 /// 类型化三依赖装配：Result/analyze/recluster/写回全部经 SimilarityAPI，
 // 进度轮询经 JobAPI。
@@ -58,27 +58,6 @@ private func makeLiveAPIs() throws -> (api: LiveSimilarityAPI, jobs: LiveJobAPI,
         settingsService: composition.settingsService
     )
     return (api, LiveJobAPI(jobService: composition.jobService), db)
-}
-
-private func insertSession(_ db: DBConnection, _ id: String) throws {
-    _ = try db.prepare("""
-        INSERT INTO sessions (id, name, status, created_at, updated_at)
-        VALUES (?, '工作区', 'photos_loaded', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id)])
-}
-
-/// 照片（V1 仍保留 checksum_file_size/mtime；analyze 的索引统计快路径
-/// 直接复用它们，无需真实文件）。
-private func insertPhoto(
-    _ db: DBConnection,
-    id: String,
-    sessionId: String,
-    filepath: String
-) throws {
-    _ = try db.prepare("""
-        INSERT INTO photos (id, session_id, filepath, filename, checksum, checksum_file_size, checksum_file_mtime_ms, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, '', 100, 1000, 'ready', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-    """).run([.text(id), .text(sessionId), .text(filepath), .text((filepath as NSString).lastPathComponent)])
 }
 
 /// 预置相似度 hash（file_size/mtime 与索引统计一致 → analyze 直接复用）。
@@ -235,6 +214,24 @@ struct SimilarityViewModelTests {
         #expect(api.analyzeInputs[0].threshold == SimilarityViewModel.defaultThreshold)
         #expect(api.analyzeInputs[0].minGroupSize == SimilarityViewModel.defaultMinGroupSize)
         #expect(api.analyzeInputs[0].groupingMode == .global)
+    }
+
+    // 显式参数进 SimilarityAPI（原 APISimilarityUITests 唯一未被上方用例对等的断言：
+    // 自定义 threshold/minGroupSize/groupingMode 必须原样透传，而非只测默认值）。
+    @Test func analyzePassesExplicitParamsToAPI() async {
+        let (viewModel, api, _) = makeStubVM()
+        let gate = AsyncGate()
+        api.analyzeGate = gate
+        viewModel.threshold = 6
+        viewModel.minGroupSize = 3
+        viewModel.groupingMode = .sequential
+
+        viewModel.startAnalyze()
+        #expect(await waitUntilAsync { api.analyzeInputs.count == 1 })
+        #expect(api.analyzeInputs[0].threshold == 6)
+        #expect(api.analyzeInputs[0].minGroupSize == 3)
+        #expect(api.analyzeInputs[0].groupingMode == .sequential)
+        gate.release()
     }
 
     // 分析失败（无既有结果）→ error 态。
@@ -507,7 +504,7 @@ struct SimilarityViewModelTests {
     // 真实库：sim.result 直读预置结果（groups_json 旧格式路径，无需成员表）。
     @Test func liveProviderReadsSeededResult() async throws {
         let live = try makeLiveAPIs()
-        try insertSession(live.db, "s1")
+        try insertSessionRow(live.db, "s1")
         let groupsJSON = """
         {"groups":[{"id":1,"label":"Group 1","count":2,"images":[{"path":"/vault/a.NEF","representative":true},{"path":"/vault/b.JPG"}]}],"ungrouped":[{"path":"/vault/u.NEF"}]}
         """
@@ -541,12 +538,13 @@ struct SimilarityViewModelTests {
     // 聚类 1 组 3 张 → 完成刷新结果。
     @Test func liveAnalyzeClustersSeededHashes() async throws {
         let live = try makeLiveAPIs()
-        try insertSession(live.db, "s1")
+        try insertSessionRow(live.db, "s1")
         // 三张同哈希照片（阈值 0 下 1 组 3 张）。
         for index in 0..<3 {
-            try insertPhoto(
+            try insertPhotoRow(
                 live.db, id: "photo-\(index)", sessionId: "s1",
-                filepath: "/vault/photo-\(index).NEF"
+                filepath: "/vault/photo-\(index).NEF",
+                checksumFileSize: 100, checksumFileMtimeMs: 1_000
             )
             try insertHash(
                 live.db, sessionId: "s1", photoId: "photo-\(index)",

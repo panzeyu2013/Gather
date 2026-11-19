@@ -492,8 +492,12 @@ struct ExportSpecsWave2Tests {
         // 容量上限：灌入 12 个不同 logo 后条目数不得超过 maxEntries。
         for index in 0..<12 {
             let path = root.appendingPathComponent("extra-\(index).png")
-            try writePNG(try makeSolidImage(width: 2, height: 2, red: 0, green: 0, blue: 1), to: path)
-            _ = WatermarkLogoCache.image(for: path.path)
+            // task-45：每轮编码 PNG + 解码（缓存键/上限用例），只把同步图像
+            // 创建/解码放进局部 autoreleasepool，让 ImageIO/CGImage 临时对象按轮回收。
+            try autoreleasepool {
+                try writePNG(try makeSolidImage(width: 2, height: 2, red: 0, green: 0, blue: 1), to: path)
+                _ = WatermarkLogoCache.image(for: path.path)
+            }
         }
         #expect(WatermarkLogoCache.entryCount <= WatermarkLogoCache.maxEntries)
     }

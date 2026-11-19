@@ -25,7 +25,7 @@ public struct MetadataAttributeWriter: Sendable {
     private let mutations: any MetadataMutationPort
     private let flushPending: MetadataQueueFlush?
     private let reader: MetadataDiskReader
-    private let assetResolver: PhotoAssetResolver?
+    private let assetResolver: (any PhotoAssetResolving)?
 
     public init(
         photoRepo: any PhotoRepository,
@@ -34,7 +34,7 @@ public struct MetadataAttributeWriter: Sendable {
         mutations: any MetadataMutationPort,
         flushPending: MetadataQueueFlush?,
         reader: MetadataDiskReader,
-        assetResolver: PhotoAssetResolver?
+        assetResolver: (any PhotoAssetResolving)?
     ) {
         self.photoRepo = photoRepo
         self.xmp = xmp
@@ -117,6 +117,28 @@ public struct MetadataAttributeWriter: Sendable {
             }
         }
 
+        // M14：资产路径批量解析。模板套用 2000 张时逐张 resolve 是 N 次「会话+照片」
+        // 查询；这里按会话一次 resolveMany（IN 查询）预取。语义保持：批量失败/某张缺席
+        // 时，循环里仍回退到原来的逐张 resolve（失败 → photos.filepath）。
+        var resolvedPrimaryPaths: [String: String] = [:]
+        if let assetResolver {
+            var idsBySession: [String: [String]] = [:]
+            for entry in queued where failureByPhoto[entry.photoId] == nil {
+                idsBySession[entry.sessionId, default: []].append(entry.photoId)
+            }
+            for (sessionId, ids) in idsBySession {
+                do {
+                    let resolved = try assetResolver.resolveMany(
+                        sessionId: sessionId, photoIds: ids)
+                    for (photoId, asset) in resolved {
+                        resolvedPrimaryPaths[photoId] = asset.filepath
+                    }
+                } catch {
+                    // 批量失败：循环里逐张 resolve 回退（与拆分前语义一致）。
+                }
+            }
+        }
+
         var written: [String] = []
         var failed: [MetadataApplyFailure] = []
         // P0 / A2：回读失败/校验不符 = 不确定（可能已写盘）。它既留在 failed 里给
@@ -155,8 +177,15 @@ public struct MetadataAttributeWriter: Sendable {
                 continue
             }
             guard let photo = photoById[input.photoId] else { continue }
-            let readPath = (try? assetResolver?.resolve(
-                sessionId: photo.sessionId, photoId: input.photoId))?.filepath ?? photo.filepath
+            let readPath: String
+            if let resolved = resolvedPrimaryPaths[input.photoId] {
+                readPath = resolved
+            } else {
+                // 批量结果缺席（未知照片/迁移不完整/批量查询失败）→ 保持原逐张语义。
+                readPath = (try? assetResolver?.resolve(
+                    sessionId: photo.sessionId, photoId: input.photoId))?.filepath
+                    ?? photo.filepath
+            }
             // P1：回读必须走盘上合成值（JPEG = 内嵌 + sidecar）。只读 sidecar 会漏掉
             // 内嵌字段，并让"清空 JPEG 内嵌字段"看起来成功。
             let sidecar: MetadataWriteAttributes
@@ -214,8 +243,27 @@ public struct MetadataAttributeWriter: Sendable {
                 let targets = siblingPhotosByXmp[readKey]
                     ?? siblingPhotosByXmp[dbKey]
                     ?? []
+                // M14：兄弟组的路径解析同样按组批量（同会话一次 resolveMany），
+                // 缺席/批量失败回退逐张 resolve 或 photos.filepath（语义不变）。
+                var siblingResolvedPaths: [String: String] = [:]
+                let siblingIds = targets.map { $0.0 }.filter { $0 != input.photoId }
+                if let assetResolver, !siblingIds.isEmpty {
+                    do {
+                        let resolved = try assetResolver.resolveMany(
+                            sessionId: photo.sessionId, photoIds: siblingIds)
+                        for (siblingId, asset) in resolved {
+                            siblingResolvedPaths[siblingId] = asset.filepath
+                        }
+                    } catch {
+                        // 批量失败：下面逐张 resolve 回退（语义不变）。
+                    }
+                }
                 var siblingPlans: [(id: String, path: String)] = []
                 for (siblingId, siblingFilepath) in targets where siblingId != input.photoId {
+                    if let resolved = siblingResolvedPaths[siblingId] {
+                        siblingPlans.append((siblingId, resolved))
+                        continue
+                    }
                     var siblingPath = siblingFilepath
                     if let assetResolver {
                         do {

@@ -7,10 +7,16 @@
 #      行首 .disabled(...) / .enabled(if:...)、withKnownIssue(...)。
 #   3. 每个 skip 站点必须带 owner、到期、原因（连续注释块内），缺失即列 file:line。
 #   4. --self-test 用临时目录自测：缺元数据 exit 1，补齐后 exit 0。
+#   5. ratchet：@Test/@Suite/断言只降不升，skip 站点只降不升；基线见
+#      docs/baselines/test-catalog-baseline.json（schema 2；缺文件/缺 key → FAIL）。
 #
 # 当前以 warning 模式 exit 0；--strict 时存在缺口即 exit 1（CI 使用 --strict）。
 # 注意：swift test 汇总行的 "N tests passed" 包含 skip；有效执行数 = 声明数 − skip 数。
 # 用法：./scripts/check-test-catalog.sh [--strict] [--self-test]
+#       ./scripts/check-test-catalog.sh --write-baseline [--allow-growth]
+#   --write-baseline 只允许持平/收紧；确需扩张（含新增 skip 站点）必须同时给
+#   --allow-growth 并在 docs/cleanup-backlog.md 台账记账；输出 schema=2 且不写
+#   generated_at（重复写无 diff），同目录 mktemp + mv 原子替换。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,12 +57,16 @@ fi
 
 STRICT=0
 SELF_TEST=0
+WRITE=0
+ALLOW_GROWTH=0
 for arg in "$@"; do
   case "$arg" in
     --strict) STRICT=1 ;;
     --self-test) SELF_TEST=1 ;;
+    --write-baseline) WRITE=1 ;;
+    --allow-growth) ALLOW_GROWTH=1 ;;
     -h|--help)
-      sed -n '2,18p' "$0"
+      sed -n '2,19p' "$0"
       exit 0
       ;;
     *)
@@ -66,70 +76,14 @@ for arg in "$@"; do
   esac
 done
 
-# 从 skip 站点向上收集“连续注释块 + 属性续行”，返回缺失的元数据名（逗号分隔）。
-skip_metadata_missing() {
-  local file="$1"
-  local line="$2"
-  local ctx j raw trimmed steps has_owner=0 has_due=0 has_reason=0 missing=""
-
-  ctx="$(sed -n "${line}p" "$file")"
-  j=$((line - 1))
-  steps=0
-  while [ "$j" -ge 1 ] && [ "$steps" -lt 20 ]; do
-    raw="$(sed -n "${j}p" "$file")"
-    trimmed="$(printf '%s' "$raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    [ -n "$trimmed" ] || break
-    case "$trimmed" in
-      //*|\**|/\**)
-        ctx="${raw}"$'\n'"${ctx}"
-        j=$((j - 1))
-        steps=$((steps + 1))
-        ;;
-      @Test*|@Suite*|\#if*|\#elseif*|\#else*|\#endif*|.*|\)*|\"*)
-        ctx="${raw}"$'\n'"${ctx}"
-        j=$((j - 1))
-        steps=$((steps + 1))
-        ;;
-      *)
-        break
-        ;;
-    esac
-  done
-
-  if printf '%s\n' "$ctx" | grep -qiE '(^|[^A-Za-z])owner[[:space:]]*[:：][[:space:]]*[^[:space:]]|负责人[[:space:]]*[:：][[:space:]]*[^[:space:]]'; then
-    has_owner=1
-  fi
-  if printf '%s\n' "$ctx" | grep -qE '到期|截止|skip-until[[:space:]]*[:：]|deadline[[:space:]]*[:：]'; then
-    has_due=1
-  fi
-  if printf '%s\n' "$ctx" | grep -qiE '原因[[:space:]]*[:：]|reason[[:space:]]*[:：]|rationale[[:space:]]*[:：]'; then
-    has_reason=1
-  fi
-
-  if [ "$has_owner" -eq 0 ]; then missing="owner"; fi
-  if [ "$has_due" -eq 0 ]; then missing="${missing:+${missing}、}到期"; fi
-  if [ "$has_reason" -eq 0 ]; then missing="${missing:+${missing}、}原因"; fi
-  printf '%s' "$missing"
-}
-
-# 取 skip 站点附近的测试函数名（多行属性时向下多找几行）。
-skip_test_name() {
-  local file="$1"
-  local line="$2"
-  local name
-  name="$(sed -n "${line},$((line + 12))p" "$file" | grep -oE 'func [A-Za-z_][A-Za-z0-9_]*' | head -n 1 | sed 's/^func //' || true)"
-  if [ -z "$name" ]; then
-    name="(suite)"
-  fi
-  printf '%s' "$name"
-}
-
 # 负例自测：临时目录内构造缺元数据 / 补齐元数据的 skip，验证 strict 开关是活的。
 # 临时目录放脚本级变量：EXIT trap 在函数返回后才执行，local 变量届时已出作用域，
 # 所以 trap 必须单引号延迟展开脚本级变量（立即展开只对 local 有效但会骗过 SC2064）。
 SELFTEST_TMP=""
 run_self_test() {
   local root script out rc
+  # 共享计数 lib 负例自测（成功静默；失败即 self-test 失败）。
+  python3 "$ROOT/scripts/lib/swift-counts.py" --self-test >/dev/null
   SELFTEST_TMP="$(mktemp -d)"
   trap 'rm -rf "$SELFTEST_TMP"' EXIT
   root="$SELFTEST_TMP/root"
@@ -226,91 +180,258 @@ if [ "$SELF_TEST" -eq 1 ]; then
   exit $?
 fi
 
-total=0
-header_missing=0
-missing_list=""
-
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  total=$((total + 1))
-  first=$(awk 'NF { print; exit }' "$f")
-  case "$first" in
-    //*) ;;
-    *)
-      header_missing=$((header_missing + 1))
-      missing_list="${missing_list}${f}"$'\n'
-      ;;
-  esac
-done < <(find "${TEST_ROOTS[@]}" -type f -name '*.swift' -not -path '*/.build/*' 2>/dev/null | sort)
-
-# 同时覆盖：单行 @Test/@Suite trait、行首续行 trait、withKnownIssue 调用。
-raw_hits="$(
-  {
-    grep -rnE '@(Test|Suite).*\.(disabled|enabled)[[:space:]]*\(' "${TEST_ROOTS[@]}" --include='*.swift' 2>/dev/null || true
-    grep -rnE '^[[:space:]]*\.(disabled|enabled)[[:space:]]*\(' "${TEST_ROOTS[@]}" --include='*.swift' 2>/dev/null || true
-    grep -rnE 'withKnownIssue[[:space:]]*\(' "${TEST_ROOTS[@]}" --include='*.swift' 2>/dev/null || true
-  } | awk -F: '!seen[$1":"$2]++'
-)"
-
-skip_total=0
-enabled_n=0
-disabled_n=0
-known_n=0
-suite_n=0
-skip_missing_n=0
-skip_missing_list=""
-
-if [ -n "$raw_hits" ]; then
-  while IFS= read -r hit; do
-    [ -n "$hit" ] || continue
-    file="${hit%%:*}"
-    rest="${hit#*:}"
-    line="${rest%%:*}"
-    text="${rest#*:}"
-    trimmed="$(printf '%s' "$text" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    # 跳过注释行（含 /// 文档注释与块注释 * 行），与旧脚本的 known_hits 过滤一致。
-    case "$trimmed" in
-      //*|\**|/\**) continue ;;
-    esac
-
-    skip_total=$((skip_total + 1))
-    case "$text" in
-      *withKnownIssue*) known_n=$((known_n + 1)) ;;
-      *".enabled"*) enabled_n=$((enabled_n + 1)) ;;
-      *".disabled"*) disabled_n=$((disabled_n + 1)) ;;
-    esac
-    case "$text" in
-      *"@Suite"*) suite_n=$((suite_n + 1)) ;;
-    esac
-
-    missing="$(skip_metadata_missing "$file" "$line")"
-    [ -n "$missing" ] || continue
-
-    tname="$(skip_test_name "$file" "$line")"
-    skip_missing_n=$((skip_missing_n + 1))
-    skip_missing_list="${skip_missing_list}  - ${file}:${line}  test=${tname}（缺 ${missing}）"$'\n'
-  done <<< "$raw_hits"
-fi
-
-# 到期校验（复审 P2）：skip 的「到期：YYYY-MM-DD」过期即失败，避免静默续期。
+# ===== 扫描（单趟读盘复用）=====
+# 旧实现的热点：每个测试文件 1 次 awk 取文件头（336 次进程）、每个 skip 站点约 20 次
+# sed 取上下文（17 站点 × ~20 次）、3 遍 grep 全量扫描、外加 1 次全量 Python 计数。
+# 现在合并为 1 次 Python：读盘一遍并把文件内容留在内存里复用给所有检查面；
+# 输出行格式、计数口径、扫描量下限与旧实现逐字节一致。
+# ratchet 计数实现见 scripts/lib/swift-counts.py（与 report-baseline.sh 单一来源）。
 TODAY="${CTC_TODAY:-$(date +%Y-%m-%d)}"
-skip_expired_n=0
-skip_expired_list=""
-if [ -n "$raw_hits" ]; then
-  while IFS= read -r hit; do
-    [ -n "$hit" ] || continue
-    file="$(printf '%s' "$hit" | cut -d: -f1)"
-    line="$(printf '%s' "$hit" | cut -d: -f2)"
-    due_line="$(sed -n "$((line - 12)),$((line))p" "$file" 2>/dev/null | grep -E '到期|截止|skip-until' | tail -1 || true)"
-    due="$(printf '%s' "$due_line" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1 || true)"
-    [ -n "$due" ] || continue
-    if [[ "$due" < "$TODAY" ]]; then
-      skip_expired_n=$((skip_expired_n + 1))
-      skip_expired_list="${skip_expired_list}  - ${file}:${line} 到期=${due}"$'\n'
-    fi
-  done <<< "$raw_hits"
-fi
+SCAN_TMP="$(mktemp -d)"
+trap 'rm -rf "$SCAN_TMP"' EXIT
+if ! python3 - "$SCAN_TMP" "$TODAY" "${TEST_ROOTS[@]}" <<'PY'
+import importlib.util
+import os
+import re
+import sys
+from pathlib import Path
 
+# 共享计数单一来源：scripts/lib/swift-counts.py（脚本已 cd 到仓库根）。
+_SPEC = importlib.util.spec_from_file_location(
+    'swift_counts', 'scripts/lib/swift-counts.py')
+COUNTS = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(COUNTS)
+
+outdir = sys.argv[1]
+today = sys.argv[2]
+roots = sys.argv[3:]
+
+# 两个包的 Tests（ratchet 口径固定，不受 --self-test 的 CTC_TEST_ROOTS_OVERRIDE 影响）。
+RATCHET_DIRS = [Path('desktop/native/gather-core/Tests'), Path('desktop/native/gather-app/Tests')]
+
+# 与旧 grep 的 [[:space:]] 等价的行内空白（行内不会出现换行）。
+SP = r'[ \t\r\v\f]'
+G1 = re.compile(r'@(Test|Suite).*\.(disabled|enabled)' + SP + r'*\(')
+G2 = re.compile(r'^' + SP + r'*\.(disabled|enabled)' + SP + r'*\(')
+G3 = re.compile(r'withKnownIssue' + SP + r'*\(')
+OWNER = re.compile(r'(^|[^A-Za-z])owner' + SP + r'*[:：]' + SP + r'*[^ \t\r\v\f]'
+                   r'|负责人' + SP + r'*[:：]' + SP + r'*[^ \t\r\v\f]', re.I)
+DUE = re.compile(r'到期|截止|skip-until' + SP + r'*[:：]|deadline' + SP + r'*[:：]')
+REASON = re.compile(r'原因' + SP + r'*[:：]|reason' + SP + r'*[:：]'
+                    r'|rationale' + SP + r'*[:：]', re.I)
+DUE_LINE = re.compile(r'到期|截止|skip-until')
+DATE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
+FUNC = re.compile(r'func [A-Za-z_][A-Za-z0-9_]*')
+
+# 文件内容缓存：每个文件只读盘/解码一次，供文件头、skip 站点、到期、ratchet 共用。
+CACHE = {}
+
+
+def read_text(path):
+    if path in CACHE:
+        return CACHE[path]
+    try:
+        with open(path, 'rb') as fh:
+            text = fh.read().decode('utf-8', 'replace')
+    except OSError:
+        text = None
+    CACHE[path] = text
+    return text
+
+
+def walk_swift(root, skip_build=False):
+    """按 grep -r 的顺序（readdir 前序）遍历 *.swift；skip_build 对应 find 的 .build 排除。"""
+    def visit(directory):
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_dir:
+                if skip_build and entry.name == '.build':
+                    continue
+                for item in visit(entry.path):
+                    yield item
+            elif entry.name.endswith('.swift'):
+                yield entry.path
+    for item in visit(root):
+        yield item
+
+
+# ---- 1) 文件头注释：find 可能含多个根，旧实现按路径全局排序后逐文件 awk 取首个非空行。
+def first_nonblank_line(text):
+    for line in text.split('\n'):
+        if line and line.strip(' \t\r\v\f'):
+            return line
+    return None
+
+
+total = 0
+header_missing = 0
+missing_header = []
+header_files = []
+for root in roots:
+    header_files.extend(walk_swift(root, skip_build=True))
+header_files.sort()
+for path in header_files:
+    total += 1
+    text = read_text(path)
+    first = first_nonblank_line(text) if text is not None else None
+    if first is None or not first.startswith('//'):
+        header_missing += 1
+        missing_header.append(path)
+
+# ---- 2) skip 站点：旧实现是 3 条 grep -rnE（@Test/@Suite trait、行首续行 trait、
+#      withKnownIssue），取并集并按 (file,line) 去重；这里同序同口径复刻。
+hits = []
+seen = set()
+for pattern in (G1, G2, G3):
+    for root in roots:
+        for path in walk_swift(root):
+            text = read_text(path)
+            if text is None:
+                continue
+            for lineno, line in enumerate(text.split('\n'), 1):
+                if pattern.search(line):
+                    key = '%s:%d' % (path, lineno)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    hits.append((path, lineno, line))
+
+
+def lines_of(path):
+    text = read_text(path)
+    return text.split('\n') if text is not None else []
+
+
+def skip_metadata_missing(path, line, text):
+    """复刻旧实现的「连续注释块 + 属性续行」向上回溯（最多 20 行）。"""
+    lines = lines_of(path)
+    ctx = [text]
+    j = line - 1
+    steps = 0
+    while j >= 1 and steps < 20:
+        raw = lines[j - 1] if j - 1 < len(lines) else ''
+        trimmed = raw.strip(' \t\r\v\f')
+        if not trimmed:
+            break
+        if trimmed.startswith('//') or trimmed.startswith('*') or trimmed.startswith('/*'):
+            ctx.insert(0, raw)
+        elif (trimmed.startswith('@Test') or trimmed.startswith('@Suite')
+              or trimmed.startswith('#if') or trimmed.startswith('#elseif')
+              or trimmed.startswith('#else') or trimmed.startswith('#endif')
+              or trimmed.startswith('.') or trimmed.startswith(')')
+              or trimmed.startswith('"')):
+            ctx.insert(0, raw)
+        else:
+            break
+        j -= 1
+        steps += 1
+    has_owner = any(OWNER.search(item) for item in ctx)
+    has_due = any(DUE.search(item) for item in ctx)
+    has_reason = any(REASON.search(item) for item in ctx)
+    missing = []
+    if not has_owner:
+        missing.append('owner')
+    if not has_due:
+        missing.append('到期')
+    if not has_reason:
+        missing.append('原因')
+    return '、'.join(missing)
+
+
+def skip_test_name(path, line):
+    lines = lines_of(path)
+    for k in range(line, line + 13):
+        if k - 1 >= len(lines):
+            break
+        m = FUNC.search(lines[k - 1])
+        if m:
+            return m.group(0)[len('func '):]
+    return '(suite)'
+
+
+skip_total = 0
+enabled_n = 0
+disabled_n = 0
+known_n = 0
+suite_n = 0
+skip_missing_n = 0
+warn_missing = []
+for path, line, text in hits:
+    trimmed = text.strip(' \t\r\v\f')
+    # 跳过注释行（含 /// 文档注释与块注释 * 行），与旧脚本一致。
+    if trimmed.startswith('//') or trimmed.startswith('*') or trimmed.startswith('/*'):
+        continue
+    skip_total += 1
+    if 'withKnownIssue' in text:
+        known_n += 1
+    if '.enabled' in text:
+        enabled_n += 1
+    if '.disabled' in text:
+        disabled_n += 1
+    if '@Suite' in text:
+        suite_n += 1
+    missing = skip_metadata_missing(path, line, text)
+    if not missing:
+        continue
+    tname = skip_test_name(path, line)
+    skip_missing_n += 1
+    warn_missing.append('  - %s:%d  test=%s（缺 %s）' % (path, line, tname, missing))
+
+# ---- 3) 到期校验（复审 P2）：skip 的「到期：YYYY-MM-DD」过期即失败。
+#      旧实现 sed -n "$((line-12)),$((line))p"：行号 <=12 时起始地址为 0/负数，
+#      sed 直接报错（stderr 被吞）→ 无到期行；这里保留同一行为。
+skip_expired_n = 0
+warn_expired = []
+for path, line, text in hits:
+    if line <= 12:
+        continue
+    lines = lines_of(path)
+    due_line = None
+    for k in range(line - 12, line + 1):
+        if k - 1 >= len(lines):
+            break
+        if DUE_LINE.search(lines[k - 1]):
+            due_line = lines[k - 1]
+    if due_line is None:
+        continue
+    dates = DATE.findall(due_line)
+    if not dates:
+        continue
+    due = dates[-1]
+    if due < today:
+        skip_expired_n += 1
+        warn_expired.append('  - %s:%d 到期=%s' % (path, line, due))
+
+
+# ---- 4) 用例/套件/断言 ratchet：先剥注释再计数（注释里的 @Test/#expect 不是真声明）。
+#      遮罩/计数口径唯一实现见 scripts/lib/swift-counts.py（与 report-baseline.sh 共享）；
+#      loader 复用本脚本已读入的 CACHE，读盘仍是单趟（输出与旧内联实现逐字节一致）。
+test_decl, suite_decl, assert_n = COUNTS.count_decls(
+    RATCHET_DIRS, loader=lambda path: CACHE.get(str(path)))
+
+counts = [total, header_missing, skip_total, enabled_n, disabled_n, known_n,
+          suite_n, skip_missing_n, skip_expired_n, test_decl, suite_decl, assert_n]
+with open(os.path.join(outdir, 'counts'), 'w', encoding='utf-8') as fh:
+    fh.write(' '.join(str(value) for value in counts) + '\n')
+with open(os.path.join(outdir, 'missing-header.txt'), 'w', encoding='utf-8') as fh:
+    fh.write(''.join(path + '\n' for path in missing_header))
+with open(os.path.join(outdir, 'warn-missing.txt'), 'w', encoding='utf-8') as fh:
+    fh.write(''.join(line + '\n' for line in warn_missing))
+with open(os.path.join(outdir, 'warn-expired.txt'), 'w', encoding='utf-8') as fh:
+    fh.write(''.join(line + '\n' for line in warn_expired))
+PY
+then
+  echo "check-test-catalog: FAIL 计数脚本没有输出（python3 可用？）" >&2
+  exit 1
+fi
+read -r total header_missing skip_total enabled_n disabled_n known_n suite_n skip_missing_n skip_expired_n test_decl suite_decl assert_n < "$SCAN_TMP/counts"
 echo "check-test-catalog:"
 echo "  测试文件            $total"
 echo "  缺文件头注释        $header_missing"
@@ -320,136 +441,108 @@ echo "  skip 元数据缺失     $skip_missing_n"
 echo "  skip 已过到期日     ${skip_expired_n}（今天 ${TODAY}）"
 echo "  口径                有效执行 = 声明数 − skip 用例数；@Suite skip 需按套件内 @Test 展开"
 
+# ---- ratchet 基线（docs/baselines/test-catalog-baseline.json，schema 2）----
+# @Test/@Suite/断言计数与 skip 站点数都从 JSON 读取；缺文件/缺 key 直接 FAIL
+# （fail-closed），避免门禁静默失效。
+BASELINE="docs/baselines/test-catalog-baseline.json"
+baseline_value() {
+  local key="$1" line val
+  line=$(grep -E "\"$key\"[[:space:]]*:[[:space:]]*[0-9]+" "$BASELINE" 2>/dev/null | head -n 1 || true)
+  val=$(printf '%s' "$line" | grep -oE '[0-9]+' | head -n 1 || true)
+  printf '%s' "$val"
+}
+if [ ! -f "$BASELINE" ]; then
+  echo "check-test-catalog: FAIL 缺少基线 $BASELINE（fail-closed：基线文件必须入库）" >&2
+  exit 1
+fi
+BASELINE_SCHEMA=$(baseline_value schema)
+if [ "$BASELINE_SCHEMA" != "2" ]; then
+  echo "check-test-catalog: FAIL 基线 schema 必须为 2（实测 ${BASELINE_SCHEMA:-缺失}）：$BASELINE" >&2
+  exit 1
+fi
+BASELINE_TEST_DECL=$(baseline_value test_decl)
+BASELINE_SUITE_DECL=$(baseline_value suite_decl)
+BASELINE_ASSERT=$(baseline_value assert)
+BASELINE_SKIP_DECL=$(baseline_value skip_decl)
+baseline_missing=0
+for pair in "test_decl=${BASELINE_TEST_DECL}" "suite_decl=${BASELINE_SUITE_DECL}" "assert=${BASELINE_ASSERT}" "skip_decl=${BASELINE_SKIP_DECL}"; do
+  case "$pair" in
+    *=) echo "check-test-catalog: FAIL 基线缺 key：metrics.${pair%=}（$BASELINE）" >&2; baseline_missing=1 ;;
+  esac
+done
+if [ "$baseline_missing" -ne 0 ]; then
+  exit 1
+fi
+
+# --write-baseline：只允许持平/收紧；同目录 mktemp + mv 原子替换，schema=2、无 generated_at。
+write_baseline() {
+  mkdir -p "$(dirname "$BASELINE")"
+  local tmp
+  tmp="$(mktemp "$(dirname "$BASELINE")/.test-catalog-baseline.XXXXXX")"
+  cat > "$tmp" <<JSON
+{
+  "schema": 2,
+  "note": "check-test-catalog ratchet：声明/断言/skip 站点基线（只降不升；--write-baseline 收紧，上涨需 --allow-growth 并记账）。",
+  "metrics": {
+    "test_decl": $test_decl,
+    "suite_decl": $suite_decl,
+    "assert": $assert_n,
+    "skip_decl": $skip_total
+  }
+}
+JSON
+  chmod 644 "$tmp"
+  mv "$tmp" "$BASELINE"
+}
+
+check_growth() {
+  local key="$1" cur="$2" base="$3"
+  if [ "$cur" -gt "$base" ]; then
+    echo "  涨：$key $base -> $cur" >&2
+    return 1
+  fi
+  return 0
+}
+
+if [ "$WRITE" -eq 1 ]; then
+  grew=0
+  if [ "$ALLOW_GROWTH" -eq 0 ]; then
+    check_growth test_decl "$test_decl" "$BASELINE_TEST_DECL" || grew=1
+    check_growth suite_decl "$suite_decl" "$BASELINE_SUITE_DECL" || grew=1
+    check_growth assert "$assert_n" "$BASELINE_ASSERT" || grew=1
+    check_growth skip_decl "$skip_total" "$BASELINE_SKIP_DECL" || grew=1
+  fi
+  if [ "$grew" -ne 0 ]; then
+    echo "check-test-catalog: REFUSED — 基线膨胀必须显式批准（--allow-growth + 台账）" >&2
+    exit 1
+  fi
+  write_baseline
+  echo "check-test-catalog: baseline 已写入 $BASELINE"
+  printf '  %-10s %s\n' test_decl "$test_decl"
+  printf '  %-10s %s\n' suite_decl "$suite_decl"
+  printf '  %-10s %s\n' assert "$assert_n"
+  printf '  %-10s %s\n' skip_decl "$skip_total"
+  exit 0
+fi
+
 if [ "$header_missing" -gt 0 ]; then
   echo "WARN 以下测试文件首个非空行不是 // 注释："
-  printf '%s' "$missing_list" | sed '/^$/d; s/^/  - /'
+  sed '/^$/d; s/^/  - /' "$SCAN_TMP/missing-header.txt"
 fi
 
 if [ "$skip_missing_n" -gt 0 ]; then
   echo "WARN 以下 skip 站点缺少 owner/到期/原因（连续注释块内）："
-  printf '%s' "$skip_missing_list"
+  cat "$SCAN_TMP/warn-missing.txt"
 fi
 
 if [ "$skip_expired_n" -gt 0 ]; then
   echo "WARN 以下 skip 站点已过到期日，必须删除 gate 或重新评估（不能只续期）："
-  printf '%s' "$skip_expired_list"
+  cat "$SCAN_TMP/warn-expired.txt"
 fi
 
 # 6) 用例/套件 ratchet：删一条 @Test 或 @Suite 不会让任何用例变红，是历史空白。
-#    下限按实测值钉死；新增用例只会让数字变大，删用例必须显式改这里并在台账记账
-#    （与 cleanup/protocol ratchet 同一套"只许收紧"的约定）。
-#    2026-10-28 两轮合并 + 三轮评审后累计收紧：2115/225 → 2195/241（feat 合入 +73/+15；
-#    契约测试与回归 +7/+1）。见 docs/reviews/{feat-merge,sidecar-merge,final-review}-2026-10-2*.md。
-#    2026-10-29 tests 合入：+10/+1（ModelReviewRepo 5 / ModelReviewService 编排 5，
-#    覆盖此前 0%/10.6% 的模型初审落库与缓存路径）→ 2205/242。
-#    2026-10-30 interaction 合并 + 评审补测：+9/+1（commit 串行化/refresh 代/keep/
-#    invalidateAll/rowIndex/Toast/布局缓存）→ 2264/249；同时修正 @Suite 计数正则
-#    （此前漏掉裸 @Suite 与 @MainActor @Suite，少计 4 个）。
-#    2026-10-30 p1-next 合并：+174/+24（11 个 core 测试文件 + 2 个 app 测试文件；
-#    CollectionRepo/SavedSearch/KeywordFacet/KeywordPath/MetadataDeliveryLifecycle/
-#    MetadataRetention/PreviewAnalysis/ProofFeedback/SemanticIndex/TriageCalibration/
-#    ContactSheetPresentation + EmbeddedRewriteSession/XMPPacketReader）→ 2438/273。
-#    2026-10-30 全量修复波：+21/+3（SchemaCurrent 的 CHECK/CASCADE 用例、策展可见性
-#    2 例、保留期会话作用域 1 例、内嵌 XMP 读 4 例、堆栈折叠 10 例 + 1 个新套件）→ 2459/276。
-#    2026-10-30 残余波：+21/+3（schema 触发器/CASCADE 2 例、保留期下推 3 例、校样字段级
-#    重放 2 例、C1 往返 9 例 + 2 个新套件、保存查询搜索串 5 例 + 1 个新套件）→ 2480/279。
-#    2026-10-31 V1 预演：+1（多个 0x0404 IIM 写回必须显式失败，不得只改首段）→ 2481/279。
-#    2026-10-31 universal 修复：+1（Float16 手写编解码逐位一致）→ 2482/279。
-#    2026-10-31 C1 检测：+1/+1（C1 16 版本化 bundle id + 标准路径兜底）→ 2483/280。
-#    2026-10-31 死代码清理：-1（删除 ImageDimensions 旧纯 Swift 实现的唯一对账用例；
-#    生产已由 ImageIODimensionsProvider 承接，该实现零生产引用）→ 2482/280。
-#    2026-10-31 按钮语义化：+2/+1（ButtonStylePolicy 门禁 + errorFill 高对比断言）→ 2484/281；
-#    2026-10-31 自动命名测试：+8/+1（SessionNameAutoFill 状态机）→ 2492/282。
-#    2026-10-31 合并后审核补测：门禁加正/负样本与遮罩用例（+2）、自动命名补初始目录/
-#    同目录/空名/空白名（+4）→ 2498/282。
-#    2026-10-31 残留收口：errorFill 补 1.4.11 边界用例（+1）→ 2499/282；同一改动把
-#    计数从「grep 原文」改成「先剥注释再数」，@Test/@Suite 无变化，断言 -2（注释里的
-#    #expect( 不再计入，AsyncWait.swift 的说明性注释原本虚增 2 条）。
-#    2026-10-31 渲染采样：新增 ButtonRenderTests（3 例 + 1 个套件，把「按钮真的用了
-#    哪个 token」从文档承诺变成像素证据）→ 2502/283。
-# 2026-11-18 评审 R3-T05 / R4-F6：三个基线重钉到实测值（原值严重过期，
-# 可静默删 765 个 @Test / 3445 条断言才触发 FAIL）：2502/283/11509 -> 3267/419/14954。
-BASELINE_TEST_DECL=3267
-BASELINE_SUITE_DECL=419
-# 计数前先剥注释：注释里的 `#expect(` / `@Test` 不是真声明（例如 AsyncWait.swift 的
-# 说明性注释），旧实现直接 grep 源码文本，ratchet 数字系统性偏高。词法遮罩保留字符串
-# 原样，否则 "https://…" 里的 // 会被当成行注释截断本行、连带漏数后面的断言。
-# 扫描根固定为两个包的 Tests（不受 --self-test 的 CTC_TEST_ROOTS_OVERRIDE 影响，
-# 否则自测子进程里 ratchet 会拿临时夹具的数字去比全仓基线）。
-read -r test_decl suite_decl assert_n < <(python3 - <<'PY'
-import re
-from pathlib import Path
-
-DIRS = [Path('desktop/native/gather-core/Tests'), Path('desktop/native/gather-app/Tests')]
-
-
-def mask_comments(text):
-    out = list(text)
-    n = len(text)
-    i = 0
-    while i < n:
-        c = text[i]
-        if c == '"':
-            # 三引号多行字符串 / 普通字符串（含转义）：原样跳过，内容保留。
-            if text.startswith('"""', i):
-                j = text.find('"""', i + 3)
-                i = n if j < 0 else j + 3
-                continue
-            j = i + 1
-            while j < n:
-                if text[j] == '\\':
-                    j += 2
-                    continue
-                if text[j] == '"' or text[j] == '\n':
-                    j += 1
-                    break
-                j += 1
-            i = j
-            continue
-        if text.startswith('//', i):
-            j = text.find('\n', i)
-            if j < 0:
-                j = n
-            for k in range(i, j):
-                out[k] = ' '
-            i = j
-            continue
-        if text.startswith('/*', i):
-            depth = 0
-            j = i
-            while j < n:
-                if text.startswith('/*', j):
-                    depth += 1
-                    j += 2
-                    continue
-                if text.startswith('*/', j):
-                    depth -= 1
-                    j += 2
-                    if depth == 0:
-                        break
-                    continue
-                j += 1
-            for k in range(i, min(j, n)):
-                if out[k] != '\n':
-                    out[k] = ' '
-            i = j
-            continue
-        i += 1
-    return ''.join(out)
-
-
-chunks = []
-for base in DIRS:
-    for path in sorted(base.rglob('*.swift')):
-        chunks.append(mask_comments(path.read_text(encoding='utf-8', errors='replace')))
-blob = '\n'.join(chunks)
-print(
-    len(re.findall(r'^[ \t]*@Test([ \t]|\()', blob, re.M)),
-    len(re.findall(r'^[ \t]*(?:@[A-Za-z_]+[ \t]+)*@Suite([ \t(]|$)', blob, re.M)),
-    len(re.findall(r'#(?:expect|require)\(', blob)),
-)
-PY
-)
+#    基线按实测值钉死（docs/baselines/test-catalog-baseline.json）；新增用例只会让
+#    数字变大，删用例必须 --write-baseline 显式收紧并在台账记账。
 if [ -z "${test_decl:-}" ] || [ -z "${suite_decl:-}" ] || [ -z "${assert_n:-}" ]; then
   echo "check-test-catalog: FAIL 计数脚本没有输出（python3 可用？）" >&2
   exit 1
@@ -467,29 +560,18 @@ echo "  用例/套件 ratchet  @Test ${test_decl}/$BASELINE_TEST_DECL · @Suite 
 
 # 7) 断言 ratchet：只数声明拦不住"删真用例、补空壳用例"。断言数（#expect / #require）
 #    才是"检查了多少事"的代理指标——把真用例删掉换成空函数，断言数会掉。
-#    2026-10-29 tests 合入 +40（同上 10 例）。
-#    2026-10-30 interaction 合并 + 评审补测：+265（含 @Suite 计数修正后的 4 个套件、
-#    commit 串行化/refresh 代/keep/invalidateAll/rowIndex/Toast/布局缓存回归）。
-#    2026-10-30 p1-next 合并：+771（同上 13 个测试文件）。
-#    2026-10-30 全量修复波：+62（同上新增用例）。
-#    2026-10-30 残余波：+107（同上新增用例）。
-#    2026-10-31 V1 预演：+5（同上 1 例）。
-#    2026-10-31 universal 修复：+2（同上 1 例）。
-#    2026-10-31 C1 检测：+3（同上 1 例）。
-#    2026-10-31 死代码清理：-3（同上删除的对账用例内 3 条断言）。
-#    2026-10-31 按钮语义化：+4（门禁 3 断言 + errorFill 高对比 1 断言）→ 11460。
-#    2026-10-31 自动命名测试：+14（8 用例断言）→ 11474（相对 11459 净 +15：+18−3 死代码）。
-#    2026-10-31 合并后审核补测：+24（门禁正/负样本、遮罩回归、自动命名 4 例）→ 11498。
-#    2026-10-31 残留收口：errorFill 边界断言 +2（源码 11,500）− 注释内 2 条（剥注释后不计数）
-#    → 11498，与上一轮持平；基线仍按剥注释口径钉死。
-#    2026-10-31 渲染采样：+11（3 例的像素断言）→ 11509。
-# 2026-11-18 round-2 评审：断言基线重钉到实测（14954 -> 14959：修复测试 +4、JSON 格式漂移守卫 +1）。
-BASELINE_ASSERT=14959
 if [ "$assert_n" -lt "$BASELINE_ASSERT" ]; then
   echo "FAIL 断言数回落：$assert_n < baseline $BASELINE_ASSERT（删断言/换空壳用例必须显式下调并记账）" >&2
   ratchet_bad=1
 fi
 echo "  断言 ratchet        #expect+#require $assert_n/$BASELINE_ASSERT"
+
+# 8) skip 站点 ratchet：skip 数只降不升（新增 gated 用例相当于放宽门禁，须显式批准）。
+if [ "${skip_total:-0}" -gt "$BASELINE_SKIP_DECL" ]; then
+  echo "FAIL skip 站点增加：${skip_total} > baseline ${BASELINE_SKIP_DECL}（新增 gated 用例必须 --write-baseline --allow-growth 并记账）" >&2
+  ratchet_bad=1
+fi
+echo "  skip 站点 ratchet   ${skip_total}/$BASELINE_SKIP_DECL"
 
 echo "----"
 if [ "$STRICT" -eq 1 ]; then

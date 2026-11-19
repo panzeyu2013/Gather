@@ -21,35 +21,6 @@ import GatherTestSupport
 
 // MARK: - Fake 端口
 
-/// TS: MetadataMutationService 替身（queuePhotoValues 记录调用）。
-/// S5c-2b-3b-2b-1 起 CullingService 不再读旧 outbox，替身也不再写库。
-final class FakeMutationPort: MetadataMutationPort, @unchecked Sendable {
-    // #6 S8: flush 经端口下发，替身可注入并记录。
-    var flush: ((String) async throws -> Void)?
-    var flushSessions: [String] = []
-
-    func flushQueuedMetadata(sessionId: String) async throws {
-        flushSessions.append(sessionId)
-        try await flush?(sessionId)
-    }
-
-    var queued: [(sessionId: String, photoId: String, values: [String: JSONValue], source: MetadataMutationSource, schedule: Bool)] = []
-
-    func queuePhotoValues(
-        sessionId: String,
-        photoId: String,
-        values: [String: JSONValue],
-        source: MetadataMutationSource,
-        schedule: Bool
-    ) throws -> MetadataMutationResult {
-        queued.append((sessionId, photoId, values, source, schedule))
-        return MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending"
-        )
-    }
-
-}
-
 /// TS: WritebackService 替身（preview/persistAttributes/execute/retryFailed/
 /// getItems/confirmSync/cleanup 全部记录调用，行为由测试注入）。
 final class FakeWritebackPort: CullingWritebackPort {
@@ -113,54 +84,6 @@ final class FakeWritebackPort: CullingWritebackPort {
 
 // MARK: - 交付端口替身（S5c-2a）
 
-/// 内存 sidecar 假件：restore 是覆盖写（幂等），removeFile 只删内存键；
-/// 可注入 restore 失败验证「失败保留 intent、replay 可重试」。
-final class FakeDeliveryFiles: DeliveryFilePort, @unchecked Sendable {
-    let lock = NSLock()
-    var storage: [String: String]
-    var restoreFailure: Error?
-    var removeFailure: Error?
-    private(set) var restoreTargets: [String] = []
-    private(set) var removedPaths: [String] = []
-
-    init(storage: [String: String] = [:]) {
-        self.storage = storage
-    }
-
-    func setContents(_ path: String, _ value: String) { lock.withLock { storage[path] = value } }
-
-    func contents(_ path: String) -> String? { lock.withLock { storage[path] } }
-
-    func setRestoreFailure(_ error: Error?) { lock.withLock { restoreFailure = error } }
-
-    func clearRestoreFailure() { lock.withLock { restoreFailure = nil } }
-
-    func setRemoveFailure(_ error: Error?) { lock.withLock { removeFailure = error } }
-
-    func clearRemoveFailure() { lock.withLock { removeFailure = nil } }
-
-    func fileExists(_ path: String) -> Bool { lock.withLock { storage[path] != nil } }
-
-    func restore(photoPath: String, backupPath: String) async throws {
-        try lock.withLock {
-            restoreTargets.append(TSPath.xmpSidecarPath(photoPath))
-            if let restoreFailure { throw restoreFailure }
-            guard let backup = storage[backupPath] else {
-                throw DeliveryCoordinatorError.backupMissing(xmpPath: backupPath)
-            }
-            storage[TSPath.xmpSidecarPath(photoPath)] = backup
-        }
-    }
-
-    func removeFile(_ path: String) async throws {
-        try lock.withLock {
-            if let removeFailure { throw removeFailure }
-            removedPaths.append(path)
-            storage.removeValue(forKey: path)
-        }
-    }
-}
-
 enum FakeDeliveryFileError: Error, Equatable {
     case restoreFailed
     case removeFailed
@@ -194,9 +117,9 @@ struct CullingHarness {
     let similarityRepo: SimilarityResultRepo
     let cacheRepo: MetadataCacheRepo
     let historyRepo: CullingHistoryRepo
-    let mutations: FakeMutationPort
+    let mutations: RecordingMetadataMutation
     let writeback: FakeWritebackPort
-    let deliveryFiles: FakeDeliveryFiles
+    let deliveryFiles: RecordingDeliveryFilePort
     let deliveryFingerprint: FakeFingerprint
     let deliveryRepo: DeliveryRepo
     let deliveryIntents: DeliveryIntentRepo
@@ -233,13 +156,13 @@ func makeCullingHarness(
 ) throws -> CullingHarness {
     let db = try makeTestDB()
     try insertSession(db, "session")
-    let mutations = FakeMutationPort()
+    let mutations = RecordingMetadataMutation()
     mutations.flush = flush
     let writeback = FakeWritebackPort()
     let historyRepo = CullingHistoryRepo(connection: db)
     // S5c-2a：culling confirm/cleanup 走真实 coordinator（真实 SQLite），
     // 只把「文件/指纹」换成内存替身，验证模块过滤、门禁、冲突与重试。
-    let deliveryFiles = FakeDeliveryFiles()
+    let deliveryFiles = RecordingDeliveryFilePort()
     let deliveryFingerprint = FakeFingerprint()
     let deliveryRepo = DeliveryRepo(connection: db)
     let deliveryIntents = DeliveryIntentRepo(connection: db)
@@ -991,69 +914,6 @@ struct CullingHistoryTests {
                 ]
             )
         }
-    }
-
-    @Test("历史栈顺序守卫（仓库层，与 TS culling-history-repository 一致）：undo/redo 只能沿栈顶")
-    func historyStackOrder() throws {
-        let harness = try makeCullingHarness()
-        try addPhoto(harness.db, id: "p1")
-        try addPhoto(harness.db, id: "p2")
-        let first = try harness.service.updateState(
-            sessionId: "session", photoId: "p1", expectedRevision: 0,
-            patch: CullingUpdatePatch(pickState: .picked)
-        )
-        let second = try harness.service.updateState(
-            sessionId: "session", photoId: "p2", expectedRevision: 0,
-            patch: CullingUpdatePatch(pickState: .picked)
-        )
-        let firstId = try #require(first.historyOperationId!)
-        let secondId = try #require(second.historyOperationId!)
-
-        // 非栈顶 undo → CULLING_UNDO_NOT_LATEST（TS 逐字）。
-        #expect(throws: PersistenceError(code: .CULLING_UNDO_NOT_LATEST)) {
-            try harness.historyRepo.setUndone(sessionId: "session", operationId: firstId, undone: true)
-        }
-        try harness.historyRepo.setUndone(sessionId: "session", operationId: secondId, undone: true)
-        try harness.historyRepo.setUndone(sessionId: "session", operationId: firstId, undone: true)
-        // 非栈顶 redo → CULLING_REDO_OUT_OF_ORDER（TS 逐字）。
-        #expect(throws: PersistenceError(code: .CULLING_REDO_OUT_OF_ORDER)) {
-            try harness.historyRepo.setUndone(sessionId: "session", operationId: secondId, undone: false)
-        }
-        try harness.historyRepo.setUndone(sessionId: "session", operationId: firstId, undone: false)
-        try harness.historyRepo.setUndone(sessionId: "session", operationId: secondId, undone: false)
-
-        #expect(try harness.historyRepo.list(sessionId: "session").map(\.undone) == [false, false])
-    }
-
-    @Test("undo 后追加新操作丢弃 redo 分支（TS 语义：append 删除 undone=1 行）")
-    func appendDropsRedoBranch() throws {
-        let harness = try makeCullingHarness()
-        try addPhoto(harness.db, id: "p1")
-        try addPhoto(harness.db, id: "p2")
-        try addPhoto(harness.db, id: "p3")
-        let first = try harness.service.updateState(
-            sessionId: "session", photoId: "p1", expectedRevision: 0,
-            patch: CullingUpdatePatch(pickState: .picked)
-        )
-        let abandoned = try harness.service.updateState(
-            sessionId: "session", photoId: "p2", expectedRevision: 0,
-            patch: CullingUpdatePatch(pickState: .picked)
-        )
-        _ = try harness.service.applyHistory(
-            sessionId: "session", requestedEntries: [],
-            historyOperationId: abandoned.historyOperationId!, direction: .undo
-        )
-        let replacement = try harness.service.updateState(
-            sessionId: "session", photoId: "p3", expectedRevision: 0,
-            patch: CullingUpdatePatch(pickState: .picked)
-        )
-
-        // 被放弃的操作被删除；列表只剩 replacement 与 first。
-        #expect(try harness.historyRepo.get(
-            sessionId: "session", operationId: abandoned.historyOperationId!
-        ) == nil)
-        #expect(try harness.historyRepo.list(sessionId: "session").map(\.id)
-            == [replacement.historyOperationId!, first.historyOperationId!])
     }
 
     @Test("getHistory 返回历史栈（limit 透传仓库 clamp）")

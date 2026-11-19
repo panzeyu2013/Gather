@@ -13,108 +13,6 @@ import GatherTestSupport
 @testable import GatherDelivery
 @testable import GatherApplication
 
-/// 记录写入的 XMP 替身：模拟执行器的"按字段合并"语义。
-private final class TemplateIOXMP: XMPProvider, @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [String: MetadataWriteAttributes] = [:]
-    private(set) var writeCount = 0
-    private var readError: Error?
-
-    func seed(_ path: String, _ attributes: MetadataWriteAttributes) {
-        lock.lock(); defer { lock.unlock() }
-        storage[path] = attributes
-    }
-
-    /// D4 回归：让下一次读盘抛错，模拟 sidecar 损坏/权限。
-    func failReads(_ error: Error) {
-        lock.lock(); defer { lock.unlock() }
-        readError = error
-    }
-
-    func attributes(_ path: String) -> MetadataWriteAttributes {
-        lock.lock(); defer { lock.unlock() }
-        return storage[path] ?? MetadataWriteAttributes()
-    }
-
-    func readKeywords(photoPath: String) async throws -> [String] { [] }
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        try throwReadErrorIfNeeded()
-        return attributes(photoPath)
-    }
-
-    private func throwReadErrorIfNeeded() throws {
-        lock.lock(); defer { lock.unlock() }
-        if let readError { throw readError }
-    }
-
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {
-        write(photoPath: photoPath, attributes: attributes)
-    }
-
-    /// 同步临界区（Swift 6 禁止在 async 上下文直接 lock/unlock）。
-    private func write(photoPath: String, attributes: MetadataWriteAttributes) {
-        lock.lock(); defer { lock.unlock() }
-        writeCount += 1
-        var current = storage[photoPath] ?? MetadataWriteAttributes()
-        if let descriptive = attributes.descriptive {
-            var merged = (current.descriptive ?? DescriptiveMetadata()).applying(descriptive)
-            // 与 WritebackService+Execute 一致：只有补丁真的带 contact 才整块替换，
-            // 否则"replace_contact=true + 无 contact 字段"会清空整块联系人（P0）。
-            if attributes.replaceContact == true, let contact = descriptive.contactInfo {
-                merged.set(.contact(contact), for: .contactInfo)
-            }
-            // 真实补丁器把"空值"落成"元素不存在"，读回为 nil；替身必须同语义。
-            for field in descriptive.explicitlySetFields
-            where merged.value(for: field)?.isEmptyValue ?? false {
-                merged.set(nil, for: field)
-            }
-            current.descriptive = merged
-        }
-        if let rating = attributes.rating { current.rating = rating }
-        if let label = attributes.label { current.label = label }
-        if let keywords = attributes.keywords { current.keywords = keywords }
-        storage[photoPath] = current
-    }
-
-    func backup(photoPath: String) async throws -> String { "" }
-    func restore(photoPath: String, backupPath: String) async throws {}
-    func fileExists(_ path: String) -> Bool { false }
-    func removeFile(_ path: String) async throws {}
-}
-
-/// 记录入队的 mutation 端口（apply 必须经过它）。
-private final class TemplateIOMutations: MetadataMutationPort, @unchecked Sendable {
-    private let lock = NSLock()
-    private(set) var queued: [(photoId: String, values: [String: JSONValue])] = []
-
-    func drain() -> [(photoId: String, values: [String: JSONValue])] {
-        lock.lock(); defer { lock.unlock() }
-        let result = queued
-        queued.removeAll()
-        return result
-    }
-
-    func queuePhotoValues(
-        sessionId: String, photoId: String, values: [String: JSONValue],
-        source: MetadataMutationSource, schedule: Bool
-    ) throws -> MetadataMutationResult {
-        lock.lock(); defer { lock.unlock() }
-        queued.append((photoId, values))
-        return MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [.descriptive],
-            revision: 1, status: "pending")
-    }
-
-    func queueKeywordDelta(
-        sessionId: String, photoId: String, added: [String], removed: [String],
-        owned: [String: Set<MetadataMutationSource>], existingKeywords: [String]?
-    ) async throws -> MetadataMutationResult? {
-        throw PortIOError.unsupported
-    }
-
-    enum PortIOError: Error { case unsupported }
-}
-
 @Suite("模板套用 IO")
 struct MetadataTemplateServiceIOTests {
     private struct Fixture {
@@ -123,8 +21,8 @@ struct MetadataTemplateServiceIOTests {
         let photoId: String
         let sessionId: String
         let photoPath: String
-        let xmp: TemplateIOXMP
-        let mutations: TemplateIOMutations
+        let xmp: RecordingXMPProvider
+        let mutations: RecordingMetadataMutation
         let templates: MetadataTemplateStore
         let batches: MetadataApplyBatchStore
         let service: MetadataTemplateService
@@ -143,8 +41,8 @@ struct MetadataTemplateServiceIOTests {
         try Data("raw".utf8).write(to: URL(fileURLWithPath: photoPath))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: photoPath)
 
-        let xmp = TemplateIOXMP()
-        let mutations = TemplateIOMutations()
+        let xmp = RecordingXMPProvider()
+        let mutations = RecordingMetadataMutation()
         let paths = [photoId: photoPath]
         let metadata = MetadataService(
             metadataCacheRepo: MetadataCacheRepo(connection: db),
@@ -154,7 +52,7 @@ struct MetadataTemplateServiceIOTests {
             mutations: mutations,
             flushPending: { _ in
                 var failed: [WritebackItem] = []
-                for entry in mutations.drain() {
+                for entry in mutations.drainValues() {
                     guard let path = paths[entry.photoId] else { continue }
                     do {
                         let attributes = MetadataWriteAttributes(

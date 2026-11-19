@@ -39,73 +39,6 @@ private final class CountingExif: ExifProvider, @unchecked Sendable {
     }
 }
 
-/// 可切换属性/存在性的 XMP 替身（比真实实现更严格：不存在任何"静默返回旧值"的兜底）。
-private final class SwitchableXMP: XMPProvider, @unchecked Sendable {
-    private let lock = NSLock()
-    private var attributes = MetadataWriteAttributes()
-    private var sidecarExists = true
-
-    private var dropsGeoDateOnRead = false
-
-    func setAttributes(_ value: MetadataWriteAttributes) {
-        // 真实 SidecarXMP 写盘会把空串 dateTaken 处理成"删除元素"（读回 nil）；
-        // 这个内存替身必须同口径归一化，否则清空用例会看到 "" 而非 nil。
-        var normalized = value
-        if let date = normalized.dateTaken,
-           date.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            normalized.dateTaken = nil
-        }
-        lock.lock(); attributes = normalized; lock.unlock()
-    }
-    func setSidecarExists(_ value: Bool) { lock.lock(); sidecarExists = value; lock.unlock() }
-    func setDropsGeoDateOnRead(_ value: Bool) {
-        lock.lock(); dropsGeoDateOnRead = value; lock.unlock()
-    }
-    func dropsGeoDate() -> Bool {
-        lock.lock(); defer { lock.unlock() }; return dropsGeoDateOnRead
-    }
-
-    /// 同步锁临界区辅助（Swift 6：async 上下文不得直接 lock/unlock）。
-    private func attributesSnapshot() -> MetadataWriteAttributes {
-        lock.lock()
-        defer { lock.unlock() }
-        return attributes
-    }
-
-    func readKeywords(photoPath: String) async throws -> [String] {
-        attributesSnapshot().keywords ?? []
-    }
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        let snapshot = attributesSnapshot()
-        guard dropsGeoDate() else { return snapshot }
-        // 模拟「写盘成功但读侧拿不到」的宿主（Wave5 batch5：JPEG 内嵌目标的真实形态）：
-        // GPS/时间被丢弃，服务层回读必须判失败，不能谎报 written。
-        return MetadataWriteAttributes(
-            keywords: snapshot.keywords,
-            rating: snapshot.rating,
-            label: snapshot.label,
-            descriptive: snapshot.descriptive,
-            triageSignal: snapshot.triageSignal,
-            keywordsMode: snapshot.keywordsMode,
-            replaceContact: snapshot.replaceContact,
-            clearedContactMembers: snapshot.clearedContactMembers)
-    }
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {}
-    func backup(photoPath: String) async throws -> String { "" }
-    func restore(photoPath: String, backupPath: String) async throws {}
-    func fileExists(_ path: String) -> Bool { lock.lock(); defer { lock.unlock() }; return sidecarExists }
-    func removeFile(_ path: String) async throws {}
-}
-
-private struct NoopMutations: MetadataMutationPort {
-    func queuePhotoValues(
-        sessionId: String, photoId: String, values: [String: JSONValue],
-        source: MetadataMutationSource, schedule: Bool
-    ) throws -> MetadataMutationResult {
-        MetadataMutationResult(photoId: photoId, xmpPath: photoId + ".xmp", dirtyFields: [], revision: 1, status: "pending")
-    }
-}
-
 struct MetadataServiceTests {
     private struct Fixture {
         let db: DBConnection
@@ -113,7 +46,7 @@ struct MetadataServiceTests {
         let photoId: String
         let photoPath: String
         let exif: CountingExif
-        let xmp: SwitchableXMP
+        let xmp: RecordingXMPProvider
         let service: MetadataService
 
         func cleanup() { try? FileManager.default.removeItem(atPath: dir) }
@@ -133,12 +66,12 @@ struct MetadataServiceTests {
         try Data("sidecar".utf8).write(to: URL(fileURLWithPath: TSPath.xmpSidecarPath(photoPath)))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: photoPath)
         let exif = CountingExif()
-        let xmp = SwitchableXMP()
+        let xmp = RecordingXMPProvider(writeMode: .ignore, fileExists: true)
         let service = MetadataService(
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             xmp: xmp,
             connection: db,
-            mutations: NoopMutations(),
+            mutations: RecordingMetadataMutation(),
             assetResolver: nil,
             exif: exif,
             dimensions: nil,
@@ -402,34 +335,6 @@ struct MetadataServiceTests {
 
 // MARK: - Wave5（batch5）：位置 / 拍摄时间
 
-/// 记录入队属性并在 flush 时真写 XMP 的变更端口（交付队列语义的最小替身）。
-private final class StoringMutations: MetadataMutationPort, @unchecked Sendable {
-    private let lock = NSLock()
-    private var pending: [String: MetadataWriteAttributes] = [:]
-
-    func queuePhotoValues(
-        sessionId: String,
-        photoId: String,
-        values: [String: JSONValue],
-        source: MetadataMutationSource,
-        schedule: Bool
-    ) throws -> MetadataMutationResult {
-        lock.lock()
-        defer { lock.unlock() }
-        pending[photoId] = MetadataWriteAttributes(jsonValue: .object(values))
-        return MetadataMutationResult(
-            photoId: photoId, xmpPath: "", dirtyFields: [], revision: 1, status: "pending")
-    }
-
-    func takePending() -> [String: MetadataWriteAttributes] {
-        lock.lock()
-        defer { lock.unlock() }
-        let result = pending
-        pending = [:]
-        return result
-    }
-}
-
 @Suite("位置/拍摄时间写入（MetadataService）")
 struct MetadataGeoDateServiceTests {
     private struct Fixture {
@@ -437,7 +342,7 @@ struct MetadataGeoDateServiceTests {
         let dir: String
         let photoId: String
         let photoPath: String
-        let xmp: SwitchableXMP
+        let xmp: RecordingXMPProvider
         let service: MetadataService
 
         func cleanup() { try? FileManager.default.removeItem(atPath: dir) }
@@ -455,9 +360,9 @@ struct MetadataGeoDateServiceTests {
         try Data("raw-bytes".utf8).write(to: URL(fileURLWithPath: photoPath))
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: photoPath)
 
-        let xmp = SwitchableXMP()
+        let xmp = RecordingXMPProvider(writeMode: .ignore, fileExists: true)
         xmp.setDropsGeoDateOnRead(dropGeoDateOnRead)
-        let mutations = StoringMutations()
+        let mutations = RecordingMetadataMutation()
         let paths = [photoId: photoPath]
         let service = MetadataService(
             metadataCacheRepo: MetadataCacheRepo(connection: db),
@@ -465,8 +370,8 @@ struct MetadataGeoDateServiceTests {
             connection: db,
             mutations: mutations,
             flushPending: { _ in
-                // 交付队列替身：把入队值写进假 XMP（SwitchableXMP 的读就是 attributes，
-                // 因此写盘=setAttributes；真实链路由 provider 写文件）。
+                // 交付队列替身：把入队值写进假 XMP（RecordingXMPProvider 固定读就是
+                // attributes，因此写盘=setAttributes；真实链路由 provider 写文件）。
                 let pending = mutations.takePending()
                 for (id, attributes) in pending where paths[id] != nil {
                     xmp.setAttributes(attributes)
@@ -729,7 +634,7 @@ struct MetadataDualSourceConflictTests {
         let embeddedSegments = MetadataParseSegments(
             ifd0: .object(["Rating": .number(5)]),
             dc: .object(["title": .string("内嵌标题")]))
-        let xmp = SwitchableXMP()
+        let xmp = RecordingXMPProvider(writeMode: .ignore, fileExists: true)
         xmp.setAttributes(attributes(
             rating: 3, descriptive: DescriptiveMetadata(title: "sidecar 标题")))
 
@@ -772,7 +677,7 @@ struct MetadataDualSourceConflictTests {
         let dir: String
         let photoId: String
         let photoPath: String
-        let xmp: SwitchableXMP
+        let xmp: RecordingXMPProvider
         let service: MetadataService
 
         func cleanup() { try? FileManager.default.removeItem(atPath: dir) }
@@ -796,12 +701,12 @@ struct MetadataDualSourceConflictTests {
             try Data("sidecar".utf8).write(to: URL(fileURLWithPath: TSPath.xmpSidecarPath(photoPath)))
         }
         try insertPhoto(db, id: photoId, sessionId: sessionId, filepath: photoPath)
-        let xmp = SwitchableXMP()
+        let xmp = RecordingXMPProvider(writeMode: .ignore, fileExists: true)
         let service = MetadataService(
             metadataCacheRepo: MetadataCacheRepo(connection: db),
             xmp: xmp,
             connection: db,
-            mutations: NoopMutations(),
+            mutations: RecordingMetadataMutation(),
             exif: StubExif(behavior: behavior))
         return ServiceFixture(
             db: db, dir: dir, photoId: photoId, photoPath: photoPath, xmp: xmp, service: service)

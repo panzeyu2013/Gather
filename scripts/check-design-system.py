@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 UI = ROOT / "desktop" / "native" / "gather-app" / "Sources" / "GatherUI"
-BASELINE = ROOT / "scripts" / "design-system-baseline.json"
+BASELINE = ROOT / "docs" / "baselines" / "design-system-baseline.json"
 
 # key -> (regex, description)
 METRICS = {
@@ -76,10 +76,23 @@ def load_baseline() -> dict[str, int]:
 
 
 def write_baseline(values: dict[str, int]) -> None:
-    BASELINE.write_text(
-        json.dumps(values, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    # 原子写：同目录临时文件 + os.replace，避免中断时留下半截 JSON。
+    import os
+    import tempfile
+
+    BASELINE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".design-system-baseline.", dir=str(BASELINE.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(values, indent=2, ensure_ascii=False) + "\n")
+        os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, BASELINE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def main() -> int:
@@ -88,7 +101,7 @@ def main() -> int:
     parser.add_argument(
         "--allow-growth",
         action="store_true",
-        help="with --update: allow metrics to increase (must be recorded in docs/reviews/)",
+        help="with --update: allow metrics to increase (must be recorded in docs/cleanup-backlog.md)",
     )
     parser.add_argument("--warn-only", action="store_true", help="report but exit 0")
     parser.add_argument("--strict", action="store_true", help="reserved; same failure rule")
@@ -112,7 +125,7 @@ def main() -> int:
                     print(f"  涨：{key} {base} -> {current}", file=sys.stderr)
                 print(
                     "check-design-system: REFUSED — 基线膨胀必须显式批准；"
-                    "确需扩张时加 --allow-growth 并在 docs/reviews/ 记账。",
+                    "确需扩张时加 --allow-growth 并在 docs/cleanup-backlog.md 记账。",
                     file=sys.stderr,
                 )
                 return 1

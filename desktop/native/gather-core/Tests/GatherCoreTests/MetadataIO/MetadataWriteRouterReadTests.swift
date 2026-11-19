@@ -10,6 +10,7 @@
 import Foundation
 import Testing
 import GatherProtocol
+import GatherTestSupport
 @testable import GatherMetadataIO
 
 // MARK: - 夹具
@@ -46,10 +47,9 @@ private func jpegHeader(withXMP packet: Data) -> Data {
 }
 
 private func writeTempJPEG(_ data: Data) throws -> String {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gather-router-xmp-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let path = directory.appendingPathComponent("photo.jpg").path
+    // task-43：目录统一走共享 TempHygiene 登记路径（文件内容仍真实落盘）。
+    let directory = try GatherTestSupport.makeTempDir(prefix: "gather-router-xmp")
+    let path = (directory as NSString).appendingPathComponent("photo.jpg")
     try data.write(to: URL(fileURLWithPath: path))
     return path
 }

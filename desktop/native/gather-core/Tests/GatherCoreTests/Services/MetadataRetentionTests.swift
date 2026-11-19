@@ -25,33 +25,6 @@ import GatherTestSupport
 
 // MARK: - fixtures
 
-private final class RetentionFailingRemovePort: DeliveryFilePort, @unchecked Sendable {
-    private let inner = FileSystemDeliveryFilePort()
-    private let remainingFailures: OSAllocatedUnfairLock<Int>
-
-    init(failures: Int) {
-        self.remainingFailures = OSAllocatedUnfairLock(initialState: failures)
-    }
-
-    func fileExists(_ path: String) -> Bool {
-        inner.fileExists(path)
-    }
-
-    func restore(photoPath: String, backupPath: String) async throws {
-        try await inner.restore(photoPath: photoPath, backupPath: backupPath)
-    }
-
-    func removeFile(_ path: String) async throws {
-        let fail = remainingFailures.withLock { remaining -> Bool in
-            guard remaining > 0 else { return false }
-            remaining -= 1
-            return true
-        }
-        if fail { throw RetentionInjectedError.removeFailed }
-        try await inner.removeFile(path)
-    }
-}
-
 private enum RetentionInjectedError: Error, Equatable {
     case removeFailed
 }
@@ -294,7 +267,7 @@ private let retentionPolicy = MetadataRetentionPolicy(
 // MARK: - 4. 备份删除失败的崩溃点
 
 @Test func retentionBackupFailureKeepsIntentForReplay() async throws {
-    let fixture = try makeRetentionFixture(files: RetentionFailingRemovePort(failures: 1))
+    let fixture = try makeRetentionFixture(files: FailingRemoveFilePort(inner: FileSystemDeliveryFilePort(), failures: 1))
     defer { fixture.cleanup() }
     let delivery = try seedRetentionDelivery(fixture, photoId: "p1", confirm: true)
     try ageRetentionDelivery(fixture, id: delivery.row.id, days: 30)

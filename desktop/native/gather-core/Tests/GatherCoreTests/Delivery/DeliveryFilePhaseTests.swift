@@ -23,7 +23,7 @@ struct DeliveryFilePhaseTests {
     ) throws -> (
         db: DBConnection,
         repo: DeliveryRepo,
-        port: DeliveryTestFilePort,
+        port: RecordingDeliveryFilePort,
         phase: DeliveryFilePhase,
         row: DeliveryRow,
         payload: DeliveryCleanupPayload
@@ -35,7 +35,7 @@ struct DeliveryFilePhaseTests {
             backupPath: DeliveryTestSupport.backupPath,
             itemModule: .culling
         )
-        let port = DeliveryTestFilePort(storage: [
+        let port = RecordingDeliveryFilePort(storage: [
             DeliveryTestSupport.xmpPath: "gather-written",
             DeliveryTestSupport.backupPath: "original",
         ])
@@ -56,7 +56,7 @@ struct DeliveryFilePhaseTests {
         defer { db.close() }
         let repo = DeliveryRepo(connection: db)
         let row = try DeliveryTestSupport.makeSyncedDelivery(repo: repo)
-        let port = DeliveryTestFilePort()
+        let port = RecordingDeliveryFilePort()
         let phase = DeliveryFilePhase(
             deliveryRepo: repo,
             files: port,
@@ -184,7 +184,7 @@ struct DeliveryFilePhaseTests {
         let repo = DeliveryRepo(connection: db)
         let row = try DeliveryTestSupport.makeSyncedDelivery(
             repo: repo, backupPath: DeliveryTestSupport.backupPath)
-        let port = DeliveryTestFilePort(storage: [DeliveryTestSupport.xmpPath: "current"])
+        let port = RecordingDeliveryFilePort(storage: [DeliveryTestSupport.xmpPath: "current"])
         let phase = DeliveryFilePhase(
             deliveryRepo: repo,
             files: port,

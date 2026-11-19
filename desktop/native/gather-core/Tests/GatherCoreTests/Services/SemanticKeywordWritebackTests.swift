@@ -11,87 +11,14 @@ import GatherTestSupport
 @testable import GatherDelivery
 @testable import GatherApplication
 
+/// 纯路径夹具根（task-43）：本套的 XMP / mutation 全是内存 fake，
+/// 照片路径不参与任何读盘；去掉每用例建临时目录 + 写占位字节 + 删除的 IO。
+private let semanticFixtureRoot =
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("gather-semantic-fixture", isDirectory: true).path
+
 /// 内存 XMP：关键词按照片路径存；写/删都由 flush 闭包驱动。
-private final class SemanticKeywordXMP: XMPProvider, @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [String: [String]] = [:]
-
-    func seed(_ path: String, _ keywords: [String]) {
-        lock.lock(); defer { lock.unlock() }
-        storage[path] = keywords
-    }
-
-    func keywords(_ path: String) -> [String] {
-        lock.lock(); defer { lock.unlock() }
-        return storage[path] ?? []
-    }
-
-    func readKeywords(photoPath: String) async throws -> [String] { keywords(photoPath) }
-
-    func readAttributes(photoPath: String) async throws -> MetadataWriteAttributes {
-        MetadataWriteAttributes(keywords: keywords(photoPath))
-    }
-
-    func writeAttributes(photoPath: String, attributes: MetadataWriteAttributes) async throws {
-        guard let keywords = attributes.keywords else { return }
-        lock.withLock { storage[photoPath] = keywords }
-    }
-
-    func applyDelta(photoPath: String, added: [String], removed: [String]) {
-        lock.lock(); defer { lock.unlock() }
-        var current = storage[photoPath] ?? []
-        let drop = Set(removed.map(KeywordNormalizer.fold))
-        current = current.filter { !drop.contains(KeywordNormalizer.fold($0)) }
-        current.append(contentsOf: added)
-        storage[photoPath] = current
-    }
-
-    func backup(photoPath: String) async throws -> String { "" }
-    func restore(photoPath: String, backupPath: String) async throws {}
-    func fileExists(_ path: String) -> Bool { false }
-    func removeFile(_ path: String) async throws {}
-}
-
 /// 记录 keyword delta，flush 时一次性落到假 XMP（与真实交付链同路径：queue → flush → 回读）。
-private final class SemanticKeywordMutations: MetadataMutationPort, @unchecked Sendable {
-    struct Entry {
-        let photoId: String
-        let added: [String]
-        let removed: [String]
-    }
-
-    private let lock = NSLock()
-    private var queue: [Entry] = []
-
-    func drain() -> [Entry] {
-        lock.lock(); defer { lock.unlock() }
-        let entries = queue
-        queue.removeAll()
-        return entries
-    }
-
-    func flushQueuedMetadata(sessionId: String) async throws {}
-
-    func queuePhotoValues(
-        sessionId: String, photoId: String, values: [String: JSONValue],
-        source: MetadataMutationSource, schedule: Bool
-    ) throws -> MetadataMutationResult {
-        throw GatherError.invalidParameter(field: "values", reason: "unused")
-    }
-
-    func queueKeywordDelta(
-        sessionId: String, photoId: String, added: [String], removed: [String],
-        owned: [String: Set<MetadataMutationSource>], existingKeywords: [String]?
-    ) async throws -> MetadataMutationResult? {
-        return lock.withLock {
-            queue.append(Entry(photoId: photoId, added: added, removed: removed))
-            return MetadataMutationResult(
-                photoId: photoId, xmpPath: "", dirtyFields: [.keywords],
-                revision: 1, status: "pending")
-        }
-    }
-}
-
 @Suite("场景标签写回批级撤销")
 struct SemanticKeywordWritebackTests {
     private func labelsJSON(_ labels: [(String, Double)]) -> String {
@@ -104,18 +31,12 @@ struct SemanticKeywordWritebackTests {
     @Test("apply 返回本批 appliedPhotoIds；undo 只清本批；再次 apply 恢复（E2）")
     func applyUndoApply() async throws {
         let db = try makeTestDB()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gather-semantic-\(UUID().uuidString)", isDirectory: true).path
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer { do { try FileManager.default.removeItem(atPath: dir) } catch {} }
+        let dir = semanticFixtureRoot
 
         let sessionId = "s-1"
         try insertSession(db, sessionId)
         let pathA = (dir as NSString).appendingPathComponent("a.CR3")
         let pathB = (dir as NSString).appendingPathComponent("b.CR3")
-        for path in [pathA, pathB] {
-            try Data("raw".utf8).write(to: URL(fileURLWithPath: path))
-        }
         try insertPhoto(db, id: "p1", sessionId: sessionId, filepath: pathA)
         try insertPhoto(db, id: "p2", sessionId: sessionId, filepath: pathB)
 
@@ -132,15 +53,15 @@ struct SemanticKeywordWritebackTests {
                 modelVersion: "test", computedAt: "2026-01-01T00:00:00Z")])
         }
 
-        let xmp = SemanticKeywordXMP()
-        let mutations = SemanticKeywordMutations()
+        let xmp = RecordingXMPProvider()
+        let mutations = RecordingMetadataMutation()
         let paths = ["p1": pathA, "p2": pathB]
         let photoRepo = PhotoRepo(connection: db)
         let metadata = MetadataService(
             metadataCacheRepo: cache, xmp: xmp, photoRepo: photoRepo, transactions: db,
             mutations: mutations,
             flushPending: { _ in
-                let entries = mutations.drain()
+                let entries = mutations.drainKeywordDeltas()
                 for entry in entries {
                     guard let path = paths[entry.photoId] else { continue }
                     xmp.applyDelta(photoPath: path, added: entry.added, removed: entry.removed)

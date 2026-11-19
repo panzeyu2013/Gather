@@ -123,7 +123,7 @@ public final class MetadataService: @unchecked Sendable {
         mutations: any MetadataMutationPort,
         flushPending: MetadataQueueFlush? = nil,
         retryFlush: MetadataQueueFlush? = nil,
-        assetResolver: PhotoAssetResolver? = nil,
+        assetResolver: (any PhotoAssetResolving)? = nil,
         exif: (any ExifProvider)? = nil,
         dimensions: (any ImageDimensionsProvider)? = nil,
         embeddedReader: (any EmbeddedXMPReader)? = nil,

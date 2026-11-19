@@ -71,27 +71,14 @@ private struct APIFixture {
 }
 
 private func makeTempDirectory() throws -> URL {
-    let url = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("gather-api-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    return url
+    // task-45：统一走 GatherTestSupport.makeTempDir（TempHygiene 登记；行为等价）。
+    URL(fileURLWithPath: try GatherTestSupport.makeTempDir(prefix: "gather-api"))
 }
 
 private func makeTempFile(in directory: URL, name: String) throws -> String {
     let url = directory.appendingPathComponent(name)
     try Data("x".utf8).write(to: url)
     return url.path
-}
-
-private func gatherError<T>(_ body: () async throws -> T) async -> GatherError? {
-    do {
-        _ = try await body()
-        return nil
-    } catch let error as GatherError {
-        return error
-    } catch {
-        return nil
-    }
 }
 
 @Suite("B1 Live API")

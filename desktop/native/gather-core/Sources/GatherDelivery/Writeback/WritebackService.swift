@@ -63,7 +63,7 @@ public final class WritebackService: @unchecked Sendable {
     private let photoRepo: any PhotoReadStore
     let metadataCacheRepo: any MetadataCacheStore
     let keywordOrigins: MetadataKeywordOriginRepo?
-    let assetResolver: PhotoAssetResolver?
+    let assetResolver: (any PhotoAssetResolving)?
     let connection: DBConnection
     /// cleanup 的交付编排（intent 前滚 + 文件恢复）；宿主注入共享实例，
     /// 缺省按同一 connection/xmp 自建（测试/嵌入场景）。
@@ -92,7 +92,7 @@ public final class WritebackService: @unchecked Sendable {
         metadataCacheRepo: any MetadataCacheStore,
         connection: DBConnection,
         keywordOrigins: MetadataKeywordOriginRepo? = nil,
-        assetResolver: PhotoAssetResolver? = nil,
+        assetResolver: (any PhotoAssetResolving)? = nil,
         delivery: DeliveryCoordinator? = nil,
         fileLock: XMPFileLock,
         target: MetadataTargetResolver = .sidecar,

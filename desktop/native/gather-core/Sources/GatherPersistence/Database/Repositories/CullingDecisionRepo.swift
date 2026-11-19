@@ -14,35 +14,24 @@
 // 历史背景：旧实现读路径优先决策行、写路径双写、reset 只删决策行 → reset 后
 // 页面仍显示旧值、summary 仍报 rated/labeled。禁止恢复该形态。
 import Foundation
+import GatherProtocol
 
-/// culling_decisions 表行（列序 = TableColumns.cullingDecisions，见 Schema.swift）。
-public struct CullingDecisionRow {
-    public let id: Int64
-    public let sessionId: String
-    public let photoId: String
-    public let groupId: String
-    public let decision: String
-    /// 镜像列：不是真相源，禁止读取（唯一真相源为 photo_metadata_cache.rating）。
-    public let rating: Int64
-    /// 镜像列：不是真相源，禁止读取（唯一真相源为 photo_metadata_cache.label）。
-    public let colorLabel: String
-    public let decisionSource: String
-    public let revision: Int64
-    public let createdAt: String
-    public let updatedAt: String
-
+/// `CullingDecisionRow` 的 DB 行解码（类型定义见 GatherProtocol/Protocol/ReadProjections.swift）。
+extension CullingDecisionRow {
     public init(row: DBRow) {
-        id = row[0].intValue ?? 0
-        sessionId = row[1].textValue ?? ""
-        photoId = row[2].textValue ?? ""
-        groupId = row[3].textValue ?? ""
-        decision = row[4].textValue ?? ""
-        rating = row[5].intValue ?? 0
-        colorLabel = row[6].textValue ?? ""
-        decisionSource = row[7].textValue ?? ""
-        revision = row[8].intValue ?? 0
-        createdAt = row[9].textValue ?? ""
-        updatedAt = row[10].textValue ?? ""
+        self.init(
+            id: row[0].intValue ?? 0,
+            sessionId: row[1].textValue ?? "",
+            photoId: row[2].textValue ?? "",
+            groupId: row[3].textValue ?? "",
+            decision: row[4].textValue ?? "",
+            rating: row[5].intValue ?? 0,
+            colorLabel: row[6].textValue ?? "",
+            decisionSource: row[7].textValue ?? "",
+            revision: row[8].intValue ?? 0,
+            createdAt: row[9].textValue ?? "",
+            updatedAt: row[10].textValue ?? "",
+        )
     }
 }
 

@@ -17,7 +17,6 @@ struct MetadataContractTests {
         for (field, raw) in fields {
             #expect(field.rawValue == raw)
         }
-
         let sources: [(MetadataMutationSource, String)] = [
             (.culling, "culling"), (.faceKeyword, "face-keyword"), (.similarity, "similarity"),
             (.template, "template"), (.manual, "manual"),
@@ -25,14 +24,12 @@ struct MetadataContractTests {
         for (source, raw) in sources {
             #expect(source.rawValue == raw)
         }
-
         let choices: [(MetadataConflictChoice, String)] = [
             (.keepLocal, "keep_local"), (.useRemote, "use_remote"),
         ]
         for (choice, raw) in choices {
             #expect(choice.rawValue == raw)
         }
-
         let actions: [(MetadataOrphanAction, String)] = [
             (.keep, "keep"), (.restore, "restore"), (.retry, "retry"),
         ]
@@ -41,63 +38,33 @@ struct MetadataContractTests {
         }
     }
 
-    // MARK: - MetadataMutationResult
+    // MARK: - DTO 往返 + key 冻结（P2：逐样本合并）
 
-    @Test func metadataMutationResultRoundTrip() throws {
-        let original = MetadataMutationResult(
+    @Test("Metadata 契约 DTO：JSON 往返稳定 + camelCase key 冻结")
+    func metadataDTOsRoundTripAndKeys() throws {
+        try assertRoundTrip(MetadataMutationResult(
             photoId: "p1", xmpPath: "/u/a.xmp",
-            dirtyFields: [.rating, .keywords], revision: 3, status: "pending"
-        )
-        let data = try JSONEncoder().encode(original)
-        #expect(try JSONDecoder().decode(MetadataMutationResult.self, from: data) == original)
-        #expect(Set(try jsonKeys(of: data)) == ["photoId", "xmpPath", "dirtyFields", "revision", "status"])
-    }
-
-    // MARK: - MetadataConflict
-
-    @Test func metadataConflictFieldRoundTripsJSONValues() throws {
-        let original = MetadataConflictField(
-            field: .rating,
-            baseline: .number(3),
-            local: .number(4),
-            remote: .object(["source": .string("capture-one")])
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(MetadataConflictField.self, from: data)
-        #expect(decoded == original)
-        #expect(Set(try jsonKeys(of: data)) == ["field", "baseline", "local", "remote"])
-    }
-
-    @Test func metadataConflictRoundTrip() throws {
-        let original = MetadataConflict(
-            xmpPath: "/u/a.xmp",
-            photoPath: "/u/a.jpg",
-            revision: 2,
-            fields: [
-                MetadataConflictField(field: .label, baseline: .string("红"), local: .string("蓝"), remote: .string("绿")),
-            ]
-        )
-        let data = try JSONEncoder().encode(original)
-        #expect(try JSONDecoder().decode(MetadataConflict.self, from: data) == original)
-        #expect(Set(try jsonKeys(of: data)) == ["xmpPath", "photoPath", "revision", "fields"])
-    }
-
-    // MARK: - MetadataOrphan
-
-    @Test func metadataOrphanRoundTrip() throws {
-        let original = MetadataOrphan(
+            dirtyFields: [.rating, .keywords], revision: 3, status: "pending"),
+            keys: ["photoId", "xmpPath", "dirtyFields", "revision", "status"])
+        try assertRoundTrip(MetadataConflictField(
+            field: .rating, baseline: .number(3), local: .number(4),
+            remote: .object(["source": .string("capture-one")])),
+            keys: ["field", "baseline", "local", "remote"])
+        try assertRoundTrip(MetadataConflict(
+            xmpPath: "/u/a.xmp", photoPath: "/u/a.jpg", revision: 2,
+            fields: [MetadataConflictField(field: .label, baseline: .string("红"),
+                                           local: .string("蓝"), remote: .string("绿"))]),
+            keys: ["xmpPath", "photoPath", "revision", "fields"])
+        try assertRoundTrip(MetadataOrphan(
             xmpPath: "/u/o.xmp", photoPath: "/u/o.jpg", status: "orphan",
-            revision: 1, errorMessage: "E", updatedAt: "t"
-        )
-        let data = try JSONEncoder().encode(original)
-        #expect(try JSONDecoder().decode(MetadataOrphan.self, from: data) == original)
-        #expect(Set(try jsonKeys(of: data)) == ["xmpPath", "photoPath", "status", "revision", "errorMessage", "updatedAt"])
+            revision: 1, errorMessage: "E", updatedAt: "t"),
+            keys: ["xmpPath", "photoPath", "status", "revision", "errorMessage", "updatedAt"])
     }
 
-    // MARK: - MetadataTags
+    // MARK: - MetadataTags（P2：全量 + Partial 形状合并）
 
     @Test func metadataTagsRoundTripAndKeys() throws {
-        let original = MetadataTags(
+        try assertRoundTrip(MetadataTags(
             filename: "a.jpg", fileSize: 1024, format: "image/jpeg", width: 6000, height: 4000,
             mime: "image/jpeg", make: "SONY", model: "ILCE-7M4", serialNumber: "S123",
             lensModel: "FE 50mm", focalLength: 50, maxAperture: 1.8, aperture: 2.8,
@@ -106,45 +73,18 @@ struct MetadataContractTests {
             dateTaken: "2025-01-01T10:00:00Z", dateDigitized: "2025-01-01T10:00:00Z",
             title: "T", description: "D", author: "A", copyright: "C",
             keywords: ["街头"], rating: 4, label: "红",
-            latitude: 31.23, longitude: 121.47, altitude: 12.5
-        )
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(MetadataTags.self, from: data)
-        #expect(decoded == original)
-
-        let expected = [
-            "filename", "fileSize", "format", "width", "height", "mime", "make", "model",
-            "serialNumber", "lensModel", "focalLength", "maxAperture", "aperture",
-            "shutterSpeed", "iso", "exposureComp", "meteringMode", "whiteBalance",
-            "dateTaken", "dateDigitized", "title", "description", "author", "copyright",
-            "keywords", "rating", "label", "latitude", "longitude", "altitude",
-        ]
-        #expect(Set(try jsonKeys(of: data)) == Set(expected), "MetadataTags JSON key 必须与 TS 字段名一致")
-        #expect(!Set(try jsonKeys(of: data)).contains("serial_number"))
-        #expect(!Set(try jsonKeys(of: data)).contains("shutter_speed"))
-    }
-
-    @Test func metadataTagsPartialEncodesOnlySetKeys() throws {
-        let partial = MetadataTags(keywords: ["街头"], rating: 5)
-        let keys = try jsonKeys(of: JSONEncoder().encode(partial))
-        #expect(Set(keys) == ["rating", "keywords"], "Partial<MetadataTags> 未设置字段必须省略")
-
-        let empty = MetadataTags()
-        #expect(try jsonKeys(of: JSONEncoder().encode(empty)).isEmpty)
-    }
-
-    private func jsonKeys(of data: Data) throws -> [String] {
-        Array(try jsonObject(of: data).keys)
-    }
-
-    private func jsonObject(of data: Data) throws -> [String: Any] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ContractTestError.invalidJSON
-        }
-        return object
-    }
-
-    private enum ContractTestError: Error {
-        case invalidJSON
+            latitude: 31.23, longitude: 121.47, altitude: 12.5),
+            keys: [
+                "filename", "fileSize", "format", "width", "height", "mime", "make", "model",
+                "serialNumber", "lensModel", "focalLength", "maxAperture", "aperture",
+                "shutterSpeed", "iso", "exposureComp", "meteringMode", "whiteBalance",
+                "dateTaken", "dateDigitized", "title", "description", "author", "copyright",
+                "keywords", "rating", "label", "latitude", "longitude", "altitude",
+            ],
+            forbiddenKeys: ["serial_number", "shutter_speed"])
+        // Partial<MetadataTags> 未设置字段必须省略；全空编码为 {}。
+        try assertJSONKeys(MetadataTags(keywords: ["街头"], rating: 5), keys: ["rating", "keywords"],
+                           name: "MetadataTags(partial)")
+        try assertJSONKeys(MetadataTags(), keys: [], name: "MetadataTags(空)")
     }
 }

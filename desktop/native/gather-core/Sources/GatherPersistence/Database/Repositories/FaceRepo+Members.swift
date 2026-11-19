@@ -5,28 +5,19 @@
 import Foundation
 import GatherProtocol
 
-/// face_cluster_members LEFT JOIN photos 的行（fm.id, fm.cluster_id, fm.session_id,
-/// fm.photo_id, p.filepath AS photo_path, fm.bbox, fm.confidence, fm.observation_id）。
-/// 照片行缺失时 photoPath 为空字符串（成员仍在计数与清单中，不再被 JOIN 丢掉）。
-public struct FaceClusterMemberRow {
-    public let id: Int64
-    public let clusterId: Int64
-    public let sessionId: String
-    public let photoId: String
-    public let photoPath: String
-    public let bbox: String
-    public let confidence: Double
-    public let observationId: Int64?
-
+/// `FaceClusterMemberRow` 的 DB 行解码（类型定义见 GatherProtocol/Protocol/ReadProjections.swift）。
+extension FaceClusterMemberRow {
     public init(row: DBRow) {
-        id = row[0].intValue ?? 0
-        clusterId = row[1].intValue ?? 0
-        sessionId = row[2].textValue ?? ""
-        photoId = row[3].textValue ?? ""
-        photoPath = row[4].textValue ?? ""
-        bbox = row[5].textValue ?? ""
-        confidence = row[6].doubleValue ?? 0
-        observationId = row[7].intValue
+        self.init(
+            id: row[0].intValue ?? 0,
+            clusterId: row[1].intValue ?? 0,
+            sessionId: row[2].textValue ?? "",
+            photoId: row[3].textValue ?? "",
+            photoPath: row[4].textValue ?? "",
+            bbox: row[5].textValue ?? "",
+            confidence: row[6].doubleValue ?? 0,
+            observationId: row[7].intValue,
+        )
     }
 }
 
