@@ -63,7 +63,7 @@ selftest_expect() {
   local st=0
   SELFTEST_OUT=$(bash "$script" "$@" 2>&1) || st=$?
   if [ "$st" -ne "$want" ]; then
-    echo "$SELFTEST_PROG: self-test FAIL — $desc（期望 exit ${want}，实得 ${st}）" >&2
+    echo "$SELFTEST_PROG: self-test FAIL — ${desc}（期望 exit ${want}，实得 ${st}）" >&2
     printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
     exit 1
   fi
@@ -348,7 +348,7 @@ if [ "$WRITE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 ]; then
     cur=$(metric "$key")
     base=$(grep -E "\"$key\"[[:space:]]*:[[:space:]]*[0-9]+" "$BASELINE" 2>/dev/null | grep -oE '[0-9]+' | head -n 1 || true)
     if [ -z "$base" ]; then
-      echo "  旧基线缺 key：$key（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+      echo "  旧基线缺 key：${key}（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
       exit 1
     fi
     if [ "$cur" -gt "$base" ]; then

@@ -117,7 +117,7 @@ cleanup() {
     if [ "$CLEAN" = 1 ]; then
         rm -rf "$WORK"
     else
-        echo "剖析原始文件保留在: $WORK（清理：rm -rf $WORK）" >&2
+        echo "剖析原始文件保留在: ${WORK}（清理：rm -rf ${WORK}）" >&2
     fi
 }
 trap cleanup EXIT
@@ -145,7 +145,7 @@ REPORT_CMD=(python3 "$PROFILE_PY" --events "$EVENTS" --time-stats "$TIME_FILE"
 
 if [ "$DRY_RUN" = 1 ]; then
     echo "== profile-tests.sh --dry-run（不执行；Linux 可验证参数装配）=="
-    echo "目标: $TARGET（$PKG）"
+    echo "目标: ${TARGET}（${PKG}）"
     if [ "$PARALLEL" = 1 ]; then
         echo "并发: --parallel（单测试耗时含调度竞争）"
     else
@@ -155,7 +155,7 @@ if [ "$DRY_RUN" = 1 ]; then
         echo "过滤: $FILTER"
     fi
     echo "事件流: $EVENTS"
-    echo "计时:   $TIME_FILE（/usr/bin/time -l -o）"
+    echo "计时:   ${TIME_FILE}（/usr/bin/time -l -o）"
     echo "日志:   $LOG"
     echo "将执行:"
     printf '  '
@@ -196,7 +196,7 @@ fi
 echo "   事件流: $EVENTS"
 echo "   计时:   $TIME_FILE"
 echo "   日志:   $LOG"
-echo "   提示:   real/RSS 含构建开销；预热构建后（先跑一次 scripts/test.sh $TARGET）更接近纯测试成本。"
+echo "   提示:   real/RSS 含构建开销；预热构建后（先跑一次 scripts/test.sh ${TARGET}）更接近纯测试成本。"
 
 set +e
 "${CMD[@]}" >"$LOG" 2>&1
@@ -204,10 +204,10 @@ RC=$?
 set -e
 if [ "$RC" -ne 0 ]; then
     CLEAN=0
-    echo "profile-tests.sh: 测试命令失败（exit $RC），以下打印原始日志：" >&2
+    echo "profile-tests.sh: 测试命令失败（exit ${RC}），以下打印原始日志：" >&2
     echo "  日志: $LOG" >&2
     if [ -s "$EVENTS" ]; then
-        echo "  事件流已部分生成: $EVENTS（可单独解析：python3 $PROFILE_PY --events $EVENTS）" >&2
+        echo "  事件流已部分生成: ${EVENTS}（可单独解析：python3 $PROFILE_PY --events ${EVENTS}）" >&2
     fi
     echo "=== 失败摘要 ===" >&2
     grep -nE '✘|recorded an issue|^error:' "$LOG" | head -40 >&2 || true
@@ -230,7 +230,7 @@ REPORT_RC=$?
 set -e
 if [ "$REPORT_RC" -ne 0 ]; then
     CLEAN=0
-    echo "profile-tests.sh: 剖析报告生成失败（exit $REPORT_RC）；事件流/计时/日志保留在 $WORK" >&2
+    echo "profile-tests.sh: 剖析报告生成失败（exit ${REPORT_RC}）；事件流/计时/日志保留在 $WORK" >&2
     exit 1
 fi
 

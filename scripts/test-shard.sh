@@ -460,7 +460,7 @@ done <<< "$UNITS"
 
 N=${#UNIT_NAME[@]}
 [ "$N" -gt 0 ] || die "测试单元数为 0（解析器应已报错）"
-[ "$N" -ge "$SHARDS" ] || die "测试单元数 $N 少于 shards $SHARDS：无法保证每个分片非空（请减小 shards 或补测试）"
+[ "$N" -ge "$SHARDS" ] || die "测试单元数 $N 少于 shards ${SHARDS}：无法保证每个分片非空（请减小 shards 或补测试）"
 
 TYPE_COUNT=0
 GLOBAL_COUNT=0
@@ -506,14 +506,14 @@ done
 
 if [ "$DRY_RUN" = 1 ]; then
     echo "== test-shard.sh --dry-run（不执行；Linux 可验证分片）=="
-    echo "目标: $TARGET（$PKG）"
+    echo "目标: ${TARGET}（${PKG}）"
     echo "测试根: $TESTS_ROOT"
     echo "单元: $N 个（顶层套件类型 $TYPE_COUNT 个 / 自由 @Test 函数 $GLOBAL_COUNT 个）；@Test 声明 $TOTAL_TESTS 个"
     echo "分片: $SHARDS 片（按 @Test 计数从多到少轮转；每片一个 --filter 正则）"
     shard=0
     while [ "$shard" -lt "$SHARDS" ]; do
         echo ""
-        echo "shard $((shard + 1))/$SHARDS：覆盖单元 ${SHARD_UNITS[$shard]} 个 / @Test ${SHARD_TESTS[$shard]} 个"
+        echo "shard $((shard + 1))/${SHARDS}：覆盖单元 ${SHARD_UNITS[$shard]} 个 / @Test ${SHARD_TESTS[$shard]} 个"
         printf "  swift test --package-path %s --filter '%s'\n" \
             "$PKG" "${SHARD_ALT[$shard]}"
         shard=$((shard + 1))
@@ -529,7 +529,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/gather-shard-XXXXXX")"
 KEEP=0
 cleanup() {
     if [ "$KEEP" = 1 ] || [ "${SHARD_KEEP:-0}" = "1" ]; then
-        echo "分片日志保留: $WORK（清理：rm -rf $WORK）" >&2
+        echo "分片日志保留: ${WORK}（清理：rm -rf ${WORK}）" >&2
     else
         rm -rf "$WORK"
     fi
@@ -548,7 +548,7 @@ shard=0
 while [ "$shard" -lt "$SHARDS" ]; do
     LOG="$WORK/shard-$((shard + 1)).log"
     echo ""
-    echo "== shard $((shard + 1))/$SHARDS（单元 ${SHARD_UNITS[$shard]} 个 / @Test ${SHARD_TESTS[$shard]} 个）"
+    echo "== shard $((shard + 1))/${SHARDS}（单元 ${SHARD_UNITS[$shard]} 个 / @Test ${SHARD_TESTS[$shard]} 个）"
     STARTED_AT=$(date +%s)
     if swift test --package-path "$PKG" \
         --explicit-target-dependency-import-check error \
@@ -577,7 +577,7 @@ while [ "$shard" -lt "$SHARDS" ]; do
     fi
     SHARD_DUR[$shard]=$DUR
     SHARD_RAN[$shard]="${RAN:-?}"
-    echo "   ${SHARD_STATUS[$shard]}，耗时 ${DUR}s，@Test ${SHARD_RAN[$shard]}（日志 $LOG）"
+    echo "   ${SHARD_STATUS[$shard]}，耗时 ${DUR}s，@Test ${SHARD_RAN[$shard]}（日志 ${LOG}）"
     if [ "${SHARD_STATUS[$shard]}" != "OK" ]; then
         grep -nE '✘|recorded an issue|^error:' "$LOG" | head -20 >&2 || true
         echo "   日志尾部（最多 60 行）：" >&2
@@ -597,7 +597,7 @@ while [ "$shard" -lt "$SHARDS" ]; do
 done
 if [ "$FAILED" -ne 0 ]; then
     KEEP=1
-    echo "test-shard.sh: 有分片失败（日志保留在 $WORK）" >&2
+    echo "test-shard.sh: 有分片失败（日志保留在 ${WORK}）" >&2
     exit 1
 fi
 echo "全部分片通过（$SHARDS 片，合计 ${TOTAL_SECONDS}s）"

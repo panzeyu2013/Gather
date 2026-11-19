@@ -59,7 +59,7 @@ selftest_expect() {
   local st=0
   SELFTEST_OUT=$(bash "$script" 2>&1) || st=$?
   if [ "$st" -ne "$want" ]; then
-    echo "$SELFTEST_PROG: self-test FAIL — $desc（期望 exit ${want}，实得 ${st}）" >&2
+    echo "$SELFTEST_PROG: self-test FAIL — ${desc}（期望 exit ${want}，实得 ${st}）" >&2
     printf '%s\n' "$SELFTEST_OUT" | sed 's/^/    /' >&2
     exit 1
   fi

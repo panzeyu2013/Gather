@@ -349,7 +349,7 @@ if [ "$WRITE_BASELINE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 
       cur=$(printf '%s' "$kv" | cut -d: -f2-)
       base=$(baseline_value "$SURFACE_GATE" "$key")
       if [ -z "$base" ]; then
-        echo "  旧基线缺 key：$key（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+        echo "  旧基线缺 key：${key}（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
         exit 1
       fi
       if [ "$cur" -gt "$base" ]; then
@@ -368,7 +368,7 @@ if [ "$WRITE_BASELINE" -eq 1 ] && [ -f "$BASELINE" ] && [ "$ALLOW_GROWTH" -eq 0 
     while read -r k v; do
       base=$(baseline_value "$MODULES_GATE" "$k")
       if [ -z "$base" ]; then
-        echo "  模块基线缺 key：$k（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
+        echo "  模块基线缺 key：${k}（拒绝静默补写；先补 key 或加 --allow-growth）" >&2
         exit 1
       fi
       if [ "$v" -gt "$base" ]; then echo "  涨：$k $base -> $v" >&2; grew=1; fi
@@ -382,7 +382,7 @@ fi
 
 if [ "$WRITE_BASELINE" -eq 1 ]; then
   write_baseline
-  echo "check-protocol-surface: baseline 已写入 $BASELINE（$SURFACE_GATE + $MODULES_GATE）"
+  echo "check-protocol-surface: baseline 已写入 ${BASELINE}（$SURFACE_GATE + ${MODULES_GATE}）"
   load_baseline_kv  # 重读刚写入的基线，后续比较按新值（--write-baseline 语义与旧版一致）
 fi
 
@@ -394,7 +394,7 @@ echo "  zero-reference 类型      $zero_reference_types"
 echo "  Router 信封类型          $router_envelope_types"
 
 if [ ! -f "$BASELINE" ] || baseline_section_missing "$SURFACE_GATE"; then
-  echo "check-protocol-surface: FAIL — 缺少基线 $BASELINE（先运行 --write-baseline）" >&2
+  echo "check-protocol-surface: FAIL — 缺少基线 ${BASELINE}（先运行 --write-baseline）" >&2
   exit 2
 fi
 
@@ -426,7 +426,7 @@ compare_metric "$SURFACE_GATE" router_envelope_types "$router_envelope_types"
 # 模块指标与协议面同住 surface-baseline.json 的 gates.protocol-surface-modules（schema 2），
 # key 名保持旧口径（public_types_<模块小写> / public_declarations_<模块小写>）。
 if baseline_section_missing "$MODULES_GATE"; then
-  echo "check-protocol-surface: FAIL — 缺少模块基线 $BASELINE（先运行 --write-baseline）" >&2
+  echo "check-protocol-surface: FAIL — 缺少模块基线 ${BASELINE}（先运行 --write-baseline）" >&2
   exit 2
 fi
 echo "  模块 public 面（类型 / 声明）："

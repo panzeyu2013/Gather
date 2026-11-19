@@ -17,7 +17,7 @@ LOG="$OUT/logs/v1-fixtures-roundtrip.log"
 mkdir -p "$(dirname "$LOG")" || exit 2
 
 if [[ ! -d "$FIXTURES" ]]; then
-  echo "fixtures dir not found: $FIXTURES（先跑 fixtures.py generate --matrix）" >&2
+  echo "fixtures dir not found: ${FIXTURES}（先跑 fixtures.py generate --matrix）" >&2
   exit 2
 fi
 if [[ -e "$TARGET" ]]; then

@@ -171,7 +171,7 @@ fi
 
 if [ -n "$OUT" ]; then
   printf '%s\n' "$BODY" > "$OUT"
-  echo "sample-similarity-annotation: $KEPT_GROUPS 组 -> $OUT（扫描 $FILE_N 张，mtime 兜底 $fallback_n 张）" >&2
+  echo "sample-similarity-annotation: $KEPT_GROUPS 组 -> ${OUT}（扫描 $FILE_N 张，mtime 兜底 $fallback_n 张）" >&2
 else
   printf '%s\n' "$BODY"
   echo "sample-similarity-annotation: $KEPT_GROUPS 组（扫描 $FILE_N 张，mtime 兜底 $fallback_n 张）" >&2

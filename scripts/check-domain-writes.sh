@@ -37,7 +37,7 @@ done
 UI_N=$(find "$UI_DIR" -type f -name '*.swift' | wc -l | tr -d ' ')
 PROTO_N=$(find "$PROTO_DIR" -type f -name '*.swift' | wc -l | tr -d ' ')
 if [ "$UI_N" -lt 200 ] || [ "$PROTO_N" -lt 10 ]; then
-  echo "check-domain-writes: FAIL 扫描量异常（UI=$UI_N proto=$PROTO_N），疑似根路径错误" >&2
+  echo "check-domain-writes: FAIL 扫描量异常（UI=$UI_N proto=${PROTO_N}），疑似根路径错误" >&2
   exit 1
 fi
 

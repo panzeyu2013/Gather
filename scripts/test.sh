@@ -173,7 +173,7 @@ run_swift_test() {
         TEST_LOG_STARTED=1
     fi
     if ! perl -e 'alarm shift; exec @ARGV' "$timeout" "$@" >>"$log" 2>&1; then
-        echo "::error::tests failed or timed out（看门狗 ${timeout}s，日志：$log）"
+        echo "::error::tests failed or timed out（看门狗 ${timeout}s，日志：${log}）"
         echo "=== failures ==="
         grep -nE '✘|recorded an issue|^error:' "$log" | head -40 || true
         echo "=== tail ==="
@@ -238,5 +238,5 @@ case "$TARGET" in
         run_core ${SWIFT_ARGS[@]+"${SWIFT_ARGS[@]}"}
         run_app ${SWIFT_ARGS[@]+"${SWIFT_ARGS[@]}"}
         ;;
-    *) echo "test.sh: 未知目标 $TARGET（core|app|all）" >&2; exit 2 ;;
+    *) echo "test.sh: 未知目标 ${TARGET}（core|app|all）" >&2; exit 2 ;;
 esac

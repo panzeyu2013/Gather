@@ -80,7 +80,7 @@ else
     LOG="$(mktemp "${TMPDIR:-/tmp}/gather-${TARGET}-tests.XXXXXX")"
 fi
 
-echo "== gather-${TARGET} tests（日志：$LOG；看门狗：${TEST_TIMEOUT}s）"
+echo "== gather-${TARGET} tests（日志：${LOG}；看门狗：${TEST_TIMEOUT}s）"
 if ! "${CMD[@]}" >"$LOG" 2>&1; then
     echo "::error::gather-${TARGET} tests failed or timed out"
     echo "=== failures ==="

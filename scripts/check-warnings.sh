@@ -10,7 +10,7 @@ cd "$ROOT"
 TARGET="${1:-all}"
 case "$TARGET" in
     core|app|all) ;;
-    *) echo "check-warnings: 未知目标 $TARGET（core|app|all）" >&2; exit 2 ;;
+    *) echo "check-warnings: 未知目标 ${TARGET}（core|app|all）" >&2; exit 2 ;;
 esac
 
 if [ "$TARGET" = "core" ] || [ "$TARGET" = "all" ]; then
