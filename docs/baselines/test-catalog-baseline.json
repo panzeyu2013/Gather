@@ -2,9 +2,9 @@
   "schema": 2,
   "note": "check-test-catalog ratchet：声明/断言/skip 站点基线（只降不升；--write-baseline 收紧，上涨需 --allow-growth 并记账）。",
   "metrics": {
-    "test_decl": 3209,
-    "suite_decl": 420,
-    "assert": 14809,
+    "test_decl": 3219,
+    "suite_decl": 421,
+    "assert": 14870,
     "skip_decl": 17
   }
 }

@@ -61,19 +61,31 @@ public struct HashGraphTable: Sendable {
         self.words = words
     }
 
-    /// 两个节点下标的汉明距离。前提：0 <= a, b < count。
+    /// 两个节点下标的汉明距离。前提：0 <= a, b < count（width == 8 时 words.count == count）。
+    /// 朴素写法：width == 8 只做 xor + popcount，逐字节冷路径见下；两条路径都保留
+    /// 数组下标自带的边界检查（越界即 trap，不换成 withUnsafeBufferPointer）。
+    ///
+    /// 热路径不要在每次比较时重判 width：调用方在**循环外**分派一次后走 `distance8`
+    /// （HashNeighborhoodGraph / MultiThresholdHashGraph 的建图循环）。
     @inline(__always)
     public func distance(_ a: Int, _ b: Int) -> Int {
-        if width == 8 {
-            return (words[a] ^ words[b]).nonzeroBitCount
-        }
+        if width == 8 { return (words[a] ^ words[b]).nonzeroBitCount }
+        return byteWiseDistance(a, b)
+    }
+
+    /// width == 8 的定宽快路径：输出与 `distance` 逐位相同（同一 `words[a] ^ words[b]`），
+    /// 同样带边界检查（`words[a]` 越界仍 trap）。前提 0 <= a, b < count 且 width == 8；
+    /// width 由调用方在循环外判定一次，故本函数体只剩 xor + popcount。
+    @inline(__always)
+    internal func distance8(_ a: Int, _ b: Int) -> Int {
+        (words[a] ^ words[b]).nonzeroBitCount
+    }
+
+    private func byteWiseDistance(_ a: Int, _ b: Int) -> Int {
+        let offsetA = a * width, offsetB = b * width
         var distance = 0
-        var offsetA = a * width
-        var offsetB = b * width
-        for _ in 0..<width {
-            distance += Int((bytes[offsetA] ^ bytes[offsetB]).nonzeroBitCount)
-            offsetA += 1
-            offsetB += 1
+        for byte in 0..<width {
+            distance += Int((bytes[offsetA + byte] ^ bytes[offsetB + byte]).nonzeroBitCount)
         }
         return distance
     }

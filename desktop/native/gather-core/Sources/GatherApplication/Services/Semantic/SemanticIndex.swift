@@ -270,15 +270,17 @@ public final class SemanticIndex {
     public static let defaultMinSimilarity = 0.92
     /// 场景分组单次参与的最大行数（贪心 O(n²)；20k 全扫会卡主线程）。
     public static let maxClusterRows = 2_000
-    /// 检索单次最多比较的行数（B7）。
-    ///
-    /// 原检索路径用 `loadRows(sessionId:limit: 0)`（全会话无上限）：20k 张 × 2048 维
-    /// Float16 会在一次检索里同时展开成 ~160MB+ 的 [Float]，而且每次检索重算。现在
-    /// 改成分块流式比较（见 scanChunkRows）+ 只保留 top-K 候选，内存与"命中数"成正比
-    /// 而不是与"会话张数"成正比；超过上限的会话按 photoId 顺序只比较前 maxScanRows 行。
-    public static let maxScanRows = 20_000
     /// 单批解码的行数上限（2048 维 × 512 ≈ 4MB 向量 + 2MB BLOB）。
+    ///
+    /// 检索**没有总行数上限**（P1-5）：旧实现有 `maxScanRows = 20_000`，超过就按
+    /// photoId 顺序静默截断比较范围——100k 库返回的是"前 2 万行里最好的"，看起来
+    /// 正常但结果错。现在按本常量分块流式比较（内存峰值 = 一批 + top-K），比较范围
+    /// 是整个会话；代价是 >20k 的会话每次检索线性变长，用 outcome.scanned 观测。
     public static let scanChunkRows = 512
+    /// 会话里的语义行全是旧模型版本时给 UI 的显式原因（不假装"没有相似照片"）。
+    static let staleModelVersionReason =
+        "semantic_unavailable: 语义索引为旧模型版本（当前 "
+            + ImageSemanticsExtractor.modelVersion + "），需重新分析照片以重建"
 
     private let store: any PhotoSemanticsStore
 
@@ -288,19 +290,45 @@ public final class SemanticIndex {
 
     // MARK: 读
 
-    /// 会话内全部向量（可限制行数；limit <= 0 = 不限）。
+    /// 会话内**当前模型版本**的全部向量（可限制行数；limit <= 0 = 不限；旧版本行计入 skipped）。
+    ///
+    /// **顺序：先 `LIMIT` 后版本过滤**（第二轮评审 P2）：`loadRows(sessionId:limit:)` 在 SQL 里
+    /// 按 `computed_at, photo_id` 取前 `limit` 行，本方法随后才剔除旧 `model_version` 的行。
+    /// 因此会话里混有旧版本行时它们会占掉配额，返回的当前版本向量可能少于 `limit`
+    /// （极端时为空）。把版本过滤下推成 `WHERE model_version = ?` 要改协议签名，列为后续项。
     public func vectors(sessionId: String, limit: Int = 0) throws -> (vectors: [SemanticVector], skipped: Int) {
         try decode(store.loadRows(sessionId: sessionId, limit: limit))
     }
 
     /// 指定照片的向量（图搜图的查询侧）。
+    ///
+    /// **只返回当前模型版本**的向量（第二轮评审 P1）：旧向量与候选集不在同一向量空间，
+    /// 拿来算余弦就是跨空间比较。旧版本返回 nil——与「没有向量」共用同一条 unavailable
+    /// 语义（不抛错），原因由 `queryVector(photoId:)` 区分。
     public func vector(photoId: String) throws -> SemanticVector? {
-        guard let row = try store.load(photoId: photoId) else { return nil }
+        try queryVector(photoId: photoId).vector
+    }
+
+    /// `vector(photoId:)` 的带原因版本：额外说明 nil 是否因为**模型版本过期**。
+    ///
+    /// - Returns: `vector` = 当前版本的可解码向量；`staleVersion` = 行存在但 `model_version` 不符。
+    private func queryVector(
+        photoId: String
+    ) throws -> (vector: SemanticVector?, staleVersion: Bool) {
+        guard let row = try store.load(photoId: photoId) else { return (nil, false) }
+        // 为什么返回 nil 而不是抛错：保持现有 unavailable 语义——检索是「能算就算、
+        // 不能算给原因」的可选能力，调用方不该为一张旧照片中断搜索/回填流程。
+        guard row.modelVersion == ImageSemanticsExtractor.modelVersion else {
+            return (nil, true)
+        }
         let labels = Self.decodeLabels(row.labelsJson)
         let vector = SemanticFeatureCodec.decode(row.feature, dimension: row.featureDim)
-        guard !vector.isEmpty else { return nil }
-        return SemanticVector(
-            photoId: row.photoId, labels: labels, vector: vector, modelVersion: row.modelVersion)
+        guard !vector.isEmpty else { return (nil, false) }
+        return (
+            SemanticVector(
+                photoId: row.photoId, labels: labels, vector: vector,
+                modelVersion: row.modelVersion),
+            false)
     }
 
     // MARK: 图搜图
@@ -317,16 +345,19 @@ public final class SemanticIndex {
                 sessionId: sessionId, method: .featurePrint, hits: [], scanned: 0, skipped: 0,
                 unavailableReason: "limit must be positive")
         }
-        guard let query = try vector(photoId: photoId) else {
+        let loaded = try queryVector(photoId: photoId)
+        guard let query = loaded.vector else {
             return SemanticSearchOutcome(
                 sessionId: sessionId, method: .featurePrint, hits: [], scanned: 0, skipped: 0,
-                unavailableReason: "semantic_unavailable: 当前照片没有语义向量")
+                unavailableReason: loaded.staleVersion
+                    ? Self.staleModelVersionReason
+                    : "semantic_unavailable: 当前照片没有语义向量")
         }
-        // B7：分块扫描 + 有界 top-K（结果与"全量解码 → 排序 → prefix(limit)"一致）。
+        // B7：分块扫描（不截断比较范围）+ 有界 top-K
+        //（结果与"全量解码 → 排序 → prefix(limit)"一致）。
         var hits: [SemanticSearchHit] = []
         let scan = try scanVectors(
             sessionId: sessionId,
-            limit: Self.maxScanRows,
             preferredDimension: query.vector.count
         ) { row in
             guard row.photoId != photoId else { return }
@@ -342,7 +373,8 @@ public final class SemanticIndex {
         }
         return SemanticSearchOutcome(
             sessionId: sessionId, method: .featurePrint, hits: hits,
-            scanned: scan.scanned, skipped: scan.skipped)
+            scanned: scan.scanned, skipped: scan.skipped,
+            unavailableReason: scan.staleOnly ? Self.staleModelVersionReason : nil)
     }
 
     // MARK: 多选种子（图搜图·集合版）
@@ -371,9 +403,12 @@ public final class SemanticIndex {
         }
         var vectors: [[Float]] = []
         var seedSkipped = 0
+        var staleSeeds = 0
         for photoId in seeds {
-            guard let vector = try vector(photoId: photoId)?.vector, !vector.isEmpty else {
+            let loaded = try queryVector(photoId: photoId)
+            guard let vector = loaded.vector?.vector, !vector.isEmpty else {
                 seedSkipped += 1
+                if loaded.staleVersion { staleSeeds += 1 }
                 continue
             }
             // 只平均同维向量：系统升级后 2048 vs 1024 混排会让余弦恒 -1。
@@ -384,16 +419,18 @@ public final class SemanticIndex {
             vectors.append(vector)
         }
         guard let query = Self.averageVector(vectors) else {
+            // 全部种子都是旧版本时给显式原因：「没有语义向量」会掩盖真正的问题。
+            let reason = staleSeeds == seeds.count
+                ? Self.staleModelVersionReason
+                : "semantic_unavailable: 选中照片没有语义向量"
             return SemanticSearchOutcome(
                 sessionId: sessionId, method: .featurePrint, hits: [], scanned: 0,
-                skipped: seedSkipped,
-                unavailableReason: "semantic_unavailable: 选中照片没有语义向量")
+                skipped: seedSkipped, unavailableReason: reason)
         }
         let seedIds = Set(seeds)
         var hits: [SemanticSearchHit] = []
         let scan = try scanVectors(
             sessionId: sessionId,
-            limit: Self.maxScanRows,
             preferredDimension: query.count
         ) { row in
             guard !seedIds.contains(row.photoId) else { return }
@@ -409,7 +446,8 @@ public final class SemanticIndex {
         }
         return SemanticSearchOutcome(
             sessionId: sessionId, method: .featurePrint, hits: hits,
-            scanned: scan.scanned, skipped: scan.skipped + seedSkipped)
+            scanned: scan.scanned, skipped: scan.skipped + seedSkipped,
+            unavailableReason: scan.staleOnly ? Self.staleModelVersionReason : nil)
     }
 
     /// 等权平均向量：**先 L2 归一化再平均**（cosine 的尺度不变性只保证尺度不变，
@@ -464,12 +502,12 @@ public final class SemanticIndex {
                 sessionId: sessionId, method: .labels, hits: [], scanned: 0, skipped: 0,
                 unavailableReason: "INVALID_PARAM: labels must not be empty")
         }
-        // B7：分块扫描 + 有界 top-K（排序键与旧实现相同：命中标签数降序 + photoId）。
+        // B7：分块扫描（不截断比较范围）+ 有界 top-K
+        //（排序键与旧实现相同：命中标签数降序 + photoId）。
         let capacity = max(0, limit)
         var hits: [SemanticSearchHit] = []
         let scan = try scanVectors(
             sessionId: sessionId,
-            limit: Self.maxScanRows,
             preferredDimension: 0
         ) { row in
             let matched = row.labels.filter { label in
@@ -490,13 +528,18 @@ public final class SemanticIndex {
         }
         return SemanticSearchOutcome(
             sessionId: sessionId, method: .labels, hits: hits,
-            scanned: scan.scanned, skipped: scan.skipped)
+            scanned: scan.scanned, skipped: scan.skipped,
+            unavailableReason: scan.staleOnly ? Self.staleModelVersionReason : nil)
     }
 
     // MARK: 场景分组
 
     /// 会话内场景分组（标签 Jaccard ≥ threshold 或余弦 ≥ cosine）。
     /// 只返回 ≥ 2 张的组；组内按相似度并入 leader，最多 maxClusterRows 行参与。
+    ///
+    /// **顺序：先 `LIMIT` 后版本过滤**（同 `vectors(limit:)`）：`loadRows(sessionId:limit:)`
+    /// 先按 `computed_at, photo_id` 取前 `maxRows` 行，再由 `decode` 剔除旧版本行；
+    /// 旧行会占配额，实际参与分组的行数可能少于 `maxRows`。下推 SQL 是后续项。
     public func sceneGroups(
         sessionId: String,
         labelJaccard: Double = SemanticIndex.defaultLabelJaccard,
@@ -622,28 +665,38 @@ public final class SemanticIndex {
     /// 分块扫描会话向量（B7：不把全会话同时展开进内存）。
     ///
     /// - Parameters:
-    ///   - limit: 最多比较的行数（<= 0 = 不设上限，仅供内部调用点使用）。
     ///   - preferredDimension: > 0 时只接受该维度的向量（图搜图：与查询向量不同维的
     ///     行本来就会得到余弦 -1）；0 = 以第一个可解码行的维度为基准（旧 decode 的语义）。
     ///   - body: 逐条回调（按 photoId 升序，稳定顺序，便于复现）。
-    /// - Returns: scanned = 参与比较的行数；skipped = 维度不符/解码失败的行数。
+    /// - Returns: scanned = 参与比较的行数；skipped = 维度不符/解码失败的行数；
+    ///   staleOnly = 会话里有行、但**全部**不是当前模型版本（结果为空的原因，调用方显式上报）。
     private func scanVectors(
         sessionId: String,
-        limit: Int,
         preferredDimension: Int,
         body: (SemanticVector) -> Void
-    ) throws -> (scanned: Int, skipped: Int) {
+    ) throws -> (scanned: Int, skipped: Int, staleOnly: Bool) {
         // 先只取 id 集合（不读 BLOB），再按块读 BLOB：峰值内存 = 一个块。
-        let ids = try store.indexedPhotoIds(sessionId: sessionId).sorted()
-        let bounded = limit > 0 && ids.count > limit ? Array(ids.prefix(limit)) : ids
+        // P0-3：只比较**当前模型版本**的向量——同维不同模型（2048 维的两次升级）
+        // 混算出来的余弦没有意义，而 dimension 判断抓不到这种情况。
+        let ids = try store.indexedPhotoIds(
+            sessionId: sessionId, modelVersion: ImageSemanticsExtractor.modelVersion).sorted()
+        // P1-5：不再按行数截断——有界的是"每批内存"，不是"比较范围"。
+        // 全是旧版本行时给调用方一个显式原因，别让它变成"没有相似照片"。
+        // 第二轮 P2：只有当前版本集合为空时才做存在性判断，用 count（O(1) 行返回）
+        // 取代第二次 indexedPhotoIds——同一个会话不再连取两遍 id 集合。合并成一条 SQL
+        // 需要协议新增 (photo_id, model_version) 投影，属后续项。
+        var staleOnly = false
+        if ids.isEmpty {
+            staleOnly = try store.count(sessionId: sessionId) > 0
+        }
         let chunkSize = max(1, Self.scanChunkRows)
         var expectedDim = max(0, preferredDimension)
         var scanned = 0
         var skipped = 0
         var offset = 0
-        while offset < bounded.count {
-            let end = min(offset + chunkSize, bounded.count)
-            let chunk = Array(bounded[offset..<end])
+        while offset < ids.count {
+            let end = min(offset + chunkSize, ids.count)
+            let chunk = Array(ids[offset..<end])
             offset = end
             // loadRows(sessionId:photoIds:) 内部再按 800 分块做 IN 查询。
             for row in try store.loadRows(sessionId: sessionId, photoIds: chunk) {
@@ -660,7 +713,7 @@ public final class SemanticIndex {
                     modelVersion: row.modelVersion))
             }
         }
-        return (scanned, skipped)
+        return (scanned, skipped, staleOnly)
     }
 
     /// 有界 top-K：内存里只保留 capacity 条。
@@ -699,14 +752,14 @@ public final class SemanticIndex {
         return lhs.photoId < rhs.photoId
     }
 
-    private func decode(
-        _ rows: [PhotoSemanticsRow]
-    ) throws -> (vectors: [SemanticVector], skipped: Int) {
+    private func decode(_ rows: [PhotoSemanticsRow]) throws -> (vectors: [SemanticVector], skipped: Int) {
         var vectors: [SemanticVector] = []
         vectors.reserveCapacity(rows.count)
         var skipped = 0
         var expectedDim = 0
         for row in rows {
+            // P1：只解码当前模型版本——两种向量空间（同维不同模型）混算余弦没有意义。
+            guard row.modelVersion == ImageSemanticsExtractor.modelVersion else { skipped += 1; continue }
             let vector = SemanticFeatureCodec.decode(row.feature, dimension: row.featureDim)
             guard !vector.isEmpty else { skipped += 1; continue }
             // 同一会话内只比较同维向量：系统升级后 2048 vs 1024 混排会让余弦恒 -1。

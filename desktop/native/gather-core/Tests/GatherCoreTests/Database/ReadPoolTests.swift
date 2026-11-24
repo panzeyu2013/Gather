@@ -3,7 +3,8 @@
 //
 // 覆盖：① 长写事务期间 SELECT 不被写连接锁阻塞且看到已提交快照；
 // ② 事务线程内 SELECT 仍读己写；③ 内存库永不建池；
-// ④ close 关闭池后读稳定报错；⑤ 慢事务按阈值记 warn。
+// ④ close 关闭池后读稳定报错；⑤ 慢事务按阈值记 warn；
+// ⑥ isReadOnlyQuery 词法表（P1-2）与「长写事务期间 WITH/VALUES 不被阻塞」。
 import Foundation
 import Testing
 import GatherTestSupport
@@ -117,6 +118,99 @@ struct ReadPoolTests {
         conn.close()
         #expect(throws: DBError.self) {
             _ = try conn.prepare("SELECT COUNT(*) FROM t")
+        }
+    }
+
+    @Test("isReadOnlyQuery 词法判定：首关键字 / 写动词 / 注释与字符串不是记号 / 绑定参数")
+    func readOnlyQueryLexicalTable() {
+        let readOnly = [
+            "SELECT 1",
+            "WITH c AS (SELECT 1 AS n) SELECT n FROM c",
+            "VALUES (1), (2)",
+            "  select count(*) from t",
+            "-- DELETE FROM t\nSELECT 1",                    // 行注释里的写动词不是记号
+            "/* DELETE */ SELECT 1",                         // 块注释同理
+            "SELECT 1 -- DELETE FROM t",
+            "SELECT 'DELETE FROM t' AS snippet",             // 字符串字面量不是记号
+            "SELECT \"insert\" FROM t",                      // 引用标识符同理
+            "SELECT replace(name, 'a', 'b') FROM t",         // 标量函数 replace(
+            "SELECT replace /* c */ (name, 'a', 'b') FROM t", // 注释不改变 replace( 判定（P2）
+            "SELECT replace -- c\n(name, 'a', 'b') FROM t",
+            "SELECT replace(@keep, 'a', 'b') FROM t",         // 函数形态 + 绑定参数实参
+            "SELECT id FROM t WHERE id = ?1",                 // 绑定参数 ?1 / :name / @name / $name
+            "SELECT id FROM t WHERE id = :id",
+            "SELECT id FROM t WHERE v = @delete",
+            "SELECT id FROM t WHERE v = $insert",
+        ]
+        for sql in readOnly {
+            #expect(DBConnection.isReadOnlyQuery(sql), "应判只读：\(sql)")
+        }
+        let notReadOnly = [
+            "WITH c AS (SELECT 1) DELETE FROM t",            // CTE + 顶层写
+            "WITH c AS (SELECT 1 AS n) INSERT INTO t (v) SELECT n FROM c",
+            "INSERT INTO t VALUES (1)",
+            "UPDATE t SET v = 'x'",
+            "DELETE FROM t",
+            "REPLACE INTO t VALUES (1)",
+            "PRAGMA user_version",
+            "ATTACH DATABASE ':memory:' AS aux",
+            "EXPLAIN SELECT 1",
+            "SELECT 1; DROP TABLE t",
+            "SELECT replace FROM t",                         // 无 ( 的 replace 按动词处理（保守方向）
+        ]
+        for sql in notReadOnly {
+            #expect(!DBConnection.isReadOnlyQuery(sql), "应判非只读：\(sql)")
+        }
+    }
+
+    @Test("长写事务期间 WITH/VALUES 走只读池：不阻塞、读已提交快照（P1-2）")
+    func withQueryNotBlockedByLongWriteTransaction() async throws {
+        let path = try makeTempPath()
+        defer { cleanup(path) }
+        let conn = try DBConnection(path: path, readPoolSize: 2)
+        defer { conn.close() }
+        try conn.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);")
+        try conn.exec("INSERT INTO t (v) VALUES ('seed');")
+
+        let entered = LockedBox(Flag())
+        let releaseCommit = DispatchSemaphore(value: 0)
+        let hold = Task.detached {
+            try conn.transaction {
+                entered.lock.withLock { entered.entered = true }
+                _ = releaseCommit.wait(timeout: .now() + 5)
+                try conn.exec("INSERT INTO t (v) VALUES ('during');")
+            }
+        }
+        defer { releaseCommit.signal() }
+        #expect(
+            await waitUntilCondition(timeout: 1) { entered.lock.withLock { entered.entered } },
+            "写事务必须已开始")
+
+        let clock = ContinuousClock()
+        let started = clock.now
+        let withRow = try conn.prepare("WITH c AS (SELECT COUNT(*) AS n FROM t) SELECT n FROM c")
+            .get()
+        let valuesRow = try conn.prepare("VALUES (42)").get()
+        let elapsed = clock.now - started
+        #expect(withRow?[0].intValue == 1, "WITH 读到写事务前的已提交快照（走只读池）")
+        #expect(valuesRow?[0].intValue == 42)
+        // 走写连接会在 connectionLock 上排队到事务结束（最长 5s 兜底）；1s 是宽上限。
+        #expect(elapsed < .seconds(1), "WITH/VALUES 不应等待写事务（实测 \(elapsed)）")
+        releaseCommit.signal()
+        try await hold.value
+    }
+
+    @Test("WITH 语句确实走只读池：池化语句跨事务作用域执行必须 fail-closed")
+    func withQueryIsPooled() throws {
+        let path = try makeTempPath()
+        defer { cleanup(path) }
+        let conn = try DBConnection(path: path, readPoolSize: 1)
+        defer { conn.close() }
+        // 事务外 prepare → 池连接（只有池化语句带跨作用域守卫）。
+        let pooled = try conn.prepare("WITH c AS (SELECT 1 AS n) SELECT n FROM c")
+        #expect(try pooled.get()?[0].intValue == 1)
+        #expect(throws: DBError.self) {
+            try conn.transaction { _ = try pooled.get() }
         }
     }
 

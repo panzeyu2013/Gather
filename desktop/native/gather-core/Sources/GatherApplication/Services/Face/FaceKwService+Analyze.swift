@@ -1,5 +1,11 @@
 // WP5b：FaceKwService 拆分（纯移动，行为不变）——Analyze。
 // 源：HEAD 95f0075 的 Services/FaceKwService.swift；仅调整跨文件访问级。
+// P0-1（计划 01-perf-kernels.md §2.1）：analyze 的照片解码改为有界并发（默认
+// min(6, activeProcessorCount - 2)），推理仍是单引擎（actor 串行），照片级落库从
+// 每张一事务改为每批一事务。
+// P1（rev-swift 并发复审）：①批事务失败降级为逐张重试（只计真正失败的照片）；
+// ②解码并发不再借用 face_inference_parallel_workers；③取消即抛，不冲刷待提交批
+// （默认 provider 在 abort 后每图先抛 → 冲刷是 no-op；注入 provider 会落库，违背取消语义）。
 
 import Foundation
 import GatherAnalysis
@@ -245,110 +251,158 @@ extension FaceKwService {
 
             onProgress?(0, totalPhotos, "face.detect")
 
-            let decodeWindow = max(1, min(8, settings.int(.faceDecodeConcurrency)))
+            // 攒批窗口 = 每批照片数（= provider 批大小 = DB 事务粒度）。P0-1 不改它的
+            // 语义：provider 的调用序与批组成依赖它（例如 FaceIdentityArchitectureTests
+            // 把 face_decode_concurrency 设成 "2" 来钉住批内下标）。
+            let batchWindow = max(1, min(8, settings.int(.faceDecodeConcurrency)))
+            // 解码并发度见 resolveDecodeConcurrency（纯性能旋钮，自动值按机器推导，
+            // 不另建设置键以免动 SettingsKey/preferenceKeys/oracle 三处）。
+            // 注入 decodeProvider 时只能串行解码：DecodeProvider 是普通（非 @Sendable）
+            // 闭包，Swift 6 下把它跨隔离域传进子任务是硬错误；默认 ImageIO 路径走
+            // 静态方法、子任务只捕获 Sendable 值，因此可以安全并发。
+            let parallelWorkers = settings.int(.faceInferenceParallelWorkers)
+            let decodeConcurrency = Self.resolveDecodeConcurrency(
+                parallelWorkers: parallelWorkers,
+                processorCount: ProcessInfo.processInfo.activeProcessorCount)
+            let hasInjectedDecode = decodeProvider != nil
+            let photoPaths = snapshot.photos.map(\.filepath)
 
             // TS: applyInferenceResult（替换旧观察只在推理成功之后；失败批次
-            // 不得摧毁该照片先前有效的检测）。
-            func applyInferenceResult(index: Int, item: FaceInferenceItem) {
+            // 不得摧毁该照片先前有效的检测）。P0-1：逐张调用点不再落库——照片级写入
+            // 先攒进 `writes`，由 flushBatch 在**一个**批事务里按索引序提交（旧实现
+            // 每张照片一次 transactions.transaction，1 万张 = 1 万次提交）。
+            func applyInferenceResult(
+                index: Int,
+                item: FaceInferenceItem,
+                writes: inout [FaceObservationWrite]
+            ) {
                 let photo = snapshot.photos[index]
                 guard case .ok(let size, let mtimeMs)? = sourceStats[photo.id] else { return }
-                if item.error != nil {
+                if let error = item.error {
                     detectionFailures += 1
-                    GatherLogger.log("Face detection failed for \(photo.filepath) \(item.error!)", level: .warn)
+                    GatherLogger.log("Face detection failed for \(photo.filepath) \(error)", level: .warn)
                     return
                 }
-                do {
-                    let observations = item.observations.map { face in
-                        FaceObservationInput(
-                            photoId: photo.id,
-                            bboxX: face.bbox.count > 0 ? face.bbox[0] : 0,
-                            bboxY: face.bbox.count > 1 ? face.bbox[1] : 0,
-                            bboxW: face.bbox.count > 2 ? face.bbox[2] : 0,
-                            bboxH: face.bbox.count > 3 ? face.bbox[3] : 0,
-                            embedding: face.embedding.map { Float($0) },
-                            confidence: face.confidence,
+                let observations = item.observations.map { face in
+                    FaceObservationInput(
+                        photoId: photo.id,
+                        bboxX: face.bbox.count > 0 ? face.bbox[0] : 0,
+                        bboxY: face.bbox.count > 1 ? face.bbox[1] : 0,
+                        bboxW: face.bbox.count > 2 ? face.bbox[2] : 0,
+                        bboxH: face.bbox.count > 3 ? face.bbox[3] : 0,
+                        embedding: face.embedding.map { Float($0) },
+                        confidence: face.confidence,
+                        sourceFileSize: size,
+                        sourceFileMtimeMs: mtimeMs,
+                        analysisSignature: analysisSignature,
+                        quality: face.quality,
+                        faceSizePx: face.faceSizePx,
+                        rollDegrees: face.rollDegrees,
+                        modelId: face.modelId,
+                        modelVersion: face.modelVersion,
+                        embeddingDim: face.embedding.count
+                    )
+                }
+                // "检测到脸但一张都没编码成功"的照片：**保留**旧观测与旧分析状态，
+                // 既不 replaceObservationsByPhoto 也不 upsertAnalysisState。
+                // 为什么：把这种情况当成"这张照片没有脸"会删掉旧观测、写下 analysis_state
+                // 使其永不再重试，随后重聚类还会连带清掉旧簇与人工绑定——即"模型配错一次
+                // 就静默摧毁用户工作"（对抗审查阻断项 2）。保留旧状态后，下次运行仍会
+                // 重试这张照片，而本次 run 会带上 encodingFailures 让失败可见。
+                let detectedFaces = item.observations.count + item.encodingFailures
+                let photoEncodingsAllFailed = item.observations.isEmpty && item.encodingFailures > 0
+                encodingFailures += item.encodingFailures
+                if detectedFaces > 0 {
+                    totalFaces += detectedFaces
+                }
+                // 只要有**任何**脸编码失败：这张照片就不算"分析完"，不写 analysis_state
+                // （下次运行重试）。部分失败时仍然落库成功的脸（部分结果可见），全失败时
+                // 连观测都不替换（保留旧数据）。
+                // 反面教材（对抗验证 V1 实测）：1 成功 + 1 失败也写 state、且失败的脸被静默
+                // 丢弃，第二次运行直接跳过这张照片 ⇒ 那些脸永不重试。
+                let hasEncodingFailures = item.encodingFailures > 0
+                if !photoEncodingsAllFailed {
+                    if migratingModel {
+                        // 模型迁移：旧观测必须保留到全部照片成功之后（见 C 阶段），
+                        // A 只把结果放入内存覆盖层。
+                        prepared[photo.id] = PreparedObservations(
+                            observations: observations,
                             sourceFileSize: size,
                             sourceFileMtimeMs: mtimeMs,
                             analysisSignature: analysisSignature,
-                            quality: face.quality,
-                            faceSizePx: face.faceSizePx,
-                            rollDegrees: face.rollDegrees,
-                            modelId: face.modelId,
-                            modelVersion: face.modelVersion,
-                            embeddingDim: face.embedding.count
-                        )
+                            complete: !hasEncodingFailures)
+                    } else {
+                        // A 的照片级写入意图：观测替换 + 分析状态同一批提交
+                        // （checkpoint = face_analysis_state；取消/崩溃后由 isCacheValid 跳过）。
+                        writes.append(FaceObservationWrite(
+                            photoId: photo.id,
+                            sourceFileSize: size,
+                            sourceFileMtimeMs: mtimeMs,
+                            observations: observations,
+                            writesAnalysisState: !hasEncodingFailures))
                     }
-                    // "检测到脸但一张都没编码成功"的照片：**保留**旧观测与旧分析状态，
-                    // 既不 replaceObservationsByPhoto 也不 upsertAnalysisState。
-                    // 为什么：把这种情况当成"这张照片没有脸"会删掉旧观测、写下 analysis_state
-                    // 使其永不再重试，随后重聚类还会连带清掉旧簇与人工绑定——即"模型配错一次
-                    // 就静默摧毁用户工作"（对抗审查阻断项 2）。保留旧状态后，下次运行仍会
-                    // 重试这张照片，而本次 run 会带上 encodingFailures 让失败可见。
-                    let detectedFaces = item.observations.count + item.encodingFailures
-                    let photoEncodingsAllFailed = item.observations.isEmpty && item.encodingFailures > 0
-                    encodingFailures += item.encodingFailures
-                    if detectedFaces > 0 {
-                        totalFaces += detectedFaces
-                    }
-                    // 只要有**任何**脸编码失败：这张照片就不算"分析完"，不写 analysis_state
-                    // （下次运行重试）。部分失败时仍然落库成功的脸（部分结果可见），全失败时
-                    // 连观测都不替换（保留旧数据）。
-                    // 反面教材（对抗验证 V1 实测）：1 成功 + 1 失败也写 state、且失败的脸被静默
-                    // 丢弃，第二次运行直接跳过这张照片 ⇒ 那些脸永不重试。
-                    let hasEncodingFailures = item.encodingFailures > 0
-                    if !photoEncodingsAllFailed {
-                        if migratingModel {
-                            // 模型迁移：旧观测必须保留到全部照片成功之后（见 C 阶段），
-                            // A 只把结果放入内存覆盖层。
-                            prepared[photo.id] = PreparedObservations(
-                                observations: observations,
-                                sourceFileSize: size,
-                                sourceFileMtimeMs: mtimeMs,
-                                analysisSignature: analysisSignature,
-                                complete: !hasEncodingFailures)
-                        } else {
-                            // A 的短事务：观测替换 + 分析状态同一提交（checkpoint =
-                            // face_analysis_state）。取消发生在照片边界，已提交的照片下次
-                            // 由 isCacheValid 跳过。
-                            _ = try transactions.transaction {
-                                let ids = try faceRepo.replaceObservationsByPhoto(
-                                    sessionId: sessionId, photoId: photo.id,
-                                    observations: observations)
-                                if !hasEncodingFailures {
-                                    try faceRepo.upsertAnalysisState(
-                                        sessionId: sessionId,
-                                        photoId: photo.id,
-                                        sourceFileSize: size,
-                                        sourceFileMtimeMs: mtimeMs,
-                                        analysisSignature: analysisSignature
-                                    )
-                                }
-                                return ids
-                            }
-                            observationsChanged = true
-                        }
-                    }
-                    if hasEncodingFailures {
-                        encodingFailedPhotos += 1
-                        GatherLogger.log(
-                            "Face encoding failed for \(item.encodingFailures)/\(detectedFaces) face(s) in "
-                                + "\(photo.filepath); keeping previous analysis state so it is retried "
-                                + "(observations replaced: \(!photoEncodingsAllFailed))",
-                            level: .warn
-                        )
-                    }
-                } catch {
-                    detectionFailures += 1
-                    GatherLogger.log("Face detection failed for \(photo.filepath) \(error)", level: .warn)
+                }
+                if hasEncodingFailures {
+                    encodingFailedPhotos += 1
+                    GatherLogger.log(
+                        "Face encoding failed for \(item.encodingFailures)/\(detectedFaces) face(s) in "
+                            + "\(photo.filepath); keeping previous analysis state so it is retried "
+                            + "(observations replaced: \(!photoEncodingsAllFailed))",
+                        level: .warn
+                    )
                 }
             }
 
-            // 每 worker 一个攒批队列；照片按 i % N 轮询分配。批满即派发，
+            // 每 worker 一个攒批队列；照片按 index % N 轮询分配。批满即派发，
             // 派发后等待结果（TS 的在飞批上限/背压为 worker 消息队列优化，
-            // 见 FaceKwService.swift 文件头差异说明）。
+            // 见 FaceKwService.swift 文件头差异说明）。P0-1 不改批组成与派发序：
+            // 变的只是"解码何时发生"（片内并发预取）与"落库粒度"（一批一事务）。
             var batchImages: [[Data]] = Array(repeating: [], count: requestedWorkers)
             var batchIndices: [[Int]] = Array(repeating: [], count: requestedWorkers)
-            var inferredPhotoCount = 0
+
+            // P0-1：一批一个事务，照片级语句按索引序串行执行（单写者不变）。
+            // P1：批事务失败**不再整批连坐**。旧实现 catch 里
+            // `detectionFailures += writes.count` 后整批回滚：一批里 1 张写失败会让
+            // ≤batchWindow-1 张好照片一起不落库（也不写 analysis_state）→ 每轮重解码
+            // 重推理、永不收敛，且 allDetectionsFailed 被这批虚增的失败污染成"整轮失败"。
+            // 现在批失败只降级为逐张重试（见下），只把真正失败的那几张计入。
+            func commitObservations(_ writes: [FaceObservationWrite]) throws {
+                try transactions.transaction {
+                    for write in writes {
+                        _ = try faceRepo.replaceObservationsByPhoto(
+                            sessionId: sessionId, photoId: write.photoId,
+                            observations: write.observations)
+                        if write.writesAnalysisState {
+                            try faceRepo.upsertAnalysisState(
+                                sessionId: sessionId,
+                                photoId: write.photoId,
+                                sourceFileSize: write.sourceFileSize,
+                                sourceFileMtimeMs: write.sourceFileMtimeMs,
+                                analysisSignature: analysisSignature)
+                        }
+                    }
+                }
+            }
+
+            /// 批事务失败后的降级路径：逐张单独事务重试，返回仍未写入成功的张数。
+            /// 为什么逐张：一张写失败只应影响那张照片（旧观测/旧 analysis_state 原样
+            /// 保留，下次运行由 isCacheValid 判否后重试），其余照片必须照常落库。
+            func commitObservationsAfterBatchFailure(_ writes: [FaceObservationWrite]) -> Int {
+                var failed = 0
+                for write in writes {
+                    do {
+                        try commitObservations([write])
+                        observationsChanged = true
+                    } catch {
+                        failed += 1
+                        GatherLogger.log(
+                            "Face observation write failed for photo \(write.photoId) "
+                                + "in degraded per-photo retry: \(error)",
+                            level: .warn)
+                    }
+                }
+                return failed
+            }
 
             func flushBatch(_ w: Int) async throws {
                 guard !batchIndices[w].isEmpty else { return }
@@ -360,46 +414,121 @@ extension FaceKwService {
                 guard results.count == indices.count else {
                     throw FaceKwServiceError.workersInitFailed
                 }
+                var writes: [FaceObservationWrite] = []
+                writes.reserveCapacity(indices.count)
                 for b in 0..<indices.count {
-                    applyInferenceResult(index: indices[b], item: results[b])
+                    applyInferenceResult(index: indices[b], item: results[b], writes: &writes)
+                }
+                guard !writes.isEmpty else { return }
+                do {
+                    try commitObservations(writes)
+                    observationsChanged = true
+                } catch {
+                    // 两条日志刻意分开：「批失败」是事务级事件，「单张失败」是降级路径里的
+                    // 逐照片事件；运维据此区分"这一批回滚了"与"这张照片写不进去"。
+                    let failed = commitObservationsAfterBatchFailure(writes)
+                    detectionFailures += failed
+                    GatherLogger.log(
+                        "Face observation batch write failed for \(writes.count) photo(s) "
+                            + "(worker \(w)): \(error); degraded to per-photo retry: "
+                            + "\(writes.count - failed) committed, \(failed) failed",
+                        level: .warn)
                 }
             }
 
-            for i in 0..<totalPhotos {
-                if signal.aborted { throw JobCancelledError() }
-                let photo = snapshot.photos[i]
+            // P0-1：先做纯判定计划（只读内存快照 sourceStats / analysisStates：无 I/O、
+            // 无副作用、无计数），再按片执行。为什么需要它：并发解码必须提前知道哪些
+            // 索引真的要解码，而"要不要解码"的判定本身是纯的；所有副作用（进度、失败
+            // 计数、日志、落库）仍严格按索引序在主任务里发生 —— 与串行版逐条相等。
+            var plan: [FacePlannedStep] = []
+            plan.reserveCapacity(totalPhotos)
+            for index in 0..<totalPhotos {
+                let photo = snapshot.photos[index]
                 guard case .ok(let size, let mtimeMs)? = sourceStats[photo.id] else {
-                    if missingPhotoIds.contains(photo.id) {
-                        // ENOENT 照片的观察已提前清理；不计算为检测失败。
-                        onProgress?(i + 1, totalPhotos, "face.detect")
-                        continue
-                    }
-                    detectionFailures += 1
-                    GatherLogger.log("Face detection failed for \(photo.filepath) photo is not readable", level: .warn)
-                    onProgress?(i + 1, totalPhotos, "face.detect")
+                    plan.append(missingPhotoIds.contains(photo.id) ? .missing(index) : .unreadable(index))
                     continue
                 }
                 if Self.isCacheValid(
                     analysisStates[photo.id], sourceSize: size, sourceMtimeMs: mtimeMs,
                     analysisSignature: analysisSignature
                 ) {
-                    totalFaces += cachedByPhoto[photo.id]?.count ?? 0
-                    onProgress?(i + 1, totalPhotos, "face.cached-faces")
-                    continue
+                    plan.append(.cached(index))
+                } else {
+                    plan.append(.analyze(index))
                 }
-                guard let preview = await decode(photo.filepath, previewMaxDimension) else {
-                    detectionFailures += 1
-                    GatherLogger.log("Face detection failed for \(photo.filepath)", level: .warn)
-                    onProgress?(i + 1, totalPhotos, "face.detect")
-                    continue
+            }
+
+            // 片宽 = 解码并发度：片内需要解码的索引 ≤ 片宽，故子任务数即并发上限。
+            var stepCursor = 0
+            while stepCursor < plan.count {
+                if signal.aborted {
+                    // 取消即抛：`batchImages` 里已解码但未提交的照片直接丢弃（下次运行重解码）
+                    // 是取消语义的一部分。不冲刷：冲刷要调 provider——默认 provider 在 abort
+                    // 后每图先抛、`try?` 吞掉后什么也没提交；注入 provider 则会推理并落库，
+                    // 违背"取消不落库"。
+                    throw JobCancelledError()
                 }
-                let w = i % requestedWorkers
-                batchImages[w].append(preview)
-                batchIndices[w].append(i)
-                inferredPhotoCount += 1
-                onProgress?(i + 1, totalPhotos, "face.detect")
-                if batchIndices[w].count >= decodeWindow {
-                    try await flushBatch(w)
+                let sliceEnd = min(stepCursor + decodeConcurrency, plan.count)
+                let slice = plan[stepCursor..<sliceEnd]
+                stepCursor = sliceEnd
+                var sliceIndices: [Int] = []
+                sliceIndices.reserveCapacity(slice.count)
+                for step in slice {
+                    if case .analyze(let index) = step { sliceIndices.append(index) }
+                }
+                let decoded: [Int: Data]
+                if hasInjectedDecode || sliceIndices.isEmpty {
+                    decoded = [:]
+                } else {
+                    decoded = await Self.decodeConcurrently(
+                        indices: sliceIndices,
+                        paths: photoPaths,
+                        maxDimension: previewMaxDimension,
+                        concurrency: decodeConcurrency,
+                        signal: signal,
+                        using: { path, maxDimension in
+                            await Self.defaultDecode(path: path, maxDimension: maxDimension)
+                        })
+                }
+                for step in slice {
+                    if signal.aborted { throw JobCancelledError() }
+                    switch step {
+                    case .missing(let index):
+                        // ENOENT 照片的观察已提前清理；不计算为检测失败。
+                        onProgress?(index + 1, totalPhotos, "face.detect")
+                    case .unreadable(let index):
+                        detectionFailures += 1
+                        GatherLogger.log(
+                            "Face detection failed for \(snapshot.photos[index].filepath) photo is not readable",
+                            level: .warn)
+                        onProgress?(index + 1, totalPhotos, "face.detect")
+                    case .cached(let index):
+                        totalFaces += cachedByPhoto[snapshot.photos[index].id]?.count ?? 0
+                        onProgress?(index + 1, totalPhotos, "face.cached-faces")
+                    case .analyze(let index):
+                        let photo = snapshot.photos[index]
+                        // 注入 provider：在主任务里串行解码（注入闭包不可跨隔离域）；
+                        // 默认路径：取本片并发解码的结果（缺键 = 解码失败）。
+                        let preview: Data?
+                        if hasInjectedDecode {
+                            preview = await decode(photo.filepath, previewMaxDimension)
+                        } else {
+                            preview = decoded[index]
+                        }
+                        guard let preview else {
+                            detectionFailures += 1
+                            GatherLogger.log("Face detection failed for \(photo.filepath)", level: .warn)
+                            onProgress?(index + 1, totalPhotos, "face.detect")
+                            continue
+                        }
+                        let w = index % requestedWorkers
+                        batchImages[w].append(preview)
+                        batchIndices[w].append(index)
+                        onProgress?(index + 1, totalPhotos, "face.detect")
+                        if batchIndices[w].count >= batchWindow {
+                            try await flushBatch(w)
+                        }
+                    }
                 }
             }
             for w in 0..<requestedWorkers {
@@ -642,6 +771,53 @@ extension FaceKwService {
         return .ok(size: Int64(s.st_size), mtimeMs: mtimeMs)
     }
 
+    /// 解码并发度（计划 01 §2.1）：自动值 max(1, min(6, 核数 - 2)) 保底，只有**显式更大**
+    /// 的 face_inference_parallel_workers 才覆盖（钳 1…16）；0 / 负数与"自动"同义。该键
+    /// 本是推理 worker 预算，旧实现当解码并发后"设 2"反而从自动 6 降到 2——拆纯函数钉方向。
+    static func resolveDecodeConcurrency(parallelWorkers: Int, processorCount: Int) -> Int {
+        let auto = max(1, min(6, processorCount - 2))
+        return max(auto, min(16, parallelWorkers))
+    }
+
+    /// 有界并发解码一批照片索引（P0-1：把解码从串行主循环里拿出来）。
+    /// 只服务默认解码路径：`DecodeProvider` 是普通（非 `@Sendable`）闭包，跨隔离域传进
+    /// 子任务是 Swift 6 硬错误，所以注入时留在主任务串行；默认路径调静态 `defaultDecode`，
+    /// 子任务只捕获 Sendable 值（索引 / 路径 / 尺寸 / 取消信号）。在飞上限由本函数排队
+    /// 保证（analyze 传片宽）；`using` 是 seam：单测注入计数解码器钉住上限 / 索引归位 /
+    /// abort 后不再解码。
+    /// 线程安全依据同 SimilarityService+Analyze.swift:116-120：RAWDecoder 走 ImageIO
+    /// （线程安全），这里不共享任何可变状态；JobAbortSignal 的可变状态在 NSLock 内。
+    /// 返回 索引 → JPEG buffer；**缺键 = 解码失败**（不抛错，逐张失败语义不变）。
+    static func decodeConcurrently(
+        indices: [Int],
+        paths: [String],
+        maxDimension: Int,
+        concurrency: Int,
+        signal: JobAbortSignal,
+        using decode: @escaping @Sendable (String, Int) async -> Data?
+    ) async -> [Int: Data] {
+        let cap = max(1, concurrency)
+        return await withTaskGroup(of: (Int, Data?).self, returning: [Int: Data].self) { group in
+            var pending = indices.makeIterator()
+            var decoded: [Int: Data] = [:]
+            var inFlight = 0
+            while true {
+                while inFlight < cap, let index = pending.next() {
+                    group.addTask {
+                        // 取消点与串行版同粒度：每张图解码前查一次 abort。
+                        guard !signal.aborted else { return (index, nil) }
+                        return (index, await decode(paths[index], maxDimension))
+                    }
+                    inFlight += 1
+                }
+                guard inFlight > 0, let (index, buffer) = await group.next() else { break }
+                inFlight -= 1
+                if let buffer { decoded[index] = buffer }
+            }
+            return decoded
+        }
+    }
+
     #if canImport(Vision)
     /// 默认推理 provider：单引擎逐图处理，单图失败不拖垮整批；取消点在图边界。
     private static func makeDefaultProvider(
@@ -707,4 +883,26 @@ private struct FaceRunParams: Codable {
     let encoderPath: String
     let eps: Double
     let minPts: Int
+}
+
+/// P0-1：一条照片级人脸观察写入（批内按索引序提交，一批一事务）。
+private struct FaceObservationWrite {
+    let photoId: String
+    let sourceFileSize: Int64
+    let sourceFileMtimeMs: Double
+    let observations: [FaceObservationInput]
+    /// false = 该照片有脸编码失败：不写 analysis_state（下次运行重试）。
+    let writesAnalysisState: Bool
+}
+
+/// P0-1：analyze 的逐照片执行计划元素（纯判定结果，无副作用）。
+private enum FacePlannedStep {
+    /// 文件已消失（ENOENT）：观察已提前清理，不计检测失败。
+    case missing(Int)
+    /// stat 失败：计 1 次检测失败。
+    case unreadable(Int)
+    /// isCacheValid 命中：沿用旧观测。
+    case cached(Int)
+    /// 需要解码 + 推理。
+    case analyze(Int)
 }

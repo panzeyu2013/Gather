@@ -65,7 +65,24 @@ public struct HashNeighborhoodGraph: NeighborhoodGraph, Sendable {
                     rows[base + (node >> 6)] &= ~(UInt64(1) << UInt64(node & 63))
                     degrees[node] = count - 1
                 }
+            } else if threshold >= 0 && table.width == 8 {
+                // width 分派在循环外：dHash 常态（64 位 = 8 字节）走定宽快路径
+                // distance8（保留 words[a] 的边界检查），内层每对只剩 xor + popcount。
+                for a in 0..<count {
+                    if (a + 1) % step == 0 || a + 1 == count {
+                        onProgress?(a + 1, count)
+                    }
+                    let rowBase = a * rowWords
+                    for b in (a + 1)..<count {
+                        guard table.distance8(a, b) <= threshold else { continue }
+                        rows[rowBase + (b >> 6)] |= UInt64(1) << UInt64(b & 63)
+                        rows[b * rowWords + (a >> 6)] |= UInt64(1) << UInt64(a & 63)
+                        degrees[a] += 1
+                        degrees[b] += 1
+                    }
+                }
             } else if threshold >= 0 {
+                // width > 8（更长的哈希）：逐字节冷路径，逐位语义不变。
                 for a in 0..<count {
                     if (a + 1) % step == 0 || a + 1 == count {
                         onProgress?(a + 1, count)
@@ -153,7 +170,28 @@ public struct MultiThresholdHashGraph: Sendable {
         var degreesByTier = thresholds.map { _ in [Int](repeating: 0, count: count) }
         let step = max(512, Int(Double(count) * 0.02))
 
-        if count > 0 {
+        if count > 0 && table.width == 8 {
+            // width 分派在循环外（dHash 常态）：内层每对只算 distance8（xor + popcount，
+            // 保留 words[a] 边界检查），多档比较与并集写入不变。
+            for a in 0..<count {
+                if (a + 1) % step == 0 || a + 1 == count {
+                    onProgress?(a + 1, count)
+                }
+                let rowBase = a * rowWords
+                for b in (a + 1)..<count {
+                    let distance = table.distance8(a, b)
+                    for tierIndex in 0..<thresholds.count where distance <= thresholds[tierIndex] {
+                        degreesByTier[tierIndex][a] += 1
+                        degreesByTier[tierIndex][b] += 1
+                    }
+                    if distance <= maxTier {
+                        unionRows[rowBase + (b >> 6)] |= UInt64(1) << UInt64(b & 63)
+                        unionRows[b * rowWords + (a >> 6)] |= UInt64(1) << UInt64(a & 63)
+                    }
+                }
+            }
+        } else if count > 0 {
+            // width > 8（更长的哈希）：逐字节冷路径，逐位语义不变。
             for a in 0..<count {
                 if (a + 1) % step == 0 || a + 1 == count {
                     onProgress?(a + 1, count)

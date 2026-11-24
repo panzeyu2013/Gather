@@ -31,7 +31,6 @@ extension SettingsViewModel {
         backend = values["face_compute_units"] ?? "auto"
         edits = values
         seedSliderValues()
-        reconcileDownloadPhaseWithModelStatus()
         errorMessage = nil
     }
 

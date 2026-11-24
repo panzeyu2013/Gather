@@ -81,11 +81,22 @@ public protocol PhotoSemanticsStore {
     func loadRows(sessionId: String, photoIds: [String]) throws -> [PhotoSemanticsRow]
     /// 已建语义行的 photo_id 集合（不回读 BLOB）：语义回填的增量判断用。
     func indexedPhotoIds(sessionId: String) throws -> Set<String>
+    /// 已建语义行的 photo_id 集合，但**只算 `model_version` 相符的行**（P0-3）。
+    ///
+    /// 换语义模型后旧向量不是"已建索引"：同维不同模型是两种向量空间
+    /// （EmbeddingModel.swift:12-14 明令禁止混用），算作已建就会静默沿用。
+    func indexedPhotoIds(sessionId: String, modelVersion: String) throws -> Set<String>
     func count(sessionId: String) throws -> Int
     /// 清空一个会话的语义行（设置页"清空语义索引"按会话）。
     func deleteSession(_ sessionId: String) throws -> Int
     /// 清空全库语义行（隐私："清空语义索引"）。
     func deleteAll() throws -> Int
+    /// 分批删除 `model_version` 不是 `keepingModelVersion` 的行（P0-3 的"重建语义索引"路径）。
+    ///
+    /// 返回删除行数。实现按批删（每批一个隐式事务），**不持一把大事务锁**：
+    /// 语义行可随时重算，分批之间被打断只需下次继续清。
+    /// **必须在事务外调用**：包进调用方事务后每批不再是独立事务，循环退化成一把大锁。
+    func clearStaleRows(sessionId: String, keepingModelVersion: String) throws -> Int
 }
 
 public extension PhotoSemanticsStore {
@@ -97,6 +108,8 @@ public extension PhotoSemanticsStore {
 public final class PhotoSemanticsRepo: PhotoSemanticsStore {
     /// 单条 SQL 的 IN 上限（与其它仓储一致的 800 分块）。
     public static let chunkSize = 800
+    /// 分批清理语义行的单批行数（P0-3）：每批一个隐式事务，单次写锁只压在一批上。
+    static let staleRowBatchSize = 2_000
 
     private let connection: DBConnection
 
@@ -138,6 +151,10 @@ public final class PhotoSemanticsRepo: PhotoSemanticsStore {
         return row.map(Self.decode)
     }
 
+    /// 会话内全部行（按 computed_at, photo_id 升序）。
+    ///
+    /// **LIMIT 在 SQL 里先生效、不按 model_version 过滤**：调用方（SemanticIndex）解码时
+    /// 才剔除旧版本行，旧行会占配额（版本过滤下推 SQL 是后续项）。
     public func loadRows(sessionId: String, limit: Int) throws -> [PhotoSemanticsRow] {
         var params: [DBValue?] = [.text(sessionId)]
         var sql = """
@@ -180,6 +197,14 @@ public final class PhotoSemanticsRepo: PhotoSemanticsStore {
         return Set(rows.compactMap { $0[0].textValue })
     }
 
+    public func indexedPhotoIds(sessionId: String, modelVersion: String) throws -> Set<String> {
+        let rows = try connection.prepare("""
+            SELECT photo_id FROM photo_semantics
+            WHERE session_id = ? AND model_version = ?
+            """).query([.text(sessionId), .text(modelVersion)])
+        return Set(rows.compactMap { $0[0].textValue })
+    }
+
     public func count(sessionId: String) throws -> Int {
         let row = try connection.prepare(
             "SELECT COUNT(*) FROM photo_semantics WHERE session_id = ?"
@@ -194,6 +219,38 @@ public final class PhotoSemanticsRepo: PhotoSemanticsStore {
 
     public func deleteAll() throws -> Int {
         try connection.prepare("DELETE FROM photo_semantics").run([])
+    }
+
+    /// 分批清理"不是当前模型版本"的行（换语义模型后的重建路径）。
+    ///
+    /// 为什么不写成一条 `DELETE ... WHERE model_version <> ?`：库是 WAL + 单写者
+    /// （DB.swift:113），一条覆盖 100k 行的大 DELETE 会把整批撤销页写进 WAL 并长期持
+    /// 写锁——期间 analyze 的其它落库与只读池查询都被拖住，崩溃时只能整段回滚。
+    /// 这里按 rowid 子查询每批删 `staleRowBatchSize` 行（各自隐式事务），
+    /// 单次持锁是毫秒级；中途被打断也已删掉前面几批，下次继续。
+    /// 用 IN (SELECT ... LIMIT) 而不是 `DELETE ... LIMIT`：后者要求
+    /// SQLITE_ENABLE_UPDATE_DELETE_LIMIT，系统 libsqlite3 不保证编进。
+    ///
+    /// **调用方必须在事务外调用**：本方法靠"每批一个隐式事务"控写锁时长，包进外层事务后分批失效。
+    public func clearStaleRows(sessionId: String, keepingModelVersion: String) throws -> Int {
+        // 旧库 ALTER 加列可能是 NULL：`<> ?` 对 NULL 恒 unknown 会永久漏删，故 COALESCE 成空串。
+        let statement = try connection.prepare("""
+            DELETE FROM photo_semantics
+            WHERE rowid IN (
+                SELECT rowid FROM photo_semantics
+                WHERE session_id = ? AND COALESCE(model_version, '') <> ?
+                LIMIT ?
+            )
+            """)
+        var removed = 0
+        while true {
+            let batch = try statement.run([
+                .text(sessionId), .text(keepingModelVersion), .int(Int64(Self.staleRowBatchSize)),
+            ])
+            if batch <= 0 { break }
+            removed += batch
+        }
+        return removed
     }
 
     // MARK: - 行映射

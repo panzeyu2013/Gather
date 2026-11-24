@@ -342,7 +342,7 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 ./scripts/check-coded-errors.sh
 ./scripts/check-backlog-evidence.sh
 ./scripts/check-design-system.sh
-./scripts/check-repo-hygiene.sh          # 仓库层卫生 7 节：bash -n/执行位/CRLF、.editorconfig、Markdown 链接、本地化表、无缓存产物、shellcheck（-S warning，缺失即 FAIL，需预装）、本地化用法守卫
+./scripts/check-repo-hygiene.sh          # 仓库层卫生 8 节：bash -n/执行位/CRLF、.editorconfig、Markdown 链接、本地化表、无缓存产物、shellcheck（-S warning，缺失即 FAIL，需预装）、本地化用法守卫、SwiftPM 包集合（恰为 2 个）
 ./scripts/check-docs-facts.sh            # 文档事实：README/docs 的基线数字须与源码计算一致（targets/域 API/schema/en key/门禁数）
 ./scripts/check-perf-ratchet.sh          # 性能反模式构造点只降不升（9 指标；基线 docs/baselines/perf-baseline.json，--write-baseline 收紧）
 ./scripts/check-lock-order.sh --strict    # G0 锁序：GatherDelivery 的 transaction 块内禁止 XMPFileLock/文件端口（DB→XMP 反向锁序零容忍，基线 0 违规）
@@ -350,7 +350,7 @@ CI 的 `boundary` / `gates` / 两个测试 job 执行以下命令（本地手动
 ./scripts/check-module-size.sh --strict   # G2 模块规模：Sources LOC/最大文件 LOC 只降不升（--allow-growth 需记账）；Tests 规模与文件数上涨只告警
 ./scripts/check-concurrency-whitelist.sh --strict # G3 并发标注白名单：@unchecked Sendable/nonisolated(unsafe) 的 file:type 位置只减不增（当前 60/4）
 ./scripts/check-layer-symbols.sh --strict # G4 Application 符号级越界：DBConnection/Database(/SQLite3/CSQLite 白名单（MaintenanceService 的 VACUUM 按 ADR-035 登记例外，其余新增即红）
-./scripts/check-public-surface-app.sh --strict # G5 app public 面：四 target 的 public 类型/声明行 + API protocol requirement 行只降不升
+./scripts/check-public-surface-app.sh --strict # G5 app public 面：四 target 的 public 类型数（含缩进/嵌套与属性前缀声明）/声明行 + API protocol requirement 行只降不升
 ./scripts/check-port-row-surface.sh --strict # G6 端口/行类型表面：Persistence 端口与 requirement 方法数（增长需 --allow-growth）、无**有效** fake 端口数（fake 需被测试引用）/ public 行类型数 / Application 对 Persistence 行类型引用数只降不升、DBRow 外溢必须 0；台账 docs/baselines/port-row-surface-baseline.json
 ./scripts/check-warnings.sh core        # core Sources -warnings-as-errors（CI 的 gather-core job）
 ./scripts/check-warnings.sh app         # app Sources -warnings-as-errors（CI 的 gather-app job）

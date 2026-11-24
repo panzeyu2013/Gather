@@ -252,11 +252,13 @@ public final class DBConnection: @unchecked Sendable {
 
     /// 预编译语句。
     ///
-    /// R6：**无事务**的 SELECT 从只读池借连接执行（不参与写连接锁）；
-    /// 事务内/写语句/PRAGMA/WITH 仍走本连接，语义与旧实现完全一致。
+    /// R6：**无事务**的只读查询（SELECT / WITH / VALUES）从只读池借连接执行
+    /// （不参与写连接锁）；事务内/写语句/PRAGMA 仍走本连接，语义与旧实现一致。
+    /// P1-2：WITH 原先被保守排除，现按词法判定（见 isReadOnlyQuery）后可走只读池。
     public func prepare(_ sql: String) throws -> DBStatement {
         let depth = threadTransactionDepth
-        if depth == 0, mode == .readWrite, Self.isReadOnlyQuery(sql),
+        // P2：池关闭（readPoolSize == 0；:memory: 默认 0）时不做 O(字节) 词法扫描，换不来路由。
+        if depth == 0, mode == .readWrite, readPoolSize > 0, Self.isReadOnlyQuery(sql),
            let pool = ensureReadPool(), let reader = pool.acquire() {
             do {
                 return try reader.makeStatement(
@@ -296,18 +298,179 @@ public final class DBConnection: @unchecked Sendable {
         }
     }
 
-    /// 只读语句判定（保守）：仅 trim 后以 SELECT 开头；WITH/RETURNING/PRAGMA 不路由。
+    /// 只读语句判定（保守）：**首个记号**须为关键字且 ∈ {SELECT, WITH, VALUES}，
+    /// 且全文不含写动词。
+    ///
+    /// P1-2（08-search §P1「修只读池路由」）：旧实现只认 trim 后以 `SELECT` 开头，
+    /// 于是 PhotoFilterQuery / FacetQuery / TriageRepo 里 5 条 `WITH …` 热查询全部
+    /// 绕过只读池，长写事务期间仍排在同一把连接锁上。这里改为按 SQLite 词法扫描：
+    /// **跳过行注释 `-- …`、块注释 `/* … */`、字符串字面量与引用标识符
+    /// （`'…'` / `"…"` / 反引号 / `[…]`，双写引号为转义）与绑定参数
+    /// （`?1` / `:name` / `@name` / `$name`）**，只看剩下的「裸单词」。因此
+    /// `-- DELETE` 注释、字符串 `'DELETE'` 不会把只读语句误判成写语句；而
+    /// `WITH … DELETE FROM … RETURNING` 这类「CTE + 顶层写」仍会被拒绝。
+    ///
+    /// 兜底（双保险）：只读池连接在 `open()` 里带 `PRAGMA query_only = ON;`（见 :123），
+    /// 即使这里把写语句误判成只读，SQLite 也会显式报错而不是悄悄改库；其余误判方向
+    /// 只会让语句退回写连接（旧行为）。本判定不改变池大小/生命周期，也不改变
+    /// `transaction` 语义：路由仍要求事务深度 0，池化语句仍受 readScopeDepth 守卫。
+    ///
+    /// 唯一函数名例外：SQLite 标量函数 `replace(a, b, c)` 与 REPLACE 动词同名，故仅当
+    /// `replace` 后面（跳过空白与注释后）紧跟 `(` 时按函数名放行（`normalizedDateTaken`
+    /// 等归一/排序片段在用）；其它写动词没有函数形态，不做例外。
     static func isReadOnlyQuery(_ sql: String) -> Bool {
-        var slice = Substring(sql)
-        while let first = slice.first,
-              first == " " || first == "\n" || first == "\t" || first == "\r" {
-            slice = slice.dropFirst()
+        let bytes = Array(sql.utf8)
+        var index = 0
+        var foundLeadingKeyword = false
+        while index < bytes.count {
+            let byte = bytes[index]
+            // 空白
+            if byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+                || byte == 0x0B || byte == 0x0C {
+                index += 1
+                continue
+            }
+            // 行注释 `-- …`：读到行尾（EOF 也终止）
+            if byte == 0x2D, index + 1 < bytes.count, bytes[index + 1] == 0x2D {
+                index += 2
+                while index < bytes.count, bytes[index] != 0x0A { index += 1 }
+                continue
+            }
+            // 块注释 `/* … */`：SQLite 不嵌套；未闭合时按到 EOF 处理（与 SQLite 一致）
+            if byte == 0x2F, index + 1 < bytes.count, bytes[index + 1] == 0x2A {
+                index += 2
+                while index + 1 < bytes.count,
+                      !(bytes[index] == 0x2A && bytes[index + 1] == 0x2F) {
+                    index += 1
+                }
+                index = index + 1 < bytes.count ? index + 2 : bytes.count
+                continue
+            }
+            // 字符串字面量 / 引用标识符：单引号与双引号用「双写」转义，反引号同理
+            if byte == 0x27 || byte == 0x22 || byte == 0x60 {
+                let quote = byte
+                index += 1
+                while index < bytes.count {
+                    if bytes[index] == quote {
+                        if index + 1 < bytes.count, bytes[index + 1] == quote {
+                            index += 2
+                            continue
+                        }
+                        index += 1
+                        break
+                    }
+                    index += 1
+                }
+                continue
+            }
+            // 方括号引用标识符 `[name]`
+            if byte == 0x5B {
+                index += 1
+                while index < bytes.count, bytes[index] != 0x5D { index += 1 }
+                if index < bytes.count { index += 1 }
+                continue
+            }
+            // 绑定参数 `?1` / `:name` / `@name` / `$name`：整段跳过（参数名不是关键字）
+            if byte == 0x3F || byte == 0x3A || byte == 0x40 || byte == 0x24,
+               index + 1 < bytes.count, Self.isSQLWordByte(bytes[index + 1]) {
+                index += 1
+                while index < bytes.count, Self.isSQLWordByte(bytes[index]) { index += 1 }
+                continue
+            }
+            // 单词（关键字 / 标识符 / 数字字面量）
+            if Self.isSQLWordByte(byte) {
+                let start = index
+                while index < bytes.count, Self.isSQLWordByte(bytes[index]) { index += 1 }
+                if !foundLeadingKeyword {
+                    // 第一个单词必须是只读首关键字，否则整个语句不路由（保守）。
+                    guard Self.isReadOnlyLeadingKeyword(bytes, start: start, end: index) else {
+                        return false
+                    }
+                    foundLeadingKeyword = true
+                }
+                if Self.isWriteVerb(bytes, start: start, end: index) {
+                    let isReplaceCall = Self.sqlWord(bytes, start: start, end: index, equals: "replace")
+                        && Self.nextSignificantByte(bytes, from: index) == 0x28
+                    if !isReplaceCall { return false }
+                }
+                continue
+            }
+            // 其余字节（运算符 / 标点 / 转义残片）：首关键字之前出现别的记号
+            // （`(`、`;`、`EXPLAIN` 等）即不路由——「首个记号是关键字」是硬条件。
+            if !foundLeadingKeyword { return false }
+            index += 1
         }
-        let lowered = slice.lowercased()
-        guard lowered.hasPrefix("select") else { return false }
-        let rest = lowered.dropFirst(6)
-        guard let next = rest.first else { return true }
-        return next == " " || next == "\n" || next == "\t" || next == "\r" || next == "("
+        return foundLeadingKeyword
+    }
+
+    /// SQL 单词字节：ASCII 字母/数字/下划线，以及非 ASCII（UTF-8 多字节续字节）。
+    /// 后者按「单词的一部分」处理，保证多字节标识符不会被切成两半误判成关键字。
+    private static func isSQLWordByte(_ byte: UInt8) -> Bool {
+        (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A)
+            || (byte >= 0x61 && byte <= 0x7A) || byte == 0x5F || byte >= 0x80
+    }
+
+    /// 大小写不敏感（仅 ASCII 折叠）的单词比较：`bytes[start..<end]` 是否等于 `literal`。
+    /// 逐字节走字面量的 UTF8 视图，不分配临时字符串。
+    private static func sqlWord(
+        _ bytes: [UInt8], start: Int, end: Int, equals literal: String
+    ) -> Bool {
+        var iterator = literal.utf8.makeIterator()
+        var index = start
+        while index < end {
+            guard var expected = iterator.next() else { return false }
+            if expected >= 0x41, expected <= 0x5A { expected += 0x20 }
+            var actual = bytes[index]
+            if actual >= 0x41, actual <= 0x5A { actual += 0x20 }
+            if actual != expected { return false }
+            index += 1
+        }
+        return iterator.next() == nil
+    }
+
+    /// 只读首关键字：SELECT / WITH / VALUES。
+    private static func isReadOnlyLeadingKeyword(
+        _ bytes: [UInt8], start: Int, end: Int
+    ) -> Bool {
+        sqlWord(bytes, start: start, end: end, equals: "select")
+            || sqlWord(bytes, start: start, end: end, equals: "with")
+            || sqlWord(bytes, start: start, end: end, equals: "values")
+    }
+
+    /// 写动词：出现在任何位置都拒绝（含 `WITH … DELETE` 这类顶层写）。
+    private static func isWriteVerb(_ bytes: [UInt8], start: Int, end: Int) -> Bool {
+        sqlWord(bytes, start: start, end: end, equals: "insert")
+            || sqlWord(bytes, start: start, end: end, equals: "update")
+            || sqlWord(bytes, start: start, end: end, equals: "delete")
+            || sqlWord(bytes, start: start, end: end, equals: "replace")
+            || sqlWord(bytes, start: start, end: end, equals: "pragma")
+            || sqlWord(bytes, start: start, end: end, equals: "attach")
+            || sqlWord(bytes, start: start, end: end, equals: "detach")
+            || sqlWord(bytes, start: start, end: end, equals: "create")
+            || sqlWord(bytes, start: start, end: end, equals: "drop")
+            || sqlWord(bytes, start: start, end: end, equals: "alter")
+    }
+
+    /// 下一个非空白 / 非注释字节（区分 `replace(` 函数调用与 `REPLACE INTO` 动词）。
+    /// 注释不是记号：`replace /* c */ (` / `replace -- c\n(` 仍是函数调用（P2）。
+    private static func nextSignificantByte(_ bytes: [UInt8], from index: Int) -> UInt8? {
+        var cursor = index
+        while cursor < bytes.count {
+            switch bytes[cursor] {
+            case 0x20, 0x09, 0x0A, 0x0D, 0x0B, 0x0C: cursor += 1
+            case 0x2D where cursor + 1 < bytes.count && bytes[cursor + 1] == 0x2D:
+                cursor += 2
+                while cursor < bytes.count, bytes[cursor] != 0x0A { cursor += 1 }
+            case 0x2F where cursor + 1 < bytes.count && bytes[cursor + 1] == 0x2A:
+                cursor += 2
+                while cursor + 1 < bytes.count,
+                      !(bytes[cursor] == 0x2A && bytes[cursor + 1] == 0x2F) { cursor += 1 }
+                cursor = cursor + 1 < bytes.count ? cursor + 2 : bytes.count
+            default:
+                return bytes[cursor]
+            }
+        }
+        return nil
     }
 
     /// 懒建只读池：首次 SELECT 时创建（此时 schema 已就绪）；失败后退化为单连接。

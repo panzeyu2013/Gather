@@ -123,6 +123,8 @@ jobs:
         run: ./scripts/check-coded-errors.sh --self-test
       - name: Test catalog self-test
         run: ./scripts/check-test-catalog.sh --self-test
+      - name: Design system self-test
+        run: ./scripts/check-design-system.sh --self-test
       - name: Release bundle verifier self-test
         run: ./scripts/verify-release-bundle.sh --self-test
       # 测试工具自测（task-44）：profile-tests.sh 的事件流解析器与 test-shard.sh

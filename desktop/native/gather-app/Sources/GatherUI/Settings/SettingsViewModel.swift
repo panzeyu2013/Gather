@@ -1,8 +1,8 @@
 // desktop/native/gather-app/Sources/GatherUI/Settings/SettingsViewModel.swift
 // Cut 4 / 4c-2d：从 SettingsView.swift 第 100-995 行拆出（VM 状态/依赖/init 主体）。
 // 拆分口径：状态与 init 留本文件；数据加载/语言/重置 -> +Loading，分组字段与滑杆 ->
-// +Fields，C1 四层预检 -> +C1Health，写回队列 -> +Sync，模型下载 -> +Download，
-// 静态配置表（分组/滑杆/label）-> +Catalog。
+// +Fields，C1 四层预检 -> +C1Health，写回队列 -> +Sync，静态配置表 -> +Catalog。
+// P1-6（ADR-028）：原「模型下载 -> +Download」已随下载器整体删除。
 //
 // 跨文件 extension 只能访问 internal 成员：原 private 依赖与可写状态改为 internal
 // （public internal(set) 保留只读对外语义），行为与访问路径不变。
@@ -67,24 +67,6 @@ public final class SettingsViewModel {
     /// **全部** outbox 行逐项 ISO 解析（无 LIMIT），叠加 12s 轮询 ⇒ 开着设置窗就是
     /// 每 12 秒一次秒级主线程停顿。写入方在 +Sync 的 recomputeLastSyncDate。
     public internal(set) var lastSyncDate: Date?
-
-    // MARK: 模型下载（对齐旧版 installBanner + models.download_default）
-
-    /// 安装流水线阶段（对齐旧版主进程 downloadDefaultModels 的 phase 语义：
-    /// 下载 → 解压；进度条文案按此切换「已下载 xx%（文件名）/正在解压…」）。
-    public enum ModelInstallStep: Equatable {
-        case downloading
-        case extracting
-    }
-
-    public enum ModelDownloadPhase: Equatable {
-        case idle
-        case downloading(filename: String, percent: Double, step: ModelInstallStep)
-        case done
-        case error
-    }
-
-    public internal(set) var downloadPhase: ModelDownloadPhase = .idle
 
     // MARK: 维护（P0 / B0）
 

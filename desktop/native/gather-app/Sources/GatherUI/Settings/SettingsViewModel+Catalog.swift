@@ -95,7 +95,7 @@ extension SettingsViewModel {
         ),
         SliderSetting(
             key: "face_decode_concurrency", min: 1, max: 8, step: 1, isInteger: true, defaultValue: 4,
-            zhLabel: "照片解码并发数", zhDesc: "同时准备的照片数；内存紧张时调低"
+            zhLabel: "每批照片数", zhDesc: "同时准备的照片数；内存紧张时调低"
         ),
         // 原生质量与匹配参数。
         SliderSetting(

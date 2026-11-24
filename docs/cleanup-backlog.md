@@ -507,6 +507,33 @@ grep -rn 'class LockedBox\|class AsyncGate' --include=*.swift desktop/native/*/T
 - 本地化键数不变（en 2,018 键 / zh 9 占位键）；本轮未新增 TODO/FIXME；新增 #if DEBUG 仅 4 处测试接缝守卫（发布包不编译）。
 - 全 diff：51 文件 +105 −837（desktop 36 文件 +14 −794）。
 
+- **2026-11-23 计划执行（P0/P1 落地 + 基线重钉）**：按 `.tmp/arch-plan-2026-11-23/` 执行 7 项代码改动与 3 项门禁修复；
+  analyze 管线并行化（`FaceKwService+Analyze.swift`：解码出串行主循环、DB 批事务）；
+  聚类 LSH 门槛拆分（`VectorIndex.swift` 新增 `clusterLSHMinPoints=4_000` / `flatBufferMinPoints=0`，旧 `lshMinPoints` 留弃用别名）；
+  `photo_semantics` 模型版本失效 + 分批清理（`PhotoSemanticsRepo.swift`、`ModelReviewService.swift`）与 `SemanticIndex` 去 20k 静默截断；
+  只读池支持 `WITH`/`VALUES`（`DB.swift`：词法剥离注释/字符串，`query_only=ON` 兜底）；
+  dHash 快路径（`ClusterGraph+HashTable.swift` 的 `HashGraphTable.distance`）：先落地 unsafe 版（`withUnsafeBufferPointer` + 冷路径 `@inline(never)` 外提），评审后改为 hoist + 边界检查版（宽度判定外提到调用方循环外，保留数组下标的边界检查）；
+  删除模型下载器闭环（删 `ModelInstaller`/`SettingsViewModel+Download`/`SettingsConfirmations`/`DeepModelAcceptanceTests` 共 304 行 = 生产 268 + 测试 36，另 7 处依赖接线，删 `model_download_url` 键与 4 个用例）。
+  **逐文件增删行数不再抄录**（2026-11-24 二轮评审 P2）：此类数字随基线与并行修改漂移，唯一口径是 `git diff HEAD --numstat`。
+  2026-11-24 核对快照：全 diff 47 文件 +2,302 −823（其中 desktop/native 35 文件 +1,598 −693）——含尚未提交的评审修复，
+  并发修改会改变这两个数，**本行不承诺与当前工作树一致**；逐文件数值一律以 `git diff HEAD --numstat` 为准。
+  门禁修复：`check-design-system.py` 加扫描下限 200 与「基线>0 当前=0」硬失败 + `--self-test`；`check-structural-gates.py` 修 public 面正则（含属性前缀/缩进嵌套/单行协议体）；`check-repo-hygiene.sh` 新增 [h] SwiftPM 包集合断言。
+  **基线重钉（allow-growth，均为口径修正或真实净增）**：
+  `structure-baseline` module-size → gather-core Sources 102,548 / app Sources 74,809；GatherAnalysis 5,757、GatherApplication 37,864、GatherPersistence 26,381、GatherProtocol 17,574；
+  `structure-baseline` public-surface-app → GatherUI 174 类型/1,495 声明、GatherHost 54/482；两半口径不同：**类型数 154→174 是口径修正**（旧 `^public` 正则漏计缩进/嵌套声明，非真实增长），**声明行 1,499→1,495 是真实下降**（−4）；
+  `surface-baseline` protocol-surface → persistence 2,030 声明（+2 来自 `indexedPhotoIds(modelVersion:)`/`clearStaleRows`）；
+  `test-catalog` → 3,205 @Test / 419 @Suite / 14,802 断言 / 17 skip（删 4 用例 1 套件，显式收紧）。
+  验证上限：Linux 侧 `swiftc -parse` 全过 + 23 道只读门禁 + hygiene 8 节全绿；**未编译、未跑测试**（无 macOS SDK），需 macOS 首跑确认。
+
+- **2026-11-24 两轮评审修复（5+5 名评审、4+4 名修理工）**：对 2026-11-23 的改动做正确性/完整性/最优性全量评审，两轮共修 20 个 P1。
+  第一轮（14 个 P1）：批事务失败连坐改逐张降级重试、解码并发与推理键解耦、取消语义收敛、聚类签名追加 `:lsh<minPoints>`、dHash 去掉未检查越界访问（改 `distance8` + 调用点 hoist，**不声称提速**）、
+  `VectorIndexReconciliationTests` 改断言生产真值、删协议默认实现（防 fake 静默忽略 `model_version`）、`COALESCE` 防 NULL、`readPoolSize=0` 短路、`--update` 归零守卫（`--allow-zero`）、public extension 隐式成员计入。
+  第二轮（6 个 P1，含 2 处回退）：**4k 聚类门槛回退 20_000**（SimHash 推算 eps=0.65 下召回仅 ≈0.60，仓库无实测，不能拿质量换速度）、**删除取消前冲刷**（默认 provider abort 后先抛，冲刷为 no-op；注入 provider 时反而违背「取消不落库」）、
+  查询侧 `vector(photoId:)` 校验版本（旧图不再跨向量空间）、设置文案改为「每批照片数」、`check-design-system --self-test` 接入 CI、并发解码新增 internal `@Sendable` seam + 3 个用例（原测试注入 decodeProvider 从未走并发分支）。
+  新增测试 8 个文件/36 个用例左右（FaceAnalyzeDecode / PhotoSemanticsRepo / ReadPool 词法表 / SemanticIndex 版本 / bench flags 自测）。
+  **基线最终态**：module-size → core Sources 102,837、GatherAnalysis 5,816、GatherApplication 37,965、GatherCoreBenchmarks 1,016；
+  public-surface-app → GatherUI 1,512 声明（含 public extension 隐式 33，口径修正）；protocol-surface → persistence 2,030；test-catalog → 3,219 @Test / 421 @Suite / 14,870 断言 / 17 skip。
+  验证上限：Linux 侧 `swiftc -parse` + 23 道门禁 + Protocol/Persistence/Delivery 类型检查 + 各路桩探针（语义 12/12、bench 6/6、dHash 400 万对 0 mismatch）；**未编译、未跑 swift test**，36 个新用例待 macOS 首跑。
 ---
 
 *本文件由 Cut 0 盘点产出；任何删除动作前先在本表把对应项改为 in-progress 并写明目标 Cut 与 owner。*

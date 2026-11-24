@@ -37,7 +37,13 @@ struct VectorIndexReconciliationTests {
             query: [Float](repeating: 0, count: 8), threshold: 0.6)
         #expect(hits.count == 0)
         #expect(lsh.size == 0)
-        #expect(CosineLshIndex.lshMinPoints == 20_000)
+        // P1：断言生产实际生效的门槛，而不是 deprecated 的旧共享别名
+        // （lshMinPoints == 20_000 只对账 TS LSH_MIN_POINTS，已无 Sources 引用）。
+        // 聚类门槛走 ClusterLshOptions.default（= CosineLshIndex.clusterLSHMinPoints，20_000）；
+        // 4_000 需先有 release exact-vs-LSH 一致率证据才可下调（见 14-review 未验证项）。
+        // 匹配扁平缓冲门槛为 0（非空库一律建 flat）。别名本身保留（删它会改编译面）。
+        #expect(ClusterLshOptions.default.minPoints == 20_000)
+        #expect(CosineLshIndex.flatBufferMinPoints == 0)
     }
 
     @Test func smallIndexReturnsEachRowAsItsOwnCandidate() throws {

@@ -171,7 +171,12 @@ def mask_comments(text):
 
 
 _TRIPLE_STR_RE = re.compile(r'"""(?:\\\\.|(?!""").)*"""', re.S)
-_STR_RE = re.compile(r'"(?:\\\\.|[^"\\\\\n])*"')
+# 转义分支 = 一个反斜杠 + 任意字符（正则写作 \\. ，即源码里的 r'\\.'）。
+# 旧写法的转义分支是「两个反斜杠 + 任意字符」，而字符类 [^"\\\n] 又把单个
+# 反斜杠排除在外 → 含 \" 的字面量整条匹配不上：字符串在 \" 处提前结束，里面的 }
+# 露成代码，block_body 在那里闭合、后续成员全部丢失（2026-11-24 修，P2；
+# 负样本见 PUBLIC_FIXTURE_STRING_MASK）。
+_STR_RE = re.compile(r'"(?:\\.|[^"\\\n])*"')
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 
@@ -1161,32 +1166,121 @@ APP_TARGETS = [
     ("GatherPreviewData", APP_SRC / "GatherPreviewData"),
 ]
 API_DIR = CORE_SRC / "GatherProtocol" / "API"
+# 声明边界：行首，或单行多声明 / 单行类型体 / 单行协议体里的 ; { } 之后。
+# 旧实现只认「行首（可选缩进）+ public」，实际漏计（2026-11-23 P1-3，见
+# .tmp/arch-plan-2026-11-23/06-gates.md §6.2）：
+#   - 属性前缀与 public 同行：`@MainActor public final class`、`@MainActor public protocol`；
+#   - 缩进/嵌套的 public 类型：`extension X { public struct Y }`（类型正则旧版连行首缩进都不认）；
+#   - 单行多声明：`public struct A {} public struct B {}`、`public enum E { case a }` 之后的声明；
+#   - 单行协议体：`public protocol P { func a(); var b: Int { get } }`。
+# 边界用定宽后行断言（零宽），匹配起点仍落在声明这一行，行号语义不变。
+_DECL_BOUNDARY = r"(?:^|(?<=[;{}]))"
+_ATTR_PREFIX = r"(?:@\w+(?:\([^)\n]*\))?[ \t]+)*"
 PUBLIC_TYPE_RE = re.compile(
-    r"(?m)^public (?:struct|enum|indirect enum|final class|class|protocol|actor) "
+    r"(?m)" + _DECL_BOUNDARY + r"[ \t]*" + _ATTR_PREFIX +
+    r"public\s+(?:struct|enum|indirect\s+enum|final\s+class|class|protocol|actor)\s+"
     r"[A-Za-z_][A-Za-z0-9_]*")
-PUBLIC_DECL_RE = re.compile(r"(?m)^[ \t]*public[ \t]")
-PUBLIC_PROTOCOL_RE = re.compile(r"(?m)^[ \t]*public protocol [A-Za-z_][A-Za-z0-9_]*")
+PUBLIC_DECL_RE = re.compile(
+    r"(?m)" + _DECL_BOUNDARY + r"[ \t]*" + _ATTR_PREFIX + r"public[ \t]")
+PUBLIC_PROTOCOL_RE = re.compile(
+    r"(?m)" + _DECL_BOUNDARY + r"[ \t]*" + _ATTR_PREFIX +
+    r"public\s+protocol\s+[A-Za-z_][A-Za-z0-9_]*")
+
+# public extension 的隐式 public 成员（2026-11-24 修，P1-3 尾巴）：
+# "public extension Foo { func bar() }" 里的 bar 是 public，但行内没有 public
+# 关键字，PUBLIC_DECL_RE 一条都不认。旧实现漏计 GatherUI 16 个 public
+# extension / 33 个隐式 public 成员，往已有 extension 追加方法时类型数与声明数
+# 都不变 → CI 静默放行。这里只数**无显式访问修饰**的成员（public/open/package/
+# internal/fileprivate/private 都不在下面的修饰符白名单里，所以显式声明不会被
+# 二次计数：它们走 PUBLIC_DECL_RE，或本来就不属于 public 面），且只数 extension
+# 体第一层（函数体里的局部 let/var 不是成员，靠 brace_depths 过滤）。
+# typealias 也在白名单里（2026-11-24 修，P2）：extension 里的 typealias 是隐式
+# public，而显式写法的 public typealias 旧版会被 PUBLIC_DECL_RE 计入 —— 只漏这一种
+# 会让「挪到 public extension 里」变成静默少计。当前源码 0 处，不影响基线。
+_IMPLICIT_MEMBER_MODIFIERS = (
+    r"(?:(?:static|final|class|mutating|nonisolated|override|required|"
+    r"convenience|dynamic|lazy|weak|unowned|indirect)[ \t]+)*")
+PUBLIC_EXTENSION_RE = re.compile(
+    r"(?m)" + _DECL_BOUNDARY + r"[ \t]*" + _ATTR_PREFIX +
+    r"public\s+extension\s+[A-Za-z_][A-Za-z0-9_.]*")
+IMPLICIT_EXTENSION_MEMBER_RE = re.compile(
+    r"(?m)" + _DECL_BOUNDARY + r"[ \t]*" + _ATTR_PREFIX + _IMPLICIT_MEMBER_MODIFIERS +
+    r"(?:func|var|let|init|subscript|typealias)\b")
 API_REQUIREMENT_RE = re.compile(
-    r"(?m)^[ \t]*(?:(?:static|mutating|nonisolated|class|final)[ \t]+)*"
-    r"(?:func|var|init|associatedtype)[ \t]")
+    r"(?m)" + _DECL_BOUNDARY + r"[ \t]*" + _ATTR_PREFIX +
+    r"(?:(?:static|mutating|nonisolated|class|final)[ \t]+)*"
+    r"(?:func|var|init|associatedtype)\b")
+
+
+def brace_depths(body):
+    """body 每个下标处相对 owner 体的花括号深度（mask_code 已遮掉字符串与注释）。"""
+    depth = 0
+    depths = [0] * (len(body) + 1)
+    for index, char in enumerate(body):
+        depths[index] = depth
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+    depths[len(body)] = depth
+    return depths
+
+
+def count_implicit_extension_members(masked):
+    """public extension 体内第一层、无显式访问修饰的成员声明数。"""
+    total = 0
+    for match in PUBLIC_EXTENSION_RE.finditer(masked):
+        body = block_body(masked, match.end())
+        if body is None:
+            continue
+        depths = brace_depths(body)
+        total += sum(1 for decl in IMPLICIT_EXTENSION_MEMBER_RE.finditer(body)
+                     if depths[decl.start()] == 0)
+    return total
+
+
+def count_explicit_public_declarations(masked):
+    """显式 public 声明数：PUBLIC_DECL_RE 命中减去 public extension 头。
+
+    PUBLIC_DECL_RE 的既有口径是「public 后面跟任意 token 即计一条」，所以
+    "public extension Foo {" 这一行本身也被算成一条声明。于是
+    public extension Foo { func a() {} }  = 头 1 + 隐式 1 = 2，而等价写法
+    extension Foo { public func a() {} } = 1：把成员从 extension 体里挪到头上
+    （或反过来）会让声明数 ±1 → 纯改写假失败/假通过（2026-11-24 修，P2）。
+    extension 头不是声明，减掉它之后两种写法的公开面都恰好是 1。
+    max(0, ...) 兜底：极端输入（PUBLIC_EXTENSION_RE 命中多于 PUBLIC_DECL_RE）
+    不能让计数变成负数。
+    """
+    hits = len(PUBLIC_DECL_RE.findall(masked))
+    heads = len(PUBLIC_EXTENSION_RE.findall(masked))
+    return max(0, hits - heads)
 
 
 def scan_public_surface(targets, api_dir):
     target_stats = {}
+    implicit_totals = {}
     app_files = 0
     for name, directory in targets:
         files = swift_files(directory) if directory.is_dir() else []
         public_types = 0
         public_declarations = 0
+        implicit_members = 0
         for path in files:
             masked = mask_code(read_text(path))
             public_types += len(PUBLIC_TYPE_RE.findall(masked))
-            public_declarations += len(PUBLIC_DECL_RE.findall(masked))
+            # 声明数 = 显式 public 声明（不含 public extension 头）+ public extension
+            # 的隐式 public 成员。合并而非独立 metric：public extension F { func f() }
+            # 与 extension F { public func f() } 的公开面完全相同，独立 metric 会让这种
+            # 纯改写变成「一个涨、一个降」→ 假失败；合并后计数对改写不变。
+            public_declarations += count_explicit_public_declarations(masked)
+            implicit_members += count_implicit_extension_members(masked)
+        public_declarations += implicit_members
         target_stats[name] = {
             "files": len(files),
             "public_types": public_types,
             "public_declarations": public_declarations,
         }
+        implicit_totals[name] = implicit_members
         app_files += len(files)
     api_files = swift_files(api_dir)
     api_protocols = 0
@@ -1201,6 +1295,9 @@ def scan_public_surface(targets, api_dir):
             api_requirements += len(API_REQUIREMENT_RE.findall(body))
     return {
         "targets": target_stats,
+        # 仅用于报告的分项（不写进基线：声明数已经把两半合并，避免同一公开面被
+        # 记两笔，也避免两边漂移）。
+        "implicit_extension_members": implicit_totals,
         "api": {
             "files": len(api_files),
             "public_protocols": api_protocols,
@@ -1243,6 +1340,18 @@ def compare_public_surface(current, baseline):
     return problems, notes
 
 
+def emit_public_surface(current):
+    for name, stats in current["targets"].items():
+        emit("  %-16s 文件 %3d / public 类型 %3d / public 声明行 %4d"
+             "（其中 public extension 隐式成员 %d）"
+             % (name, stats["files"], stats["public_types"],
+                stats["public_declarations"],
+                current["implicit_extension_members"].get(name, 0)))
+    emit("  API：%d 文件 / %d 个 public protocol / %d 条 requirement 行"
+         % (current["api"]["files"], current["api"]["public_protocols"],
+            current["api"]["requirement_lines"]))
+
+
 def gate_public_surface_app(opts):
     if opts["self_test"]:
         return self_test_public_surface()
@@ -1273,9 +1382,12 @@ def gate_public_surface_app(opts):
         data = {
             "generated_by": "scripts/check-public-surface-app.sh --write-baseline",
             "note": (
-                "app 四个 target（GatherUI/GatherHost/GatherApp/GatherPreviewData）顶层 public 类型数 + "
-                "public 声明行数；GatherProtocol/API/**/*.swift 每个 public protocol 体内的 "
-                "requirement 行数（func/var/init/associatedtype，剥注释）。只降不升；"
+                "app 四个 target（GatherUI/GatherHost/GatherApp/GatherPreviewData）的 public 类型数"
+                "（含缩进/嵌套声明与同一行的属性前缀）+ public 声明数（同一行多条分别计数；"
+                "显式 public 声明 + public extension 体内隐式 public 的 "
+                "func/var/let/init/subscript/typealias，extension 头本身不计）；"
+                "GatherProtocol/API/**/*.swift 每个 public protocol 体内的 requirement 数"
+                "（func/var/init/associatedtype，剥注释；单行协议体按 ; { } 分隔计数）。只降不升；"
                 "GatherPreviewData 用 package 可见性，public 面 0 是预期（不误报）。"
             ),
             "scan": {"app_swift_files": current["app_files"],
@@ -1288,13 +1400,7 @@ def gate_public_surface_app(opts):
         }
         save_baseline("public-surface-app", data)
         emit("baseline 已写入 %s" % baseline_label("public-surface-app"))
-        for name, stats in current["targets"].items():
-            emit("  %-16s 文件 %3d / public 类型 %3d / public 声明行 %4d"
-                 % (name, stats["files"], stats["public_types"],
-                    stats["public_declarations"]))
-        emit("  API：%d 文件 / %d 个 public protocol / %d 条 requirement 行"
-             % (current["api"]["files"], current["api"]["public_protocols"],
-                current["api"]["requirement_lines"]))
+        emit_public_surface(current)
         return 0
 
     if baseline is None:
@@ -1306,13 +1412,7 @@ def gate_public_surface_app(opts):
         rep.problem(problem)
     for note in notes:
         rep.note(note)
-    for name, stats in current["targets"].items():
-        emit("  %-16s 文件 %3d / public 类型 %3d / public 声明行 %4d"
-             % (name, stats["files"], stats["public_types"],
-                stats["public_declarations"]))
-    emit("  API：%d 文件 / %d 个 public protocol / %d 条 requirement 行"
-         % (current["api"]["files"], current["api"]["public_protocols"],
-            current["api"]["requirement_lines"]))
+    emit_public_surface(current)
     return rep.finish("app public 面与 API requirement 不超过基线")
 
 # ---------------------------------------------------------------- 自测 fixture
@@ -1402,7 +1502,26 @@ final class Fixture {
 }
 '''
 
-PUBLIC_FIXTURE_TARGET = '''// fixture: public 面样本
+PUBLIC_FIXTURE_TARGET_EXTENSION = """// fixture: public extension 的隐式 public 成员（6 个正样本 / 2 个负样本）
+public extension Widget {
+    func title() -> String { "" }
+    var flag: Bool { true }
+    static func make() -> Self { Widget(id: 1) }
+    @discardableResult func reset() -> Bool { true }
+    init(stub: Int) { _ = stub }
+
+    func withBody() -> Int {
+        // 函数体里的局部 let 不是成员（负样本，必须不计）
+        let local = 1
+        return local
+    }
+
+    // 显式 private 不是 public 面（负样本，必须不计）
+    private func hidden() {}
+}
+"""
+
+PUBLIC_FIXTURE_TARGET = '''// fixture: public 面样本（属性前缀 / 缩进嵌套 / 单行多声明）
 public struct Widget: Sendable {
     public let id: Int
     public func render() {}
@@ -1411,13 +1530,47 @@ public struct Widget: Sendable {
 public enum Mode {
     case a
 }
+
+@MainActor public final class Host {
+    public let name: String
+}
+
+enum Namespace {
+    public struct Nested { public func f() {} }
+}
+
+public struct Alpha {} public struct Beta {}
 '''
 
-PUBLIC_FIXTURE_API = '''// fixture: API requirement 样本
+PUBLIC_FIXTURE_EXTENSION_ADDED = "    func appended() {}\n"
+# 显式 public 成员：走 PUBLIC_DECL_RE，不能被隐式计数器二次计数。
+PUBLIC_FIXTURE_EXTENSION_ADDED_EXPLICIT = "    public func exposed() {}\n"
+# static let：修饰符白名单（static/final/...）必须认。
+PUBLIC_FIXTURE_EXTENSION_ADDED_STATIC = "    static let cache = 0\n"
+# typealias：extension 里的 typealias 也是隐式 public（旧白名单漏计）。
+PUBLIC_FIXTURE_EXTENSION_ADDED_TYPEALIAS = "    typealias Row = Int\n"
+
+# 字符串里的 } 与 \" 必须被遮罩：旧 _STR_RE 漏 \" → 字面量提前结束，} 露成代码，
+# block_body 在那里闭合、tail() 丢失（隐式成员 1 而不是 2）。
+PUBLIC_FIXTURE_STRING_MASK = '''// fixture: 字符串遮罩负样本
+public extension Widget {
+    func logLine() {
+        log("x } \\" y")
+    }
+
+    func tail() {}
+}
+'''
+
+PUBLIC_FIXTURE_API = '''// fixture: API requirement 样本（含属性前缀与单行协议体）
 public protocol FixtureAPI: Sendable {
     func load() async throws
     var name: String { get }
     static func make() -> Self
+}
+
+@MainActor public protocol InlineAPI {
+    func a(); var b: Int { get }; init(c: Int)
 }
 '''
 
@@ -1564,27 +1717,106 @@ def self_test_public_surface():
         api = tmp / "app" / "Sources" / "GatherProtocol" / "API"
         app.mkdir(parents=True)
         api.mkdir(parents=True)
-        (app / "Fixture.swift").write_text(PUBLIC_FIXTURE_TARGET, encoding="utf-8")
+        (app / "Fixture.swift").write_text(PUBLIC_FIXTURE_TARGET + PUBLIC_FIXTURE_TARGET_EXTENSION,
+                                           encoding="utf-8")
         (api / "FixtureAPI.swift").write_text(PUBLIC_FIXTURE_API, encoding="utf-8")
         current = scan_public_surface([("GatherUI", app)], api)
         stats = current["targets"]["GatherUI"]
-        if stats["public_types"] != 2:
+        # 6 个 public 类型：Widget/Mode/Host（属性前缀）+ Nested（缩进嵌套）+ Alpha/Beta（单行多声明）。
+        if stats["public_types"] != 6:
             die("self-test FAIL：public 类型计数异常：%r" % (stats,))
-        if stats["public_declarations"] != 4:
-            die("self-test FAIL：public 声明行计数异常：%r" % (stats,))
-        if current["api"]["public_protocols"] != 1:
+        # 16 条 public 声明 = 10 条显式（Widget/let/func + Mode + Host/let + Nested/func
+        # + Alpha/Beta）+ 6 条隐式成员（func/var/static func/属性前缀 func/init/带函数体的 func）。
+        # public extension 头**不计**（count_explicit_public_declarations 减掉了头：
+        # 头不是声明，计了会让 "public extension { func a }" 比等价写法多 1）。
+        # private 成员与函数体里的局部 let 不计。
+        if stats["public_declarations"] != 16:
+            die("self-test FAIL：public 声明计数异常：%r" % (stats,))
+        if current["implicit_extension_members"]["GatherUI"] != 6:
+            die("self-test FAIL：public extension 隐式成员计数异常：%r"
+                % (current["implicit_extension_members"],))
+        # 往已有 public extension 追加一个成员：计数必须 +1（bug 现场是「不变」）。
+        (app / "Fixture.swift").write_text(
+            PUBLIC_FIXTURE_TARGET + PUBLIC_FIXTURE_TARGET_EXTENSION.replace(
+                "    private func hidden() {}",
+                PUBLIC_FIXTURE_EXTENSION_ADDED + "    private func hidden() {}"),
+            encoding="utf-8")
+        appended = scan_public_surface([("GatherUI", app)], api)["targets"]["GatherUI"]
+        if appended["public_declarations"] != stats["public_declarations"] + 1:
+            die("self-test FAIL：往已有 public extension 追加成员后计数没变：%r -> %r"
+                % (stats["public_declarations"], appended["public_declarations"]))
+
+        def rescan(added):
+            (app / "Fixture.swift").write_text(
+                PUBLIC_FIXTURE_TARGET + PUBLIC_FIXTURE_TARGET_EXTENSION.replace(
+                    "    private func hidden() {}", added + "    private func hidden() {}"),
+                encoding="utf-8")
+            return scan_public_surface([("GatherUI", app)], api)
+
+        # 追加显式 public func：走 PUBLIC_DECL_RE，隐式成员必须仍是 6（同一成员不能被
+        # 两条正则各记一次），声明数 +1。
+        explicit_added = rescan(PUBLIC_FIXTURE_EXTENSION_ADDED_EXPLICIT)
+        if explicit_added["implicit_extension_members"]["GatherUI"] != 6:
+            die("self-test FAIL：显式 public 成员被当成隐式成员：%r"
+                % (explicit_added["implicit_extension_members"],))
+        if explicit_added["targets"]["GatherUI"]["public_declarations"] != stats["public_declarations"] + 1:
+            die("self-test FAIL：追加显式 public 成员后声明数没变：%r -> %r"
+                % (stats["public_declarations"],
+                   explicit_added["targets"]["GatherUI"]["public_declarations"]))
+
+        # 追加 static let：修饰符白名单要认，隐式成员 +1（6 -> 7）。
+        static_added = rescan(PUBLIC_FIXTURE_EXTENSION_ADDED_STATIC)
+        if static_added["implicit_extension_members"]["GatherUI"] != 7:
+            die("self-test FAIL：public extension 里的 static let 未计入：%r"
+                % (static_added["implicit_extension_members"],))
+
+        # 追加 typealias：extension 里的 typealias 也是隐式 public（旧白名单漏计）。
+        typealias_added = rescan(PUBLIC_FIXTURE_EXTENSION_ADDED_TYPEALIAS)
+        if typealias_added["implicit_extension_members"]["GatherUI"] != 7:
+            die("self-test FAIL：public extension 里的 typealias 未计入：%r"
+                % (typealias_added["implicit_extension_members"],))
+
+        # 字符串里的 } 与 \" 必须被遮罩：旧 _STR_RE 漏 \" 时 block_body 在字符串里的
+        # } 处提前闭合，tail() 整个丢失（隐式成员 1 而不是 2）。
+        mask_dir = tmp / "mask" / "GatherUI"
+        mask_dir.mkdir(parents=True)
+        (mask_dir / "MaskFixture.swift").write_text(PUBLIC_FIXTURE_STRING_MASK, encoding="utf-8")
+        masked = scan_public_surface([("GatherUI", mask_dir)], api)
+        if masked["implicit_extension_members"]["GatherUI"] != 2:
+            die("self-test FAIL：字符串里的 } 提前结束了 extension body：%r"
+                % (masked["implicit_extension_members"],))
+        if masked["targets"]["GatherUI"]["public_declarations"] != 2:
+            die("self-test FAIL：字符串遮罩后声明数异常：%r"
+                % (masked["targets"]["GatherUI"],))
+
+        (app / "Fixture.swift").write_text(PUBLIC_FIXTURE_TARGET + PUBLIC_FIXTURE_TARGET_EXTENSION,
+                                           encoding="utf-8")
+        if current["api"]["public_protocols"] != 2:
             die("self-test FAIL：public protocol 计数异常：%r" % (current["api"],))
-        if current["api"]["requirement_lines"] != 3:
-            die("self-test FAIL：requirement 行计数异常：%r" % (current["api"],))
+        if current["api"]["requirement_lines"] != 6:
+            die("self-test FAIL：requirement 计数异常：%r" % (current["api"],))
         baseline = {
             "targets": {"GatherUI": {"files": 1, "public_types": 1,
                                      "public_declarations": 4}},
             "api": {"public_protocols": 1, "requirement_lines": 2},
         }
         problems, _notes = compare_public_surface(current, baseline)
-        if len(problems) != 2:
+        if len(problems) != 4:
             die("self-test FAIL：public 面上涨没有被 compare 全部发现：%r" % (problems,))
-        emit("self-test OK（public 类型/声明行/API requirement 计数正确；上涨被发现）")
+        exact = {
+            "targets": {"GatherUI": {"files": 1, "public_types": stats["public_types"],
+                                     "public_declarations": stats["public_declarations"]}},
+            "api": {"public_protocols": current["api"]["public_protocols"],
+                    "requirement_lines": current["api"]["requirement_lines"]},
+        }
+        problems, _notes = compare_public_surface(current, exact)
+        if problems:
+            die("self-test FAIL：持平基线被误报：%r" % (problems,))
+        emit("self-test OK（属性前缀/缩进嵌套/单行多声明均计入：类型 6 / 声明 16"
+             "（public extension 头不计 + 隐式成员 6，private 与函数体内局部 let 不计）/ "
+             "protocol 2 / requirement 6；追加成员 +1 / 显式 public 不改隐式数 / "
+             "static let 与 typealias 各 +1 / 字符串里的 } 被遮罩（隐式 2）；"
+             "上涨被发现、持平不误报）")
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

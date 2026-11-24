@@ -146,7 +146,8 @@ extension SettingsView {
         }
     }
 
-    /// 模型缺失横幅：SF Symbol + 语义色底 + 原生进度条。
+    /// 模型缺失横幅：SF Symbol + 语义色底 + 两条离线出路（打开目录 / 恢复内置
+    /// SFace）。P1-6（ADR-028）：在线下载入口已删除（无 SHA 校验 + 无消费者）。
     private func installBlock(_ model: MLStatusData) -> some View {
         VStack(alignment: .leading, spacing: GatherMetrics.Space.s) {
             Label(
@@ -162,12 +163,6 @@ extension SettingsView {
                 .textSelection(.enabled)
 
             HStack(spacing: GatherMetrics.Space.s) {
-                Button(l10n("下载人脸模型")) {
-                    pendingModelInstall = PendingModelInstall(
-                        modelDir: model.modelResourcesDir)
-                }
-                .gatherButton(.primary)
-                .disabled(viewModel.isDownloading)
                 Button(l10n("打开模型文件夹")) {
                     viewModel.openModelDirectory()
                 }
@@ -176,24 +171,6 @@ extension SettingsView {
                     viewModel.save(key: SettingsViewModel.faceEmbeddingModelSettingKey, value: "", with: l10n)
                 }
                 .gatherButton(.secondary)
-            }
-
-            switch viewModel.downloadPhase {
-            case .downloading(let filename, let percent, let step):
-                ProgressView(value: min(1, max(0, percent / 100))) {
-                    Text(step == .extracting
-                        ? l10n("正在解压…")
-                        : l10n.format("已下载 %d%%（%@）", Int(percent), filename))
-                        .font(GatherFont.secondary)
-                        .foregroundStyle(.secondary)
-                }
-            case .done:
-                Label(l10n("人脸模型已安装"), systemImage: "checkmark.circle.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(GatherTheme.successText)
-                    .font(GatherFont.secondary)
-            default:
-                EmptyView()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

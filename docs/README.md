@@ -44,12 +44,12 @@ WorkflowRegistry 的 8 条 workflow）；交付在 GatherDelivery，持久层是
 
 - 9 个功能 target（含测试/工具共 18 个）；16 个域 API / 195 个类型化方法。
 - **声明口径**（`check-test-catalog.sh` 的 ratchet，按剥注释后的 `@Test`/`@Suite` 声明计）：
-  core 1,952 `@Test` / 237 `@Suite`；app 1,257 / 183（合计 3,209 / 420，均不低于基线 3,209 / 420；断言 14,809 站点）。
+  core 1,962 `@Test` / 239 `@Suite`；app 1,253 / 182（合计 3,215 / 421，与基线一致；断言 14,843 站点）。
 - **最近一次 macOS 运行**（2026-11-16，当前 Linux 环境无法复跑）：core 1,970 tests / 290 suites +
   串行 25 tests / 4 suites（合计 1,995 / 294）；app 1,260 tests / 184 suites。core 声明 237 个
   `@Suite` 与运行时 294 的差额来自只有 `@Test`、没有 `@Suite` 的测试文件（运行时每个文件算一个隐式套件）。
 - 24 个 `check-*.sh` 门禁（23 道 Linux 只读门禁 + `check-warnings` 需 macOS SDK、按 CI 口径待
-  macOS runner 复验；此前三个 Linux 只读门禁：`check-repo-hygiene.sh`（7 节，含 shellcheck 与本地化用法守卫）、
+  macOS runner 复验；此前三个 Linux 只读门禁：`check-repo-hygiene.sh`（8 节，含 shellcheck、本地化用法守卫与 SwiftPM 包集合断言）、
   `check-docs-facts.sh`（文档基线数字须与源码事实一致）与 `check-perf-ratchet.sh`（性能反模式构造点只降不升，
   基线 docs/baselines/perf-baseline.json）；Wave 4 新增六道 Linux 结构门禁 G0–G5：`check-lock-order.sh`（XMP→DB 单向锁序）、
   `check-import-graph.sh`（Package.swift 依赖边 + import 图 SCC）、`check-module-size.sh`（每 target 文件/LOC ratchet）、

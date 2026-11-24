@@ -122,22 +122,22 @@
       "note": "每 target 文件数/LOC/最大文件 LOC + 包级 Sources/Tests LOC。Sources LOC 合计与最大文件 LOC 只降不升（上涨需 --allow-growth 并记账）；Tests 规模只告警；文件数上涨只告警不失败（拆文件是合法重构）；Tests/Sources 行比只记录、不参与 ratchet。",
       "scan": {
         "target_dirs": 18,
-        "swift_files": 1112
+        "swift_files": 1110
       },
       "packages": {
         "desktop/native/gather-core": {
-          "sources_loc": 102108,
-          "tests_loc": 62453,
+          "sources_loc": 102837,
+          "tests_loc": 63069,
           "sources_files": 427,
-          "tests_files": 207,
-          "tests_to_sources_ratio": 0.6116
+          "tests_files": 209,
+          "tests_to_sources_ratio": 0.6133
         },
         "desktop/native/gather-app": {
-          "sources_loc": 75128,
-          "tests_loc": 36960,
-          "sources_files": 345,
-          "tests_files": 133,
-          "tests_to_sources_ratio": 0.492
+          "sources_loc": 74809,
+          "tests_loc": 36842,
+          "sources_files": 342,
+          "tests_files": 132,
+          "tests_to_sources_ratio": 0.4925
         }
       },
       "targets": {
@@ -149,7 +149,7 @@
         },
         "GatherAnalysis": {
           "files": 20,
-          "loc": 5711,
+          "loc": 5816,
           "max_file_loc": 781,
           "max_file": "desktop/native/gather-core/Sources/GatherAnalysis/Face/EmbeddingModel.swift"
         },
@@ -160,26 +160,26 @@
           "max_file": "desktop/native/gather-app/Sources/GatherApp/GatherAutomationIntents.swift"
         },
         "GatherAppTests": {
-          "files": 133,
-          "loc": 36960,
+          "files": 132,
+          "loc": 36842,
           "max_file_loc": 1707,
           "max_file": "desktop/native/gather-app/Tests/GatherAppTests/CullingViewModelAPITests.swift"
         },
         "GatherApplication": {
           "files": 119,
-          "loc": 37685,
+          "loc": 37965,
           "max_file_loc": 917,
           "max_file": "desktop/native/gather-core/Sources/GatherApplication/Services/Output/S3ShareTransport.swift"
         },
         "GatherCoreBenchmarks": {
           "files": 1,
-          "loc": 890,
-          "max_file_loc": 890,
+          "loc": 1016,
+          "max_file_loc": 1016,
           "max_file": "desktop/native/gather-core/Sources/GatherCoreBenchmarks/main.swift"
         },
         "GatherCoreTests": {
-          "files": 200,
-          "loc": 61586,
+          "files": 202,
+          "loc": 62201,
           "max_file_loc": 2113,
           "max_file": "desktop/native/gather-core/Tests/GatherCoreTests/Services/CullingServiceTests.swift"
         },
@@ -209,7 +209,7 @@
         },
         "GatherPersistence": {
           "files": 134,
-          "loc": 26164,
+          "loc": 26384,
           "max_file_loc": 1330,
           "max_file": "desktop/native/gather-core/Sources/GatherPersistence/Database/Queries/PhotoFilterQuery.swift"
         },
@@ -221,7 +221,7 @@
         },
         "GatherProtocol": {
           "files": 112,
-          "loc": 17576,
+          "loc": 17574,
           "max_file_loc": 784,
           "max_file": "desktop/native/gather-core/Sources/GatherProtocol/Protocol/DescriptiveMetadata.swift"
         },
@@ -233,7 +233,7 @@
         },
         "GatherTestSupport": {
           "files": 7,
-          "loc": 867,
+          "loc": 868,
           "max_file_loc": 386,
           "max_file": "desktop/native/gather-core/Tests/GatherTestSupport/ServiceConstructionTestSupport.swift"
         },
@@ -244,8 +244,8 @@
           "max_file": "desktop/native/gather-core/Sources/GatherTriageEval/SimilarityEvalCommand.swift"
         },
         "GatherUI": {
-          "files": 282,
-          "loc": 59313,
+          "files": 279,
+          "loc": 58994,
           "max_file_loc": 1152,
           "max_file": "desktop/native/gather-app/Sources/GatherUI/Export/ExportView+Delivery.swift"
         }
@@ -669,20 +669,20 @@
     },
     "public-surface-app": {
       "generated_by": "scripts/check-public-surface-app.sh --write-baseline",
-      "note": "app 四个 target（GatherUI/GatherHost/GatherApp/GatherPreviewData）顶层 public 类型数 + public 声明行数；GatherProtocol/API/**/*.swift 每个 public protocol 体内的 requirement 行数（func/var/init/associatedtype，剥注释）。只降不升；GatherPreviewData 用 package 可见性，public 面 0 是预期（不误报）。",
+      "note": "app 四个 target（GatherUI/GatherHost/GatherApp/GatherPreviewData）的 public 类型数（含缩进/嵌套声明与同一行的属性前缀）+ public 声明数（同一行多条分别计数；显式 public 声明 + public extension 体内隐式 public 的 func/var/let/init/subscript/typealias，extension 头本身不计）；GatherProtocol/API/**/*.swift 每个 public protocol 体内的 requirement 数（func/var/init/associatedtype，剥注释；单行协议体按 ; { } 分隔计数）。只降不升；GatherPreviewData 用 package 可见性，public 面 0 是预期（不误报）。",
       "scan": {
-        "app_swift_files": 345,
+        "app_swift_files": 342,
         "api_files": 55
       },
       "targets": {
         "GatherUI": {
-          "files": 282,
-          "public_types": 154,
-          "public_declarations": 1499
+          "files": 279,
+          "public_types": 174,
+          "public_declarations": 1512
         },
         "GatherHost": {
           "files": 53,
-          "public_types": 53,
+          "public_types": 54,
           "public_declarations": 482
         },
         "GatherApp": {

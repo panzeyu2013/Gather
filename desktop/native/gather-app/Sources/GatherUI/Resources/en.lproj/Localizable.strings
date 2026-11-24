@@ -1494,7 +1494,7 @@
 "人脸模型未找到。请恢复内置 SFace，或选择有效的 CoreML 模型。" = "Face model not found. Restore the bundled SFace model or choose a valid CoreML model.";
 "使用内置 SFace" = "Use bundled SFace";
 "人脸模型不可用，请前往设置恢复内置模型或重新选择。" = "Face model unavailable. Open Settings to restore the bundled model or choose another.";
-"照片解码并发数" = "Photo decoding concurrency";
+"每批照片数" = "Photos per batch";
 "同时准备的照片数；内存紧张时调低" = "Number of photos prepared at once; lower this if memory is limited";
 "留空使用应用内置 SFace 身份模型；也可选择 112×112 图像输入的 CoreML 模型。换模型后需要全量重新分析，已有人工身份与纠错记录会保留。" = "Leave empty to use bundled SFace, or choose a CoreML model with 112×112 image input. Changing models requires reanalysis; manual identities and corrections are preserved.";
 "开=优先处理新增照片；模型或人工约束变化时会重新聚类。关=每次重新聚类。两种方式都会保留人工身份与纠错记录。" = "On: prioritize new photos; rebuild clusters when models or manual constraints change. Off: rebuild clusters every time. Both preserve manual identities and corrections.";

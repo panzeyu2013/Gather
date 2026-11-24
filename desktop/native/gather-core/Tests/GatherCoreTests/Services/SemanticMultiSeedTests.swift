@@ -21,11 +21,19 @@ private final class MultiSeedStore: PhotoSemanticsStore {
     func indexedPhotoIds(sessionId: String) throws -> Set<String> {
         Set(rows.values.filter { $0.sessionId == sessionId }.map(\.photoId))
     }
+    /// P0-3：2 参重载显式实现（协议无默认实现）；多选检索只取同一向量空间的行。
+    func indexedPhotoIds(sessionId: String, modelVersion: String) throws -> Set<String> {
+        Set(rows.values
+            .filter { $0.sessionId == sessionId && $0.modelVersion == modelVersion }
+            .map(\.photoId))
+    }
     func count(sessionId: String) throws -> Int {
         rows.values.filter { $0.sessionId == sessionId }.count
     }
     func deleteSession(_ sessionId: String) throws -> Int { 0 }
     func deleteAll() throws -> Int { 0 }
+    /// 多选检索不触发"重建语义索引"，无旧版本行可清。
+    func clearStaleRows(sessionId: String, keepingModelVersion: String) throws -> Int { 0 }
 }
 
 private func row(
@@ -36,7 +44,7 @@ private func row(
         labelsJson: "[]",
         feature: SemanticFeatureCodec.encode(vector),
         featureDim: vector.count,
-        modelVersion: "test",
+        modelVersion: ImageSemanticsExtractor.modelVersion,
         computedAt: "2026-11-11T00:00:00Z")
 }
 

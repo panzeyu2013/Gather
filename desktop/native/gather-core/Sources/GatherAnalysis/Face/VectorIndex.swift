@@ -84,7 +84,39 @@ public struct LshHits: Equatable, Sendable {
 /// 恢复余弦阈值低至 ~0.6 的召回。候选一律经精确余弦复核，假阳性不可能
 /// 泄漏进结果——LSH 只会*收缩*候选集（TS lsh-index.ts:9-12）。
 public final class CosineLshIndex {
-    /// 超过此行数走 ANN 路径而非 O(n^2) 全扫描（TS lsh-index.ts:49 LSH_MIN_POINTS）。
+    /// 聚类启用 LSH 的规模门槛（2026-11-24 第二轮评审回退：4_000 → 20_000）。
+    /// 语义：n <= 本值仍走 `FaceClusterer.exactRegionQuery` 的精确全扫描；n > 本值走
+    /// 「桶候选 + 精确余弦复核」的近似路径（`ClusterLshOptions.minPoints` 的默认值）。
+    /// 为什么回退：近似路径只收缩候选集 ⇒ **precision** 与暴力一致，**召回**却完全由
+    /// LSH 决定。按 SimHash 的二项近似推算（默认 16 位 × 6 表、probeRadius=2），
+    /// eps=0.65（生产默认相似度门）的单表命中率 ≈0.141、6 表并集召回 ≈0.602；要拿到
+    /// ≈0.971 得 eps≈0.85。即 4k 档会把 cos≈0.65 的近邻漏掉近四成，而仓库**没有任何**
+    /// 4k 档 release exact-vs-LSH 一致率/召回实测——发布前不拿质量换速度，故门槛维持
+    /// TS 对账值 20_000（lsh-index.ts:49 LSH_MIN_POINTS）：低于 20k 一律走精确路。
+    /// 下调条件：先给出 release 构建在 4k 真实语料上的 exact-vs-LSH 一致率证据
+    /// （.tmp/arch-plan-2026-11-23/14-review-and-fix.md §3「4k 门槛标定」未验证项），
+    /// 再改本值并重跑 gather-core-benchmarks 的 lsh 档。
+    static let clusterLSHMinPoints = 20_000
+
+    /// 匹配构建扁平行缓冲的规模门槛（P1-1 前半：2026-11-23 与 LSH 门槛解耦）。
+    /// 语义：0 ⇒ 非空库一律建 flat 行缓冲，常见库（几百~几千行）不再退回按行
+    /// `[Float]` 逐元素取值。与是否建 LSH 无关——实例级 LSH 门是
+    /// `FaceMatcher(library:lshMinPoints:)` 的参数（默认 20_000，见 Matcher.swift）。
+    /// flat 与 rows 两条分支的结果逐位相同（同行序、同逐项累加顺序），
+    /// FaceMatcherBatchTests 用精确 == 守门。
+    static let flatBufferMinPoints = 0
+
+    /// 已弃用（2026-11-23 门槛拆分）：旧「一个常量管两处」的共享门槛。两处的真值现在
+    /// 分属不同对象，**不要**照搬本别名去选路径：
+    /// - **匹配路径**：门槛是 `FaceMatcher` 的 `lshMinPoints`（默认 20_000，
+    ///   Matcher.swift:178-181）。只有改它才是改匹配召回。
+    /// - **扁平缓冲**：`flatBufferMinPoints`（0）**只**控制是否建扁平行缓冲，不参与任何
+    ///   匹配/聚类门槛判定；按它选路径会把全库推到 LSH（0 < 任意库行数），召回突变。
+    /// - **聚类路径**：`clusterLSHMinPoints`（20_000）。
+    /// 保留为别名的理由：值保持 20_000（= TS `LSH_MIN_POINTS`；本轮聚类门槛回退后与
+    /// `clusterLSHMinPoints` 同值，但语义仍分属两处），外部对 `CosineLshIndex` 的使用点
+    /// 不会因拆分产生行为/编译漂移（删它会改编译面）；Sources 内已零引用，新代码不得使用。
+    @available(*, deprecated, message: "匹配路径门槛见 FaceMatcher.lshMinPoints（20_000）；flatBufferMinPoints 只控制扁平缓冲；聚类门槛见 clusterLSHMinPoints")
     public static let lshMinPoints = 20_000
 
     public let config: LshConfig

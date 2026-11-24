@@ -717,9 +717,21 @@ extension FaceKwService {
         settings.bool(.faceIncrementalClustering)
     }
 
-    /// 聚类签名（缓存键）：除 eps/minPts 外必须包含质量门槛与二遍阈值——
-    /// 否则改了 face_core_quality 之后旧簇会被判定"仍然有效"而跳过重聚类。
-    static func clusterSignature(eps: Double, minPts: Int, options: FaceClusterOptions) -> String {
+    /// 聚类签名（缓存键）：除 eps/minPts 外必须包含质量门槛、二遍阈值与聚类 LSH 门槛——
+    /// 否则改了 face_core_quality / 改了 LSH 门槛之后旧簇会被判定"仍然有效"而跳过重聚类
+    /// （P1：门槛 20_000 -> 4_000 时旧 exact 簇不失效、recluster 又共用同一缓存键）。
+    /// - Parameter lshMinPoints: **本次聚类实际使用的** LSH 门槛，由调用点从 clusterProvider
+    ///   的选项透传（生产默认 provider 见 FaceKwService.swift:154-163：它只接 eps/minPts/
+    ///   FaceClusterOptions，不接 LSH 选项 ⇒ 跑的是 `ClusterLshOptions.default`；注入
+    ///   provider 若自带 options，调用点必须把自己的 minPoints 传到这里）。构造处不再直接读
+    ///   `ClusterLshOptions.default`：provider 是注入点，构造处取全局默认会让「签名写着
+    ///   一个门槛、实跑 0/精确」这种不一致悄悄通过缓存校验而跳过重聚类。
+    ///   缺省值只是既有三参调用点的兼容值（= 生产默认）；新增调用点必须显式传实参。
+    static func clusterSignature(
+        eps: Double, minPts: Int, options: FaceClusterOptions,
+        lshMinPoints: Int = ClusterLshOptions.default.minPoints
+    ) -> String {
         "\(eps):\(minPts):q\(options.coreQualityFloor):r\(options.retryMinSamples.map(String.init) ?? "-")"
+            + ":lsh\(lshMinPoints)"
     }
 }

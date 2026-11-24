@@ -20,8 +20,12 @@
 // LSH 召回在 print 之后逐项判定，退化直接 exit 1；手动/发版验收依赖这个退出码，
 // 不再只把 NDJSON 留待人工比对。
 // （原夜间 workflow 已于 2026-10-29 移除，下面这些门改为手动执行。）
-//   .build/debug/gather-core-benchmarks --face-10k     # 10k 合成人脸（显式档；debug 走 LSH，
-//                                                      #   -c release 走生产默认的精确 DBSCAN）
+//   .build/debug/gather-core-benchmarks --face-10k            # 10k 合成人脸（默认用生产选项
+//                                                             #   ClusterLshOptions.default，门槛 20_000
+//                                                             #   ⇒ 10k <= 20k 走精确 DBSCAN，-Onone 分钟级）
+//   .build/debug/gather-core-benchmarks --face-10k --exact    # 显式精确（等价默认；NDJSON 打 lshMinPoints=0 lsh=off）
+//   .build/debug/gather-core-benchmarks --face-10k --lsh      # 强制 LSH 候选（门槛 1，快速档）
+//   .build/debug/gather-core-benchmarks --face-flags-self-test # 只跑 --exact/--lsh 解析的负样本自测（秒级，不跑基准）
 import Foundation
 import GatherAnalysis
 import GatherProtocol
@@ -226,12 +230,15 @@ func benchEmbeddingCluster(size: Int, seed: UInt32, lshMinPoints: Int) throws {
 
     let groups = result.clusters.count
     let noise = result.noise.count
+    // 这一档测的是 LSH 路径的耗时/形状（README「LSH 路径 minPoints=1000」），门槛
+    // 用的是档位用的强制值，不是生产门槛；生产门槛单独打出来，避免读成生产真值。
+    let path = size > lshMinPoints ? "lsh" : "exact-threshold"
 
     emit(MetricRow(
         benchmark: "similarity", phase: "embedding-cluster", size: size,
         durationMs: runMs,
         throughputPerSec: Double(size) / (runMs / 1000),
-        metric: "genMs=\(String(format: "%.1f", gen)) groups=\(groups) noise=\(noise) lshMinPoints=\(lshMinPoints)"))
+        metric: "genMs=\(String(format: "%.1f", gen)) groups=\(groups) noise=\(noise) path=\(path) lshMinPoints=\(lshMinPoints) productionMinPoints=\(ClusterLshOptions.default.minPoints)"))
 }
 
 // ── 质量基线（从单测迁出）──
@@ -679,12 +686,13 @@ func benchIncrementalCluster(size: Int, added: Int, seed: UInt32) throws -> [Str
 // 范围：审计 §6.2 item 2 的 B（聚类）与匹配两段。检测/对齐/嵌入需要模型资产，
 // bench 无模型，A 段不测（报告里明确写 "no-model"）。
 // 数据：50 身份 × 200 样本 × 512 维，单位中心 + 高斯扰动（确定性种子）。
-// 聚类路径按构建配置选择并在 metric 里显式标注 path：
-//   · release（-c release）：生产在 10k 档的默认路径 = 精确 DBSCAN（默认 LSH 门是
-//     20k），10k² × 512 ≈ 5×10¹⁰ 次乘加在此配置可跑（实测约 19s）；
-//   · debug（-Onone）：同一精确扫描不可行（分钟级），改跑 LSH 候选路径
-//     （bits 12 / tables 2 / probeRadius 0），用于快速回归与内存粗估。
-// 两种构建的数字不可互比；metric 的 path=/build= 字段即口径。
+// 聚类路径只由显式开关决定（不再按构建配置切换，见 resolveFaceClusterMode），
+// 并在 metric 里显式标注 path=：
+//   · 默认：生产选项（ClusterLshOptions.default，LSH 门 20_000）⇒ 10k <= 20k 走
+//     精确 DBSCAN（path=exact-threshold；release 约 19 s，-Onone 分钟级）；
+//   · `--lsh`：门槛压到 1，强制 LSH 候选路径（bits 12 / tables 2 / probeRadius 0），
+//     用于快速回归与内存粗估；`--exact` 只是显式声明精确（10k 档等价默认）。
+// 两种配置的数字不可互比；metric 的 path=/build= 字段即口径。
 
 /// 合成人脸档的内存粗估（MB）：entries + DBSCAN 平铺 + LSH 行副本 + 桶表 +
 /// 匹配库平铺。只计本进程持有的大数组，不含 allocator 碎片/临时数组。
@@ -708,14 +716,115 @@ func faceMemoryEstimateMB(
     return (total, detail)
 }
 
-func benchFaceCluster(entries: [EmbeddingEntry], dim: Int, seed: UInt32, exact: Bool) throws {
+/// 聚类路径与门槛的**唯一**来源：generate 行（plain）与 NDJSON 行都从这里取值。
+/// 旧实现两行各算一遍（generate 行 `--exact` 打 0，NDJSON 行仍打生产门槛），同一次
+/// run 会出现 `lshMinPoints=0` 与 `lshMinPoints=20_000` 两套说法。
+struct FaceClusterMode {
+    /// 显式 `--exact`：`ClusterLshOptions.enabled = false`（门槛恒打 0 = off）。
+    let exact: Bool
+    /// 显式 `--lsh`：门槛降到 1，强制 LSH 候选（debug 快速形状档）。
+    let forceLSH: Bool
+    /// 传给 `ClusterLshOptions.minPoints` 的门槛；exact 档恒 0（关闭，不参与判定）。
+    let lshMinPoints: Int
+
+    var lshEnabled: Bool { !exact }
+
+    /// 本次**实际**走的路径（由档位大小与门槛共同决定，不按"想走哪条"报）：
+    /// `exact`（--exact）/ `exact-threshold`（enabled 但 n <= 门槛，默认档跑 10k 即此）/
+    /// `lsh` / `lsh-forced`。
+    func pathName(size: Int) -> String {
+        guard lshEnabled else { return "exact" }
+        guard size > lshMinPoints else { return "exact-threshold" }
+        return forceLSH ? "lsh-forced" : "lsh"
+    }
+
+    /// 是否真的建了 LSH 索引（内存粗估按它取，不按"想要"的路径）。
+    func usesLSH(size: Int) -> Bool { lshEnabled && size > lshMinPoints }
+}
+
+enum FaceClusterModeError: Error, CustomStringConvertible {
+    case conflictingFlags
+    var description: String {
+        "--exact 与 --lsh 互斥：一个是关 LSH 的精确 DBSCAN，一个是压门槛强制 LSH"
+    }
+}
+
+/// 解析 `--exact` / `--lsh`；都不给 = 生产默认（`ClusterLshOptions.default`）。
+/// 冲突档直接抛错而不是静默取 `--exact`：静默会让"以为在测 LSH 档"的验收拿到精确数。
+func resolveFaceClusterMode(
+    _ arguments: [String], productionMinPoints: Int
+) throws -> FaceClusterMode {
+    let exact = arguments.contains("--exact")
+    let forceLSH = arguments.contains("--lsh")
+    if exact && forceLSH { throw FaceClusterModeError.conflictingFlags }
+    if exact { return FaceClusterMode(exact: true, forceLSH: false, lshMinPoints: 0) }
+    if forceLSH { return FaceClusterMode(exact: false, forceLSH: true, lshMinPoints: 1) }
+    return FaceClusterMode(exact: false, forceLSH: false, lshMinPoints: productionMinPoints)
+}
+
+/// `--exact` / `--lsh` 的负样本自测（不跑基准）：默认档、两个显式档、近似拼写，
+/// 以及必须被拒绝的冲突档。口径是"同一次 run 只有一套门槛"——generate 行与 NDJSON 行
+/// 共用 `FaceClusterMode`，所以这里直接断言解析结果与 pathName/usesLSH。
+func faceClusterFlagsSelfTest() -> [String] {
+    var failures: [String] = []
+    let production = ClusterLshOptions.default.minPoints
+    // 负样本：生产聚类门槛必须是 20_000（4k 回退的证据点，见 VectorIndex.swift:87-99）。
+    check(
+        production == 20_000,
+        "production cluster LSH minPoints must be 20_000 (got \(production))", into: &failures)
+    // (参数, 期望 exact, 期望 forceLSH, 期望打印门槛, 探测档位大小, 期望实际路径)
+    let cases: [([String], Bool, Bool, Int, Int, String)] = [
+        ([], false, false, production, 10_000, "exact-threshold"),
+        ([], false, false, production, 50_000, "lsh"),
+        (["--exact"], true, false, 0, 10_000, "exact"),
+        (["--exact"], true, false, 0, 50_000, "exact"),
+        (["--lsh"], false, true, 1, 2_000, "lsh-forced"),
+        (["--exact=true", "--lshy"], false, false, production, 10_000, "exact-threshold"),
+    ]
+    for (arguments, exact, forceLSH, minPoints, size, path) in cases {
+        do {
+            let mode = try resolveFaceClusterMode(arguments, productionMinPoints: production)
+            check(
+                mode.exact == exact && mode.forceLSH == forceLSH,
+                "args \(arguments): expected exact=\(exact) lsh=\(forceLSH)", into: &failures)
+            check(
+                mode.lshMinPoints == minPoints,
+                "args \(arguments): expected lshMinPoints=\(minPoints) got \(mode.lshMinPoints)",
+                into: &failures)
+            check(
+                mode.pathName(size: size) == path,
+                "args \(arguments) size=\(size): expected path=\(path) got \(mode.pathName(size: size))",
+                into: &failures)
+        } catch {
+            check(false, "args \(arguments) must parse: \(error)", into: &failures)
+        }
+    }
+    // 负样本：冲突档必须拒绝（旧实现静默取 --exact，用户以为在测 LSH 档）。
+    do {
+        _ = try resolveFaceClusterMode(["--exact", "--lsh"], productionMinPoints: production)
+        check(false, "--exact --lsh must be rejected", into: &failures)
+    } catch is FaceClusterModeError {
+        // 期望路径：抛 FaceClusterModeError
+    } catch {
+        check(
+            false, "conflicting flags must throw FaceClusterModeError, got \(error)",
+            into: &failures)
+    }
+    return failures
+}
+
+func benchFaceCluster(
+    entries: [EmbeddingEntry], dim: Int, seed: UInt32, mode: FaceClusterMode
+) throws {
     let size = entries.count
     // 512 维下 LSH 的成本主要在"每表 16→12 位 × 每行 512 维"的投影点积；
     // 50 个紧簇（簇内余弦 ≈0.987）用 12 位 × 2 表即可，桶内候选 ~2.4 行/表。
     let bits = 12, tables = 2, probeRadius = 0
+    // 选项只从 mode 取：默认档就是生产选项（门槛 20_000）；10k 档 n <= 门槛 ⇒ 由
+    // Clusterer 走精确路（pathName 写 exact-threshold，内存粗估也不计 LSH）。
     let options = ClusterLshOptions(
-        enabled: !exact,
-        minPoints: 1_000,
+        enabled: mode.lshEnabled,
+        minPoints: mode.lshMinPoints,
         config: LshConfig(
             bits: bits, tables: tables, probeRadius: probeRadius, seed: seed, unitVectors: true))
     let sinceRun = DispatchTime.now()
@@ -723,18 +832,19 @@ func benchFaceCluster(entries: [EmbeddingEntry], dim: Int, seed: UInt32, exact: 
         entries: entries, eps: 0.9, minPts: 5, lshOptions: options)
     let runMs = elapsedMs(sinceRun)
 
-    let estimate = exact
+    let usesLSH = mode.usesLSH(size: size)
+    let estimate = usesLSH
         ? faceMemoryEstimateMB(
-            size: size, dim: dim, libraryRows: 0, lshTables: 0, lshBits: 0, includeLSH: false)
-        : faceMemoryEstimateMB(
             size: size, dim: dim, libraryRows: 0, lshTables: tables, lshBits: bits)
+        : faceMemoryEstimateMB(
+            size: size, dim: dim, libraryRows: 0, lshTables: 0, lshBits: 0, includeLSH: false)
     let groups = result.clusters.count
     let largest = result.clusters.map(\.count).max() ?? 0
     emit(MetricRow(
         benchmark: "face", phase: "face-cluster-10k", size: size,
         durationMs: runMs,
         throughputPerSec: Double(size) / max(runMs / 1000, 1e-9),
-        metric: "dim=\(dim) identities=50 path=\(exact ? "exact" : "lsh") build=\(faceBuildName()) bits=\(exact ? 0 : bits) tables=\(exact ? 0 : tables) probeRadius=\(exact ? 0 : probeRadius) eps=0.9 minPts=5 groups=\(groups) largest=\(largest) noise=\(result.noise.count) estPeakMB=\(String(format: "%.1f", estimate.total)) estDetail=\(estimate.detail)"))
+        metric: "dim=\(dim) identities=50 path=\(mode.pathName(size: size)) lsh=\(usesLSH ? "on" : "off") lshMinPoints=\(mode.lshMinPoints) clusterLSHMinPoints=\(ClusterLshOptions.default.minPoints) build=\(faceBuildName()) bits=\(usesLSH ? bits : 0) tables=\(usesLSH ? tables : 0) probeRadius=\(usesLSH ? probeRadius : 0) eps=0.9 minPts=5 groups=\(groups) largest=\(largest) noise=\(result.noise.count) estPeakMB=\(String(format: "%.1f", estimate.total)) estDetail=\(estimate.detail)"))
 }
 
 func benchFaceMatch(entries: [EmbeddingEntry], identities: Int, dim: Int) throws {
@@ -781,24 +891,28 @@ func benchFaceMatch(entries: [EmbeddingEntry], identities: Int, dim: Int) throws
         metric: "dim=\(dim) clusters=\(clusters.count) libraryRows=\(library.count) matched=\(accepted) ambiguous=\(ambiguous) unknown=\(unknown) lsh=off estPeakMB=\(String(format: "%.1f", estimate.total)) estDetail=\(estimate.detail)"))
 }
 
-/// 构建配置与聚类路径：release 才跑精确 10k DBSCAN（-Onone 下的 O(n²) 精确扫描
-/// 是分钟级，debug 改跑 LSH 候选）。两函数避免在字符串插值里直接写常量条件
-/// （-Onone 也会对 `_isDebugAssertConfiguration()` 做常量折叠并告警不可达分支）。
+/// 构建配置与聚类路径。默认**不再**按构建配置强制精确 DBSCAN（P1：那会让
+/// `--face-10k` 绕过生产门槛、§5.5 验收测不到真值）：默认走生产默认选项
+/// （`ClusterLshOptions.default`，门槛 20_000 ⇒ 10k <= 20k 走精确），路径只由
+/// `--exact` / `--lsh` 显式选择（-Onone 下 O(n²) 精确扫描是分钟级，快速形状档请用
+/// `--lsh`）。函数避免在字符串插值里直接写常量条件（-Onone 也会对
+/// `_isDebugAssertConfiguration()` 做常量折叠并告警不可达分支）。
 @inline(never)
 func benchmarkIsDebugBuild() -> Bool { _isDebugAssertConfiguration() }
 
 func faceBuildName() -> String { benchmarkIsDebugBuild() ? "debug" : "release" }
-
-func faceClusterUsesExact() -> Bool { !benchmarkIsDebugBuild() }
 
 func benchFace10k(size: Int, dim: Int, identities: Int, seed: UInt32) throws {
     let sinceGen = DispatchTime.now()
     let entries = makeEmbeddings(
         count: size, dim: dim, seed: seed, perturb: 0.005, clusters: identities)
     let genMs = elapsedMs(sinceGen)
-    let exact = faceClusterUsesExact()
-    print("benchmark=face phase=generate size=\(size) dim=\(dim) genMs=\(String(format: "%.1f", genMs)) build=\(faceBuildName()) clusterPath=\(exact ? "exact" : "lsh") aStage=skipped(no-model)")
-    try benchFaceCluster(entries: entries, dim: dim, seed: seed, exact: exact)
+    // 与 benchFaceCluster 同一个 mode（同一套门槛/路径）：两行输出不再各算一遍。
+    let mode = try resolveFaceClusterMode(
+        CommandLine.arguments, productionMinPoints: ClusterLshOptions.default.minPoints)
+    let usesLSH = mode.usesLSH(size: size)
+    print("benchmark=face phase=generate size=\(size) dim=\(dim) genMs=\(String(format: "%.1f", genMs)) build=\(faceBuildName()) clusterPath=\(mode.pathName(size: size)) lsh=\(usesLSH ? "on" : "off") lshMinPoints=\(mode.lshMinPoints) clusterLSHMinPoints=\(ClusterLshOptions.default.minPoints) aStage=skipped(no-model)")
+    try benchFaceCluster(entries: entries, dim: dim, seed: seed, mode: mode)
     try benchFaceMatch(entries: entries, identities: identities, dim: dim)
 }
 
@@ -836,10 +950,19 @@ if CommandLine.arguments.contains("--incremental") {
     reportChecks("similarity", failures)
 }
 
+// --exact / --lsh 的负样本自测：不跑任何基准（秒级），只验参数解析与门槛/路径口径。
+if CommandLine.arguments.contains("--face-flags-self-test") {
+    reportChecks("face-flags", faceClusterFlagsSelfTest())
+}
+
 // 10k 合成人脸显式档（Cut 5 / 5d-2）：不进默认档/冒烟档，避免日常基准变慢。
 if CommandLine.arguments.contains("--face-10k") {
     do {
         try benchFace10k(size: 10_000, dim: 512, identities: 50, seed: 0xFACE10)
+    } catch let error as FaceClusterModeError {
+        // 参数冲突是用法错误（exit 2），与"基准/断言失败"（exit 1）区分开。
+        print("benchmark=face error=\(error)")
+        exit(2)
     } catch {
         print("benchmark=face error=\(error)")
         exit(1)
@@ -874,7 +997,10 @@ do {
         try benchDHashCluster(size: size, seed: 0xD4A5)
     }
     for size in sizes {
-        // 2 万档强制 LSH（minPoints=1000），5 万档走默认门（20_000，自动 LSH）。
+        // 该档测 LSH 路径的形状/耗时（README: embedding-cluster「LSH 路径 minPoints=1000」），
+        // 门槛用强制值 1_000：20k 档恰好等于生产门槛 20_000，直接把生产门槛传进去会让这一档
+        // 翻成 O(n²) 精确路（2 万/5 万 的耗时证据与 README 基线同时失效）。生产门槛由
+        // NDJSON 的 productionMinPoints 打出；生产真值的验收档是 --face-10k（默认 = 生产选项）。
         try benchEmbeddingCluster(size: size, seed: 0xB1E2, lshMinPoints: smoke ? 100 : 1_000)
     }
     for size in sizes {

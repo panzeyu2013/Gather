@@ -482,10 +482,10 @@ hash，只做聚类 + 档位预计算，不重算哈希。
 - 首次启动按数据库写入 768 维 marker 并为既有工作区装配带 dedupe/checkpoint 的
   `face.analyze` 重跑任务（`GatherApp.prepareNativeEmbeddingRerun`），特征空间
   迁移不静默。
-- **遗留不一致（2026-09-28）**：设置页仍保留旧 ONNX 模型下载入口
+- **遗留不一致（2026-09-28，已于 2026-11-23 处置）**：设置页曾保留旧 ONNX 模型下载入口
   （`Settings/SettingsView.swift` 的 `startModelDownload`/`ModelInstaller`，下载
-  `buffalo_l.zip`），与“无模型资产、无下载链路”不符；属未接线遗留，待产品裁决
-  （删除或接线），处置原则见 ADR-028。
+  `buffalo_l.zip`）。**2026-11-23 已按 ADR-028 删除**：`ModelInstaller`、下载设置键
+  `model_download_url`、设置页入口与对应用例全部移除（仓库已无 ONNX 运行时，该能力不可达）。
 
 ### 事实依据
 

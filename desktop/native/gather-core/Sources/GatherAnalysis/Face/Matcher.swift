@@ -6,9 +6,11 @@
 //   精确路径 cosineSimilarity 127-142 行）
 //
 // 语义要点（与 TS 逐位一致）：
-//   - 库大小 <= lshMinPoints（默认 CosineLshIndex.lshMinPoints = 20_000，
-//     lsh-index.ts:49）走全量精确扫描（face-matcher.ts:103-121）；> 阈值走
-//     CosineLshIndex 桶候选 + 精确余弦重验（face-matcher.ts:78-101）。LSH
+//   - 实例级 API `matchAgainstLibrary`：库大小 <= lshMinPoints（实例参数，默认
+//     20_000 = TS lsh-index.ts:49 LSH_MIN_POINTS；与聚类门槛
+//     `CosineLshIndex.clusterLSHMinPoints` 无耦合）走全量精确扫描
+//     （face-matcher.ts:103-121）；> 阈值走 CosineLshIndex 桶候选 + 精确余弦重验
+//     （face-matcher.ts:78-101）。LSH
 //     只会收缩候选集（候选一律经精确余弦复核），故 precision 与暴力一致，
 //     召回门限见 face-clusterer-lsh.test.ts（>= 0.95）。
 //   - LSH 路径余弦由 CosineLshIndex 内部 verifyCandidates 计算：默认配置
@@ -42,8 +44,11 @@
 //     每簇成员/feedback 的读取与 rejected 集合由调用方（FaceKwService）一次批量算好。
 //   - Cut 5 / 5d-2：批量 API **不再**为实例库建 LSH（旧实现借 loadLibrary 顺带建索引，
 //     纯浪费内存/建索引时间）；LSH 只服务实例级逐查询 API `matchAgainstLibrary`。
-//     `lshMinPoints` 参数保留：> 阈值时才为批量路径准备平铺缓冲（候选收缩仍不用），
-//     并为 `matchAgainstLibrary` 保留同一 LSH 门。
+//   - P1-1（2026-11-23 前半）：扁平缓冲门槛与 LSH 门槛解耦。平铺缓冲改由
+//     `CosineLshIndex.flatBufferMinPoints`（0 ⇒ 非空库一律建）门控，批量路径在
+//     常见规模（几百~几千行）也吃到连续缓冲；`lshMinPoints` 参数从此只管实例级
+//     LSH 建索引（候选收缩仍只服务 `matchAgainstLibrary`）。两条分支（flat / 逐行）
+//     结果逐位相同：同一行序、同一逐项累加顺序、同一零向量短路。
 
 import Foundation
 import GatherProtocol
@@ -148,15 +153,21 @@ public enum MatcherError: Error, Equatable {
 /// CosineLshIndex：跨表多探针桶并集候选 + 精确余弦重验，precision 与暴力一致
 /// （LSH 只会收缩候选集）。批量 API `match(clusters:...)` 恒走精确扫描，从不建
 /// LSH——它的候选收缩会漏掉人物最佳行，且对账要求逐位一致（Cut 5 / 5d-2）。
+/// `lshMinPoints` **只**门控实例级 LSH；扁平行缓冲由
+/// `CosineLshIndex.flatBufferMinPoints`（0 ⇒ 非空库一律建）门控（P1-1 前半）。
 public final class FaceMatcher {
     private let libraryEmbeddings: [LibraryEmbedding]
+    /// 实例级 LSH 建索引门槛：库行数 > 本值才建 CosineLshIndex。**只**影响 LSH
+    /// 候选路径（`matchAgainstLibrary`）；扁平行缓冲的门槛是
+    /// `CosineLshIndex.flatBufferMinPoints`，与本值无关（P1-1 前半解耦）。
     public let lshMinPoints: Int
 
     private var libraryFlat: [Float]?
     private var lshIndex: CosineLshIndex?
     private var libraryDim = 0
-    /// 行维度已校验（> lshMinPoints 时平铺缓冲也已就绪）。批量路径只要求这一状态，
-    /// 不要求 LSH；`matchAgainstLibrary` 再按需补建索引。
+    /// 行维度已校验（P1-1 前半起：非空库的平铺缓冲也已就绪，不再是「库 > 20_000
+    /// 才就绪」）。批量路径只要求这一状态，不要求 LSH；`matchAgainstLibrary`
+    /// 再按需补建索引。
     private var libraryRowsPrepared = false
     /// 实例库的行范数平方（magB）缓存：批量路径只按库行顺序累加一次，与
     /// cosineSimilarity 的 magB 累加顺序相同（同序 ⇒ 位级同值）。
@@ -164,16 +175,23 @@ public final class FaceMatcher {
 
     /// 注入式构造：调用方喂入完整库（等价 TS 构造注入 PersonRepository 后
     /// loadLibrary() 惰性取数的结果）。
-    public init(library: [LibraryEmbedding], lshMinPoints: Int = CosineLshIndex.lshMinPoints) {
+    /// - Parameter lshMinPoints: 实例级 LSH 门槛，默认 20_000 = TS `LSH_MIN_POINTS`
+    ///   （lsh-index.ts:49）对账值。与聚类门槛 `clusterLSHMinPoints` 当前**同值但不同
+    ///   语义**：那个门管批量聚类的候选收缩，这个门管逐查询匹配，两者不得互相带动——
+    ///   匹配走近似会收缩候选集，小库必须保持精确全扫描，改这个默认值就是改召回。
+    public init(library: [LibraryEmbedding], lshMinPoints: Int = 20_000) {
         self.libraryEmbeddings = library
         self.lshMinPoints = lshMinPoints
     }
 
-    /// 行维度校验 +（超过 lshMinPoints 时）一次性平铺缓冲。**不建 LSH**：批量路径
-    /// 也复用它（平铺改善扫描局部性，但与候选收缩无关）。
+    /// 行维度校验 + 一次性平铺缓冲（P1-1 前半：门槛是
+    /// `CosineLshIndex.flatBufferMinPoints` = 0 ⇒ 非空库一律建，不再等库大到
+    /// 20_000 才建）。**不建 LSH**：批量路径也复用它（平铺改善扫描局部性，但与
+    /// 候选收缩无关）。空库不建缓冲（不触碰 `[0]`，`libraryDim` 保持 0）；
+    /// 行维度不一致仍显式抛错（TS flat.set 越界静默截断的偏差，见文件头）。
     private func prepareLibraryRows() throws {
         if libraryRowsPrepared { return }
-        if libraryEmbeddings.count > lshMinPoints {
+        if libraryEmbeddings.count > CosineLshIndex.flatBufferMinPoints {
             libraryDim = libraryEmbeddings[0].embedding.count
             var flat = [Float](repeating: 0, count: libraryEmbeddings.count * libraryDim)
             for i in 0..<libraryEmbeddings.count {
@@ -193,7 +211,8 @@ public final class FaceMatcher {
     // TS face-matcher.ts:36-55（loadLibrary）：惰性加载库并按规模决定路径。
     // Swift 侧库数据由构造注入，此处只做首次建索引（索引随实例生命周期存在，
     // 重建需重新构造实例，语义与 TS 一致）。**唯一**建 LSH 的入口是实例级
-    // `matchAgainstLibrary`；批量 API 只调 prepareLibraryRows（Cut 5 / 5d-2）。
+    // `matchAgainstLibrary`（门 = lshMinPoints，与行缓冲门已解耦）；批量 API 只调
+    // prepareLibraryRows（Cut 5 / 5d-2）。
     private func loadLibrary() throws -> [LibraryEmbedding] {
         try prepareLibraryRows()
         if lshIndex == nil, libraryEmbeddings.count > lshMinPoints, let flat = libraryFlat {
@@ -269,8 +288,8 @@ public final class FaceMatcher {
     // MARK: - 批量 API（Cut 5 / 5c-1：库一次、范数一次；5d-2：不建 LSH）
 
     /// 批量扫描的库快照。范数在构造时按行、按同一 `for i in 0..<n` 顺序累加一次。
-    /// `flat` 只在库 > lshMinPoints（prepareLibraryRows 已建平铺缓冲）时非空；两种
-    /// 来源的行序与数值完全相同，逐行回退到 `rows[j].embedding`。
+    /// `flat` 在库行维度一致时非空（prepareLibraryRows 已建平铺缓冲；P1-1 前半起
+    /// 非空库一律建）；两种来源的行序与数值完全相同，逐行回退到 `rows[j].embedding`。
     private struct LibrarySnapshot {
         let rows: [LibraryEmbedding]
         let flat: [Float]?
@@ -306,8 +325,8 @@ public final class FaceMatcher {
 
     /// 解析本次批量的库快照。
     /// - `library == nil`：用实例库，`prepareLibraryRows()` 只做首次行校验/平铺
-    ///   （> lshMinPoints 时；**不建 LSH**），范数首次算完后缓存在实例上。即使实例
-    ///   之前因 `matchAgainstLibrary` 建过索引，批量也从不使用该索引。
+    ///   （P1-1 前半起非空库一律平铺；**不建 LSH**），范数首次算完后缓存在实例上。
+    ///   即使实例之前因 `matchAgainstLibrary` 建过索引，批量也从不使用该索引。
     /// - 显式传入：用该快照，范数在本次调用内预计算一次（不建平铺、不建 LSH）。
     private func librarySnapshot(_ library: [LibraryEmbedding]?) throws -> LibrarySnapshot {
         guard let library else {

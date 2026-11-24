@@ -4,7 +4,7 @@
   "gates": {
     "protocol-surface": {
       "protocol_files": 112,
-      "protocol_lines": 17576,
+      "protocol_lines": 17574,
       "public_types": 522,
       "public_declarations": 3220,
       "zero_reference_types": 1,
@@ -12,13 +12,13 @@
     },
     "protocol-surface-modules": {
       "public_types_gatherpersistence": 292,
-      "public_declarations_gatherpersistence": 2028,
+      "public_declarations_gatherpersistence": 2030,
       "public_types_gatherdelivery": 28,
       "public_declarations_gatherdelivery": 148,
       "public_types_gatheranalysis": 71,
       "public_declarations_gatheranalysis": 393,
       "public_types_gatherapplication": 262,
-      "public_declarations_gatherapplication": 1789,
+      "public_declarations_gatherapplication": 1788,
       "public_types_gathermetadataio": 5,
       "public_declarations_gathermetadataio": 26
     }

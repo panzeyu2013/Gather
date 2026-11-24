@@ -1,8 +1,10 @@
 // desktop/native/gather-app/Sources/GatherUI/Settings/SettingsView.swift
 // Cut 4 / 4c-2d：设置页从 1,935 行拆为「壳 + View extensions + VM extensions +
-// 独立支撑文件」。本文件只保留页面壳：7 个状态项（6 个 @State + @FocusState）、
+// 独立支撑文件」。本文件只保留页面壳：6 个状态项（5 个 @State + @FocusState）、
 // 装配 init、body 的 Form 章节顺序，以及 3 个 .task / 2 个 fileImporter /
-// 2 个 gatherDestructiveConfirm 的顺序（全部逐字未动）。
+// 1 个 .sheet 的顺序（全部逐字未动）。
+// P1-6（ADR-028 未接线资产删除）：模型下载器链路已删除，随之下线「模型覆盖
+// 安装」确认弹窗与其 @State（SettingsConfirmations.swift 同类一并删除）。
 // 章节实现：+Sections（横幅/保存规则/语言）/ +C1HealthSection / +FaceAnalysis /
 // +Model（高级与模型推理）/ +Fields（分组字段行）。
 //
@@ -35,7 +37,6 @@ import GatherProtocol
 public struct SettingsView: View {
     @State var viewModel: SettingsViewModel
     @State private var pendingResetImpact: SettingsResetImpact?
-    @State var pendingModelInstall: PendingModelInstall?
     /// 正在用文件选择器编辑的设置项（目录项选文件夹，其余选文件）。
     @State var pickingField: SettingField?
     /// 正在用文件选择器编辑的模型路径键。
@@ -95,7 +96,7 @@ public struct SettingsView: View {
         .tint(GatherTheme.accent)
         // 页面骨架（frame / 语义背景 / 窗口标题）由 DesignSystem 提供；
         // Form(.grouped)、section 顺序与其后的 toolbar / fileImporter /
-        // gatherDestructiveConfirm 全部未动。
+        // .sheet 全部未动。
         .gatherPage(title: l10n("设置"), surface: .canvas)
         // 窗口级不透明修复务必留在最外层：Settings scene 用
         // containerBackground(for: .window) 给窗口铺 canvas，不能被页面
@@ -180,16 +181,6 @@ public struct SettingsView: View {
                 }
             }
         }
-        // 模型覆盖安装：同名文件会被覆盖且不可恢复，先确认。
-        .gatherDestructiveConfirm(
-            pending: $pendingModelInstall,
-            title: l10n("确认下载并安装人脸模型？"),
-            confirmLabel: { _ in l10n("下载并覆盖") },
-            confirmRole: { _ in .destructive },
-            message: { $0.scopeText(with: l10n) },
-            onConfirm: { _ in Task { await viewModel.startModelDownload() } },
-            onCancel: { _ in viewModel.reportCancellation(l10n("下载并安装人脸模型")) }
-        )
     }
 }
 

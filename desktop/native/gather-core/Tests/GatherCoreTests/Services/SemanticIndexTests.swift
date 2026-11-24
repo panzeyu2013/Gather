@@ -41,6 +41,21 @@ private final class FakeSemanticsStore: PhotoSemanticsStore {
         Set(rows.values.filter { $0.sessionId == sessionId }.map(\.photoId))
     }
 
+    /// P0-3：2 参重载必须显式实现（协议已删掉默认实现，否则版本语义在单测里不生效）。
+    func indexedPhotoIds(sessionId: String, modelVersion: String) throws -> Set<String> {
+        Set(rows.values
+            .filter { $0.sessionId == sessionId && $0.modelVersion == modelVersion }
+            .map(\.photoId))
+    }
+
+    func clearStaleRows(sessionId: String, keepingModelVersion: String) throws -> Int {
+        let stale = rows.values.filter {
+            $0.sessionId == sessionId && $0.modelVersion != keepingModelVersion
+        }
+        for row in stale { rows.removeValue(forKey: row.photoId) }
+        return stale.count
+    }
+
     func count(sessionId: String) throws -> Int {
         rows.values.filter { $0.sessionId == sessionId }.count
     }
@@ -63,7 +78,8 @@ private func row(
     photoId: String,
     sessionId: String = "s1",
     vector: [Float],
-    labels: [SemanticLabel] = []
+    labels: [SemanticLabel] = [],
+    modelVersion: String = ImageSemanticsExtractor.modelVersion
 ) -> PhotoSemanticsRow {
     PhotoSemanticsRow(
         photoId: photoId,
@@ -71,7 +87,7 @@ private func row(
         labelsJson: SemanticIndex.encodeLabels(labels),
         feature: SemanticFeatureCodec.encode(vector),
         featureDim: vector.count,
-        modelVersion: ImageSemanticsExtractor.modelVersion,
+        modelVersion: modelVersion,
         computedAt: "2026-10-30T00:00:00.000Z")
 }
 
@@ -181,11 +197,11 @@ struct SemanticIndexSearchTests {
             PhotoSemanticsInsert(
                 photoId: "a", sessionId: "s1", labelsJson: "[]",
                 feature: SemanticFeatureCodec.encode(vector), featureDim: 4,
-                modelVersion: "m", computedAt: "t"),
+                modelVersion: ImageSemanticsExtractor.modelVersion, computedAt: "t"),
             PhotoSemanticsInsert(
                 photoId: "b", sessionId: "s1", labelsJson: "[]",
                 feature: SemanticFeatureCodec.encode([1, 0, 0]), featureDim: 3,
-                modelVersion: "m", computedAt: "t"),
+                modelVersion: ImageSemanticsExtractor.modelVersion, computedAt: "t"),
         ])
         let index = SemanticIndex(store: store)
         let outcome = try index.similar(to: "a", sessionId: "s1", limit: 10, minSimilarity: 0.5)
@@ -214,14 +230,14 @@ struct SemanticIndexSearchTests {
                     SemanticLabel(label: "indoor", confidence: 0.4),
                 ]),
                 feature: SemanticFeatureCodec.encode(vector), featureDim: 4,
-                modelVersion: "m", computedAt: "t"),
+                modelVersion: ImageSemanticsExtractor.modelVersion, computedAt: "t"),
             PhotoSemanticsInsert(
                 photoId: "beach1", sessionId: "s1",
                 labelsJson: SemanticIndex.encodeLabels([
                     SemanticLabel(label: "beach", confidence: 0.9),
                 ]),
                 feature: SemanticFeatureCodec.encode(vector), featureDim: 4,
-                modelVersion: "m", computedAt: "t"),
+                modelVersion: ImageSemanticsExtractor.modelVersion, computedAt: "t"),
         ])
         let index = SemanticIndex(store: store)
         let outcome = try index.search(sessionId: "s1", labels: ["Wedding"], limit: 10)
@@ -266,5 +282,66 @@ struct SemanticIndexSearchTests {
         #expect(SemanticIndex.jaccard([], []) == 0)
         #expect(SemanticIndex.jaccard(["a"], ["a"]) == 1)
         #expect(abs(SemanticIndex.jaccard(["a", "b"], ["b", "c"]) - 1.0 / 3.0) < 0.0001)
+    }
+
+    @Test("模型版本过滤：vectors()/sceneGroups()/similar() 都不混两种向量空间")
+    func modelVersionFiltering() throws {
+        let store = FakeSemanticsStore()
+        let labels = [SemanticLabel(label: "beach", confidence: 0.9)]
+        store.rows["a"] = row(photoId: "a", vector: [1, 0, 0], labels: labels)
+        store.rows["b"] = row(photoId: "b", vector: [1, 0, 0], labels: labels)
+        // 旧模型版本的同一场景照片：同维但属于另一种向量空间，必须排除。
+        store.rows["old"] = PhotoSemanticsRow(
+            photoId: "old", sessionId: "s1",
+            labelsJson: SemanticIndex.encodeLabels(labels),
+            feature: SemanticFeatureCodec.encode([1, 0, 0]), featureDim: 3,
+            modelVersion: "vision.fp0", computedAt: "2026-10-30T00:00:00.000Z")
+        let index = SemanticIndex(store: store)
+
+        let decoded = try index.vectors(sessionId: "s1")
+        #expect(decoded.vectors.map(\.photoId) == ["a", "b"])
+        #expect(decoded.skipped == 1, "旧版本行计入 skipped，而不是参与比较")
+        #expect(try index.sceneGroups(sessionId: "s1").map(\.photoIds) == [["a", "b"]])
+        // scanVectors 走 indexedPhotoIds(2 参)：旧版本照片不能进候选（fake 的显式实现生效）。
+        let outcome = try index.similar(to: "a", sessionId: "s1", limit: 10, minSimilarity: 0.5)
+        #expect(outcome.hits.map(\.photoId) == ["b"])
+    }
+
+    @Test("查询侧版本校验：旧版本查询图/种子不跨向量空间比较，原因是 stale")
+    func staleQueryVector() throws {
+        let store = FakeSemanticsStore()
+        let vector: [Float] = [1, 0, 0]
+        // 旧版本行既当查询图也当种子；同会话备一张当前版本候选，证明不是"没得比"。
+        store.rows["oldQuery"] = row(
+            photoId: "oldQuery", vector: vector, modelVersion: "vision.fp0")
+        store.rows["oldSeed"] = row(
+            photoId: "oldSeed", vector: vector, modelVersion: "vision.fp0")
+        store.rows["freshSeed"] = row(photoId: "freshSeed", vector: vector)
+        store.rows["candidate"] = row(photoId: "candidate", vector: vector)
+        let index = SemanticIndex(store: store)
+
+        // 查询侧版本校验：旧版本返回 nil（与"没有向量"同一条 unavailable 路径）。
+        #expect(try index.vector(photoId: "oldQuery") == nil)
+        #expect(try index.vector(photoId: "candidate") != nil)
+
+        // 单张查询图过期：不拿旧向量算余弦，也不假装"没有相似照片"。
+        let single = try index.similar(to: "oldQuery", sessionId: "s1", limit: 10, minSimilarity: 0.5)
+        #expect(single.hits.isEmpty)
+        #expect(single.scanned == 0)
+        #expect(single.unavailableReason == SemanticIndex.staleModelVersionReason)
+
+        // 全部种子过期：旧种子计入 skipped，原因同样是 stale。
+        let allStale = try index.similar(
+            to: ["oldQuery", "oldSeed"], sessionId: "s1", limit: 10, minSimilarity: 0.5)
+        #expect(allStale.hits.isEmpty)
+        #expect(allStale.skipped == 2, "旧种子计入 skipped")
+        #expect(allStale.unavailableReason == SemanticIndex.staleModelVersionReason)
+
+        // 新旧种子混用：旧种子只计 skipped，不污染平均向量，新种子照常命中。
+        let mixed = try index.similar(
+            to: ["oldSeed", "freshSeed"], sessionId: "s1", limit: 10, minSimilarity: 0.5)
+        #expect(mixed.skipped == 1)
+        #expect(mixed.hits.map(\.photoId) == ["candidate"])
+        #expect(mixed.unavailableReason == nil)
     }
 }

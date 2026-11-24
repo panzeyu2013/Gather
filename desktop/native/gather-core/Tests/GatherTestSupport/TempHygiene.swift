@@ -15,7 +15,8 @@
 //      安装时机可能晚于并行用例的首次建目录，快照会把它们误判成“既有残留”
 //      （实测：首版快照方案漏掉 2 个 gather-replay-*.lock）；启动时刻必须取
 //      `proc_pidinfo(PROC_PIDTBSDINFO)`，不能用 `Date() - systemUptime`（那是开机时刻）。
-//      `gather-models-*` 归 app 的 ModelInstaller 所有（下载包/解压目录），显式跳过。
+//      `gather-models-*`（原模型下载包/解压目录前缀，P1-6 删除下载器后已无
+//      创建点）仍显式跳过：旧机器上可能留有历史残留。
 //
 // 已知边界：atexit 不覆盖 SIGKILL；-9 中断仍可能漏。跨进程并发测试不在设计内
 // （scripts/test.sh 与 CI 都是单进程串行/并行一次）。

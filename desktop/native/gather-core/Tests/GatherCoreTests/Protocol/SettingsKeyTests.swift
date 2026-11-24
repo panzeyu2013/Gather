@@ -42,7 +42,6 @@ struct SettingsKeyTests {
         "onnx_threads": "4",
         "default_threshold": "10",
         "default_min_group_size": "2",
-        "model_download_url": "",
         "thumbnail_size": "1024",
         "thumbnail_quality": "80",
         "disk_cache_dir": "",

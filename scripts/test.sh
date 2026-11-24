@@ -35,7 +35,7 @@ usage() {
 
 # --clean-temp：统计/清理两个 temp root 里 >1 天的 Gather 残留（原
 # scripts/clean-test-temp.sh 已并入，T11）。只统计除非 --apply；gather-models-*
-# 归 app 的 ModelInstaller 所有（下载包/解压目录），不动；CoreML 不认 $TMPDIR，
+# 是历史下载器残留（ModelInstaller 已于 2026-11-23 删除，仅保留清理规则），不动；CoreML 不认 $TMPDIR，
 # 始终写 DARWIN_USER_TEMP_DIR，所以两个 root 都要看。
 clean_temp_summary() {
     local label="$1" root="$2" count size
@@ -114,7 +114,7 @@ fi
 
 # 进程级兜底（2026-10-30）：TempHygiene(atexit) 覆盖不到 SIGKILL / Ctrl-C，且个别
 # 跨进程 rendezvous（gather-replay-*.lock）不保证删。这里用「运行开始标记 + mtime」
-# 在退出时清掉本次运行新增的临时条目；gather-models-* 归 app 的 ModelInstaller 所有。
+# 在退出时清掉本次运行新增的临时条目；gather-models-* 是已删除下载器的历史残留。
 TEST_TEMP_MARK="$(mktemp "${TMPDIR:-/tmp}/.gather-test-run.XXXXXX")"
 cleanup_test_temp() {
     local root

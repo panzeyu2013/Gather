@@ -135,8 +135,26 @@ public final class ModelReviewService: @unchecked Sendable {
         let semanticsStore = collectSemantics ? semantics : nil
         var indexedPhotoIds: Set<String> = []
         if let semanticsStore {
+            // P0-3：语义模型换版本后旧向量必须失效——同维不同模型是两种向量空间，
+            // 混用正是 EmbeddingModel.swift:12-14 明令禁止的失效模式。每次分析
+            //（且语义索引开启）先把非当前版本的行分批清掉，再按 model_version 取
+            // 增量集合：即使清理失败，旧行也不算"已建索引"，本批会重采覆盖。
+            let semanticsVersion = ImageSemanticsExtractor.modelVersion
             do {
-                indexedPhotoIds = try semanticsStore.indexedPhotoIds(sessionId: sessionId)
+                let dropped = try semanticsStore.clearStaleRows(
+                    sessionId: sessionId, keepingModelVersion: semanticsVersion)
+                if dropped > 0 {
+                    GatherLogger.log(
+                        "model.review semantics dropped \(dropped) stale rows"
+                            + " (model_version != \(semanticsVersion))", level: .info)
+                }
+            } catch {
+                // 清理失败不阻断初审：下面的版本过滤仍把旧行算作"未建索引"。
+                GatherLogger.log("model.review semantics purge failed: \(error)", level: .warn)
+            }
+            do {
+                indexedPhotoIds = try semanticsStore.indexedPhotoIds(
+                    sessionId: sessionId, modelVersion: semanticsVersion)
             } catch {
                 // 读语义索引失败不该阻断初审：本批按"未建索引"处理（可能重复采集）。
                 GatherLogger.log("model.review semantics lookup failed: \(error)", level: .warn)

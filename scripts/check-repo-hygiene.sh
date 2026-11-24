@@ -39,12 +39,18 @@
 #         SimilarityNotice / CommandError.localized / …）内部；否则 FAIL 并打印 file:line。
 #       - 平衡括号解析多行调用；跳过注释、#Preview 块和 PreviewSupport/ 预览夹具目录
 #         （那里的中文是示例数据，不是产品文案）。
+#   [h] SwiftPM 包集合
+#       - `git ls-files '*Package.swift'` 必须恰为 desktop/native/gather-core/Package.swift
+#         与 desktop/native/gather-app/Package.swift 两个；多一个或少于两个都 FAIL。
+#       - 动机：所有门禁/CI 都硬编码这两个包路径，新增第三个 SwiftPM 包既不会被扫描、
+#         也不会被编译（2026-11-23 P1-3，见 .tmp/arch-plan-2026-11-23/06-gates.md §6.3）。
+#       - --self-test 只跑本节的合成样本（正样本 / 第三个包 / 缺包），不需要 git 检出。
 #
 # 防「静默 0 命中」守卫：每个检查面都有扫描量下限（文件数 / 链接数 / key 数 / 占位符数），
 # 低于下限直接 FAIL，避免路径或解析器失效时门禁变绿。
 #
-# 用法：./scripts/check-repo-hygiene.sh
-# exit 0 = 七节全过；exit 1 = 至少一节失败（消息含节名与文件行号）。
+# 用法：./scripts/check-repo-hygiene.sh [--self-test]
+# exit 0 = 八节全过；exit 1 = 至少一节失败（消息含节名与文件行号）。
 # 非目标：不做 macOS 构建、不改文件、不检查 docs 措辞（事实校准见 scripts/report-baseline.sh）。
 set -euo pipefail
 
@@ -64,10 +70,11 @@ trap 'rm -rf "$SCRATCH"' EXIT
 
 echo "check-repo-hygiene: 仓库卫生门禁"
 
-if ! python3 - "$SCRATCH" <<'PY_HYGIENE'
-# check-repo-hygiene 的检查内核：七节合并为单进程，git ls-files 与文件读取各一次。
+if ! python3 - "$SCRATCH" "$@" <<'PY_HYGIENE'
+# check-repo-hygiene 的检查内核：八节合并为单进程，git ls-files 与文件读取各一次。
 # 由 scripts/check-repo-hygiene.sh 通过 heredoc 调用，输出行格式与逐节旧实现逐字节一致。
-# 参数：argv[1] = 临时目录（SCRATCH），用于 py_compile 字节码与 shellcheck 输出。
+# 参数：argv[1] = 临时目录（SCRATCH），用于 py_compile 字节码与 shellcheck 输出；
+#       argv[2:] = 脚本参数（目前只支持 --self-test：只跑 [h] 的合成样本）。
 import contextlib
 import io
 import os
@@ -79,11 +86,17 @@ import sys
 import traceback
 
 SCRATCH = sys.argv[1]
+ARGS = sys.argv[2:]
+SELFTEST = '--self-test' in ARGS
+UNKNOWN_ARGS = [arg for arg in ARGS if arg != '--self-test']
 FAIL = False
 
 # ---- 共用：一次 git ls-files；文件内容按需缓存，一次读盘复用给多节 ----
-tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
-tracked = sorted(p.decode('utf-8', 'surrogateescape') for p in tracked if p)
+if SELFTEST:
+    tracked = []  # --self-test 只跑 [h] 的合成样本，不依赖 git 检出
+else:
+    tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
+    tracked = sorted(p.decode('utf-8', 'surrogateescape') for p in tracked if p)
 # 空 tracked：与旧实现一致——[a] 打印 FAIL 并结束本节，其余节仍按空清单继续检查。
 TRACKED_EMPTY = not tracked
 
@@ -977,8 +990,72 @@ def section_g():
     return True
 
 
+# ===== [h] SwiftPM 包集合（新增第三个包必须显式登记） =====
+# 所有门禁/CI 都硬编码 gather-core + gather-app：新增第三个 SwiftPM 包既不会被扫描，
+# 也不会被编译（2026-11-23 P1-3，见 .tmp/arch-plan-2026-11-23/06-gates.md §6.3）。
+# 用 git ls-files 的权威集合断言「恰为这两个」，多一个或少一个都 FAIL。
+PACKAGE_MANIFESTS = (
+    'desktop/native/gather-core/Package.swift',
+    'desktop/native/gather-app/Package.swift',
+)
+
+
+def package_set_problems(manifests):
+    found = sorted(p for p in manifests if p.rsplit('/', 1)[-1] == 'Package.swift')
+    problems = []
+    if len(found) != len(PACKAGE_MANIFESTS):
+        problems.append('Package.swift 应恰为 %d 个（%s），实际 %d 个：%s；'
+                        '新增 SwiftPM 包必须同时纳入门禁与 CI'
+                        % (len(PACKAGE_MANIFESTS), ' / '.join(PACKAGE_MANIFESTS),
+                           len(found), ', '.join(found) or '(空)'))
+    for expected in PACKAGE_MANIFESTS:
+        if expected not in found:
+            problems.append('缺少预期的包清单：%s' % expected)
+    for extra in found:
+        if extra not in PACKAGE_MANIFESTS:
+            problems.append('未登记的 SwiftPM 包：%s' % extra)
+    return problems
+
+
+def section_h():
+    problems = package_set_problems(tracked)
+    if problems:
+        for problem in problems:
+            print('    FAIL ' + problem)
+        return False
+    print('    ok    %d 个 Package.swift（gather-core / gather-app），无未登记的新包'
+          % len(PACKAGE_MANIFESTS))
+    return True
+
+
+def self_test_package_set():
+    good = list(PACKAGE_MANIFESTS)
+    extra = good + ['desktop/native/gather-tools/Package.swift']
+    missing = good[:1]
+    failures = []
+    if package_set_problems(good):
+        failures.append('正样本（2 个包）被误报')
+    if not package_set_problems(extra):
+        failures.append('第三个包未被发现')
+    if not package_set_problems(missing):
+        failures.append('缺包未被发现')
+    if failures:
+        for item in failures:
+            print('    FAIL ' + item)
+        return False
+    print('    ok    self-test：2 包通过 / 第三个包 FAIL / 缺包 FAIL')
+    return True
+
+
 def main():
     global FAIL
+    if UNKNOWN_ARGS:
+        print('check-repo-hygiene: 未知参数：%s（只支持 --self-test）'
+              % ' '.join(UNKNOWN_ARGS), file=sys.stderr)
+        sys.exit(2)
+    if SELFTEST:
+        ok = run_section('[h] SwiftPM 包集合（--self-test 合成样本）', self_test_package_set)
+        sys.exit(0 if ok else 1)
     sections_ae = (
         ('[a] 脚本语法 / shebang 执行位 / CRLF', section_a),
         ('[b] .editorconfig 一致性（LF / 无行尾空白 / 末行换行 / UTF-8）', section_b),
@@ -1000,6 +1077,8 @@ def main():
         FAIL = True
     sys.stdout.write(g_buf.getvalue())
     if not ok_g:
+        FAIL = True
+    if not run_section('[h] SwiftPM 包集合（git ls-files 恰为 2 个）', section_h):
         FAIL = True
     sys.exit(1 if FAIL else 0)
 

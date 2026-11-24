@@ -163,7 +163,6 @@ public final class SettingsService: @unchecked Sendable {
         "lazy_checksum",
         "max_detections",
         "metadata_write_mode",
-        "model_download_url",
         "nms_threshold",
         "onnx_threads",
         "thumbnail_quality",

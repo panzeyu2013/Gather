@@ -11,8 +11,9 @@
 // 默认 defaultSimilarityThreshold = 0.65，值域 similarityThresholdRange = 0...1；
 // settings key default_eps、模板 face.eps、IPC 字段 eps 与本参数同义同刻度。
 //
-// 大语料（n > minPoints 且启用）走 angular-LSH 桶 + 多探针 + 精确复核的 ANN
-// 路径（候选经精确余弦重验，precision 与暴力一致）。进度回调单调钳制，BFS
+// 大语料（n > minPoints 且启用，默认门槛 20_000 = CosineLshIndex.clusterLSHMinPoints）
+// 走 angular-LSH 桶 + 多探针 + 精确复核的 ANN 路径（候选经精确余弦重验，precision
+// 与暴力一致）；n <= 门槛仍走 exactRegionQuery 的精确全扫描。进度回调单调钳制，BFS
 // 展开期间按心跳步长上报，避免调用方超时误判（TS 注释 153-163 行语义保留）。
 //
 // 【增量 vs 全量（assignIncrementally；ADR-029 未做项补齐）】
@@ -106,9 +107,12 @@ public struct ClusterLshOptions: Sendable {
     public var minPoints: Int
     public var config: LshConfig
 
+    /// 默认启用 LSH，门槛取 `CosineLshIndex.clusterLSHMinPoints`（20_000）：
+    /// n <= 20k 走精确 `exactRegionQuery`，n > 20k 走近似 + 精确余弦复核兜底。
+    /// 下调门槛需先有 release 下 exact-vs-LSH 成员一致率证据（第二轮回退：4k 在 eps=0.65 下召回仅约 0.60）。
     public static let `default` = ClusterLshOptions(
         enabled: true,
-        minPoints: CosineLshIndex.lshMinPoints,
+        minPoints: CosineLshIndex.clusterLSHMinPoints,
         config: LshConfig(unitVectors: true))
 
     public init(enabled: Bool, minPoints: Int, config: LshConfig) {
